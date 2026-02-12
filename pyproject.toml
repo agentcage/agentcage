@@ -1,0 +1,29 @@
+[project]
+name = "lobstercage"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+lobstercage = "lobstercage.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "src/lobstercage/data/proxy"]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lobstercage"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]

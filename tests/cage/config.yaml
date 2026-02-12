@@ -1,0 +1,20 @@
+name: cagetest
+
+container:
+  image: "localhost/lobstercage-test-agent"
+  command: ["node", "/app/test-all.js"]
+  volumes:
+    - "./tests/cage/scripts:/app:ro"
+
+domains:
+  mode: allowlist
+  list:
+    - httpbin.org
+    - api.github.com
+
+secrets:
+  enabled: true
+  action: block
+
+max_request_body: 1048576
+log_allowed: true

@@ -1,0 +1,22 @@
+# lobstercage curl test config
+
+container:
+  image: "docker.io/alpine/curl:latest"
+  command: ["sh", "/app/test-curl.sh"]
+  volumes:
+    - "./test-agent:/app:ro"
+  env: {}
+
+domains:
+  mode: allowlist
+  list:
+    - httpbin.org
+
+secrets:
+  enabled: true
+  action: block
+  extra_patterns: []
+
+max_request_body: 10485760
+
+log_allowed: true

@@ -1,0 +1,88 @@
+[Unit]
+Description=lobstercage cage
+Requires={{ name }}-proxy.service
+After={{ name }}-proxy.service
+
+[Container]
+ContainerName={{ name }}-cage
+Image={{ image }}
+Network={{ name }}-net.network
+DNS=10.89.0.10
+Environment="HTTP_PROXY=http://{{ name }}-proxy:8080"
+Environment="HTTPS_PROXY=http://{{ name }}-proxy:8080"
+Environment="http_proxy=http://{{ name }}-proxy:8080"
+Environment="https_proxy=http://{{ name }}-proxy:8080"
+Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
+Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
+Environment="NODE_OPTIONS=--import /lobstercage/proxy-fetch.mjs"
+Volume={{ name }}-certs.volume:/certs:ro,Z
+Volume={{ patches_host_dir }}:/lobstercage:ro,Z
+{% for vol in volumes %}
+Volume={{ vol }}
+{% endfor %}
+{% for vol_name, mount in named_volumes.items() %}
+Volume={{ vol_name }}:{{ mount }}
+{% endfor %}
+{% for spec in tmpfs %}
+Tmpfs={{ spec }}
+{% endfor %}
+{% for spec in ports %}
+PublishPort={{ spec }}
+{% endfor %}
+{% for secret in podman_secrets %}
+{% if deploy_name %}
+Secret={{ deploy_name }}.{{ secret }},type=env,target={{ secret }}
+{% else %}
+Secret={{ secret }},type=env
+{% endif %}
+{% endfor %}
+{% for key, val in cage_placeholders %}
+Environment="{{ key }}={{ val }}"
+{% endfor %}
+{% for key, val in env.items() %}
+Environment="{{ key }}={{ val }}"
+{% endfor %}
+{% if user %}
+User={{ user }}
+{% endif %}
+{% if read_only %}
+ReadOnly=true
+{% endif %}
+{% if security_label_disable %}
+SecurityLabelDisable=true
+{% endif %}
+{% if no_new_privileges %}
+NoNewPrivileges=true
+{% endif %}
+{% for cap in drop_capabilities %}
+DropCapability={{ cap }}
+{% endfor %}
+{% for cap in add_capabilities %}
+AddCapability={{ cap }}
+{% endfor %}
+{% if memory %}
+PodmanArgs=--memory={{ memory }}
+{% endif %}
+{% if cpus %}
+PodmanArgs=--cpus={{ cpus }}
+{% endif %}
+{% if command %}
+Exec={{ command | join(' ') }}
+{% endif %}
+
+[Service]
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-proxy test -f /home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+{% if not read_only %}
+ExecStartPost=/bin/bash -c 'GW=$(podman inspect {{ name }}-cage --format "{{ '{{' }}range .NetworkSettings.Networks{{ '}}{{' }}.Gateway{{ '}}{{' }}end{{ '}}' }}"); podman exec --user root {{ name }}-cage sh -c "printf '"'"'nameserver 10.89.0.10\nnameserver %s\n'"'"' $GW > /etc/resolv.conf"'
+{% endif %}
+Restart={{ restart }}
+RestartSec={{ restart_sec }}
+{% if timeout_start_sec %}
+TimeoutStartSec={{ timeout_start_sec }}
+{% endif %}
+{% if timeout_stop_sec %}
+TimeoutStopSec={{ timeout_stop_sec }}
+{% endif %}
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,11 @@
+FROM docker.io/mitmproxy/mitmproxy@sha256:194a578e789215da19e1eaf42b98d9a6cec097dc4ead17aad1e1d268d7a33e85
+RUN pip install --no-cache-dir pyyaml==6.0.2
+COPY proxy/inspectors/ /app/inspectors/
+COPY proxy/addon.py /app/addon.py
+COPY proxy/secret_injector.py /app/secret_injector.py
+ENV LOBSTERCAGE_CONFIG=/etc/lobstercage/config.yaml
+# Bypass default entrypoint — it uses stat/usermod that fail under rootless podman
+ENTRYPOINT []
+USER mitmproxy
+CMD ["mitmdump", "-s", "/app/addon.py", "--listen-port", "8080", \
+     "--set", "connection_strategy=lazy", "--listen-host", "10.89.0.11", "--quiet"]

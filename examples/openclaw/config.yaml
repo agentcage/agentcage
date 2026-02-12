@@ -1,0 +1,172 @@
+# lobstercage configuration for OpenClaw
+#
+# Copy this file and customize it for your setup:
+#   cp examples/openclaw/config.yaml config.yaml
+#   # Edit: set your secrets, allowed domains, resource limits
+#   ./lobstercage generate -c config.yaml
+#
+# See docs/openclaw.md for a full setup walkthrough.
+#
+# Defaults (applied automatically unless overridden):
+#   Container hardening:
+#     user: "1000:1000"        read_only: true       drop_capabilities: ALL
+#     no_new_privileges: true   security_label_disable: true
+#   Service:
+#     restart: on-failure       restart_sec: 10       timeout_stop_sec: 30
+#   Proxy:
+#     max_request_body: 10485760 (10 MB)   secrets: enabled
+#
+# To opt out of any default, set it explicitly (e.g. read_only: false).
+# See docs/configuration.md for the full reference.
+
+name: openclaw
+
+container:
+  # Base image — use the official image or your own custom build
+  image: "ghcr.io/openclaw/openclaw:latest"
+
+  # Gateway mode: --allow-unconfigured permits all models,
+  # --bind lan listens on all interfaces, --auth password enables auth
+  command: ["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan", "--auth", "password"]
+
+  # Host directory mounted into the container as the agent workspace
+  volumes:
+    - "${HOME}/openclaw-workspace:/workspace:rw"
+
+  # Podman named volume for persistent OpenClaw state (conversations, settings)
+  named_volumes:
+    openclaw-state: "/home/node/.openclaw:rw"
+
+  # Writable directories on the read-only root filesystem.
+  # /tmp: general temp files (noexec for safety)
+  # /home/node/.npm: npm cache
+  # /scratch: working area for agent tasks (exec allowed for build tools)
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=64M"
+    - "/home/node/.npm:rw,size=128M"
+    - "/scratch:rw,exec,nosuid,size=256M"
+
+  # Gateway web UI — bind to localhost only to prevent LAN exposure
+  ports:
+    - "127.0.0.1:18789:18789"
+
+  # Disable mDNS/Bonjour broadcasts (not useful inside a container)
+  env:
+    OPENCLAW_DISABLE_BONJOUR: "1"
+
+  # Podman secrets injected as environment variables directly into the cage.
+  # Only secrets used internally by the cage process belong here (not API keys
+  # that travel in proxied HTTP requests — use secret_injection for those).
+  # Create each secret first (use -n to avoid trailing newline):
+  #   echo -n "your-token" | podman secret create OPENCLAW_GATEWAY_TOKEN -
+  #   echo -n "your-pass"  | podman secret create OPENCLAW_GATEWAY_PASSWORD -
+  podman_secrets:
+    - OPENCLAW_GATEWAY_TOKEN
+    - OPENCLAW_GATEWAY_PASSWORD
+
+  # Resource limits — tune to your workload and host resources
+  memory: "4g"
+  cpus: "2.0"
+
+  # OpenClaw's Node.js startup is slow (~120s) — give it time before systemd
+  # considers the start failed
+  timeout_start_sec: 120
+
+# ── Custom upstream DNS servers for the dnsmasq sidecar ──
+# Default: 1.1.1.1, 8.8.8.8 (Cloudflare + Google)
+# Uncomment for Tailscale MagicDNS (resolves *.ts.net hostnames)
+# dns_servers:
+#   - 100.100.100.100
+#   - 1.1.1.1
+#   - 8.8.8.8
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Create each secret as a Podman secret (same as above):
+#   echo -n "sk-ant-..." | podman secret create ANTHROPIC_API_KEY -
+# Then uncomment the corresponding block below.
+secret_injection:
+  # Core AI provider
+  - env: ANTHROPIC_API_KEY
+    placeholder: "{{ANTHROPIC_API_KEY}}"
+    inject_to:
+      - anthropic.com
+
+  # Uncomment providers as needed:
+  #- env: OPENAI_API_KEY
+  #  placeholder: "{{OPENAI_API_KEY}}"
+  #  inject_to:
+  #    - openai.com
+  #- env: OPENROUTER_API_KEY
+  #  placeholder: "{{OPENROUTER_API_KEY}}"
+  #  inject_to:
+  #    - openrouter.ai
+
+  # Web search
+  #- env: BRAVE_API_KEY
+  #  placeholder: "{{BRAVE_API_KEY}}"
+  #  inject_to:
+  #    - search.brave.com
+
+  # Web scraping
+  #- env: FIRECRAWL_API_KEY
+  #  placeholder: "{{FIRECRAWL_API_KEY}}"
+  #  inject_to:
+  #    - firecrawl.dev
+
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com"). Sibling domains are NOT matched — "github.com" does
+# not allow "githubusercontent.com", so add it separately.
+domains:
+  mode: allowlist
+  list:
+    # ── Core AI providers ──
+    - anthropic.com
+    #- openai.com
+    #- openrouter.ai
+
+    # ── Development (package registries, code hosting) ──
+    - npmjs.org
+    - npmjs.com
+    - pypi.org
+    - files.pythonhosted.org
+    - nodejs.org
+    - github.com
+    - githubusercontent.com
+    #- gitlab.com
+
+    # ── Web access (search, scraping) ──
+    #- search.brave.com        # requires BRAVE_API_KEY secret
+    #- perplexity.ai
+    #- firecrawl.dev           # requires FIRECRAWL_API_KEY secret
+
+    # ── AI/ML services ──
+    #- huggingface.co
+    #- hf.co
+
+    # ── Messaging ──
+    #- api.telegram.org
+    #- discord.com
+
+    # Add domains your agents need access to:
+    #- example.com
+
+# ── Secret detection ──
+# Defense-in-depth: pattern-matches credentials in requests even though
+# secret_injection already prevents the cage from seeing real keys.
+# Built-in allow_to_domains automatically lets known secrets reach their
+# provider domains (e.g. anthropic_key → anthropic.com). No manual
+# configuration needed for standard providers.
+# To add custom mappings or override built-ins:
+#secrets:
+#  allow_to_domains:
+#    custom_key:
+#      - my-service.example.com
+
+# ── Inspectors ──
+# Entropy and content-type are off by default; enable them here.
+# All config values below use sensible defaults — listed only for reference.
+inspectors:
+  - name: entropy
+  - name: content-type

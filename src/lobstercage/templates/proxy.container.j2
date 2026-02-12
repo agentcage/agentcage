@@ -1,0 +1,30 @@
+[Unit]
+Description=lobstercage mitmproxy
+Requires={{ name }}-dns.service
+After={{ name }}-dns.service
+
+[Container]
+ContainerName={{ name }}-proxy
+Image=localhost/lobstercage-proxy
+Network={{ name }}-net.network:ip=10.89.0.11
+Network=podman
+DNS=10.89.0.10
+DNS=1.1.1.1
+Volume={{ config_host_path }}:/etc/lobstercage/config.yaml:ro,Z
+Volume={{ name }}-certs.volume:/home/mitmproxy/.mitmproxy:Z
+Exec=mitmdump -s /app/addon.py --listen-port 8080 --set connection_strategy=lazy --listen-host 10.89.0.11{% if not log_proxy_connections %} --quiet{% endif %}
+
+{% for secret in proxy_secrets %}
+{% if deploy_name %}
+Secret={{ deploy_name }}.{{ secret }},type=env,target={{ secret }}
+{% else %}
+Secret={{ secret }},type=env
+{% endif %}
+{% endfor %}
+
+[Service]
+ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "printf 'nameserver 10.89.0.10\nnameserver 1.1.1.1\n' > /etc/resolv.conf"
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

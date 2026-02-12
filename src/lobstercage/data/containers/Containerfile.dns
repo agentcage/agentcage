@@ -1,0 +1,8 @@
+FROM docker.io/alpine@sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95
+RUN apk add --no-cache dnsmasq libcap && \
+    setcap cap_net_bind_service=+ep /usr/sbin/dnsmasq && \
+    (adduser -D -H dnsmasq 2>/dev/null || true)
+EXPOSE 53/udp 53/tcp
+USER dnsmasq
+CMD ["dnsmasq", "--no-daemon", "--no-resolv", \
+     "--server", "1.1.1.1", "--server", "8.8.8.8"]

@@ -1,0 +1,23 @@
+# lobstercage basic example
+# See docs/configuration.md for the full reference.
+#
+# Before running, update the agent volume path below to point to
+# the absolute path of the agent/ directory in this example.
+
+name: basic
+
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${AGENT_DIR}:/app:ro"
+
+domains:
+  mode: allowlist
+  list:
+    - httpbin.org
+
+secrets:
+  enabled: true
+
+log_allowed: true
