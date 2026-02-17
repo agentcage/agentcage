@@ -126,6 +126,32 @@ class TestDnsQuadlet:
         assert "--server=/api.anthropic.com/100.100.100.100" in content
         assert "--server=/github.com/100.100.100.100" in content
 
+    def test_dns_allowlist_forwards_to_all_servers(self, tmp_path):
+        """Each allowlisted domain should be forwarded to every DNS server."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              mode: allowlist
+              list:
+                - github.com
+                - pypi.org
+            dns_servers:
+              - 100.100.100.100
+              - 1.1.1.1
+              - 8.8.8.8
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        assert "--address=/#/" in content
+        # Each domain forwarded to ALL three servers
+        for domain in ("github.com", "pypi.org"):
+            for server in ("100.100.100.100", "1.1.1.1", "8.8.8.8"):
+                assert f"--server=/{domain}/{server}" in content
+
     def test_dns_no_allowlist_filtering_in_blocklist_mode(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
