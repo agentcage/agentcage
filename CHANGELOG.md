@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Proxy container resolves DNS via upstream servers directly instead of through dnsmasq
 - Cage `HTTP_PROXY` uses proxy static IP (10.89.0.11) instead of container name
-- `dns_servers` defaults to `["1.1.1.1", "8.8.8.8"]` when omitted from config
+- `dns_servers` defaults to host DNS servers (from `/etc/resolv.conf`) when omitted from config
 
 ### Removed
 - `dns.lookup` / `dns/promises.lookup` patches from proxy-fetch.mjs (no longer needed since DNS always resolves)

@@ -5,7 +5,7 @@ import textwrap
 
 import pytest
 
-from agentcage.config import Config, ContainerConfig, LoggingConfig, load_config, validate_config
+from agentcage.config import Config, ContainerConfig, LoggingConfig, _host_dns_servers, load_config, validate_config
 
 
 class TestLoadConfigMinimal:
@@ -44,9 +44,13 @@ class TestLoadConfigMinimal:
         cfg = load_config(minimal_yaml)
         assert cfg.secret_injection == []
 
-    def test_default_dns_servers(self, minimal_yaml):
+    def test_default_dns_servers(self, minimal_yaml, monkeypatch):
+        monkeypatch.setattr(
+            "agentcage.config._host_dns_servers",
+            lambda: ["10.0.0.1", "10.0.0.2"],
+        )
         cfg = load_config(minimal_yaml)
-        assert cfg.dns_servers == ["1.1.1.1", "8.8.8.8"]
+        assert cfg.dns_servers == ["10.0.0.1", "10.0.0.2"]
 
 
 class TestLoadConfigFull:
@@ -290,3 +294,39 @@ class TestValidateConfig:
         cfg = load_config(str(p))
         warnings = validate_config(cfg)
         assert warnings == []
+
+
+class TestHostDnsServers:
+    def test_parses_resolv_conf(self, tmp_path, monkeypatch):
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text(
+            "# comment\n"
+            "nameserver 100.100.100.100\n"
+            "nameserver 1.1.1.1\n"
+            "search local\n"
+        )
+        _real_open = open
+        monkeypatch.setattr("builtins.open", lambda path, *a, **kw:
+            _real_open(str(resolv), *a, **kw) if path == "/etc/resolv.conf"
+            else _real_open(path, *a, **kw)
+        )
+        assert _host_dns_servers() == ["100.100.100.100", "1.1.1.1"]
+
+    def test_empty_resolv_conf_falls_back(self, tmp_path, monkeypatch):
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("# no nameservers here\nsearch local\n")
+        _real_open = open
+        monkeypatch.setattr("builtins.open", lambda path, *a, **kw:
+            _real_open(str(resolv), *a, **kw) if path == "/etc/resolv.conf"
+            else _real_open(path, *a, **kw)
+        )
+        assert _host_dns_servers() == ["1.1.1.1", "8.8.8.8"]
+
+    def test_missing_resolv_conf_falls_back(self, monkeypatch):
+        _real_open = open
+        def raise_oserror(path, *a, **kw):
+            if path == "/etc/resolv.conf":
+                raise OSError("No such file")
+            return _real_open(path, *a, **kw)
+        monkeypatch.setattr("builtins.open", raise_oserror)
+        assert _host_dns_servers() == ["1.1.1.1", "8.8.8.8"]
