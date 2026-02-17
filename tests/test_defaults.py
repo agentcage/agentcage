@@ -3,6 +3,7 @@
 import sys
 import textwrap
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import yaml
@@ -91,7 +92,8 @@ class TestDefaultInspectors:
     def test_openclaw_simplified_config_still_loads_inspectors(self):
         """The simplified openclaw config (no inspectors: section) should still
         get entropy + content-type loaded by default."""
-        with open("/home/luca/github/openclaw-setup/config/lobstercage/config.yaml") as f:
+        openclaw_cfg = Path(__file__).resolve().parent.parent / "examples" / "openclaw" / "config.yaml"
+        with open(openclaw_cfg) as f:
             cfg_text = f.read()
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
