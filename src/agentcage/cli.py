@@ -86,6 +86,11 @@ def _ensure_patches(podman: Podman) -> str:
                 f"patch file integrity check failed: {dst} does not match source"
             )
 
+    # Write resolv.conf for cage DNS (always points to dnsmasq sidecar)
+    resolv_path = os.path.join(patches_work, "resolv.conf")
+    with open(resolv_path, "w") as f:
+        f.write("nameserver 10.89.0.10\n")
+
     # Install undici deps if missing (npm ci uses lockfile for integrity)
     node_modules = os.path.join(patches_work, "node_modules", "undici")
     if not os.path.isdir(node_modules):

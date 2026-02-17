@@ -63,6 +63,20 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
+def _host_dns_servers() -> list[str]:
+    """Read nameservers from /etc/resolv.conf, falling back to public DNS."""
+    try:
+        with open("/etc/resolv.conf") as f:
+            servers = [
+                parts[1]
+                for line in f
+                if (parts := line.split()) and parts[0] == "nameserver"
+            ]
+        return servers if servers else ["1.1.1.1", "8.8.8.8"]
+    except OSError:
+        return ["1.1.1.1", "8.8.8.8"]
+
+
 def load_config(path: str) -> Config:
     """Load and parse a agentcage YAML config file."""
     with open(path) as f:
@@ -133,8 +147,8 @@ def load_config(path: str) -> Config:
     # Remove injected secrets from podman_secrets (they're handled separately)
     cc.podman_secrets = [s for s in cc.podman_secrets if s not in injected_names]
 
-    # DNS servers
-    cfg.dns_servers = list(raw.get("dns_servers") or [])
+    # DNS servers (default to host resolvers if not specified)
+    cfg.dns_servers = list(raw.get("dns_servers") or _host_dns_servers())
 
     # Domains
     dom_raw = raw.get("domains") or {}

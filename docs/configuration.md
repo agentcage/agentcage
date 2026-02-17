@@ -29,7 +29,7 @@ Example configs: [`basic/config.yaml`](../examples/basic/) | [`openclaw/config.y
 | `name` | `string` | *(required)* | Project name — used as the prefix for container names, network name, and quadlet filenames (e.g. `myapp` produces `myapp-cage`, `myapp-proxy`, etc.) |
 | `log_allowed` | `bool` | `true` | Log allowed requests to the proxy journal |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit |
-| `dns_servers` | `list[string]` | `["1.1.1.1", "8.8.8.8"]` | Upstream DNS servers for the dnsmasq sidecar. Overrides the DNS image default when set |
+| `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container |
 
 ### `dns_servers` example
 
