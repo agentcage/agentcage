@@ -7,16 +7,16 @@ After={{ name }}-proxy.service
 ContainerName={{ name }}-cage
 Image={{ image }}
 Network={{ name }}-net.network
-DNS=10.89.0.10
-Environment="HTTP_PROXY=http://{{ name }}-proxy:8080"
-Environment="HTTPS_PROXY=http://{{ name }}-proxy:8080"
-Environment="http_proxy=http://{{ name }}-proxy:8080"
-Environment="https_proxy=http://{{ name }}-proxy:8080"
+Environment="HTTP_PROXY=http://10.89.0.11:8080"
+Environment="HTTPS_PROXY=http://10.89.0.11:8080"
+Environment="http_proxy=http://10.89.0.11:8080"
+Environment="https_proxy=http://10.89.0.11:8080"
 Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
 Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
 Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"
 Volume={{ name }}-certs.volume:/certs:ro,Z
 Volume={{ patches_host_dir }}:/agentcage:ro,Z
+Volume={{ patches_host_dir }}/resolv.conf:/etc/resolv.conf:ro,Z
 {% for vol in volumes %}
 Volume={{ vol }}
 {% endfor %}
@@ -72,9 +72,6 @@ Exec={{ command | join(' ') }}
 
 [Service]
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-proxy test -f /home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
-{% if not read_only %}
-ExecStartPost=/bin/bash -c 'GW=$(podman inspect {{ name }}-cage --format "{{ '{{' }}range .NetworkSettings.Networks{{ '}}{{' }}.Gateway{{ '}}{{' }}end{{ '}}' }}"); podman exec --user root {{ name }}-cage sh -c "printf '"'"'nameserver 10.89.0.10\nnameserver %s\n'"'"' $GW > /etc/resolv.conf"'
-{% endif %}
 Restart={{ restart }}
 RestartSec={{ restart_sec }}
 {% if timeout_start_sec %}

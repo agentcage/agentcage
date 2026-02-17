@@ -91,6 +91,7 @@ def generate_quadlets(
         proxy_secrets=proxy_secrets,
         deploy_name=deploy_name,
         log_proxy_connections=config.logging.proxy_connections,
+        dns_servers=config.dns_servers,
     )
 
     # Cage container

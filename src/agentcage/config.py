@@ -133,8 +133,8 @@ def load_config(path: str) -> Config:
     # Remove injected secrets from podman_secrets (they're handled separately)
     cc.podman_secrets = [s for s in cc.podman_secrets if s not in injected_names]
 
-    # DNS servers
-    cfg.dns_servers = list(raw.get("dns_servers") or [])
+    # DNS servers (default to public resolvers if not specified)
+    cfg.dns_servers = list(raw.get("dns_servers") or ["1.1.1.1", "8.8.8.8"])
 
     # Domains
     dom_raw = raw.get("domains") or {}

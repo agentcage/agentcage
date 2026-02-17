@@ -14,9 +14,9 @@ For configuration options, see the [Configuration Reference](configuration.md).
   │  │ Agent         │    │ DNS sidecar   │    │ mitmproxy        │  │
   │  │               │    │ (dnsmasq)     │    │ + inspector chain│  │
   │  │ HTTP_PROXY=  ─┼────┼───────────────┼───►│                  │  │
-  │  │  proxy:8080   │    │               │    │ scans + forwards─┼──┼─► Internet
+  │  │  10.89.0.11  ─┼────┼───────────────┼──►│ scans + forwards─┼──┼─► Internet
   │  │               │    │               │    │                  │  │
-  │  │ dns=dnsmasq  ─┼───►│ resolves via  │    │                  │  │
+  │  │ resolv.conf  ─┼───►│ resolves via  │    │                  │  │
   │  │               │    │ external net ─┼────┼──────────────────┼──┼─► Upstream DNS
   │  │               │    │               │    │                  │  │
   │  │ ONLY on       │    │ internal +    │    │ internal +       │  │
@@ -28,7 +28,7 @@ For configuration options, see the [Configuration Reference](configuration.md).
 
 **Agent** -- The user's container (e.g. an AI coding agent). It is connected *only* to the internal network and has no internet gateway. `HTTP_PROXY` and `HTTPS_PROXY` environment variables force all HTTP traffic through the proxy container. The agent cannot reach the internet by any other path.
 
-**DNS sidecar (dnsmasq)** -- Dual-homed: connected to both the internal network (at `10.89.0.10`) and the default `podman` network. It handles DNS resolution for agents that resolve hostnames before proxying. Upstream DNS servers default to `1.1.1.1` and `8.8.8.8` but are configurable via `dns_servers`.
+**DNS sidecar (dnsmasq)** -- Dual-homed: connected to both the internal network (at `10.89.0.10`) and the default `podman` network. It handles DNS resolution for agents that resolve hostnames before proxying. In allowlist mode, non-allowlisted domains resolve to a placeholder IP (`198.51.100.1`, RFC 5737 TEST-NET-2) instead of failing, so SSRF guards that pre-resolve DNS continue to work. Upstream DNS servers default to `1.1.1.1` and `8.8.8.8` but are configurable via `dns_servers`.
 
 **Proxy (mitmproxy + addon.py)** -- Dual-homed: connected to both networks. Listens on `:8080` on the internal network. Runs the [inspector chain](#inspector-chain) against every request, forwarding allowed traffic to the internet and returning 403 JSON responses for blocked requests.
 
@@ -36,7 +36,7 @@ For configuration options, see the [Configuration Reference](configuration.md).
 
 The generated `.network` file uses Podman's `Internal=true` directive, which creates a network with no internet gateway. Only containers that are also connected to an external network (the DNS sidecar and proxy) can reach the internet.
 
-The network uses a fixed subnet: `10.89.0.0/24` with the DNS sidecar assigned `10.89.0.10`. If this conflicts with your existing network, edit the generated `.network` file and update the `DNS=` lines in the container files.
+The network uses a fixed subnet: `10.89.0.0/24` with the DNS sidecar at `10.89.0.10` and the proxy at `10.89.0.11`. The cage's `/etc/resolv.conf` is bind-mounted (read-only) to point at the dnsmasq sidecar. If this subnet conflicts with your existing network, you will need to regenerate the quadlet files after editing the `.network` file.
 
 ## Inspector Chain
 

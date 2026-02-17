@@ -121,8 +121,8 @@ class TestDnsQuadlet:
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
-        # Should block all domains by default and allow only listed ones
-        assert "--address=/#/" in content
+        # Should return placeholder IP for non-allowlisted and allow only listed ones
+        assert "--address=/#/198.51.100.1" in content
         assert "--server=/api.anthropic.com/100.100.100.100" in content
         assert "--server=/github.com/100.100.100.100" in content
 
@@ -146,7 +146,7 @@ class TestDnsQuadlet:
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
-        assert "--address=/#/" in content
+        assert "--address=/#/198.51.100.1" in content
         # Each domain forwarded to ALL three servers
         for domain in ("github.com", "pypi.org"):
             for server in ("100.100.100.100", "1.1.1.1", "8.8.8.8"):
@@ -167,7 +167,7 @@ class TestDnsQuadlet:
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
         # Blocklist mode should NOT apply DNS filtering
-        assert "--address=/#/" not in content
+        assert "--address=/#/198.51.100.1" not in content
 
 
 class TestProxyQuadlet:
@@ -241,12 +241,24 @@ class TestProxyQuadlet:
         assert "Exec=mitmdump" in content
         assert "--quiet" not in content
 
-    def test_proxy_resolv_conf(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+    def test_proxy_resolv_conf_uses_upstream_dns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            dns_servers:
+              - 100.100.100.100
+              - 1.1.1.1
+        """))
+        cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-proxy.container"]
         assert "ExecStartPost=" in content
-        assert "nameserver 10.89.0.10" in content
+        assert "nameserver 100.100.100.100" in content
+        assert "nameserver 1.1.1.1" in content
+        # Proxy should NOT use dnsmasq
+        assert "nameserver 10.89.0.10" not in content
 
 
 class TestCageQuadlet:
@@ -258,10 +270,10 @@ class TestCageQuadlet:
         assert "Image=localhost/test:latest" in content
         assert "Requires=test-proxy.service" in content
         assert "After=test-proxy.service" in content
-        assert 'Environment="HTTP_PROXY=http://test-proxy:8080"' in content
-        assert 'Environment="HTTPS_PROXY=http://test-proxy:8080"' in content
-        assert 'Environment="http_proxy=http://test-proxy:8080"' in content
-        assert 'Environment="https_proxy=http://test-proxy:8080"' in content
+        assert 'Environment="HTTP_PROXY=http://10.89.0.11:8080"' in content
+        assert 'Environment="HTTPS_PROXY=http://10.89.0.11:8080"' in content
+        assert 'Environment="http_proxy=http://10.89.0.11:8080"' in content
+        assert 'Environment="https_proxy=http://10.89.0.11:8080"' in content
         assert 'Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"' in content
@@ -285,25 +297,17 @@ class TestCageQuadlet:
         assert "ExecStartPre=" in content
         assert "mitmproxy-ca-cert.pem" in content
 
-    def test_cage_resolv_conf_when_not_readonly(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-              read_only: false
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-cage.container"]
-        assert "ExecStartPost=" in content
-        assert "resolv.conf" in content
-
-    def test_cage_no_resolv_conf_when_readonly(self, minimal_yaml):
+    def test_cage_resolv_conf_bind_mount(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-cage.container"]
-        assert "ExecStartPost=" not in content
+        assert "Volume=/patches/resolv.conf:/etc/resolv.conf:ro,Z" in content
+
+    def test_cage_no_dns_directive(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-cage.container"]
+        assert "\nDNS=" not in content
 
     def test_cage_service_section(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
@@ -353,8 +357,6 @@ class TestCageQuadlet:
         assert "RestartSec=0" in content
         assert "TimeoutStartSec=300" in content
         assert "TimeoutStopSec=60" in content
-        # ExecStartPost present (read_only=false)
-        assert "ExecStartPost=" in content
 
     def test_cage_openclaw(self, openclaw_yaml):
         cfg = load_config(openclaw_yaml)

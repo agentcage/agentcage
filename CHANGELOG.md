@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-02-17
+
+### Fixed
+- Cage DNS resolution: bind-mount resolv.conf pointing to dnsmasq instead of relying on `DNS=` directive (which was overridden by aardvark-dns) and `ExecStartPost` (which failed on read-only containers)
+- SSRF guard compatibility: dnsmasq returns placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for non-allowlisted domains instead of NXDOMAIN, so DNS-pinned SSRF guards no longer crash
+
+### Changed
+- Proxy container resolves DNS via upstream servers directly instead of through dnsmasq
+- Cage `HTTP_PROXY` uses proxy static IP (10.89.0.11) instead of container name
+- `dns_servers` defaults to `["1.1.1.1", "8.8.8.8"]` when omitted from config
+
+### Removed
+- `dns.lookup` / `dns/promises.lookup` patches from proxy-fetch.mjs (no longer needed since DNS always resolves)
+
 ## [0.1.0] - 2026-02-17
 
 ### Added
@@ -29,4 +43,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.1.2]: https://github.com/agentcage/agentcage/releases/tag/v0.1.2
 [0.1.0]: https://github.com/agentcage/agentcage/releases/tag/v0.1.0

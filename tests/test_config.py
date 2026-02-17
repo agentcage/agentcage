@@ -44,9 +44,9 @@ class TestLoadConfigMinimal:
         cfg = load_config(minimal_yaml)
         assert cfg.secret_injection == []
 
-    def test_no_dns_servers(self, minimal_yaml):
+    def test_default_dns_servers(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
-        assert cfg.dns_servers == []
+        assert cfg.dns_servers == ["1.1.1.1", "8.8.8.8"]
 
 
 class TestLoadConfigFull:
