@@ -1,11 +1,11 @@
-// Minimal agent that demonstrates lobstercage proxy behavior.
+// Minimal agent that demonstrates agentcage proxy behavior.
 // No real API key needed — uses httpbin.org to show allowed/blocked requests
 // and secret leak detection.
 
 const FAKE_SECRET = "sk-ant-FAKE01-abcdefghijklmnopqrstuvwxyz";
 
 async function main() {
-  console.log("lobstercage basic example agent");
+  console.log("agentcage basic example agent");
   console.log(`HTTP_PROXY=${process.env.HTTP_PROXY}`);
   console.log(`HTTPS_PROXY=${process.env.HTTPS_PROXY}`);
   console.log();

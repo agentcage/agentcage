@@ -1,4 +1,4 @@
-"""lobstercage CLI — cage and secret command groups."""
+"""agentcage CLI — cage and secret command groups."""
 
 from __future__ import annotations
 
@@ -12,18 +12,18 @@ import click
 
 from importlib.metadata import version
 
-from lobstercage.config import load_config, validate_config
-from lobstercage.podman import Podman
-from lobstercage.quadlets import generate_quadlets
-from lobstercage import state, systemd
+from agentcage.config import load_config, validate_config
+from agentcage.podman import Podman
+from agentcage.quadlets import generate_quadlets
+from agentcage import state, systemd
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 @click.group()
-@click.version_option(version=version("lobstercage"), prog_name="lobstercage")
+@click.version_option(version=version("agentcage"), prog_name="agentcage")
 def main():
-    """Keep your lobster in a box 🦞🔒"""
+    """Defense-in-depth proxy sandbox for AI agents."""
 
 
 # ── helpers ──────────────────────────────────────────────
@@ -61,7 +61,7 @@ def _patches_work_dir() -> str:
     """Return (and create) the patches working directory."""
     d = os.path.join(
         os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
-        "lobstercage", "patches",
+        "agentcage", "patches",
     )
     os.makedirs(d, exist_ok=True)
     return d
@@ -113,13 +113,13 @@ def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podm
     build_context = str(_DATA_DIR)
     click.echo("Building proxy image...")
     podman.build_image(
-        "lobstercage-proxy",
+        "agentcage-proxy",
         os.path.join(containers_dir, "Containerfile.proxy"),
         build_context,
     )
     click.echo("Building DNS image...")
     podman.build_image(
-        "lobstercage-dns",
+        "agentcage-dns",
         os.path.join(containers_dir, "Containerfile.dns"),
         build_context,
         cap_add=["CAP_SETFCAP"],
@@ -185,7 +185,7 @@ def cage_create(config_path: str):
 
     if state.deployment_exists(name):
         click.echo(f"error: cage '{name}' already exists", err=True)
-        click.echo(f"  Use 'lobstercage cage update {name}' to update it.", err=True)
+        click.echo(f"  Use 'agentcage cage update {name}' to update it.", err=True)
         sys.exit(1)
 
     podman = Podman()
@@ -198,7 +198,7 @@ def cage_create(config_path: str):
             click.echo(f"  {key}", err=True)
         click.echo("Create them with:", err=True)
         for key in missing:
-            click.echo(f"  lobstercage secret set {name} {key}", err=True)
+            click.echo(f"  agentcage secret set {name} {key}", err=True)
         sys.exit(1)
 
     # Save state
@@ -254,7 +254,7 @@ def cage_update(name: str, config_path: str | None):
             click.echo(f"  {key}", err=True)
         click.echo("Create them with:", err=True)
         for key in missing:
-            click.echo(f"  lobstercage secret set {name} {key}", err=True)
+            click.echo(f"  agentcage secret set {name} {key}", err=True)
         sys.exit(1)
 
     # Stop existing
@@ -336,8 +336,8 @@ def cage_destroy(name: str, yes: bool):
     podman = Podman()
     if podman.network_remove(f"{name}-net"):
         removed.append(f"network:{name}-net")
-    if podman.volume_remove(f"lobstercage-certs-{name}"):
-        removed.append(f"volume:lobstercage-certs-{name}")
+    if podman.volume_remove(f"agentcage-certs-{name}"):
+        removed.append(f"volume:agentcage-certs-{name}")
 
     # Remove scoped secrets
     click.echo("Removing scoped secrets...")
@@ -378,7 +378,7 @@ def cage_verify(name: str):
         click.echo(f"  [FAIL] {msg}")
         failed += 1
 
-    click.echo(f"=== lobstercage verify: {name} ===")
+    click.echo(f"=== agentcage verify: {name} ===")
     click.echo()
 
     # Container checks

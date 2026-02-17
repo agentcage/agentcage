@@ -1,6 +1,6 @@
 # OpenClaw Setup Guide
 
-[OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside a lobstercage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
+[OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside a agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
 For the full list of configuration options, see the [Configuration Reference](configuration.md).
 
@@ -15,7 +15,7 @@ For the full list of configuration options, see the [Configuration Reference](co
 ### 1. Copy the example config
 
 ```bash
-cd /path/to/lobstercage
+cd /path/to/agentcage
 cp examples/openclaw/config.yaml config.yaml
 ```
 
@@ -60,8 +60,8 @@ This is bind-mounted into the container at `/workspace`. Agent file operations h
 ### 4. Generate quadlets and deploy
 
 ```bash
-lobstercage generate -c config.yaml
-lobstercage deploy ./openclaw-cage
+agentcage generate -c config.yaml
+agentcage deploy ./openclaw-cage
 ```
 
 ### 5. Verify
@@ -81,7 +81,7 @@ journalctl --user -u openclaw-dns -f     # DNS sidecar
 
 ## Secret detection defaults
 
-lobstercage ships with 19 built-in secret patterns and automatic domain exemptions. Out-of-the-box, your API keys are protected without any `allow_to_domains` configuration:
+agentcage ships with 19 built-in secret patterns and automatic domain exemptions. Out-of-the-box, your API keys are protected without any `allow_to_domains` configuration:
 
 - **Anthropic keys** (`sk-ant-...`) are auto-allowed to `anthropic.com`
 - **OpenAI keys** (`sk-proj-...`) are auto-allowed to `openai.com`
@@ -171,8 +171,8 @@ container:
 Regenerate and restart:
 
 ```bash
-lobstercage generate -c config.yaml
-lobstercage deploy ./openclaw-cage
+agentcage generate -c config.yaml
+agentcage deploy ./openclaw-cage
 ```
 
 ## Troubleshooting

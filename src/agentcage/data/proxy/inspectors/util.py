@@ -1,4 +1,4 @@
-"""Shared utilities for lobstercage inspectors."""
+"""Shared utilities for agentcage inspectors."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def shannon_entropy(data: bytes) -> float:
     return entropy
 
 
-_DEFAULT_ALLOWED_DIRS = ["/etc/lobstercage/inspectors"]
+_DEFAULT_ALLOWED_DIRS = ["/etc/agentcage/inspectors"]
 
 
 def load_inspector_from_file(
@@ -33,12 +33,12 @@ def load_inspector_from_file(
     """Import a Python file and return the first Inspector subclass found.
 
     For security, the path must resolve to a location under one of the
-    ``allowed_dirs``.  Defaults to ``/etc/lobstercage/inspectors``.
-    Override via the ``LOBSTERCAGE_INSPECTOR_DIRS`` env var
+    ``allowed_dirs``.  Defaults to ``/etc/agentcage/inspectors``.
+    Override via the ``AGENTCAGE_INSPECTOR_DIRS`` env var
     (colon-separated list of directories).
     """
     if allowed_dirs is None:
-        env_dirs = os.environ.get("LOBSTERCAGE_INSPECTOR_DIRS")
+        env_dirs = os.environ.get("AGENTCAGE_INSPECTOR_DIRS")
         if env_dirs:
             allowed_dirs = [d for d in env_dirs.split(":") if d]
         else:

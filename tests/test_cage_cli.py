@@ -1,4 +1,4 @@
-"""Tests for the 'lobstercage cage' CLI subcommands."""
+"""Tests for the 'agentcage cage' CLI subcommands."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch, call, ANY
 
 from click.testing import CliRunner
 
-from lobstercage.cli import main
+from agentcage.cli import main
 
 
 def _runner():
@@ -15,18 +15,18 @@ def _runner():
 
 
 class TestCageCreate:
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_create_fails_if_exists(self, mock_state, MockPodman, mock_systemd, minimal_yaml):
         mock_state.deployment_exists.return_value = True
         result = _runner().invoke(main, ["cage", "create", "-c", minimal_yaml])
         assert result.exit_code != 0
         assert "already exists" in result.output
 
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_create_fails_on_missing_secrets(self, mock_state, MockPodman, mock_systemd, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -44,29 +44,29 @@ class TestCageCreate:
         result = _runner().invoke(main, ["cage", "create", "-c", str(p)])
         assert result.exit_code != 0
         assert "missing secrets" in result.output
-        assert "lobstercage secret set" in result.output
+        assert "agentcage secret set" in result.output
 
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_create_requires_config(self, mock_state, MockPodman, mock_systemd):
         result = _runner().invoke(main, ["cage", "create"])
         assert result.exit_code != 0
 
 
 class TestCageUpdate:
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_update_fails_if_not_exists(self, mock_state, MockPodman, mock_systemd):
         mock_state.deployment_exists.return_value = False
         result = _runner().invoke(main, ["cage", "update", "test"])
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_update_name_mismatch(self, mock_state, MockPodman, mock_systemd, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -81,9 +81,9 @@ class TestCageUpdate:
 
 
 class TestCageDestroy:
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_destroy_with_yes(self, mock_state, MockPodman, mock_systemd, tmp_path):
         podman = MockPodman.return_value
         podman.network_remove.return_value = False
@@ -96,9 +96,9 @@ class TestCageDestroy:
         assert result.exit_code == 0
         mock_state.remove_deployment.assert_called_once_with("test")
 
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_destroy_prompts_without_yes(self, mock_state, MockPodman, mock_systemd):
         podman = MockPodman.return_value
         podman.network_remove.return_value = False
@@ -111,16 +111,16 @@ class TestCageDestroy:
 
 
 class TestCageList:
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_list_empty(self, mock_state, MockPodman):
         mock_state.list_deployments.return_value = []
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "No" in result.output
 
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_list_shows_cages(self, mock_state, MockPodman):
         mock_state.list_deployments.return_value = ["myapp"]
         podman = MockPodman.return_value
@@ -132,16 +132,16 @@ class TestCageList:
 
 
 class TestCageReload:
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.state")
     def test_reload_fails_if_not_exists(self, mock_state, mock_systemd):
         mock_state.deployment_exists.return_value = False
         result = _runner().invoke(main, ["cage", "reload", "test"])
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
-    @patch("lobstercage.cli.systemd")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.state")
     def test_reload_restarts_services(self, mock_state, mock_systemd):
         mock_state.deployment_exists.return_value = True
         result = _runner().invoke(main, ["cage", "reload", "test"])
@@ -151,8 +151,8 @@ class TestCageReload:
 
 
 class TestCageLogs:
-    @patch("lobstercage.cli.os.execvp")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
     def test_logs_default(self, mock_state, mock_execvp):
         mock_state.deployment_exists.return_value = True
         result = _runner().invoke(main, ["cage", "logs", "basic"])
@@ -162,8 +162,8 @@ class TestCageLogs:
             "-n", "50", "-f",
         ])
 
-    @patch("lobstercage.cli.os.execvp")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
     def test_logs_filtered(self, mock_state, mock_execvp):
         mock_state.deployment_exists.return_value = True
         result = _runner().invoke(main, ["cage", "logs", "basic", "-s", "proxy", "--no-follow"])
@@ -173,8 +173,8 @@ class TestCageLogs:
             "-n", "50",
         ])
 
-    @patch("lobstercage.cli.os.execvp")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
     def test_logs_no_cage(self, mock_state, mock_execvp):
         mock_state.deployment_exists.return_value = False
         result = _runner().invoke(main, ["cage", "logs", "nope"])

@@ -1,20 +1,20 @@
 # Basic example
 
-A minimal lobstercage cage that sandboxes a Node.js agent behind the inspecting proxy. No API keys or secrets needed -- uses httpbin.org to demonstrate proxy behavior.
+A minimal agentcage cage that sandboxes a Node.js agent behind the inspecting proxy. No API keys or secrets needed -- uses httpbin.org to demonstrate proxy behavior.
 
 ## Usage
 
 ```bash
-cd /path/to/lobstercage
+cd /path/to/agentcage
 
 # Create and start the cage
-AGENT_DIR=$(pwd)/examples/basic/agent lobstercage cage create -c examples/basic/config.yaml
+AGENT_DIR=$(pwd)/examples/basic/agent agentcage cage create -c examples/basic/config.yaml
 
 # View the agent output
 journalctl --user -u basic-cage -e
 
 # Tear down when done
-lobstercage cage destroy basic
+agentcage cage destroy basic
 ```
 
 ## What it demonstrates

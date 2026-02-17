@@ -589,7 +589,7 @@ class TestEntropyInspector:
             "action": "block",
         })
         ctx = _ctx(
-            url="https://github.com/search?q=lobstercage+python&type=code",
+            url="https://github.com/search?q=agentcage+python&type=code",
             host="github.com",
             body_bytes=None,
             body_entropy=None,

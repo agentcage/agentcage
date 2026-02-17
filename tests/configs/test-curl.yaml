@@ -1,4 +1,4 @@
-# lobstercage curl test config
+# agentcage curl test config
 
 container:
   image: "docker.io/alpine/curl:latest"

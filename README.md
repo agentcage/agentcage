@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/lobstercage.png" alt="lobstercage logo" width="250">
+  <img src="docs/agentcage.png" alt="agentcage logo" width="250">
 </p>
 
-# lobstercage 🦞🔒
+# agentcage
 
-*Keep your lobster in a box — MITM traffic inspection for AI agents.*
+*Defense-in-depth proxy sandbox for AI agents.*
 
 Sandboxed container environments for AI agents, powered by rootless [Podman](https://podman.io/) and [mitmproxy](https://mitmproxy.org/).
 
@@ -14,7 +14,7 @@ Sandboxed container environments for AI agents, powered by rootless [Podman](htt
 
 ## What is it?
 
-lobstercage is a CLI that generates hardened, sandboxed container environments for AI agents. It produces [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that deploy three containers on a rootless [Podman](https://podman.io/) network -- no root privileges required. Your agent runs on an internal-only network with no internet gateway; the only way out is through an inspecting [mitmproxy](https://mitmproxy.org/) that scans every HTTP request before forwarding it.
+agentcage is a CLI that generates hardened, sandboxed container environments for AI agents. It produces [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that deploy three containers on a rootless [Podman](https://podman.io/) network -- no root privileges required. Your agent runs on an internal-only network with no internet gateway; the only way out is through an inspecting [mitmproxy](https://mitmproxy.org/) that scans every HTTP request before forwarding it.
 
 ## Why is it needed?
 
@@ -26,7 +26,7 @@ Most AI agent deployments hand the agent a [**lethal trifecta**](https://simonwi
 
 Any one of these alone is manageable. Combined, they create an exfiltration risk: if the agent is compromised, misaligned, or simply makes a mistake, it can send your credentials, source code, or private data to any endpoint on the internet. Most current setups have zero defense against this -- the agent has the same network access as any other process on the machine.
 
-lobstercage breaks the trifecta by placing the agent behind a defense-in-depth proxy sandbox: network isolation, domain filtering, secret injection, credential scanning, payload analysis, and container hardening -- all fail-closed. See [Security & Threat Model](docs/security.md) for the full breakdown of each layer and known limitations.
+agentcage breaks the trifecta by placing the agent behind a defense-in-depth proxy sandbox: network isolation, domain filtering, secret injection, credential scanning, payload analysis, and container hardening -- all fail-closed. See [Security & Threat Model](docs/security.md) for the full breakdown of each layer and known limitations.
 
 ## How does it work?
 
@@ -74,16 +74,16 @@ podman machine start
 ## Install
 
 ```bash
-uv tool install lobstercage            # from PyPI (when published)
-uv tool install git+https://github.com/lucamartinetti/lobstercage.git  # from GitHub
+uv tool install agentcage            # from PyPI (when published)
+uv tool install git+https://github.com/agentcage/agentcage.git  # from GitHub
 ```
 
 Or for development:
 
 ```bash
-git clone https://github.com/lucamartinetti/lobstercage.git
-cd lobstercage
-uv run lobstercage --help
+git clone https://github.com/agentcage/agentcage.git
+cd agentcage
+uv run agentcage --help
 ```
 
 ## Quick Start
@@ -93,13 +93,13 @@ uv run lobstercage --help
 cp examples/basic/config.yaml config.yaml
 
 # Store secrets first (they're required before cage creation)
-lobstercage secret set myapp ANTHROPIC_API_KEY
+agentcage secret set myapp ANTHROPIC_API_KEY
 
 # Create the cage (builds images, generates quadlets, starts containers)
-lobstercage cage create -c config.yaml
+agentcage cage create -c config.yaml
 
 # Verify everything is healthy
-lobstercage cage verify myapp
+agentcage cage verify myapp
 ```
 
 ## CLI Reference
@@ -107,7 +107,7 @@ lobstercage cage verify myapp
 The CLI is organized into two command groups: **`cage`** (manage cages) and **`secret`** (manage cage-scoped secrets).
 
 ```
-lobstercage <group> <command> [options]
+agentcage <group> <command> [options]
 ```
 
 ### `cage` -- Manage cages
@@ -134,14 +134,14 @@ lobstercage <group> <command> [options]
 ### `cage create`
 
 ```
-lobstercage cage create -c <config>
+agentcage cage create -c <config>
 ```
 
 Creates a new cage from a config file. This single command:
 
 1. Validates the config
 2. Checks that all required secrets exist in Podman
-3. Saves deployment state to `~/.config/lobstercage/deployments/<name>/config.yaml`
+3. Saves deployment state to `~/.config/agentcage/deployments/<name>/config.yaml`
 4. Builds the proxy and DNS container images
 5. Generates and installs 5 quadlet files into `~/.config/containers/systemd/`
 6. Reloads systemd and starts the cage
@@ -160,13 +160,13 @@ Fails if any required secrets are missing. The error message tells you exactly w
 error: missing secrets for cage 'myapp':
   ANTHROPIC_API_KEY
 Create them with:
-  lobstercage secret set myapp ANTHROPIC_API_KEY
+  agentcage secret set myapp ANTHROPIC_API_KEY
 ```
 
 ### `cage update`
 
 ```
-lobstercage cage update <name> [-c <config>]
+agentcage cage update <name> [-c <config>]
 ```
 
 Rebuild and restart an existing cage. Use this after changing code or config:
@@ -179,7 +179,7 @@ Stops the running services before rebuilding, then starts them again.
 ### `cage list`
 
 ```
-lobstercage cage list
+agentcage cage list
 ```
 
 Lists all known cages with their current status:
@@ -194,7 +194,7 @@ broken               degraded (2/3)
 ### `cage destroy`
 
 ```
-lobstercage cage destroy <name> [-y|--yes]
+agentcage cage destroy <name> [-y|--yes]
 ```
 
 Tears down a cage completely:
@@ -203,14 +203,14 @@ Tears down a cage completely:
 2. Removes quadlet files from `~/.config/containers/systemd/`
 3. Removes the Podman network and certificate volume
 4. Removes all scoped secrets (e.g., `myapp.ANTHROPIC_API_KEY`)
-5. Removes deployment state from `~/.config/lobstercage/deployments/<name>/`
+5. Removes deployment state from `~/.config/agentcage/deployments/<name>/`
 
 User-defined named volumes and bind-mounted data are never removed. Pass `-y` to skip the confirmation prompt.
 
 ### `cage verify`
 
 ```
-lobstercage cage verify <name>
+agentcage cage verify <name>
 ```
 
 Runs health checks against a running cage:
@@ -224,7 +224,7 @@ Runs health checks against a running cage:
 Example output:
 
 ```
-=== lobstercage verify: myapp ===
+=== agentcage verify: myapp ===
 
 -- Containers --
   [PASS] myapp-proxy is running
@@ -250,7 +250,7 @@ Example output:
 ### `cage reload`
 
 ```
-lobstercage cage reload <name>
+agentcage cage reload <name>
 ```
 
 Restarts containers without rebuilding images. Useful after config-only changes (the config YAML is bind-mounted into the proxy container, so a restart picks it up).
@@ -258,20 +258,20 @@ Restarts containers without rebuilding images. Useful after config-only changes 
 ### `secret set`
 
 ```
-lobstercage secret set <name> <key>
+agentcage secret set <name> <key>
 ```
 
 Sets a deployment-scoped secret. When run interactively, prompts for the value with hidden input. Also accepts piped input:
 
 ```bash
 # Interactive (prompts for value)
-lobstercage secret set myapp ANTHROPIC_API_KEY
+agentcage secret set myapp ANTHROPIC_API_KEY
 
 # Piped from a command
-echo "sk-ant-abc123" | lobstercage secret set myapp ANTHROPIC_API_KEY
+echo "sk-ant-abc123" | agentcage secret set myapp ANTHROPIC_API_KEY
 
 # From a file
-lobstercage secret set myapp ANTHROPIC_API_KEY < /path/to/key.txt
+agentcage secret set myapp ANTHROPIC_API_KEY < /path/to/key.txt
 ```
 
 Secrets are stored in Podman as `<name>.<key>` (e.g., `myapp.ANTHROPIC_API_KEY`) and mapped back to the original env var name via `target=` in the quadlet templates, so the container sees `ANTHROPIC_API_KEY` as expected.
@@ -281,7 +281,7 @@ If the cage is currently running, it is automatically reloaded after the secret 
 ### `secret list`
 
 ```
-lobstercage secret list <name>
+agentcage secret list <name>
 ```
 
 Lists secrets for a cage. If the cage has deployment state, cross-references with the config to show expected secrets and their status:
@@ -301,7 +301,7 @@ If no deployment state exists, lists all Podman secrets matching the `<name>.` p
 ### `secret rm`
 
 ```
-lobstercage secret rm <name> <key>
+agentcage secret rm <name> <key>
 ```
 
 Removes a secret from Podman. If the cage is currently running, it is automatically reloaded.
@@ -316,29 +316,29 @@ cp examples/basic/config.yaml config.yaml
 vim config.yaml
 
 # 2. Store secrets (before creating the cage)
-lobstercage secret set myapp ANTHROPIC_API_KEY
-lobstercage secret set myapp GITHUB_TOKEN
+agentcage secret set myapp ANTHROPIC_API_KEY
+agentcage secret set myapp GITHUB_TOKEN
 
 # 3. Create the cage
-lobstercage cage create -c config.yaml
+agentcage cage create -c config.yaml
 
 # 4. Verify it's healthy
-lobstercage cage verify myapp
+agentcage cage verify myapp
 
 # 5. View logs
 journalctl --user -u myapp-cage -f
 
 # 6. Update after code/config changes
-lobstercage cage update myapp -c config.yaml
+agentcage cage update myapp -c config.yaml
 
 # 7. Rotate a secret (auto-reloads the cage)
-lobstercage secret set myapp ANTHROPIC_API_KEY
+agentcage secret set myapp ANTHROPIC_API_KEY
 
 # 8. Restart without rebuild (config-only change)
-lobstercage cage reload myapp
+agentcage cage reload myapp
 
 # 9. Tear it all down
-lobstercage cage destroy myapp
+agentcage cage destroy myapp
 ```
 
 ### View logs
@@ -351,7 +351,7 @@ journalctl --user -u myapp-dns -f
 
 ## Deployment State
 
-lobstercage tracks each cage in `~/.config/lobstercage/deployments/<name>/config.yaml`. This stored config copy allows commands like `cage update` (without `-c`) and `cage reload` to operate without requiring the original config file. The state is removed when a cage is destroyed.
+agentcage tracks each cage in `~/.config/agentcage/deployments/<name>/config.yaml`. This stored config copy allows commands like `cage update` (without `-c`) and `cage reload` to operate without requiring the original config file. The state is removed when a cage is destroyed.
 
 ## Architecture
 

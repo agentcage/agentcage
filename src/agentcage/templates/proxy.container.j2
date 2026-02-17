@@ -1,16 +1,16 @@
 [Unit]
-Description=lobstercage mitmproxy
+Description=agentcage mitmproxy
 Requires={{ name }}-dns.service
 After={{ name }}-dns.service
 
 [Container]
 ContainerName={{ name }}-proxy
-Image=localhost/lobstercage-proxy
+Image=localhost/agentcage-proxy
 Network={{ name }}-net.network:ip=10.89.0.11
 Network=podman
 DNS=10.89.0.10
 DNS=1.1.1.1
-Volume={{ config_host_path }}:/etc/lobstercage/config.yaml:ro,Z
+Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 Volume={{ name }}-certs.volume:/home/mitmproxy/.mitmproxy:Z
 Exec=mitmdump -s /app/addon.py --listen-port 8080 --set connection_strategy=lazy --listen-host 10.89.0.11{% if not log_proxy_connections %} --quiet{% endif %}
 

@@ -104,7 +104,7 @@ class TestLoadInspectorFromFile:
         p = tmp_path / "evil.py"
         p.write_text("x = 1\n")
         with pytest.raises(ImportError, match="outside allowed directories"):
-            load_inspector_from_file(str(p), allowed_dirs=["/etc/lobstercage/inspectors"])
+            load_inspector_from_file(str(p), allowed_dirs=["/etc/agentcage/inspectors"])
 
     def test_rejects_symlink_escape(self, tmp_path):
         allowed = tmp_path / "allowed"

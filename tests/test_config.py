@@ -1,11 +1,11 @@
-"""Tests for lobstercage config parsing and validation."""
+"""Tests for agentcage config parsing and validation."""
 
 import os
 import textwrap
 
 import pytest
 
-from lobstercage.config import Config, ContainerConfig, LoggingConfig, load_config, validate_config
+from agentcage.config import Config, ContainerConfig, LoggingConfig, load_config, validate_config
 
 
 class TestLoadConfigMinimal:

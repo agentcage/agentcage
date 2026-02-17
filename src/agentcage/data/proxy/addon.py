@@ -1,4 +1,4 @@
-"""lobstercage — mitmproxy traffic inspection with pluggable inspectors."""
+"""agentcage — mitmproxy traffic inspection with pluggable inspectors."""
 
 import json
 import os
@@ -19,7 +19,7 @@ from inspectors.secrets import SecretsInspector
 from inspectors.util import load_inspector_from_file, shannon_entropy
 from secret_injector import SecretInjector
 
-CONFIG_PATH = os.environ.get("LOBSTERCAGE_CONFIG", "/etc/lobstercage/config.yaml")
+CONFIG_PATH = os.environ.get("AGENTCAGE_CONFIG", "/etc/agentcage/config.yaml")
 
 
 # ── Built-in inspector registry ──────────────────────────
@@ -39,7 +39,7 @@ _BUILTIN_INSPECTORS: dict[str, type[Inspector]] = {
 # ── Orchestrator ─────────────────────────────────────────
 
 
-class Lobstercage:
+class Agentcage:
     """mitmproxy addon that delegates inspection to a chain of inspectors."""
 
     def load(self, loader) -> None:
@@ -58,7 +58,7 @@ class Lobstercage:
             self.injector.configure(injection_cfg)
             if self.injector.redact_to:
                 ctx.log.info(
-                    f"lobstercage: redact_to domains={self.injector.redact_to}"
+                    f"agentcage: redact_to domains={self.injector.redact_to}"
                 )
 
         # Rate limiting — token bucket per host
@@ -74,7 +74,7 @@ class Lobstercage:
 
         # Audit log file — structured JSON lines for forensic analysis
         audit_path = os.environ.get(
-            "LOBSTERCAGE_AUDIT_LOG", "/var/log/lobstercage/audit.jsonl"
+            "AGENTCAGE_AUDIT_LOG", "/var/log/agentcage/audit.jsonl"
         )
         self._audit_file = None
         if audit_path:
@@ -82,11 +82,11 @@ class Lobstercage:
                 os.makedirs(os.path.dirname(audit_path), exist_ok=True)
                 self._audit_file = open(audit_path, "a")
             except OSError as e:
-                ctx.log.warn(f"lobstercage: cannot open audit log {audit_path}: {e}")
+                ctx.log.warn(f"agentcage: cannot open audit log {audit_path}: {e}")
 
         names = [i.name for i in self.inspectors]
         ctx.log.info(
-            f"lobstercage loaded: inspectors={names}, "
+            f"agentcage loaded: inspectors={names}, "
             f"injection_rules={len(self.injector.rules)}"
         )
 
@@ -147,7 +147,7 @@ class Lobstercage:
 
               inspectors:
                 - name: my-check
-                  path: /etc/lobstercage/my_inspector.py
+                  path: /etc/agentcage/my_inspector.py
                   config:
                     key: value
         """
@@ -199,11 +199,11 @@ class Lobstercage:
                 429,
                 json.dumps(
                     {"blocked": True, "reason": "rate limit exceeded",
-                     "host": flow.request.host, "by": "lobstercage"}
+                     "host": flow.request.host, "by": "agentcage"}
                 ).encode(),
                 {"Content-Type": "application/json"},
             )
-            flow.metadata["lobstercage_blocked"] = True
+            flow.metadata["agentcage_blocked"] = True
             self._log(flow, "blocked", "rate limit exceeded", [])
             return
 
@@ -215,11 +215,11 @@ class Lobstercage:
                 403,
                 json.dumps(
                     {"blocked": True, "reason": inject_result.reason,
-                     "host": flow.request.host, "by": "lobstercage"}
+                     "host": flow.request.host, "by": "agentcage"}
                 ).encode(),
                 {"Content-Type": "application/json"},
             )
-            flow.metadata["lobstercage_blocked"] = True
+            flow.metadata["agentcage_blocked"] = True
             self._log(flow, "blocked", inject_result.reason, [inject_result])
             return
 
@@ -243,11 +243,11 @@ class Lobstercage:
                 403,
                 json.dumps(
                     {"blocked": True, "reason": reason,
-                     "host": flow.request.host, "by": "lobstercage"}
+                     "host": flow.request.host, "by": "agentcage"}
                 ).encode(),
                 {"Content-Type": "application/json"},
             )
-            flow.metadata["lobstercage_blocked"] = True
+            flow.metadata["agentcage_blocked"] = True
             self._log(flow, "blocked", reason, results)
         else:
             # Inject real secrets only AFTER inspectors have approved
@@ -261,7 +261,7 @@ class Lobstercage:
 
     def response(self, flow: http.HTTPFlow) -> None:
         # Only run response inspectors if the request wasn't blocked
-        if flow.metadata.get("lobstercage_blocked"):
+        if flow.metadata.get("agentcage_blocked"):
             return
 
         ctx_obj = self._build_context(flow, response=True)
@@ -282,7 +282,7 @@ class Lobstercage:
                 403,
                 json.dumps(
                     {"blocked": True, "reason": reason,
-                     "host": flow.request.host, "by": "lobstercage"}
+                     "host": flow.request.host, "by": "agentcage"}
                 ).encode(),
                 {"Content-Type": "application/json"},
             )
@@ -407,4 +407,4 @@ class Lobstercage:
                 pass
 
 
-addons = [Lobstercage()]
+addons = [Agentcage()]

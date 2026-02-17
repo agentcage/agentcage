@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * lobstercage e2e test — exercises allowed, blocked-domain,
+ * agentcage e2e test — exercises allowed, blocked-domain,
  * and secret-exfil scenarios using Node.js native fetch.
  *
  * The proxy-fetch.mjs patch (loaded via NODE_OPTIONS=--import)
@@ -27,7 +27,7 @@ async function test(label, fn) {
 }
 
 (async () => {
-  console.log("=== lobstercage e2e test (native fetch + proxy patch) ===");
+  console.log("=== agentcage e2e test (native fetch + proxy patch) ===");
   console.log(`HTTP_PROXY=${process.env.HTTP_PROXY}`);
   console.log(`NODE_OPTIONS=${process.env.NODE_OPTIONS}\n`);
 

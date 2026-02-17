@@ -4,7 +4,7 @@ const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy ||
                  process.env.HTTP_PROXY  || process.env.http_proxy;
 
 if (proxyUrl) {
-  // Resolve undici from the lobstercage patches directory (mounted at /lobstercage/)
+  // Resolve undici from the agentcage patches directory (mounted at /agentcage/)
   const require = createRequire(import.meta.url);
   const { EnvHttpProxyAgent } = require('undici');
   const proxyAgent = new EnvHttpProxyAgent();

@@ -1,4 +1,4 @@
-"""Deployment state management — track configs in ~/.config/lobstercage/."""
+"""Deployment state management — track configs in ~/.config/agentcage/."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from pathlib import Path
 
 import yaml
 
-from lobstercage.config import Config, load_config
+from agentcage.config import Config, load_config
 
 _CONFIG_DIR = Path(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-) / "lobstercage"
+) / "agentcage"
 _DEPLOYMENTS_DIR = _CONFIG_DIR / "deployments"
 
 

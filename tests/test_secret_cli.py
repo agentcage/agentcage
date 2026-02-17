@@ -1,4 +1,4 @@
-"""Tests for the 'lobstercage secret' CLI subcommands."""
+"""Tests for the 'agentcage secret' CLI subcommands."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from lobstercage.cli import main
+from agentcage.cli import main
 
 
 def _runner():
@@ -14,8 +14,8 @@ def _runner():
 
 
 class TestSecretSet:
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_set_creates_secret(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = False
@@ -26,8 +26,8 @@ class TestSecretSet:
         podman.secret_create.assert_called_once_with("myapp.API_KEY", "s3cret")
         assert "myapp.API_KEY" in result.output
 
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_set_replaces_existing(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = True
@@ -38,8 +38,8 @@ class TestSecretSet:
         podman.secret_remove.assert_called_once_with("myapp.API_KEY")
         podman.secret_create.assert_called_once_with("myapp.API_KEY", "newval")
 
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_set_reloads_running_deployment(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = False
@@ -55,8 +55,8 @@ class TestSecretSet:
 
 
 class TestSecretList:
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_list_no_state_shows_secrets(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_list.return_value = [
@@ -70,8 +70,8 @@ class TestSecretList:
         assert "API_KEY" in result.output
         assert "OTHER" in result.output
 
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_list_with_state_shows_status(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_list.return_value = [{"Name": "myapp.API_KEY"}]
@@ -87,8 +87,8 @@ class TestSecretList:
         assert "ok" in result.output
         assert "MISSING" in result.output
 
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_list_empty(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_list.return_value = []
@@ -100,8 +100,8 @@ class TestSecretList:
 
 
 class TestSecretRm:
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_rm_removes_secret(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = True
@@ -112,8 +112,8 @@ class TestSecretRm:
         assert result.exit_code == 0
         podman.secret_remove.assert_called_once_with("myapp.API_KEY")
 
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_rm_nonexistent_fails(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = False

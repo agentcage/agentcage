@@ -17,7 +17,7 @@ from mitmproxy import http
 
 from inspectors.base import InspectionResult
 
-log = logging.getLogger("lobstercage.secret_injector")
+log = logging.getLogger("agentcage.secret_injector")
 
 
 @dataclass

@@ -5,8 +5,8 @@ import textwrap
 
 import pytest
 
-from lobstercage.config import load_config
-from lobstercage.quadlets import generate_quadlets
+from agentcage.config import load_config
+from agentcage.quadlets import generate_quadlets
 
 
 class TestQuadletFileNames:
@@ -42,7 +42,7 @@ class TestVolumeQuadlet:
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-certs.volume"]
-        assert "VolumeName=lobstercage-certs-test" in content
+        assert "VolumeName=agentcage-certs-test" in content
 
 
 class TestDnsQuadlet:
@@ -51,7 +51,7 @@ class TestDnsQuadlet:
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
         assert "ContainerName=test-dns" in content
-        assert "Image=localhost/lobstercage-dns" in content
+        assert "Image=localhost/agentcage-dns" in content
         assert "Network=test-net.network:ip=10.89.0.10" in content
         assert "--log-queries" in content
 
@@ -150,10 +150,10 @@ class TestProxyQuadlet:
         files = generate_quadlets(cfg, "/home/user/config.yaml", "/patches")
         content = files["test-proxy.container"]
         assert "ContainerName=test-proxy" in content
-        assert "Image=localhost/lobstercage-proxy" in content
+        assert "Image=localhost/agentcage-proxy" in content
         assert "Requires=test-dns.service" in content
         assert "After=test-dns.service" in content
-        assert "Volume=/home/user/config.yaml:/etc/lobstercage/config.yaml:ro,Z" in content
+        assert "Volume=/home/user/config.yaml:/etc/agentcage/config.yaml:ro,Z" in content
         assert "Volume=test-certs.volume:/home/mitmproxy/.mitmproxy:Z" in content
 
     def test_proxy_secrets(self, tmp_path):
@@ -238,9 +238,9 @@ class TestCageQuadlet:
         assert 'Environment="https_proxy=http://test-proxy:8080"' in content
         assert 'Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"' in content
-        assert 'Environment="NODE_OPTIONS=--import /lobstercage/proxy-fetch.mjs"' in content
+        assert 'Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"' in content
         assert "Volume=test-certs.volume:/certs:ro,Z" in content
-        assert "Volume=/home/patches:/lobstercage:ro,Z" in content
+        assert "Volume=/home/patches:/agentcage:ro,Z" in content
 
     def test_cage_defaults_hardening(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
@@ -332,7 +332,7 @@ class TestCageQuadlet:
 
     def test_cage_openclaw(self, openclaw_yaml):
         cfg = load_config(openclaw_yaml)
-        files = generate_quadlets(cfg, "/etc/lobstercage/config.yaml", "/patches")
+        files = generate_quadlets(cfg, "/etc/agentcage/config.yaml", "/patches")
         content = files["openclaw-cage.container"]
         assert "Image=ghcr.io/openclaw/openclaw:latest" in content
         assert "Exec=node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password" in content

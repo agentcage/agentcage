@@ -3,7 +3,7 @@ RUN pip install --no-cache-dir pyyaml==6.0.2
 COPY proxy/inspectors/ /app/inspectors/
 COPY proxy/addon.py /app/addon.py
 COPY proxy/secret_injector.py /app/secret_injector.py
-ENV LOBSTERCAGE_CONFIG=/etc/lobstercage/config.yaml
+ENV AGENTCAGE_CONFIG=/etc/agentcage/config.yaml
 # Bypass default entrypoint — it uses stat/usermod that fail under rootless podman
 ENTRYPOINT []
 USER mitmproxy

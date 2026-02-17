@@ -1,4 +1,4 @@
-"""Tests for the 'lobstercage domain' CLI subcommands."""
+"""Tests for the 'agentcage domain' CLI subcommands."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from lobstercage.cli import main
+from agentcage.cli import main
 
 
 def _runner():
@@ -21,7 +21,7 @@ SAMPLE_CONFIG = {
 
 
 class TestDomainList:
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.state")
     def test_domain_list(self, mock_state):
         mock_state.load_raw_config.return_value = dict(SAMPLE_CONFIG)
 
@@ -32,7 +32,7 @@ class TestDomainList:
         assert "httpbin.org" in result.output
         assert "github.com" in result.output
 
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.state")
     def test_domain_list_empty(self, mock_state):
         mock_state.load_raw_config.return_value = {"name": "basic"}
 
@@ -40,7 +40,7 @@ class TestDomainList:
         assert result.exit_code == 0
         assert "Mode: allowlist" in result.output
 
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.state")
     def test_domain_list_no_cage(self, mock_state):
         mock_state.load_raw_config.side_effect = FileNotFoundError("No stored config for cage 'nope'")
 
@@ -50,8 +50,8 @@ class TestDomainList:
 
 
 class TestDomainAdd:
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_domain_add(self, mock_state, MockPodman):
         raw = {
             "name": "basic",
@@ -72,7 +72,7 @@ class TestDomainAdd:
         saved = mock_state.save_raw_config.call_args[0][1]
         assert "github.com" in saved["domains"]["list"]
 
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.state")
     def test_domain_add_duplicate(self, mock_state):
         raw = {
             "name": "basic",
@@ -85,8 +85,8 @@ class TestDomainAdd:
         assert "already in" in result.output
         mock_state.save_raw_config.assert_not_called()
 
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_domain_add_creates_section(self, mock_state, MockPodman):
         raw = {"name": "basic"}
         mock_state.load_raw_config.return_value = raw
@@ -105,8 +105,8 @@ class TestDomainAdd:
 
 
 class TestDomainRm:
-    @patch("lobstercage.cli.Podman")
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_domain_rm(self, mock_state, MockPodman):
         raw = {
             "name": "basic",
@@ -127,7 +127,7 @@ class TestDomainRm:
         assert "github.com" not in saved["domains"]["list"]
         assert "httpbin.org" in saved["domains"]["list"]
 
-    @patch("lobstercage.cli.state")
+    @patch("agentcage.cli.state")
     def test_domain_rm_not_found(self, mock_state):
         raw = {
             "name": "basic",

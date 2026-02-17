@@ -1,4 +1,4 @@
-"""Base classes and protocols for lobstercage inspectors."""
+"""Base classes and protocols for agentcage inspectors."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class Inspector:
 
         inspectors:
           - name: my-check
-            path: /etc/lobstercage/my_inspector.py
+            path: /etc/agentcage/my_inspector.py
             config:
               forbidden_word: "EXFIL"
     """

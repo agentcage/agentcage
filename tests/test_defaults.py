@@ -18,7 +18,7 @@ sys.modules.setdefault("mitmproxy", _mitmproxy)
 sys.modules.setdefault("mitmproxy.ctx", _mitmproxy.ctx)
 sys.modules.setdefault("mitmproxy.http", _mitmproxy.http)
 
-from addon import Lobstercage  # noqa: E402
+from addon import Agentcage  # noqa: E402
 
 
 # ── addon.py: entropy + content-type on by default ──────────
@@ -27,9 +27,9 @@ from addon import Lobstercage  # noqa: E402
 class TestDefaultInspectors:
     """Verify entropy and content-type inspectors load without config."""
 
-    def _make_addon(self, yaml_content: str) -> Lobstercage:
-        """Create a Lobstercage addon from YAML without mitmproxy."""
-        addon = Lobstercage()
+    def _make_addon(self, yaml_content: str) -> Agentcage:
+        """Create a Agentcage addon from YAML without mitmproxy."""
+        addon = Agentcage()
         addon.cfg = yaml.safe_load(yaml_content) or {}
         logging_cfg = addon.cfg.get("logging") or {}
         if "allowed_requests" in logging_cfg:
@@ -109,7 +109,7 @@ class TestCLI:
 
     def _run(self, args):
         from click.testing import CliRunner
-        from lobstercage.cli import main
+        from agentcage.cli import main
         return CliRunner().invoke(main, args, catch_exceptions=False)
 
     def test_verify_requires_name(self):
@@ -148,8 +148,8 @@ class TestCLI:
 class TestAddonLogAllowed:
     """Test log_allowed default and logging config precedence."""
 
-    def _make_addon(self, yaml_content: str) -> Lobstercage:
-        addon = Lobstercage()
+    def _make_addon(self, yaml_content: str) -> Agentcage:
+        addon = Agentcage()
         addon.cfg = yaml.safe_load(yaml_content) or {}
         logging_cfg = addon.cfg.get("logging") or {}
         if "allowed_requests" in logging_cfg:

@@ -1,5 +1,5 @@
 [Unit]
-Description=lobstercage cage
+Description=agentcage cage
 Requires={{ name }}-proxy.service
 After={{ name }}-proxy.service
 
@@ -14,9 +14,9 @@ Environment="http_proxy=http://{{ name }}-proxy:8080"
 Environment="https_proxy=http://{{ name }}-proxy:8080"
 Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
 Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
-Environment="NODE_OPTIONS=--import /lobstercage/proxy-fetch.mjs"
+Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"
 Volume={{ name }}-certs.volume:/certs:ro,Z
-Volume={{ patches_host_dir }}:/lobstercage:ro,Z
+Volume={{ patches_host_dir }}:/agentcage:ro,Z
 {% for vol in volumes %}
 Volume={{ vol }}
 {% endfor %}

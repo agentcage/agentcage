@@ -1,4 +1,4 @@
-"""Shared fixtures for lobstercage tests."""
+"""Shared fixtures for agentcage tests."""
 
 import textwrap
 

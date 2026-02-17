@@ -1,12 +1,12 @@
 # Security & Threat Model
 
-lobstercage is a defense-in-depth proxy sandbox designed to reduce the risk of data exfiltration from AI agent containers. It is not a silver bullet -- it raises the bar significantly for HTTP-based exfiltration while acknowledging limitations outside that scope.
+agentcage is a defense-in-depth proxy sandbox designed to reduce the risk of data exfiltration from AI agent containers. It is not a silver bullet -- it raises the bar significantly for HTTP-based exfiltration while acknowledging limitations outside that scope.
 
 For architecture details, see [Architecture](architecture.md). For configuration options, see [Configuration Reference](configuration.md).
 
 ## Threat Model
 
-### What lobstercage prevents
+### What agentcage prevents
 
 The primary threat is an AI agent exfiltrating sensitive data -- API keys, credentials, source code, environment variables -- via HTTP requests. This covers both intentional exfiltration (a compromised or misaligned agent deliberately sending secrets to an attacker-controlled server) and accidental leakage (an agent including sensitive context in API calls it wasn't supposed to make).
 
@@ -29,7 +29,7 @@ The primary threat is an AI agent exfiltrating sensitive data -- API keys, crede
 
 ## Defense Layers
 
-lobstercage applies multiple overlapping defenses:
+agentcage applies multiple overlapping defenses:
 
 1. **Network isolation** -- The agent container is on a Podman `--internal` network with no internet gateway. The only path to the internet is through the mitmproxy container. This is enforced at the network level and cannot be bypassed by the agent process.
 
@@ -53,7 +53,7 @@ lobstercage applies multiple overlapping defenses:
 
 9. **Custom inspectors** -- User-defined Python inspectors can implement arbitrary detection logic, extending the chain with domain-specific rules. Custom inspector paths are validated against an allowed directory list to prevent arbitrary code loading.
 
-10. **Audit logging** -- All inspection decisions (blocked, flagged, and allowed requests) are written as structured JSON lines to a persistent audit log file (`/var/log/lobstercage/audit.jsonl` by default). Allowed request logging is enabled by default for forensic completeness.
+10. **Audit logging** -- All inspection decisions (blocked, flagged, and allowed requests) are written as structured JSON lines to a persistent audit log file (`/var/log/agentcage/audit.jsonl` by default). Allowed request logging is enabled by default for forensic completeness.
 
 ## Fail-Closed Design
 
@@ -73,7 +73,7 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 - **Python dependencies** (pyyaml) are pinned to exact versions
 - **Node.js patch dependencies** (undici) use `npm ci` with a committed lockfile containing integrity hashes
 - **Patch files** are re-copied from package data and SHA-256 verified on every cage create, update, and reload
-- **Custom inspector paths** are validated against an allowed directory list (default: `/etc/lobstercage/inspectors/`)
+- **Custom inspector paths** are validated against an allowed directory list (default: `/etc/agentcage/inspectors/`)
 - **Cage names** are validated against `^[a-z0-9][a-z0-9-]{0,62}$` to prevent shell injection in generated systemd units
 - **Jinja2 templates** use `SandboxedEnvironment` to prevent template injection
 - **Volume host paths** are validated to resolve within the user's home directory
@@ -81,14 +81,14 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 ## OWASP Top 10 for Agentic Applications (2026)
 
-| OWASP Risk | lobstercage Coverage | Residual Gaps |
+| OWASP Risk | agentcage Coverage | Residual Gaps |
 |---|---|---|
-| **ASI01 Agent Goal Hijack** | Out of scope — lobstercage inspects network traffic, not agent intent | Correctly scoped |
+| **ASI01 Agent Goal Hijack** | Out of scope — agentcage inspects network traffic, not agent intent | Correctly scoped |
 | **ASI02 Tool Misuse** | Strong — domain allowlist + WebSocket inspection + DNS filtering limit which services agents can reach | Multi-request evasion, DNS subdomain exfiltration, allowed-domain data smuggling |
 | **ASI03 Identity/Privilege Abuse** | Strong — secret injection prevents agent from holding real credentials; inspectors see only placeholders | — |
 | **ASI04 Supply Chain** | Strong — pinned image digests, pinned deps, lockfile integrity, patch file verification, inspector path validation | Agent can install arbitrary packages from allowlisted registries |
 | **ASI05 Code Execution** | Strong — read-only root, dropped caps, no-new-privileges; custom inspector paths restricted to allowed directories | — |
-| **ASI06 Memory Poisoning** | Not applicable — lobstercage doesn't manage agent memory | Named volumes persist across sessions (design choice) |
+| **ASI06 Memory Poisoning** | Not applicable — agentcage doesn't manage agent memory | Named volumes persist across sessions (design choice) |
 | **ASI07 Inter-Agent Comms** | Not applicable — single-agent scope | — |
 | **ASI08 Cascading Failures** | Strong — fail-closed on proxy down, systemd restart, per-host rate limiting | — |
 | **ASI09 Human Trust** | Strong — persistent structured audit logging with all decisions logged by default | — |
@@ -99,7 +99,7 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 **Multi-request evasion** -- An agent could split a secret across many requests to avoid regex matching. The entropy and content-type inspectors help catch encoded exfiltration, but are not foolproof against sophisticated splitting strategies. The GTG-1002 campaign demonstrated that AI agents can autonomously develop multi-step exfiltration strategies where each individual request appears legitimate.
 
 **Proxy-unaware applications** -- Applications that don't read `HTTP_PROXY` / `HTTPS_PROXY` get connection errors (blocked by network isolation) rather than 403 responses from the proxy. This applies to:
-  - Node.js `http.request()` / `https.request()` (lobstercage patches `globalThis.fetch` automatically, but not the lower-level APIs)
+  - Node.js `http.request()` / `https.request()` (agentcage patches `globalThis.fetch` automatically, but not the lower-level APIs)
   - Go's `net/http` (does respect `HTTP_PROXY` by default)
   - Rust's `reqwest` (requires explicit proxy configuration)
   - Python's `urllib3` (does respect `HTTP_PROXY`, but `socket` does not)
@@ -111,7 +111,7 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 **Exfiltration through allowed domains** -- The domain allowlist prevents direct exfiltration to attacker infrastructure, but data can be smuggled through *allowed* endpoints. For example, an agent could embed secrets in GitHub issue titles, Brave Search query parameters, or npm package metadata. The secrets inspector detects known credential patterns in URLs, but custom-encoded data in URL paths and query parameters is not subject to entropy analysis (only request bodies are). Rate limiting and audit log monitoring help bound this channel.
 
-**MCP server exposure** -- If a caged agent runs an MCP server (exposed via the `ports` config option), the MCP server is accessible on the internal network. lobstercage doesn't inspect intra-network traffic.
+**MCP server exposure** -- If a caged agent runs an MCP server (exposed via the `ports` config option), the MCP server is accessible on the internal network. agentcage doesn't inspect intra-network traffic.
 
 **Supply chain poisoning** -- The agent can install arbitrary packages from allowlisted registries (npm, PyPI, etc.). A prompt injection could direct the agent to install a malicious package that runs code inside the container. Container hardening (read-only root, dropped caps, no-new-privileges) limits the impact but does not prevent data access within the agent's workspace. Consider pre-approved package lists for high-security deployments.
 
@@ -119,4 +119,4 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 ## Reporting Security Issues
 
-Please report security issues via [GitHub Issues](https://github.com/lobstercage/lobstercage/issues).
+Please report security issues via [GitHub Issues](https://github.com/agentcage/agentcage/issues).

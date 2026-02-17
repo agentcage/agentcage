@@ -1,6 +1,6 @@
 # Architecture
 
-lobstercage generates [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that define 3 containers, a Podman network, and a shared certificate volume. Together they form a proxy sandbox where all agent HTTP traffic is inspected before reaching the internet.
+agentcage generates [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that define 3 containers, a Podman network, and a shared certificate volume. Together they form a proxy sandbox where all agent HTTP traffic is inspected before reaching the internet.
 
 For configuration options, see the [Configuration Reference](configuration.md).
 
@@ -98,7 +98,7 @@ Before the cage container's main process starts, an `ExecStartPre` script polls 
 
 ## Certificate Sharing
 
-mitmproxy generates a CA certificate on first run, stored in a named Podman volume (`lobstercage-certs-<name>`). This volume is:
+mitmproxy generates a CA certificate on first run, stored in a named Podman volume (`agentcage-certs-<name>`). This volume is:
 
 - Mounted read-write in the proxy container at `/home/mitmproxy/.mitmproxy` (where mitmproxy writes the cert)
 - Mounted **read-only** in the cage container at `/certs`
@@ -112,7 +112,7 @@ Two environment variables are set in the cage container so that common runtimes 
 
 Node.js's built-in `fetch()` (powered by undici) ignores the `HTTP_PROXY` / `HTTPS_PROXY` environment variables. Without intervention, `fetch()` calls from Node.js agents bypass the proxy entirely -- and since the agent has no internet gateway, they fail with connection errors instead of being inspected.
 
-lobstercage solves this by injecting a loader script via `NODE_OPTIONS=--import /lobstercage/proxy-fetch.mjs`. The script replaces `globalThis.fetch` with a wrapper that routes requests through an `EnvHttpProxyAgent` from the `undici` package, which reads the proxy env vars.
+agentcage solves this by injecting a loader script via `NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs`. The script replaces `globalThis.fetch` with a wrapper that routes requests through an `EnvHttpProxyAgent` from the `undici` package, which reads the proxy env vars.
 
 Non-Node.js applications (Python, Go, curl, etc.) natively respect `HTTP_PROXY` / `HTTPS_PROXY` and need no patching.
 

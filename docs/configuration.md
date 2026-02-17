@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Full reference for all lobstercage configuration settings — types, defaults, and examples.
+Full reference for all agentcage configuration settings — types, defaults, and examples.
 
 For architecture details, see [Architecture](architecture.md).
 Example configs: [`basic/config.yaml`](../examples/basic/) | [`openclaw/config.yaml`](../examples/openclaw/)
@@ -244,7 +244,7 @@ secrets:
 
 ## Inspectors
 
-lobstercage uses a **pluggable inspector chain**. Each HTTP request passes through a sequence of inspectors that can **block**, **flag**, or **allow** it. The chain short-circuits on the first hard block.
+agentcage uses a **pluggable inspector chain**. Each HTTP request passes through a sequence of inspectors that can **block**, **flag**, or **allow** it. The chain short-circuits on the first hard block.
 
 ### Built-in inspectors
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
-from lobstercage.config import Config
+from agentcage.config import Config
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -31,7 +31,7 @@ def generate_quadlets(
     """Return {filename: content} for all 5 quadlet files.
 
     Args:
-        config: Parsed lobstercage config.
+        config: Parsed agentcage config.
         config_host_path: Absolute host path to config.yaml (for proxy Volume=).
         patches_host_dir: Absolute host path to patches/ dir (for cage Volume=).
         deploy_name: Deployment name for secret prefixing.  When set, podman

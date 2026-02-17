@@ -1,4 +1,4 @@
-"""Parse and validate lobstercage YAML configuration."""
+"""Parse and validate agentcage YAML configuration."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class Config:
 
 
 def load_config(path: str) -> Config:
-    """Load and parse a lobstercage YAML config file."""
+    """Load and parse a agentcage YAML config file."""
     with open(path) as f:
         raw = yaml.safe_load(f)
 

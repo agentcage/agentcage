@@ -1,9 +1,9 @@
 [Unit]
-Description=lobstercage DNS sidecar
+Description=agentcage DNS sidecar
 
 [Container]
 ContainerName={{ name }}-dns
-Image=localhost/lobstercage-dns
+Image=localhost/agentcage-dns
 Network={{ name }}-net.network:ip=10.89.0.10
 Network=podman
 AddCapability=NET_BIND_SERVICE

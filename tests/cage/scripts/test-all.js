@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// lobstercage test suite — runs inside the caged agent container
+// agentcage test suite — runs inside the caged agent container
 // Tests: allowed domains, blocked domains, secret leak blocking
 
 const tests = [];
@@ -12,7 +12,7 @@ function test(name, fn) {
 }
 
 async function run() {
-  console.log("=== lobstercage cage test suite ===\n");
+  console.log("=== agentcage cage test suite ===\n");
 
   for (const { name, fn } of tests) {
     process.stdout.write(`  ${name} ... `);

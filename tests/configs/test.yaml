@@ -1,4 +1,4 @@
-# lobstercage e2e test config
+# agentcage e2e test config
 
 container:
   image: "docker.io/node:22-slim"

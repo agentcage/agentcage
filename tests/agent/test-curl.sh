@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "=== lobstercage curl e2e test ==="
+echo "=== agentcage curl e2e test ==="
 echo "Using proxy: $HTTP_PROXY"
 echo ""
 

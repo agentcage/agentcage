@@ -1,9 +1,9 @@
-# lobstercage configuration for OpenClaw
+# agentcage configuration for OpenClaw
 #
 # Copy this file and customize it for your setup:
 #   cp examples/openclaw/config.yaml config.yaml
 #   # Edit: set your secrets, allowed domains, resource limits
-#   ./lobstercage generate -c config.yaml
+#   ./agentcage generate -c config.yaml
 #
 # See docs/openclaw.md for a full setup walkthrough.
 #
