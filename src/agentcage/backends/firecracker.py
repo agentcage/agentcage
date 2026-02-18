@@ -14,11 +14,15 @@ from jinja2.sandbox import SandboxedEnvironment
 from agentcage import systemd
 from agentcage.config import Config
 from agentcage.firecracker import network, prerequisites
-from agentcage.firecracker.rootfs import prepare_vm_rootfs, cleanup_rootfs, build_base_rootfs
+from agentcage.firecracker.rootfs import (
+    prepare_vm_rootfs, cleanup_rootfs, build_base_rootfs,
+    ensure_data_drive, data_drive_path,
+)
 from agentcage.firecracker.secrets import (
     create_secrets_drive,
     secrets_drive_path,
     remove_all_secrets,
+    save_secret,
 )
 from agentcage.firecracker.vmconfig import (
     generate_vm_config,
@@ -93,6 +97,26 @@ class FirecrackerBackend:
         else:
             click.echo(f"Note: image '{user_image}' not local — VM will pull on first boot")
 
+        # Bridge secrets from Podman store → file-based store for the VM
+        all_secret_names = list(config.container.podman_secrets)
+        for rule in config.secret_injection:
+            if rule.env not in all_secret_names:
+                all_secret_names.append(rule.env)
+
+        if all_secret_names:
+            click.echo("Bridging secrets from Podman store to VM file store...")
+            for secret_name in all_secret_names:
+                podman_name = f"{deploy_name}.{secret_name}"
+                try:
+                    value = self._podman.secret_read(podman_name)
+                    save_secret(deploy_name, secret_name, value)
+                    click.echo(f"  Bridged secret: {secret_name}")
+                except subprocess.CalledProcessError:
+                    click.echo(
+                        f"  Warning: secret '{podman_name}' not found in Podman store",
+                        err=True,
+                    )
+
         # Prepare VM rootfs with quadlets, images, and startup script baked in
         click.echo("Preparing VM rootfs...")
         rootfs = prepare_vm_rootfs(
@@ -104,13 +128,37 @@ class FirecrackerBackend:
         sec_path = secrets_drive_path(deploy_name)
         has_secrets = create_secrets_drive(deploy_name, sec_path)
 
+        # Create persistent data drive for named volumes (survives rootfs rebuilds)
+        data_path = None
+        if config.container.named_volumes:
+            data_path = ensure_data_drive(deploy_name)
+
         # Generate VM config JSON
         vm_cfg_path = vm_config_path(deploy_name)
         vm_cfg = generate_vm_config(
             config, deploy_name, rootfs,
             secrets_drive_path=sec_path if has_secrets else None,
+            data_drive_path=data_path,
         )
         write_vm_config(vm_cfg, vm_cfg_path)
+
+        # Parse port forwards from config
+        vm_ip = network.cage_ip(deploy_name)
+        port_forwards = []
+        for port_spec in config.container.ports:
+            parts = port_spec.split(":")
+            if len(parts) == 3:
+                host_bind, host_port, container_port = parts
+            elif len(parts) == 2:
+                host_bind = "0.0.0.0"
+                host_port, container_port = parts
+            else:
+                continue
+            port_forwards.append({
+                "host_bind": host_bind,
+                "host_port": host_port,
+                "vm_port": host_port,  # VM maps host_port → host_port internally
+            })
 
         # Generate the host systemd unit (one service for the entire VM)
         nethelper = shutil.which("agentcage-nethelper") or "agentcage-nethelper"
@@ -134,6 +182,8 @@ class FirecrackerBackend:
             restart_sec=config.container.restart_sec,
             timeout_start_sec=config.container.timeout_start_sec,
             timeout_stop_sec=config.container.timeout_stop_sec,
+            port_forwards=port_forwards,
+            vm_ip=vm_ip,
         )
 
         return {f"{name}-cage.service": unit_content}
@@ -203,6 +253,12 @@ class FirecrackerBackend:
         if os.path.isfile(sec_drive):
             os.unlink(sec_drive)
             removed.append("secrets-drive")
+
+        # Remove data drive
+        d_drive = data_drive_path(name)
+        if os.path.isfile(d_drive):
+            os.unlink(d_drive)
+            removed.append("data-drive")
 
         # Remove VM config
         cfg_path = vm_config_path(name)

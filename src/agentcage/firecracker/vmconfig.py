@@ -15,6 +15,7 @@ def generate_vm_config(
     deploy_name: str,
     rootfs_path: str,
     secrets_drive_path: str | None = None,
+    data_drive_path: str | None = None,
 ) -> dict:
     """Generate the Firecracker JSON config for a cage VM."""
     fc = config.firecracker
@@ -59,6 +60,15 @@ def generate_vm_config(
             "path_on_host": secrets_drive_path,
             "is_root_device": False,
             "is_read_only": True,
+        })
+
+    # Add persistent data drive if present
+    if data_drive_path and os.path.isfile(data_drive_path):
+        cfg["drives"].append({
+            "drive_id": "data",
+            "path_on_host": data_drive_path,
+            "is_root_device": False,
+            "is_read_only": False,
         })
 
     return cfg

@@ -114,6 +114,15 @@ class Podman:
             input=value, text=True, check=True,
         )
 
+    def secret_read(self, name: str) -> str:
+        """Read a secret's value from Podman's secret store."""
+        r = subprocess.run(
+            ["podman", "secret", "inspect", "--showsecret",
+             "--format", "{{.SecretData}}", name],
+            capture_output=True, text=True, check=True,
+        )
+        return r.stdout.strip()
+
     def secret_remove(self, name: str) -> bool:
         r = subprocess.run(
             ["podman", "secret", "rm", name],

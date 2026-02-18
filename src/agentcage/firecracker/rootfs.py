@@ -98,9 +98,10 @@ def _export_container_images(
 def _generate_startup_script(config: Config, deploy_name: str) -> str:
     """Generate a shell script that starts the cage containers via podman."""
     name = config.name
+    cc = config.container
 
-    # DNS server config
-    dns_servers = ["1.1.1.1", "8.8.8.8"]
+    # DNS server config — use configured servers, fallback to public DNS
+    dns_servers = config.dns_servers if config.dns_servers else ["1.1.1.1", "8.8.8.8"]
 
     # Build dnsmasq args
     dns_args = ["dnsmasq", "--no-daemon", "--log-queries", "--no-resolv"]
@@ -122,11 +123,83 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
     if not config.logging.allowed_requests:
         proxy_cmd += " --quiet"
 
+    # Proxy secrets (for secret injection)
+    proxy_secret_args = ""
+    for rule in config.secret_injection:
+        proxy_secret_args += f"    --secret {rule.env},type=env,target={rule.env} \\\n"
+
     # Agent container config
-    agent_image = config.container.image
+    agent_image = cc.image
     agent_cmd = ""
-    if config.container.command:
-        agent_cmd = " ".join(config.container.command)
+    if cc.command:
+        agent_cmd = " ".join(cc.command)
+
+    # Warn about host volume mounts (not supported in Firecracker mode)
+    volume_warnings = ""
+    if cc.volumes:
+        for vol in cc.volumes:
+            volume_warnings += f'echo "start-cage: WARNING: host volume mount not supported in Firecracker mode, skipping: {vol}"\n'
+
+    # Build cage container extra args
+    cage_extra_args = ""
+
+    # Environment variables from config
+    for key, val in cc.env.items():
+        cage_extra_args += f"    -e {_shell_quote(f'{key}={val}')} \\\n"
+
+    # Tmpfs mounts
+    for tmpfs_spec in cc.tmpfs:
+        cage_extra_args += f"    --tmpfs {_shell_quote(tmpfs_spec)} \\\n"
+
+    # Named volumes — backed by data drive if available
+    named_volume_setup = ""
+    for vol_name, mount_spec in cc.named_volumes.items():
+        named_volume_setup += f"""# Create named volume backed by data drive
+if [[ -d /mnt/data ]]; then
+    mkdir -p /mnt/data/{vol_name}
+    podman volume create --opt type=none --opt o=bind --opt device=/mnt/data/{vol_name} {vol_name} 2>/dev/null || true
+else
+    podman volume create {vol_name} 2>/dev/null || true
+fi
+"""
+        cage_extra_args += f"    -v {_shell_quote(f'{vol_name}:{mount_spec}')} \\\n"
+
+    # Ports — rewrite 127.0.0.1 → 0.0.0.0 since VM is the isolation boundary
+    for port_spec in cc.ports:
+        vm_port = port_spec.replace("127.0.0.1:", "0.0.0.0:")
+        cage_extra_args += f"    -p {_shell_quote(vm_port)} \\\n"
+
+    # Capabilities
+    for cap in cc.drop_capabilities:
+        cage_extra_args += f"    --cap-drop {cap} \\\n"
+    for cap in cc.add_capabilities:
+        cage_extra_args += f"    --cap-add {cap} \\\n"
+
+    # Resource limits
+    if cc.memory:
+        cage_extra_args += f"    --memory {_shell_quote(cc.memory)} \\\n"
+    if cc.cpus:
+        cage_extra_args += f"    --cpus {_shell_quote(cc.cpus)} \\\n"
+
+    # User
+    if cc.user:
+        cage_extra_args += f"    -u {_shell_quote(cc.user)} \\\n"
+
+    # Security settings
+    if cc.read_only:
+        cage_extra_args += "    --read-only \\\n"
+    if cc.no_new_privileges:
+        cage_extra_args += "    --security-opt no-new-privileges \\\n"
+    if cc.security_label_disable:
+        cage_extra_args += "    --security-opt label=disable \\\n"
+
+    # Podman secrets (direct secrets, not injection)
+    for secret_name in cc.podman_secrets:
+        cage_extra_args += f"    --secret {secret_name},type=env,target={secret_name} \\\n"
+
+    # Secret injection placeholders — cage sees only the placeholder value
+    for rule in config.secret_injection:
+        cage_extra_args += f"    -e {_shell_quote(f'{rule.env}={rule.placeholder}')} \\\n"
 
     # Build the script
     script = f"""#!/bin/bash
@@ -135,7 +208,7 @@ set -euo pipefail
 
 CAGE_NAME="{name}"
 
-echo "start-cage: creating networks"
+{volume_warnings}echo "start-cage: creating networks"
 # Internal network — agent container only (no internet gateway)
 podman network create --internal --subnet=10.89.0.0/24 "${{CAGE_NAME}}-net" 2>/dev/null || true
 # External network — for DNS and proxy outbound connectivity
@@ -152,7 +225,7 @@ if [ -n "$EXT_BRIDGE" ]; then
     iptables-legacy -t nat -A POSTROUTING -s 10.90.0.0/24 ! -o "$EXT_BRIDGE" -j MASQUERADE || echo "start-cage: WARNING: MASQUERADE rule failed"
 fi
 
-echo "start-cage: starting DNS container (dual-homed)"
+{named_volume_setup}echo "start-cage: starting DNS container (dual-homed)"
 podman run -d --name "${{CAGE_NAME}}-dns" \\
     --log-driver k8s-file \\
     --network "${{CAGE_NAME}}-net:ip=10.89.0.10" \\
@@ -168,7 +241,7 @@ podman run -d --name "${{CAGE_NAME}}-proxy" \\
     --network "${{CAGE_NAME}}-ext" \\
     -v /etc/agentcage/config.yaml:/etc/agentcage/config.yaml:ro \\
     --dns 10.89.0.10 \\
-    localhost/agentcage-proxy \\
+{proxy_secret_args}    localhost/agentcage-proxy \\
     {proxy_cmd}
 
 # Wait for proxy CA cert to be generated
@@ -199,7 +272,7 @@ podman run -d --name "${{CAGE_NAME}}-cage" \\
     -v "$CERT_DIR:/certs:ro" \\
     -v /var/lib/agentcage/patches:/agentcage:ro \\
     --dns 10.89.0.10 \\
-    {agent_image} \\
+{cage_extra_args}    {agent_image} \\
     {agent_cmd}
 
 echo "start-cage: all containers started"
@@ -211,6 +284,17 @@ podman logs -f "${{CAGE_NAME}}-proxy" 2>&1 | while IFS= read -r line; do echo "[
 podman logs -f "${{CAGE_NAME}}-cage" 2>&1 | while IFS= read -r line; do echo "[cage] $line"; done &
 """
     return script
+
+
+def _shell_quote(s: str) -> str:
+    """Quote a string for safe inclusion in a shell script."""
+    if not s:
+        return "''"
+    # If the string is simple (no special chars), return as-is
+    if all(c.isalnum() or c in "-_=./:,+" for c in s):
+        return s
+    # Otherwise, single-quote it (escaping any embedded single quotes)
+    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def _populate_staging(
@@ -315,6 +399,40 @@ def prepare_vm_rootfs(
 
     click.echo(f"Prepared VM rootfs: {rootfs_path}")
     return rootfs_path
+
+
+def ensure_data_drive(deploy_name: str, size_mb: int = 4096) -> str:
+    """Create a persistent data drive for named volumes if it doesn't exist.
+
+    The data drive survives rootfs rebuilds (cage update) so named volume
+    data persists across updates. Only created on first call.
+
+    Returns the path to the data drive image.
+    """
+    vm_dir = _state_dir(deploy_name)
+    data_path = vm_dir / "data.ext4"
+
+    if data_path.exists():
+        click.echo(f"Data drive already exists: {data_path}")
+        return str(data_path)
+
+    click.echo(f"Creating persistent data drive: {data_path} ({size_mb}MB)")
+    subprocess.run(
+        ["dd", "if=/dev/zero", f"of={data_path}",
+         "bs=1M", f"count={size_mb}"],
+        capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["mkfs.ext4", "-F", "-q", "-L", "agentcage-data", str(data_path)],
+        capture_output=True, check=True,
+    )
+
+    return str(data_path)
+
+
+def data_drive_path(deploy_name: str) -> str:
+    """Return the expected data drive path for a deployment."""
+    return str(_state_dir(deploy_name) / "data.ext4")
 
 
 def rootfs_path(deploy_name: str) -> str:

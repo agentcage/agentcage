@@ -78,6 +78,33 @@ class TestGenerateVmConfig:
         secrets = next(d for d in vm_cfg["drives"] if d["drive_id"] == "secrets")
         assert secrets["is_read_only"] is True
 
+    def test_data_drive_when_provided(self, tmp_path):
+        data_path = tmp_path / "data.ext4"
+        data_path.write_text("fake")
+        cfg = _make_config()
+        vm_cfg = generate_vm_config(
+            cfg, "myagent", "/rootfs.ext4",
+            data_drive_path=str(data_path),
+        )
+        assert len(vm_cfg["drives"]) == 2
+        data = next(d for d in vm_cfg["drives"] if d["drive_id"] == "data")
+        assert data["is_read_only"] is False
+
+    def test_all_drives(self, tmp_path):
+        secrets_path = tmp_path / "secrets.ext4"
+        secrets_path.write_text("fake")
+        data_path = tmp_path / "data.ext4"
+        data_path.write_text("fake")
+        cfg = _make_config()
+        vm_cfg = generate_vm_config(
+            cfg, "myagent", "/rootfs.ext4",
+            secrets_drive_path=str(secrets_path),
+            data_drive_path=str(data_path),
+        )
+        assert len(vm_cfg["drives"]) == 3
+        drive_ids = {d["drive_id"] for d in vm_cfg["drives"]}
+        assert drive_ids == {"rootfs", "secrets", "data"}
+
     def test_network_interface(self):
         cfg = _make_config()
         vm_cfg = generate_vm_config(cfg, "myagent", "/rootfs.ext4")

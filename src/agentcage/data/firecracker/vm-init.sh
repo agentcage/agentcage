@@ -71,11 +71,12 @@ fi
 
 echo "nameserver 10.88.0.1" > /etc/resolv.conf
 
-# ── Mount secrets drive if present ───────────────────────
-if [[ -b /dev/vdb ]]; then
-    echo "agentcage-vm: mounting secrets drive"
+# ── Mount secrets drive if present (by filesystem label) ─
+SECRETS_DEV=$(blkid -L agentcage-secrets 2>/dev/null || true)
+if [[ -n "$SECRETS_DEV" ]]; then
+    echo "agentcage-vm: mounting secrets drive ($SECRETS_DEV)"
     mkdir -p /mnt/secrets
-    mount -o ro /dev/vdb /mnt/secrets
+    mount -o ro "$SECRETS_DEV" /mnt/secrets
 
     for f in /mnt/secrets/*; do
         [[ -f "$f" ]] || continue
@@ -83,6 +84,14 @@ if [[ -b /dev/vdb ]]; then
         podman secret create "$local_name" "$f" || true
         echo "agentcage-vm: loaded secret $local_name"
     done
+fi
+
+# ── Mount data drive if present (persistent named volumes) ─
+DATA_DEV=$(blkid -L agentcage-data 2>/dev/null || true)
+if [[ -n "$DATA_DEV" ]]; then
+    echo "agentcage-vm: mounting data drive ($DATA_DEV)"
+    mkdir -p /mnt/data
+    mount "$DATA_DEV" /mnt/data
 fi
 
 # ── Quick diagnostic ─────────────────────────────────────

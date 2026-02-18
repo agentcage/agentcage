@@ -92,7 +92,7 @@ def create_secrets_drive(deploy_name: str, output_path: str) -> bool:
         capture_output=True, check=True,
     )
     subprocess.run(
-        ["mkfs.ext4", "-F", "-q", output_path],
+        ["mkfs.ext4", "-F", "-q", "-L", "agentcage-secrets", output_path],
         capture_output=True, check=True,
     )
 
