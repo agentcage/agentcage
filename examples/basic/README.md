@@ -1,6 +1,6 @@
 # Basic example
 
-A minimal agentcage cage that sandboxes a Node.js agent behind the inspecting proxy. No API keys or secrets needed -- uses httpbin.org to demonstrate proxy behavior.
+A minimal agentcage cage that sandboxes a Node.js agent behind the inspecting proxy. No secrets needed -- uses httpbin.org to demonstrate proxy behavior.
 
 ## Usage
 
@@ -21,7 +21,7 @@ agentcage cage destroy basic
 
 1. **Allowed request** -- GET to httpbin.org succeeds (HTTP 200)
 2. **Blocked request** -- GET to evil.com is denied (HTTP 403, domain not in allowlist)
-3. **Secret leak detection** -- POST containing a fake API key is blocked (HTTP 403, secret detected)
+3. **Secret leak detection** -- POST containing a fake secret is blocked (HTTP 403, secret detected)
 4. **Clean POST** -- POST with harmless data to an allowed domain succeeds (HTTP 200)
 
 See [Configuration Reference](../../docs/configuration.md) for all settings.

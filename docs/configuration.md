@@ -89,7 +89,7 @@ These settings are nested under `container:` in the config file.
 
 ## Secret injection (`secret_injection:`)
 
-Secret injection prevents API keys and other sensitive values from ever entering the cage container. Instead of passing real secrets to the cage, it receives placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`). The proxy transparently swaps placeholders for real values on outbound requests and redacts real values back to placeholders on inbound responses.
+Secret injection prevents secrets from ever entering the cage container. Instead of passing real secrets to the cage, it receives placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`). The proxy transparently swaps placeholders for real values on outbound requests and redacts real values back to placeholders on inbound responses.
 
 Secrets listed in `secret_injection` are **automatically excluded** from the cage's Podman secrets. The proxy container receives the real value, and the cage container receives the placeholder as an environment variable.
 
@@ -128,7 +128,7 @@ secret_injection:
 
 Secrets that don't need injection (e.g. gateway passwords used only within the cage) should remain in `podman_secrets` as before.
 
-> **Note:** Secret injection and the `secrets` inspector are complementary. The injector proactively prevents the cage from seeing real secrets, while the `secrets` inspector provides defense-in-depth by pattern-matching against known credential formats. Both can be active at the same time. Since injection runs *before* inspectors, the `secrets` inspector sees the real key in the modified request -- keep `allow_to_domains` entries for injected secrets so the inspector doesn't block them.
+> **Note:** Secret injection and the `secrets` inspector are complementary. The injector proactively prevents the cage from seeing real secrets, while the `secrets` inspector provides defense-in-depth by pattern-matching against known secret formats. Both can be active at the same time. Since injection runs *before* inspectors, the `secrets` inspector sees the real key in the modified request -- keep `allow_to_domains` entries for injected secrets so the inspector doesn't block them.
 
 ---
 
@@ -191,7 +191,7 @@ Detected secrets always result in a **block** action (403 response). Use `allow_
 
 ### Built-in domain exemptions
 
-By default, each built-in secret pattern is automatically allowed to reach its provider domain (e.g. `anthropic_key` → `anthropic.com`, `openai_key` → `openai.com`). This means you don't need to manually configure `allow_to_domains` for standard API keys.
+By default, each built-in secret pattern is automatically allowed to reach its provider domain (e.g. `anthropic_key` → `anthropic.com`, `openai_key` → `openai.com`). This means you don't need to manually configure `allow_to_domains` for standard secrets.
 
 User-specified `allow_to_domains` entries are merged with the built-in defaults — your entries extend (not replace) the built-ins. If you specify the same pattern name, your entry overrides the built-in for that pattern.
 
@@ -251,7 +251,7 @@ agentcage uses a **pluggable inspector chain**. Each HTTP request passes through
 | Inspector | Default | Description |
 |-----------|---------|-------------|
 | `domain` | on | Domain allowlist/blocklist enforcement |
-| `secrets` | on | Regex-based secret/credential leak detection (always blocks) |
+| `secrets` | on | Regex-based secret leak detection (always blocks) |
 | `body-size` | on | Request body size limits (loaded when `max_request_body` > 0; default is 10 MB) |
 | `entropy` | off | Shannon entropy analysis — detects encrypted/compressed payloads |
 | `content-type` | off | Content-type mismatch detection and base64 blob scanning |

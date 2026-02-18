@@ -6,9 +6,9 @@
 
 *Defense-in-depth proxy sandbox for AI agents.*
 
-Sandboxed container environments for AI agents, powered by rootless [Podman](https://podman.io/) and [mitmproxy](https://mitmproxy.org/).
+Because "the agent would never do that" is not a security policy.
 
-> ⚠️ **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
+> :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
 > **Setting up OpenClaw?** See the [OpenClaw guide](docs/openclaw.md) and [`openclaw/config.yaml`](examples/openclaw/).
 
@@ -16,23 +16,76 @@ Sandboxed container environments for AI agents, powered by rootless [Podman](htt
 
 agentcage is a CLI that generates hardened, sandboxed container environments for AI agents. It produces [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that deploy three containers on a rootless [Podman](https://podman.io/) network -- no root privileges required. Your agent runs on an internal-only network with no internet gateway; the only way out is through an inspecting [mitmproxy](https://mitmproxy.org/) that scans every HTTP request before forwarding it.
 
+## Features
+
+- :mag: **Pluggable inspector chain** -- domain filtering, secret detection, payload analysis, and custom Python inspectors
+- :key: **Bidirectional secret injection** -- agent gets placeholders, proxy injects outbound, redacts inbound
+- :detective: **Regex-based secret scanning** -- automatic provider-to-domain mapping, extensible via config
+- :bar_chart: **Payload analysis** -- Shannon entropy, content-type mismatch detection, base64 blob scanning, body-size limits
+- :globe_with_meridians: **WebSocket frame inspection** -- same inspector chain applied to every frame post-handshake
+- :satellite: **DNS filtering** -- dnsmasq sidecar, RFC 5737 placeholder IPs for non-allowlisted domains, query logging
+- :stopwatch: **Per-host rate limiting** -- token-bucket with configurable burst
+- :pencil: **Structured audit logging** -- JSON lines for all inspection decisions (block, flag, allow)
+- :lock: **Container hardening** -- read-only rootfs, all capabilities dropped, `no-new-privileges`
+- :package: **Supply chain hardening** -- pinned base image digests, lockfile integrity, SHA-256 patch verification
+
+## Design Principles
+
+1. **Fail-closed** -- if any component fails, traffic stops, not bypasses.
+2. **Secure by default** -- all hardening is on out of the box; security is opt-out, not opt-in.
+3. **Inspect, don't just isolate** -- every request, frame, and query is analyzed before forwarding.
+4. **Agent never holds real secrets** -- placeholders in, real values injected in transit only.
+5. **Audit everything** -- all decisions logged as structured JSON by default.
+
 ## Why is it needed?
 
 Most AI agent deployments hand the agent a [**lethal trifecta**](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
 
 1. **Internet access** -- the agent can reach any server on the internet.
-2. **Credentials** -- API keys, tokens, and secrets are passed as environment variables or mounted files.
+2. **Secrets** -- tokens and other secrets are passed as environment variables or mounted files.
 3. **Arbitrary code execution** -- the agent runs code it writes itself, or code suggested by a model.
 
-Any one of these alone is manageable. Combined, they create an exfiltration risk: if the agent is compromised, misaligned, or simply makes a mistake, it can send your credentials, source code, or private data to any endpoint on the internet. Most current setups have zero defense against this -- the agent has the same network access as any other process on the machine.
+Any one of these alone is manageable. Combined, they create an exfiltration risk: if the agent is compromised, misaligned, or simply makes a mistake, it can send your secrets, source code, or private data to any endpoint on the internet. Most current setups have zero defense against this -- the agent has the same network access as any other process on the machine.
 
-agentcage breaks the trifecta by placing the agent behind a defense-in-depth proxy sandbox: network isolation, domain filtering, secret injection, credential scanning, payload analysis, and container hardening -- all fail-closed. See [Security & Threat Model](docs/security.md) for the full breakdown of each layer and known limitations.
+agentcage breaks the trifecta by placing the agent behind a defense-in-depth proxy sandbox: network isolation, domain filtering, secret injection, secret scanning, payload analysis, and container hardening -- all fail-closed. See [Security & Threat Model](docs/security.md) for the full breakdown of each layer and known limitations.
+
+## How is it different?
+
+Most agent sandboxes stop at network-level isolation: put the agent in a VM or container and control which hosts it can reach. agentcage adds a full inspection layer on top -- every HTTP request, WebSocket frame, and DNS query passes through a pluggable inspector chain before reaching the internet.
+
+The agent never holds real secrets. Secret injection gives the agent placeholder tokens (`{{ANTHROPIC_API_KEY}}`); the proxy swaps in real values on outbound requests and redacts them from inbound responses. If a placeholder is sent to an unauthorized domain, the request is blocked. The secrets inspector provides a second line of defense with regex-based secret scanning that detects common key formats, each with automatic provider-to-domain mapping so legitimate API calls pass through without manual configuration.
+
+On top of domain filtering and secret detection, the inspector chain analyzes payloads for anomalies -- Shannon entropy (catching encrypted/compressed exfiltration), content-type mismatches, base64 blobs -- and inspects WebSocket frames with the same chain. All decisions are written as structured JSON audit logs.
+
+agentcage runs natively on headless Linux using rootless Podman -- fully self-hosted, single-binary CLI, open source.
 
 ## How does it work?
 
-The agent container has no internet gateway. All HTTP traffic is routed via `HTTP_PROXY` / `HTTPS_PROXY` to a dual-homed mitmproxy container, which is the agent's only path to the outside world. A pluggable inspector chain evaluates every request -- enforcing domain allowlists, scanning for secret leaks, and optionally analyzing payloads -- before forwarding or blocking with a 403.
+A cage is three containers on an internal Podman network: your agent (no internet gateway), a dual-homed DNS sidecar, and a dual-homed mitmproxy that inspects and forwards all traffic.
 
-See [Architecture](docs/architecture.md) for the full container topology, inspector chain, startup order, and certificate sharing.
+```
+  podman network: <name>-net (--internal, no internet gateway)
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                                                                  │
+  │  ┌──────────────┐    ┌───────────────┐    ┌──────────────────┐  │
+  │  │ Agent         │    │ DNS sidecar   │    │ mitmproxy        │  │
+  │  │               │    │ (dnsmasq)     │    │ + inspector chain│  │
+  │  │ HTTP_PROXY=  ─┼────┼───────────────┼───►│                  │  │
+  │  │  10.89.0.11  ─┼────┼───────────────┼──►│ scans + forwards─┼──┼─► Internet
+  │  │               │    │               │    │                  │  │
+  │  │ resolv.conf  ─┼───►│ resolves via  │    │                  │  │
+  │  │               │    │ external net ─┼────┼──────────────────┼──┼─► Upstream DNS
+  │  │               │    │               │    │                  │  │
+  │  │ ONLY on       │    │ internal +    │    │ internal +       │  │
+  │  │ internal net  │    │ external net  │    │ external net     │  │
+  │  └──────────────┘    └───────────────┘    └──────────────────┘  │
+  │                                                                  │
+  └──────────────────────────────────────────────────────────────────┘
+```
+
+All HTTP traffic is routed via `HTTP_PROXY` / `HTTPS_PROXY` to the mitmproxy container. A pluggable inspector chain evaluates every request -- enforcing domain allowlists, scanning for secret leaks, analyzing payloads -- before forwarding or blocking with a 403. The chain short-circuits on the first hard block.
+
+See [Architecture](docs/architecture.md) for the full inspector chain, startup order, and certificate sharing.
 
 ## Prerequisites
 
@@ -86,229 +139,7 @@ cd agentcage
 uv run agentcage --help
 ```
 
-## Quick Start
-
-```bash
-# Edit config (set your allowed domains, image, etc.)
-cp examples/basic/config.yaml config.yaml
-
-# Store secrets first (they're required before cage creation)
-agentcage secret set myapp ANTHROPIC_API_KEY
-
-# Create the cage (builds images, generates quadlets, starts containers)
-agentcage cage create -c config.yaml
-
-# Verify everything is healthy
-agentcage cage verify myapp
-```
-
-## CLI Reference
-
-The CLI is organized into two command groups: **`cage`** (manage cages) and **`secret`** (manage cage-scoped secrets).
-
-```
-agentcage <group> <command> [options]
-```
-
-### `cage` -- Manage cages
-
-| Command | Description |
-|---|---|
-| `cage create -c CONFIG` | Build images, generate quadlets, install, and start a new cage |
-| `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
-| `cage list` | List all cages with status |
-| `cage destroy NAME [-y]` | Stop containers, remove quadlets, state, and scoped secrets |
-| `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
-| `cage reload NAME` | Restart containers without rebuilding images |
-
-### `secret` -- Manage cage-scoped secrets
-
-| Command | Description |
-|---|---|
-| `secret list NAME` | List secrets for a cage (with status if cage exists) |
-| `secret set NAME KEY` | Set a secret (prompts for value or reads stdin) |
-| `secret rm NAME KEY` | Remove a secret |
-
----
-
-### `cage create`
-
-```
-agentcage cage create -c <config>
-```
-
-Creates a new cage from a config file. This single command:
-
-1. Validates the config
-2. Checks that all required secrets exist in Podman
-3. Saves deployment state to `~/.config/agentcage/deployments/<name>/config.yaml`
-4. Builds the proxy and DNS container images
-5. Generates and installs 5 quadlet files into `~/.config/containers/systemd/`
-6. Reloads systemd and starts the cage
-
-The generated quadlet files are:
-
-- `<name>-net.network` -- internal network with fixed subnet
-- `<name>-certs.volume` -- shared certificate volume
-- `<name>-dns.container` -- DNS sidecar (dnsmasq)
-- `<name>-proxy.container` -- mitmproxy with inspector chain
-- `<name>-cage.container` -- your agent container
-
-Fails if any required secrets are missing. The error message tells you exactly which secrets to create:
-
-```
-error: missing secrets for cage 'myapp':
-  ANTHROPIC_API_KEY
-Create them with:
-  agentcage secret set myapp ANTHROPIC_API_KEY
-```
-
-### `cage update`
-
-```
-agentcage cage update <name> [-c <config>]
-```
-
-Rebuild and restart an existing cage. Use this after changing code or config:
-
-- **With `-c`**: Updates the stored config, then rebuilds and restarts.
-- **Without `-c`**: Rebuilds from the previously stored config (useful when only the container image or proxy code has changed).
-
-Stops the running services before rebuilding, then starts them again.
-
-### `cage list`
-
-```
-agentcage cage list
-```
-
-Lists all known cages with their current status:
-
-```
-NAME                 STATUS
-myapp                running (3/3)
-testcage             stopped (0/3)
-broken               degraded (2/3)
-```
-
-### `cage destroy`
-
-```
-agentcage cage destroy <name> [-y|--yes]
-```
-
-Tears down a cage completely:
-
-1. Stops all containers (cage, proxy, DNS)
-2. Removes quadlet files from `~/.config/containers/systemd/`
-3. Removes the Podman network and certificate volume
-4. Removes all scoped secrets (e.g., `myapp.ANTHROPIC_API_KEY`)
-5. Removes deployment state from `~/.config/agentcage/deployments/<name>/`
-
-User-defined named volumes and bind-mounted data are never removed. Pass `-y` to skip the confirmation prompt.
-
-### `cage verify`
-
-```
-agentcage cage verify <name>
-```
-
-Runs health checks against a running cage:
-
-- All 3 containers running (cage, proxy, DNS)
-- CA certificate present in the shared volume
-- `HTTP_PROXY` / `HTTPS_PROXY` set in the cage container
-- Egress filtering working (blocked domain returns 403)
-- Podman running rootless
-
-Example output:
-
-```
-=== agentcage verify: myapp ===
-
--- Containers --
-  [PASS] myapp-proxy is running
-  [PASS] myapp-dns is running
-  [PASS] myapp-cage is running
-
--- CA Certificate --
-  [PASS] mitmproxy CA cert exists in shared volume
-
--- Proxy Configuration --
-  [PASS] HTTP_PROXY is set
-  [PASS] HTTPS_PROXY is set
-
--- Egress Filtering --
-  [PASS] Blocked domain (evil-exfil-server.io) is denied (HTTP 403)
-
--- Podman --
-  [PASS] Podman is running rootless
-
-=== Results: 8 passed, 0 failed, 0 warnings ===
-```
-
-### `cage reload`
-
-```
-agentcage cage reload <name>
-```
-
-Restarts containers without rebuilding images. Useful after config-only changes (the config YAML is bind-mounted into the proxy container, so a restart picks it up).
-
-### `secret set`
-
-```
-agentcage secret set <name> <key>
-```
-
-Sets a deployment-scoped secret. When run interactively, prompts for the value with hidden input. Also accepts piped input:
-
-```bash
-# Interactive (prompts for value)
-agentcage secret set myapp ANTHROPIC_API_KEY
-
-# Piped from a command
-echo "sk-ant-abc123" | agentcage secret set myapp ANTHROPIC_API_KEY
-
-# From a file
-agentcage secret set myapp ANTHROPIC_API_KEY < /path/to/key.txt
-```
-
-Secrets are stored in Podman as `<name>.<key>` (e.g., `myapp.ANTHROPIC_API_KEY`) and mapped back to the original env var name via `target=` in the quadlet templates, so the container sees `ANTHROPIC_API_KEY` as expected.
-
-If the cage is currently running, it is automatically reloaded after the secret is set.
-
-### `secret list`
-
-```
-agentcage secret list <name>
-```
-
-Lists secrets for a cage. If the cage has deployment state, cross-references with the config to show expected secrets and their status:
-
-```
-NAME                           TYPE         STATUS
-ANTHROPIC_API_KEY                 injection    ok
-GITHUB_TOKEN                   direct       MISSING
-```
-
-Secret types:
-- **injection** -- managed by the proxy's secret injection system (the cage sees a placeholder; the proxy swaps in the real value)
-- **direct** -- passed directly to the cage container via `podman_secrets`
-
-If no deployment state exists, lists all Podman secrets matching the `<name>.` prefix.
-
-### `secret rm`
-
-```
-agentcage secret rm <name> <key>
-```
-
-Removes a secret from Podman. If the cage is currently running, it is automatically reloaded.
-
----
-
-## Typical Workflow
+## Usage
 
 ```bash
 # 1. Write your config
@@ -319,14 +150,16 @@ vim config.yaml
 agentcage secret set myapp ANTHROPIC_API_KEY
 agentcage secret set myapp GITHUB_TOKEN
 
-# 3. Create the cage
+# 3. Create the cage (builds images, generates quadlets, starts containers)
 agentcage cage create -c config.yaml
 
 # 4. Verify it's healthy
 agentcage cage verify myapp
 
 # 5. View logs
-journalctl --user -u myapp-cage -f
+journalctl --user -u myapp-cage -f    # agent logs
+journalctl --user -u myapp-proxy -f   # proxy inspection logs
+journalctl --user -u myapp-dns -f     # DNS query logs
 
 # 6. Update after code/config changes
 agentcage cage update myapp -c config.yaml
@@ -341,13 +174,15 @@ agentcage cage reload myapp
 agentcage cage destroy myapp
 ```
 
-### View logs
+## CLI Overview
 
-```bash
-journalctl --user -u myapp-cage -f
-journalctl --user -u myapp-proxy -f
-journalctl --user -u myapp-dns -f
-```
+| Group | Commands |
+|---|---|
+| `cage` | `create`, `update`, `list`, `destroy`, `verify`, `reload` |
+| `secret` | `set`, `list`, `rm` |
+| `domain` | `list`, `add`, `rm` |
+
+See [CLI Reference](docs/cli.md) for full documentation of all commands and options.
 
 ## Deployment State
 
@@ -355,7 +190,7 @@ agentcage tracks each cage in `~/.config/agentcage/deployments/<name>/config.yam
 
 ## Architecture
 
-Three containers on an internal Podman network: the agent (no internet gateway), a dual-homed DNS sidecar, and a dual-homed mitmproxy that inspects and forwards all traffic. See [Architecture](docs/architecture.md) for the full topology, inspector chain, startup order, and certificate sharing.
+See [Architecture](docs/architecture.md) for the full container topology, inspector chain, startup order, and certificate sharing.
 
 ## Configuration
 

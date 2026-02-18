@@ -1,0 +1,262 @@
+# CLI Reference
+
+The CLI is organized into three command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), and **`domain`** (manage cage domain allowlists).
+
+```
+agentcage <group> <command> [options]
+```
+
+## `cage` -- Manage cages
+
+| Command | Description |
+|---|---|
+| `cage create -c CONFIG` | Build images, generate quadlets, install, and start a new cage |
+| `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
+| `cage list` | List all cages with status |
+| `cage destroy NAME [-y]` | Stop containers, remove quadlets, state, and scoped secrets |
+| `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
+| `cage reload NAME` | Restart containers without rebuilding images |
+
+## `secret` -- Manage cage-scoped secrets
+
+| Command | Description |
+|---|---|
+| `secret list NAME` | List secrets for a cage (with status if cage exists) |
+| `secret set NAME KEY` | Set a secret (prompts for value or reads stdin) |
+| `secret rm NAME KEY` | Remove a secret |
+
+## `domain` -- Manage cage domain allowlists
+
+| Command | Description |
+|---|---|
+| `domain list NAME` | List domains and filtering mode for a cage |
+| `domain add NAME DOMAIN` | Add a domain to a cage's allowlist (auto-reloads if running) |
+| `domain rm NAME DOMAIN` | Remove a domain from a cage's allowlist (auto-reloads if running) |
+
+---
+
+## `cage create`
+
+```
+agentcage cage create -c <config>
+```
+
+Creates a new cage from a config file. This single command:
+
+1. Validates the config
+2. Checks that all required secrets exist in Podman
+3. Saves deployment state to `~/.config/agentcage/deployments/<name>/config.yaml`
+4. Builds the proxy and DNS container images
+5. Generates and installs 5 quadlet files into `~/.config/containers/systemd/`
+6. Reloads systemd and starts the cage
+
+The generated quadlet files are:
+
+- `<name>-net.network` -- internal network with fixed subnet
+- `<name>-certs.volume` -- shared certificate volume
+- `<name>-dns.container` -- DNS sidecar (dnsmasq)
+- `<name>-proxy.container` -- mitmproxy with inspector chain
+- `<name>-cage.container` -- your agent container
+
+Fails if any required secrets are missing. The error message tells you exactly which secrets to create:
+
+```
+error: missing secrets for cage 'myapp':
+  ANTHROPIC_API_KEY
+Create them with:
+  agentcage secret set myapp ANTHROPIC_API_KEY
+```
+
+## `cage update`
+
+```
+agentcage cage update <name> [-c <config>]
+```
+
+Rebuild and restart an existing cage. Use this after changing code or config:
+
+- **With `-c`**: Updates the stored config, then rebuilds and restarts.
+- **Without `-c`**: Rebuilds from the previously stored config (useful when only the container image or proxy code has changed).
+
+Stops the running services before rebuilding, then starts them again.
+
+## `cage list`
+
+```
+agentcage cage list
+```
+
+Lists all known cages with their current status:
+
+```
+NAME                 STATUS
+myapp                running (3/3)
+testcage             stopped (0/3)
+broken               degraded (2/3)
+```
+
+## `cage destroy`
+
+```
+agentcage cage destroy <name> [-y|--yes]
+```
+
+Tears down a cage completely:
+
+1. Stops all containers (cage, proxy, DNS)
+2. Removes quadlet files from `~/.config/containers/systemd/`
+3. Removes the Podman network and certificate volume
+4. Removes all scoped secrets (e.g., `myapp.ANTHROPIC_API_KEY`)
+5. Removes deployment state from `~/.config/agentcage/deployments/<name>/`
+
+User-defined named volumes and bind-mounted data are never removed. Pass `-y` to skip the confirmation prompt.
+
+## `cage verify`
+
+```
+agentcage cage verify <name>
+```
+
+Runs health checks against a running cage:
+
+- All 3 containers running (cage, proxy, DNS)
+- CA certificate present in the shared volume
+- `HTTP_PROXY` / `HTTPS_PROXY` set in the cage container
+- Egress filtering working (blocked domain returns 403)
+- Podman running rootless
+
+Example output:
+
+```
+=== agentcage verify: myapp ===
+
+-- Containers --
+  [PASS] myapp-proxy is running
+  [PASS] myapp-dns is running
+  [PASS] myapp-cage is running
+
+-- CA Certificate --
+  [PASS] mitmproxy CA cert exists in shared volume
+
+-- Proxy Configuration --
+  [PASS] HTTP_PROXY is set
+  [PASS] HTTPS_PROXY is set
+
+-- Egress Filtering --
+  [PASS] Blocked domain (evil-exfil-server.io) is denied (HTTP 403)
+
+-- Podman --
+  [PASS] Podman is running rootless
+
+=== Results: 8 passed, 0 failed, 0 warnings ===
+```
+
+## `cage reload`
+
+```
+agentcage cage reload <name>
+```
+
+Restarts containers without rebuilding images. Useful after config-only changes (the config YAML is bind-mounted into the proxy container, so a restart picks it up).
+
+## `secret set`
+
+```
+agentcage secret set <name> <key>
+```
+
+Sets a deployment-scoped secret. When run interactively, prompts for the value with hidden input. Also accepts piped input:
+
+```bash
+# Interactive (prompts for value)
+agentcage secret set myapp ANTHROPIC_API_KEY
+
+# Piped from a command
+echo "sk-ant-abc123" | agentcage secret set myapp ANTHROPIC_API_KEY
+
+# From a file
+agentcage secret set myapp ANTHROPIC_API_KEY < /path/to/key.txt
+```
+
+Secrets are stored in Podman as `<name>.<key>` (e.g., `myapp.ANTHROPIC_API_KEY`) and mapped back to the original env var name via `target=` in the quadlet templates, so the container sees `ANTHROPIC_API_KEY` as expected.
+
+If the cage is currently running, it is automatically reloaded after the secret is set.
+
+## `secret list`
+
+```
+agentcage secret list <name>
+```
+
+Lists secrets for a cage. If the cage has deployment state, cross-references with the config to show expected secrets and their status:
+
+```
+NAME                           TYPE         STATUS
+ANTHROPIC_API_KEY                 injection    ok
+GITHUB_TOKEN                   direct       MISSING
+```
+
+Secret types:
+- **injection** -- managed by the proxy's secret injection system (the cage sees a placeholder; the proxy swaps in the real value)
+- **direct** -- passed directly to the cage container via `podman_secrets`
+
+If no deployment state exists, lists all Podman secrets matching the `<name>.` prefix.
+
+## `secret rm`
+
+```
+agentcage secret rm <name> <key>
+```
+
+Removes a secret from Podman. If the cage is currently running, it is automatically reloaded.
+
+## `domain list`
+
+```
+agentcage domain list <name>
+```
+
+Lists the domain filtering mode and all domains for a cage:
+
+```
+Mode: allowlist
+api.anthropic.com
+github.com
+httpbin.org
+```
+
+Mode is one of:
+- **allowlist** -- only listed domains are permitted (default)
+- **blocklist** -- listed domains are blocked, all others permitted
+
+## `domain add`
+
+```
+agentcage domain add <name> <domain>
+```
+
+Adds a domain to a cage's allowlist. Updates both the stored config and the proxy config on disk. If the cage is currently running, all containers are automatically restarted so the change takes effect immediately.
+
+```bash
+agentcage domain add myapp api.openai.com
+# Added 'api.openai.com' to cage 'myapp'. Cage reloaded.
+```
+
+Subdomain matching is built in -- adding `anthropic.com` also allows `api.anthropic.com`. Duplicates are detected and skipped.
+
+If no `domains` section exists in the stored config, one is created with mode `allowlist`.
+
+## `domain rm`
+
+```
+agentcage domain rm <name> <domain>
+```
+
+Removes a domain from a cage's allowlist. Like `domain add`, updates stored config and proxy config, and auto-reloads the cage if running.
+
+```bash
+agentcage domain rm myapp api.openai.com
+# Removed 'api.openai.com' from cage 'myapp'. Cage reloaded.
+```
+
+Fails if the domain is not in the list.

@@ -28,9 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Domain management with `domain add`, `domain list`, and `domain rm` commands
 - Network isolation via rootless Podman with `--internal` network (no internet gateway for the agent)
 - Domain allowlist/blocklist filtering at both proxy and DNS layers
-- Secret injection — the cage never sees real API keys; the proxy swaps placeholders transparently
+- Secret injection — the cage never sees real secrets; the proxy swaps placeholders transparently
 - 19 built-in secret detection patterns (OpenAI, Anthropic, AWS, GitHub, Google, Slack, Stripe, and more)
-- Built-in `allow_to_domains` mappings so standard API keys reach their provider domains without configuration
+- Built-in `allow_to_domains` mappings so standard secrets reach their provider domains without configuration
 - Shannon entropy analysis for detecting encrypted/compressed exfiltration payloads
 - Content-type mismatch and base64 blob detection
 - Per-host token-bucket rate limiting

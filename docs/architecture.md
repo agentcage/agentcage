@@ -47,7 +47,7 @@ All HTTP traffic passes through a pluggable inspector chain implemented in `addo
 | Inspector | Default | Purpose |
 |-----------|---------|---------|
 | `domain` | on | Domain allowlist/blocklist enforcement |
-| `secrets` | on | Regex-based secret/credential leak detection |
+| `secrets` | on | Regex-based secret leak detection |
 | `body-size` | on | Request body size limits |
 | `entropy` | off | Shannon entropy analysis for encrypted/compressed payloads |
 | `content-type` | off | Content-type mismatch and base64 blob detection |
@@ -60,7 +60,7 @@ See the [Configuration Reference](configuration.md#inspectors) for the full insp
 
 Secret injection is an optional pre/post-processing step that runs **outside** the inspector chain. It modifies the flow in-place rather than observing it read-only like inspectors do.
 
-The cage container never receives real API keys. Instead it gets placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`), and the proxy swaps them transparently:
+The cage container never receives real secrets. Instead it gets placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`), and the proxy swaps them transparently:
 
 ```
 Outbound (cage → upstream):

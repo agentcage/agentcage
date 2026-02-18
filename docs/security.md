@@ -8,12 +8,12 @@ For architecture details, see [Architecture](architecture.md). For configuration
 
 ### What agentcage prevents
 
-The primary threat is an AI agent exfiltrating sensitive data -- API keys, credentials, source code, environment variables -- via HTTP requests. This covers both intentional exfiltration (a compromised or misaligned agent deliberately sending secrets to an attacker-controlled server) and accidental leakage (an agent including sensitive context in API calls it wasn't supposed to make).
+The primary threat is an AI agent exfiltrating sensitive data -- secrets, source code, environment variables -- via HTTP requests. This covers both intentional exfiltration (a compromised or misaligned agent deliberately sending secrets to an attacker-controlled server) and accidental leakage (an agent including sensitive context in API calls it wasn't supposed to make).
 
 ### In scope
 
 - **HTTP/HTTPS exfiltration** -- secrets or sensitive data sent in request bodies, headers, or URLs
-- **Accidental secret leakage** -- API keys or credentials inadvertently included in outbound requests
+- **Accidental secret leakage** -- secrets inadvertently included in outbound requests
 - **Unauthorized API calls** -- requests to domains not on the allowlist
 - **Encoded payload smuggling** -- base64-encoded or compressed data hiding exfiltrated content in seemingly normal requests
 - **WebSocket exfiltration** -- secrets or high-entropy data sent via WebSocket frames after the initial handshake
@@ -37,9 +37,9 @@ agentcage applies multiple overlapping defenses:
 
 3. **DNS filtering** -- When using allowlist mode, the dnsmasq sidecar returns a placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for non-allowlisted domains, preventing DNS resolution from reaching real infrastructure while keeping SSRF guards functional. DNS query logging is enabled by default for forensic analysis.
 
-4. **Secret injection** -- When configured, the cage container never receives real API keys or credentials. It gets placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`), and the proxy transparently injects real values on outbound requests and redacts them from inbound responses. Inspectors run on the pre-injection flow (with placeholders still in place), so real secret values are never exposed to the inspector chain. Domain restrictions ensure placeholders are only injected to authorized services; sending a placeholder to an unauthorized domain is blocked. See [Secret injection](configuration.md#secret-injection-secret_injection).
+4. **Secret injection** -- When configured, the cage container never receives real secrets. It gets placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`), and the proxy transparently injects real values on outbound requests and redacts them from inbound responses. Inspectors run on the pre-injection flow (with placeholders still in place), so real secret values are never exposed to the inspector chain. Domain restrictions ensure placeholders are only injected to authorized services; sending a placeholder to an unauthorized domain is blocked. See [Secret injection](configuration.md#secret-injection-secret_injection).
 
-5. **Secret detection** -- 19 regex patterns scan every request for common credential formats: OpenAI, Anthropic, AWS, GitHub, Google, Slack, Stripe, GitLab, Hugging Face, Databricks, Azure JWT, OpenRouter, Perplexity, Brave, Telegram, Discord, and Firecrawl tokens, plus private keys. Matches result in a hard block by default. Built-in `allow_to_domains` mappings automatically let each secret type reach its provider domain (e.g., an Anthropic key to `anthropic.com`) without manual configuration. Custom patterns can be added via `extra_patterns` config, including env-var-based literal matching.
+5. **Secret detection** -- 19 regex patterns scan every request for common secret formats: OpenAI, Anthropic, AWS, GitHub, Google, Slack, Stripe, GitLab, Hugging Face, Databricks, Azure JWT, OpenRouter, Perplexity, Brave, Telegram, Discord, and Firecrawl tokens, plus private keys. Matches result in a hard block by default. Built-in `allow_to_domains` mappings automatically let each secret type reach its provider domain (e.g., an Anthropic key to `anthropic.com`) without manual configuration. Custom patterns can be added via `extra_patterns` config, including env-var-based literal matching.
 
 6. **Payload inspection** -- Inspectors analyze request bodies for anomalies (default action: block):
    - **Entropy analysis** detects encrypted or compressed payloads that may hide exfiltrated data
@@ -85,7 +85,7 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 |---|---|---|
 | **ASI01 Agent Goal Hijack** | Out of scope — agentcage inspects network traffic, not agent intent | Correctly scoped |
 | **ASI02 Tool Misuse** | Strong — domain allowlist + WebSocket inspection + DNS filtering limit which services agents can reach | Multi-request evasion, DNS subdomain exfiltration, allowed-domain data smuggling |
-| **ASI03 Identity/Privilege Abuse** | Strong — secret injection prevents agent from holding real credentials; inspectors see only placeholders | — |
+| **ASI03 Identity/Privilege Abuse** | Strong — secret injection prevents agent from holding real secrets; inspectors see only placeholders | — |
 | **ASI04 Supply Chain** | Strong — pinned image digests, pinned deps, lockfile integrity, patch file verification, inspector path validation | Agent can install arbitrary packages from allowlisted registries |
 | **ASI05 Code Execution** | Strong — read-only root, dropped caps, no-new-privileges; custom inspector paths restricted to allowed directories | — |
 | **ASI06 Memory Poisoning** | Not applicable — agentcage doesn't manage agent memory | Named volumes persist across sessions (design choice) |
@@ -109,7 +109,7 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 **DNS-based exfiltration** -- In allowlist mode, dnsmasq returns a placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for non-allowlisted domains, blocking direct DNS exfiltration. However, an agent with code execution can encode data in subdomain labels of *allowlisted* domains (e.g. `<encoded-data>.cdn.jsdelivr.net`). These queries are forwarded to the upstream resolver, which recursively resolves them — potentially reaching an attacker's authoritative nameserver if they control a subdomain delegation. Each DNS query can carry ~253 bytes; practical exfiltration rates of 10-50 KB/s are achievable. Mitigations include monitoring dnsmasq query logs for high-entropy subdomain labels and enabling rate limiting.
 
-**Exfiltration through allowed domains** -- The domain allowlist prevents direct exfiltration to attacker infrastructure, but data can be smuggled through *allowed* endpoints. For example, an agent could embed secrets in GitHub issue titles, Brave Search query parameters, or npm package metadata. The secrets inspector detects known credential patterns in URLs, but custom-encoded data in URL paths and query parameters is not subject to entropy analysis (only request bodies are). Rate limiting and audit log monitoring help bound this channel.
+**Exfiltration through allowed domains** -- The domain allowlist prevents direct exfiltration to attacker infrastructure, but data can be smuggled through *allowed* endpoints. For example, an agent could embed secrets in GitHub issue titles, Brave Search query parameters, or npm package metadata. The secrets inspector detects known secret patterns in URLs, but custom-encoded data in URL paths and query parameters is not subject to entropy analysis (only request bodies are). Rate limiting and audit log monitoring help bound this channel.
 
 **MCP server exposure** -- If a caged agent runs an MCP server (exposed via the `ports` config option), the MCP server is accessible on the internal network. agentcage doesn't inspect intra-network traffic.
 
