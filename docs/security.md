@@ -115,7 +115,7 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 **Supply chain poisoning** -- The agent can install arbitrary packages from allowlisted registries (npm, PyPI, etc.). A prompt injection could direct the agent to install a malicious package that runs code inside the container. Container hardening (read-only root, dropped caps, no-new-privileges) limits the impact but does not prevent data access within the agent's workspace. Consider pre-approved package lists for high-security deployments.
 
-**Shared kernel** -- Rootless Podman containers share the host kernel. A container escape CVE in the Linux kernel or runc/crun would bypass all protections.
+**Shared kernel** -- Rootless Podman containers share the host kernel. A container escape CVE in the Linux kernel or runc/crun would bypass all protections. For workloads where this is unacceptable, use [Firecracker MicroVM isolation](firecracker.md) (`isolation: firecracker`) which provides hardware-level isolation via KVM with a dedicated guest kernel per cage.
 
 ## Reporting Security Issues
 

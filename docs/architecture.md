@@ -2,7 +2,7 @@
 
 agentcage generates [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that define 3 containers, a Podman network, and a shared certificate volume. Together they form a proxy sandbox where all agent HTTP traffic is inspected before reaching the internet.
 
-For configuration options, see the [Configuration Reference](configuration.md).
+For configuration options, see the [Configuration Reference](configuration.md). For hardware-level VM isolation via Firecracker, see [Firecracker MicroVM Isolation](firecracker.md).
 
 ## Container Topology
 
