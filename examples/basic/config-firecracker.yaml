@@ -1,18 +1,21 @@
 # agentcage basic example — Firecracker microVM isolation
+#
+# Firecracker VMs don't support host volume mounts, so the agent code
+# must be baked into the container image.  Build it first:
+#   podman build -t basic-agent examples/basic/agent
+
 name: basic
 
 isolation: firecracker
 firecracker:
-  # kernel is optional — auto-downloaded to ~/.local/share/agentcage/firecracker/
+  # kernel and firecracker binary are auto-downloaded on first use
   vcpus: 2
   mem_mb: 2048
   jailer: false
 
 container:
-  image: "node:22-slim"
+  image: "localhost/basic-agent:latest"
   command: ["node", "/app/agent.js"]
-  volumes:
-    - "${AGENT_DIR}:/app:ro"
 
 domains:
   mode: allowlist
