@@ -1,0 +1,124 @@
+#!/bin/bash
+# agentcage-nethelper — minimal privileged helper for Firecracker networking
+#
+# This script is intended to be installed setuid root. It performs ONLY:
+#   1. Create/destroy the shared bridge (agentcage-br0)
+#   2. Create/destroy TAP devices (tap-{name})
+#   3. Set TAP ownership to the calling user
+#   4. Add/remove iptables MASQUERADE rule
+#
+# Usage:
+#   agentcage-nethelper create-bridge
+#   agentcage-nethelper destroy-bridge
+#   agentcage-nethelper create-tap <cage-name>
+#   agentcage-nethelper destroy-tap <cage-name>
+#
+# Security: strict input validation, no user-controlled paths or shell expansion.
+
+set -euo pipefail
+
+BRIDGE="agentcage-br0"
+BRIDGE_IP="10.88.0.1/24"
+BRIDGE_SUBNET="10.88.0.0/24"
+
+# Strict cage name validation: lowercase alphanumeric + hyphens, 1-63 chars
+validate_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+        echo "error: invalid cage name: '$name'" >&2
+        exit 1
+    fi
+}
+
+# Derive a deterministic IP from the cage name (hash-based, 10.88.0.2-254)
+cage_ip() {
+    local name="$1"
+    local hash
+    hash=$(printf '%s' "$name" | cksum | awk '{print $1}')
+    local octet=$(( (hash % 253) + 2 ))  # 2-254
+    echo "10.88.0.${octet}"
+}
+
+cmd_create_bridge() {
+    if ip link show "$BRIDGE" &>/dev/null; then
+        echo "bridge $BRIDGE already exists"
+        return 0
+    fi
+    ip link add name "$BRIDGE" type bridge
+    ip addr add "$BRIDGE_IP" dev "$BRIDGE"
+    ip link set "$BRIDGE" up
+
+    # Enable IP forwarding
+    sysctl -q -w net.ipv4.ip_forward=1
+
+    # MASQUERADE for VM traffic (idempotent — check before adding)
+    if ! iptables -t nat -C POSTROUTING -s "$BRIDGE_SUBNET" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null; then
+        iptables -t nat -A POSTROUTING -s "$BRIDGE_SUBNET" ! -o "$BRIDGE" -j MASQUERADE
+    fi
+    echo "created bridge $BRIDGE ($BRIDGE_IP)"
+}
+
+cmd_destroy_bridge() {
+    # Remove MASQUERADE rule
+    iptables -t nat -D POSTROUTING -s "$BRIDGE_SUBNET" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null || true
+    ip link delete "$BRIDGE" 2>/dev/null || true
+    echo "destroyed bridge $BRIDGE"
+}
+
+cmd_create_tap() {
+    local name="$1"
+    validate_name "$name"
+
+    local tap="tap-${name}"
+    local caller_uid="${SUDO_UID:-${PKEXEC_UID:-$(id -ru)}}"
+
+    # Ensure bridge exists
+    if ! ip link show "$BRIDGE" &>/dev/null; then
+        cmd_create_bridge
+    fi
+
+    # Create TAP device
+    if ip link show "$tap" &>/dev/null; then
+        echo "TAP $tap already exists"
+    else
+        ip tuntap add dev "$tap" mode tap user "$caller_uid"
+        ip link set "$tap" master "$BRIDGE"
+        ip link set "$tap" up
+        echo "created TAP $tap (owner uid=$caller_uid)"
+    fi
+}
+
+cmd_destroy_tap() {
+    local name="$1"
+    validate_name "$name"
+
+    local tap="tap-${name}"
+    if ip link show "$tap" &>/dev/null; then
+        ip link delete "$tap"
+        echo "destroyed TAP $tap"
+    else
+        echo "TAP $tap does not exist"
+    fi
+}
+
+# Main dispatch
+case "${1:-}" in
+    create-bridge)
+        cmd_create_bridge
+        ;;
+    destroy-bridge)
+        cmd_destroy_bridge
+        ;;
+    create-tap)
+        [[ $# -ge 2 ]] || { echo "usage: $0 create-tap <cage-name>" >&2; exit 1; }
+        cmd_create_tap "$2"
+        ;;
+    destroy-tap)
+        [[ $# -ge 2 ]] || { echo "usage: $0 destroy-tap <cage-name>" >&2; exit 1; }
+        cmd_destroy_tap "$2"
+        ;;
+    *)
+        echo "usage: $0 {create-bridge|destroy-bridge|create-tap|destroy-tap} [cage-name]" >&2
+        exit 1
+        ;;
+esac
