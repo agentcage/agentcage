@@ -1,0 +1,21 @@
+[Unit]
+Description=agentcage Firecracker VM ({{ name }})
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre={{ nethelper }} create-tap {{ name }}
+ExecStart={{ firecracker_bin }} --api-sock {{ runtime_dir }}/vm.sock --config-file {{ vm_config_path }}
+ExecStopPost={{ nethelper }} destroy-tap {{ name }}
+Restart={{ restart }}
+RestartSec={{ restart_sec }}
+{% if timeout_start_sec %}
+TimeoutStartSec={{ timeout_start_sec }}
+{% endif %}
+{% if timeout_stop_sec %}
+TimeoutStopSec={{ timeout_stop_sec }}
+{% endif %}
+RuntimeDirectory=agentcage/{{ name }}
+
+[Install]
+WantedBy=default.target
