@@ -135,19 +135,37 @@ set -euo pipefail
 
 CAGE_NAME="{name}"
 
-echo "start-cage: creating network"
+echo "start-cage: creating networks"
+# Internal network — agent container only (no internet gateway)
 podman network create --internal --subnet=10.89.0.0/24 "${{CAGE_NAME}}-net" 2>/dev/null || true
+# External network — for DNS and proxy outbound connectivity
+podman network create --subnet=10.90.0.0/24 "${{CAGE_NAME}}-ext" 2>/dev/null || true
 
-echo "start-cage: starting DNS container"
+# Enable IP forwarding and set up NAT for the external network manually
+# (firewall_driver=none in containers.conf means netavark skips nftables,
+# so we do it here with iptables-legacy which the microvm kernel supports)
+echo 1 > /proc/sys/net/ipv4/ip_forward
+EXT_BRIDGE=$(podman network inspect "${{CAGE_NAME}}-ext" --format '{{{{.NetworkInterface}}}}' 2>/dev/null || echo "")
+if [ -n "$EXT_BRIDGE" ]; then
+    echo "start-cage: setting up NAT for $EXT_BRIDGE"
+    iptables-legacy -P FORWARD ACCEPT || echo "start-cage: WARNING: cannot set FORWARD policy"
+    iptables-legacy -t nat -A POSTROUTING -s 10.90.0.0/24 ! -o "$EXT_BRIDGE" -j MASQUERADE || echo "start-cage: WARNING: MASQUERADE rule failed"
+fi
+
+echo "start-cage: starting DNS container (dual-homed)"
 podman run -d --name "${{CAGE_NAME}}-dns" \\
+    --log-driver k8s-file \\
     --network "${{CAGE_NAME}}-net:ip=10.89.0.10" \\
+    --network "${{CAGE_NAME}}-ext" \\
     --cap-add NET_BIND_SERVICE \\
     localhost/agentcage-dns \\
     {dns_cmd}
 
-echo "start-cage: starting proxy container"
+echo "start-cage: starting proxy container (dual-homed)"
 podman run -d --name "${{CAGE_NAME}}-proxy" \\
+    --log-driver k8s-file \\
     --network "${{CAGE_NAME}}-net:ip=10.89.0.11" \\
+    --network "${{CAGE_NAME}}-ext" \\
     -v /etc/agentcage/config.yaml:/etc/agentcage/config.yaml:ro \\
     --dns 10.89.0.10 \\
     localhost/agentcage-proxy \\
@@ -167,8 +185,9 @@ CERT_DIR="/tmp/agentcage-certs"
 mkdir -p "$CERT_DIR"
 podman cp "${{CAGE_NAME}}-proxy:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem" "$CERT_DIR/" 2>/dev/null || true
 
-echo "start-cage: starting cage container"
+echo "start-cage: starting cage container (internal network only)"
 podman run -d --name "${{CAGE_NAME}}-cage" \\
+    --log-driver k8s-file \\
     --network "${{CAGE_NAME}}-net" \\
     -e "HTTP_PROXY=http://10.89.0.11:8080" \\
     -e "HTTPS_PROXY=http://10.89.0.11:8080" \\
@@ -176,13 +195,20 @@ podman run -d --name "${{CAGE_NAME}}-cage" \\
     -e "https_proxy=http://10.89.0.11:8080" \\
     -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \\
     -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \\
+    -e "NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs" \\
     -v "$CERT_DIR:/certs:ro" \\
+    -v /var/lib/agentcage/patches:/agentcage:ro \\
     --dns 10.89.0.10 \\
     {agent_image} \\
     {agent_cmd}
 
 echo "start-cage: all containers started"
 podman ps
+
+# Follow all container logs so they appear on the VM console
+podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do echo "[dns] $line"; done &
+podman logs -f "${{CAGE_NAME}}-proxy" 2>&1 | while IFS= read -r line; do echo "[proxy] $line"; done &
+podman logs -f "${{CAGE_NAME}}-cage" 2>&1 | while IFS= read -r line; do echo "[cage] $line"; done &
 """
     return script
 
@@ -200,9 +226,16 @@ def _populate_staging(
     for d in [
         "var/lib/agentcage/quadlets",
         "var/lib/agentcage/images",
+        "var/lib/agentcage/patches",
         "etc/agentcage",
     ]:
         os.makedirs(os.path.join(staging_dir, d), exist_ok=True)
+
+    # Copy Node.js proxy-fetch patches into rootfs
+    patches_src = _DATA_DIR / "patches"
+    patches_dest = os.path.join(staging_dir, "var/lib/agentcage/patches")
+    if patches_src.is_dir():
+        shutil.copytree(str(patches_src), patches_dest, dirs_exist_ok=True)
 
     # Write quadlet files
     for filename, content in quadlet_files.items():

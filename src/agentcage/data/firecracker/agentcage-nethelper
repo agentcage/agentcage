@@ -5,7 +5,7 @@
 #   1. Create/destroy the shared bridge (agentcage-br0)
 #   2. Create/destroy TAP devices (tap-{name})
 #   3. Set TAP ownership to the calling user
-#   4. Add/remove iptables MASQUERADE rule
+#   4. Add/remove iptables/nftables MASQUERADE and FORWARD rules
 #
 # Usage:
 #   agentcage-nethelper create-bridge
@@ -55,10 +55,38 @@ cmd_create_bridge() {
     if ! iptables -t nat -C POSTROUTING -s "$BRIDGE_SUBNET" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null; then
         iptables -t nat -A POSTROUTING -s "$BRIDGE_SUBNET" ! -o "$BRIDGE" -j MASQUERADE
     fi
+
+    # FORWARD rules — allow bridge traffic even when FORWARD policy is DROP
+    # (e.g. Docker sets iptables FORWARD policy to DROP)
+    if ! iptables -C FORWARD -i "$BRIDGE" -j ACCEPT 2>/dev/null; then
+        iptables -I FORWARD -i "$BRIDGE" -j ACCEPT
+    fi
+    if ! iptables -C FORWARD -o "$BRIDGE" -j ACCEPT 2>/dev/null; then
+        iptables -I FORWARD -o "$BRIDGE" -j ACCEPT
+    fi
+
+    # nftables FORWARD rules — some hosts use nftables (inet filter forward)
+    # with policy drop alongside iptables. Both must allow the traffic.
+    if command -v nft &>/dev/null && nft list chain inet filter forward &>/dev/null 2>&1; then
+        nft add rule inet filter forward iifname "$BRIDGE" accept 2>/dev/null || true
+        nft add rule inet filter forward oifname "$BRIDGE" accept 2>/dev/null || true
+    fi
     echo "created bridge $BRIDGE ($BRIDGE_IP)"
 }
 
 cmd_destroy_bridge() {
+    # Remove nftables FORWARD rules
+    if command -v nft &>/dev/null && nft list chain inet filter forward &>/dev/null 2>&1; then
+        local handle
+        for handle in $(nft -a list chain inet filter forward 2>/dev/null \
+            | grep -E "iifname \"$BRIDGE\"|oifname \"$BRIDGE\"" \
+            | sed -n 's/.*# handle //p'); do
+            nft delete rule inet filter forward handle "$handle" 2>/dev/null || true
+        done
+    fi
+    # Remove iptables FORWARD rules
+    iptables -D FORWARD -i "$BRIDGE" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -o "$BRIDGE" -j ACCEPT 2>/dev/null || true
     # Remove MASQUERADE rule
     iptables -t nat -D POSTROUTING -s "$BRIDGE_SUBNET" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null || true
     ip link delete "$BRIDGE" 2>/dev/null || true

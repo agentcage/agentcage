@@ -32,6 +32,12 @@ RUN mkdir -p /run/containers/storage \
     && printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
        > /etc/containers/storage.conf
 
+# Disable nftables firewall driver — Firecracker microvm kernels typically
+# lack CONFIG_NF_TABLES.  NAT rules are set up manually via iptables-legacy
+# in start-cage.sh instead.
+RUN printf '[network]\nfirewall_driver = "none"\n' \
+       > /etc/containers/containers.conf
+
 # Pre-create directories for agentcage injected files
 RUN mkdir -p /var/lib/agentcage/quadlets /var/lib/agentcage/images /etc/agentcage
 
