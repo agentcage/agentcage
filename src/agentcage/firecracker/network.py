@@ -11,7 +11,7 @@ _NETHELPER = "agentcage-nethelper"
 
 
 def _run_nethelper(*args: str) -> str:
-    """Run the nethelper with the given arguments."""
+    """Run the nethelper with the given arguments (via sudo)."""
     helper = shutil.which(_NETHELPER)
     if not helper:
         raise RuntimeError(
@@ -19,7 +19,7 @@ def _run_nethelper(*args: str) -> str:
             "install it with: agentcage firecracker setup"
         )
     result = subprocess.run(
-        [helper, *args],
+        ["sudo", helper, *args],
         capture_output=True,
         text=True,
     )

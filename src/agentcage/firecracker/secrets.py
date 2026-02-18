@@ -96,25 +96,13 @@ def create_secrets_drive(deploy_name: str, output_path: str) -> bool:
         capture_output=True, check=True,
     )
 
-    # Mount and copy secrets in
-    mount_dir = f"/tmp/agentcage-secrets-{os.getpid()}"
-    inject_lines = [
-        f"set -e",
-        f"mkdir -p {mount_dir}",
-        f"mount -o loop {output_path} {mount_dir}",
-    ]
+    # Inject secret files using debugfs (no mount/root needed)
     for key in secrets:
         src = str(secrets_dir / key)
-        inject_lines.append(f"cp {src} {mount_dir}/{key}")
-    inject_lines.extend([
-        f"umount {mount_dir}",
-        f"rmdir {mount_dir}",
-    ])
-
-    subprocess.run(
-        ["podman", "unshare", "bash", "-c", "\n".join(inject_lines)],
-        check=True,
-    )
+        subprocess.run(
+            ["debugfs", "-w", "-R", f"write {src} /{key}", output_path],
+            capture_output=True, check=True,
+        )
 
     return True
 

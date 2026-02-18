@@ -1,43 +1,39 @@
 # Containerfile.vmbase — builds the base VM rootfs for Firecracker
 #
-# Contains: Alpine Linux, systemd (OpenRC), Podman, and basic tools.
+# Contains: Fedora Minimal, Podman, and basic tools.
 # This image is exported to an ext4 rootfs, not run as a container.
+#
+# Must be built with --cap-add=all (Fedora RPMs set file capabilities).
 
-FROM docker.io/alpine:3.21
+FROM registry.fedoraproject.org/fedora-minimal:43
 
-# Install core packages: init, podman, networking, and tools
-RUN apk add --no-cache \
-    openrc \
+# Podman + dependencies (--setopt=install_weak_deps=0 keeps it lean)
+RUN microdnf install -y --setopt=install_weak_deps=0 \
     podman \
-    podman-compose \
     fuse-overlayfs \
-    slirp4netns \
     iptables \
-    iproute2 \
-    dnsmasq \
+    iproute \
     python3 \
-    py3-yaml \
+    python3-pyyaml \
     bash \
     coreutils \
-    e2fsprogs \
-    shadow \
-    && true
+    procps-ng \
+    && microdnf clean all
 
-# Create a non-root user for rootless Podman inside the VM
-RUN adduser -D -u 1000 agentcage \
+RUN podman --version
+
+# Create agentcage user
+RUN useradd -u 1000 -m agentcage \
     && echo "agentcage:100000:65536" >> /etc/subuid \
     && echo "agentcage:100000:65536" >> /etc/subgid
 
-# Configure OpenRC for container/VM usage
-RUN mkdir -p /run/openrc \
-    && touch /run/openrc/softlevel \
-    && rc-update add local default
+# Configure root Podman storage (native overlay — kernel 6.1+ supports it)
+RUN mkdir -p /run/containers/storage \
+    && printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n' \
+       > /etc/containers/storage.conf
 
-# Podman storage configuration for the VM
-RUN mkdir -p /home/agentcage/.config/containers \
-    && printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
-       > /home/agentcage/.config/containers/storage.conf \
-    && chown -R agentcage:agentcage /home/agentcage
+# Pre-create directories for agentcage injected files
+RUN mkdir -p /var/lib/agentcage/quadlets /var/lib/agentcage/images /etc/agentcage
 
 # Copy VM init script
 COPY firecracker/vm-init.sh /usr/local/bin/vm-init.sh

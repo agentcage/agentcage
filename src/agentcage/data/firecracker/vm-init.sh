@@ -1,9 +1,12 @@
 #!/bin/bash
 # vm-init.sh — Firecracker guest init script
 #
-# This runs as PID 1 (or called by init) inside the Firecracker VM.
-# It sets up networking, mounts filesystems, starts Podman, and
-# deploys the cage containers using pre-baked quadlet files.
+# This runs as PID 1 inside the Firecracker VM.
+# It sets up networking, mounts filesystems, loads container images,
+# and starts the cage containers via Podman.
+#
+# Podman runs as root inside the VM — the VM itself is the isolation
+# boundary, so rootless Podman adds no security benefit here.
 
 set -euo pipefail
 
@@ -13,12 +16,28 @@ echo "agentcage-vm: starting init"
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mkdir -p /run/lock
 
+# ── Mount cgroups (required for Podman) ──────────────────
+if ! mountpoint -q /sys/fs/cgroup 2>/dev/null; then
+    if mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null; then
+        echo "agentcage-vm: mounted cgroup v2"
+    else
+        echo "agentcage-vm: cgroup v2 not available, trying v1"
+        mount -t tmpfs cgroup /sys/fs/cgroup
+        for ctrl in cpu cpuacct blkio memory devices freezer net_cls pids; do
+            mkdir -p "/sys/fs/cgroup/$ctrl"
+            mount -t cgroup -o "$ctrl" cgroup "/sys/fs/cgroup/$ctrl" 2>/dev/null || true
+        done
+    fi
+fi
+
 # ── Parse kernel command line ────────────────────────────
-# Expected params: agentcage.name=<name> ip=<ip>::<gw>:<mask>::<iface>:off
 CAGE_NAME=""
 for param in $(cat /proc/cmdline); do
     case "$param" in
@@ -30,17 +49,14 @@ done
 
 if [[ -z "$CAGE_NAME" ]]; then
     echo "agentcage-vm: error: agentcage.name not set in kernel cmdline" >&2
-    exec /bin/sh  # drop to shell for debugging
+    exec /bin/sh
 fi
 
 echo "agentcage-vm: cage name: $CAGE_NAME"
 
 # ── Network setup ────────────────────────────────────────
-# The ip= kernel param configures eth0 automatically via the kernel's
-# IP autoconfiguration. If it didn't work, we configure it manually.
 if ! ip addr show eth0 2>/dev/null | grep -q "inet "; then
     echo "agentcage-vm: configuring network manually"
-    # Read from kernel cmdline ip= param
     for param in $(cat /proc/cmdline); do
         case "$param" in
             ip=*)
@@ -53,7 +69,6 @@ if ! ip addr show eth0 2>/dev/null | grep -q "inet "; then
     done
 fi
 
-# Set up DNS (use the bridge gateway as a forwarder to host DNS)
 echo "nameserver 10.88.0.1" > /etc/resolv.conf
 
 # ── Mount secrets drive if present ───────────────────────
@@ -62,51 +77,50 @@ if [[ -b /dev/vdb ]]; then
     mkdir -p /mnt/secrets
     mount -o ro /dev/vdb /mnt/secrets
 
-    # Create Podman secrets from files
     for f in /mnt/secrets/*; do
         [[ -f "$f" ]] || continue
         local_name="$(basename "$f")"
-        su - agentcage -c "podman secret create '$local_name' '$f'" 2>/dev/null || true
+        podman secret create "$local_name" "$f" || true
         echo "agentcage-vm: loaded secret $local_name"
     done
 fi
 
+# ── Quick diagnostic ─────────────────────────────────────
+echo "agentcage-vm: kernel $(uname -r)"
+
+# ── Prepare Podman runtime dirs (tmpfs loses them) ───────
+mkdir -p /run/containers/storage /var/lib/containers/storage
+
 # ── Load pre-built container images ──────────────────────
 IMAGE_DIR="/var/lib/agentcage/images"
 if [[ -d "$IMAGE_DIR" ]]; then
+    echo "agentcage-vm: images dir contents: $(ls -la $IMAGE_DIR)"
     for archive in "$IMAGE_DIR"/*.tar; do
         [[ -f "$archive" ]] || continue
-        echo "agentcage-vm: loading image $(basename "$archive")"
-        su - agentcage -c "podman load -i '$archive'" 2>/dev/null || true
+        echo "agentcage-vm: loading image $(basename "$archive") ($(du -h "$archive" | cut -f1))"
+        if timeout 120 podman load -i "$archive" 2>&1; then
+            echo "agentcage-vm: loaded $(basename "$archive") ok"
+        else
+            echo "agentcage-vm: warning: failed to load $(basename "$archive")"
+        fi
+        # Free space — tarballs are no longer needed after loading
+        rm -f "$archive"
     done
 fi
 
-# ── Install and start quadlet services ───────────────────
-QUADLET_SRC="/var/lib/agentcage/quadlets"
-QUADLET_DST="/home/agentcage/.config/containers/systemd"
-
-if [[ -d "$QUADLET_SRC" ]]; then
-    mkdir -p "$QUADLET_DST"
-    cp "$QUADLET_SRC"/* "$QUADLET_DST"/ 2>/dev/null || true
-    chown -R agentcage:agentcage "$QUADLET_DST"
-fi
-
-# ── Start the cage via Podman (as agentcage user) ────────
+# ── Start the cage ───────────────────────────────────────
 echo "agentcage-vm: starting cage services"
 
-# Use loginctl or direct systemd --user if available
-if command -v loginctl &>/dev/null; then
-    loginctl enable-linger agentcage 2>/dev/null || true
-fi
+STARTUP_SCRIPT="/var/lib/agentcage/start-cage.sh"
 
-# Start systemd user instance and reload quadlets
-su - agentcage -c "systemctl --user daemon-reload" 2>/dev/null || true
-su - agentcage -c "systemctl --user start ${CAGE_NAME}-cage.service" 2>/dev/null || {
-    # Fallback: start containers directly if systemd --user isn't available
-    echo "agentcage-vm: systemd --user not available, starting containers directly"
-    su - agentcage -c "podman network create --internal --subnet=10.89.0.0/24 ${CAGE_NAME}-net" 2>/dev/null || true
-    su - agentcage -c "podman start ${CAGE_NAME}-dns ${CAGE_NAME}-proxy ${CAGE_NAME}-cage" 2>/dev/null || true
-}
+if [[ -x "$STARTUP_SCRIPT" ]]; then
+    echo "agentcage-vm: running startup script"
+    bash "$STARTUP_SCRIPT" 2>&1 || {
+        echo "agentcage-vm: startup script failed (exit $?)" >&2
+    }
+else
+    echo "agentcage-vm: error: startup script not found: $STARTUP_SCRIPT" >&2
+fi
 
 echo "agentcage-vm: init complete, cage $CAGE_NAME is running"
 

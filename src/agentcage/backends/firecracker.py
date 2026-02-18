@@ -80,10 +80,24 @@ class FirecrackerBackend:
         # Generate quadlet files (these go inside the VM, not on the host)
         quadlets = generate_quadlets(config, config_host_path, patches_host_dir, deploy_name)
 
-        # Prepare VM rootfs with quadlets baked in
+        # Container images to bake into the VM rootfs
+        container_images = ["agentcage-proxy", "agentcage-dns"]
+        # Also include the user's cage image if it exists locally
+        user_image = config.container.image
+        result = subprocess.run(
+            ["podman", "image", "exists", user_image],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            container_images.append(user_image)
+        else:
+            click.echo(f"Note: image '{user_image}' not local — VM will pull on first boot")
+
+        # Prepare VM rootfs with quadlets, images, and startup script baked in
         click.echo("Preparing VM rootfs...")
         rootfs = prepare_vm_rootfs(
-            self._podman, deploy_name, config, quadlets, config_host_path
+            self._podman, deploy_name, config, quadlets, config_host_path,
+            container_images=container_images,
         )
 
         # Build secrets drive
@@ -100,6 +114,7 @@ class FirecrackerBackend:
 
         # Generate the host systemd unit (one service for the entire VM)
         nethelper = shutil.which("agentcage-nethelper") or "agentcage-nethelper"
+        firecracker_path = shutil.which(fc.firecracker_bin) or fc.firecracker_bin
         runtime_dir = f"/run/user/{os.getuid()}/agentcage/{name}"
 
         env = SandboxedEnvironment(
@@ -112,7 +127,7 @@ class FirecrackerBackend:
         unit_content = template.render(
             name=name,
             nethelper=nethelper,
-            firecracker_bin=fc.firecracker_bin,
+            firecracker_bin=firecracker_path,
             vm_config_path=vm_cfg_path,
             runtime_dir=runtime_dir,
             restart=config.container.restart,

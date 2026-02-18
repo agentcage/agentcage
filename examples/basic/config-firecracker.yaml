@@ -1,0 +1,25 @@
+# agentcage basic example — Firecracker microVM isolation
+name: basic
+
+isolation: firecracker
+firecracker:
+  kernel: /home/luca/firecracker/vmlinux-6.1.128
+  vcpus: 2
+  mem_mb: 2048
+  jailer: false
+
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${AGENT_DIR}:/app:ro"
+
+domains:
+  mode: allowlist
+  list:
+    - httpbin.org
+
+secrets:
+  enabled: true
+
+log_allowed: true
