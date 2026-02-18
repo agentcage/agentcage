@@ -14,7 +14,7 @@ from importlib.metadata import version
 
 from agentcage.config import load_config, validate_config
 from agentcage.podman import Podman
-from agentcage.quadlets import generate_quadlets
+from agentcage.backends import get_backend
 from agentcage import state, systemd
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -109,51 +109,15 @@ def _ensure_patches(podman: Podman) -> str:
 
 def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podman):
     """Build images, generate quadlets, install, and start."""
-    name = cfg.name
+    backend = get_backend(cfg)
 
     patches_work_dir = _ensure_patches(podman)
 
-    # Build images
-    containers_dir = str(_DATA_DIR / "containers")
-    build_context = str(_DATA_DIR)
-    click.echo("Building proxy image...")
-    podman.build_image(
-        "agentcage-proxy",
-        os.path.join(containers_dir, "Containerfile.proxy"),
-        build_context,
-    )
-    click.echo("Building DNS image...")
-    podman.build_image(
-        "agentcage-dns",
-        os.path.join(containers_dir, "Containerfile.dns"),
-        build_context,
-        cap_add=["CAP_SETFCAP"],
-    )
+    backend.build_artifacts(cfg, deploy_name)
 
-    # Generate quadlets
-    files = generate_quadlets(cfg, config_host_path, patches_work_dir, deploy_name)
-
-    # Write directly to systemd quadlet dir
-    quadlet_dest = Path(os.path.expanduser("~/.config/containers/systemd"))
-    quadlet_dest.mkdir(parents=True, exist_ok=True)
-    for filename, content in files.items():
-        (quadlet_dest / filename).write_text(content)
-    click.echo(f"Installed quadlet files to {quadlet_dest}/")
-
-    # Reload and start — restart network/volume first so they're recreated
-    # (systemd may think they're still active from a previous run even if
-    # podman resources were removed by 'cage destroy')
-    systemd.daemon_reload()
-    try:
-        systemd.restart_unit(f"{name}-net-network.service")
-    except Exception as e:
-        click.echo(f"warning: failed to restart network service: {e}", err=True)
-    try:
-        systemd.restart_unit(f"{name}-certs-volume.service")
-    except Exception as e:
-        click.echo(f"warning: failed to restart volume service: {e}", err=True)
-    systemd.start_unit(f"{name}-cage.service")
-    click.echo(f"Started {name}-cage")
+    units = backend.generate_units(cfg, config_host_path, patches_work_dir, deploy_name)
+    backend.install_units(units)
+    backend.start(cfg.name)
 
 
 def _restart_cage(name: str):
@@ -311,45 +275,21 @@ def cage_destroy(name: str, yes: bool):
             abort=True,
         )
 
-    quadlet_dir = Path(os.path.expanduser("~/.config/containers/systemd"))
-    removed: list[str] = []
+    # Load config to determine backend, fall back to container backend
+    try:
+        cfg = state.load_deployment_config(name)
+        backend = get_backend(cfg)
+    except Exception:
+        from agentcage.backends.container import ContainerBackend
+        backend = ContainerBackend()
 
     click.echo("Stopping services...")
-    for svc in ("cage", "proxy", "dns"):
-        try:
-            systemd.stop_unit(f"{name}-{svc}.service")
-        except Exception as e:
-            click.echo(f"warning: failed to stop {name}-{svc}: {e}", err=True)
+    backend.stop(name)
 
     click.echo("Removing quadlet files...")
-    quadlet_files = [
-        f"{name}-cage.container",
-        f"{name}-proxy.container",
-        f"{name}-dns.container",
-        f"{name}-net.network",
-        f"{name}-certs.volume",
-    ]
-    for fname in quadlet_files:
-        fpath = quadlet_dir / fname
-        if fpath.exists():
-            fpath.unlink()
-            removed.append(fname)
-
-    systemd.daemon_reload()
+    removed = backend.destroy_resources(name)
 
     click.echo("Removing Podman resources...")
-    podman = Podman()
-    if podman.network_remove(f"{name}-net"):
-        removed.append(f"network:{name}-net")
-    if podman.volume_remove(f"agentcage-certs-{name}"):
-        removed.append(f"volume:agentcage-certs-{name}")
-
-    # Remove scoped secrets
-    click.echo("Removing scoped secrets...")
-    for s in podman.secret_list(prefix=f"{name}."):
-        sname = s.get("Name", "")
-        if podman.secret_remove(sname):
-            removed.append(f"secret:{sname}")
 
     # Remove state
     if state.deployment_exists(name):
