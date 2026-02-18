@@ -25,10 +25,19 @@ def check_prerequisites(config: Config) -> list[str]:
 
     # firecracker binary
     if not shutil.which(fc.firecracker_bin):
-        issues.append(
-            f"'{fc.firecracker_bin}' not found in PATH — "
-            "install Firecracker: https://github.com/firecracker-microvm/firecracker/releases"
-        )
+        from agentcage.firecracker.binaries import default_firecracker_path, ensure_firecracker
+        if fc.firecracker_bin == "firecracker":
+            # Default name, not in PATH — try auto-download
+            try:
+                ensure_firecracker()
+                fc.firecracker_bin = default_firecracker_path()
+            except Exception as e:
+                issues.append(f"firecracker not found and auto-download failed: {e}")
+        else:
+            issues.append(
+                f"'{fc.firecracker_bin}' not found in PATH — "
+                "install Firecracker: https://github.com/firecracker-microvm/firecracker/releases"
+            )
 
     # jailer binary (if enabled)
     if fc.jailer and not shutil.which(fc.jailer_bin):
@@ -41,7 +50,14 @@ def check_prerequisites(config: Config) -> list[str]:
     if not fc.kernel:
         issues.append("firecracker.kernel is not set in config")
     elif not os.path.isfile(fc.kernel):
-        issues.append(f"kernel image not found: {fc.kernel}")
+        from agentcage.firecracker.kernel import default_kernel_path, ensure_kernel
+        if fc.kernel == default_kernel_path():
+            try:
+                ensure_kernel(fc.kernel)
+            except Exception as e:
+                issues.append(f"kernel not found and auto-download failed: {e}")
+        else:
+            issues.append(f"kernel image not found: {fc.kernel}")
 
     # agentcage-nethelper
     nethelper = shutil.which("agentcage-nethelper")

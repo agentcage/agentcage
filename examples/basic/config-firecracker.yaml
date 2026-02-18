@@ -3,7 +3,7 @@ name: basic
 
 isolation: firecracker
 firecracker:
-  kernel: /home/luca/firecracker/vmlinux-6.1.128
+  # kernel is optional — auto-downloaded to ~/.local/share/agentcage/firecracker/
   vcpus: 2
   mem_mb: 2048
   jailer: false

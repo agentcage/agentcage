@@ -134,10 +134,10 @@ Firecracker-specific settings live under the `firecracker:` key in `config.yaml`
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `kernel` | string | _(required)_ | Absolute path to the `vmlinux` kernel binary. Must be Linux 6.1 or later. |
+| `kernel` | string | _(auto-downloaded)_ | Path to the `vmlinux` kernel binary. If omitted, a pre-built kernel is automatically downloaded to `~/.local/share/agentcage/firecracker/`. |
 | `vcpus` | int | `2` | Number of virtual CPUs to allocate to the VM. |
 | `mem_mb` | int | `2048` | VM memory in megabytes. |
-| `firecracker_bin` | string | `"firecracker"` | Path to the Firecracker binary. Defaults to searching `$PATH`. |
+| `firecracker_bin` | string | `"firecracker"` | Path to the Firecracker binary. If omitted, auto-downloaded to `~/.local/share/agentcage/firecracker/` when not found in `$PATH`. |
 | `jailer` | bool | `false` | Run Firecracker inside the Firecracker jailer for additional isolation. Not yet implemented. |
 
 ### Example Configuration
@@ -147,10 +147,9 @@ name: basic
 isolation: firecracker
 
 firecracker:
-  kernel: /home/user/firecracker/vmlinux-6.1.128
+  # kernel is optional — auto-downloaded to ~/.local/share/agentcage/firecracker/
   vcpus: 2
   mem_mb: 2048
-  firecracker_bin: firecracker
 
 container:
   image: "node:22-slim"
@@ -173,15 +172,27 @@ secrets:
 | Requirement | Notes |
 |-------------|-------|
 | `/dev/kvm` | KVM must be accessible to your user. Check with `ls -la /dev/kvm`. |
-| Firecracker binary | Download from the [Firecracker releases page](https://github.com/firecracker-microvm/firecracker/releases). |
-| Linux kernel 6.1+ | A pre-built `vmlinux` binary. See [Firecracker kernel docs](https://github.com/firecracker-microvm/firecracker/blob/main/docs/rootfs-and-kernel-setup.md) for build instructions. |
+| Firecracker binary | Auto-downloaded on first use to `~/.local/share/agentcage/firecracker/`, or specify a custom path via `firecracker.firecracker_bin` in config. |
+| Linux kernel 6.1+ | Auto-downloaded on first use, or specify a custom path via `firecracker.kernel` in config. |
 | Podman | Required on the host to build and export container images. |
 | `mkfs.ext4` | Part of `e2fsprogs`. Used to create the VM rootfs image. |
 | `debugfs` | Also part of `e2fsprogs`. Used to inspect rootfs images. |
 
 ### One-Time Host Setup
 
-**Install the nethelper and configure sudoers:**
+Run the setup command to download the kernel, check prerequisites, and create the network bridge:
+
+```bash
+agentcage firecracker setup
+```
+
+This will:
+1. Download a pre-built vmlinux kernel to `~/.local/share/agentcage/firecracker/` (if not already present)
+2. Download the Firecracker binary to `~/.local/share/agentcage/firecracker/` (if not already present)
+3. Check all prerequisites and report any issues
+4. Create the `agentcage-br0` network bridge (requires the nethelper)
+
+**Install the nethelper and configure sudoers** (before running setup):
 
 ```bash
 # Install the nethelper binary
@@ -190,20 +201,6 @@ sudo install -m 755 agentcage-nethelper /usr/local/bin/agentcage-nethelper
 # Grant your user passwordless access to the nethelper
 echo "$USER ALL=(root) NOPASSWD: /usr/local/bin/agentcage-nethelper" \
   | sudo tee /etc/sudoers.d/agentcage-nethelper
-```
-
-**Create the host bridge** (persists until reboot; add to a network startup script or systemd unit for permanence):
-
-```bash
-sudo agentcage-nethelper create-bridge
-```
-
-**Download a pre-built kernel:**
-
-```bash
-mkdir -p ~/firecracker
-wget -O ~/firecracker/vmlinux-6.1.128 \
-  https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.12/x86_64/vmlinux-6.1.128
 ```
 
 ### Create and Run a Cage

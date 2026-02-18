@@ -90,7 +90,7 @@ class TestFirecrackerValidation:
         with pytest.raises(ValueError, match="isolation"):
             validate_config(cfg)
 
-    def test_firecracker_requires_kernel(self, tmp_path):
+    def test_firecracker_defaults_kernel_when_empty(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -99,8 +99,10 @@ class TestFirecrackerValidation:
               image: test:latest
         """))
         cfg = load_config(str(p))
-        with pytest.raises(ValueError, match="kernel"):
-            validate_config(cfg)
+        assert cfg.firecracker.kernel == ""
+        validate_config(cfg)
+        assert "vmlinux" in cfg.firecracker.kernel
+        assert cfg.firecracker.kernel != ""
 
     def test_firecracker_vcpus_minimum(self, tmp_path):
         p = tmp_path / "config.yaml"

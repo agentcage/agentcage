@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 
 import yaml
@@ -218,7 +219,13 @@ def validate_config(config: Config) -> list[str]:
     if config.isolation == "firecracker":
         fc = config.firecracker
         if not fc.kernel:
-            raise ValueError("firecracker.kernel is required when isolation is 'firecracker'")
+            from agentcage.firecracker.kernel import default_kernel_path
+            fc.kernel = default_kernel_path()
+        if fc.firecracker_bin == "firecracker" and not shutil.which("firecracker"):
+            from agentcage.firecracker.binaries import default_firecracker_path
+            default_fc = default_firecracker_path()
+            if os.path.isfile(default_fc):
+                fc.firecracker_bin = default_fc
         if fc.vcpus < 1:
             raise ValueError("firecracker.vcpus must be >= 1")
         if fc.mem_mb < 128:

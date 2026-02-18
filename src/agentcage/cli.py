@@ -150,6 +150,19 @@ def cage_create(config_path: str):
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
 
+    if cfg.isolation == "firecracker":
+        backend = get_backend(cfg)
+        issues = backend.check_prerequisites(cfg)
+        if issues:
+            click.echo("Firecracker prerequisites not met:", err=True)
+            for issue in issues:
+                click.echo(f"  - {issue}", err=True)
+            click.echo(
+                "\nRun 'agentcage firecracker setup' for one-time host setup.",
+                err=True,
+            )
+            sys.exit(1)
+
     name = cfg.name
 
     if state.deployment_exists(name):
@@ -665,3 +678,69 @@ def domain_rm(cage_name: str, domain_name: str):
     if reloaded:
         msg += " Cage reloaded."
     click.echo(msg)
+
+
+# ── firecracker group ─────────────────────────────────────
+
+
+@main.group(name="firecracker")
+def firecracker_group():
+    """Firecracker host setup and management."""
+
+
+@firecracker_group.command("setup")
+def firecracker_setup():
+    """One-time host setup: download kernel, check prerequisites, create bridge."""
+    from agentcage.firecracker.kernel import ensure_kernel, default_kernel_path
+    from agentcage.firecracker.binaries import ensure_firecracker, default_firecracker_path
+    from agentcage.firecracker import prerequisites, network
+    from agentcage.config import Config, FirecrackerConfig
+
+    # 1. Ensure kernel
+    kernel_path = default_kernel_path()
+    click.echo(f"Kernel: {kernel_path}")
+    try:
+        ensure_kernel(kernel_path)
+        click.echo("  ok")
+    except Exception as e:
+        click.echo(f"  FAILED: {e}", err=True)
+
+    # 2. Ensure Firecracker binary
+    fc_path = default_firecracker_path()
+    click.echo(f"Firecracker: {fc_path}")
+    try:
+        ensure_firecracker(fc_path)
+        click.echo("  ok")
+    except Exception as e:
+        click.echo(f"  FAILED: {e}", err=True)
+
+    # 3. Check prerequisites (use a minimal firecracker config for the check)
+    cfg = Config(
+        name="setup-check",
+        isolation="firecracker",
+        firecracker=FirecrackerConfig(kernel=kernel_path),
+    )
+    cfg.container.image = "placeholder"
+    issues = prerequisites.check_prerequisites(cfg)
+
+    if issues:
+        click.echo()
+        click.echo("Remaining issues:")
+        for issue in issues:
+            click.echo(f"  - {issue}")
+    else:
+        click.echo()
+        click.echo("All prerequisites met.")
+
+    # 4. Create bridge if missing
+    if not os.path.exists("/sys/class/net/agentcage-br0"):
+        click.echo()
+        click.echo("Creating network bridge (agentcage-br0)...")
+        try:
+            network.create_bridge()
+            click.echo("  ok")
+        except Exception as e:
+            click.echo(f"  FAILED: {e}", err=True)
+    else:
+        click.echo()
+        click.echo("Network bridge (agentcage-br0) already exists.")
