@@ -31,19 +31,19 @@ agentcage is a CLI that generates hardened, sandboxed container environments for
 
 ## Design Principles
 
-1. **Fail-closed** -- if any component fails, traffic stops, not bypasses.
-2. **Secure by default** -- all hardening is on out of the box; security is opt-out, not opt-in.
-3. **Inspect, don't just isolate** -- every request, frame, and query is analyzed before forwarding.
-4. **Agent never holds real secrets** -- placeholders in, real values injected in transit only.
-5. **Audit everything** -- all decisions logged as structured JSON by default.
+1. :no_entry: **Fail-closed** -- if any component fails, traffic stops, not bypasses.
+2. :shield: **Secure by default** -- all hardening is on out of the box; security is opt-out, not opt-in.
+3. :mag: **Inspect, don't just isolate** -- every request, frame, and query is analyzed before forwarding.
+4. :closed_lock_with_key: **Agent never holds real secrets** -- placeholders in, real values injected in transit only.
+5. :scroll: **Audit everything** -- all decisions logged as structured JSON by default.
 
 ## Why is it needed?
 
 Most AI agent deployments hand the agent a [**lethal trifecta**](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
 
-1. **Internet access** -- the agent can reach any server on the internet.
-2. **Secrets** -- tokens and other secrets are passed as environment variables or mounted files.
-3. **Arbitrary code execution** -- the agent runs code it writes itself, or code suggested by a model.
+1. :globe_with_meridians: **Internet access** -- the agent can reach any server on the internet.
+2. :key: **Secrets** -- tokens and other secrets are passed as environment variables or mounted files.
+3. :computer: **Arbitrary code execution** -- the agent runs code it writes itself, or code suggested by a model.
 
 Any one of these alone is manageable. Combined, they create an exfiltration risk: if the agent is compromised, misaligned, or simply makes a mistake, it can send your secrets, source code, or private data to any endpoint on the internet. Most current setups have zero defense against this -- the agent has the same network access as any other process on the machine.
 
