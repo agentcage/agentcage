@@ -1,0 +1,44 @@
+# Containerfile.vmbase — builds the base VM rootfs for Firecracker
+#
+# Contains: Alpine Linux, systemd (OpenRC), Podman, and basic tools.
+# This image is exported to an ext4 rootfs, not run as a container.
+
+FROM docker.io/alpine:3.21
+
+# Install core packages: init, podman, networking, and tools
+RUN apk add --no-cache \
+    openrc \
+    podman \
+    podman-compose \
+    fuse-overlayfs \
+    slirp4netns \
+    iptables \
+    iproute2 \
+    dnsmasq \
+    python3 \
+    py3-yaml \
+    bash \
+    coreutils \
+    e2fsprogs \
+    shadow \
+    && true
+
+# Create a non-root user for rootless Podman inside the VM
+RUN adduser -D -u 1000 agentcage \
+    && echo "agentcage:100000:65536" >> /etc/subuid \
+    && echo "agentcage:100000:65536" >> /etc/subgid
+
+# Configure OpenRC for container/VM usage
+RUN mkdir -p /run/openrc \
+    && touch /run/openrc/softlevel \
+    && rc-update add local default
+
+# Podman storage configuration for the VM
+RUN mkdir -p /home/agentcage/.config/containers \
+    && printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
+       > /home/agentcage/.config/containers/storage.conf \
+    && chown -R agentcage:agentcage /home/agentcage
+
+# Copy VM init script
+COPY firecracker/vm-init.sh /usr/local/bin/vm-init.sh
+RUN chmod +x /usr/local/bin/vm-init.sh
