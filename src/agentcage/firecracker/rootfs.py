@@ -141,11 +141,26 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
 
     dns_cmd = " ".join(_shell_quote(a) for a in dns_args)
 
-    # Build proxy command
-    proxy_cmd = (
-        "mitmdump -s /app/addon.py --listen-port 8080"
-        " --set connection_strategy=lazy --listen-host 10.89.0.11"
-    )
+    # Build proxy command — use multi-mode when ports are configured
+    if cc.ports:
+        proxy_cmd = (
+            "mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080"
+        )
+        for port_spec in cc.ports:
+            parts = port_spec.split(":")
+            if len(parts) == 3:
+                container_port = parts[2]
+            elif len(parts) == 2:
+                container_port = parts[1]
+            else:
+                continue
+            proxy_cmd += f" --mode reverse:http://10.89.0.2:{container_port}@10.89.0.11:{container_port}"
+        proxy_cmd += " --set connection_strategy=lazy"
+    else:
+        proxy_cmd = (
+            "mitmdump -s /app/addon.py --listen-port 8080"
+            " --set connection_strategy=lazy --listen-host 10.89.0.11"
+        )
     if not config.logging.allowed_requests:
         proxy_cmd += " --quiet"
 
@@ -200,15 +215,14 @@ fi
 """
         cage_extra_args += f"    -v {_shell_quote(f'{vol_name}:{mount_spec}')} \\\n"
 
-    # Ports — rewrite 127.0.0.1 → 0.0.0.0 since VM is the isolation boundary.
-    # Also build DNAT rules so traffic arriving on the VM's eth0 reaches the
-    # container (firewall_driver=none means Podman won't create them).
+    # Ports — build DNAT rules so traffic arriving on the VM's eth0 reaches the
+    # proxy container (firewall_driver=none means Podman won't create them).
+    # The proxy serves as a reverse proxy for inbound traffic, so DNAT targets
+    # the proxy IP (10.89.0.11), not the cage directly.
     port_dnat_rules = ""
     for port_spec in cc.ports:
-        vm_port = port_spec.replace("127.0.0.1:", "0.0.0.0:")
-        cage_extra_args += f"    -p {_shell_quote(vm_port)} \\\n"
         # Parse host_port:container_port for DNAT
-        parts = vm_port.split(":")
+        parts = port_spec.split(":")
         if len(parts) == 3:
             host_port, container_port = parts[1], parts[2]
         elif len(parts) == 2:
@@ -217,7 +231,7 @@ fi
             host_port = container_port = parts[0]
         port_dnat_rules += (
             f'iptables-legacy -t nat -A PREROUTING -p tcp --dport {host_port}'
-            f' -j DNAT --to-destination 10.89.0.2:{container_port}'
+            f' -j DNAT --to-destination 10.89.0.11:{container_port}'
             f' || echo "start-cage: WARNING: DNAT rule failed for port {host_port}"\n'
         )
     # MASQUERADE so the container (on --internal network with no default
