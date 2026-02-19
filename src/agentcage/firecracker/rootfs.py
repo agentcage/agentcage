@@ -81,18 +81,44 @@ def _export_container_images(
     staging_dir: str,
     images: list[str],
 ) -> None:
-    """Export container images as OCI tarballs into the staging dir."""
+    """Export container images as gzipped, split tarballs into the staging dir.
+
+    mkfs.ext4 -d has a 2GB per-file limit (signed 32-bit in __populate_fs).
+    Images are gzip-compressed and split into <1.9GB chunks.
+    Chunks are named <image>.tar.gz.00, .01, etc.
+    vm-init.sh reassembles them with cat before podman load.
+    """
     images_dir = os.path.join(staging_dir, "var/lib/agentcage/images")
     os.makedirs(images_dir, exist_ok=True)
 
     for image in images:
         safe_name = image.replace("/", "_").replace(":", "_")
-        tar_path = os.path.join(images_dir, f"{safe_name}.tar")
+        chunk_prefix = os.path.join(images_dir, f"{safe_name}.tar.gz.")
         click.echo(f"  Exporting image: {image}")
-        subprocess.run(
-            ["podman", "save", "--format", "docker-archive", "-o", tar_path, image],
-            check=True,
+        save_proc = subprocess.Popen(
+            ["podman", "save", "--format", "docker-archive", image],
+            stdout=subprocess.PIPE,
         )
+        gzip_proc = subprocess.Popen(
+            ["gzip", "-1"],
+            stdin=save_proc.stdout,
+            stdout=subprocess.PIPE,
+        )
+        split_proc = subprocess.Popen(
+            ["split", "-b", "1900m", "-d", "--suffix-length=2", "-", chunk_prefix],
+            stdin=gzip_proc.stdout,
+        )
+        save_proc.stdout.close()
+        gzip_proc.stdout.close()
+        split_proc.wait()
+        gzip_proc.wait()
+        save_proc.wait()
+        if save_proc.returncode != 0:
+            raise subprocess.CalledProcessError(save_proc.returncode, "podman save")
+        if gzip_proc.returncode != 0:
+            raise subprocess.CalledProcessError(gzip_proc.returncode, "gzip")
+        if split_proc.returncode != 0:
+            raise subprocess.CalledProcessError(split_proc.returncode, "split")
 
 
 def _generate_startup_script(config: Config, deploy_name: str) -> str:
@@ -157,6 +183,12 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
         named_volume_setup += f"""# Create named volume backed by data drive
 if [[ -d /mnt/data ]]; then
     mkdir -p /mnt/data/{vol_name}
+    # Fix ownership: data migrated from rootless podman has UIDs shifted by
+    # subuid offset (e.g. 100000). In the VM, rootful podman uses real UIDs.
+    if [[ -d /mnt/data/{vol_name} ]]; then
+        # Find files owned by shifted UIDs (>=100000) and remap to real UIDs
+        find /mnt/data/{vol_name} -uid +99999 -exec chown 1000:1000 {{}} + 2>/dev/null || true
+    fi
     podman volume create --opt type=none --opt o=bind --opt device=/mnt/data/{vol_name} {vol_name} 2>/dev/null || true
 else
     podman volume create {vol_name} 2>/dev/null || true
@@ -205,6 +237,7 @@ fi
     script = f"""#!/bin/bash
 # Auto-generated cage startup script for {name}
 set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 CAGE_NAME="{name}"
 
@@ -226,7 +259,7 @@ if [ -n "$EXT_BRIDGE" ]; then
 fi
 
 {named_volume_setup}echo "start-cage: starting DNS container (dual-homed)"
-podman run -d --name "${{CAGE_NAME}}-dns" \\
+podman run -d --replace --name "${{CAGE_NAME}}-dns" \\
     --log-driver k8s-file \\
     --network "${{CAGE_NAME}}-net:ip=10.89.0.10" \\
     --network "${{CAGE_NAME}}-ext" \\
@@ -235,7 +268,7 @@ podman run -d --name "${{CAGE_NAME}}-dns" \\
     {dns_cmd}
 
 echo "start-cage: starting proxy container (dual-homed)"
-podman run -d --name "${{CAGE_NAME}}-proxy" \\
+podman run -d --replace --name "${{CAGE_NAME}}-proxy" \\
     --log-driver k8s-file \\
     --network "${{CAGE_NAME}}-net:ip=10.89.0.11" \\
     --network "${{CAGE_NAME}}-ext" \\
@@ -259,7 +292,7 @@ mkdir -p "$CERT_DIR"
 podman cp "${{CAGE_NAME}}-proxy:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem" "$CERT_DIR/" 2>/dev/null || true
 
 echo "start-cage: starting cage container (internal network only)"
-podman run -d --name "${{CAGE_NAME}}-cage" \\
+podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     --log-driver k8s-file \\
     --network "${{CAGE_NAME}}-net" \\
     -e "HTTP_PROXY=http://10.89.0.11:8080" \\
@@ -364,10 +397,6 @@ def prepare_vm_rootfs(
     # Ensure base image exists
     build_base_rootfs(podman)
 
-    # Determine rootfs size (enough for base + container images + headroom)
-    # Base Fedora image ~300MB, images need space both as tarballs and extracted
-    size_mb = max(config.firecracker.mem_mb, 4096)
-
     with tempfile.TemporaryDirectory(prefix="agentcage-rootfs-") as staging:
         click.echo("Exporting base VM image to staging directory...")
         _export_base_to_dir(podman, staging)
@@ -385,12 +414,26 @@ def prepare_vm_rootfs(
             check=True,
         )
 
+        # Determine rootfs size from actual staging content + headroom
+        # Images are loaded then deleted at boot, so we need space for
+        # tarballs + extracted layers simultaneously
+        result = subprocess.run(
+            ["du", "-sm", staging],
+            capture_output=True, text=True, check=True,
+        )
+        staging_mb = int(result.stdout.split()[0])
+        # 10x headroom: during podman load in the VM, the decompressed
+        # tar and extracted container layers coexist on the rootfs.
+        # Peak usage: gzip tarballs + decompressed tar (~2.5x gzip)
+        # + overlay layer storage (~2.5x gzip) + podman temp files + base OS.
+        # The rootfs is a sparse file so host disk only uses actual content.
+        size_mb = max(staging_mb * 10, 4096)
+
         # Create ext4 image from populated directory
-        click.echo(f"Building ext4 rootfs: {rootfs_path} ({size_mb}MB)")
+        click.echo(f"Building ext4 rootfs: {rootfs_path} ({size_mb}MB, staging: {staging_mb}MB)")
         subprocess.run(
-            ["dd", "if=/dev/zero", f"of={rootfs_path}",
-             "bs=1M", f"count={size_mb}"],
-            capture_output=True, check=True,
+            ["truncate", "-s", f"{size_mb}M", rootfs_path],
+            check=True,
         )
         subprocess.run(
             ["mkfs.ext4", "-F", "-q", "-d", staging, rootfs_path],
@@ -423,7 +466,7 @@ def ensure_data_drive(deploy_name: str, size_mb: int = 4096) -> str:
         capture_output=True, check=True,
     )
     subprocess.run(
-        ["mkfs.ext4", "-F", "-q", "-L", "agentcage-data", str(data_path)],
+        ["mkfs.ext4", "-F", "-q", "-L", "cage-data", str(data_path)],
         capture_output=True, check=True,
     )
 

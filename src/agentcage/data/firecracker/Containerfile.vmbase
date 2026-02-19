@@ -17,6 +17,7 @@ RUN microdnf install -y --setopt=install_weak_deps=0 \
     python3-pyyaml \
     bash \
     coreutils \
+    gzip \
     procps-ng \
     && microdnf clean all
 
