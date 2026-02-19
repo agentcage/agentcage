@@ -12,11 +12,12 @@ For configuration options, see the [Configuration Reference](configuration.md). 
   │                                                                  │
   │  ┌──────────────┐    ┌───────────────┐    ┌──────────────────┐  │
   │  │ Agent         │    │ DNS sidecar   │    │ mitmproxy        │  │
-  │  │               │    │ (dnsmasq)     │    │ + inspector chain│  │
-  │  │ HTTP_PROXY=  ─┼────┼───────────────┼───►│                  │  │
-  │  │  10.89.0.11  ─┼────┼───────────────┼──►│ scans + forwards─┼──┼─► Internet
+  │  │ 10.89.0.2    │    │ (dnsmasq)     │    │ + inspector chain│  │
   │  │               │    │               │    │                  │  │
-  │  │ resolv.conf  ─┼───►│ resolves via  │    │                  │  │
+  │  │ HTTP_PROXY=  ─┼────┼───────────────┼───►│ forward :8080   ─┼──┼─► Internet
+  │  │  10.89.0.11   │    │               │    │                  │  │
+  │  │               │    │               │    │ reverse :port   ◄┼──┼── Host (published ports)
+  │  │ resolv.conf  ─┼───►│ resolves via  │    │   ↕ inspects     │  │
   │  │               │    │ external net ─┼────┼──────────────────┼──┼─► Upstream DNS
   │  │               │    │               │    │                  │  │
   │  │ ONLY on       │    │ internal +    │    │ internal +       │  │
@@ -26,17 +27,22 @@ For configuration options, see the [Configuration Reference](configuration.md). 
   └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Agent** -- The user's container (e.g. an AI coding agent). It is connected *only* to the internal network and has no internet gateway. `HTTP_PROXY` and `HTTPS_PROXY` environment variables force all HTTP traffic through the proxy container. The agent cannot reach the internet by any other path.
+**Agent** -- The user's container (e.g. an AI coding agent), at fixed IP `10.89.0.2`. It is connected *only* to the internal network and has no internet gateway. `HTTP_PROXY` and `HTTPS_PROXY` environment variables force all outbound HTTP traffic through the proxy container. The agent cannot reach the internet by any other path. Published ports are not exposed on the agent container — they are served by the proxy.
 
 **DNS sidecar (dnsmasq)** -- Dual-homed: connected to both the internal network (at `10.89.0.10`) and the default `podman` network. It handles DNS resolution for agents that resolve hostnames before proxying. In allowlist mode, non-allowlisted domains resolve to a placeholder IP (`198.51.100.1`, RFC 5737 TEST-NET-2) instead of failing, so SSRF guards that pre-resolve DNS continue to work. Upstream DNS servers default to `1.1.1.1` and `8.8.8.8` but are configurable via `dns_servers`.
 
-**Proxy (mitmproxy + addon.py)** -- Dual-homed: connected to both networks. Listens on `:8080` on the internal network. Runs the [inspector chain](#inspector-chain) against every request, forwarding allowed traffic to the internet and returning 403 JSON responses for blocked requests.
+**Proxy (mitmproxy + addon.py)** -- Dual-homed: connected to both networks. Runs the [inspector chain](#inspector-chain) against every request. Operates in two modes simultaneously when ports are published:
+
+- **Forward proxy** (`:8080`) -- handles outbound traffic from the agent, forwarding allowed requests to the internet
+- **Reverse proxy** (one listener per published port) -- handles inbound traffic from the host, forwarding to the agent at `10.89.0.2`
+
+Both directions pass through the full inspector chain (domain filtering, secret detection, entropy analysis, etc.). When no ports are published, only the forward proxy mode is active.
 
 ## Network Isolation
 
 The generated `.network` file uses Podman's `Internal=true` directive, which creates a network with no internet gateway. Only containers that are also connected to an external network (the DNS sidecar and proxy) can reach the internet.
 
-The network uses a fixed subnet: `10.89.0.0/24` with the DNS sidecar at `10.89.0.10` and the proxy at `10.89.0.11`. The cage's `/etc/resolv.conf` is bind-mounted (read-only) to point at the dnsmasq sidecar. If this subnet conflicts with your existing network, you will need to regenerate the quadlet files after editing the `.network` file.
+The network uses a fixed subnet: `10.89.0.0/24` with the agent at `10.89.0.2`, the DNS sidecar at `10.89.0.10`, and the proxy at `10.89.0.11`. The cage's `/etc/resolv.conf` is bind-mounted (read-only) to point at the dnsmasq sidecar. If this subnet conflicts with your existing network, you will need to regenerate the quadlet files after editing the `.network` file.
 
 ## Inspector Chain
 

@@ -141,11 +141,26 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
 
     dns_cmd = " ".join(_shell_quote(a) for a in dns_args)
 
-    # Build proxy command
-    proxy_cmd = (
-        "mitmdump -s /app/addon.py --listen-port 8080"
-        " --set connection_strategy=lazy --listen-host 10.89.0.11"
-    )
+    # Build proxy command — use multi-mode when ports are configured
+    if cc.ports:
+        proxy_cmd = (
+            "mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080"
+        )
+        for port_spec in cc.ports:
+            parts = port_spec.split(":")
+            if len(parts) == 3:
+                container_port = parts[2]
+            elif len(parts) == 2:
+                container_port = parts[1]
+            else:
+                continue
+            proxy_cmd += f" --mode reverse:http://10.89.0.2:{container_port}@0.0.0.0:{container_port}"
+        proxy_cmd += " --set connection_strategy=lazy"
+    else:
+        proxy_cmd = (
+            "mitmdump -s /app/addon.py --listen-port 8080"
+            " --set connection_strategy=lazy --listen-host 10.89.0.11"
+        )
     if not config.logging.allowed_requests:
         proxy_cmd += " --quiet"
 
@@ -200,33 +215,23 @@ fi
 """
         cage_extra_args += f"    -v {_shell_quote(f'{vol_name}:{mount_spec}')} \\\n"
 
-    # Ports — rewrite 127.0.0.1 → 0.0.0.0 since VM is the isolation boundary.
-    # Also build DNAT rules so traffic arriving on the VM's eth0 reaches the
-    # container (firewall_driver=none means Podman won't create them).
-    port_dnat_rules = ""
+    # Ports — use socat to forward traffic from the VM's eth0 to the proxy
+    # container.  iptables DNAT is unreliable here because firewall_driver=none
+    # means Podman doesn't set up bridge forwarding rules, and manual DNAT
+    # across the Podman bridge is fragile.  socat is simple and reliable.
+    port_forwards_script = ""
     for port_spec in cc.ports:
-        vm_port = port_spec.replace("127.0.0.1:", "0.0.0.0:")
-        cage_extra_args += f"    -p {_shell_quote(vm_port)} \\\n"
-        # Parse host_port:container_port for DNAT
-        parts = vm_port.split(":")
+        parts = port_spec.split(":")
         if len(parts) == 3:
             host_port, container_port = parts[1], parts[2]
         elif len(parts) == 2:
             host_port, container_port = parts[0], parts[1]
         else:
             host_port = container_port = parts[0]
-        port_dnat_rules += (
-            f'iptables-legacy -t nat -A PREROUTING -p tcp --dport {host_port}'
-            f' -j DNAT --to-destination 10.89.0.2:{container_port}'
-            f' || echo "start-cage: WARNING: DNAT rule failed for port {host_port}"\n'
-        )
-    # MASQUERADE so the container (on --internal network with no default
-    # gateway) sees traffic from a local address and can respond.
-    # Conntrack reverses both SNAT and DNAT on the return path.
-    if cc.ports:
-        port_dnat_rules += (
-            'iptables-legacy -t nat -A POSTROUTING -d 10.89.0.0/24 -j MASQUERADE'
-            ' || echo "start-cage: WARNING: MASQUERADE rule failed"\n'
+        port_forwards_script += (
+            f'echo "start-cage: port-forward 0.0.0.0:{host_port} -> 10.89.0.11:{container_port}"\n'
+            f'socat TCP-LISTEN:{host_port},bind=0.0.0.0,fork,reuseaddr'
+            f' TCP:10.89.0.11:{container_port} &\n'
         )
 
     # Capabilities
@@ -339,7 +344,7 @@ podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     {agent_cmd}
 
 echo "start-cage: all containers started"
-{port_dnat_rules}podman ps
+{port_forwards_script}podman ps
 
 # Follow all container logs so they appear on the VM console
 podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do echo "[dns] $line"; done &
@@ -445,8 +450,9 @@ def prepare_vm_rootfs(
         )
 
         # Determine rootfs size from actual staging content + headroom
-        # Images are loaded then deleted at boot, so we need space for
-        # tarballs + extracted layers simultaneously
+        # Image tarballs are kept on disk (not deleted) so the VM can
+        # reload them after a restart.  Peak usage: decompressed tarballs
+        # + overlay layer storage + podman temp files + base OS.
         result = subprocess.run(
             ["du", "-sm", staging],
             capture_output=True, text=True, check=True,

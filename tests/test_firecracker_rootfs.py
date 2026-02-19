@@ -99,16 +99,14 @@ class TestGenerateStartupScript:
         assert "podman volume create" in script
         assert "-v mydata:/data:rw" in script
 
-    def test_ports_rewrite_localhost(self):
+    def test_cage_no_published_ports(self):
+        """Cage container should NOT have -p flags — ports go through proxy."""
         cfg = _make_config(container={"ports": ["127.0.0.1:8080:8080"]})
         script = _generate_startup_script(cfg, "testcage")
-        assert "0.0.0.0:8080:8080" in script
-        assert "127.0.0.1:8080:8080" not in script
-
-    def test_ports_non_localhost_unchanged(self):
-        cfg = _make_config(container={"ports": ["0.0.0.0:9090:9090"]})
-        script = _generate_startup_script(cfg, "testcage")
-        assert "0.0.0.0:9090:9090" in script
+        # Extract cage podman run command
+        cage_run_start = script.index("starting cage container")
+        cage_run = script[cage_run_start:script.index("\n\necho \"start-cage: all", cage_run_start)]
+        assert " -p " not in cage_run
 
     def test_capabilities_drop(self):
         cfg = _make_config(container={"drop_capabilities": ["ALL"]})
@@ -200,18 +198,17 @@ class TestGenerateStartupScript:
         # Proxy should get the real secret
         assert "--secret API_KEY,type=env,target=API_KEY" in script
 
-    def test_port_dnat_rules(self):
+    def test_port_forward_socat(self):
+        """Ports should use socat forwarding to the proxy container."""
         cfg = _make_config(container={"ports": ["127.0.0.1:3000:3000", "8080:8080"]})
         script = _generate_startup_script(cfg, "testcage")
-        assert "iptables-legacy -t nat -A PREROUTING -p tcp --dport 3000 -j DNAT --to-destination 10.89.0.2:3000" in script
-        assert "iptables-legacy -t nat -A PREROUTING -p tcp --dport 8080 -j DNAT --to-destination 10.89.0.2:8080" in script
-        assert "iptables-legacy -t nat -A POSTROUTING -d 10.89.0.0/24 -j MASQUERADE" in script
+        assert "socat TCP-LISTEN:3000,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:3000 &" in script
+        assert "socat TCP-LISTEN:8080,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:8080 &" in script
 
-    def test_no_dnat_without_ports(self):
+    def test_no_port_forward_without_ports(self):
         cfg = _make_config(container={"ports": []})
         script = _generate_startup_script(cfg, "testcage")
-        assert "PREROUTING" not in script
-        assert "-d 10.89.0.0/24 -j MASQUERADE" not in script
+        assert "socat TCP-LISTEN" not in script
         # The external network MASQUERADE should still be there
         assert "POSTROUTING -s 10.90.0.0/24" in script
 
@@ -252,6 +249,21 @@ class TestGenerateStartupScript:
         script = _generate_startup_script(cfg, "testcage")
         assert "--quiet" not in script
 
+    def test_proxy_reverse_mode_in_script(self):
+        """Proxy should use multi-mode with reverse listeners for each port."""
+        cfg = _make_config(container={"ports": ["127.0.0.1:3000:3000", "9090:9090"]})
+        script = _generate_startup_script(cfg, "testcage")
+        assert "--mode regular@10.89.0.11:8080" in script
+        assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in script
+        assert "--mode reverse:http://10.89.0.2:9090@0.0.0.0:9090" in script
+
+    def test_proxy_no_reverse_without_ports(self):
+        """Without ports, proxy should use simple --listen-port form."""
+        cfg = _make_config(container={"ports": []})
+        script = _generate_startup_script(cfg, "testcage")
+        assert "--listen-port 8080" in script
+        assert "--mode" not in script
+
     def test_full_config_script(self):
         """Integration test: a realistic config should produce a valid-looking script."""
         cfg = _make_config(
@@ -281,7 +293,10 @@ class TestGenerateStartupScript:
         script = _generate_startup_script(cfg, "testcage")
         # Should contain all the key elements
         assert "localhost/openclaw:latest" in script
-        assert "0.0.0.0:18789:18789" in script
+        # Proxy should have reverse mode for port 18789
+        assert "--mode reverse:http://10.89.0.2:18789@0.0.0.0:18789" in script
+        # socat forwards to proxy, not cage
+        assert "socat TCP-LISTEN:18789,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:18789 &" in script
         assert "--memory 8g" in script
         assert "--cap-drop ALL" in script
         assert "--cap-add NET_BIND_SERVICE" in script

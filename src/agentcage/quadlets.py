@@ -65,6 +65,28 @@ def generate_quadlets(
     # Proxy secrets: env names from secret_injection rules
     proxy_secrets = [r.env for r in config.secret_injection]
 
+    # Parse ports into structured forwards for proxy reverse mode
+    inbound_forwards = []
+    for port_spec in cc.ports:
+        parts = port_spec.split(":")
+        if len(parts) == 3:
+            host_bind, host_port, container_port = parts
+        elif len(parts) == 2:
+            host_bind, host_port, container_port = "0.0.0.0", parts[0], parts[1]
+        else:
+            continue
+        if container_port == "8080":
+            raise ValueError(
+                f"container port 8080 conflicts with the mitmproxy forward proxy "
+                f"(port spec: {port_spec!r}). Use a different container port."
+            )
+        inbound_forwards.append({
+            "host_bind": host_bind,
+            "host_port": host_port,
+            "container_port": container_port,
+            "publish_spec": f"{host_bind}:{host_port}:{container_port}",
+        })
+
     common = {"name": name}
 
     # Network
@@ -84,7 +106,7 @@ def generate_quadlets(
         dns_allowlist=dns_allowlist,
     )
 
-    # Proxy container
+    # Proxy container — published ports are served here via reverse proxy mode
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
         config_host_path=config_host_path,
@@ -92,9 +114,10 @@ def generate_quadlets(
         deploy_name=deploy_name,
         log_proxy_connections=config.logging.proxy_connections,
         dns_servers=config.dns_servers,
+        inbound_forwards=inbound_forwards,
     )
 
-    # Cage container
+    # Cage container — no published ports (traffic arrives via proxy reverse mode)
     files[f"{name}-cage.container"] = env.get_template("cage.container.j2").render(
         **common,
         image=cc.image,
@@ -102,7 +125,6 @@ def generate_quadlets(
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
         tmpfs=cc.tmpfs,
-        ports=cc.ports,
         podman_secrets=cc.podman_secrets,
         cage_placeholders=cage_placeholders,
         env=expanded_env,

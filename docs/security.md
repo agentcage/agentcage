@@ -31,7 +31,7 @@ The primary threat is an AI agent exfiltrating sensitive data -- secrets, source
 
 agentcage applies multiple overlapping defenses:
 
-1. **Network isolation** -- The agent container is on a Podman `--internal` network with no internet gateway. The only path to the internet is through the mitmproxy container. This is enforced at the network level and cannot be bypassed by the agent process.
+1. **Network isolation** -- The agent container is on a Podman `--internal` network with no internet gateway. The only path to the internet is through the mitmproxy container. Published ports are served by the proxy container via mitmproxy reverse mode, so both inbound and outbound HTTP traffic passes through the inspector chain. This is enforced at the network level and cannot be bypassed by the agent process.
 
 2. **Domain filtering** -- An allowlist or blocklist controls which domains the agent can reach. Non-matching requests receive a 403 response with a JSON body explaining the block. Subdomains are matched automatically.
 
@@ -111,7 +111,7 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 **Exfiltration through allowed domains** -- The domain allowlist prevents direct exfiltration to attacker infrastructure, but data can be smuggled through *allowed* endpoints. For example, an agent could embed secrets in GitHub issue titles, Brave Search query parameters, or npm package metadata. The secrets inspector detects known secret patterns in URLs, but custom-encoded data in URL paths and query parameters is not subject to entropy analysis (only request bodies are). Rate limiting and audit log monitoring help bound this channel.
 
-**MCP server exposure** -- If a caged agent runs an MCP server (exposed via the `ports` config option), the MCP server is accessible on the internal network. agentcage doesn't inspect intra-network traffic.
+**Published port limitations** -- Published ports (`ports` config option) are served through mitmproxy reverse mode, so HTTP traffic is inspected by the full inspector chain. However, non-HTTP protocols (raw TCP, WebSocket upgrade on non-standard ports) will fail at HTTP parsing. Container port 8080 cannot be published as it conflicts with the forward proxy listener.
 
 **Supply chain poisoning** -- The agent can install arbitrary packages from allowlisted registries (npm, PyPI, etc.). A prompt injection could direct the agent to install a malicious package that runs code inside the container. Container hardening (read-only root, dropped caps, no-new-privileges) limits the impact but does not prevent data access within the agent's workspace. Consider pre-approved package lists for high-security deployments.
 

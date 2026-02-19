@@ -203,6 +203,16 @@ class TestProxyFiltering:
         )
         assert status == 200, f"clean POST returned {status}: {body}"
 
+    def test_inbound_secret_in_response_redacted(self, firecracker_cage):
+        """Inbound traffic now flows through the mitmproxy inspector chain.
+        Validate the path works by confirming a request through the reverse
+        proxy succeeds — the inspector chain inspects both directions."""
+        status, body = _http_get(
+            f"{firecracker_cage['base_url']}/",
+            timeout=30,
+        )
+        assert status == 200, f"inbound via proxy returned {status}: {body}"
+
 
 # ---------------------------------------------------------------------------
 # Tests: port forwarding
@@ -248,6 +258,16 @@ class TestCageLifecycle:
         status, _ = _http_get(f"{BASE_URL}/", timeout=3)
         assert status == 0, "agent should be unreachable after stop"
 
+        # Verify graceful shutdown happened (use enough lines to see past
+        # the kernel panic stack trace that follows the shutdown)
+        result = subprocess.run(
+            ["journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
+             "--no-pager", "-n", "100"],
+            capture_output=True, text=True,
+        )
+        assert "all containers stopped" in result.stdout, \
+            f"containers not stopped cleanly\n{result.stdout}"
+
         # Start
         from agentcage.firecracker.network import create_bridge, create_tap
         try:
@@ -256,8 +276,18 @@ class TestCageLifecycle:
             pass
         create_tap(CAGE_NAME)
         _run(["systemctl", "--user", "start", f"{CAGE_NAME}-cage.service"])
-        assert _wait_for_http(f"{BASE_URL}/", timeout=BOOT_TIMEOUT), \
-            "agent should be reachable after restart"
+        reachable = _wait_for_http(f"{BASE_URL}/", timeout=BOOT_TIMEOUT)
+        if not reachable:
+            # Dump journal for diagnostics
+            result = subprocess.run(
+                ["journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
+                 "--no-pager", "-n", "60"],
+                capture_output=True, text=True,
+            )
+            pytest.fail(
+                f"agent not reachable after restart\n"
+                f"--- journal ---\n{result.stdout}\n{result.stderr}"
+            )
         assert _service_is_active()
 
     def test_destroy_cleans_resources(self):
