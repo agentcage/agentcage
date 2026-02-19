@@ -6,7 +6,7 @@ After={{ name }}-proxy.service
 [Container]
 ContainerName={{ name }}-cage
 Image={{ image }}
-Network={{ name }}-net.network
+Network={{ name }}-net.network:ip=10.89.0.2
 Environment="HTTP_PROXY=http://10.89.0.11:8080"
 Environment="HTTPS_PROXY=http://10.89.0.11:8080"
 Environment="http_proxy=http://10.89.0.11:8080"
@@ -25,9 +25,6 @@ Volume={{ vol_name }}:{{ mount }}
 {% endfor %}
 {% for spec in tmpfs %}
 Tmpfs={{ spec }}
-{% endfor %}
-{% for spec in ports %}
-PublishPort={{ spec }}
 {% endfor %}
 {% for secret in podman_secrets %}
 {% if deploy_name %}

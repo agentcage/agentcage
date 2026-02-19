@@ -36,7 +36,7 @@ def full_yaml(tmp_path):
           tmpfs:
             - "/tmp:rw,noexec,nosuid,size=64M"
           ports:
-            - "127.0.0.1:8080:8080"
+            - "127.0.0.1:3000:3000"
           podman_secrets:
             - MY_API_KEY
             - INJECTED_KEY

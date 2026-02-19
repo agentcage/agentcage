@@ -322,6 +322,7 @@ class TestCageQuadlet:
         cfg = load_config(full_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["myapp-cage.container"]
+        proxy_content = files["myapp-proxy.container"]
         # Image
         assert "Image=node:22-slim" in content
         # Command
@@ -332,8 +333,11 @@ class TestCageQuadlet:
         assert "Volume=myapp-data:/data:rw" in content
         # Tmpfs
         assert "Tmpfs=/tmp:rw,noexec,nosuid,size=64M" in content
-        # Ports
-        assert "PublishPort=127.0.0.1:8080:8080" in content
+        # Ports — should be on proxy, not cage
+        assert "PublishPort=" not in content
+        assert "PublishPort=127.0.0.1:3000:3000" in proxy_content
+        # Cage has static IP
+        assert "ip=10.89.0.2" in content
         # Podman secrets (INJECTED_KEY removed, MY_API_KEY kept)
         assert "Secret=MY_API_KEY,type=env" in content
         # Cage placeholder for injected secret
