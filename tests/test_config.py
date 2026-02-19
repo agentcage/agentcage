@@ -64,7 +64,7 @@ class TestLoadConfigFull:
         assert cc.env == {"ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}", "STATIC_VAR": "hello"}
         assert cc.named_volumes == {"myapp-data": "/data:rw"}
         assert cc.tmpfs == ["/tmp:rw,noexec,nosuid,size=64M"]
-        assert cc.ports == ["127.0.0.1:8080:8080"]
+        assert cc.ports == ["127.0.0.1:3000:3000"]
         assert cc.user == ""
         assert cc.memory == "4g"
         assert cc.cpus == "2.0"

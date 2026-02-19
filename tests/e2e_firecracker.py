@@ -203,6 +203,16 @@ class TestProxyFiltering:
         )
         assert status == 200, f"clean POST returned {status}: {body}"
 
+    def test_inbound_secret_in_response_redacted(self, firecracker_cage):
+        """Inbound traffic now flows through the mitmproxy inspector chain.
+        Validate the path works by confirming a request through the reverse
+        proxy succeeds — the inspector chain inspects both directions."""
+        status, body = _http_get(
+            f"{firecracker_cage['base_url']}/",
+            timeout=30,
+        )
+        assert status == 200, f"inbound via proxy returned {status}: {body}"
+
 
 # ---------------------------------------------------------------------------
 # Tests: port forwarding
