@@ -67,7 +67,9 @@ class TestEnsureKernel:
 
         with patch(
             "agentcage.firecracker.kernel.download_with_progress"
-        ) as mock_dl:
+        ) as mock_dl, patch(
+            "agentcage.firecracker.kernel._KERNEL_SHA256", {}
+        ):
             def fake_download(url, dest):
                 with open(dest, "wb") as f:
                     f.write(b"downloaded-kernel")
@@ -100,7 +102,9 @@ class TestEnsureKernel:
 
         with patch(
             "agentcage.firecracker.kernel.download_with_progress"
-        ) as mock_dl:
+        ) as mock_dl, patch(
+            "agentcage.firecracker.kernel._KERNEL_SHA256", {}
+        ):
             def fake_download(url, dest):
                 with open(dest, "wb") as f:
                     f.write(b"kernel")
@@ -110,3 +114,24 @@ class TestEnsureKernel:
 
         assert result == expected
         assert os.path.isfile(expected)
+
+    def test_checksum_mismatch_raises(self, tmp_path, monkeypatch):
+        kernel = tmp_path / "vmlinux"
+        monkeypatch.setattr("platform.machine", lambda: "x86_64")
+
+        with patch(
+            "agentcage.firecracker.kernel.download_with_progress"
+        ) as mock_dl, patch(
+            "agentcage.firecracker.kernel._KERNEL_SHA256",
+            {"x86_64": "0000000000000000000000000000000000000000000000000000000000000000"},
+        ):
+            def fake_download(url, dest):
+                with open(dest, "wb") as f:
+                    f.write(b"tampered-kernel")
+            mock_dl.side_effect = fake_download
+
+            with pytest.raises(RuntimeError, match="checksum mismatch"):
+                ensure_kernel(str(kernel))
+
+        assert not kernel.exists()
+        assert not (tmp_path / "vmlinux.tmp").exists()

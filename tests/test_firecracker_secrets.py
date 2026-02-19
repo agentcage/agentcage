@@ -78,3 +78,19 @@ class TestFileSecretStore:
         assert load_secret("cage-a", "KEY") == "a"
         assert load_secret("cage-b", "KEY") == "b"
         assert list_secrets("cage-a") == ["KEY"]
+
+    def test_path_traversal_save_rejected(self, secrets_home):
+        with pytest.raises(ValueError, match="path traversal"):
+            save_secret("myapp", "../../etc/passwd", "malicious")
+
+    def test_path_traversal_load_rejected(self, secrets_home):
+        with pytest.raises(ValueError, match="path traversal"):
+            load_secret("myapp", "../../../etc/shadow")
+
+    def test_path_traversal_exists_rejected(self, secrets_home):
+        with pytest.raises(ValueError, match="path traversal"):
+            secret_exists("myapp", "../../etc/passwd")
+
+    def test_path_traversal_remove_rejected(self, secrets_home):
+        with pytest.raises(ValueError, match="path traversal"):
+            remove_secret("myapp", "../../../etc/passwd")

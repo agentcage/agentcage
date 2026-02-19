@@ -23,17 +23,26 @@ def _secrets_dir(deploy_name: str) -> Path:
     return config_dir
 
 
+def _safe_secret_path(secrets_dir: Path, key: str) -> Path:
+    """Resolve a secret key to a path, guarding against path traversal."""
+    resolved = (secrets_dir / key).resolve()
+    if not resolved.is_relative_to(secrets_dir.resolve()):
+        raise ValueError(f"Invalid secret key (path traversal): {key!r}")
+    return resolved
+
+
 def save_secret(deploy_name: str, key: str, value: str) -> None:
     """Store a secret value for a cage."""
     secrets_dir = _secrets_dir(deploy_name)
-    secret_path = secrets_dir / key
+    secret_path = _safe_secret_path(secrets_dir, key)
     secret_path.write_text(value)
     secret_path.chmod(0o600)
 
 
 def load_secret(deploy_name: str, key: str) -> str:
     """Load a secret value for a cage."""
-    secret_path = _secrets_dir(deploy_name) / key
+    secrets_dir = _secrets_dir(deploy_name)
+    secret_path = _safe_secret_path(secrets_dir, key)
     if not secret_path.is_file():
         raise FileNotFoundError(f"Secret '{key}' not found for '{deploy_name}'")
     return secret_path.read_text()
@@ -41,7 +50,8 @@ def load_secret(deploy_name: str, key: str) -> str:
 
 def secret_exists(deploy_name: str, key: str) -> bool:
     """Check if a secret exists for a cage."""
-    return (_secrets_dir(deploy_name) / key).is_file()
+    secrets_dir = _secrets_dir(deploy_name)
+    return _safe_secret_path(secrets_dir, key).is_file()
 
 
 def list_secrets(deploy_name: str) -> list[str]:
@@ -54,7 +64,8 @@ def list_secrets(deploy_name: str) -> list[str]:
 
 def remove_secret(deploy_name: str, key: str) -> bool:
     """Remove a secret. Returns True if removed."""
-    secret_path = _secrets_dir(deploy_name) / key
+    secrets_dir = _secrets_dir(deploy_name)
+    secret_path = _safe_secret_path(secrets_dir, key)
     if secret_path.is_file():
         secret_path.unlink()
         return True

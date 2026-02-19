@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import sys
@@ -14,6 +15,12 @@ _URL_TEMPLATE = (
     "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/"
     "{ci_version}/{arch}/vmlinux-{kernel_version}"
 )
+
+# SHA-256 checksums computed from upstream S3 objects
+_KERNEL_SHA256 = {
+    "x86_64": "27a8310b9a727517e9eb02044524b6ceb77de5728e3491b6974d5c846227ecc8",
+    "aarch64": "cb1291c66bca75bc11cb9c8357fcef9965bb1786dffcb42a60923c3e0e49f319",
+}
 
 
 def default_kernel_path() -> str:
@@ -89,6 +96,18 @@ def ensure_kernel(path: str | None = None) -> str:
     tmp = path + ".tmp"
     try:
         download_with_progress(url, tmp)
+
+        # Verify kernel integrity
+        arch = platform.machine()
+        expected = _KERNEL_SHA256.get(arch)
+        if expected:
+            actual = hashlib.sha256(open(tmp, "rb").read()).hexdigest()
+            if actual != expected:
+                raise RuntimeError(
+                    f"Kernel checksum mismatch: "
+                    f"expected {expected}, got {actual}"
+                )
+
         os.rename(tmp, path)
     except BaseException:
         # Clean up partial download

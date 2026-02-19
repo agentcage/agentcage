@@ -139,7 +139,7 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
             for srv in dns_servers:
                 dns_args += [f"--server=/{domain}/{srv}"]
 
-    dns_cmd = " ".join(f"'{a}'" if " " in a else a for a in dns_args)
+    dns_cmd = " ".join(_shell_quote(a) for a in dns_args)
 
     # Build proxy command
     proxy_cmd = (
@@ -152,19 +152,21 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
     # Proxy secrets (for secret injection)
     proxy_secret_args = ""
     for rule in config.secret_injection:
-        proxy_secret_args += f"    --secret {rule.env},type=env,target={rule.env} \\\n"
+        env_q = _shell_quote(f"{rule.env},type=env,target={rule.env}")
+        proxy_secret_args += f"    --secret {env_q} \\\n"
 
     # Agent container config
-    agent_image = cc.image
+    agent_image = _shell_quote(cc.image)
     agent_cmd = ""
     if cc.command:
-        agent_cmd = " ".join(cc.command)
+        agent_cmd = " ".join(_shell_quote(c) for c in cc.command)
 
     # Warn about host volume mounts (not supported in Firecracker mode)
     volume_warnings = ""
     if cc.volumes:
         for vol in cc.volumes:
-            volume_warnings += f'echo "start-cage: WARNING: host volume mount not supported in Firecracker mode, skipping: {vol}"\n'
+            vol_q = _shell_quote(vol)
+            volume_warnings += f'echo "start-cage: WARNING: host volume mount not supported in Firecracker mode, skipping:" {vol_q}\n'
 
     # Build cage container extra args
     cage_extra_args = ""
@@ -180,18 +182,20 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
     # Named volumes — backed by data drive if available
     named_volume_setup = ""
     for vol_name, mount_spec in cc.named_volumes.items():
+        vn_q = _shell_quote(vol_name)
+        vn_path_q = _shell_quote(f"/mnt/data/{vol_name}")
         named_volume_setup += f"""# Create named volume backed by data drive
 if [[ -d /mnt/data ]]; then
-    mkdir -p /mnt/data/{vol_name}
+    mkdir -p {vn_path_q}
     # Fix ownership: data migrated from rootless podman has UIDs shifted by
     # subuid offset (e.g. 100000). In the VM, rootful podman uses real UIDs.
-    if [[ -d /mnt/data/{vol_name} ]]; then
+    if [[ -d {vn_path_q} ]]; then
         # Find files owned by shifted UIDs (>=100000) and remap to real UIDs
-        find /mnt/data/{vol_name} -uid +99999 -exec chown 1000:1000 {{}} + 2>/dev/null || true
+        find {vn_path_q} -uid +99999 -exec chown 1000:1000 {{}} + 2>/dev/null || true
     fi
-    podman volume create --opt type=none --opt o=bind --opt device=/mnt/data/{vol_name} {vol_name} 2>/dev/null || true
+    podman volume create --opt type=none --opt o=bind --opt device={vn_path_q} {vn_q} 2>/dev/null || true
 else
-    podman volume create {vol_name} 2>/dev/null || true
+    podman volume create {vn_q} 2>/dev/null || true
 fi
 """
         cage_extra_args += f"    -v {_shell_quote(f'{vol_name}:{mount_spec}')} \\\n"
@@ -203,9 +207,9 @@ fi
 
     # Capabilities
     for cap in cc.drop_capabilities:
-        cage_extra_args += f"    --cap-drop {cap} \\\n"
+        cage_extra_args += f"    --cap-drop {_shell_quote(cap)} \\\n"
     for cap in cc.add_capabilities:
-        cage_extra_args += f"    --cap-add {cap} \\\n"
+        cage_extra_args += f"    --cap-add {_shell_quote(cap)} \\\n"
 
     # Resource limits
     if cc.memory:
@@ -227,19 +231,21 @@ fi
 
     # Podman secrets (direct secrets, not injection)
     for secret_name in cc.podman_secrets:
-        cage_extra_args += f"    --secret {secret_name},type=env,target={secret_name} \\\n"
+        sn_q = _shell_quote(f"{secret_name},type=env,target={secret_name}")
+        cage_extra_args += f"    --secret {sn_q} \\\n"
 
     # Secret injection placeholders — cage sees only the placeholder value
     for rule in config.secret_injection:
         cage_extra_args += f"    -e {_shell_quote(f'{rule.env}={rule.placeholder}')} \\\n"
 
     # Build the script
+    name_q = _shell_quote(name)
     script = f"""#!/bin/bash
 # Auto-generated cage startup script for {name}
 set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-CAGE_NAME="{name}"
+CAGE_NAME={name_q}
 
 {volume_warnings}echo "start-cage: creating networks"
 # Internal network — agent container only (no internet gateway)

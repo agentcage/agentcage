@@ -87,7 +87,9 @@ class TestEnsureFirecracker:
 
         with patch(
             "agentcage.firecracker.kernel.download_with_progress"
-        ) as mock_dl:
+        ) as mock_dl, patch(
+            "agentcage.firecracker.binaries._TARBALL_SHA256", {}
+        ):
             mock_dl.side_effect = fake_download
             result = ensure_firecracker(str(fc))
 
@@ -137,9 +139,43 @@ class TestEnsureFirecracker:
 
         with patch(
             "agentcage.firecracker.kernel.download_with_progress"
-        ) as mock_dl:
+        ) as mock_dl, patch(
+            "agentcage.firecracker.binaries._TARBALL_SHA256", {}
+        ):
             mock_dl.side_effect = fake_download
             result = ensure_firecracker()
 
         assert result == expected
         assert os.path.isfile(expected)
+
+    def test_checksum_mismatch_raises(self, tmp_path, monkeypatch):
+        fc = tmp_path / "firecracker"
+        monkeypatch.setattr("platform.machine", lambda: "x86_64")
+
+        import tarfile
+        import io
+
+        member_name = f"release-{_FIRECRACKER_VERSION}-x86_64/firecracker-{_FIRECRACKER_VERSION}-x86_64"
+
+        def fake_download(url, dest):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+                data = b"tampered-binary"
+                info = tarfile.TarInfo(name=member_name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+            with open(dest, "wb") as f:
+                f.write(buf.getvalue())
+
+        with patch(
+            "agentcage.firecracker.kernel.download_with_progress"
+        ) as mock_dl, patch(
+            "agentcage.firecracker.binaries._TARBALL_SHA256",
+            {"x86_64": "0000000000000000000000000000000000000000000000000000000000000000"},
+        ):
+            mock_dl.side_effect = fake_download
+
+            with pytest.raises(RuntimeError, match="checksum mismatch"):
+                ensure_firecracker(str(fc))
+
+        assert not fc.exists()

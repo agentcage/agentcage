@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import stat
@@ -13,6 +14,12 @@ _URL_TEMPLATE = (
     "https://github.com/firecracker-microvm/firecracker/releases/download/"
     "{version}/firecracker-{version}-{arch}.tgz"
 )
+
+# SHA-256 checksums from official .sha256.txt files on the GitHub release
+_TARBALL_SHA256 = {
+    "x86_64": "ea66dc1fbdb2473bbb95a1e822ae7884cd575a891a8f801258723258d36b7c7c",
+    "aarch64": "65a39256b9dd741e20c3a3fe5055cb38e5159049b5ede2015604951521000a04",
+}
 
 
 def default_firecracker_path() -> str:
@@ -58,8 +65,18 @@ def ensure_firecracker(path: str | None = None) -> str:
     try:
         download_with_progress(url, tarball)
 
-        # Tarball contains: release-v1.14.1-{arch}/firecracker-v1.14.1-{arch}
+        # Verify tarball integrity
         arch = platform.machine()
+        expected = _TARBALL_SHA256.get(arch)
+        if expected:
+            actual = hashlib.sha256(open(tarball, "rb").read()).hexdigest()
+            if actual != expected:
+                raise RuntimeError(
+                    f"Firecracker tarball checksum mismatch: "
+                    f"expected {expected}, got {actual}"
+                )
+
+        # Tarball contains: release-v1.14.1-{arch}/firecracker-v1.14.1-{arch}
         member_name = (
             f"release-{_FIRECRACKER_VERSION}-{arch}/"
             f"firecracker-{_FIRECRACKER_VERSION}-{arch}"
