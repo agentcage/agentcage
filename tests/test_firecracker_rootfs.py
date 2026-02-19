@@ -198,19 +198,17 @@ class TestGenerateStartupScript:
         # Proxy should get the real secret
         assert "--secret API_KEY,type=env,target=API_KEY" in script
 
-    def test_port_dnat_rules(self):
-        """DNAT should target the proxy (10.89.0.11), not the cage."""
+    def test_port_forward_socat(self):
+        """Ports should use socat forwarding to the proxy container."""
         cfg = _make_config(container={"ports": ["127.0.0.1:3000:3000", "8080:8080"]})
         script = _generate_startup_script(cfg, "testcage")
-        assert "iptables-legacy -t nat -A PREROUTING -p tcp --dport 3000 -j DNAT --to-destination 10.89.0.11:3000" in script
-        assert "iptables-legacy -t nat -A PREROUTING -p tcp --dport 8080 -j DNAT --to-destination 10.89.0.11:8080" in script
-        assert "iptables-legacy -t nat -A POSTROUTING -d 10.89.0.0/24 -j MASQUERADE" in script
+        assert "socat TCP-LISTEN:3000,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:3000 &" in script
+        assert "socat TCP-LISTEN:8080,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:8080 &" in script
 
-    def test_no_dnat_without_ports(self):
+    def test_no_port_forward_without_ports(self):
         cfg = _make_config(container={"ports": []})
         script = _generate_startup_script(cfg, "testcage")
-        assert "PREROUTING" not in script
-        assert "-d 10.89.0.0/24 -j MASQUERADE" not in script
+        assert "socat TCP-LISTEN" not in script
         # The external network MASQUERADE should still be there
         assert "POSTROUTING -s 10.90.0.0/24" in script
 
@@ -297,8 +295,8 @@ class TestGenerateStartupScript:
         assert "localhost/openclaw:latest" in script
         # Proxy should have reverse mode for port 18789
         assert "--mode reverse:http://10.89.0.2:18789@0.0.0.0:18789" in script
-        # DNAT targets proxy, not cage
-        assert "DNAT --to-destination 10.89.0.11:18789" in script
+        # socat forwards to proxy, not cage
+        assert "socat TCP-LISTEN:18789,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:18789 &" in script
         assert "--memory 8g" in script
         assert "--cap-drop ALL" in script
         assert "--cap-add NET_BIND_SERVICE" in script

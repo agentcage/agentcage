@@ -215,13 +215,12 @@ fi
 """
         cage_extra_args += f"    -v {_shell_quote(f'{vol_name}:{mount_spec}')} \\\n"
 
-    # Ports — build DNAT rules so traffic arriving on the VM's eth0 reaches the
-    # proxy container (firewall_driver=none means Podman won't create them).
-    # The proxy serves as a reverse proxy for inbound traffic, so DNAT targets
-    # the proxy IP (10.89.0.11), not the cage directly.
-    port_dnat_rules = ""
+    # Ports — use socat to forward traffic from the VM's eth0 to the proxy
+    # container.  iptables DNAT is unreliable here because firewall_driver=none
+    # means Podman doesn't set up bridge forwarding rules, and manual DNAT
+    # across the Podman bridge is fragile.  socat is simple and reliable.
+    port_forwards_script = ""
     for port_spec in cc.ports:
-        # Parse host_port:container_port for DNAT
         parts = port_spec.split(":")
         if len(parts) == 3:
             host_port, container_port = parts[1], parts[2]
@@ -229,18 +228,10 @@ fi
             host_port, container_port = parts[0], parts[1]
         else:
             host_port = container_port = parts[0]
-        port_dnat_rules += (
-            f'iptables-legacy -t nat -A PREROUTING -p tcp --dport {host_port}'
-            f' -j DNAT --to-destination 10.89.0.11:{container_port}'
-            f' || echo "start-cage: WARNING: DNAT rule failed for port {host_port}"\n'
-        )
-    # MASQUERADE so the container (on --internal network with no default
-    # gateway) sees traffic from a local address and can respond.
-    # Conntrack reverses both SNAT and DNAT on the return path.
-    if cc.ports:
-        port_dnat_rules += (
-            'iptables-legacy -t nat -A POSTROUTING -d 10.89.0.0/24 -j MASQUERADE'
-            ' || echo "start-cage: WARNING: MASQUERADE rule failed"\n'
+        port_forwards_script += (
+            f'echo "start-cage: port-forward 0.0.0.0:{host_port} -> 10.89.0.11:{container_port}"\n'
+            f'socat TCP-LISTEN:{host_port},bind=0.0.0.0,fork,reuseaddr'
+            f' TCP:10.89.0.11:{container_port} &\n'
         )
 
     # Capabilities
@@ -353,7 +344,7 @@ podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     {agent_cmd}
 
 echo "start-cage: all containers started"
-{port_dnat_rules}podman ps
+{port_forwards_script}podman ps
 
 # Follow all container logs so they appear on the VM console
 podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do echo "[dns] $line"; done &
