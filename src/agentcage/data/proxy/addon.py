@@ -9,6 +9,7 @@ from typing import Optional
 
 import yaml
 from mitmproxy import ctx, http
+from mitmproxy.proxy.mode_specs import ReverseMode
 
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.body_size import BodySizeInspector
@@ -228,7 +229,16 @@ class Agentcage:
         ctx_obj = self._build_context(flow)
         results: list[InspectionResult] = []
 
+        # Reverse proxy flows are inbound traffic (host → cage via proxy).
+        # Skip domain filtering (the "domain" is the internal cage IP, not
+        # an external target) but still run all other inspectors.
+        is_reverse = isinstance(
+            getattr(flow.client_conn, "proxy_mode", None), ReverseMode
+        )
+
         for inspector in self.inspectors:
+            if is_reverse and isinstance(inspector, DomainInspector):
+                continue
             result = inspector.inspect_request(ctx_obj)
             if result is not None:
                 results.append(result)

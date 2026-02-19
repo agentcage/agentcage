@@ -473,7 +473,7 @@ class TestProxyReverseMode:
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         proxy = files["test-proxy.container"]
         assert "--mode regular@10.89.0.11:8080" in proxy
-        assert "--mode reverse:http://10.89.0.2:3000@10.89.0.11:3000" in proxy
+        assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in proxy
         assert "PublishPort=127.0.0.1:3000:3000" in proxy
 
     def test_proxy_no_reverse_without_ports(self, minimal_yaml):
@@ -499,8 +499,8 @@ class TestProxyReverseMode:
         proxy = files["test-proxy.container"]
         cage = files["test-cage.container"]
         # Proxy has both reverse modes and both PublishPorts
-        assert "--mode reverse:http://10.89.0.2:3000@10.89.0.11:3000" in proxy
-        assert "--mode reverse:http://10.89.0.2:9090@10.89.0.11:9090" in proxy
+        assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in proxy
+        assert "--mode reverse:http://10.89.0.2:9090@0.0.0.0:9090" in proxy
         assert "PublishPort=127.0.0.1:3000:3000" in proxy
         assert "PublishPort=0.0.0.0:9090:9090" in proxy
         # Cage has no PublishPort

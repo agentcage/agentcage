@@ -256,8 +256,8 @@ class TestGenerateStartupScript:
         cfg = _make_config(container={"ports": ["127.0.0.1:3000:3000", "9090:9090"]})
         script = _generate_startup_script(cfg, "testcage")
         assert "--mode regular@10.89.0.11:8080" in script
-        assert "--mode reverse:http://10.89.0.2:3000@10.89.0.11:3000" in script
-        assert "--mode reverse:http://10.89.0.2:9090@10.89.0.11:9090" in script
+        assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in script
+        assert "--mode reverse:http://10.89.0.2:9090@0.0.0.0:9090" in script
 
     def test_proxy_no_reverse_without_ports(self):
         """Without ports, proxy should use simple --listen-port form."""
@@ -296,7 +296,7 @@ class TestGenerateStartupScript:
         # Should contain all the key elements
         assert "localhost/openclaw:latest" in script
         # Proxy should have reverse mode for port 18789
-        assert "--mode reverse:http://10.89.0.2:18789@10.89.0.11:18789" in script
+        assert "--mode reverse:http://10.89.0.2:18789@0.0.0.0:18789" in script
         # DNAT targets proxy, not cage
         assert "DNAT --to-destination 10.89.0.11:18789" in script
         assert "--memory 8g" in script

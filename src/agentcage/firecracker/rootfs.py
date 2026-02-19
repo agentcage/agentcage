@@ -154,7 +154,7 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
                 container_port = parts[1]
             else:
                 continue
-            proxy_cmd += f" --mode reverse:http://10.89.0.2:{container_port}@10.89.0.11:{container_port}"
+            proxy_cmd += f" --mode reverse:http://10.89.0.2:{container_port}@0.0.0.0:{container_port}"
         proxy_cmd += " --set connection_strategy=lazy"
     else:
         proxy_cmd = (
