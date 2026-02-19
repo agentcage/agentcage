@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -462,7 +463,20 @@ def cage_logs(name, services, lines, no_follow):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
 
-    units = [f"{name}-{svc}" for svc in (services or ("cage", "proxy", "dns"))]
+    cfg = state.load_deployment_config(name)
+    selected = services or ("cage", "proxy", "dns")
+
+    if cfg.isolation == "firecracker":
+        # Firecracker has a single host unit; container logs are prefixed
+        # [cage], [proxy], [dns] on the VM console.
+        _logs_firecracker(name, selected, lines, no_follow)
+    else:
+        _logs_container(name, selected, lines, no_follow)
+
+
+def _logs_container(name, services, lines, no_follow):
+    """Exec into journalctl with one -u per host-level service unit."""
+    units = [f"{name}-{svc}" for svc in services]
     cmd = ["journalctl", "--user"]
     for u in units:
         cmd += ["-u", u]
@@ -470,6 +484,28 @@ def cage_logs(name, services, lines, no_follow):
     if not no_follow:
         cmd.append("-f")
     os.execvp("journalctl", cmd)
+
+
+def _logs_firecracker(name, services, lines, no_follow):
+    """Show logs from the single Firecracker host unit, filtering by service prefix."""
+    cmd = ["journalctl", "--user", "-u", f"{name}-cage",
+           "-n", str(lines), "-o", "cat"]
+    if not no_follow:
+        cmd.append("-f")
+
+    need_filter = set(services) != {"cage", "proxy", "dns"}
+    if not need_filter:
+        os.execvp("journalctl", cmd)
+    else:
+        # Pipe through grep to match [cage]/[proxy]/[dns] prefixed lines
+        pattern = "|".join(rf"\[{svc}\]" for svc in services)
+        journal = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        grep = subprocess.Popen(
+            ["grep", "--line-buffered", "-E", pattern],
+            stdin=journal.stdout,
+        )
+        journal.stdout.close()  # allow SIGPIPE if grep exits
+        sys.exit(grep.wait())
 
 
 # ── secret group ─────────────────────────────────────────

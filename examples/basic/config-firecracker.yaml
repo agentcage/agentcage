@@ -16,6 +16,8 @@ firecracker:
 container:
   image: "localhost/basic-agent:latest"
   command: ["node", "/app/agent.js"]
+  ports:
+    - "127.0.0.1:3000:3000"
 
 domains:
   mode: allowlist
