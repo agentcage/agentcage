@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 
 import yaml
@@ -54,13 +55,23 @@ class DomainConfig:
 
 
 @dataclass
+class FirecrackerConfig:
+    kernel: str = ""  # path to vmlinux
+    vcpus: int = 2
+    mem_mb: int = 2048
+    firecracker_bin: str = "firecracker"
+
+
+@dataclass
 class Config:
     name: str = ""
+    isolation: str = "container"  # "container" | "firecracker"
     container: ContainerConfig = field(default_factory=ContainerConfig)
     secret_injection: list[SecretInjectionRule] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    firecracker: FirecrackerConfig = field(default_factory=FirecrackerConfig)
 
 
 def _host_dns_servers() -> list[str]:
@@ -87,6 +98,16 @@ def load_config(path: str) -> Config:
 
     cfg = Config()
     cfg.name = raw.get("name", "")
+    cfg.isolation = raw.get("isolation", "container")
+
+    # Firecracker section
+    fc_raw = raw.get("firecracker") or {}
+    fc = FirecrackerConfig()
+    fc.kernel = fc_raw.get("kernel", "")
+    fc.vcpus = int(fc_raw.get("vcpus", 2))
+    fc.mem_mb = int(fc_raw.get("mem_mb", 2048))
+    fc.firecracker_bin = fc_raw.get("firecracker_bin", "firecracker")
+    cfg.firecracker = fc
 
     # Container section
     c = raw.get("container") or {}
@@ -185,6 +206,26 @@ def validate_config(config: Config) -> list[str]:
         )
     if not config.container.image:
         raise ValueError("container.image is required in config")
+
+    if config.isolation not in ("container", "firecracker"):
+        raise ValueError(
+            f"isolation must be 'container' or 'firecracker' (got: {config.isolation!r})"
+        )
+
+    if config.isolation == "firecracker":
+        fc = config.firecracker
+        if not fc.kernel:
+            from agentcage.firecracker.kernel import default_kernel_path
+            fc.kernel = default_kernel_path()
+        if fc.firecracker_bin == "firecracker" and not shutil.which("firecracker"):
+            from agentcage.firecracker.binaries import default_firecracker_path
+            default_fc = default_firecracker_path()
+            if os.path.isfile(default_fc):
+                fc.firecracker_bin = default_fc
+        if fc.vcpus < 1:
+            raise ValueError("firecracker.vcpus must be >= 1")
+        if fc.mem_mb < 128:
+            raise ValueError("firecracker.mem_mb must be >= 128")
 
     warnings = []
 

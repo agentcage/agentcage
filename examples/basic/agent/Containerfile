@@ -1,0 +1,5 @@
+FROM node:22-slim
+WORKDIR /app
+COPY agent.js .
+EXPOSE 3000
+CMD ["node", "/app/agent.js"]

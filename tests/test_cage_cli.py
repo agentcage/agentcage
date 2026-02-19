@@ -150,11 +150,18 @@ class TestCageReload:
         assert mock_systemd.restart_unit.call_count == 3
 
 
+def _mock_config(isolation="container"):
+    cfg = MagicMock()
+    cfg.isolation = isolation
+    return cfg
+
+
 class TestCageLogs:
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
     def test_logs_default(self, mock_state, mock_execvp):
         mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
         result = _runner().invoke(main, ["cage", "logs", "basic"])
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user",
@@ -166,6 +173,7 @@ class TestCageLogs:
     @patch("agentcage.cli.state")
     def test_logs_filtered(self, mock_state, mock_execvp):
         mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
         result = _runner().invoke(main, ["cage", "logs", "basic", "-s", "proxy", "--no-follow"])
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user",
@@ -180,4 +188,72 @@ class TestCageLogs:
         result = _runner().invoke(main, ["cage", "logs", "nope"])
         assert result.exit_code != 0
         assert "does not exist" in result.output
+        mock_execvp.assert_not_called()
+
+    # -- Firecracker isolation --
+
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_firecracker_default(self, mock_state, mock_execvp):
+        """All services requested → single unit, no grep, uses -o cat."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        result = _runner().invoke(main, ["cage", "logs", "basic"])
+        mock_execvp.assert_called_once_with("journalctl", [
+            "journalctl", "--user", "-u", "basic-cage",
+            "-n", "50", "-o", "cat", "-f",
+        ])
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_firecracker_filtered(self, mock_state, mock_execvp, mock_popen):
+        """Single service requested → pipes through grep on [proxy] prefix."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+
+        mock_journal = MagicMock()
+        mock_grep = MagicMock()
+        mock_grep.wait.return_value = 0
+        mock_popen.side_effect = [mock_journal, mock_grep]
+
+        result = _runner().invoke(main, [
+            "cage", "logs", "basic", "-s", "proxy", "--no-follow",
+        ])
+
+        # journalctl Popen
+        mock_popen.assert_any_call(
+            ["journalctl", "--user", "-u", "basic-cage",
+             "-n", "50", "-o", "cat"],
+            stdout=ANY,
+        )
+        # grep Popen
+        mock_popen.assert_any_call(
+            ["grep", "--line-buffered", "-E", r"\[proxy\]"],
+            stdin=mock_journal.stdout,
+        )
+        mock_execvp.assert_not_called()
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_firecracker_multi_filter(self, mock_state, mock_execvp, mock_popen):
+        """Two services requested → grep alternation pattern."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+
+        mock_journal = MagicMock()
+        mock_grep = MagicMock()
+        mock_grep.wait.return_value = 0
+        mock_popen.side_effect = [mock_journal, mock_grep]
+
+        result = _runner().invoke(main, [
+            "cage", "logs", "basic", "-s", "proxy", "-s", "dns", "--no-follow",
+        ])
+
+        # grep pattern should match both [proxy] and [dns]
+        grep_call = mock_popen.call_args_list[1]
+        pattern = grep_call[0][0][3]  # 4th element of the command list
+        assert r"\[proxy\]" in pattern
+        assert r"\[dns\]" in pattern
         mock_execvp.assert_not_called()

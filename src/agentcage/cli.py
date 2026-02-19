@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from importlib.metadata import version
 
 from agentcage.config import load_config, validate_config
 from agentcage.podman import Podman
-from agentcage.quadlets import generate_quadlets
+from agentcage.backends import get_backend
 from agentcage import state, systemd
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -109,51 +110,15 @@ def _ensure_patches(podman: Podman) -> str:
 
 def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podman):
     """Build images, generate quadlets, install, and start."""
-    name = cfg.name
+    backend = get_backend(cfg)
 
     patches_work_dir = _ensure_patches(podman)
 
-    # Build images
-    containers_dir = str(_DATA_DIR / "containers")
-    build_context = str(_DATA_DIR)
-    click.echo("Building proxy image...")
-    podman.build_image(
-        "agentcage-proxy",
-        os.path.join(containers_dir, "Containerfile.proxy"),
-        build_context,
-    )
-    click.echo("Building DNS image...")
-    podman.build_image(
-        "agentcage-dns",
-        os.path.join(containers_dir, "Containerfile.dns"),
-        build_context,
-        cap_add=["CAP_SETFCAP"],
-    )
+    backend.build_artifacts(cfg, deploy_name)
 
-    # Generate quadlets
-    files = generate_quadlets(cfg, config_host_path, patches_work_dir, deploy_name)
-
-    # Write directly to systemd quadlet dir
-    quadlet_dest = Path(os.path.expanduser("~/.config/containers/systemd"))
-    quadlet_dest.mkdir(parents=True, exist_ok=True)
-    for filename, content in files.items():
-        (quadlet_dest / filename).write_text(content)
-    click.echo(f"Installed quadlet files to {quadlet_dest}/")
-
-    # Reload and start — restart network/volume first so they're recreated
-    # (systemd may think they're still active from a previous run even if
-    # podman resources were removed by 'cage destroy')
-    systemd.daemon_reload()
-    try:
-        systemd.restart_unit(f"{name}-net-network.service")
-    except Exception as e:
-        click.echo(f"warning: failed to restart network service: {e}", err=True)
-    try:
-        systemd.restart_unit(f"{name}-certs-volume.service")
-    except Exception as e:
-        click.echo(f"warning: failed to restart volume service: {e}", err=True)
-    systemd.start_unit(f"{name}-cage.service")
-    click.echo(f"Started {name}-cage")
+    units = backend.generate_units(cfg, config_host_path, patches_work_dir, deploy_name)
+    backend.install_units(units)
+    backend.start(cfg.name)
 
 
 def _restart_cage(name: str):
@@ -185,6 +150,19 @@ def cage_create(config_path: str):
         sys.exit(1)
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
+
+    if cfg.isolation == "firecracker":
+        backend = get_backend(cfg)
+        issues = backend.check_prerequisites(cfg)
+        if issues:
+            click.echo("Firecracker prerequisites not met:", err=True)
+            for issue in issues:
+                click.echo(f"  - {issue}", err=True)
+            click.echo(
+                "\nRun 'agentcage firecracker setup' for one-time host setup.",
+                err=True,
+            )
+            sys.exit(1)
 
     name = cfg.name
 
@@ -311,45 +289,21 @@ def cage_destroy(name: str, yes: bool):
             abort=True,
         )
 
-    quadlet_dir = Path(os.path.expanduser("~/.config/containers/systemd"))
-    removed: list[str] = []
+    # Load config to determine backend, fall back to container backend
+    try:
+        cfg = state.load_deployment_config(name)
+        backend = get_backend(cfg)
+    except Exception:
+        from agentcage.backends.container import ContainerBackend
+        backend = ContainerBackend()
 
     click.echo("Stopping services...")
-    for svc in ("cage", "proxy", "dns"):
-        try:
-            systemd.stop_unit(f"{name}-{svc}.service")
-        except Exception as e:
-            click.echo(f"warning: failed to stop {name}-{svc}: {e}", err=True)
+    backend.stop(name)
 
     click.echo("Removing quadlet files...")
-    quadlet_files = [
-        f"{name}-cage.container",
-        f"{name}-proxy.container",
-        f"{name}-dns.container",
-        f"{name}-net.network",
-        f"{name}-certs.volume",
-    ]
-    for fname in quadlet_files:
-        fpath = quadlet_dir / fname
-        if fpath.exists():
-            fpath.unlink()
-            removed.append(fname)
-
-    systemd.daemon_reload()
+    removed = backend.destroy_resources(name)
 
     click.echo("Removing Podman resources...")
-    podman = Podman()
-    if podman.network_remove(f"{name}-net"):
-        removed.append(f"network:{name}-net")
-    if podman.volume_remove(f"agentcage-certs-{name}"):
-        removed.append(f"volume:agentcage-certs-{name}")
-
-    # Remove scoped secrets
-    click.echo("Removing scoped secrets...")
-    for s in podman.secret_list(prefix=f"{name}."):
-        sname = s.get("Name", "")
-        if podman.secret_remove(sname):
-            removed.append(f"secret:{sname}")
 
     # Remove state
     if state.deployment_exists(name):
@@ -509,7 +463,20 @@ def cage_logs(name, services, lines, no_follow):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
 
-    units = [f"{name}-{svc}" for svc in (services or ("cage", "proxy", "dns"))]
+    cfg = state.load_deployment_config(name)
+    selected = services or ("cage", "proxy", "dns")
+
+    if cfg.isolation == "firecracker":
+        # Firecracker has a single host unit; container logs are prefixed
+        # [cage], [proxy], [dns] on the VM console.
+        _logs_firecracker(name, selected, lines, no_follow)
+    else:
+        _logs_container(name, selected, lines, no_follow)
+
+
+def _logs_container(name, services, lines, no_follow):
+    """Exec into journalctl with one -u per host-level service unit."""
+    units = [f"{name}-{svc}" for svc in services]
     cmd = ["journalctl", "--user"]
     for u in units:
         cmd += ["-u", u]
@@ -517,6 +484,28 @@ def cage_logs(name, services, lines, no_follow):
     if not no_follow:
         cmd.append("-f")
     os.execvp("journalctl", cmd)
+
+
+def _logs_firecracker(name, services, lines, no_follow):
+    """Show logs from the single Firecracker host unit, filtering by service prefix."""
+    cmd = ["journalctl", "--user", "-u", f"{name}-cage",
+           "-n", str(lines), "-o", "cat"]
+    if not no_follow:
+        cmd.append("-f")
+
+    need_filter = set(services) != {"cage", "proxy", "dns"}
+    if not need_filter:
+        os.execvp("journalctl", cmd)
+    else:
+        # Pipe through grep to match [cage]/[proxy]/[dns] prefixed lines
+        pattern = "|".join(rf"\[{svc}\]" for svc in services)
+        journal = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        grep = subprocess.Popen(
+            ["grep", "--line-buffered", "-E", pattern],
+            stdin=journal.stdout,
+        )
+        journal.stdout.close()  # allow SIGPIPE if grep exits
+        sys.exit(grep.wait())
 
 
 # ── secret group ─────────────────────────────────────────
@@ -725,3 +714,69 @@ def domain_rm(cage_name: str, domain_name: str):
     if reloaded:
         msg += " Cage reloaded."
     click.echo(msg)
+
+
+# ── firecracker group ─────────────────────────────────────
+
+
+@main.group(name="firecracker")
+def firecracker_group():
+    """Firecracker host setup and management."""
+
+
+@firecracker_group.command("setup")
+def firecracker_setup():
+    """One-time host setup: download kernel, check prerequisites, create bridge."""
+    from agentcage.firecracker.kernel import ensure_kernel, default_kernel_path
+    from agentcage.firecracker.binaries import ensure_firecracker, default_firecracker_path
+    from agentcage.firecracker import prerequisites, network
+    from agentcage.config import Config, FirecrackerConfig
+
+    # 1. Ensure kernel
+    kernel_path = default_kernel_path()
+    click.echo(f"Kernel: {kernel_path}")
+    try:
+        ensure_kernel(kernel_path)
+        click.echo("  ok")
+    except Exception as e:
+        click.echo(f"  FAILED: {e}", err=True)
+
+    # 2. Ensure Firecracker binary
+    fc_path = default_firecracker_path()
+    click.echo(f"Firecracker: {fc_path}")
+    try:
+        ensure_firecracker(fc_path)
+        click.echo("  ok")
+    except Exception as e:
+        click.echo(f"  FAILED: {e}", err=True)
+
+    # 3. Check prerequisites (use a minimal firecracker config for the check)
+    cfg = Config(
+        name="setup-check",
+        isolation="firecracker",
+        firecracker=FirecrackerConfig(kernel=kernel_path),
+    )
+    cfg.container.image = "placeholder"
+    issues = prerequisites.check_prerequisites(cfg)
+
+    if issues:
+        click.echo()
+        click.echo("Remaining issues:")
+        for issue in issues:
+            click.echo(f"  - {issue}")
+    else:
+        click.echo()
+        click.echo("All prerequisites met.")
+
+    # 4. Create bridge if missing
+    if not os.path.exists("/sys/class/net/agentcage-br0"):
+        click.echo()
+        click.echo("Creating network bridge (agentcage-br0)...")
+        try:
+            network.create_bridge()
+            click.echo("  ok")
+        except Exception as e:
+            click.echo(f"  FAILED: {e}", err=True)
+    else:
+        click.echo()
+        click.echo("Network bridge (agentcage-br0) already exists.")
