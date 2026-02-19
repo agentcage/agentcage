@@ -38,6 +38,9 @@ Issues = "https://github.com/agentcage/agentcage/issues"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "src/agentcage/data/proxy"]
+markers = [
+    "e2e_firecracker: end-to-end tests requiring KVM and Firecracker (slow)",
+]
 
 [tool.uv]
 package = true
