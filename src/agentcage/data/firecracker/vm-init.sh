@@ -100,54 +100,62 @@ echo "agentcage-vm: kernel $(uname -r)"
 # ── Prepare Podman runtime dirs (tmpfs loses them) ───────
 mkdir -p /run/containers/storage /var/lib/containers/storage
 
+# ── Handle restart: reset corrupted storage ───────────────
+# Firecracker VMs are killed abruptly, leaving Podman's overlay storage in
+# a corrupted state (broken symlinks, stale lock files).  On restart we
+# detect this, wipe the storage, and reload images from preserved tarballs.
+if [ -d /var/lib/containers/storage/overlay ]; then
+    echo "agentcage-vm: restart detected — resetting podman storage"
+    podman system reset --force 2>&1 || true
+    mkdir -p /run/containers/storage
+fi
+
 # ── Load pre-built container images ──────────────────────
 # Images are exported as gzipped, split chunks to work around mkfs.ext4 -d's
 # 2GB per-file limit.  Chunks are named <image>.tar.gz.00, .01, etc.
 # We reassemble then load with -i (not stdin) to avoid podman creating
 # a temp copy of the entire decompressed archive.
+#
+# On first boot, chunks are reassembled into .tar files and loaded.
+# The .tar files are kept (not deleted) so restarts can reload them.
 IMAGE_DIR="/var/lib/agentcage/images"
+NEED_LOAD=false
 if [[ -d "$IMAGE_DIR" ]]; then
     echo "agentcage-vm: images dir contents: $(ls -la $IMAGE_DIR)"
-    # Find unique image prefixes from split chunks (*.tar.gz.NN)
-    # Chunks are named <image>.tar.gz.00, .01, etc. (prefix includes trailing dot)
+
+    # Phase 1: reassemble split chunks into .tar files (first boot only)
     for chunk in "$IMAGE_DIR"/*.tar.gz.00; do
         [[ -f "$chunk" ]] || continue
-        # prefix keeps trailing dot: "name.tar.gz." so glob "name.tar.gz.*"
-        # won't match the reassembled "name.tar.gz"
         prefix="${chunk%00}"
         reassembled="${prefix%.}"
         echo "agentcage-vm: reassembling $(basename "$reassembled") ($(du -ch "${prefix}"* | tail -1 | cut -f1) total)"
-        # Reassemble: rename first chunk, append rest, delete as we go
         mv "$chunk" "$reassembled"
         for c in "${prefix}"*; do
             [[ -f "$c" ]] || continue
             cat "$c" >> "$reassembled"
             rm -f "$c"
         done
-        # Decompress gzip first so podman doesn't create a temp copy
-        # (podman load -i .tar reads directly; .tar.gz gets copied to /var/tmp)
         echo "agentcage-vm: decompressing $(basename "$reassembled") ($(du -h "$reassembled" | cut -f1))"
         gunzip "$reassembled"
-        decompressed="${reassembled%.gz}"
-        echo "agentcage-vm: loading image $(basename "$decompressed") ($(du -h "$decompressed" | cut -f1))"
-        if timeout 300 podman load -i "$decompressed" 2>&1; then
-            echo "agentcage-vm: loaded $(basename "$decompressed") ok"
-        else
-            echo "agentcage-vm: warning: failed to load $(basename "$decompressed")"
-        fi
-        rm -f "$decompressed"
+        NEED_LOAD=true
     done
-    # Also handle non-split archives (.tar or .tar.gz without chunk suffix)
-    for archive in "$IMAGE_DIR"/*.tar "$IMAGE_DIR"/*.tar.gz; do
-        [[ -f "$archive" ]] || continue
-        echo "agentcage-vm: loading image $(basename "$archive") ($(du -h "$archive" | cut -f1))"
-        if timeout 300 podman load -i "$archive" 2>&1; then
-            echo "agentcage-vm: loaded $(basename "$archive") ok"
-        else
-            echo "agentcage-vm: warning: failed to load $(basename "$archive")"
-        fi
-        rm -f "$archive"
-    done
+
+    # Phase 2: load all .tar files (first boot and restarts)
+    # Check if images are already loaded (skip on first boot after phase 1
+    # only if storage is clean — but always reload after a reset)
+    if ! podman image ls -q 2>/dev/null | grep -q . || [[ "$NEED_LOAD" == true ]]; then
+        for archive in "$IMAGE_DIR"/*.tar; do
+            [[ -f "$archive" ]] || continue
+            echo "agentcage-vm: loading image $(basename "$archive") ($(du -h "$archive" | cut -f1))"
+            if timeout 300 podman load -i "$archive" 2>&1; then
+                echo "agentcage-vm: loaded $(basename "$archive") ok"
+            else
+                echo "agentcage-vm: warning: failed to load $(basename "$archive")"
+            fi
+        done
+    else
+        echo "agentcage-vm: images already loaded, skipping"
+    fi
 fi
 
 # ── Start the cage ───────────────────────────────────────

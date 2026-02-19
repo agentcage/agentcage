@@ -450,8 +450,9 @@ def prepare_vm_rootfs(
         )
 
         # Determine rootfs size from actual staging content + headroom
-        # Images are loaded then deleted at boot, so we need space for
-        # tarballs + extracted layers simultaneously
+        # Image tarballs are kept on disk (not deleted) so the VM can
+        # reload them after a restart.  Peak usage: decompressed tarballs
+        # + overlay layer storage + podman temp files + base OS.
         result = subprocess.run(
             ["du", "-sm", staging],
             capture_output=True, text=True, check=True,

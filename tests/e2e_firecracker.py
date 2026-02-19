@@ -250,7 +250,6 @@ class TestCageLifecycle:
         yield
         _cage_destroy()
 
-    @pytest.mark.xfail(reason="Firecracker rootfs is not idempotent — VM restart requires rootfs rebuild")
     def test_stop_and_start(self):
         # Stop
         _run(["systemctl", "--user", "stop", f"{CAGE_NAME}-cage.service"])
@@ -267,8 +266,18 @@ class TestCageLifecycle:
             pass
         create_tap(CAGE_NAME)
         _run(["systemctl", "--user", "start", f"{CAGE_NAME}-cage.service"])
-        assert _wait_for_http(f"{BASE_URL}/", timeout=BOOT_TIMEOUT), \
-            "agent should be reachable after restart"
+        reachable = _wait_for_http(f"{BASE_URL}/", timeout=BOOT_TIMEOUT)
+        if not reachable:
+            # Dump journal for diagnostics
+            result = subprocess.run(
+                ["journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
+                 "--no-pager", "-n", "60"],
+                capture_output=True, text=True,
+            )
+            pytest.fail(
+                f"agent not reachable after restart\n"
+                f"--- journal ---\n{result.stdout}\n{result.stderr}"
+            )
         assert _service_is_active()
 
     def test_destroy_cleans_resources(self):
