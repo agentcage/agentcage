@@ -138,7 +138,6 @@ Firecracker-specific settings live under the `firecracker:` key in `config.yaml`
 | `vcpus` | int | `2` | Number of virtual CPUs to allocate to the VM. |
 | `mem_mb` | int | `2048` | VM memory in megabytes. |
 | `firecracker_bin` | string | `"firecracker"` | Path to the Firecracker binary. If omitted, auto-downloaded to `~/.local/share/agentcage/firecracker/` when not found in `$PATH`. |
-| `jailer` | bool | `false` | Run Firecracker inside the Firecracker jailer for additional isolation. Not yet implemented. |
 
 ### Example Configuration
 
@@ -216,8 +215,6 @@ journalctl --user -u basic-cage -f
 ## Known Limitations
 
 - **Host volume mounts are not supported.** The agent container runs inside a VM with its own rootfs. There is no mechanism to bind-mount directories from the host into the agent container. Agent code must be baked into the container image.
-
-- **Jailer support is not yet implemented.** The `jailer: true` option is accepted in configuration but does nothing. Firecracker jailer support is planned for a future release.
 
 - **4GB rootfs per cage.** The ext4 rootfs image is sparse, so it does not consume 4GB of disk immediately, but the full 4GB is reserved in the filesystem. Cages with large container images may require a larger rootfs — this is not currently configurable.
 

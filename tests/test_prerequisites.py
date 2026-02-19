@@ -15,9 +15,7 @@ def _make_fc_config(**overrides) -> Config:
         "kernel": "/boot/vmlinux",
         "vcpus": 2,
         "mem_mb": 2048,
-        "jailer": True,
         "firecracker_bin": "firecracker",
-        "jailer_bin": "jailer",
     }
     fc_kwargs.update(overrides)
     return Config(
@@ -65,17 +63,6 @@ class TestCheckPrerequisites:
         cfg = _make_fc_config()
         issues = check_prerequisites(cfg)
         assert any("kernel" in i for i in issues)
-
-    @patch("agentcage.firecracker.prerequisites.shutil.which")
-    @patch("agentcage.firecracker.prerequisites.os.access", return_value=True)
-    @patch("agentcage.firecracker.prerequisites.os.path.exists", return_value=True)
-    @patch("agentcage.firecracker.prerequisites.os.path.isfile", return_value=True)
-    @patch("agentcage.firecracker.prerequisites._is_setuid_root", return_value=True)
-    def test_jailer_disabled_skips_check(self, mock_setuid, mock_isfile, mock_exists, mock_access, mock_which):
-        mock_which.side_effect = lambda name: "/usr/bin/fake" if name != "jailer" else None
-        cfg = _make_fc_config(jailer=False)
-        issues = check_prerequisites(cfg)
-        assert not any("jailer" in i for i in issues)
 
     def test_empty_kernel_path(self):
         cfg = _make_fc_config(kernel="")

@@ -59,9 +59,7 @@ class FirecrackerConfig:
     kernel: str = ""  # path to vmlinux
     vcpus: int = 2
     mem_mb: int = 2048
-    jailer: bool = True
     firecracker_bin: str = "firecracker"
-    jailer_bin: str = "jailer"
 
 
 @dataclass
@@ -108,9 +106,7 @@ def load_config(path: str) -> Config:
     fc.kernel = fc_raw.get("kernel", "")
     fc.vcpus = int(fc_raw.get("vcpus", 2))
     fc.mem_mb = int(fc_raw.get("mem_mb", 2048))
-    fc.jailer = fc_raw.get("jailer", True)
     fc.firecracker_bin = fc_raw.get("firecracker_bin", "firecracker")
-    fc.jailer_bin = fc_raw.get("jailer_bin", "jailer")
     cfg.firecracker = fc
 
     # Container section

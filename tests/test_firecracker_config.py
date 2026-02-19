@@ -18,9 +18,7 @@ class TestFirecrackerConfigDefaults:
         assert fc.kernel == ""
         assert fc.vcpus == 2
         assert fc.mem_mb == 2048
-        assert fc.jailer is True
         assert fc.firecracker_bin == "firecracker"
-        assert fc.jailer_bin == "jailer"
 
 
 class TestFirecrackerConfigParsing:
@@ -48,18 +46,14 @@ class TestFirecrackerConfigParsing:
               kernel: /boot/vmlinux
               vcpus: 4
               mem_mb: 4096
-              jailer: false
               firecracker_bin: /usr/bin/firecracker
-              jailer_bin: /usr/bin/jailer
         """))
         cfg = load_config(str(p))
         fc = cfg.firecracker
         assert fc.kernel == "/boot/vmlinux"
         assert fc.vcpus == 4
         assert fc.mem_mb == 4096
-        assert fc.jailer is False
         assert fc.firecracker_bin == "/usr/bin/firecracker"
-        assert fc.jailer_bin == "/usr/bin/jailer"
 
     def test_container_mode_ignores_firecracker_section(self, tmp_path):
         p = tmp_path / "config.yaml"

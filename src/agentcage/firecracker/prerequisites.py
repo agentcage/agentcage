@@ -39,13 +39,6 @@ def check_prerequisites(config: Config) -> list[str]:
                 "install Firecracker: https://github.com/firecracker-microvm/firecracker/releases"
             )
 
-    # jailer binary (if enabled)
-    if fc.jailer and not shutil.which(fc.jailer_bin):
-        issues.append(
-            f"'{fc.jailer_bin}' not found in PATH — "
-            "install Firecracker jailer or set firecracker.jailer: false"
-        )
-
     # Kernel image
     if not fc.kernel:
         issues.append("firecracker.kernel is not set in config")
