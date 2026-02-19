@@ -71,22 +71,51 @@ cmd_create_bridge() {
         nft add rule inet filter forward iifname "$BRIDGE" accept 2>/dev/null || true
         nft add rule inet filter forward oifname "$BRIDGE" accept 2>/dev/null || true
     fi
+
+    # nftables INPUT rules — allow VMs to reach host-local services (e.g.
+    # services bound to Tailscale IPs). The VM is the isolation boundary.
+    if command -v nft &>/dev/null && nft list chain inet filter input &>/dev/null 2>&1; then
+        nft add rule inet filter input iifname "$BRIDGE" accept 2>/dev/null || true
+    fi
+
+    # iptables INPUT rules — some hosts (e.g. Tailscale) have chains that
+    # drop traffic from non-standard interfaces to local IPs.
+    if ! iptables -C INPUT -i "$BRIDGE" -j ACCEPT 2>/dev/null; then
+        iptables -I INPUT -i "$BRIDGE" -j ACCEPT
+    fi
+    # If Tailscale's ts-input chain exists, add ACCEPT before its DROP rule
+    if iptables -L ts-input -n &>/dev/null 2>&1; then
+        if ! iptables -C ts-input -i "$BRIDGE" -j ACCEPT 2>/dev/null; then
+            iptables -I ts-input 3 -i "$BRIDGE" -j ACCEPT
+        fi
+    fi
+
     echo "created bridge $BRIDGE ($BRIDGE_IP)"
 }
 
 cmd_destroy_bridge() {
-    # Remove nftables FORWARD rules
-    if command -v nft &>/dev/null && nft list chain inet filter forward &>/dev/null 2>&1; then
-        local handle
-        for handle in $(nft -a list chain inet filter forward 2>/dev/null \
-            | grep -E "iifname \"$BRIDGE\"|oifname \"$BRIDGE\"" \
-            | sed -n 's/.*# handle //p'); do
-            nft delete rule inet filter forward handle "$handle" 2>/dev/null || true
+    # Remove nftables FORWARD and INPUT rules
+    if command -v nft &>/dev/null; then
+        local chain handle
+        for chain in forward input; do
+            if nft list chain inet filter "$chain" &>/dev/null 2>&1; then
+                for handle in $(nft -a list chain inet filter "$chain" 2>/dev/null \
+                    | grep -E "iifname \"$BRIDGE\"|oifname \"$BRIDGE\"" \
+                    | sed -n 's/.*# handle //p'); do
+                    nft delete rule inet filter "$chain" handle "$handle" 2>/dev/null || true
+                done
+            fi
         done
     fi
     # Remove iptables FORWARD rules
     iptables -D FORWARD -i "$BRIDGE" -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -o "$BRIDGE" -j ACCEPT 2>/dev/null || true
+    # Remove iptables INPUT rules
+    iptables -D INPUT -i "$BRIDGE" -j ACCEPT 2>/dev/null || true
+    # Remove Tailscale ts-input rule
+    if iptables -L ts-input -n &>/dev/null 2>&1; then
+        iptables -D ts-input -i "$BRIDGE" -j ACCEPT 2>/dev/null || true
+    fi
     # Remove MASQUERADE rule
     iptables -t nat -D POSTROUTING -s "$BRIDGE_SUBNET" ! -o "$BRIDGE" -j MASQUERADE 2>/dev/null || true
     ip link delete "$BRIDGE" 2>/dev/null || true
