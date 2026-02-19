@@ -258,6 +258,16 @@ class TestCageLifecycle:
         status, _ = _http_get(f"{BASE_URL}/", timeout=3)
         assert status == 0, "agent should be unreachable after stop"
 
+        # Verify graceful shutdown happened (use enough lines to see past
+        # the kernel panic stack trace that follows the shutdown)
+        result = subprocess.run(
+            ["journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
+             "--no-pager", "-n", "100"],
+            capture_output=True, text=True,
+        )
+        assert "all containers stopped" in result.stdout, \
+            f"containers not stopped cleanly\n{result.stdout}"
+
         # Start
         from agentcage.firecracker.network import create_bridge, create_tap
         try:

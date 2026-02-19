@@ -23,6 +23,11 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mkdir -p /run/lock
 
+# ── Ctrl+Alt+Del → SIGINT to PID 1 (not hard reboot) ────
+# Firecracker's SendCtrlAltDel triggers this; mode 0 sends
+# SIGINT to init so our trap can do a graceful shutdown.
+echo 0 > /proc/sys/kernel/ctrl-alt-del 2>/dev/null || true
+
 # ── Mount cgroups (required for Podman) ──────────────────
 if ! mountpoint -q /sys/fs/cgroup 2>/dev/null; then
     if mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null; then
@@ -174,7 +179,30 @@ fi
 
 echo "agentcage-vm: init complete, cage $CAGE_NAME is running"
 
-# Keep PID 1 alive — reap zombies
+# ── Graceful shutdown on SIGINT (SendCtrlAltDel) / SIGTERM ──
+# Disable errexit — bash's SIGINT handling with set -e can cause
+# immediate exit before the trap handler fires.
+set +e
+
+shutdown_vm() {
+    echo "agentcage-vm: graceful shutdown requested"
+    for c in "${CAGE_NAME}-cage" "${CAGE_NAME}-proxy" "${CAGE_NAME}-dns"; do
+        echo "agentcage-vm: stopping $c"
+        podman stop --time 10 "$c" 2>/dev/null || true
+    done
+    echo "agentcage-vm: all containers stopped"
+    sync
+    echo o > /proc/sysrq-trigger   # SysRq poweroff
+    sleep 5                         # fallback if SysRq unsupported
+    exit 0                          # kernel panic → Firecracker exits
+}
+trap shutdown_vm SIGINT SIGTERM
+
+# Keep PID 1 alive — reap zombies.
+# sleep runs in the background so that `wait` (a bash builtin) is the
+# foreground operation.  This lets signals (SIGINT from SendCtrlAltDel)
+# interrupt wait immediately and trigger the trap handler.
 while true; do
-    wait -n 2>/dev/null || sleep 60
+    sleep 60 &
+    wait -n 2>/dev/null || true
 done
