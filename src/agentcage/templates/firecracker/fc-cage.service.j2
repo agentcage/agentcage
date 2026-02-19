@@ -4,12 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=sudo {{ nethelper }} create-tap {{ name }}
 ExecStart={{ firecracker_bin }} --api-sock {{ runtime_dir }}/vm.sock --config-file {{ vm_config_path }}
 {% for fwd in port_forwards %}
 ExecStartPost=/bin/bash -c 'for i in $(seq 1 90); do if socat -T0 TCP-CONNECT:{{ vm_ip }}:{{ fwd.vm_port }} /dev/null 2>/dev/null; then socat TCP-LISTEN:{{ fwd.host_port }},bind={{ fwd.host_bind }},fork,reuseaddr TCP:{{ vm_ip }}:{{ fwd.vm_port }} & echo "port-forward: {{ fwd.host_bind }}:{{ fwd.host_port }} -> {{ vm_ip }}:{{ fwd.vm_port }}"; break; fi; sleep 2; done'
 {% endfor %}
-ExecStopPost=sudo {{ nethelper }} destroy-tap {{ name }}
 Restart={{ restart }}
 RestartSec={{ restart_sec }}
 {% if timeout_start_sec %}
@@ -19,6 +17,12 @@ TimeoutStartSec={{ timeout_start_sec }}
 TimeoutStopSec={{ timeout_stop_sec }}
 {% endif %}
 RuntimeDirectory=agentcage/{{ name }}
+
+# Host-side hardening (TAP creation/destruction moved to CLI, so no sudo
+# needed in the service — seccomp directives are safe to apply)
+NoNewPrivileges=yes
+RestrictRealtime=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=default.target

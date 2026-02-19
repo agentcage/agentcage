@@ -161,7 +161,6 @@ class FirecrackerBackend:
             })
 
         # Generate the host systemd unit (one service for the entire VM)
-        nethelper = shutil.which("agentcage-nethelper") or "agentcage-nethelper"
         firecracker_path = shutil.which(fc.firecracker_bin) or fc.firecracker_bin
         runtime_dir = f"/run/user/{os.getuid()}/agentcage/{name}"
 
@@ -174,7 +173,6 @@ class FirecrackerBackend:
         template = env.get_template("fc-cage.service.j2")
         unit_content = template.render(
             name=name,
-            nethelper=nethelper,
             firecracker_bin=firecracker_path,
             vm_config_path=vm_cfg_path,
             runtime_dir=runtime_dir,
@@ -206,6 +204,10 @@ class FirecrackerBackend:
         except Exception as e:
             click.echo(f"warning: failed to create bridge: {e}", err=True)
 
+        # Create TAP device before starting the service (requires sudo,
+        # which is incompatible with systemd hardening directives)
+        network.create_tap(name)
+
         systemd.start_unit(f"{name}-cage.service")
         click.echo(f"Started {name} (Firecracker VM)")
 
@@ -214,6 +216,12 @@ class FirecrackerBackend:
             systemd.stop_unit(f"{name}-cage.service")
         except Exception as e:
             click.echo(f"warning: failed to stop {name}: {e}", err=True)
+
+        # Destroy TAP device after stopping the service
+        try:
+            network.destroy_tap(name)
+        except Exception:
+            pass
 
     def restart(self, name: str) -> None:
         try:
