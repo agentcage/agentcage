@@ -200,10 +200,34 @@ fi
 """
         cage_extra_args += f"    -v {_shell_quote(f'{vol_name}:{mount_spec}')} \\\n"
 
-    # Ports — rewrite 127.0.0.1 → 0.0.0.0 since VM is the isolation boundary
+    # Ports — rewrite 127.0.0.1 → 0.0.0.0 since VM is the isolation boundary.
+    # Also build DNAT rules so traffic arriving on the VM's eth0 reaches the
+    # container (firewall_driver=none means Podman won't create them).
+    port_dnat_rules = ""
     for port_spec in cc.ports:
         vm_port = port_spec.replace("127.0.0.1:", "0.0.0.0:")
         cage_extra_args += f"    -p {_shell_quote(vm_port)} \\\n"
+        # Parse host_port:container_port for DNAT
+        parts = vm_port.split(":")
+        if len(parts) == 3:
+            host_port, container_port = parts[1], parts[2]
+        elif len(parts) == 2:
+            host_port, container_port = parts[0], parts[1]
+        else:
+            host_port = container_port = parts[0]
+        port_dnat_rules += (
+            f'iptables-legacy -t nat -A PREROUTING -p tcp --dport {host_port}'
+            f' -j DNAT --to-destination 10.89.0.2:{container_port}'
+            f' || echo "start-cage: WARNING: DNAT rule failed for port {host_port}"\n'
+        )
+    # MASQUERADE so the container (on --internal network with no default
+    # gateway) sees traffic from a local address and can respond.
+    # Conntrack reverses both SNAT and DNAT on the return path.
+    if cc.ports:
+        port_dnat_rules += (
+            'iptables-legacy -t nat -A POSTROUTING -d 10.89.0.0/24 -j MASQUERADE'
+            ' || echo "start-cage: WARNING: MASQUERADE rule failed"\n'
+        )
 
     # Capabilities
     for cap in cc.drop_capabilities:
@@ -300,7 +324,7 @@ podman cp "${{CAGE_NAME}}-proxy:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem
 echo "start-cage: starting cage container (internal network only)"
 podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     --log-driver k8s-file \\
-    --network "${{CAGE_NAME}}-net" \\
+    --network "${{CAGE_NAME}}-net:ip=10.89.0.2" \\
     -e "HTTP_PROXY=http://10.89.0.11:8080" \\
     -e "HTTPS_PROXY=http://10.89.0.11:8080" \\
     -e "http_proxy=http://10.89.0.11:8080" \\
@@ -315,7 +339,7 @@ podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     {agent_cmd}
 
 echo "start-cage: all containers started"
-podman ps
+{port_dnat_rules}podman ps
 
 # Follow all container logs so they appear on the VM console
 podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do echo "[dns] $line"; done &

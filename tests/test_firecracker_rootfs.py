@@ -200,6 +200,21 @@ class TestGenerateStartupScript:
         # Proxy should get the real secret
         assert "--secret API_KEY,type=env,target=API_KEY" in script
 
+    def test_port_dnat_rules(self):
+        cfg = _make_config(container={"ports": ["127.0.0.1:3000:3000", "8080:8080"]})
+        script = _generate_startup_script(cfg, "testcage")
+        assert "iptables-legacy -t nat -A PREROUTING -p tcp --dport 3000 -j DNAT --to-destination 10.89.0.2:3000" in script
+        assert "iptables-legacy -t nat -A PREROUTING -p tcp --dport 8080 -j DNAT --to-destination 10.89.0.2:8080" in script
+        assert "iptables-legacy -t nat -A POSTROUTING -d 10.89.0.0/24 -j MASQUERADE" in script
+
+    def test_no_dnat_without_ports(self):
+        cfg = _make_config(container={"ports": []})
+        script = _generate_startup_script(cfg, "testcage")
+        assert "PREROUTING" not in script
+        assert "-d 10.89.0.0/24 -j MASQUERADE" not in script
+        # The external network MASQUERADE should still be there
+        assert "POSTROUTING -s 10.90.0.0/24" in script
+
     def test_host_volumes_warning(self):
         cfg = _make_config(container={"volumes": ["./data:/data:rw"]})
         script = _generate_startup_script(cfg, "testcage")
