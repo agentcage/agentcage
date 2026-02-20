@@ -14,7 +14,7 @@ Because "the agent would never do that" is not a security policy.
 
 ## What is it?
 
-agentcage is a CLI that generates hardened, sandboxed container environments for AI agents. It produces [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that deploy three containers on a rootless [Podman](https://podman.io/) network -- no root privileges required. Your agent runs on an internal-only network with no internet gateway; the only way out is through an inspecting [mitmproxy](https://mitmproxy.org/) that scans every HTTP request before forwarding it.
+agentcage is a CLI that generates hardened, sandboxed environments for AI agents. In the default **container mode**, it produces [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that deploy three containers on a rootless [Podman](https://podman.io/) network -- no root privileges required. In **[Firecracker](https://firecracker-microvm.github.io/) mode**, the same container topology runs inside a dedicated microVM with its own Linux kernel, providing hardware-level isolation via KVM. In both modes, your agent runs on an internal-only network with no internet gateway; the only way out is through an inspecting [mitmproxy](https://mitmproxy.org/) that scans every HTTP request before forwarding it.
 
 ## Features
 
@@ -87,6 +87,22 @@ All HTTP traffic is routed via `HTTP_PROXY` / `HTTPS_PROXY` to the mitmproxy con
 
 See [Architecture](docs/architecture.md) for the full inspector chain, startup order, and certificate sharing.
 
+## Isolation Modes
+
+agentcage supports two isolation modes. Both share the same three-container topology and inspector chain — the difference is what provides the outer isolation boundary.
+
+| | Container mode (default) | Firecracker mode |
+|---|---|---|
+| **Isolation** | Linux namespaces (rootless Podman) | Hardware virtualization (KVM) |
+| **Kernel** | Shared with host | Dedicated guest kernel per cage |
+| **Container escape risk** | Mitigated by hardening, not eliminated | Eliminated — escape lands in VM, not on host |
+| **Root required** | No | Yes (for TAP device and bridge setup) |
+| **macOS support** | Yes (via Podman machine) | No (requires `/dev/kvm`) |
+| **Boot overhead** | ~1s | ~7s |
+| **Best for** | Development, CI, low-risk workloads | Production, untrusted agents, high-security |
+
+Set `isolation: firecracker` in your config to use Firecracker mode. See [Firecracker MicroVM Isolation](docs/firecracker.md) for setup and details.
+
 ## Prerequisites
 
 - [Podman](https://podman.io/) (rootless)
@@ -123,6 +139,10 @@ podman machine start
 ```
 
 > **Note:** On macOS, Podman runs containers inside a Linux VM. `podman machine init` creates and `podman machine start` starts it.
+
+### Firecracker Mode (optional)
+
+Firecracker mode requires Linux with `/dev/kvm` access. See [Firecracker setup](docs/firecracker.md#setup) for full prerequisites. macOS is not supported for Firecracker mode.
 
 ## Install
 
@@ -212,7 +232,7 @@ See the [Configuration Reference](docs/configuration.md) for all settings, defau
 
 ## Security
 
-The agent has no internet gateway -- all traffic must pass through the proxy, which applies domain filtering, secret detection, payload inspection, and custom inspectors. See [Security & Threat Model](docs/security.md) for the full threat model, defense layers, and known limitations.
+The agent has no internet gateway -- all traffic must pass through the proxy, which applies domain filtering, secret detection, payload inspection, and custom inspectors. For workloads requiring hardware-level isolation, Firecracker mode adds a dedicated guest kernel per cage, eliminating container escape as an attack vector. See [Security & Threat Model](docs/security.md) for the full threat model, defense layers, and known limitations.
 
 ## License
 

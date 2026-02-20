@@ -1,8 +1,8 @@
 # Architecture
 
-agentcage generates [systemd quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) files that define 3 containers, a Podman network, and a shared certificate volume. Together they form a proxy sandbox where all agent HTTP traffic is inspected before reaching the internet.
+agentcage deploys a three-container topology — agent, DNS sidecar, and inspecting proxy — on an internal network with no internet gateway. In **container mode** (default), these containers run directly on the host via rootless Podman. In **Firecracker mode**, the same topology runs inside a dedicated microVM with its own kernel, adding hardware-level isolation around the containers.
 
-For configuration options, see the [Configuration Reference](configuration.md). For hardware-level VM isolation via Firecracker, see [Firecracker MicroVM Isolation](firecracker.md).
+This document covers the shared architecture used by both modes. For Firecracker-specific details (VM rootfs, TAP networking, privilege model), see [Firecracker MicroVM Isolation](firecracker.md). For configuration options, see the [Configuration Reference](configuration.md).
 
 ## Container Topology
 
@@ -26,6 +26,26 @@ For configuration options, see the [Configuration Reference](configuration.md). 
   │                                                                  │
   └──────────────────────────────────────────────────────────────────┘
 ```
+
+## Isolation Boundary
+
+In container mode, the three containers above run directly on the host using rootless Podman. Network isolation is enforced by Podman's `--internal` network flag, and container hardening (read-only rootfs, dropped capabilities, no-new-privileges) reduces the attack surface. However, all containers share the host kernel.
+
+In Firecracker mode, the entire topology runs inside a Firecracker microVM with a dedicated guest kernel. The VM itself becomes the isolation boundary — a container escape lands inside the VM, not on the host. The host sees only the Firecracker process and a TAP device; the agent's containers are invisible to the host's container runtime.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Firecracker VM (dedicated kernel, KVM isolation)           │
+│                                                             │
+│   ┌─────────────────────────────────────────────────────┐   │
+│   │  Podman internal network (same topology as above)   │   │
+│   │  Agent ──► DNS sidecar ──► Proxy ──► Internet       │   │
+│   └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└───────────────── TAP device ──── Bridge ──── Host ──────────┘
+```
+
+This is the **only** architectural difference between the modes. The inspector chain, secret injection, DNS filtering, and all other inspection logic are identical.
 
 **Agent** -- The user's container (e.g. an AI coding agent), at fixed IP `10.89.0.2`. It is connected *only* to the internal network and has no internet gateway. `HTTP_PROXY` and `HTTPS_PROXY` environment variables force all outbound HTTP traffic through the proxy container. The agent cannot reach the internet by any other path. Published ports are not exposed on the agent container — they are served by the proxy.
 

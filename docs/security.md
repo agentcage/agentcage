@@ -6,6 +6,24 @@ For architecture details, see [Architecture](architecture.md). For configuration
 
 ## Threat Model
 
+### Isolation modes and the threat surface
+
+agentcage offers two isolation modes that affect the threat model differently:
+
+**Container mode** (default) — The agent runs in a rootless Podman container with hardened defaults (read-only rootfs, all capabilities dropped, no-new-privileges). Network isolation is enforced by Podman's internal network. This provides strong defense against HTTP-based exfiltration, but all containers share the host kernel. A container escape via a kernel or runtime CVE is out of scope for this mode.
+
+**Firecracker mode** — The same container topology runs inside a Firecracker microVM with a dedicated guest kernel, isolated by KVM hardware virtualization. This brings "kernel or container escapes" **into scope** as a defended threat: an escape from the container lands inside the VM, not on the host. The host sees only the Firecracker VMM process.
+
+| Threat | Container mode | Firecracker mode |
+|---|---|---|
+| HTTP/HTTPS exfiltration | Defended (proxy inspection) | Defended (same) |
+| Secret leakage | Defended (injection + scanning) | Defended (same) |
+| Unauthorized API calls | Defended (domain filtering) | Defended (same) |
+| DNS exfiltration | Partially defended (placeholder IPs) | Partially defended (same) |
+| Container/runtime escape | **Out of scope** (shared kernel) | Defended (VM boundary) |
+| Kernel exploit | **Out of scope** (shared kernel) | Defended (guest kernel) |
+| Side-channel attacks | Out of scope | Out of scope |
+
 ### What agentcage prevents
 
 The primary threat is an AI agent exfiltrating sensitive data -- secrets, source code, environment variables -- via HTTP requests. This covers both intentional exfiltration (a compromised or misaligned agent deliberately sending secrets to an attacker-controlled server) and accidental leakage (an agent including sensitive context in API calls it wasn't supposed to make).
@@ -22,7 +40,7 @@ The primary threat is an AI agent exfiltrating sensitive data -- secrets, source
 
 - **Non-HTTP protocols** -- TCP/UDP connections other than HTTP (blocked by network isolation, but not inspected)
 - **DNS exfiltration** -- data encoded in subdomain labels of allowlisted domains (blocked for non-allowlisted domains; see Known Limitations)
-- **Kernel or container escapes** -- exploits that break out of the Podman container
+- **Kernel or container escapes (container mode)** -- exploits that break out of the Podman container via kernel or runtime vulnerabilities. In Firecracker mode, these are contained by the VM boundary (see Isolation modes above).
 - **Side-channel attacks** -- timing-based or resource-usage-based data leakage
 - **Multi-request evasion** -- splitting secrets across many small requests to avoid pattern matching
 - **Confused deputy / prompt injection** -- an agent tricked into exfiltrating data through legitimate-looking requests to allowed domains
@@ -31,7 +49,7 @@ The primary threat is an AI agent exfiltrating sensitive data -- secrets, source
 
 agentcage applies multiple overlapping defenses:
 
-1. **Network isolation** -- The agent container is on a Podman `--internal` network with no internet gateway. The only path to the internet is through the mitmproxy container. Published ports are served by the proxy container via mitmproxy reverse mode, so both inbound and outbound HTTP traffic passes through the inspector chain. This is enforced at the network level and cannot be bypassed by the agent process.
+1. **Network isolation** -- The agent container is on a Podman `--internal` network with no internet gateway. The only path to the internet is through the mitmproxy container. Published ports are served by the proxy container via mitmproxy reverse mode, so both inbound and outbound HTTP traffic passes through the inspector chain. This is enforced at the network level and cannot be bypassed by the agent process. In Firecracker mode, the network isolation has an additional layer: the VM's only external connectivity is a single TAP device bridged to the host, and the Firecracker VMM enforces that the VM cannot create additional network interfaces.
 
 2. **Domain filtering** -- An allowlist or blocklist controls which domains the agent can reach. Non-matching requests receive a 403 response with a JSON body explaining the block. Subdomains are matched automatically.
 
@@ -115,7 +133,9 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 **Supply chain poisoning** -- The agent can install arbitrary packages from allowlisted registries (npm, PyPI, etc.). A prompt injection could direct the agent to install a malicious package that runs code inside the container. Container hardening (read-only root, dropped caps, no-new-privileges) limits the impact but does not prevent data access within the agent's workspace. Consider pre-approved package lists for high-security deployments.
 
-**Shared kernel** -- Rootless Podman containers share the host kernel. A container escape CVE in the Linux kernel or runc/crun would bypass all protections. For workloads where this is unacceptable, use [Firecracker MicroVM isolation](firecracker.md) (`isolation: firecracker`) which provides hardware-level isolation via KVM with a dedicated guest kernel per cage.
+**Shared kernel (container mode only)** — In container mode, rootless Podman containers share the host kernel. A container escape CVE in the Linux kernel, runc, or crun would bypass all container-level protections and give the agent access to the host. This is the most significant limitation of container mode.
+
+Firecracker mode eliminates this limitation. Each cage runs in a dedicated microVM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host — and the VM has no host filesystem access. Set `isolation: firecracker` to use this mode. See [Firecracker MicroVM Isolation](firecracker.md) for setup and tradeoffs.
 
 ## Reporting Security Issues
 

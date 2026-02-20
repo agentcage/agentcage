@@ -4,6 +4,21 @@ Firecracker microVM isolation is an optional alternative to the default containe
 
 For configuration options, see the [Configuration Reference](configuration.md).
 
+## Why Firecracker
+
+Container mode is a strong default: rootless, no KVM required, works on macOS, sub-second startup. But containers share the host kernel. A kernel vulnerability or container runtime escape (runc/crun CVE) could let a compromised agent break out of the container and access the host.
+
+Firecracker mode eliminates this risk by wrapping the entire container topology in a dedicated microVM:
+
+- **Dedicated guest kernel per cage.** Each cage boots its own Linux kernel inside KVM. A kernel exploit inside the VM cannot affect the host kernel.
+- **Hardware-level isolation via KVM.** The VM boundary is enforced by the CPU's virtualization extensions (VT-x/AMD-V), not by kernel namespaces. This is the same isolation technology used by AWS Lambda and Fargate.
+- **Container escape is contained.** If an agent escapes its container, it lands inside the VM — not on the host. The VM has no host filesystem access and no shared kernel.
+- **Same inspection architecture.** The inspector chain, secret injection, DNS filtering, and audit logging work identically inside the VM. Firecracker adds an outer boundary; it does not replace the inner defenses.
+
+The tradeoff is approximately 7 seconds of additional boot time, a requirement for Linux with `/dev/kvm`, and `sudo` for network setup (TAP devices and bridge).
+
+**Use container mode** for development, CI, and workloads where the host kernel is trusted. **Use Firecracker mode** for production, untrusted agents, and environments where container escape is an unacceptable risk.
+
 ## Architecture
 
 Each cage maps to a single Firecracker process managed as a systemd user service. Inside the VM, Podman runs as root (see [design decisions](#key-design-decisions) below) and orchestrates the same three-container topology as container mode — DNS sidecar, proxy, and agent — over an internal network.
