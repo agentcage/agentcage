@@ -50,9 +50,9 @@ class TestDomainList:
 
 
 class TestDomainAdd:
-    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_domain_add(self, mock_state, MockPodman):
+    def test_domain_add(self, mock_state, mock_get_backend):
         raw = {
             "name": "basic",
             "domains": {"mode": "allowlist", "list": ["httpbin.org"]},
@@ -61,8 +61,8 @@ class TestDomainAdd:
         cfg = MagicMock()
         cfg.name = "basic"
         mock_state.load_deployment_config.return_value = cfg
-        podman = MockPodman.return_value
-        podman.container_running.return_value = True
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
 
         result = _runner().invoke(main, ["domain", "add", "basic", "github.com"])
         assert result.exit_code == 0
@@ -85,16 +85,16 @@ class TestDomainAdd:
         assert "already in" in result.output
         mock_state.save_raw_config.assert_not_called()
 
-    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_domain_add_creates_section(self, mock_state, MockPodman):
+    def test_domain_add_creates_section(self, mock_state, mock_get_backend):
         raw = {"name": "basic"}
         mock_state.load_raw_config.return_value = raw
         cfg = MagicMock()
         cfg.name = "basic"
         mock_state.load_deployment_config.return_value = cfg
-        podman = MockPodman.return_value
-        podman.container_running.return_value = False
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = False
 
         result = _runner().invoke(main, ["domain", "add", "basic", "example.com"])
         assert result.exit_code == 0
@@ -105,9 +105,9 @@ class TestDomainAdd:
 
 
 class TestDomainRm:
-    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_domain_rm(self, mock_state, MockPodman):
+    def test_domain_rm(self, mock_state, mock_get_backend):
         raw = {
             "name": "basic",
             "domains": {"mode": "allowlist", "list": ["httpbin.org", "github.com"]},
@@ -116,8 +116,8 @@ class TestDomainRm:
         cfg = MagicMock()
         cfg.name = "basic"
         mock_state.load_deployment_config.return_value = cfg
-        podman = MockPodman.return_value
-        podman.container_running.return_value = True
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
 
         result = _runner().invoke(main, ["domain", "rm", "basic", "github.com"])
         assert result.exit_code == 0

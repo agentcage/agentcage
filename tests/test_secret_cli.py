@@ -38,16 +38,18 @@ class TestSecretSet:
         podman.secret_remove.assert_called_once_with("myapp.API_KEY")
         podman.secret_create.assert_called_once_with("myapp.API_KEY", "newval")
 
+    @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
-    def test_set_reloads_running_deployment(self, mock_state, MockPodman):
+    def test_set_reloads_running_deployment(self, mock_state, MockPodman, mock_get_backend):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = False
-        podman.container_running.return_value = True
         mock_state.deployment_exists.return_value = True
         cfg = MagicMock()
         cfg.name = "myapp"
         mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
 
         result = _runner().invoke(main, ["secret", "set", "myapp", "API_KEY"], input="val\n")
         assert result.exit_code == 0

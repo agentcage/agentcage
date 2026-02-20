@@ -111,43 +111,141 @@ class TestCageDestroy:
 
 
 class TestCageList:
-    @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
-    def test_list_empty(self, mock_state, MockPodman):
+    def test_list_empty(self, mock_state):
         mock_state.list_deployments.return_value = []
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "No" in result.output
 
-    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_list_shows_cages(self, mock_state, MockPodman):
+    def test_list_shows_container_cage(self, mock_state, mock_get_backend):
         mock_state.list_deployments.return_value = ["myapp"]
-        podman = MockPodman.return_value
-        podman.container_running.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.is_running.return_value = True
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "myapp" in result.output
-        assert "running" in result.output
+        assert "container" in result.output
+        assert "running (3/3)" in result.output
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_list_shows_firecracker_cage(self, mock_state, mock_get_backend):
+        mock_state.list_deployments.return_value = ["myvm"]
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage"]
+        backend.is_running.return_value = True
+        result = _runner().invoke(main, ["cage", "list"])
+        assert result.exit_code == 0
+        assert "myvm" in result.output
+        assert "firecracker" in result.output
+        assert "running (1/1)" in result.output
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_list_config_error(self, mock_state, mock_get_backend):
+        mock_state.list_deployments.return_value = ["broken"]
+        mock_state.load_deployment_config.side_effect = Exception("bad config")
+        result = _runner().invoke(main, ["cage", "list"])
+        assert result.exit_code == 0
+        assert "broken" in result.output
+        assert "config error" in result.output
 
 
 class TestCageReload:
-    @patch("agentcage.cli.systemd")
     @patch("agentcage.cli.state")
-    def test_reload_fails_if_not_exists(self, mock_state, mock_systemd):
+    def test_reload_fails_if_not_exists(self, mock_state):
         mock_state.deployment_exists.return_value = False
         result = _runner().invoke(main, ["cage", "reload", "test"])
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
-    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_reload_restarts_services(self, mock_state, mock_systemd):
+    def test_reload_restarts_container(self, mock_state, mock_get_backend):
         mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        backend = mock_get_backend.return_value
         result = _runner().invoke(main, ["cage", "reload", "test"])
         assert result.exit_code == 0
         assert "Reloaded" in result.output
-        assert mock_systemd.restart_unit.call_count == 3
+        backend.restart.assert_called_once_with("test")
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_reload_restarts_firecracker(self, mock_state, mock_get_backend):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        backend = mock_get_backend.return_value
+        result = _runner().invoke(main, ["cage", "reload", "test"])
+        assert result.exit_code == 0
+        assert "Reloaded" in result.output
+        backend.restart.assert_called_once_with("test")
+
+
+class TestCageVerify:
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_nonexistent_cage(self, mock_state, mock_get_backend):
+        mock_state.load_deployment_config.side_effect = FileNotFoundError()
+        result = _runner().invoke(main, ["cage", "verify", "nope"])
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_container_all_running(self, mock_state, mock_get_backend, MockPodman):
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.is_running.return_value = True
+        podman = MockPodman.return_value
+        # CA cert check → success; which curl → found; curl egress → blocked
+        podman.container_exec.side_effect = [
+            (0, ""),       # test -f /certs/...
+            (0, "/usr/bin/curl"),  # which curl
+            (0, "403"),    # curl blocked domain
+        ]
+        podman.container_inspect.return_value = {
+            "Config": {"Env": ["HTTP_PROXY=http://x", "HTTPS_PROXY=http://x"]}
+        }
+        podman.info.return_value = {
+            "host": {"security": {"rootless": True}}
+        }
+        result = _runner().invoke(main, ["cage", "verify", "test"])
+        assert result.exit_code == 0
+        assert "container" in result.output
+        assert "PASS" in result.output
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_firecracker_running(self, mock_state, mock_get_backend):
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage"]
+        backend.is_running.return_value = True
+        result = _runner().invoke(main, ["cage", "verify", "myvm"])
+        assert result.exit_code == 0
+        assert "firecracker" in result.output
+        assert "PASS" in result.output
+        assert "VM Internals" in result.output
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_firecracker_stopped(self, mock_state, mock_get_backend):
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage"]
+        backend.is_running.return_value = False
+        result = _runner().invoke(main, ["cage", "verify", "myvm"])
+        assert result.exit_code != 0
+        assert "FAIL" in result.output
 
 
 def _mock_config(isolation="container"):

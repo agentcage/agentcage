@@ -132,13 +132,12 @@ def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podm
     backend.start(cfg.name)
 
 
-def _restart_cage(name: str):
-    """Restart all services for a cage."""
-    for svc in ("cage", "proxy", "dns"):
-        try:
-            systemd.restart_unit(f"{name}-{svc}.service")
-        except Exception as e:
-            click.echo(f"warning: failed to restart {name}-{svc}: {e}", err=True)
+def _restart_cage(name: str, cfg=None):
+    """Restart all services for a cage using the appropriate backend."""
+    if cfg is None:
+        cfg = state.load_deployment_config(name)
+    backend = get_backend(cfg)
+    backend.restart(name)
 
 
 # ── cage group ────────────────────────────────────────────
@@ -204,9 +203,12 @@ def cage_create(config_path: str):
 
     click.echo()
     click.echo("Logs:")
-    click.echo(f"  journalctl --user -u {name}-cage -f")
-    click.echo(f"  journalctl --user -u {name}-proxy -f")
-    click.echo(f"  journalctl --user -u {name}-dns -f")
+    if cfg.isolation == "firecracker":
+        click.echo(f"  journalctl --user -u {name}-cage -f")
+    else:
+        click.echo(f"  journalctl --user -u {name}-cage -f")
+        click.echo(f"  journalctl --user -u {name}-proxy -f")
+        click.echo(f"  journalctl --user -u {name}-dns -f")
 
 
 @cage.command("update")
@@ -264,11 +266,8 @@ def cage_update(name: str, config_path: str | None):
 
     # Stop existing
     click.echo("Stopping services...")
-    for svc in ("cage", "proxy", "dns"):
-        try:
-            systemd.stop_unit(f"{name}-{svc}.service")
-        except Exception as e:
-            click.echo(f"warning: failed to stop {name}-{svc}: {e}", err=True)
+    backend = get_backend(cfg)
+    backend.stop(name)
 
     _build_and_deploy(cfg, config_host_path, name, podman)
     click.echo(f"Updated cage '{name}'")
@@ -282,13 +281,21 @@ def cage_list():
         click.echo("No cages found.")
         return
 
-    podman = Podman()
-    click.echo(f"{'NAME':<20} STATUS")
+    click.echo(f"{'NAME':<20} {'ISOLATION':<14} STATUS")
     for name in names:
-        total = 3
+        try:
+            cfg = state.load_deployment_config(name)
+            backend = get_backend(cfg)
+        except Exception:
+            click.echo(f"{name:<20} {'?':<14} unknown (config error)")
+            continue
+
+        isolation = cfg.isolation
+        services = backend.service_names(name)
+        total = len(services)
         running = sum(
-            1 for svc in ("cage", "proxy", "dns")
-            if podman.container_running(f"{name}-{svc}")
+            1 for svc in services
+            if backend.is_running(name, svc)
         )
         if running == total:
             status = f"running ({running}/{total})"
@@ -296,7 +303,7 @@ def cage_list():
             status = f"stopped (0/{total})"
         else:
             status = f"degraded ({running}/{total})"
-        click.echo(f"{name:<20} {status}")
+        click.echo(f"{name:<20} {isolation:<14} {status}")
 
 
 @cage.command("destroy")
@@ -347,7 +354,13 @@ def cage_destroy(name: str, yes: bool):
 @click.argument("name")
 def cage_verify(name: str):
     """Check that a cage is healthy."""
-    podman = Podman()
+    try:
+        cfg = state.load_deployment_config(name)
+        backend = get_backend(cfg)
+    except Exception:
+        click.echo(f"error: cage '{name}' does not exist or has invalid config", err=True)
+        sys.exit(1)
+
     passed = 0
     failed = 0
 
@@ -361,17 +374,34 @@ def cage_verify(name: str):
         click.echo(f"  [FAIL] {msg}")
         failed += 1
 
-    click.echo(f"=== agentcage verify: {name} ===")
+    click.echo(f"=== agentcage verify: {name} ({cfg.isolation}) ===")
     click.echo()
 
-    # Container checks
-    click.echo("-- Containers --")
-    for svc in ("proxy", "dns", "cage"):
-        cname = f"{name}-{svc}"
-        if podman.container_running(cname):
-            _pass(f"{cname} is running")
+    # Service checks (backend-agnostic)
+    click.echo("-- Services --")
+    services = backend.service_names(name)
+    for svc in services:
+        if backend.is_running(name, svc):
+            _pass(f"{name}-{svc} is running")
         else:
-            _fail(f"{cname} is NOT running")
+            _fail(f"{name}-{svc} is NOT running")
+
+    if cfg.isolation == "container":
+        _verify_container(name, _pass, _fail)
+    else:
+        _verify_firecracker(name, _pass, _fail)
+
+    # Summary
+    click.echo()
+    click.echo(f"=== Results: {passed} passed, {failed} failed, 0 warnings ===")
+    if failed > 0:
+        click.echo("    Review failures above.")
+        sys.exit(1)
+
+
+def _verify_container(name: str, _pass, _fail):
+    """Container-specific health checks (exec into host containers)."""
+    podman = Podman()
 
     # CA certificate check
     click.echo()
@@ -451,26 +481,31 @@ def cage_verify(name: str):
     except Exception:
         _fail("Podman is NOT rootless")
 
-    # Summary
+
+def _verify_firecracker(name: str, _pass, _fail):
+    """Firecracker-specific health checks."""
+    # In Firecracker mode, proxy/dns/cage all run inside the VM.
+    # We cannot exec into them from the host, so we check what we can.
     click.echo()
-    click.echo(f"=== Results: {passed} passed, {failed} failed, 0 warnings ===")
-    if failed > 0:
-        click.echo("    Review failures above.")
-        sys.exit(1)
+    click.echo("-- VM Internals --")
+    click.echo("  [INFO] CA cert, proxy config, and egress checks run inside the VM")
+    click.echo("  [INFO] Use 'agentcage cage logs {name}' to verify internal health")
 
 
 @cage.command("reload")
 @click.argument("name")
 def cage_reload(name: str):
-    """Restart containers without rebuilding images."""
+    """Restart services without rebuilding images."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
 
+    cfg = state.load_deployment_config(name)
+
     # Re-copy patch files from package data to overwrite any tampering
     _ensure_patches(Podman())
 
-    _restart_cage(name)
+    _restart_cage(name, cfg)
     click.echo(f"Reloaded cage '{name}'")
 
 
@@ -612,9 +647,10 @@ def secret_set(cage_name: str, key: str):
     if state.deployment_exists(cage_name):
         cfg = state.load_deployment_config(cage_name)
         name = cfg.name
-        if podman.container_running(f"{name}-cage"):
+        backend = get_backend(cfg)
+        if backend.is_running(name, "cage"):
             click.echo(f"Reloading cage '{name}'...")
-            _restart_cage(name)
+            _restart_cage(name, cfg)
 
 
 @secret.command("rm")
@@ -636,9 +672,10 @@ def secret_rm(cage_name: str, key: str):
     if state.deployment_exists(cage_name):
         cfg = state.load_deployment_config(cage_name)
         name = cfg.name
-        if podman.container_running(f"{name}-cage"):
+        backend = get_backend(cfg)
+        if backend.is_running(name, "cage"):
             click.echo(f"Reloading cage '{name}'...")
-            _restart_cage(name)
+            _restart_cage(name, cfg)
 
 
 # ── domain group ─────────────────────────────────────────
@@ -695,9 +732,9 @@ def domain_add(cage_name: str, domain_name: str):
     reloaded = False
     cfg = state.load_deployment_config(cage_name)
     name = cfg.name
-    podman = Podman()
-    if podman.container_running(f"{name}-cage"):
-        _restart_cage(name)
+    backend = get_backend(cfg)
+    if backend.is_running(name, "cage"):
+        _restart_cage(name, cfg)
         reloaded = True
 
     msg = f"Added '{domain_name}' to cage '{cage_name}'."
@@ -729,9 +766,9 @@ def domain_rm(cage_name: str, domain_name: str):
     reloaded = False
     cfg = state.load_deployment_config(cage_name)
     name = cfg.name
-    podman = Podman()
-    if podman.container_running(f"{name}-cage"):
-        _restart_cage(name)
+    backend = get_backend(cfg)
+    if backend.is_running(name, "cage"):
+        _restart_cage(name, cfg)
         reloaded = True
 
     msg = f"Removed '{domain_name}' from cage '{cage_name}'."
