@@ -63,6 +63,7 @@ class EntropyInspector(Inspector):
             for h, prefixes in config.get("host_exempt_content_types", {}).items()
         }
         self.check_url_params: bool = config.get("check_url_params", True)
+        self.check_url_path: bool = config.get("check_url_path", True)
         self.url_threshold: float = config.get("url_threshold", 5.5)
         self.url_min_value_bytes: int = config.get("url_min_value_bytes", 64)
 
@@ -72,7 +73,10 @@ class EntropyInspector(Inspector):
         result = self._check_body(ctx)
         if result is not None:
             return result
-        return self._check_url_params(ctx)
+        result = self._check_url_params(ctx)
+        if result is not None:
+            return result
+        return self._check_url_path(ctx)
 
     def _check_body(
         self, ctx: InspectionContext
@@ -144,4 +148,37 @@ class EntropyInspector(Inspector):
                             "param_length": len(val_bytes),
                         },
                     )
+        return None
+
+    def _check_url_path(
+        self, ctx: InspectionContext
+    ) -> Optional[InspectionResult]:
+        if not self.check_url_path:
+            return None
+        parsed = urlparse(ctx.url)
+        if not parsed.path:
+            return None
+        for segment in parsed.path.split("/"):
+            if not segment:
+                continue
+            seg_bytes = segment.encode("utf-8", errors="replace")
+            if len(seg_bytes) < self.url_min_value_bytes:
+                continue
+            ent = shannon_entropy(seg_bytes)
+            if ent >= self.url_threshold:
+                return InspectionResult(
+                    inspector=self.name,
+                    action=self.action,
+                    reason=(
+                        f"high entropy URL path segment: {ent:.2f} "
+                        f"(threshold {self.url_threshold})"
+                    ),
+                    severity="high",
+                    score=ent,
+                    metadata={
+                        "entropy": ent,
+                        "url_threshold": self.url_threshold,
+                        "segment_length": len(seg_bytes),
+                    },
+                )
         return None

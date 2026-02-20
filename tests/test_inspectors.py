@@ -635,6 +635,87 @@ class TestEntropyInspector:
         )
         assert e.inspect_request(ctx) is None
 
+    # ── URL path entropy tests ──
+
+    def test_url_path_high_entropy_blocked(self):
+        """High-entropy URL path segments should be caught."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+        })
+        import base64, os
+        high_ent_seg = base64.urlsafe_b64encode(os.urandom(128)).decode().rstrip("=")
+        ctx = _ctx(
+            url=f"https://cdn.jsdelivr.net/{high_ent_seg}/package.json",
+            host="cdn.jsdelivr.net",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        r = e.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert "URL path" in r.reason
+
+    def test_url_path_normal_segments_allowed(self):
+        """Normal URL path segments should not trigger."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+        })
+        ctx = _ctx(
+            url="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js",
+            host="cdn.jsdelivr.net",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        assert e.inspect_request(ctx) is None
+
+    def test_url_path_short_segments_skipped(self):
+        """Path segments shorter than url_min_value_bytes should be skipped."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_min_value_bytes": 256,
+        })
+        # 128-byte hex segment, below 256 minimum
+        seg = "".join(f"{b:02x}" for b in range(64))
+        ctx = _ctx(
+            url=f"https://example.com/{seg}/file",
+            host="example.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        assert e.inspect_request(ctx) is None
+
+    def test_url_path_check_disabled(self):
+        """check_url_path=false should skip path analysis."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "check_url_path": False,
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+        })
+        import base64, os
+        high_ent_seg = base64.urlsafe_b64encode(os.urandom(128)).decode().rstrip("=")
+        ctx = _ctx(
+            url=f"https://cdn.jsdelivr.net/{high_ent_seg}/package.json",
+            host="cdn.jsdelivr.net",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        assert e.inspect_request(ctx) is None
+
 
 # ── ContentTypeInspector ─────────────────────────────────
 
