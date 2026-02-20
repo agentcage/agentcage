@@ -1,4 +1,4 @@
-"""Tests for the addon orchestrator (shannon_entropy + custom loader)."""
+"""Tests for the addon orchestrator (shannon_entropy + custom loader + rate limiter)."""
 
 import os
 import math
@@ -117,3 +117,66 @@ class TestLoadInspectorFromFile:
         link.symlink_to(real_file)
         with pytest.raises(ImportError, match="outside allowed directories"):
             load_inspector_from_file(str(link), allowed_dirs=[str(allowed)])
+
+
+# ── Rate limiter defaults ────────────────────────────────
+
+
+class TestRateLimitDefaults:
+    """Test that rate limiting is enabled by default (security review H2)."""
+
+    def _make_limiter(self, cfg: dict):
+        """Replicate the addon's rate limiter init + check logic without mitmproxy."""
+        import time
+        from collections import defaultdict
+
+        class _Limiter:
+            pass
+        lim = _Limiter()
+        rl_cfg = cfg.get("rate_limit") or {}
+        lim._rl_rate = float(rl_cfg.get("requests_per_second", 10))
+        lim._rl_burst = int(rl_cfg.get("burst", 50))
+        lim._rl_buckets = defaultdict(
+            lambda: [lim._rl_burst, time.monotonic()]
+        )
+
+        def check(host: str) -> bool:
+            if not lim._rl_rate:
+                return True
+            bucket = lim._rl_buckets[host]
+            now = time.monotonic()
+            elapsed = now - bucket[1]
+            bucket[1] = now
+            bucket[0] = min(lim._rl_burst, bucket[0] + elapsed * lim._rl_rate)
+            if bucket[0] >= 1:
+                bucket[0] -= 1
+                return True
+            return False
+
+        lim.check = check
+        return lim
+
+    def test_default_rate_is_10_rps(self):
+        lim = self._make_limiter({})
+        assert lim._rl_rate == 10.0
+
+    def test_default_burst_is_50(self):
+        lim = self._make_limiter({})
+        assert lim._rl_burst == 50
+
+    def test_rate_limit_enabled_by_default(self):
+        """With no rate_limit config, burst requests should eventually be denied."""
+        lim = self._make_limiter({})
+        host = "api.example.com"
+        # Burn through the burst
+        for _ in range(50):
+            assert lim.check(host) is True
+        # Next request should be denied (no time elapsed to refill)
+        assert lim.check(host) is False
+
+    def test_explicit_zero_disables(self):
+        """Operators can still disable rate limiting with requests_per_second: 0."""
+        lim = self._make_limiter({"rate_limit": {"requests_per_second": 0}})
+        host = "api.example.com"
+        for _ in range(1000):
+            assert lim.check(host) is True

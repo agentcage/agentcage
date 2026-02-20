@@ -64,8 +64,8 @@ class Agentcage:
 
         # Rate limiting — token bucket per host
         rl_cfg = self.cfg.get("rate_limit") or {}
-        self._rl_rate: float = float(rl_cfg.get("requests_per_second", 0))
-        self._rl_burst: int = int(rl_cfg.get("burst", 10))
+        self._rl_rate: float = float(rl_cfg.get("requests_per_second", 10))
+        self._rl_burst: int = int(rl_cfg.get("burst", 50))
         self._rl_buckets: dict[str, list] = defaultdict(
             lambda: [self._rl_burst, time.monotonic()]
         )  # {host: [tokens, last_time]}
