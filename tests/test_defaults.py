@@ -13,11 +13,20 @@ import pytest
 # ── Stub mitmproxy before importing addon ────────────────────
 
 _mitmproxy = types.ModuleType("mitmproxy")
+_mitmproxy.__path__ = []  # make it a package so submodule imports work
 _mitmproxy.ctx = MagicMock()
 _mitmproxy.http = MagicMock()
+_proxy = types.ModuleType("mitmproxy.proxy")
+_proxy.__path__ = []
+_mode_specs = types.ModuleType("mitmproxy.proxy.mode_specs")
+_mode_specs.ReverseMode = MagicMock()
+_mitmproxy.proxy = _proxy
+_proxy.mode_specs = _mode_specs
 sys.modules.setdefault("mitmproxy", _mitmproxy)
 sys.modules.setdefault("mitmproxy.ctx", _mitmproxy.ctx)
 sys.modules.setdefault("mitmproxy.http", _mitmproxy.http)
+sys.modules.setdefault("mitmproxy.proxy", _proxy)
+sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
 from addon import Agentcage  # noqa: E402
 
