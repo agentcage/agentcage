@@ -163,8 +163,12 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
             "mitmdump -s /app/addon.py --listen-port 8080"
             " --set connection_strategy=lazy --listen-host 10.89.0.11"
         )
+    # In Firecracker mode, use flow_detail=0 instead of --quiet so that
+    # ctx.log.warn() (blocked/flagged decisions) still reaches the severity
+    # filter pipeline.  --quiet sets termlog_verbosity=error which suppresses
+    # warn-level output entirely.
     if not config.logging.allowed_requests:
-        proxy_cmd += " --quiet"
+        proxy_cmd += " --set flow_detail=0"
 
     # Proxy secrets (for secret injection)
     proxy_secret_args = ""
@@ -353,62 +357,34 @@ podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
 echo "start-cage: all containers started"
 {port_forwards_script}podman ps
 
-# Severity-tagged log forwarding
-MIN_LEVEL_DNS={min_level_dns}
-MIN_LEVEL_PROXY={min_level_proxy}
-MIN_LEVEL_CAGE={min_level_cage}
-
-level_num() {{
-    case "$1" in
-        debug) echo 0 ;; info) echo 1 ;; warn) echo 2 ;; error) echo 3 ;; *) echo 1 ;;
+# Severity-tagged log forwarding — inline classification avoids
+# function-call issues with set -euo pipefail in pipeline subshells.
+# Level thresholds: debug=0, info=1, warn=2, error=3
+# Note: "|| :" after test&&echo prevents set -e from killing the subshell
+# when test returns false (exit 1) and the && short-circuits.
+podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do
+    case "$line" in
+        *query\\[*|*reply*|*cached*|*forwarded*) test {min_level_dns} -le 0 && echo "[dns:debug] $line" || : ;;
+        *error*|*REFUSED*|*SERVFAIL*) echo "[dns:error] $line" ;;
+        *) test {min_level_dns} -le 1 && echo "[dns:info] $line" || : ;;
     esac
-}}
-
-classify_dns() {{
-    case "$1" in
-        *query\\[*|*reply*|*cached*|*forwarded*) echo debug ;;
-        *error*|*REFUSED*|*SERVFAIL*) echo error ;;
-        *) echo info ;;
+done &
+podman logs -f "${{CAGE_NAME}}-proxy" 2>&1 | while IFS= read -r line; do
+    case "$line" in
+        *'"decision":"blocked"'*|*'"decision": "blocked"'*) test {min_level_proxy} -le 2 && echo "[proxy:warn] $line" || : ;;
+        *'"decision":"flagged"'*|*'"decision": "flagged"'*) test {min_level_proxy} -le 2 && echo "[proxy:warn] $line" || : ;;
+        *'"decision":"allowed"'*|*'"decision": "allowed"'*) test {min_level_proxy} -le 1 && echo "[proxy:info] $line" || : ;;
+        *[Ee]rror*|*Traceback*) echo "[proxy:error] $line" ;;
+        *) test {min_level_proxy} -le 0 && echo "[proxy:debug] $line" || : ;;
     esac
-}}
-
-classify_proxy() {{
-    case "$1" in
-        *'"decision":"blocked"'*|*'"decision": "blocked"'*) echo warn ;;
-        *'"decision":"flagged"'*|*'"decision": "flagged"'*) echo warn ;;
-        *'"decision":"allowed"'*|*'"decision": "allowed"'*) echo info ;;
-        *[Ee]rror*|*Traceback*) echo error ;;
-        *) echo debug ;;
+done &
+podman logs -f "${{CAGE_NAME}}-cage" 2>&1 | while IFS= read -r line; do
+    case "$line" in
+        *[Ee]rror*|*Traceback*|*FATAL*|*"exit code"*) echo "[cage:error] $line" ;;
+        *[Ww]arn*|*WARN*) test {min_level_cage} -le 2 && echo "[cage:warn] $line" || : ;;
+        *) test {min_level_cage} -le 1 && echo "[cage:info] $line" || : ;;
     esac
-}}
-
-classify_cage() {{
-    case "$1" in
-        *[Ee]rror*|*Traceback*|*FATAL*|*"exit code"*) echo error ;;
-        *[Ww]arn*|*WARN*) echo warn ;;
-        *) echo info ;;
-    esac
-}}
-
-forward_logs() {{
-    local svc="$1"
-    local min_level="$2"
-    while IFS= read -r line; do
-        local lvl
-        case "$svc" in
-            dns) lvl=$(classify_dns "$line") ;;
-            proxy) lvl=$(classify_proxy "$line") ;;
-            cage) lvl=$(classify_cage "$line") ;;
-        esac
-        if [ "$(level_num "$lvl")" -ge "$min_level" ]; then
-            echo "[$svc:$lvl] $line"
-        fi
-    done
-}}
-
-podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | forward_logs dns "$MIN_LEVEL_DNS" &
-podman logs -f "${{CAGE_NAME}}-proxy" 2>&1 | forward_logs proxy "$MIN_LEVEL_PROXY" &
-podman logs -f "${{CAGE_NAME}}-cage" 2>&1 | forward_logs cage "$MIN_LEVEL_CAGE" &
+done &
 """
     return script
 

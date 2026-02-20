@@ -239,15 +239,17 @@ class TestGenerateStartupScript:
         assert "--address=/#/198.51.100.1" in script
         assert "--server=/example.com/1.1.1.1" in script
 
-    def test_proxy_quiet_mode(self):
+    def test_proxy_flow_detail_off(self):
         cfg = _make_config(logging=LoggingConfig(allowed_requests=False))
         script = _generate_startup_script(cfg, "testcage")
-        assert "--quiet" in script
+        assert "--set flow_detail=0" in script
+        assert "--quiet" not in script
 
     def test_proxy_verbose_mode(self):
         cfg = _make_config(logging=LoggingConfig(allowed_requests=True))
         script = _generate_startup_script(cfg, "testcage")
         assert "--quiet" not in script
+        assert "flow_detail=0" not in script
 
     def test_proxy_reverse_mode_in_script(self):
         """Proxy should use multi-mode with reverse listeners for each port."""
@@ -319,39 +321,64 @@ class TestLogQueryConditional:
 
 
 class TestSeverityLogForwarding:
-    def test_min_level_defaults(self):
+    def test_default_level_thresholds(self):
+        """Default config (level=info) → test 1 -le N in all pipelines."""
         cfg = _make_config()
         script = _generate_startup_script(cfg, "testcage")
-        assert "MIN_LEVEL_DNS=1" in script
-        assert "MIN_LEVEL_PROXY=1" in script
-        assert "MIN_LEVEL_CAGE=1" in script
+        # dns debug: test 1 -le 0 (suppressed at info)
+        assert "test 1 -le 0" in script
+        # dns info: test 1 -le 1 (passes at info)
+        assert "test 1 -le 1" in script
 
-    def test_min_level_custom(self):
+    def test_custom_level_thresholds(self):
+        """level=warn + dns=error → dns uses 3, proxy/cage use 2."""
         cfg = _make_config(logging=LoggingConfig(level="warn", dns="error"))
         script = _generate_startup_script(cfg, "testcage")
-        assert "MIN_LEVEL_DNS=3" in script   # error = 3
-        assert "MIN_LEVEL_PROXY=2" in script  # warn = 2 (inherited)
-        assert "MIN_LEVEL_CAGE=2" in script   # warn = 2 (inherited)
+        # DNS pipeline should use threshold 3 (error)
+        assert 'test 3 -le 0 && echo "[dns:debug]' in script
+        assert 'test 3 -le 1 && echo "[dns:info]' in script
+        # Proxy/cage pipelines should use threshold 2 (warn)
+        assert 'test 2 -le 2 && echo "[proxy:warn]' in script
+        assert 'test 2 -le 2 && echo "[cage:warn]' in script
 
-    def test_classify_functions_present(self):
+    def test_inline_classification_present(self):
+        """Each service has its own while-loop with case classification."""
         cfg = _make_config()
         script = _generate_startup_script(cfg, "testcage")
-        assert "classify_dns()" in script
-        assert "classify_proxy()" in script
-        assert "classify_cage()" in script
-
-    def test_forward_logs_present(self):
-        cfg = _make_config()
-        script = _generate_startup_script(cfg, "testcage")
-        assert "forward_logs dns" in script
-        assert "forward_logs proxy" in script
-        assert "forward_logs cage" in script
+        # Three separate podman logs pipelines
+        assert 'podman logs -f "${CAGE_NAME}-dns"' in script
+        assert 'podman logs -f "${CAGE_NAME}-proxy"' in script
+        assert 'podman logs -f "${CAGE_NAME}-cage"' in script
+        # Each has inline case classification
+        assert script.count("while IFS= read -r line; do") == 3
+        assert script.count('case "$line" in') == 3
 
     def test_severity_tag_format(self):
+        """Output lines use [service:level] format."""
         cfg = _make_config()
         script = _generate_startup_script(cfg, "testcage")
-        # The script should emit [service:level] format
-        assert '[$svc:$lvl]' in script
+        assert "[dns:debug]" in script
+        assert "[dns:error]" in script
+        assert "[dns:info]" in script
+        assert "[proxy:warn]" in script
+        assert "[proxy:info]" in script
+        assert "[proxy:error]" in script
+        assert "[cage:error]" in script
+        assert "[cage:warn]" in script
+        assert "[cage:info]" in script
+
+    def test_errexit_safe(self):
+        """test&&echo patterns have || : to prevent set -e kills."""
+        cfg = _make_config()
+        script = _generate_startup_script(cfg, "testcage")
+        # Every "test N -le M && echo" should end with "|| :"
+        import re
+        matches = re.findall(r'test \d+ -le \d+ && echo .+', script)
+        assert len(matches) > 0
+        for m in matches:
+            # Strip trailing ;; from case branches
+            clean = m.rstrip().rstrip(";").rstrip()
+            assert clean.endswith("|| :"), f"Missing || : in: {m}"
 
 
 class TestEnsureDataDrive:
