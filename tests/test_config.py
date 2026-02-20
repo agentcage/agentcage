@@ -5,7 +5,7 @@ import textwrap
 
 import pytest
 
-from agentcage.config import Config, ContainerConfig, LoggingConfig, _host_dns_servers, load_config, validate_config
+from agentcage.config import Config, ContainerConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, load_config, validate_config
 
 
 class TestLoadConfigMinimal:
@@ -297,36 +297,87 @@ class TestValidateConfig:
 
 
 class TestHostDnsServers:
-    def test_parses_resolv_conf(self, tmp_path, monkeypatch):
-        resolv = tmp_path / "resolv.conf"
-        resolv.write_text(
-            "# comment\n"
-            "nameserver 100.100.100.100\n"
-            "nameserver 1.1.1.1\n"
-            "search local\n"
-        )
+    def _patch_resolv(self, monkeypatch, tmp_path, etc_text, resolved_text=None):
+        """Mock /etc/resolv.conf and optionally _RESOLVED_CONF."""
+        etc_file = tmp_path / "etc-resolv.conf"
+        etc_file.write_text(etc_text)
+        resolved_file = None
+        if resolved_text is not None:
+            resolved_file = tmp_path / "resolved-resolv.conf"
+            resolved_file.write_text(resolved_text)
         _real_open = open
-        monkeypatch.setattr("builtins.open", lambda path, *a, **kw:
-            _real_open(str(resolv), *a, **kw) if path == "/etc/resolv.conf"
-            else _real_open(path, *a, **kw)
+
+        def _fake_open(path, *a, **kw):
+            if path == "/etc/resolv.conf":
+                return _real_open(str(etc_file), *a, **kw)
+            if path == _RESOLVED_CONF and resolved_file is not None:
+                return _real_open(str(resolved_file), *a, **kw)
+            if path == _RESOLVED_CONF:
+                raise OSError("No such file")
+            return _real_open(path, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+
+    def test_parses_resolv_conf(self, tmp_path, monkeypatch):
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="# comment\nnameserver 100.100.100.100\nnameserver 1.1.1.1\nsearch local\n",
         )
         assert _host_dns_servers() == ["100.100.100.100", "1.1.1.1"]
 
-    def test_empty_resolv_conf_falls_back(self, tmp_path, monkeypatch):
-        resolv = tmp_path / "resolv.conf"
-        resolv.write_text("# no nameservers here\nsearch local\n")
-        _real_open = open
-        monkeypatch.setattr("builtins.open", lambda path, *a, **kw:
-            _real_open(str(resolv), *a, **kw) if path == "/etc/resolv.conf"
-            else _real_open(path, *a, **kw)
+    def test_empty_resolv_conf_raises(self, tmp_path, monkeypatch):
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="# no nameservers here\nsearch local\n",
         )
-        assert _host_dns_servers() == ["1.1.1.1", "8.8.8.8"]
+        with pytest.raises(RuntimeError, match="Could not detect usable DNS"):
+            _host_dns_servers()
 
-    def test_missing_resolv_conf_falls_back(self, monkeypatch):
+    def test_missing_resolv_conf_raises(self, tmp_path, monkeypatch):
         _real_open = open
-        def raise_oserror(path, *a, **kw):
-            if path == "/etc/resolv.conf":
+        def _fake_open(path, *a, **kw):
+            if path in ("/etc/resolv.conf", _RESOLVED_CONF):
                 raise OSError("No such file")
             return _real_open(path, *a, **kw)
-        monkeypatch.setattr("builtins.open", raise_oserror)
-        assert _host_dns_servers() == ["1.1.1.1", "8.8.8.8"]
+        monkeypatch.setattr("builtins.open", _fake_open)
+        with pytest.raises(RuntimeError, match="Could not detect usable DNS"):
+            _host_dns_servers()
+
+    def test_systemd_resolved_uses_upstream(self, tmp_path, monkeypatch):
+        """When /etc/resolv.conf has only 127.0.0.53, read real upstreams."""
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="nameserver 127.0.0.53\noptions edns0\n",
+            resolved_text="nameserver 192.168.1.1\n",
+        )
+        assert _host_dns_servers() == ["192.168.1.1"]
+
+    def test_loopback_no_resolved_raises(self, tmp_path, monkeypatch):
+        """All loopback + no systemd-resolved file → error."""
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="nameserver 127.0.0.53\noptions edns0\n",
+        )
+        with pytest.raises(RuntimeError, match="Set dns_servers explicitly"):
+            _host_dns_servers()
+
+    def test_filters_loopback_keeps_real_servers(self, tmp_path, monkeypatch):
+        """Loopback entries are dropped but real servers are kept."""
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text=(
+                "nameserver 127.0.0.1\n"
+                "nameserver 9.9.9.9\n"
+                "nameserver 127.0.0.53\n"
+                "nameserver 8.8.4.4\n"
+            ),
+        )
+        assert _host_dns_servers() == ["9.9.9.9", "8.8.4.4"]
+
+    def test_filters_ipv6_loopback(self, tmp_path, monkeypatch):
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="nameserver ::1\n",
+        )
+        with pytest.raises(RuntimeError, match="Could not detect usable DNS"):
+            _host_dns_servers()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import shutil
@@ -74,18 +75,59 @@ class Config:
     firecracker: FirecrackerConfig = field(default_factory=FirecrackerConfig)
 
 
-def _host_dns_servers() -> list[str]:
-    """Read nameservers from /etc/resolv.conf, falling back to public DNS."""
+def _is_loopback(addr: str) -> bool:
+    """Return True if *addr* is a loopback IP (127.0.0.0/8 or ::1)."""
     try:
-        with open("/etc/resolv.conf") as f:
-            servers = [
+        return ipaddress.ip_address(addr).is_loopback
+    except ValueError:
+        return False
+
+
+def _read_nameservers(path: str) -> list[str]:
+    """Parse nameserver lines from a resolv.conf file."""
+    try:
+        with open(path) as f:
+            return [
                 parts[1]
                 for line in f
                 if (parts := line.split()) and parts[0] == "nameserver"
             ]
-        return servers if servers else ["1.1.1.1", "8.8.8.8"]
     except OSError:
-        return ["1.1.1.1", "8.8.8.8"]
+        return []
+
+
+# systemd-resolved writes the real upstream servers here, while
+# /etc/resolv.conf points at the 127.0.0.53 stub listener.
+_RESOLVED_CONF = "/run/systemd/resolve/resolv.conf"
+
+
+def _host_dns_servers() -> list[str]:
+    """Read nameservers from /etc/resolv.conf.
+
+    Loopback addresses (e.g. 127.0.0.53 from systemd-resolved) are filtered
+    out because they are unreachable from inside containers.  When all
+    nameservers are loopback, the real upstreams are read from
+    /run/systemd/resolve/resolv.conf.
+
+    Raises RuntimeError if no usable DNS servers can be found.  Set
+    ``dns_servers`` explicitly in the config to avoid auto-detection.
+    """
+    servers = _read_nameservers("/etc/resolv.conf")
+    non_loopback = [s for s in servers if not _is_loopback(s)]
+    if non_loopback:
+        return non_loopback
+    # All servers were loopback (systemd-resolved stub) — try the real
+    # upstream config that systemd-resolved maintains.
+    resolved = _read_nameservers(_RESOLVED_CONF)
+    resolved = [s for s in resolved if not _is_loopback(s)]
+    if resolved:
+        return resolved
+    raise RuntimeError(
+        "Could not detect usable DNS servers: /etc/resolv.conf contains only "
+        "loopback addresses (e.g. 127.0.0.53 from systemd-resolved) and "
+        f"{_RESOLVED_CONF} is missing or empty. "
+        "Set dns_servers explicitly in your agentcage config."
+    )
 
 
 def load_config(path: str) -> Config:
