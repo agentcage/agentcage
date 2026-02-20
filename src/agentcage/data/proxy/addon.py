@@ -212,23 +212,17 @@ class Agentcage:
         # Check for placeholder-to-unauthorized-domain violations first
         # (this does NOT modify the flow — only checks domain restrictions)
         inject_result = self.injector.check_injection_policy(flow)
-        if inject_result and inject_result.action == "block":
-            flow.response = http.Response.make(
-                403,
-                json.dumps(
-                    {"blocked": True, "reason": inject_result.reason,
-                     "host": flow.request.host, "by": "agentcage"}
-                ).encode(),
-                {"Content-Type": "application/json"},
-            )
-            flow.metadata["agentcage_blocked"] = True
-            self._log(flow, "blocked", inject_result.reason, [inject_result])
-            return
 
         # Build context BEFORE injection so inspectors see placeholders,
         # not real secret values
         ctx_obj = self._build_context(flow)
         results: list[InspectionResult] = []
+
+        # Policy violations are flagged (not blocked) so the request still
+        # goes through with the placeholder left in place.
+        if inject_result is not None:
+            results.append(inject_result)
+            ctx_obj.prior_results.append(inject_result)
 
         # Reverse proxy flows are inbound traffic (host → cage via proxy).
         # Skip domain filtering (the "domain" is the internal cage IP, not

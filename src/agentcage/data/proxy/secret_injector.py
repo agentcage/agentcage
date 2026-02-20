@@ -90,7 +90,7 @@ class SecretInjector:
     ) -> Optional[InspectionResult]:
         """Check domain restrictions without modifying the flow.
 
-        Returns an ``InspectionResult`` (block) if a placeholder is found
+        Returns an ``InspectionResult`` (flag) if a placeholder is found
         heading to an unauthorized domain.  Returns ``None`` if ok.
         """
         if not self.rules:
@@ -107,12 +107,12 @@ class SecretInjector:
             if rule.inject_to and not self._domain_matches(host, rule.inject_to):
                 return InspectionResult(
                     inspector="secret-injector",
-                    action="block",
+                    action="flag",
                     reason=(
                         f"placeholder {rule.name} sent to unauthorized "
                         f"domain {host}"
                     ),
-                    severity="critical",
+                    severity="high",
                 )
         return None
 
@@ -122,8 +122,8 @@ class SecretInjector:
         If the host matches ``redact_to``, outbound redaction is performed
         instead (real values → placeholders).
 
-        This method assumes ``check_injection_policy`` has already been
-        called and approved the request.
+        Rules whose ``inject_to`` list does not match the request host are
+        skipped, leaving the placeholder in place.
         """
         if not self.rules:
             return
@@ -137,6 +137,10 @@ class SecretInjector:
 
         for rule in self.rules:
             if not self._find_placeholder(flow, rule):
+                continue
+
+            # Skip injection if domain not authorized for this rule
+            if rule.inject_to and not self._domain_matches(host, rule.inject_to):
                 continue
 
             # Replace placeholder → real value
