@@ -112,7 +112,7 @@ class SecretInjector:
                         f"placeholder {rule.name} sent to unauthorized "
                         f"domain {host}"
                     ),
-                    severity="high",
+                    severity="error",
                 )
         return None
 

@@ -95,7 +95,7 @@ class TestInjectRequest:
         result = inj.check_injection_policy(flow)
         assert result is not None
         assert result.action == "flag"
-        assert result.severity == "high"
+        assert result.severity == "error"
         assert "unauthorized" in result.reason
         assert "evil.com" in result.reason
 
