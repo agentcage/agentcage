@@ -5,7 +5,7 @@
 #
 # Must be built with --cap-add=all (Fedora RPMs set file capabilities).
 
-FROM registry.fedoraproject.org/fedora-minimal:43
+FROM registry.fedoraproject.org/fedora-minimal:45
 
 # Podman + dependencies (--setopt=install_weak_deps=0 keeps it lean)
 RUN microdnf install -y --setopt=install_weak_deps=0 \
