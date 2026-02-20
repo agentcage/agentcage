@@ -9,25 +9,25 @@ from typing import Optional
 from inspectors.base import Inspector, InspectionContext, InspectionResult
 
 BUILTIN_SECRETS = {
-    "openai_key": re.compile(r"sk-proj-[a-zA-Z0-9]{20,}"),
-    "anthropic_key": re.compile(r"sk-ant-[a-zA-Z0-9\-]{20,}"),
+    "openai_key": re.compile(r"sk-proj-[a-zA-Z0-9]{20,250}"),
+    "anthropic_key": re.compile(r"sk-ant-[a-zA-Z0-9\-]{20,250}"),
     "aws_access_key": re.compile(r"AKIA[0-9A-Z]{16}"),
-    "github_token": re.compile(r"gh[ps]_[A-Za-z0-9_]{36,}"),
-    "github_pat": re.compile(r"github_pat_[A-Za-z0-9_]{22,}"),
+    "github_token": re.compile(r"gh[ps]_[A-Za-z0-9_]{36,255}"),
+    "github_pat": re.compile(r"github_pat_[A-Za-z0-9_]{22,255}"),
     "google_api_key": re.compile(r"AIza[0-9A-Za-z\-_]{35}"),
-    "slack_token": re.compile(r"xox[bpors]-[0-9]{10,}-[a-zA-Z0-9-]+"),
-    "stripe_key": re.compile(r"[sr]k_(live|test)_[0-9a-zA-Z]{24,}"),
-    "private_key": re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"),
-    "gitlab_token": re.compile(r"glpat-[A-Za-z0-9\-_]{20,}"),
-    "huggingface_token": re.compile(r"hf_[A-Za-z0-9]{20,}"),
+    "slack_token": re.compile(r"xox[bpors]-[0-9]{10,20}-[a-zA-Z0-9-]{1,255}"),
+    "stripe_key": re.compile(r"[sr]k_(live|test)_[0-9a-zA-Z]{24,255}"),
+    "private_key": re.compile(r"-----BEGIN[ A-Z]{0,20}PRIVATE KEY-----"),
+    "gitlab_token": re.compile(r"glpat-[A-Za-z0-9\-_]{20,255}"),
+    "huggingface_token": re.compile(r"hf_[A-Za-z0-9]{20,255}"),
     "databricks_token": re.compile(r"dapi[0-9a-f]{32}"),
-    "azure_jwt": re.compile(r"eyJ[A-Za-z0-9_-]{50,}\.eyJ[A-Za-z0-9_-]{50,}"),
+    "azure_jwt": re.compile(r"eyJ[A-Za-z0-9_-]{50,4096}\.eyJ[A-Za-z0-9_-]{50,4096}"),
     "openrouter_key": re.compile(r"sk-or-v1-[a-f0-9]{64}"),
     "perplexity_key": re.compile(r"pplx-[a-f0-9]{64}"),
-    "brave_api_key": re.compile(r"BSA[a-zA-Z0-9]{20,}"),
+    "brave_api_key": re.compile(r"BSA[a-zA-Z0-9]{20,255}"),
     "telegram_bot_token": re.compile(r"[0-9]{8,10}:[A-Za-z0-9_-]{35}"),
-    "discord_bot_token": re.compile(r"[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}"),
-    "firecrawl_key": re.compile(r"fc-[a-zA-Z0-9]{32,}"),
+    "discord_bot_token": re.compile(r"[MN][A-Za-z0-9]{23,255}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,255}"),
+    "firecrawl_key": re.compile(r"fc-[a-zA-Z0-9]{32,255}"),
 }
 
 BUILTIN_ALLOW_TO_DOMAINS = {

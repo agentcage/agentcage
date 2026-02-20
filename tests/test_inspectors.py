@@ -286,6 +286,47 @@ class TestSecretsInspector:
         ctx = _ctx(body_text="fc-short", host="evil.com")
         assert s.inspect_request(ctx) is None
 
+    # ── Bounded quantifier tests (security review H3) ──
+
+    def test_oversized_key_not_fully_consumed(self):
+        """Upper-bounded patterns should not match arbitrarily long strings.
+
+        The match itself still succeeds (the prefix is valid), but the
+        regex engine stops consuming characters at the upper bound rather
+        than scanning the entire input.  This test verifies that behaviour
+        by ensuring a 10k-char body still completes in bounded time and
+        that legitimate-length keys are still detected.
+        """
+        import time
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        # A body with a valid prefix followed by 10k chars should still be
+        # detected (regex matches the valid-length prefix), but should not
+        # cause the engine to scan unboundedly.
+        body = "sk-ant-" + "a" * 10_000
+        ctx = _ctx(body_text=body, host="evil.com")
+        t0 = time.monotonic()
+        r = s.inspect_request(ctx)
+        elapsed = time.monotonic() - t0
+        assert r is not None
+        assert r.action == "block"
+        # Should complete in well under 1 second even on slow hardware
+        assert elapsed < 1.0
+
+    def test_private_key_bounded_type_name(self):
+        """Private key pattern matches real types but not absurdly long ones."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        # Real type: should match
+        ctx = _ctx(body_text="-----BEGIN RSA PRIVATE KEY-----", host="evil.com")
+        assert s.inspect_request(ctx) is not None
+        # EC type: should match
+        ctx2 = _ctx(body_text="-----BEGIN EC PRIVATE KEY-----", host="evil.com")
+        assert s.inspect_request(ctx2) is not None
+        # Absurdly long type (>20 spaces+chars): should not match
+        ctx3 = _ctx(body_text="-----BEGIN" + " AAAA" * 10 + "PRIVATE KEY-----", host="evil.com")
+        assert s.inspect_request(ctx3) is None
+
     # ── Built-in allow_to_domains tests ──
 
     def test_builtin_allow_lets_anthropic_key_through(self):
