@@ -21,7 +21,7 @@ Host (systemd --user)
 └── TAP device (tap-basic) ──── Bridge (agentcage-br0) ──── Host network
 ```
 
-Host-to-VM connectivity is provided by a TAP device (`tap-<name>`) bridged into `agentcage-br0`. VM traffic is NATed through the host via an iptables MASQUERADE rule. The VM receives a static IP derived deterministically from the cage name (see [Networking](#networking--the-nethelper)).
+Host-to-VM connectivity is provided by a TAP device (`tap-<name>`) bridged into `agentcage-br0`. VM traffic is NATed through the host via an iptables MASQUERADE rule. The VM receives a static IP derived deterministically from the cage name (see [Networking](#networking)).
 
 ### Key Design Decisions
 
@@ -35,64 +35,37 @@ Host-to-VM connectivity is provided by a TAP device (`tap-<name>`) bridged into 
 
 **Fedora Minimal 43 as the VM base.** Fedora Minimal provides the best upstream Podman compatibility with a minimal footprint suitable for a VM rootfs.
 
-## Networking & the Nethelper
+## Networking
 
-### Why a Nethelper is Needed
+### Bridge and TAP Devices
 
-Firecracker VMs connect to the host via TAP devices rather than the virtual Ethernet pairs used in container networking. Creating TAP devices, attaching them to bridges, and installing iptables rules all require root privileges. agentcage runs as a regular user (systemd --user), so these operations cannot be performed directly.
-
-The nethelper binary (`agentcage-nethelper`) is the minimal privilege escalation boundary. It is installed setuid or invoked via a `sudoers` rule, performs strict input validation, and exposes only the specific operations required to manage Firecracker networking. It does nothing else.
-
-### What it Does
+Firecracker VMs connect to the host via TAP devices rather than the virtual Ethernet pairs used in container networking. Creating TAP devices, attaching them to bridges, and installing iptables rules all require root privileges. Firecracker commands must therefore be run with `sudo`.
 
 **Bridge management** (`agentcage-br0`, `10.88.0.1/24`):
 
-The bridge is a shared Linux bridge that acts as a virtual switch connecting all Firecracker VMs on the host to each other and to the host's network stack. It is created once and persists across cage lifetimes. The nethelper also enables `net.ipv4.ip_forward` and installs a single iptables `MASQUERADE` rule on the bridge's subnet, so VM traffic is NATed through the host to the internet.
+The bridge is a shared Linux bridge that acts as a virtual switch connecting all Firecracker VMs on the host to each other and to the host's network stack. It is created once and persists across cage lifetimes. agentcage also enables `net.ipv4.ip_forward` and installs iptables `MASQUERADE` and `FORWARD` rules on the bridge's subnet, so VM traffic is NATed through the host to the internet. VM-to-VM traffic on the bridge is blocked.
 
 **TAP device management** (one `tap-<name>` per cage):
 
-Each cage gets a dedicated TAP device. The TAP device is the virtual NIC that Firecracker attaches to the VM's `eth0`. The nethelper creates it, sets ownership to the calling user's UID (read from `SUDO_UID`) so that the Firecracker process can open it without root, and attaches it to `agentcage-br0`.
+Each cage gets a dedicated TAP device. The TAP device is the virtual NIC that Firecracker attaches to the VM's `eth0`. agentcage creates it, sets ownership to the real user's UID (read from `SUDO_UID`) so that the Firecracker process can open it without root, and attaches it to `agentcage-br0`.
 
 ### The Flow
 
 ```
-cage create → systemd ExecStartPre:
-    sudo agentcage-nethelper create-tap basic
-        → creates tap-basic
-        → attaches tap-basic to agentcage-br0
-        → chowns tap-basic to SUDO_UID
+sudo agentcage cage create:
+    → creates tap-basic, attaches to agentcage-br0, chowns to SUDO_UID
+    → builds rootfs, installs systemd unit (chowned to real user)
+    → starts the service (systemctl --user)
 
 → Firecracker starts, attaches tap-basic to VM's eth0
-→ VM kernel receives ip= parameter, configures eth0 with 10.88.0.209/24
+→ VM kernel receives ip= parameter, configures eth0 with 10.88.0.x/24
 → VM traffic → tap-basic → agentcage-br0 → MASQUERADE → internet
 
-cage destroy → systemd ExecStopPost:
-    sudo agentcage-nethelper destroy-tap basic
-        → deletes tap-basic
+sudo agentcage cage destroy:
+    → stops the service, deletes tap-basic
 ```
 
-### Security Design
-
-The nethelper applies several restrictions to limit the scope of the privilege it holds:
-
-**Strict input validation.** Cage names must match `^[a-z0-9][a-z0-9-]{0,62}$` before any operation proceeds. Invalid input is rejected immediately.
-
-**Fixed operations only.** The nethelper can only manage `agentcage-br0` and devices named `tap-*`. It cannot operate on arbitrary network interfaces.
-
-**No user-controlled paths.** TAP device names are derived from the validated cage name by prepending `tap-`. The user never supplies a raw device name.
-
 **Deterministic IP assignment.** The `cage_ip()` function hashes the cage name to select a stable IP in the range `10.88.0.2–10.88.0.254`. The same cage name always gets the same IP, making routing predictable without requiring a DHCP server.
-
-**Minimal sudoers scope.** The sudoers rule grants `NOPASSWD` only for this specific binary. No other commands are covered.
-
-### Nethelper Commands
-
-| Command | Arguments | Description |
-|---------|-----------|-------------|
-| `create-bridge` | _(none)_ | Creates `agentcage-br0` at `10.88.0.1/24`, enables IP forwarding, installs MASQUERADE rule |
-| `destroy-bridge` | _(none)_ | Removes `agentcage-br0` and its associated iptables rule |
-| `create-tap` | `<cage-name>` | Creates `tap-<cage-name>`, sets owner to `SUDO_UID`, attaches to `agentcage-br0` |
-| `destroy-tap` | `<cage-name>` | Deletes `tap-<cage-name>` |
 
 ## VM Rootfs Build Pipeline
 
@@ -182,35 +155,43 @@ secrets:
 Run the setup command to download the kernel, check prerequisites, and create the network bridge:
 
 ```bash
-agentcage firecracker setup
+sudo agentcage firecracker setup
 ```
 
 This will:
 1. Download a pre-built vmlinux kernel to `~/.local/share/agentcage/firecracker/` (if not already present)
 2. Download the Firecracker binary to `~/.local/share/agentcage/firecracker/` (if not already present)
 3. Check all prerequisites and report any issues
-4. Create the `agentcage-br0` network bridge (requires the nethelper)
-
-**Install the nethelper and configure sudoers** (before running setup):
-
-```bash
-# Install the nethelper binary
-sudo install -m 755 agentcage-nethelper /usr/local/bin/agentcage-nethelper
-
-# Grant your user passwordless access to the nethelper
-echo "$USER ALL=(root) NOPASSWD: /usr/local/bin/agentcage-nethelper" \
-  | sudo tee /etc/sudoers.d/agentcage-nethelper
-```
+4. Create the `agentcage-br0` network bridge
 
 ### Create and Run a Cage
 
 ```bash
 # Create the cage (builds rootfs, exports images — takes 1–2 minutes on first run)
-agentcage cage create --config config-firecracker.yaml
+sudo agentcage cage create --config config-firecracker.yaml
 
 # Tail logs
 journalctl --user -u basic-cage -f
 ```
+
+### Privilege Model
+
+Firecracker cages require `sudo` for networking operations (TAP devices, bridges, iptables rules). Container-mode cages do not need root.
+
+When invoked via `sudo`, agentcage reads `SUDO_UID` and `SUDO_GID` to chown all created files (rootfs, unit files, VM config, drives) back to the real user, so the systemd user service can access them.
+
+| Command | Needs `sudo` | Why |
+|---------|:---:|-----|
+| `sudo agentcage firecracker setup` | Yes | Creates bridge, iptables/nft rules, IP forwarding |
+| `sudo agentcage cage create -c ...` | Yes | Creates bridge + TAP device, builds rootfs, installs unit |
+| `sudo agentcage cage update NAME` | Yes | Stops service, recreates TAP, rebuilds rootfs |
+| `sudo agentcage cage destroy NAME` | Yes | Destroys TAP device, cleans up files |
+| `agentcage cage list` | No | Only reads container state |
+| `agentcage cage verify NAME` | No | Only reads container state |
+| `agentcage cage reload NAME` | No | Only calls `systemctl --user restart` |
+| `agentcage cage logs NAME` | No | Only calls `journalctl --user` |
+| `agentcage secret *` | No | Only manages Podman secrets |
+| `agentcage domain *` | No | Only edits config files |
 
 ## Known Limitations
 

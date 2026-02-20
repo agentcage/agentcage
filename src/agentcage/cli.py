@@ -30,6 +30,17 @@ def main():
 # ── helpers ──────────────────────────────────────────────
 
 
+def _require_root(action: str) -> None:
+    """Exit with an error if not running as root."""
+    if os.geteuid() != 0:
+        click.echo(
+            f"error: '{action}' with Firecracker isolation requires root\n"
+            f"  Run with: sudo agentcage {action}",
+            err=True,
+        )
+        sys.exit(1)
+
+
 def _expected_secrets(cfg) -> list[str]:
     """Return all secret names a cage expects (injection + direct)."""
     names: list[str] = []
@@ -152,6 +163,7 @@ def cage_create(config_path: str):
         click.echo(f"warning: {w}", err=True)
 
     if cfg.isolation == "firecracker":
+        _require_root("cage create")
         backend = get_backend(cfg)
         issues = backend.check_prerequisites(cfg)
         if issues:
@@ -232,6 +244,9 @@ def cage_update(name: str, config_path: str | None):
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
 
+    if cfg.isolation == "firecracker":
+        _require_root("cage update")
+
     config_host_path = state.save_proxy_config(name)
 
     podman = Podman()
@@ -300,6 +315,8 @@ def cage_destroy(name: str, yes: bool):
     try:
         cfg = state.load_deployment_config(name)
         backend = get_backend(cfg)
+        if cfg.isolation == "firecracker":
+            _require_root("cage destroy")
     except Exception:
         from agentcage.backends.container import ContainerBackend
         backend = ContainerBackend()
@@ -734,6 +751,8 @@ def firecracker_group():
 @firecracker_group.command("setup")
 def firecracker_setup():
     """One-time host setup: download kernel, check prerequisites, create bridge."""
+    _require_root("firecracker setup")
+
     from agentcage.firecracker.kernel import ensure_kernel, default_kernel_path
     from agentcage.firecracker.binaries import ensure_firecracker, default_firecracker_path
     from agentcage.firecracker import prerequisites, network

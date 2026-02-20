@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import grp
 import os
 import shutil
 
@@ -52,17 +51,11 @@ def check_prerequisites(config: Config) -> list[str]:
         else:
             issues.append(f"kernel image not found: {fc.kernel}")
 
-    # agentcage-nethelper
-    nethelper = shutil.which("agentcage-nethelper")
-    if not nethelper:
+    # Root check
+    if os.geteuid() != 0:
         issues.append(
-            "'agentcage-nethelper' not found in PATH — "
-            "install it with: agentcage firecracker setup"
-        )
-    elif not _is_setuid_root(nethelper):
-        issues.append(
-            f"'{nethelper}' is not setuid root — "
-            "reinstall with: agentcage firecracker setup"
+            "not running as root — Firecracker networking requires root: "
+            "sudo agentcage ..."
         )
 
     # Podman (still needed inside the VM)
@@ -70,12 +63,3 @@ def check_prerequisites(config: Config) -> list[str]:
         issues.append("'podman' not found in PATH")
 
     return issues
-
-
-def _is_setuid_root(path: str) -> bool:
-    """Check if a file is setuid and owned by root."""
-    try:
-        st = os.stat(path)
-        return (st.st_mode & 0o4000) != 0 and st.st_uid == 0
-    except OSError:
-        return False

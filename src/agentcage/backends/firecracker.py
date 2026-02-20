@@ -29,10 +29,33 @@ from agentcage.firecracker.vmconfig import (
     write_vm_config,
     vm_config_path,
 )
-from agentcage.podman import Podman
+from agentcage.podman import Podman, _podman_cmd
 from agentcage.quadlets import generate_quadlets
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+
+
+def _chown_for_real_user(path: Path) -> None:
+    """If running via sudo, chown *path* to the real (invoking) user."""
+    uid = os.environ.get("SUDO_UID")
+    gid = os.environ.get("SUDO_GID")
+    if uid and gid:
+        os.chown(path, int(uid), int(gid))
+
+
+def _chown_tree_for_real_user(path: Path) -> None:
+    """Recursively chown a directory tree to the real user."""
+    uid = os.environ.get("SUDO_UID")
+    gid = os.environ.get("SUDO_GID")
+    if not uid or not gid:
+        return
+    iuid, igid = int(uid), int(gid)
+    os.chown(path, iuid, igid)
+    for dirpath, dirnames, filenames in os.walk(path):
+        for d in dirnames:
+            os.chown(os.path.join(dirpath, d), iuid, igid)
+        for f in filenames:
+            os.chown(os.path.join(dirpath, f), iuid, igid)
 
 
 class FirecrackerBackend:
@@ -89,7 +112,7 @@ class FirecrackerBackend:
         # Also include the user's cage image if it exists locally
         user_image = config.container.image
         result = subprocess.run(
-            ["podman", "image", "exists", user_image],
+            [*_podman_cmd(), "image", "exists", user_image],
             capture_output=True,
         )
         if result.returncode == 0:
@@ -124,15 +147,19 @@ class FirecrackerBackend:
             container_images=container_images,
             patches_dir=patches_host_dir,
         )
+        _chown_for_real_user(Path(rootfs))
 
         # Build secrets drive
         sec_path = secrets_drive_path(deploy_name)
         has_secrets = create_secrets_drive(deploy_name, sec_path)
+        if has_secrets:
+            _chown_for_real_user(Path(sec_path))
 
         # Create persistent data drive for named volumes (survives rootfs rebuilds)
         data_path = None
         if config.container.named_volumes:
             data_path = ensure_data_drive(deploy_name)
+            _chown_for_real_user(Path(data_path))
 
         # Generate VM config JSON
         vm_cfg_path = vm_config_path(deploy_name)
@@ -142,6 +169,19 @@ class FirecrackerBackend:
             data_drive_path=data_path,
         )
         write_vm_config(vm_cfg, vm_cfg_path)
+        _chown_for_real_user(Path(vm_cfg_path))
+
+        # Chown the deployment VM directory and secrets directory
+        vm_dir = Path(vm_cfg_path).parent
+        _chown_tree_for_real_user(vm_dir)
+        sec_dir = Path(sec_path).parent
+        if sec_dir.is_dir():
+            _chown_tree_for_real_user(sec_dir)
+        # Chown the deployment parent dir itself
+        deploy_dir = vm_dir.parent
+        _chown_for_real_user(deploy_dir)
+        if deploy_dir.parent.is_dir():
+            _chown_for_real_user(deploy_dir.parent)
 
         # Parse port forwards from config
         vm_ip = network.cage_ip(deploy_name)
@@ -163,7 +203,8 @@ class FirecrackerBackend:
 
         # Generate the host systemd unit (one service for the entire VM)
         firecracker_path = shutil.which(fc.firecracker_bin) or fc.firecracker_bin
-        runtime_dir = f"/run/user/{os.getuid()}/agentcage/{name}"
+        real_uid = os.environ.get("SUDO_UID", str(os.getuid()))
+        runtime_dir = f"/run/user/{real_uid}/agentcage/{name}"
 
         env = SandboxedEnvironment(
             loader=FileSystemLoader(str(_TEMPLATES_DIR / "firecracker")),
@@ -188,13 +229,17 @@ class FirecrackerBackend:
         return {f"{name}-cage.service": unit_content}
 
     def unit_dir(self) -> Path:
-        return Path(os.path.expanduser("~/.config/systemd/user"))
+        home = os.path.expanduser("~")
+        return Path(home) / ".config" / "systemd" / "user"
 
     def install_units(self, units: dict[str, str]) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
         for filename, content in units.items():
-            (dest / filename).write_text(content)
+            unit_path = dest / filename
+            unit_path.write_text(content)
+            _chown_for_real_user(unit_path)
+        _chown_for_real_user(dest)
         click.echo(f"Installed unit files to {dest}/")
         systemd.daemon_reload()
 

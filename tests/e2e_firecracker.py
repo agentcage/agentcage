@@ -1,9 +1,9 @@
 """End-to-end tests for Firecracker microVM isolation.
 
-Requires KVM, agentcage-nethelper (setuid), and Firecracker binaries.
+Requires KVM, root (sudo), and Firecracker binaries.
 Skipped automatically when prerequisites are missing.
 
-Run:  pytest tests/e2e_firecracker.py -v -s
+Run:  sudo pytest tests/e2e_firecracker.py -v -s
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import pytest
 # Skip conditions
 # ---------------------------------------------------------------------------
 
+_IS_ROOT = os.geteuid() == 0
 _HAS_KVM = os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.W_OK)
 _HAS_AGENTCAGE = shutil.which("agentcage") is not None
 _HAS_FIRECRACKER = (
@@ -33,6 +34,7 @@ _HAS_FIRECRACKER = (
 
 pytestmark = [
     pytest.mark.e2e_firecracker,
+    pytest.mark.skipif(not _IS_ROOT, reason="requires root (sudo pytest ...)"),
     pytest.mark.skipif(not _HAS_KVM, reason="KVM not available"),
     pytest.mark.skipif(not _HAS_AGENTCAGE, reason="agentcage not in PATH"),
     pytest.mark.skipif(not _HAS_FIRECRACKER, reason="Firecracker not available"),
@@ -53,6 +55,19 @@ BOOT_TIMEOUT = 180  # seconds — VM boot + image loading is slow
 def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a command, returning the CompletedProcess."""
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+
+
+def _as_real_user(*cmd: str) -> list[str]:
+    """Prefix a command with runuser if running as root via sudo."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user:
+        return ["runuser", "-u", sudo_user, "--", *cmd]
+    return list(cmd)
+
+
+def _systemctl_user(*args: str) -> subprocess.CompletedProcess:
+    """Run systemctl --user, via runuser if running as root."""
+    return _run(_as_real_user("systemctl", "--user", *args))
 
 
 def _wait_for_http(url: str, timeout: int = BOOT_TIMEOUT) -> bool:
@@ -113,7 +128,7 @@ def _cage_create() -> None:
 
 
 def _service_is_active() -> bool:
-    r = _run(["systemctl", "--user", "is-active", f"{CAGE_NAME}-cage.service"])
+    r = _systemctl_user("is-active", f"{CAGE_NAME}-cage.service")
     return r.stdout.strip() == "active"
 
 
@@ -135,8 +150,8 @@ def firecracker_cage():
     if not _wait_for_http(f"{BASE_URL}/", timeout=BOOT_TIMEOUT):
         # Grab logs for debugging before failing
         logs = _run(
-            ["journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
-             "--no-pager", "-n", "80"]
+            _as_real_user("journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
+             "--no-pager", "-n", "80")
         )
         _cage_destroy()
         pytest.fail(
@@ -239,9 +254,9 @@ class TestPortForwarding:
 
 
 class TestCageLifecycle:
-    @pytest.fixture(autouse=True)
+    @pytest.fixture(autouse=True, scope="class")
     def _lifecycle_cage(self):
-        """Create a dedicated cage for lifecycle tests, cleaned up after."""
+        """Create a cage once for all lifecycle tests, cleaned up after."""
         _cage_destroy()
         _cage_create()
         if not _wait_for_http(f"{BASE_URL}/", timeout=BOOT_TIMEOUT):
@@ -250,9 +265,9 @@ class TestCageLifecycle:
         yield
         _cage_destroy()
 
-    def test_stop_and_start(self):
+    def test_1_stop_and_start(self):
         # Stop
-        _run(["systemctl", "--user", "stop", f"{CAGE_NAME}-cage.service"])
+        _systemctl_user("stop", f"{CAGE_NAME}-cage.service")
         time.sleep(2)
         assert not _service_is_active(), "service should be inactive after stop"
         status, _ = _http_get(f"{BASE_URL}/", timeout=3)
@@ -260,10 +275,9 @@ class TestCageLifecycle:
 
         # Verify graceful shutdown happened (use enough lines to see past
         # the kernel panic stack trace that follows the shutdown)
-        result = subprocess.run(
-            ["journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
-             "--no-pager", "-n", "100"],
-            capture_output=True, text=True,
+        result = _run(
+            _as_real_user("journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
+             "--no-pager", "-n", "100"),
         )
         assert "all containers stopped" in result.stdout, \
             f"containers not stopped cleanly\n{result.stdout}"
@@ -275,14 +289,13 @@ class TestCageLifecycle:
         except Exception:
             pass
         create_tap(CAGE_NAME)
-        _run(["systemctl", "--user", "start", f"{CAGE_NAME}-cage.service"])
+        _systemctl_user("start", f"{CAGE_NAME}-cage.service")
         reachable = _wait_for_http(f"{BASE_URL}/", timeout=BOOT_TIMEOUT)
         if not reachable:
             # Dump journal for diagnostics
-            result = subprocess.run(
-                ["journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
-                 "--no-pager", "-n", "60"],
-                capture_output=True, text=True,
+            result = _run(
+                _as_real_user("journalctl", "--user", "-u", f"{CAGE_NAME}-cage.service",
+                 "--no-pager", "-n", "60"),
             )
             pytest.fail(
                 f"agent not reachable after restart\n"
@@ -290,7 +303,7 @@ class TestCageLifecycle:
             )
         assert _service_is_active()
 
-    def test_destroy_cleans_resources(self):
+    def test_2_destroy_cleans_resources(self):
         _cage_destroy()
         time.sleep(1)
 

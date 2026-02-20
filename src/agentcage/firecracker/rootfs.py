@@ -16,7 +16,7 @@ from pathlib import Path
 import click
 
 from agentcage.config import Config
-from agentcage.podman import Podman
+from agentcage.podman import Podman, _podman_cmd
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _BASE_ROOTFS_NAME = "agentcage-vmbase"
@@ -55,13 +55,13 @@ def _export_base_to_dir(podman: Podman, staging_dir: str) -> None:
     """Export the base VM image to a staging directory."""
     container_name = f"agentcage-export-{os.getpid()}"
     subprocess.run(
-        ["podman", "create", "--name", container_name, _BASE_ROOTFS_NAME, "/bin/true"],
+        [*_podman_cmd(), "create", "--name", container_name, _BASE_ROOTFS_NAME, "/bin/true"],
         capture_output=True, check=True,
     )
     try:
         tar_path = os.path.join(staging_dir, "base.tar")
         subprocess.run(
-            ["podman", "export", "-o", tar_path, container_name],
+            [*_podman_cmd(), "export", "-o", tar_path, container_name],
             check=True,
         )
         # Untar into the staging directory
@@ -72,7 +72,7 @@ def _export_base_to_dir(podman: Podman, staging_dir: str) -> None:
         os.unlink(tar_path)
     finally:
         subprocess.run(
-            ["podman", "rm", "-f", container_name],
+            [*_podman_cmd(), "rm", "-f", container_name],
             capture_output=True,
         )
 
@@ -96,7 +96,7 @@ def _export_container_images(
         chunk_prefix = os.path.join(images_dir, f"{safe_name}.tar.gz.")
         click.echo(f"  Exporting image: {image}")
         save_proc = subprocess.Popen(
-            ["podman", "save", "--format", "docker-archive", image],
+            [*_podman_cmd(), "save", "--format", "docker-archive", image],
             stdout=subprocess.PIPE,
         )
         gzip_proc = subprocess.Popen(
@@ -437,6 +437,13 @@ def prepare_vm_rootfs(
     build_base_rootfs(podman)
 
     with tempfile.TemporaryDirectory(prefix="agentcage-rootfs-") as staging:
+        # When running as root via sudo, the real user's Podman needs to
+        # write into the staging directory (via runuser).
+        sudo_uid = os.environ.get("SUDO_UID")
+        sudo_gid = os.environ.get("SUDO_GID")
+        if sudo_uid and sudo_gid:
+            os.chown(staging, int(sudo_uid), int(sudo_gid))
+
         click.echo("Exporting base VM image to staging directory...")
         _export_base_to_dir(podman, staging)
 

@@ -31,8 +31,8 @@ class TestCheckPrerequisites:
     @patch("agentcage.firecracker.prerequisites.os.access", return_value=True)
     @patch("agentcage.firecracker.prerequisites.os.path.exists", return_value=True)
     @patch("agentcage.firecracker.prerequisites.os.path.isfile", return_value=True)
-    @patch("agentcage.firecracker.prerequisites._is_setuid_root", return_value=True)
-    def test_all_ok(self, mock_setuid, mock_isfile, mock_exists, mock_access, mock_which):
+    @patch("agentcage.firecracker.prerequisites.os.geteuid", return_value=0)
+    def test_all_ok(self, mock_euid, mock_isfile, mock_exists, mock_access, mock_which):
         mock_which.return_value = "/usr/bin/fake"
         cfg = _make_fc_config()
         issues = check_prerequisites(cfg)
@@ -49,7 +49,7 @@ class TestCheckPrerequisites:
     @patch("agentcage.firecracker.prerequisites.os.path.exists", return_value=True)
     @patch("agentcage.firecracker.prerequisites.os.path.isfile", return_value=True)
     def test_missing_firecracker_binary(self, mock_isfile, mock_exists, mock_access, mock_which):
-        cfg = _make_fc_config()
+        cfg = _make_fc_config(firecracker_bin="/nonexistent/firecracker")
         issues = check_prerequisites(cfg)
         assert any("firecracker" in i and "not found" in i for i in issues)
 
@@ -57,8 +57,8 @@ class TestCheckPrerequisites:
     @patch("agentcage.firecracker.prerequisites.os.access", return_value=True)
     @patch("agentcage.firecracker.prerequisites.os.path.exists", return_value=True)
     @patch("agentcage.firecracker.prerequisites.os.path.isfile", return_value=False)
-    @patch("agentcage.firecracker.prerequisites._is_setuid_root", return_value=True)
-    def test_missing_kernel(self, mock_setuid, mock_isfile, mock_exists, mock_access, mock_which):
+    @patch("agentcage.firecracker.prerequisites.os.geteuid", return_value=0)
+    def test_missing_kernel(self, mock_euid, mock_isfile, mock_exists, mock_access, mock_which):
         mock_which.return_value = "/usr/bin/fake"
         cfg = _make_fc_config()
         issues = check_prerequisites(cfg)
@@ -68,3 +68,14 @@ class TestCheckPrerequisites:
         cfg = _make_fc_config(kernel="")
         issues = check_prerequisites(cfg)
         assert any("kernel" in i and "not set" in i for i in issues)
+
+    @patch("agentcage.firecracker.prerequisites.shutil.which")
+    @patch("agentcage.firecracker.prerequisites.os.access", return_value=True)
+    @patch("agentcage.firecracker.prerequisites.os.path.exists", return_value=True)
+    @patch("agentcage.firecracker.prerequisites.os.path.isfile", return_value=True)
+    @patch("agentcage.firecracker.prerequisites.os.geteuid", return_value=1000)
+    def test_not_root(self, mock_euid, mock_isfile, mock_exists, mock_access, mock_which):
+        mock_which.return_value = "/usr/bin/fake"
+        cfg = _make_fc_config()
+        issues = check_prerequisites(cfg)
+        assert any("not running as root" in i for i in issues)
