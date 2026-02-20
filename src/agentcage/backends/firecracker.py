@@ -122,6 +122,7 @@ class FirecrackerBackend:
         rootfs = prepare_vm_rootfs(
             self._podman, deploy_name, config, quadlets, config_host_path,
             container_images=container_images,
+            patches_dir=patches_host_dir,
         )
 
         # Build secrets drive

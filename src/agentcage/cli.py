@@ -224,6 +224,13 @@ def cage_update(name: str, config_path: str | None):
         state.save_deployment(name, config_path)
     else:
         cfg = state.load_deployment_config(name)
+        try:
+            warnings = validate_config(cfg)
+        except ValueError as e:
+            click.echo(f"error: {e}", err=True)
+            sys.exit(1)
+        for w in warnings:
+            click.echo(f"warning: {w}", err=True)
 
     config_host_path = state.save_proxy_config(name)
 

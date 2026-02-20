@@ -76,21 +76,6 @@ fi
 
 echo "nameserver 10.88.0.1" > /etc/resolv.conf
 
-# ── Mount secrets drive if present (by filesystem label) ─
-SECRETS_DEV=$(blkid -L cage-secrets 2>/dev/null || true)
-if [[ -n "$SECRETS_DEV" ]]; then
-    echo "agentcage-vm: mounting secrets drive ($SECRETS_DEV)"
-    mkdir -p /mnt/secrets
-    mount -o ro "$SECRETS_DEV" /mnt/secrets
-
-    for f in /mnt/secrets/*; do
-        [[ -f "$f" ]] || continue
-        local_name="$(basename "$f")"
-        podman secret create "$local_name" "$f" || true
-        echo "agentcage-vm: loaded secret $local_name"
-    done
-fi
-
 # ── Mount data drive if present (persistent named volumes) ─
 DATA_DEV=$(blkid -L cage-data 2>/dev/null || true)
 if [[ -n "$DATA_DEV" ]]; then
@@ -113,6 +98,26 @@ if [ -d /var/lib/containers/storage/overlay ]; then
     echo "agentcage-vm: restart detected — resetting podman storage"
     podman system reset --force 2>&1 || true
     mkdir -p /run/containers/storage
+fi
+
+# ── Mount secrets drive and create Podman secrets ─────────
+# Must happen AFTER podman system reset (restart) to avoid secrets being
+# wiped.  The drive is an ext4 image attached by Firecracker as a
+# virtio-block device with label "cage-secrets".
+SECRETS_DEV=$(blkid -L cage-secrets 2>/dev/null || true)
+if [[ -n "$SECRETS_DEV" ]]; then
+    echo "agentcage-vm: mounting secrets drive ($SECRETS_DEV)"
+    mkdir -p /mnt/secrets
+    mount -o ro "$SECRETS_DEV" /mnt/secrets
+
+    for f in /mnt/secrets/*; do
+        [[ -f "$f" ]] || continue
+        local_name="$(basename "$f")"
+        podman secret create "$local_name" "$f" || true
+        echo "agentcage-vm: loaded secret $local_name"
+    done
+else
+    echo "agentcage-vm: no secrets drive found"
 fi
 
 # ── Load pre-built container images ──────────────────────
@@ -168,16 +173,23 @@ echo "agentcage-vm: starting cage services"
 
 STARTUP_SCRIPT="/var/lib/agentcage/start-cage.sh"
 
+STARTUP_OK=false
 if [[ -x "$STARTUP_SCRIPT" ]]; then
     echo "agentcage-vm: running startup script"
-    bash "$STARTUP_SCRIPT" 2>&1 || {
-        echo "agentcage-vm: startup script failed (exit $?)" >&2
-    }
+    if bash "$STARTUP_SCRIPT" 2>&1; then
+        STARTUP_OK=true
+    else
+        echo "agentcage-vm: startup script FAILED (exit $?)"
+    fi
 else
-    echo "agentcage-vm: error: startup script not found: $STARTUP_SCRIPT" >&2
+    echo "agentcage-vm: error: startup script not found: $STARTUP_SCRIPT"
 fi
 
-echo "agentcage-vm: init complete, cage $CAGE_NAME is running"
+if [[ "$STARTUP_OK" == true ]]; then
+    echo "agentcage-vm: init complete, cage $CAGE_NAME is running"
+else
+    echo "agentcage-vm: init complete, cage $CAGE_NAME FAILED TO START"
+fi
 
 # ── Graceful shutdown on SIGINT (SendCtrlAltDel) / SIGTERM ──
 # Disable errexit — bash's SIGINT handling with set -e can cause

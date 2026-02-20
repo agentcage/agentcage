@@ -372,6 +372,7 @@ def _populate_staging(
     quadlet_files: dict[str, str],
     proxy_config_path: str,
     container_images: list[str],
+    patches_dir: str | None = None,
 ) -> None:
     """Add cage-specific files to the staging directory."""
     # Ensure directories exist
@@ -384,10 +385,12 @@ def _populate_staging(
         os.makedirs(os.path.join(staging_dir, d), exist_ok=True)
 
     # Copy Node.js proxy-fetch patches into rootfs
-    patches_src = _DATA_DIR / "patches"
+    # Use the work dir (with node_modules installed) if provided,
+    # otherwise fall back to package data dir.
+    patches_src = patches_dir if patches_dir else str(_DATA_DIR / "patches")
     patches_dest = os.path.join(staging_dir, "var/lib/agentcage/patches")
-    if patches_src.is_dir():
-        shutil.copytree(str(patches_src), patches_dest, dirs_exist_ok=True)
+    if os.path.isdir(patches_src):
+        shutil.copytree(patches_src, patches_dest, dirs_exist_ok=True)
 
     # Write quadlet files
     for filename, content in quadlet_files.items():
@@ -418,6 +421,7 @@ def prepare_vm_rootfs(
     quadlet_files: dict[str, str],
     proxy_config_path: str,
     container_images: list[str] | None = None,
+    patches_dir: str | None = None,
 ) -> str:
     """Prepare a cage-specific VM rootfs with config, images, and startup script.
 
@@ -440,6 +444,7 @@ def prepare_vm_rootfs(
         _populate_staging(
             staging, config, deploy_name,
             quadlet_files, proxy_config_path, container_images,
+            patches_dir=patches_dir,
         )
 
         # Ensure all files are readable (Fedora ships /etc/gshadow etc.
