@@ -306,6 +306,54 @@ class TestGenerateStartupScript:
         assert "mkdir -p /mnt/data/state" in script
 
 
+class TestLogQueryConditional:
+    def test_log_queries_off_by_default(self):
+        cfg = _make_config()
+        script = _generate_startup_script(cfg, "testcage")
+        assert "--log-queries" not in script
+
+    def test_log_queries_on_when_enabled(self):
+        cfg = _make_config(logging=LoggingConfig(dns_queries=True))
+        script = _generate_startup_script(cfg, "testcage")
+        assert "--log-queries" in script
+
+
+class TestSeverityLogForwarding:
+    def test_min_level_defaults(self):
+        cfg = _make_config()
+        script = _generate_startup_script(cfg, "testcage")
+        assert "MIN_LEVEL_DNS=1" in script
+        assert "MIN_LEVEL_PROXY=1" in script
+        assert "MIN_LEVEL_CAGE=1" in script
+
+    def test_min_level_custom(self):
+        cfg = _make_config(logging=LoggingConfig(level="warn", dns="error"))
+        script = _generate_startup_script(cfg, "testcage")
+        assert "MIN_LEVEL_DNS=3" in script   # error = 3
+        assert "MIN_LEVEL_PROXY=2" in script  # warn = 2 (inherited)
+        assert "MIN_LEVEL_CAGE=2" in script   # warn = 2 (inherited)
+
+    def test_classify_functions_present(self):
+        cfg = _make_config()
+        script = _generate_startup_script(cfg, "testcage")
+        assert "classify_dns()" in script
+        assert "classify_proxy()" in script
+        assert "classify_cage()" in script
+
+    def test_forward_logs_present(self):
+        cfg = _make_config()
+        script = _generate_startup_script(cfg, "testcage")
+        assert "forward_logs dns" in script
+        assert "forward_logs proxy" in script
+        assert "forward_logs cage" in script
+
+    def test_severity_tag_format(self):
+        cfg = _make_config()
+        script = _generate_startup_script(cfg, "testcage")
+        # The script should emit [service:level] format
+        assert '[$svc:$lvl]' in script
+
+
 class TestEnsureDataDrive:
     def test_creates_data_drive(self, monkeypatch, tmp_path):
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))

@@ -46,14 +46,14 @@ class TestVolumeQuadlet:
 
 
 class TestDnsQuadlet:
-    def test_dns_default_has_log_queries(self, minimal_yaml):
+    def test_dns_default_no_log_queries(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
         assert "ContainerName=test-dns" in content
         assert "Image=localhost/agentcage-dns" in content
         assert "Network=test-net.network:ip=10.89.0.10" in content
-        assert "--log-queries" in content
+        assert "--log-queries" not in content
 
     def test_dns_custom_servers(self, tmp_path):
         p = tmp_path / "config.yaml"
@@ -69,7 +69,7 @@ class TestDnsQuadlet:
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
         assert "--server 100.100.100.100 --server 1.1.1.1" in content
-        assert "--log-queries" in content
+        assert "--log-queries" not in content
 
 
     def test_dns_log_queries_enabled(self, tmp_path):

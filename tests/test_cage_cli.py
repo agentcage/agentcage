@@ -325,11 +325,11 @@ class TestCageLogs:
              "-n", "50", "-o", "cat"],
             stdout=ANY,
         )
-        # grep Popen
-        mock_popen.assert_any_call(
-            ["grep", "--line-buffered", "-E", r"\[proxy\]"],
-            stdin=mock_journal.stdout,
-        )
+        # grep Popen — pattern matches [proxy:(debug|info|warn|error)]
+        grep_call = mock_popen.call_args_list[1]
+        pattern = grep_call[0][0][3]
+        assert "proxy" in pattern
+        assert "debug|info|warn|error" in pattern
         mock_execvp.assert_not_called()
 
     @patch("agentcage.cli.subprocess.Popen")
@@ -349,9 +349,10 @@ class TestCageLogs:
             "cage", "logs", "basic", "-s", "proxy", "-s", "dns", "--no-follow",
         ])
 
-        # grep pattern should match both [proxy] and [dns]
+        # grep pattern should match both [proxy:*] and [dns:*]
         grep_call = mock_popen.call_args_list[1]
         pattern = grep_call[0][0][3]  # 4th element of the command list
-        assert r"\[proxy\]" in pattern
-        assert r"\[dns\]" in pattern
+        assert "proxy" in pattern
+        assert "dns" in pattern
+        assert "debug|info|warn|error" in pattern
         mock_execvp.assert_not_called()

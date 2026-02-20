@@ -5,7 +5,7 @@ import textwrap
 
 import pytest
 
-from agentcage.config import Config, ContainerConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, load_config, validate_config
+from agentcage.config import Config, ContainerConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, _VALID_LEVELS, load_config, validate_config
 
 
 class TestLoadConfigMinimal:
@@ -196,6 +196,86 @@ class TestLoggingConfig:
         """))
         cfg = load_config(str(p))
         assert cfg.logging.allowed_requests is False
+
+    def test_level_default(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        assert cfg.logging.level == "info"
+        assert cfg.logging.dns == ""
+        assert cfg.logging.proxy == ""
+        assert cfg.logging.cage == ""
+
+    def test_level_explicit(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            logging:
+              level: warn
+              dns: error
+              proxy: debug
+        """))
+        cfg = load_config(str(p))
+        assert cfg.logging.level == "warn"
+        assert cfg.logging.dns == "error"
+        assert cfg.logging.proxy == "debug"
+        assert cfg.logging.cage == ""
+
+    def test_level_for_fallback(self):
+        lc = LoggingConfig(level="warn", dns="error")
+        assert lc.level_for("dns") == "error"
+        assert lc.level_for("proxy") == "warn"
+        assert lc.level_for("cage") == "warn"
+
+    def test_level_for_all_set(self):
+        lc = LoggingConfig(level="info", dns="debug", proxy="warn", cage="error")
+        assert lc.level_for("dns") == "debug"
+        assert lc.level_for("proxy") == "warn"
+        assert lc.level_for("cage") == "error"
+
+
+class TestValidateLoggingLevels:
+    def test_invalid_global_level(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            logging:
+              level: trace
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match="logging.level"):
+            validate_config(cfg)
+
+    def test_invalid_service_level(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            logging:
+              dns: verbose
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match="logging.dns"):
+            validate_config(cfg)
+
+    def test_valid_levels_pass(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            logging:
+              level: debug
+              dns: warn
+              proxy: error
+              cage: info
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert warnings == []
 
 
 class TestLoadConfigEdgeCases:

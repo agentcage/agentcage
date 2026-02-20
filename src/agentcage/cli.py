@@ -516,7 +516,10 @@ def cage_reload(name: str):
 @click.option("-n", "--lines", default=50, show_default=True,
               help="Number of lines to show.")
 @click.option("--no-follow", is_flag=True, help="Print logs and exit.")
-def cage_logs(name, services, lines, no_follow):
+@click.option("-l", "--level", "min_level", default=None,
+              type=click.Choice(["debug", "info", "warn", "error"]),
+              help="Minimum severity level to show.")
+def cage_logs(name, services, lines, no_follow, min_level):
     """Follow journalctl logs for a cage."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
@@ -527,13 +530,48 @@ def cage_logs(name, services, lines, no_follow):
 
     if cfg.isolation == "firecracker":
         # Firecracker has a single host unit; container logs are prefixed
-        # [cage], [proxy], [dns] on the VM console.
-        _logs_firecracker(name, selected, lines, no_follow)
+        # [cage:level], [proxy:level], [dns:level] on the VM console.
+        _logs_firecracker(name, selected, lines, no_follow, min_level)
     else:
-        _logs_container(name, selected, lines, no_follow)
+        _logs_container(name, selected, lines, no_follow, min_level)
 
 
-def _logs_container(name, services, lines, no_follow):
+_LEVEL_ORDER = {"debug": 0, "info": 1, "warn": 2, "error": 3}
+
+
+def _classify_line(service: str, line: str) -> str:
+    """Classify a log line's severity for container-mode filtering."""
+    if service == "dns":
+        low = line.lower()
+        for pat in ("query[", "reply", "cached", "forwarded"):
+            if pat in low:
+                return "debug"
+        for pat in ("error", "refused", "servfail"):
+            if pat in low:
+                return "error"
+        return "info"
+    if service == "proxy":
+        if '"decision":"blocked"' in line or '"decision": "blocked"' in line:
+            return "warn"
+        if '"decision":"flagged"' in line or '"decision": "flagged"' in line:
+            return "warn"
+        if '"decision":"allowed"' in line or '"decision": "allowed"' in line:
+            return "info"
+        low = line.lower()
+        if "error" in low or "traceback" in low:
+            return "error"
+        return "debug"
+    # cage
+    low = line.lower()
+    for pat in ("error", "traceback", "fatal", "exit code"):
+        if pat in low:
+            return "error"
+    if "warn" in low:
+        return "warn"
+    return "info"
+
+
+def _logs_container(name, services, lines, no_follow, min_level=None):
     """Exec into journalctl with one -u per host-level service unit."""
     units = [f"{name}-{svc}" for svc in services]
     cmd = ["journalctl", "--user"]
@@ -542,22 +580,58 @@ def _logs_container(name, services, lines, no_follow):
     cmd += ["-n", str(lines)]
     if not no_follow:
         cmd.append("-f")
-    os.execvp("journalctl", cmd)
+
+    if min_level is None:
+        os.execvp("journalctl", cmd)
+    else:
+        # Filter by severity on the Python side
+        min_ord = _LEVEL_ORDER.get(min_level, 1)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+        try:
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip("\n")
+                # Detect which service this line belongs to
+                svc = None
+                for s in services:
+                    if f"{name}-{s}" in line:
+                        svc = s
+                        break
+                if svc is None:
+                    svc = "cage"  # fallback
+                lvl = _classify_line(svc, line)
+                if _LEVEL_ORDER.get(lvl, 1) >= min_ord:
+                    click.echo(line)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            proc.terminate()
 
 
-def _logs_firecracker(name, services, lines, no_follow):
+def _level_grep_pattern(services: tuple, min_level: str | None) -> str:
+    """Build a grep -E pattern matching [service:level] tags."""
+    levels_at_or_above = ("debug", "info", "warn", "error")
+    if min_level:
+        min_ord = _LEVEL_ORDER.get(min_level, 1)
+        levels_at_or_above = tuple(
+            l for l, o in _LEVEL_ORDER.items() if o >= min_ord
+        )
+    lvl_alt = "|".join(levels_at_or_above)
+    svc_alt = "|".join(services)
+    return rf"\[({svc_alt}):({lvl_alt})\]"
+
+
+def _logs_firecracker(name, services, lines, no_follow, min_level=None):
     """Show logs from the single Firecracker host unit, filtering by service prefix."""
     cmd = ["journalctl", "--user", "-u", f"{name}-cage",
            "-n", str(lines), "-o", "cat"]
     if not no_follow:
         cmd.append("-f")
 
-    need_filter = set(services) != {"cage", "proxy", "dns"}
+    need_filter = set(services) != {"cage", "proxy", "dns"} or min_level is not None
     if not need_filter:
         os.execvp("journalctl", cmd)
     else:
-        # Pipe through grep to match [cage]/[proxy]/[dns] prefixed lines
-        pattern = "|".join(rf"\[{svc}\]" for svc in services)
+        pattern = _level_grep_pattern(services, min_level)
         journal = subprocess.Popen(cmd, stdout=subprocess.PIPE)
         grep = subprocess.Popen(
             ["grep", "--line-buffered", "-E", pattern],

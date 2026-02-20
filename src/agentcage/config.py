@@ -42,11 +42,24 @@ class ContainerConfig:
     timeout_stop_sec: int = 30
 
 
+_VALID_LEVELS = ("debug", "info", "warn", "error")
+_LEVEL_ORDER = {name: idx for idx, name in enumerate(_VALID_LEVELS)}
+
+
 @dataclass
 class LoggingConfig:
     dns_queries: bool = False
     proxy_connections: bool = False
     allowed_requests: bool = False
+    level: str = "info"   # global default minimum level
+    dns: str = ""         # per-service override (empty = inherit from level)
+    proxy: str = ""
+    cage: str = ""
+
+    def level_for(self, service: str) -> str:
+        """Return the effective minimum level for *service*."""
+        override = getattr(self, service, "")
+        return override if override else self.level
 
 
 @dataclass
@@ -229,6 +242,10 @@ def load_config(path: str) -> Config:
         lc.allowed_requests = bool(log_raw["allowed_requests"])
     else:
         lc.allowed_requests = bool(raw.get("log_allowed", False))
+    lc.level = str(log_raw.get("level", "info") or "info")
+    lc.dns = str(log_raw.get("dns", "") or "")
+    lc.proxy = str(log_raw.get("proxy", "") or "")
+    lc.cage = str(log_raw.get("cage", "") or "")
     cfg.logging = lc
 
     return cfg
@@ -268,6 +285,20 @@ def validate_config(config: Config) -> list[str]:
             raise ValueError("firecracker.vcpus must be >= 1")
         if fc.mem_mb < 128:
             raise ValueError("firecracker.mem_mb must be >= 128")
+
+    # Validate logging levels
+    if config.logging.level not in _VALID_LEVELS:
+        raise ValueError(
+            f"logging.level must be one of {_VALID_LEVELS} "
+            f"(got: {config.logging.level!r})"
+        )
+    for svc in ("dns", "proxy", "cage"):
+        val = getattr(config.logging, svc)
+        if val and val not in _VALID_LEVELS:
+            raise ValueError(
+                f"logging.{svc} must be one of {_VALID_LEVELS} or empty "
+                f"(got: {val!r})"
+            )
 
     warnings = []
 
