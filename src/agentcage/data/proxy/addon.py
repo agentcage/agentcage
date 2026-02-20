@@ -408,7 +408,10 @@ class Agentcage:
                 for r in results
             ]
         line = json.dumps(entry)
-        ctx.log.info(line)
+        if decision in ("blocked", "flagged"):
+            ctx.log.warn(line)
+        else:
+            ctx.log.info(line)
         if self._audit_file:
             try:
                 self._audit_file.write(line + "\n")
