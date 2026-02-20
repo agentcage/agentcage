@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-20
+
+### Security
+- Entropy inspector now checks URL path segments for high-entropy data, closing an exfiltration channel that bypassed body inspection
+- Rate limiting enabled by default (10 req/s, burst 50) — previously disabled unless explicitly configured
+- All secret detection regex patterns now have upper-bounded quantifiers to prevent ReDoS on crafted inputs
+
+## [0.2.0] - 2026-02-20
+
+### Added
+- **Firecracker microVM isolation** — run the same three-container topology inside a dedicated microVM with its own Linux kernel, providing hardware-level isolation via KVM (`isolation: firecracker`)
+- `firecracker setup` CLI command to download and verify Firecracker binaries and kernel
+- Auto-download of Firecracker binary and kernel with SHA-256 checksum verification
+- File-based secret store and secrets drive for Firecracker VMs
+- Persistent data drive for Firecracker VMs (survives cage updates)
+- Graceful VM shutdown via SendCtrlAltDel with trap-based container cleanup
+- VM restart support with automatic Podman storage reset
+- **Inbound port inspection** — ports exposed via `ports:` config are now routed through the mitmproxy inspector chain in both container and Firecracker modes
+- Socat-based port forwarding for Firecracker VMs (replaces iptables DNAT)
+- Dependency update script and bumped pinned dependencies
+
+### Changed
+- Extracted `Backend` protocol; CLI now dispatches to `ContainerBackend` or `FirecrackerBackend` based on `isolation` config
+- Firecracker commands require `sudo` directly (removed `agentcage-nethelper` setuid binary)
+- Reverse proxy binds to `0.0.0.0` and skips domain inspector for inbound flows
+
+### Fixed
+- Secrets and startup failures in Firecracker VMs
+- Firecracker networking: dual-homed TAP, INPUT firewall rules for VM-to-host connectivity
+- Firecracker image loading, gzip handling, UID mapping, and port forwarding
+- E2E tests use real user's HOME when running via sudo
+
+### Docs
+- Firecracker MicroVM isolation guide (`docs/firecracker.md`)
+- Updated architecture, security, and README to cover both isolation modes and threat model differences
+
 ## [0.1.2] - 2026-02-17
 
 ### Fixed
@@ -43,5 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.3.0]: https://github.com/agentcage/agentcage/releases/tag/v0.3.0
+[0.2.0]: https://github.com/agentcage/agentcage/releases/tag/v0.2.0
 [0.1.2]: https://github.com/agentcage/agentcage/releases/tag/v0.1.2
 [0.1.0]: https://github.com/agentcage/agentcage/releases/tag/v0.1.0

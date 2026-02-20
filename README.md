@@ -191,9 +191,9 @@ agentcage cage create -c config.yaml
 agentcage cage verify myapp
 
 # 5. View logs
-journalctl --user -u myapp-cage -f    # agent logs
-journalctl --user -u myapp-proxy -f   # proxy inspection logs
-journalctl --user -u myapp-dns -f     # DNS query logs
+agentcage cage logs myapp             # agent logs
+agentcage cage logs myapp -s proxy    # proxy inspection logs
+agentcage cage logs myapp -s dns      # DNS query logs
 
 # 6. Update after code/config changes
 agentcage cage update myapp -c config.yaml
