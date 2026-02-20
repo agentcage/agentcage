@@ -25,10 +25,18 @@ import pytest
 _IS_ROOT = os.geteuid() == 0
 _HAS_KVM = os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.W_OK)
 _HAS_AGENTCAGE = shutil.which("agentcage") is not None
+def _real_home() -> str:
+    """Return the real user's home dir (not root's when running via sudo)."""
+    sudo_user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user:
+        import pwd
+        return pwd.getpwnam(sudo_user).pw_dir
+    return os.path.expanduser("~")
+
 _HAS_FIRECRACKER = (
     shutil.which("firecracker") is not None
     or os.path.isfile(
-        os.path.expanduser("~/.local/share/agentcage/firecracker/firecracker")
+        os.path.join(_real_home(), ".local/share/agentcage/firecracker/firecracker")
     )
 )
 
@@ -113,15 +121,28 @@ def _http_post(url: str, data: dict, timeout: int = 15) -> tuple[int, str]:
         return 0, str(e)
 
 
+def _agentcage_env(**extra: str) -> dict[str, str]:
+    """Return env dict with HOME/XDG set for the real user (not root)."""
+    env = os.environ.copy()
+    sudo_user = env.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user:
+        import pwd
+        pw = pwd.getpwnam(sudo_user)
+        env["HOME"] = pw.pw_dir
+        env["XDG_RUNTIME_DIR"] = f"/run/user/{pw.pw_uid}"
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{pw.pw_uid}/bus"
+    env.update(extra)
+    return env
+
+
 def _cage_destroy() -> None:
     """Destroy the cage, ignoring errors."""
-    _run(["agentcage", "cage", "destroy", CAGE_NAME, "-y"])
+    _run(["agentcage", "cage", "destroy", CAGE_NAME, "-y"], env=_agentcage_env())
 
 
 def _cage_create() -> None:
     """Create the cage with Firecracker isolation."""
-    env = os.environ.copy()
-    env["AGENT_DIR"] = os.path.join(REPO_ROOT, "examples", "basic", "agent")
+    env = _agentcage_env(AGENT_DIR=os.path.join(REPO_ROOT, "examples", "basic", "agent"))
     result = _run(["agentcage", "cage", "create", "-c", CONFIG_PATH], env=env)
     if result.returncode != 0:
         pytest.fail(f"cage create failed:\nstdout: {result.stdout}\nstderr: {result.stderr}")
@@ -311,15 +332,13 @@ class TestCageLifecycle:
         assert not _service_is_active()
 
         # Unit file should be removed
-        unit = os.path.expanduser(
-            f"~/.config/systemd/user/{CAGE_NAME}-cage.service"
-        )
+        home = _real_home()
+        unit = os.path.join(home, ".config", "systemd", "user",
+                            f"{CAGE_NAME}-cage.service")
         assert not os.path.exists(unit), f"unit file still exists: {unit}"
 
         # Rootfs should be removed
-        config_home = os.environ.get(
-            "XDG_CONFIG_HOME", os.path.expanduser("~/.config")
-        )
+        config_home = os.path.join(home, ".config")
         rootfs = os.path.join(
             config_home, "agentcage", "deployments", CAGE_NAME, "vm", "rootfs.ext4"
         )
