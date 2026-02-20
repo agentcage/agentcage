@@ -219,14 +219,17 @@ class TestProxyQuadlet:
         assert "Secret=myapp.OTHER_KEY,type=env,target=OTHER_KEY" in content
         assert "Secret=API_KEY,type=env\n" not in content
 
-    def test_proxy_quiet_by_default(self, minimal_yaml):
+    def test_proxy_default_flags(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-proxy.container"]
         assert "Exec=mitmdump" in content
-        assert "--quiet" in content
+        assert "--set flow_detail=0" in content
+        assert "--quiet" not in content
+        assert "-v" not in content
+        assert 'Environment="PYTHONUNBUFFERED=1"' in content
 
-    def test_proxy_no_quiet_when_logging(self, tmp_path):
+    def test_proxy_no_flow_detail_when_logging(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -240,6 +243,7 @@ class TestProxyQuadlet:
         content = files["test-proxy.container"]
         assert "Exec=mitmdump" in content
         assert "--quiet" not in content
+        assert "flow_detail" not in content
 
     def test_proxy_resolv_conf_uses_upstream_dns(self, tmp_path):
         p = tmp_path / "config.yaml"

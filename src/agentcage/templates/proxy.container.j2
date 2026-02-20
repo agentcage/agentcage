@@ -12,15 +12,16 @@ Network=podman
 DNS={{ srv }}
 {% endfor %}
 Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
+Environment="PYTHONUNBUFFERED=1"
 Volume={{ name }}-certs.volume:/home/mitmproxy/.mitmproxy:Z
 {% if inbound_forwards %}
-Exec=mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080{% for fwd in inbound_forwards %} --mode reverse:http://10.89.0.2:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy{% if not log_proxy_connections %} --quiet{% endif %}
+Exec=mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080{% for fwd in inbound_forwards %} --mode reverse:http://10.89.0.2:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
 
 {% for fwd in inbound_forwards %}
 PublishPort={{ fwd.publish_spec }}
 {% endfor %}
 {% else %}
-Exec=mitmdump -s /app/addon.py --listen-port 8080 --set connection_strategy=lazy --listen-host 10.89.0.11{% if not log_proxy_connections %} --quiet{% endif %}
+Exec=mitmdump -s /app/addon.py --listen-port 8080 --set connection_strategy=lazy --listen-host 10.89.0.11{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
 
 {% endif %}
 {% for secret in proxy_secrets %}

@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -408,10 +409,9 @@ class Agentcage:
                 for r in results
             ]
         line = json.dumps(entry)
-        if decision in ("blocked", "flagged"):
-            ctx.log.warn(line)
-        else:
-            ctx.log.info(line)
+        # Write directly to stderr so output appears regardless of
+        # mitmproxy's termlog_verbosity / -v / --quiet settings.
+        print(line, file=sys.stderr, flush=True)
         if self._audit_file:
             try:
                 self._audit_file.write(line + "\n")
