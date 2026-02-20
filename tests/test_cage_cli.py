@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 from unittest.mock import MagicMock, patch, call, ANY
 
@@ -325,11 +326,11 @@ class TestCageLogs:
              "-n", "50", "-o", "cat"],
             stdout=ANY,
         )
-        # grep Popen — pattern matches [proxy:(debug|info|warn|error)]
+        # grep Popen — pattern matches [proxy:(debug|info|warning|error|critical)]
         grep_call = mock_popen.call_args_list[1]
         pattern = grep_call[0][0][3]
         assert "proxy" in pattern
-        assert "debug|info|warn|error" in pattern
+        assert "debug|info|warning|error|critical" in pattern
         mock_execvp.assert_not_called()
 
     @patch("agentcage.cli.subprocess.Popen")
@@ -354,5 +355,157 @@ class TestCageLogs:
         pattern = grep_call[0][0][3]  # 4th element of the command list
         assert "proxy" in pattern
         assert "dns" in pattern
-        assert "debug|info|warn|error" in pattern
+        assert "debug|info|warning|error|critical" in pattern
         mock_execvp.assert_not_called()
+
+
+# ── sample audit JSON lines ──────────────────────────────
+
+_AUDIT_ALLOWED = json.dumps({
+    "ts": "2026-02-20T10:00:00+00:00", "method": "GET",
+    "host": "api.anthropic.com", "url": "https://api.anthropic.com/v1/messages",
+    "decision": "allowed", "reason": "", "inspectors": [],
+})
+
+_AUDIT_BLOCKED = json.dumps({
+    "ts": "2026-02-20T10:01:00+00:00", "method": "POST",
+    "host": "evil.com", "url": "https://evil.com/exfil",
+    "decision": "blocked", "reason": "domain not in allowlist",
+    "inspectors": [{"name": "domain", "action": "block",
+                    "reason": "domain not in allowlist", "severity": "error"}],
+})
+
+_AUDIT_FLAGGED = json.dumps({
+    "ts": "2026-02-20T10:02:00+00:00", "method": "POST",
+    "host": "api.anthropic.com", "url": "https://api.anthropic.com/v1/messages",
+    "decision": "flagged", "reason": "high entropy",
+    "inspectors": [{"name": "entropy", "action": "flag",
+                    "reason": "high entropy", "severity": "warning"}],
+})
+
+_NON_AUDIT = "some non-json log line\n"
+
+
+def _mock_popen_output(lines):
+    """Create a mock Popen whose stdout yields the given lines."""
+    mock_proc = MagicMock()
+    mock_proc.stdout = iter(lines)
+    mock_proc.wait.return_value = 0
+    return mock_proc
+
+
+class TestCageAudit:
+    @patch("agentcage.cli.state")
+    def test_audit_fails_if_not_exists(self, mock_state):
+        mock_state.deployment_exists.return_value = False
+        result = _runner().invoke(main, ["cage", "audit", "nope"])
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.state")
+    def test_audit_container_mode(self, mock_state, mock_popen):
+        """Parses raw JSON from mocked subprocess in container mode."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+
+        lines = [_AUDIT_ALLOWED + "\n", _NON_AUDIT, _AUDIT_BLOCKED + "\n"]
+        mock_popen.return_value = _mock_popen_output(lines)
+
+        result = _runner().invoke(main, ["cage", "audit", "myapp", "--no-color"])
+        assert result.exit_code == 0
+        assert "api.anthropic.com" in result.output
+        assert "evil.com" in result.output
+
+        # Verify journal command uses proxy unit
+        cmd = mock_popen.call_args[0][0]
+        assert "-u" in cmd
+        idx = cmd.index("-u")
+        assert cmd[idx + 1] == "myapp-proxy"
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.state")
+    def test_audit_firecracker_mode(self, mock_state, mock_popen):
+        """Uses cage unit for Firecracker mode; parses [proxy:*] prefixed lines."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+
+        fc_line = f"[proxy:warning] {_AUDIT_BLOCKED}\n"
+        lines = [fc_line, _NON_AUDIT]
+        mock_popen.return_value = _mock_popen_output(lines)
+
+        result = _runner().invoke(main, ["cage", "audit", "myvm", "--no-color"])
+        assert result.exit_code == 0
+        assert "evil.com" in result.output
+
+        # Verify journal command uses cage unit (Firecracker)
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("-u")
+        assert cmd[idx + 1] == "myvm-cage"
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.state")
+    def test_audit_decision_filter(self, mock_state, mock_popen):
+        """-d blocked filters out allowed entries."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+
+        lines = [_AUDIT_ALLOWED + "\n", _AUDIT_BLOCKED + "\n", _AUDIT_FLAGGED + "\n"]
+        mock_popen.return_value = _mock_popen_output(lines)
+
+        result = _runner().invoke(main, [
+            "cage", "audit", "myapp", "-d", "blocked", "--no-color",
+        ])
+        assert result.exit_code == 0
+        assert "evil.com" in result.output
+        assert "api.anthropic.com" not in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.state")
+    def test_audit_json_output(self, mock_state, mock_popen):
+        """--json outputs valid JSON lines."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+
+        lines = [_AUDIT_ALLOWED + "\n", _AUDIT_BLOCKED + "\n"]
+        mock_popen.return_value = _mock_popen_output(lines)
+
+        result = _runner().invoke(main, [
+            "cage", "audit", "myapp", "--json",
+        ])
+        assert result.exit_code == 0
+        output_lines = [l for l in result.output.strip().split("\n") if l]
+        assert len(output_lines) == 2
+        for line in output_lines:
+            parsed = json.loads(line)
+            assert "decision" in parsed
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.state")
+    def test_audit_summary_mode(self, mock_state, mock_popen):
+        """--summary shows aggregated stats."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+
+        lines = [_AUDIT_ALLOWED + "\n", _AUDIT_BLOCKED + "\n", _AUDIT_FLAGGED + "\n"]
+        mock_popen.return_value = _mock_popen_output(lines)
+
+        result = _runner().invoke(main, [
+            "cage", "audit", "myapp", "--summary",
+        ])
+        assert result.exit_code == 0
+        assert "Total entries: 3" in result.output
+        assert "blocked" in result.output
+        assert "allowed" in result.output
+
+    @patch("agentcage.cli.state")
+    def test_audit_summary_follow_conflict(self, mock_state):
+        """--summary --follow errors."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+
+        result = _runner().invoke(main, [
+            "cage", "audit", "myapp", "--summary", "--follow",
+        ])
+        assert result.exit_code != 0
+        assert "incompatible" in result.output

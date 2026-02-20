@@ -42,7 +42,7 @@ class ContainerConfig:
     timeout_stop_sec: int = 30
 
 
-_VALID_LEVELS = ("debug", "info", "warn", "error")
+_VALID_LEVELS = ("debug", "info", "warning", "error", "critical")
 _LEVEL_ORDER = {name: idx for idx, name in enumerate(_VALID_LEVELS)}
 
 

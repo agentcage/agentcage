@@ -211,26 +211,26 @@ class TestLoggingConfig:
             container:
               image: test:latest
             logging:
-              level: warn
+              level: warning
               dns: error
               proxy: debug
         """))
         cfg = load_config(str(p))
-        assert cfg.logging.level == "warn"
+        assert cfg.logging.level == "warning"
         assert cfg.logging.dns == "error"
         assert cfg.logging.proxy == "debug"
         assert cfg.logging.cage == ""
 
     def test_level_for_fallback(self):
-        lc = LoggingConfig(level="warn", dns="error")
+        lc = LoggingConfig(level="warning", dns="error")
         assert lc.level_for("dns") == "error"
-        assert lc.level_for("proxy") == "warn"
-        assert lc.level_for("cage") == "warn"
+        assert lc.level_for("proxy") == "warning"
+        assert lc.level_for("cage") == "warning"
 
     def test_level_for_all_set(self):
-        lc = LoggingConfig(level="info", dns="debug", proxy="warn", cage="error")
+        lc = LoggingConfig(level="info", dns="debug", proxy="warning", cage="error")
         assert lc.level_for("dns") == "debug"
-        assert lc.level_for("proxy") == "warn"
+        assert lc.level_for("proxy") == "warning"
         assert lc.level_for("cage") == "error"
 
 
@@ -269,7 +269,7 @@ class TestValidateLoggingLevels:
               image: test:latest
             logging:
               level: debug
-              dns: warn
+              dns: warning
               proxy: error
               cage: info
         """))

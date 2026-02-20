@@ -359,7 +359,7 @@ echo "start-cage: all containers started"
 
 # Severity-tagged log forwarding — inline classification avoids
 # function-call issues with set -euo pipefail in pipeline subshells.
-# Level thresholds: debug=0, info=1, warn=2, error=3
+# Level thresholds: debug=0, info=1, warning=2, error=3, critical=4
 # Note: "|| :" after test&&echo prevents set -e from killing the subshell
 # when test returns false (exit 1) and the && short-circuits.
 podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do
@@ -371,8 +371,8 @@ podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do
 done &
 podman logs -f "${{CAGE_NAME}}-proxy" 2>&1 | while IFS= read -r line; do
     case "$line" in
-        *'"decision":"blocked"'*|*'"decision": "blocked"'*) test {min_level_proxy} -le 2 && echo "[proxy:warn] $line" || : ;;
-        *'"decision":"flagged"'*|*'"decision": "flagged"'*) test {min_level_proxy} -le 2 && echo "[proxy:warn] $line" || : ;;
+        *'"decision":"blocked"'*|*'"decision": "blocked"'*) test {min_level_proxy} -le 2 && echo "[proxy:warning] $line" || : ;;
+        *'"decision":"flagged"'*|*'"decision": "flagged"'*) test {min_level_proxy} -le 2 && echo "[proxy:warning] $line" || : ;;
         *'"decision":"allowed"'*|*'"decision": "allowed"'*) test {min_level_proxy} -le 1 && echo "[proxy:info] $line" || : ;;
         *[Ee]rror*|*Traceback*) echo "[proxy:error] $line" ;;
         *) test {min_level_proxy} -le 0 && echo "[proxy:debug] $line" || : ;;
@@ -381,7 +381,7 @@ done &
 podman logs -f "${{CAGE_NAME}}-cage" 2>&1 | while IFS= read -r line; do
     case "$line" in
         *[Ee]rror*|*Traceback*|*FATAL*|*"exit code"*) echo "[cage:error] $line" ;;
-        *[Ww]arn*|*WARN*) test {min_level_cage} -le 2 && echo "[cage:warn] $line" || : ;;
+        *[Ww]arn*|*WARN*) test {min_level_cage} -le 2 && echo "[cage:warning] $line" || : ;;
         *) test {min_level_cage} -le 1 && echo "[cage:info] $line" || : ;;
     esac
 done &

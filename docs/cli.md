@@ -16,6 +16,8 @@ agentcage <group> <command> [options]
 | `cage destroy NAME [-y]` | Stop containers, remove quadlets, state, and scoped secrets |
 | `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
 | `cage reload NAME` | Restart containers without rebuilding images |
+| `cage logs NAME [OPTIONS]` | Follow journalctl logs for a cage |
+| `cage audit NAME [OPTIONS]` | Query, filter, and summarize proxy audit logs |
 
 ## `secret` -- Manage cage-scoped secrets
 
@@ -158,6 +160,68 @@ agentcage cage reload <name>
 ```
 
 Restarts containers without rebuilding images. Useful after config-only changes (the config YAML is bind-mounted into the proxy container, so a restart picks it up).
+
+## `cage logs`
+
+```
+agentcage cage logs <name> [options]
+```
+
+Follow journalctl logs for a cage.
+
+### Options
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `-s, --service` | repeatable choice: `cage`/`proxy`/`dns` | Filter by service (default: all) |
+| `-n, --lines` | int (default 50) | Number of lines to show |
+| `--no-follow` | flag | Print logs and exit |
+| `-l, --severity` | choice: `debug`/`info`/`warning`/`error`/`critical` | Minimum severity level to show |
+
+## `cage audit`
+
+```
+agentcage cage audit <name> [options]
+```
+
+Query, filter, and summarize proxy audit logs. The proxy writes a structured JSON audit entry for every inspected request (blocked, flagged, or allowed). This command reads those entries from journalctl, applies filters, and presents them as a table, JSON lines, or an aggregated summary.
+
+In container mode, audit entries are read from the `{name}-proxy` systemd unit. In Firecracker mode, they are read from the `{name}-cage` unit (where proxy logs appear with `[proxy:level]` prefixes).
+
+### Options
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `-d, --decision` | repeatable choice: `blocked`/`flagged`/`allowed` | Filter by decision (OR within, AND with other filters) |
+| `--host` | repeatable string | Filter by target host (substring match) |
+| `--inspector` | repeatable string | Filter by inspector name |
+| `--severity` | choice: `debug`/`info`/`warning`/`error`/`critical` | Minimum severity level |
+| `--method` | repeatable string | Filter by HTTP method |
+| `--since` | string | Time window: `1h`, `30m`, `7d`, or ISO date |
+| `-n, --lines` | int (default 100) | Max entries to show (0 = unlimited) |
+| `-f, --follow` | flag | Stream new entries in real time |
+| `--json` | flag | Output as JSON lines (one per entry) |
+| `--summary` | flag | Show aggregated statistics (incompatible with `--follow`) |
+| `--no-color` | flag | Disable colored output |
+
+### Examples
+
+```bash
+# Last 100 audit entries as a table
+agentcage cage audit myapp
+
+# Stream blocked and flagged entries as JSON (for alerting pipelines)
+agentcage cage audit myapp -f --json -d blocked -d flagged
+
+# Daily summary report
+agentcage cage audit myapp --summary --since 24h
+
+# Secret leak attempts
+agentcage cage audit myapp -d blocked --inspector secrets
+
+# Pipe to an alerting webhook
+agentcage cage audit myapp -f --json -d blocked | ./alert-webhook.sh
+```
 
 ## `secret set`
 

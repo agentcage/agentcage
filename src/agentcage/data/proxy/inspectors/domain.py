@@ -34,13 +34,13 @@ class DomainInspector(Inspector):
                 inspector=self.name,
                 action="block",
                 reason=f"domain not in allowlist: {ctx.host}",
-                severity="high",
+                severity="error",
             )
         if self.mode == "blocklist" and matched:
             return InspectionResult(
                 inspector=self.name,
                 action="block",
                 reason=f"domain in blocklist: {ctx.host}",
-                severity="high",
+                severity="error",
             )
         return None

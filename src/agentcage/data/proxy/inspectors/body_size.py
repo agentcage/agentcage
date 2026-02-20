@@ -25,7 +25,7 @@ class BodySizeInspector(Inspector):
                 inspector=self.name,
                 action="block",
                 reason=f"body too large: {ctx.body_size} > {self.max_bytes}",
-                severity="medium",
+                severity="warning",
                 metadata={
                     "body_size": ctx.body_size,
                     "max_bytes": self.max_bytes,

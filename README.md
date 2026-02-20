@@ -195,16 +195,21 @@ agentcage cage logs myapp             # agent logs
 agentcage cage logs myapp -s proxy    # proxy inspection logs
 agentcage cage logs myapp -s dns      # DNS query logs
 
-# 6. Update after code/config changes
+# 6. Audit inspection decisions
+agentcage cage audit myapp                          # last 100 entries
+agentcage cage audit myapp --summary --since 24h    # daily summary
+agentcage cage audit myapp -f --json -d blocked     # alerting pipeline
+
+# 7. Update after code/config changes
 agentcage cage update myapp -c config.yaml
 
-# 7. Rotate a secret (auto-reloads the cage)
+# 8. Rotate a secret (auto-reloads the cage)
 agentcage secret set myapp ANTHROPIC_API_KEY
 
-# 8. Restart without rebuild (config-only change)
+# 9. Restart without rebuild (config-only change)
 agentcage cage reload myapp
 
-# 9. Tear it all down
+# 10. Tear it all down
 agentcage cage destroy myapp
 ```
 
@@ -212,7 +217,7 @@ agentcage cage destroy myapp
 
 | Group | Commands |
 |---|---|
-| `cage` | `create`, `update`, `list`, `destroy`, `verify`, `reload` |
+| `cage` | `create`, `update`, `list`, `destroy`, `verify`, `reload`, `audit` |
 | `secret` | `set`, `list`, `rm` |
 | `domain` | `list`, `add`, `rm` |
 

@@ -331,15 +331,15 @@ class TestSeverityLogForwarding:
         assert "test 1 -le 1" in script
 
     def test_custom_level_thresholds(self):
-        """level=warn + dns=error → dns uses 3, proxy/cage use 2."""
-        cfg = _make_config(logging=LoggingConfig(level="warn", dns="error"))
+        """level=warning + dns=error → dns uses 3, proxy/cage use 2."""
+        cfg = _make_config(logging=LoggingConfig(level="warning", dns="error"))
         script = _generate_startup_script(cfg, "testcage")
         # DNS pipeline should use threshold 3 (error)
         assert 'test 3 -le 0 && echo "[dns:debug]' in script
         assert 'test 3 -le 1 && echo "[dns:info]' in script
-        # Proxy/cage pipelines should use threshold 2 (warn)
-        assert 'test 2 -le 2 && echo "[proxy:warn]' in script
-        assert 'test 2 -le 2 && echo "[cage:warn]' in script
+        # Proxy/cage pipelines should use threshold 2 (warning)
+        assert 'test 2 -le 2 && echo "[proxy:warning]' in script
+        assert 'test 2 -le 2 && echo "[cage:warning]' in script
 
     def test_inline_classification_present(self):
         """Each service has its own while-loop with case classification."""
@@ -360,11 +360,11 @@ class TestSeverityLogForwarding:
         assert "[dns:debug]" in script
         assert "[dns:error]" in script
         assert "[dns:info]" in script
-        assert "[proxy:warn]" in script
+        assert "[proxy:warning]" in script
         assert "[proxy:info]" in script
         assert "[proxy:error]" in script
         assert "[cage:error]" in script
-        assert "[cage:warn]" in script
+        assert "[cage:warning]" in script
         assert "[cage:info]" in script
 
     def test_errexit_safe(self):

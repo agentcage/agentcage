@@ -13,7 +13,7 @@ class InspectionResult:
     inspector: str
     action: str = "block"  # "block" or "flag"
     reason: str = ""
-    severity: str = "medium"  # "info", "low", "medium", "high", "critical"
+    severity: str = "warning"  # "debug", "info", "warning", "error", "critical"
     score: float = 0.0  # for anomaly-scoring mode
     metadata: dict = field(default_factory=dict)
 

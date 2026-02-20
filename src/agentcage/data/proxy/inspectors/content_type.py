@@ -70,7 +70,7 @@ class ContentTypeInspector(Inspector):
                     f"but body entropy is {ctx.body_entropy:.2f} "
                     f"(expected <{self.entropy_ceiling})"
                 ),
-                severity="high",
+                severity="error",
                 metadata={
                     "content_type": ctx.content_type,
                     "entropy": ctx.body_entropy,
@@ -89,7 +89,7 @@ class ContentTypeInspector(Inspector):
                         f"large base64 blob ({len(match.group())} chars) "
                         f"in {ctx.content_type} body"
                     ),
-                    severity="medium",
+                    severity="warning",
                     metadata={
                         "content_type": ctx.content_type,
                         "base64_length": len(match.group()),

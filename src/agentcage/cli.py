@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -13,7 +15,16 @@ import click
 
 from importlib.metadata import version
 
-from agentcage.config import load_config, validate_config
+from agentcage.audit import (
+    AuditEntry,
+    AuditFilter,
+    compute_summary,
+    extract_audit_json,
+    format_summary,
+    format_table_header,
+    format_table_row,
+)
+from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd
@@ -516,8 +527,8 @@ def cage_reload(name: str):
 @click.option("-n", "--lines", default=50, show_default=True,
               help="Number of lines to show.")
 @click.option("--no-follow", is_flag=True, help="Print logs and exit.")
-@click.option("-l", "--level", "min_level", default=None,
-              type=click.Choice(["debug", "info", "warn", "error"]),
+@click.option("-l", "--severity", "min_level", default=None,
+              type=click.Choice(["debug", "info", "warning", "error", "critical"]),
               help="Minimum severity level to show.")
 def cage_logs(name, services, lines, no_follow, min_level):
     """Follow journalctl logs for a cage."""
@@ -536,9 +547,6 @@ def cage_logs(name, services, lines, no_follow, min_level):
         _logs_container(name, selected, lines, no_follow, min_level)
 
 
-_LEVEL_ORDER = {"debug": 0, "info": 1, "warn": 2, "error": 3}
-
-
 def _classify_line(service: str, line: str) -> str:
     """Classify a log line's severity for container-mode filtering."""
     if service == "dns":
@@ -552,9 +560,9 @@ def _classify_line(service: str, line: str) -> str:
         return "info"
     if service == "proxy":
         if '"decision":"blocked"' in line or '"decision": "blocked"' in line:
-            return "warn"
+            return "warning"
         if '"decision":"flagged"' in line or '"decision": "flagged"' in line:
-            return "warn"
+            return "warning"
         if '"decision":"allowed"' in line or '"decision": "allowed"' in line:
             return "info"
         low = line.lower()
@@ -567,7 +575,7 @@ def _classify_line(service: str, line: str) -> str:
         if pat in low:
             return "error"
     if "warn" in low:
-        return "warn"
+        return "warning"
     return "info"
 
 
@@ -609,7 +617,7 @@ def _logs_container(name, services, lines, no_follow, min_level=None):
 
 def _level_grep_pattern(services: tuple, min_level: str | None) -> str:
     """Build a grep -E pattern matching [service:level] tags."""
-    levels_at_or_above = ("debug", "info", "warn", "error")
+    levels_at_or_above = ("debug", "info", "warning", "error", "critical")
     if min_level:
         min_ord = _LEVEL_ORDER.get(min_level, 1)
         levels_at_or_above = tuple(
@@ -639,6 +647,178 @@ def _logs_firecracker(name, services, lines, no_follow, min_level=None):
         )
         journal.stdout.close()  # allow SIGPIPE if grep exits
         sys.exit(grep.wait())
+
+
+# ── cage audit ─────────────────────────────────────────────
+
+
+def _normalize_since(since: str) -> str:
+    """Convert shorthand durations to journalctl --since format.
+
+    Accepts ``1h``, ``30m``, ``7d`` or ISO dates (passed through).
+    """
+    m = re.match(r"^(\d+)([hHmMdD])$", since)
+    if not m:
+        return since  # assume ISO date, pass through
+    val, unit = int(m.group(1)), m.group(2).lower()
+    if unit == "h":
+        return f"{val} hours ago"
+    elif unit == "m":
+        return f"{val} minutes ago"
+    elif unit == "d":
+        return f"{val} days ago"
+    return since
+
+
+def _build_audit_journal_cmd(
+    name: str, cfg, *, since: str | None = None, follow: bool = False,
+) -> list[str]:
+    """Build the journalctl command for reading audit entries."""
+    if cfg.isolation == "firecracker":
+        unit = f"{name}-cage"
+    else:
+        unit = f"{name}-proxy"
+
+    cmd = ["journalctl", "--user", "-u", unit, "-o", "cat"]
+
+    if since:
+        cmd += ["--since", _normalize_since(since)]
+
+    if follow:
+        cmd.append("-f")
+    else:
+        # Over-read: many lines aren't audit entries
+        cmd += ["-n", "10000"]
+
+    return cmd
+
+
+def _audit_batch(name, cfg, filt, lines, since, as_json, no_color):
+    """Read historical audit entries, filter, and output."""
+    cmd = _build_audit_journal_cmd(name, cfg, since=since)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    entries = []
+    try:
+        for raw_line in proc.stdout:
+            d = extract_audit_json(raw_line)
+            if d is None:
+                continue
+            entry = AuditEntry.from_dict(d)
+            if filt.matches(entry):
+                entries.append(entry)
+    finally:
+        proc.wait()
+
+    # Keep only last N
+    if lines > 0:
+        entries = entries[-lines:]
+
+    if as_json:
+        for entry in entries:
+            click.echo(json.dumps(entry.raw))
+    else:
+        click.echo(format_table_header())
+        for entry in entries:
+            click.echo(format_table_row(entry, color=not no_color))
+
+
+def _audit_follow(name, cfg, filt, as_json, no_color):
+    """Stream audit entries in real time."""
+    cmd = _build_audit_journal_cmd(name, cfg, follow=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+
+    if not as_json:
+        click.echo(format_table_header())
+
+    try:
+        for raw_line in proc.stdout:
+            d = extract_audit_json(raw_line)
+            if d is None:
+                continue
+            entry = AuditEntry.from_dict(d)
+            if filt.matches(entry):
+                if as_json:
+                    click.echo(json.dumps(entry.raw))
+                else:
+                    click.echo(format_table_row(entry, color=not no_color))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        proc.terminate()
+
+
+def _audit_summary(name, cfg, filt, since):
+    """Compute and display summary statistics."""
+    cmd = _build_audit_journal_cmd(name, cfg, since=since)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    entries = []
+    try:
+        for raw_line in proc.stdout:
+            d = extract_audit_json(raw_line)
+            if d is None:
+                continue
+            entry = AuditEntry.from_dict(d)
+            if filt.matches(entry):
+                entries.append(entry)
+    finally:
+        proc.wait()
+
+    summary = compute_summary(entries)
+    click.echo(format_summary(summary))
+
+
+@cage.command("audit")
+@click.argument("name")
+@click.option("-d", "--decision", "decisions", multiple=True,
+              type=click.Choice(["blocked", "flagged", "allowed"]),
+              help="Filter by decision (repeatable).")
+@click.option("--host", "hosts", multiple=True,
+              help="Filter by target host (substring match, repeatable).")
+@click.option("--inspector", "inspectors", multiple=True,
+              help="Filter by inspector name (repeatable).")
+@click.option("--severity", type=click.Choice(["debug", "info", "warning", "error", "critical"]),
+              help="Minimum inspector severity.")
+@click.option("--method", "methods", multiple=True,
+              help="Filter by HTTP method (repeatable).")
+@click.option("--since", default=None,
+              help="Time window: 1h, 30m, 7d, or ISO date.")
+@click.option("-n", "--lines", default=100, show_default=True,
+              help="Max entries to show (0 = unlimited).")
+@click.option("-f", "--follow", is_flag=True,
+              help="Stream new entries in real time.")
+@click.option("--json", "as_json", is_flag=True,
+              help="Output as JSON lines.")
+@click.option("--summary", is_flag=True,
+              help="Show aggregated statistics.")
+@click.option("--no-color", is_flag=True,
+              help="Disable colored output.")
+def cage_audit(name, decisions, hosts, inspectors, severity, methods,
+               since, lines, follow, as_json, summary, no_color):
+    """Query, filter, and summarize proxy audit logs."""
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    if summary and follow:
+        click.echo("error: --summary and --follow are incompatible", err=True)
+        sys.exit(1)
+
+    cfg = state.load_deployment_config(name)
+
+    filt = AuditFilter(
+        decisions=list(decisions),
+        hosts=list(hosts),
+        inspectors=list(inspectors),
+        min_severity=severity,
+        methods=list(methods),
+    )
+
+    if summary:
+        _audit_summary(name, cfg, filt, since)
+    elif follow:
+        _audit_follow(name, cfg, filt, as_json, no_color)
+    else:
+        _audit_batch(name, cfg, filt, lines, since, as_json, no_color)
 
 
 # ── secret group ─────────────────────────────────────────

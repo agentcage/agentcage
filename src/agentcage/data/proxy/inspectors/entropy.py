@@ -106,7 +106,7 @@ class EntropyInspector(Inspector):
                     f"high entropy body: {ctx.body_entropy:.2f} "
                     f"(threshold {self.threshold})"
                 ),
-                severity="high",
+                severity="error",
                 score=ctx.body_entropy,
                 metadata={
                     "entropy": ctx.body_entropy,
@@ -139,7 +139,7 @@ class EntropyInspector(Inspector):
                             f"high entropy URL param '{key}': {ent:.2f} "
                             f"(threshold {self.url_threshold})"
                         ),
-                        severity="high",
+                        severity="error",
                         score=ent,
                         metadata={
                             "entropy": ent,
@@ -173,7 +173,7 @@ class EntropyInspector(Inspector):
                         f"high entropy URL path segment: {ent:.2f} "
                         f"(threshold {self.url_threshold})"
                     ),
-                    severity="high",
+                    severity="error",
                     score=ent,
                     metadata={
                         "entropy": ent,
