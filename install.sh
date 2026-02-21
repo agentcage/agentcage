@@ -412,7 +412,6 @@ main() {
     info ""
     info "Get started:"
     info "  agentcage --help"
-    info "  agentcage init my-agent          # scaffold a new config"
     info ""
     info "Docs: https://github.com/agentcage/agentcage"
 
