@@ -293,12 +293,7 @@ def cage_create(config_path: str):
 
     click.echo()
     click.echo("Logs:")
-    if cfg.isolation == "firecracker":
-        click.echo(f"  journalctl --user -u {name}-cage -f")
-    else:
-        click.echo(f"  journalctl --user -u {name}-cage -f")
-        click.echo(f"  journalctl --user -u {name}-proxy -f")
-        click.echo(f"  journalctl --user -u {name}-dns -f")
+    click.echo(f"  agentcage cage logs {name}")
 
 
 @cage.command("update")
