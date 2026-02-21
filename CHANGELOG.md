@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.4] - 2026-02-20
+## [0.3.5] - 2026-02-21
 
 ### Security
 - WebSocket frames now undergo secret injection (outbound) and redaction (inbound), closing a gap where the cage could learn real secret values from WebSocket responses
+
+## [0.3.4] - 2026-02-20
 
 ### Added
 - `cage audit` CLI command — query, filter, and summarize proxy audit logs with support for real-time streaming and JSON output for alerting pipelines
@@ -106,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.3.5]: https://github.com/agentcage/agentcage/releases/tag/v0.3.5
 [0.3.4]: https://github.com/agentcage/agentcage/releases/tag/v0.3.4
 [0.3.3]: https://github.com/agentcage/agentcage/releases/tag/v0.3.3
 [0.3.1]: https://github.com/agentcage/agentcage/releases/tag/v0.3.1
