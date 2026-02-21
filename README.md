@@ -147,11 +147,23 @@ Firecracker mode requires Linux with `/dev/kvm` access. See [Firecracker setup](
 ## Install
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
+```
+
+This installs agentcage and all prerequisites (Podman, Python 3.12+, uv). For Firecracker mode:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --with-firecracker
+```
+
+Or install manually:
+
+```bash
 uv tool install agentcage            # from PyPI (when published)
 uv tool install git+https://github.com/agentcage/agentcage.git  # from GitHub
 ```
 
-Or for development:
+For development:
 
 ```bash
 git clone https://github.com/agentcage/agentcage.git
