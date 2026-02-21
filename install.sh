@@ -9,6 +9,9 @@
 
 set -eu
 
+# Save original PATH before we modify it, for the end-of-script PATH check
+_ORIG_PATH="$PATH"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -423,15 +426,15 @@ main() {
         info "Firecracker is set up. Use 'isolation: firecracker' in config.yaml."
     fi
 
-    # Check if agentcage is on PATH for future shells
+    # Check if agentcage is on PATH for future shells (use original PATH,
+    # not the one we modified during installation)
     agentcage_path="$(command -v agentcage 2>/dev/null)" || true
     case "$agentcage_path" in
         "$HOME"/.local/bin/*)
-            # Check if .local/bin is likely on the user's default PATH
-            if ! echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin" 2>/dev/null; then
+            if ! echo "$_ORIG_PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin" 2>/dev/null; then
                 info ""
-                info "Add ~/.local/bin to your PATH if not already configured:"
-                info "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+                info "To use agentcage, restart your shell or run:"
+                info "  source \"\$HOME/.local/bin/env\"    # for sh/bash/zsh"
             fi
             ;;
     esac
