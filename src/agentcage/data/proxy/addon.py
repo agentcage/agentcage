@@ -297,7 +297,7 @@ class Agentcage:
         self.injector.redact_response(flow)
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
-        """Inspect WebSocket frame payloads for secrets and high entropy."""
+        """Inspect, inject, and redact WebSocket frame payloads."""
         assert flow.websocket is not None
         msg = flow.websocket.messages[-1]
         content = msg.content
@@ -307,10 +307,11 @@ class Agentcage:
         body_bytes = content if isinstance(content, bytes) else content.encode()
         body_text = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
         body_ent = shannon_entropy(body_bytes)
+        host = flow.request.host
 
         ws_ctx = InspectionContext(
             url=flow.request.url,
-            host=flow.request.host,
+            host=host,
             method="WEBSOCKET",
             headers=dict(flow.request.headers),
             content_type="application/x-websocket-frame",
@@ -321,26 +322,62 @@ class Agentcage:
         )
 
         results: list[InspectionResult] = []
-        for inspector in self.inspectors:
-            result = inspector.inspect_request(ws_ctx)
-            if result is not None:
-                results.append(result)
-                ws_ctx.prior_results.append(result)
-                if result.action == "block":
-                    break
 
-        blocked = [r for r in results if r.action == "block"]
-        if blocked:
-            reason = blocked[0].reason
-            msg.drop()
-            self._log(flow, "blocked", f"websocket: {reason}", results)
+        if msg.from_client:
+            # ── Outbound (cage → remote) ──────────────────
+            inject_result = self.injector.check_ws_injection_policy(
+                body_bytes, host
+            )
+            if inject_result is not None:
+                results.append(inject_result)
+                ws_ctx.prior_results.append(inject_result)
+
+            for inspector in self.inspectors:
+                result = inspector.inspect_request(ws_ctx)
+                if result is not None:
+                    results.append(result)
+                    ws_ctx.prior_results.append(result)
+                    if result.action == "block":
+                        break
+
+            blocked = [r for r in results if r.action == "block"]
+            if blocked:
+                reason = blocked[0].reason
+                msg.drop()
+                self._log(flow, "blocked", f"websocket: {reason}", results)
+            else:
+                msg.content = self.injector.inject_ws_content(
+                    body_bytes, host
+                )
+                flagged = [r for r in results if r.action == "flag"]
+                if flagged:
+                    reasons = "; ".join(r.reason for r in flagged)
+                    self._log(
+                        flow, "flagged", f"websocket: {reasons}", results
+                    )
+                elif self.log_allowed:
+                    self._log(flow, "allowed", "websocket", results)
         else:
-            flagged = [r for r in results if r.action == "flag"]
-            if flagged:
-                reasons = "; ".join(r.reason for r in flagged)
-                self._log(flow, "flagged", f"websocket: {reasons}", results)
-            elif self.log_allowed:
-                self._log(flow, "allowed", "websocket", results)
+            # ── Inbound (remote → cage) ───────────────────
+            for inspector in self.inspectors:
+                result = inspector.inspect_response(ws_ctx)
+                if result is not None:
+                    results.append(result)
+                    ws_ctx.prior_results.append(result)
+                    if result.action == "block":
+                        break
+
+            blocked = [r for r in results if r.action == "block"]
+            if blocked:
+                reason = blocked[0].reason
+                msg.drop()
+                self._log(flow, "blocked", f"websocket: {reason}", results)
+            else:
+                if self.log_allowed:
+                    self._log(flow, "allowed", "websocket", results)
+
+            # Redact real secrets before content reaches the cage
+            msg.content = self.injector.redact_ws_content(body_bytes)
 
     # ── Context building ─────────────────────────────────
 

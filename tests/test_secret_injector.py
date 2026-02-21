@@ -446,3 +446,162 @@ class TestConfigFormat:
         })
         assert len(inj.rules) == 1
         assert inj.redact_to == []
+
+
+# ── WebSocket content injection ─────────────────────────
+
+
+class TestInjectWsContent:
+    def test_replaces_placeholder_for_authorized_domain(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.inject_ws_content(b"token={{KEY}}", "api.anthropic.com")
+        assert result == b"token=real-secret"
+
+    def test_skips_unauthorized_domain(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.inject_ws_content(b"token={{KEY}}", "evil.com")
+        assert result == b"token={{KEY}}"
+
+    def test_empty_inject_to_leaves_placeholder(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=[]),
+        ])
+        result = inj.inject_ws_content(b"token={{KEY}}", "any-domain.com")
+        assert result == b"token={{KEY}}"
+
+    def test_noop_when_no_rules(self):
+        inj = SecretInjector()
+        result = inj.inject_ws_content(b"hello world", "example.com")
+        assert result == b"hello world"
+
+    def test_noop_when_no_placeholder_present(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.inject_ws_content(b"clean content", "api.anthropic.com")
+        assert result == b"clean content"
+
+    def test_multiple_rules(self):
+        inj = _injector_with_rules([
+            InjectionRule("K1", "{{K1}}", "secret-1", inject_to=["anthropic.com"]),
+            InjectionRule("K2", "{{K2}}", "secret-2", inject_to=["anthropic.com"]),
+        ])
+        result = inj.inject_ws_content(b"a={{K1}}&b={{K2}}", "api.anthropic.com")
+        assert result == b"a=secret-1&b=secret-2"
+
+    def test_subdomain_matching(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.inject_ws_content(b"{{KEY}}", "deep.sub.anthropic.com")
+        assert result == b"real-secret"
+
+    def test_redact_to_domain_redacts_real_values(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        inj.redact_to = ["matrix.example.com"]
+        result = inj.inject_ws_content(b"message with real-secret", "matrix.example.com")
+        assert result == b"message with {{KEY}}"
+
+    def test_redact_to_domain_placeholder_passes_through(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        inj.redact_to = ["matrix.example.com"]
+        result = inj.inject_ws_content(b"my key is {{KEY}}", "matrix.example.com")
+        assert result == b"my key is {{KEY}}"
+
+
+# ── WebSocket content redaction ─────────────────────────
+
+
+class TestRedactWsContent:
+    def test_redacts_real_value(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.redact_ws_content(b'{"key": "real-secret"}')
+        assert result == b'{"key": "{{KEY}}"}'
+
+    def test_longest_first_ordering(self):
+        inj = _injector_with_rules([
+            InjectionRule("SHORT", "{{SHORT}}", "secret", inject_to=[]),
+            InjectionRule("LONG", "{{LONG}}", "secret-long-value", inject_to=[]),
+        ])
+        result = inj.redact_ws_content(b"the value is secret-long-value here")
+        assert result == b"the value is {{LONG}} here"
+
+    def test_noop_when_no_rules(self):
+        inj = SecretInjector()
+        result = inj.redact_ws_content(b"clean body")
+        assert result == b"clean body"
+
+    def test_noop_when_no_secret_present(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.redact_ws_content(b"nothing to redact")
+        assert result == b"nothing to redact"
+
+    def test_redacts_regardless_of_inject_to(self):
+        """Inbound redaction applies even when inject_to is empty."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=[]),
+        ])
+        result = inj.redact_ws_content(b"leaked: real-secret")
+        assert result == b"leaked: {{KEY}}"
+
+
+# ── WebSocket injection policy check ───────────────────
+
+
+class TestCheckWsInjectionPolicy:
+    def test_flags_placeholder_to_unauthorized_domain(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.check_ws_injection_policy(b"{{KEY}}", "evil.com")
+        assert result is not None
+        assert result.action == "flag"
+        assert "unauthorized" in result.reason
+        assert "evil.com" in result.reason
+
+    def test_ok_for_authorized_domain(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.check_ws_injection_policy(b"{{KEY}}", "api.anthropic.com")
+        assert result is None
+
+    def test_flags_empty_inject_to(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=[]),
+        ])
+        result = inj.check_ws_injection_policy(b"{{KEY}}", "any-domain.com")
+        assert result is not None
+        assert result.action == "flag"
+
+    def test_noop_when_no_rules(self):
+        inj = SecretInjector()
+        result = inj.check_ws_injection_policy(b"{{KEY}}", "evil.com")
+        assert result is None
+
+    def test_noop_when_no_placeholder(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.check_ws_injection_policy(b"clean content", "evil.com")
+        assert result is None
+
+    def test_redact_to_domain_skips_check(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        inj.redact_to = ["matrix.example.com"]
+        result = inj.check_ws_injection_policy(b"{{KEY}}", "matrix.example.com")
+        assert result is None

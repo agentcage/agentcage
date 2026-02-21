@@ -226,6 +226,90 @@ class SecretInjector:
                     real_bytes, ph_bytes
                 )
 
+    # ── WebSocket (raw bytes) methods ───────────────────────
+
+    def check_ws_injection_policy(
+        self, content: bytes, host: str
+    ) -> Optional[InspectionResult]:
+        """Check domain restrictions for a WebSocket frame payload.
+
+        Like ``check_injection_policy`` but operates on raw bytes + host
+        instead of an ``http.HTTPFlow``.
+        """
+        if not self.rules:
+            return None
+
+        host = host.lower()
+
+        if self.redact_to and self._domain_matches(host, self.redact_to):
+            return None
+
+        for rule in self.rules:
+            if rule.placeholder.encode() not in content:
+                continue
+            if not rule.inject_to or not self._domain_matches(host, rule.inject_to):
+                return InspectionResult(
+                    inspector="secret-injector",
+                    action="flag",
+                    reason=(
+                        f"placeholder {rule.name} sent to unauthorized "
+                        f"domain {host}"
+                    ),
+                    severity="error",
+                )
+        return None
+
+    def inject_ws_content(self, content: bytes, host: str) -> bytes:
+        """Replace placeholders with real values in outbound WebSocket content.
+
+        If the host matches ``redact_to``, outbound redaction is performed
+        instead (real values → placeholders).
+        """
+        if not self.rules:
+            return content
+
+        host = host.lower()
+
+        if self.redact_to and self._domain_matches(host, self.redact_to):
+            return self._redact_ws_content(content)
+
+        for rule in self.rules:
+            ph_bytes = rule.placeholder.encode()
+            if ph_bytes not in content:
+                continue
+            if not rule.inject_to or not self._domain_matches(host, rule.inject_to):
+                continue
+            content = content.replace(ph_bytes, rule.real_value.encode())
+
+        return content
+
+    def redact_ws_content(self, content: bytes) -> bytes:
+        """Replace real secret values with placeholders in WebSocket content.
+
+        Processes rules sorted by real-value length descending to prevent
+        partial matches when one value is a substring of another.
+        """
+        if not self.rules:
+            return content
+
+        sorted_rules = sorted(
+            self.rules, key=lambda r: len(r.real_value), reverse=True
+        )
+
+        for rule in sorted_rules:
+            real_bytes = rule.real_value.encode()
+            if real_bytes in content:
+                content = content.replace(real_bytes, rule.placeholder.encode())
+
+        return content
+
+    def _redact_ws_content(self, content: bytes) -> bytes:
+        """Private helper — redact real values in outbound WS content.
+
+        Used by ``inject_ws_content`` for ``redact_to`` domains.
+        """
+        return self.redact_ws_content(content)
+
     @staticmethod
     def _domain_matches(host: str, domains: list[str]) -> bool:
         """Suffix match — same logic as DomainInspector._matches."""
