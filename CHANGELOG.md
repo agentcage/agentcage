@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-02-21
+
+### Fixed
+- Install script: `sudo agentcage firecracker setup` fails on Ubuntu because sudo resets PATH — now uses the full binary path
+- Install script: PATH warning after install was never shown because the script's own PATH exports made the check always pass
+- Install script: removed nonexistent `init` subcommand suggestion, added correct `agentcage init` and `--list-presets` examples
+
 ## [0.3.5] - 2026-02-21
 
 ### Security
