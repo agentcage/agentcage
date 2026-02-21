@@ -852,6 +852,9 @@ def _audit_summary(name, cfg, filt, since):
               help="Filter by inspector name (repeatable).")
 @click.option("--severity", type=click.Choice(["debug", "info", "warning", "error", "critical"]),
               help="Minimum inspector severity.")
+@click.option("--direction", "directions", multiple=True,
+              type=click.Choice(["inbound", "outbound"]),
+              help="Filter by traffic direction (repeatable).")
 @click.option("--method", "methods", multiple=True,
               help="Filter by HTTP method (repeatable).")
 @click.option("--since", default=None,
@@ -866,8 +869,8 @@ def _audit_summary(name, cfg, filt, since):
               help="Show aggregated statistics.")
 @click.option("--no-color", is_flag=True,
               help="Disable colored output.")
-def cage_audit(name, decisions, hosts, inspectors, severity, methods,
-               since, lines, follow, as_json, summary, no_color):
+def cage_audit(name, decisions, directions, hosts, inspectors, severity,
+               methods, since, lines, follow, as_json, summary, no_color):
     """Query, filter, and summarize proxy audit logs."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
@@ -881,6 +884,7 @@ def cage_audit(name, decisions, hosts, inspectors, severity, methods,
 
     filt = AuditFilter(
         decisions=list(decisions),
+        directions=list(directions),
         hosts=list(hosts),
         inspectors=list(inspectors),
         min_severity=severity,

@@ -17,6 +17,7 @@ class AuditEntry:
     """Parsed audit log entry."""
 
     ts: str
+    direction: str
     method: str
     host: str
     url: str
@@ -29,6 +30,7 @@ class AuditEntry:
     def from_dict(cls, d: dict) -> AuditEntry:
         return cls(
             ts=d.get("ts", ""),
+            direction=d.get("direction", ""),
             method=d.get("method", ""),
             host=d.get("host", ""),
             url=d.get("url", ""),
@@ -44,6 +46,7 @@ class AuditFilter:
     """Filter criteria for audit entries."""
 
     decisions: list[str] = field(default_factory=list)
+    directions: list[str] = field(default_factory=list)
     hosts: list[str] = field(default_factory=list)
     inspectors: list[str] = field(default_factory=list)
     min_severity: str | None = None
@@ -51,6 +54,8 @@ class AuditFilter:
 
     def matches(self, entry: AuditEntry) -> bool:
         if self.decisions and entry.decision not in self.decisions:
+            return False
+        if self.directions and entry.direction not in self.directions:
             return False
         if self.hosts and not any(h in entry.host for h in self.hosts):
             return False
@@ -116,6 +121,7 @@ def extract_audit_json(line: str) -> dict | None:
 def compute_summary(entries: list[AuditEntry]) -> dict:
     """Aggregate statistics from audit entries."""
     decisions: Counter = Counter()
+    directions: Counter = Counter()
     hosts: Counter = Counter()
     blocked_hosts: Counter = Counter()
     inspector_triggers: Counter = Counter()
@@ -123,6 +129,8 @@ def compute_summary(entries: list[AuditEntry]) -> dict:
 
     for e in entries:
         decisions[e.decision] += 1
+        if e.direction:
+            directions[e.direction] += 1
         hosts[e.host] += 1
         methods[e.method] += 1
         if e.decision == "blocked":
@@ -133,6 +141,7 @@ def compute_summary(entries: list[AuditEntry]) -> dict:
     return {
         "total": len(entries),
         "decisions": dict(decisions),
+        "directions": dict(directions),
         "top_hosts": dict(hosts.most_common(10)),
         "top_blocked_hosts": dict(blocked_hosts.most_common(10)),
         "inspector_triggers": dict(inspector_triggers.most_common(10)),
@@ -149,12 +158,13 @@ _DECISION_COLORS = {
 
 def format_table_header() -> str:
     """Return column header for table output."""
-    return f"{'TIMESTAMP':<26} {'METHOD':<8} {'HOST':<30} {'DECISION':<10} REASON"
+    return f"{'TIMESTAMP':<26} {'DIR':<4} {'METHOD':<8} {'HOST':<30} {'DECISION':<10} REASON"
 
 
 def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
     """Format a single audit entry as a table row."""
     ts = entry.ts[:25] if len(entry.ts) > 25 else entry.ts
+    dir_label = {"inbound": "in", "outbound": "out"}.get(entry.direction, "")
     method = entry.method[:7]
     host = entry.host[:29] if len(entry.host) > 29 else entry.host
     decision = entry.decision
@@ -172,13 +182,13 @@ def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
                 parts.append(r)
         reason = "; ".join(parts)
 
-    row = f"{ts:<26} {method:<8} {host:<30} {decision:<10} {reason}"
+    row = f"{ts:<26} {dir_label:<4} {method:<8} {host:<30} {decision:<10} {reason}"
 
     if color and decision in _DECISION_COLORS:
         from click import style
         # Color just the decision column
         colored_decision = style(f"{decision:<10}", fg=_DECISION_COLORS[decision])
-        row = f"{ts:<26} {method:<8} {host:<30} {colored_decision} {reason}"
+        row = f"{ts:<26} {dir_label:<4} {method:<8} {host:<30} {colored_decision} {reason}"
 
     return row
 
@@ -198,6 +208,17 @@ def format_summary(summary: dict) -> str:
         pct = f"({count * 100 // total}%)" if total else ""
         lines.append(f"  {d:<10} {count:>6}  {pct}")
     lines.append("")
+
+    # Directions
+    directions = summary.get("directions", {})
+    if directions:
+        lines.append("Directions:")
+        for d in ("outbound", "inbound"):
+            count = directions.get(d, 0)
+            if count:
+                pct = f"({count * 100 // total}%)" if total else ""
+                lines.append(f"  {d:<10} {count:>6}  {pct}")
+        lines.append("")
 
     # Top hosts
     top_hosts = summary.get("top_hosts", {})

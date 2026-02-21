@@ -17,6 +17,7 @@ from agentcage.audit import (
 
 _ALLOWED = {
     "ts": "2026-02-20T10:00:00+00:00",
+    "direction": "outbound",
     "method": "GET",
     "host": "api.anthropic.com",
     "url": "https://api.anthropic.com/v1/messages",
@@ -27,6 +28,7 @@ _ALLOWED = {
 
 _BLOCKED = {
     "ts": "2026-02-20T10:01:00+00:00",
+    "direction": "outbound",
     "method": "POST",
     "host": "evil.com",
     "url": "https://evil.com/exfil",
@@ -39,6 +41,7 @@ _BLOCKED = {
 
 _FLAGGED = {
     "ts": "2026-02-20T10:02:00+00:00",
+    "direction": "outbound",
     "method": "POST",
     "host": "api.anthropic.com",
     "url": "https://api.anthropic.com/v1/messages",
@@ -51,6 +54,7 @@ _FLAGGED = {
 
 _SECRETS_BLOCKED = {
     "ts": "2026-02-20T10:03:00+00:00",
+    "direction": "outbound",
     "method": "POST",
     "host": "httpbin.org",
     "url": "https://httpbin.org/post",
@@ -59,6 +63,17 @@ _SECRETS_BLOCKED = {
     "inspectors": [
         {"name": "secrets", "action": "block", "reason": "API key pattern detected", "severity": "critical"},
     ],
+}
+
+_INBOUND = {
+    "ts": "2026-02-20T10:04:00+00:00",
+    "direction": "inbound",
+    "method": "GET",
+    "host": "10.89.0.2",
+    "url": "http://10.89.0.2:8080/api/health",
+    "decision": "allowed",
+    "reason": "",
+    "inspectors": [],
 }
 
 
@@ -229,6 +244,7 @@ class TestFormatting:
     def test_table_header(self):
         h = format_table_header()
         assert "TIMESTAMP" in h
+        assert "DIR" in h
         assert "METHOD" in h
         assert "DECISION" in h
 
@@ -238,6 +254,25 @@ class TestFormatting:
         assert "blocked" in row
         assert "evil.com" in row
         assert "POST" in row
+
+    def test_table_row_direction_outbound(self):
+        entry = AuditEntry.from_dict(_ALLOWED)
+        row = format_table_row(entry, color=False)
+        assert "out" in row
+
+    def test_table_row_direction_inbound(self):
+        entry = AuditEntry.from_dict(_INBOUND)
+        row = format_table_row(entry, color=False)
+        assert " in " in row
+
+    def test_table_row_direction_missing(self):
+        """Entry without direction field shows empty string, no crash."""
+        d = {**_ALLOWED}
+        del d["direction"]
+        entry = AuditEntry.from_dict(d)
+        assert entry.direction == ""
+        row = format_table_row(entry, color=False)
+        assert "GET" in row
 
     def test_table_row_builds_reason_from_inspectors(self):
         entry = AuditEntry.from_dict({**_BLOCKED, "reason": ""})
@@ -251,3 +286,81 @@ class TestFormatting:
         assert "Total entries: 2" in text
         assert "blocked" in text
         assert "allowed" in text
+
+    def test_format_summary_directions(self):
+        entries = [
+            AuditEntry.from_dict(_ALLOWED),
+            AuditEntry.from_dict(_BLOCKED),
+            AuditEntry.from_dict(_INBOUND),
+        ]
+        s = compute_summary(entries)
+        text = format_summary(s)
+        assert "Directions:" in text
+        assert "outbound" in text
+        assert "inbound" in text
+
+
+# ── TestDirection ─────────────────────────────────────────
+
+
+class TestDirection:
+    def _entry(self, d: dict) -> AuditEntry:
+        return AuditEntry.from_dict(d)
+
+    def test_from_dict_populates_direction(self):
+        entry = self._entry(_ALLOWED)
+        assert entry.direction == "outbound"
+
+    def test_from_dict_inbound(self):
+        entry = self._entry(_INBOUND)
+        assert entry.direction == "inbound"
+
+    def test_from_dict_missing_direction(self):
+        d = {**_ALLOWED}
+        del d["direction"]
+        entry = self._entry(d)
+        assert entry.direction == ""
+
+    def test_filter_direction_inbound(self):
+        filt = AuditFilter(directions=["inbound"])
+        assert filt.matches(self._entry(_INBOUND))
+        assert not filt.matches(self._entry(_ALLOWED))
+
+    def test_filter_direction_outbound(self):
+        filt = AuditFilter(directions=["outbound"])
+        assert filt.matches(self._entry(_ALLOWED))
+        assert filt.matches(self._entry(_BLOCKED))
+        assert not filt.matches(self._entry(_INBOUND))
+
+    def test_filter_direction_both(self):
+        filt = AuditFilter(directions=["inbound", "outbound"])
+        assert filt.matches(self._entry(_ALLOWED))
+        assert filt.matches(self._entry(_INBOUND))
+
+    def test_filter_direction_empty_allows_all(self):
+        filt = AuditFilter(directions=[])
+        assert filt.matches(self._entry(_ALLOWED))
+        assert filt.matches(self._entry(_INBOUND))
+
+    def test_filter_direction_combined_with_decision(self):
+        filt = AuditFilter(decisions=["allowed"], directions=["inbound"])
+        assert filt.matches(self._entry(_INBOUND))
+        assert not filt.matches(self._entry(_ALLOWED))  # outbound
+
+    def test_summary_directions(self):
+        entries = [
+            self._entry(_ALLOWED),
+            self._entry(_BLOCKED),
+            self._entry(_INBOUND),
+        ]
+        s = compute_summary(entries)
+        assert s["directions"]["outbound"] == 2
+        assert s["directions"]["inbound"] == 1
+
+    def test_summary_no_direction_field(self):
+        """Entries without direction don't appear in directions counter."""
+        d = {**_ALLOWED}
+        del d["direction"]
+        entries = [self._entry(d)]
+        s = compute_summary(entries)
+        assert s["directions"] == {}
