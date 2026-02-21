@@ -269,7 +269,7 @@ class TestFormatting:
     def test_table_header(self):
         h = format_table_header()
         assert "TIMESTAMP" in h
-        assert "DIR" in h
+        assert "DIRECTION" in h
         assert "METHOD" in h
         assert "HOST" in h
         assert "PORT" in h
@@ -288,12 +288,12 @@ class TestFormatting:
     def test_table_row_direction_outbound(self):
         entry = AuditEntry.from_dict(_ALLOWED)
         row = format_table_row(entry, color=False)
-        assert "out" in row
+        assert "OUTBOUND" in row
 
     def test_table_row_direction_inbound(self):
         entry = AuditEntry.from_dict(_INBOUND)
         row = format_table_row(entry, color=False)
-        assert " in " in row
+        assert "INBOUND" in row
 
     def test_table_row_direction_missing(self):
         """Entry without direction field shows empty string, no crash."""

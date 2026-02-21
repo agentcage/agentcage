@@ -113,9 +113,13 @@ class SecretInjector:
         if self.redact_to and self._domain_matches(host, self.redact_to):
             return None
 
-        # Block literal real values — the agent should never send these
+        # Block literal real values heading to unauthorized domains.
+        # If the host is in the rule's inject_to list the value will
+        # legitimately appear after injection, so we allow it.
         for rule in self.rules:
             if self._find_real_value(flow, rule):
+                if rule.inject_to and self._domain_matches(host, rule.inject_to):
+                    continue
                 return InspectionResult(
                     inspector="secret-injector",
                     action="block",
@@ -300,9 +304,11 @@ class SecretInjector:
         if self.redact_to and self._domain_matches(host, self.redact_to):
             return None
 
-        # Block literal real values
+        # Block literal real values heading to unauthorized domains
         for rule in self.rules:
             if rule.real_value.encode() in content:
+                if rule.inject_to and self._domain_matches(host, rule.inject_to):
+                    continue
                 return InspectionResult(
                     inspector="secret-injector",
                     action="block",

@@ -30,8 +30,11 @@ class Podman:
         containerfile: str,
         context_dir: str,
         cap_add: list[str] | None = None,
+        no_cache: bool = False,
     ) -> None:
         cmd = [*_podman_cmd(), "build", "-t", tag, "-f", containerfile]
+        if no_cache:
+            cmd.append("--no-cache")
         for cap in cap_add or []:
             cmd.extend(["--cap-add", cap])
         cmd.append(context_dir)

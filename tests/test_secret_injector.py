@@ -691,8 +691,8 @@ class TestCheckLiteralSecrets:
         assert result.action == "block"
         assert result.severity == "critical"
 
-    def test_blocks_literal_value_to_authorized_domain(self):
-        """Agent shouldn't know real values — block even to inject_to domains."""
+    def test_allows_literal_value_to_authorized_domain(self):
+        """Literal values to inject_to domains are allowed (post-injection)."""
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
@@ -702,9 +702,7 @@ class TestCheckLiteralSecrets:
             content="body with real-secret here",
         )
         result = inj.check_injection_policy(flow)
-        assert result is not None
-        assert result.action == "block"
-        assert result.severity == "critical"
+        assert result is None
 
     def test_skips_redact_to_domains(self):
         """Redact-to domains are handled by redaction, not blocking."""
@@ -769,14 +767,12 @@ class TestCheckWsLiteralSecrets:
         assert "EMAIL" in result.reason
         assert "search.brave.com" in result.reason
 
-    def test_blocks_literal_value_to_authorized_domain(self):
+    def test_allows_literal_value_to_authorized_domain(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         result = inj.check_ws_injection_policy(b"real-secret", "api.anthropic.com")
-        assert result is not None
-        assert result.action == "block"
-        assert result.severity == "critical"
+        assert result is None
 
     def test_skips_redact_to_domains(self):
         inj = _injector_with_rules([

@@ -44,6 +44,7 @@ class ContainerBackend:
             "agentcage-proxy",
             os.path.join(containers_dir, "Containerfile.proxy"),
             build_context,
+            no_cache=True,
         )
         click.echo("Building DNS image...")
         self._podman.build_image(

@@ -169,7 +169,7 @@ _DECISION_COLORS = {
 def format_table_header() -> str:
     """Return column header for table output."""
     return (
-        f"{'TIMESTAMP':<26} {'DIR':<4} {'METHOD':<8} "
+        f"{'TIMESTAMP':<26} {'DIRECTION':<10} {'METHOD':<8} "
         f"{'HOST':<25} {'PORT':<5} {'PATH':<20} "
         f"{'DECISION':<10} REASON"
     )
@@ -178,7 +178,7 @@ def format_table_header() -> str:
 def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
     """Format a single audit entry as a table row."""
     ts = entry.ts[:25] if len(entry.ts) > 25 else entry.ts
-    dir_label = {"inbound": "in", "outbound": "out"}.get(entry.direction, "")
+    dir_label = {"inbound": "INBOUND", "outbound": "OUTBOUND"}.get(entry.direction, "")
     method = entry.method[:7]
     host = entry.host[:24] if len(entry.host) > 24 else entry.host
     port = str(entry.port) if entry.port else ""
@@ -211,7 +211,7 @@ def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
         reason = f"{reason}; {tag}" if reason else tag
 
     row = (
-        f"{ts:<26} {dir_label:<4} {method:<8} "
+        f"{ts:<26} {dir_label:<10} {method:<8} "
         f"{host:<25} {port:<5} {path:<20} "
         f"{decision:<10} {reason}"
     )
