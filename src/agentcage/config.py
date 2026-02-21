@@ -220,8 +220,12 @@ def load_config(path: str) -> Config:
                 inject_to=list(entry.get("inject_to") or []),
             ))
 
-    # Remove injected secrets from podman_secrets (they're handled separately)
+    # Remove injected secrets from podman_secrets and env — they are handled
+    # separately via placeholder substitution in the proxy.  Leaving them in
+    # env would expose the real value inside the cage (os.path.expandvars
+    # expands ${VAR} references during quadlet generation).
     cc.podman_secrets = [s for s in cc.podman_secrets if s not in injected_names]
+    cc.env = {k: v for k, v in cc.env.items() if k not in injected_names}
 
     # DNS servers (default to host resolvers if not specified)
     cfg.dns_servers = list(raw.get("dns_servers") or _host_dns_servers())

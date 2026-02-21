@@ -33,10 +33,10 @@ Secret={{ deploy_name }}.{{ secret }},type=env,target={{ secret }}
 Secret={{ secret }},type=env
 {% endif %}
 {% endfor %}
-{% for key, val in cage_placeholders %}
+{% for key, val in env.items() %}
 Environment="{{ key }}={{ val }}"
 {% endfor %}
-{% for key, val in env.items() %}
+{% for key, val in cage_placeholders %}
 Environment="{{ key }}={{ val }}"
 {% endfor %}
 {% if user %}

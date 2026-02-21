@@ -116,6 +116,12 @@ if [[ -n "$SECRETS_DEV" ]]; then
         podman secret create "$local_name" "$f" || true
         echo "agentcage-vm: loaded secret $local_name"
     done
+
+    # Unmount and remove the secrets drive — secrets are now in the Podman
+    # secret store; keeping the mount would expose plain-text values on disk.
+    umount /mnt/secrets
+    rm -rf /mnt/secrets
+    echo "agentcage-vm: secrets drive unmounted"
 else
     echo "agentcage-vm: no secrets drive found"
 fi
