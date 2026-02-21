@@ -85,6 +85,6 @@ def vm_config_path(deploy_name: str) -> str:
     """Return the expected VM config path for a deployment."""
     config_dir = Path(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-    ) / "agentcage" / "deployments" / deploy_name / "vm"
+    ) / "agentcage" / "cages" / deploy_name / "vm"
     config_dir.mkdir(parents=True, exist_ok=True)
     return str(config_dir / "vm-config.json")

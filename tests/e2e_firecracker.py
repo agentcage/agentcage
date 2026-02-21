@@ -340,6 +340,6 @@ class TestCageLifecycle:
         # Rootfs should be removed
         config_home = os.path.join(home, ".config")
         rootfs = os.path.join(
-            config_home, "agentcage", "deployments", CAGE_NAME, "vm", "rootfs.ext4"
+            config_home, "agentcage", "cages", CAGE_NAME, "vm", "rootfs.ext4"
         )
         assert not os.path.exists(rootfs), f"rootfs still exists: {rootfs}"

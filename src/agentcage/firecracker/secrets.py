@@ -16,7 +16,7 @@ def _secrets_dir(deploy_name: str) -> Path:
     """Return the host directory for a cage's secrets."""
     config_dir = Path(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-    ) / "agentcage" / "deployments" / deploy_name / "secrets"
+    ) / "agentcage" / "cages" / deploy_name / "secrets"
     config_dir.mkdir(parents=True, exist_ok=True)
     # Restrict permissions to owner only
     config_dir.chmod(0o700)
@@ -122,6 +122,6 @@ def secrets_drive_path(deploy_name: str) -> str:
     """Return the expected secrets drive path for a deployment."""
     config_dir = Path(
         os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-    ) / "agentcage" / "deployments" / deploy_name / "vm"
+    ) / "agentcage" / "cages" / deploy_name / "vm"
     config_dir.mkdir(parents=True, exist_ok=True)
     return str(config_dir / "secrets.ext4")

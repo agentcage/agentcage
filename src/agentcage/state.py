@@ -13,7 +13,7 @@ from agentcage.config import Config, load_config
 _CONFIG_DIR = Path(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
 ) / "agentcage"
-_DEPLOYMENTS_DIR = _CONFIG_DIR / "deployments"
+_DEPLOYMENTS_DIR = _CONFIG_DIR / "cages"
 
 
 def _deploy_dir(name: str) -> Path:
