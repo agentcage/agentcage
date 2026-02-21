@@ -30,7 +30,7 @@ def _ctx(
         url=url,
         host=host,
         method=method,
-        headers=headers or {},
+        headers=headers or [],
         content_type=content_type,
         body_bytes=body_bytes,
         body_text=body_text,
@@ -398,6 +398,37 @@ class TestSecretsInspector:
         assert s.allow_to_domains["anthropic_key"] == ["my-proxy.example.com"]
         # No built-in entries for keys the user didn't specify
         assert "openai_key" not in s.allow_to_domains
+
+    def test_detects_secret_in_duplicate_header(self):
+        """Multi-value headers: secret in a later value must still be caught."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        ctx = _ctx(
+            headers=[
+                ("authorization", "Bearer safe-token"),
+                ("x-custom", "sk-ant-abcdefghijklmnopqrstuvwxyz"),
+            ],
+            host="evil.com",
+        )
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert "anthropic_key" in r.reason
+
+    def test_detects_secret_in_repeated_header_value(self):
+        """When the same header appears twice, both values are scanned."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        ctx = _ctx(
+            headers=[
+                ("x-data", "harmless"),
+                ("x-data", "sk-ant-abcdefghijklmnopqrstuvwxyz"),
+            ],
+            host="evil.com",
+        )
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert "anthropic_key" in r.reason
 
 
 # ── BodySizeInspector ────────────────────────────────────
@@ -829,6 +860,27 @@ class TestContentTypeInspector:
             body_entropy=4.0,
         )
         assert ct.inspect_request(ctx) is None
+
+    def test_detects_url_safe_base64_blob(self):
+        """URL-safe base64 uses -_ instead of +/ — must still be caught."""
+        ct = ContentTypeInspector()
+        ct.configure({
+            "entropy_ceiling": 6.5,
+            "detect_base64": True,
+            "base64_min_len": 64,
+            "action": "flag",
+        })
+        # URL-safe base64 with - and _ characters
+        b64_line = "ABCDEFgh-_ABCDEFgh-_" * 20  # 400 chars
+        body = f"preamble\n{b64_line}\npostamble"
+        ctx = _ctx(
+            content_type="text/plain",
+            body_text=body,
+            body_entropy=4.0,
+        )
+        r = ct.inspect_request(ctx)
+        assert r is not None
+        assert "base64" in r.reason
 
     def test_no_body(self):
         ct = ContentTypeInspector()

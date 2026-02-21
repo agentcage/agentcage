@@ -78,7 +78,7 @@ class TestLoadInspectorFromFile:
             url="https://example.com",
             host="example.com",
             method="POST",
-            headers={},
+            headers=[],
             content_type="text/plain",
             body_bytes=b"contains SECRET data",
             body_text="contains SECRET data",

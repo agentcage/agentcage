@@ -24,7 +24,7 @@ _TEXT_CT_PREFIXES = (
 )
 
 # Base64: almost exclusively [A-Za-z0-9+/=\s]
-_BASE64_RE = re.compile(r"^[A-Za-z0-9+/=\s]{64,}$", re.MULTILINE)
+_BASE64_RE = re.compile(r"^[A-Za-z0-9+/=\-_\s]{64,}$", re.MULTILINE)
 
 
 class ContentTypeInspector(Inspector):
