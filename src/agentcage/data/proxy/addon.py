@@ -452,7 +452,7 @@ class Agentcage:
             url=flow.request.url,
             host=host,
             method="WEBSOCKET",
-            headers=dict(flow.request.headers),
+            headers=list(flow.request.headers.items(multi=True)),
             content_type="application/x-websocket-frame",
             body_bytes=body_bytes,
             body_text=body_text,
@@ -529,12 +529,12 @@ class Agentcage:
             body_bytes = flow.response.content
             body_text = flow.response.get_text(strict=False)
             content_type = flow.response.headers.get("content-type", "")
-            headers = dict(flow.response.headers)
+            headers = list(flow.response.headers.items(multi=True))
         else:
             body_bytes = flow.request.content
             body_text = flow.request.get_text(strict=False)
             content_type = flow.request.headers.get("content-type", "")
-            headers = dict(flow.request.headers)
+            headers = list(flow.request.headers.items(multi=True))
 
         body_size = len(body_bytes) if body_bytes else 0
         body_ent = shannon_entropy(body_bytes) if body_bytes else None

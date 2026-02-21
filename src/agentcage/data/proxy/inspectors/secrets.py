@@ -93,7 +93,7 @@ class SecretsInspector(Inspector):
     ) -> Optional[InspectionResult]:
         if not self.enabled:
             return None
-        targets = [ctx.url, str(ctx.headers)]
+        targets = [ctx.url] + [v for _, v in ctx.headers]
         if ctx.body_text:
             targets.append(ctx.body_text)
         host = ctx.host.lower()

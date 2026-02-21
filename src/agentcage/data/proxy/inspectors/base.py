@@ -25,7 +25,7 @@ class InspectionContext:
     url: str
     host: str
     method: str
-    headers: dict[str, str]
+    headers: list[tuple[str, str]]
     content_type: str
     body_bytes: Optional[bytes]
     body_text: Optional[str]
