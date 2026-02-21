@@ -21,6 +21,20 @@ uv run pytest
 3. Run `uv run pytest` and ensure all tests pass.
 4. Submit a pull request with a clear description of what changed and why.
 
+## Updating Dependencies
+
+All dependencies are pinned (lock files, image digests, binary checksums). To check for updates:
+
+```bash
+./scripts/update-deps.py              # check all, report only
+./scripts/update-deps.py --update     # check all, apply updates
+./scripts/update-deps.py containers   # check a single category
+```
+
+Categories: `python`, `containers`, `firecracker`, `kernel`, `node`, `pip`.
+
+Requires `skopeo` for container image checks (`sudo pacman -S skopeo` on Arch).
+
 ## Code Style
 
 - Follow existing patterns in the codebase.

@@ -24,6 +24,20 @@ agentcage offers two isolation modes that affect the threat model differently:
 | Kernel exploit | **Out of scope** (shared kernel) | Defended (guest kernel) |
 | Side-channel attacks | Out of scope | Out of scope |
 
+### Isolation modes
+
+| | Container mode (default) | Firecracker mode |
+|---|---|---|
+| **Isolation** | Linux namespaces (rootless Podman) | Hardware virtualization (KVM) |
+| **Kernel** | Shared with host | Dedicated guest kernel per cage |
+| **Container escape risk** | Mitigated by hardening, not eliminated | Eliminated — escape lands in VM, not on host |
+| **Root required** | No | Yes (for TAP device and bridge setup) |
+| **macOS support** | Yes (via Podman machine) | No (requires `/dev/kvm`) |
+| **Boot overhead** | ~1s | ~7s |
+| **Best for** | Development, CI, low-risk workloads | Production, untrusted agents, high-security |
+
+Set `isolation: firecracker` in your config to use Firecracker mode. See [Firecracker MicroVM Isolation](firecracker.md) for setup and details.
+
 ### What agentcage prevents
 
 The primary threat is an AI agent exfiltrating sensitive data -- secrets, source code, environment variables -- via HTTP requests. This covers both intentional exfiltration (a compromised or misaligned agent deliberately sending secrets to an attacker-controlled server) and accidental leakage (an agent including sensitive context in API calls it wasn't supposed to make).
