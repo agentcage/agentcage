@@ -372,7 +372,6 @@ class TestCageQuadlet:
         content = files["openclaw-cage.container"]
         assert "Image=ghcr.io/openclaw/openclaw:latest" in content
         assert "Exec=node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password" in content
-        assert "Secret=OPENCLAW_GATEWAY_TOKEN,type=env" in content
         assert "Secret=OPENCLAW_GATEWAY_PASSWORD,type=env" in content
         assert 'Environment="ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}"' in content
         assert 'Environment="OPENCLAW_DISABLE_BONJOUR=1"' in content

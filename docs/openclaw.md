@@ -29,9 +29,6 @@ OpenClaw needs secrets injected via Podman:
 # Anthropic secret (required)
 echo -n "sk-ant-..." | podman secret create ANTHROPIC_API_KEY -
 
-# Gateway authentication token (used by OpenClaw clients to connect)
-echo -n "your-token-here" | podman secret create OPENCLAW_GATEWAY_TOKEN -
-
 # Gateway password
 echo -n "your-password-here" | podman secret create OPENCLAW_GATEWAY_PASSWORD -
 
@@ -47,7 +44,7 @@ podman secret ls
 
 If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `config.yaml`.
 
-> **Secret injection:** The example config uses `secret_injection` for secrets (Anthropic, Brave). This means the cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. Gateway secrets (`OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_GATEWAY_PASSWORD`) stay in `podman_secrets` since they are used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
+> **Secret injection:** The example config uses `secret_injection` for secrets (Anthropic, Brave). This means the cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway secret (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
 
 ### 3. Create workspace directory
 
