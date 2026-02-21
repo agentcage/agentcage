@@ -38,7 +38,7 @@ class ContainerConfig:
     security_label_disable: bool = True
     restart: str = "on-failure"
     restart_sec: int = 10
-    timeout_start_sec: int = 120
+    timeout_start_sec: int = 600
     timeout_stop_sec: int = 30
 
 
