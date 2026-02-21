@@ -326,7 +326,8 @@ setup_firecracker() {
     fi
 
     info "Setting up Firecracker (via agentcage firecracker setup)..."
-    sudo agentcage firecracker setup
+    agentcage_bin="$(command -v agentcage)"
+    sudo "$agentcage_bin" firecracker setup
 }
 
 # ---------------------------------------------------------------------------
