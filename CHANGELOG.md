@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-02-21
+
+### Added
+- `agentcage init` command with `--preset` support for scaffolding config files
+- PicoClaw preset (`--preset picoclaw`) — ultra-lightweight Go-based AI assistant with config.json volume mount, minimal resources (256 MB / 0.5 CPU), and domain allowlist for AI providers and messaging channels
+- OpenClaw preset (`--preset openclaw`) — moved from static `examples/openclaw/` to Jinja2 template with cage name substitution
+- Generic init scaffold for custom setups (`agentcage init <name>` without `--preset`)
+- `--list-presets` flag to discover available presets
+
 ## [0.3.6] - 2026-02-21
 
 ### Fixed
