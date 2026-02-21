@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-02-21
+
+### Added
+- HAR capture support for full request/response forensics (`capture.enable_har` config option)
+
+### Fixed
+- Firecracker socat port-forward retries now scale with `timeout_start_sec` instead of hardcoded 90, preventing premature timeout for large images
+
 ## [0.3.8] - 2026-02-21
 
 ### Fixed
