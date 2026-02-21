@@ -70,7 +70,7 @@ class DomainConfig:
 
 @dataclass
 class CaptureConfig:
-    enabled: bool = False
+    enable_har: bool = False
     max_body_size: int = 10485760  # 10MB
     min_action: str = "all"  # "all" | "flag" | "block"
     domains: list[str] = field(default_factory=list)
@@ -265,7 +265,7 @@ def load_config(path: str) -> Config:
     # Capture
     cap_raw = raw.get("capture") or {}
     cap = CaptureConfig()
-    cap.enabled = bool(cap_raw.get("enabled", False))
+    cap.enable_har = bool(cap_raw.get("enable_har", False))
     cap.max_body_size = int(cap_raw.get("max_body_size", 10485760))
     cap.min_action = str(cap_raw.get("min_action", "all") or "all")
     cap.domains = list(cap_raw.get("domains") or [])

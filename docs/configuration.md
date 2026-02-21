@@ -257,7 +257,7 @@ Each captured flow contains two perspectives:
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable traffic capture. Creates a volume mount for the capture file. |
+| `enable_har` | `bool` | `false` | Enable HAR traffic capture. Creates a volume mount for the capture file. |
 | `max_body_size` | `int` | `10485760` (10 MB) | Truncate bodies larger than this. Truncated entries are marked with `bodyTruncated: true`. |
 | `min_action` | `string` | `"all"` | Minimum inspector action to trigger capture: `"all"` (capture everything), `"flag"` (flagged + blocked only), `"block"` (blocked only). |
 | `domains` | `list[string]` | `[]` | Domain allowlist — only capture flows to matching domains. Empty = capture all. Subdomains are matched automatically. |
@@ -267,7 +267,7 @@ Each captured flow contains two perspectives:
 
 ```yaml
 capture:
-  enabled: true
+  enable_har: true
   max_body_size: 10485760     # 10MB (default)
   min_action: all             # capture everything
   domains: []                 # all domains
@@ -278,7 +278,7 @@ capture:
 
 ```yaml
 capture:
-  enabled: true
+  enable_har: true
   min_action: flag            # skip allowed requests
   domains:
     - anthropic.com           # only capture anthropic traffic

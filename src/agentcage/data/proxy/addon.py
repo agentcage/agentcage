@@ -90,7 +90,7 @@ class Agentcage:
         # Capture JSONL — full request/response bodies for HAR export
         self._capture = None
         cap_cfg = self.cfg.get("capture") or {}
-        if cap_cfg.get("enabled") and CAPTURE_PATH:
+        if cap_cfg.get("enable_har") and CAPTURE_PATH:
             try:
                 from capture import CaptureWriter
                 self._capture = CaptureWriter(cap_cfg, CAPTURE_PATH)

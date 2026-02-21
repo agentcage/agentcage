@@ -107,7 +107,7 @@ def generate_quadlets(
     )
 
     # Capture volume — host path for capture JSONL
-    capture_enabled = config.capture.enabled
+    capture_enabled = config.capture.enable_har
     if capture_enabled:
         from agentcage.state import capture_dir as _capture_dir
         capture_host_dir = str(_capture_dir(deploy_name or name))

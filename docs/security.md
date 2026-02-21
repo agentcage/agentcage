@@ -139,7 +139,7 @@ Firecracker mode eliminates this limitation. Each cage runs in a dedicated micro
 
 ## Traffic Capture and HAR Export
 
-When `capture: enabled: true` is set, the proxy records full decrypted request/response bodies to a JSONL file. This data is exported via `agentcage cage har`.
+When `capture: enable_har: true` is set, the proxy records full decrypted request/response bodies to a JSONL file. This data is exported via `agentcage cage har`.
 
 ### OUTBOUND captures contain real secrets
 
