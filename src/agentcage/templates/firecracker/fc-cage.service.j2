@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 ExecStart={{ firecracker_bin }} --api-sock {{ runtime_dir }}/vm.sock --config-file {{ vm_config_path }}
 {% for fwd in port_forwards %}
-ExecStartPost=/bin/bash -c 'for i in $(seq 1 90); do if socat -T0 TCP-CONNECT:{{ vm_ip }}:{{ fwd.vm_port }} /dev/null 2>/dev/null; then socat TCP-LISTEN:{{ fwd.host_port }},bind={{ fwd.host_bind }},fork,reuseaddr TCP:{{ vm_ip }}:{{ fwd.vm_port }} & echo $! > {{ runtime_dir }}/socat-{{ fwd.host_port }}.pid; echo "port-forward: {{ fwd.host_bind }}:{{ fwd.host_port }} -> {{ vm_ip }}:{{ fwd.vm_port }}"; break; fi; sleep 2; done'
+ExecStartPost=/bin/bash -c 'retries={{ ((timeout_start_sec or 120) // 2) }}; for i in $(seq 1 $retries); do if socat -T0 TCP-CONNECT:{{ vm_ip }}:{{ fwd.vm_port }} /dev/null 2>/dev/null; then socat TCP-LISTEN:{{ fwd.host_port }},bind={{ fwd.host_bind }},fork,reuseaddr TCP:{{ vm_ip }}:{{ fwd.vm_port }} & echo $! > {{ runtime_dir }}/socat-{{ fwd.host_port }}.pid; echo "port-forward: {{ fwd.host_bind }}:{{ fwd.host_port }} -> {{ vm_ip }}:{{ fwd.vm_port }}"; break; fi; sleep 2; done'
 {% endfor %}
 ExecStop=/bin/bash -c 'curl -sf --unix-socket {{ runtime_dir }}/vm.sock -X PUT http://localhost/actions -H "Content-Type: application/json" -d '\''{"action_type": "SendCtrlAltDel"}'\'' || true; while kill -0 $MAINPID 2>/dev/null; do sleep 1; done'
 {% for fwd in port_forwards %}
