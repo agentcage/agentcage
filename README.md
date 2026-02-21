@@ -111,11 +111,13 @@ agentcage cage reload myapp
 agentcage cage destroy myapp
 ```
 
-| Group | Commands |
+| Command / Group | Commands |
 |---|---|
-| `cage` | `create`, `update`, `list`, `destroy`, `verify`, `reload`, `audit` |
+| `init` | *(top-level)* -- scaffold a config file |
+| `cage` | `create`, `update`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har` |
 | `secret` | `set`, `list`, `rm` |
 | `domain` | `list`, `add`, `rm` |
+| `firecracker` | `setup` |
 
 See [CLI Reference](docs/cli.md) for full documentation of all commands and options.
 

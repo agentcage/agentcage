@@ -1,10 +1,45 @@
 # CLI Reference
 
-The CLI is organized into three command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), and **`domain`** (manage cage domain allowlists).
+The CLI has a top-level **`init`** command for scaffolding configs, and four command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain allowlists), and **`firecracker`** (host setup for Firecracker mode).
 
 ```
+agentcage init [NAME] [options]
 agentcage <group> <command> [options]
 ```
+
+## `init` -- Scaffold a config
+
+```
+agentcage init [NAME] [options]
+```
+
+Generates a starter `config.yaml` for a new cage. With `--preset`, uses a curated template; without it, produces a generic scaffold you can edit.
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-o, --output` | path | `config.yaml` | Output file path |
+| `--image` | string | `node:22-slim` | Container image |
+| `--isolation` | choice: `container`/`firecracker` | `container` | Isolation backend |
+| `--force` | flag | | Overwrite existing file |
+| `--preset` | string | | Use a preset template (e.g. `openclaw`, `picoclaw`) |
+| `--list-presets` | flag | | List available presets and exit |
+
+### Examples
+
+```bash
+# Generic scaffold
+agentcage init myapp --image python:3.12-slim
+
+# OpenClaw preset
+agentcage init myclaw --preset openclaw
+
+# List available presets
+agentcage init --list-presets
+```
+
+---
 
 ## `cage` -- Manage cages
 
@@ -372,3 +407,34 @@ agentcage domain rm myapp api.openai.com
 ```
 
 Fails if the domain is not in the list.
+
+---
+
+## `firecracker` -- Firecracker host setup
+
+### `firecracker setup`
+
+```
+sudo agentcage firecracker setup
+```
+
+One-time host setup for Firecracker mode. Requires root. This command:
+
+1. Downloads the guest kernel (if not already present)
+2. Downloads the Firecracker binary (if not already present)
+3. Checks all prerequisites (`/dev/kvm` access, `agentcage-nethelper`, etc.)
+4. Creates the `agentcage-br0` network bridge (if not already present)
+
+Run this once before creating your first Firecracker cage. If any step fails, the output tells you exactly what to fix.
+
+```bash
+sudo agentcage firecracker setup
+# Kernel: /opt/agentcage/vmlinux
+#   ok
+# Firecracker: /opt/agentcage/firecracker
+#   ok
+#
+# All prerequisites met.
+#
+# Network bridge (agentcage-br0) already exists.
+```
