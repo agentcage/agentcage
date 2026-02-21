@@ -126,7 +126,8 @@ class TestInjectRequest:
         inj.inject_request(flow)
         assert flow.request.content == b"key=real-secret&email={{EMAIL}}"
 
-    def test_no_inject_to_injects_everywhere(self):
+    def test_no_inject_to_leaves_placeholder(self):
+        """Empty inject_to means the secret is never injected — placeholder stays."""
         inj = _injector_with_rules([
             InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com", inject_to=[]),
         ])
@@ -136,7 +137,22 @@ class TestInjectRequest:
             content="contact: {{EMAIL}}",
         )
         inj.inject_request(flow)
-        assert flow.request.content == b"contact: user@example.com"
+        assert flow.request.content == b"contact: {{EMAIL}}"
+
+    def test_no_inject_to_flags_policy(self):
+        """Empty inject_to → placeholder sent anywhere triggers a flag."""
+        inj = _injector_with_rules([
+            InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com", inject_to=[]),
+        ])
+        flow = _make_flow(
+            url="https://any-domain.com/api",
+            host="any-domain.com",
+            content="contact: {{EMAIL}}",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "flag"
+        assert "EMAIL" in result.reason
 
     def test_subdomain_matches_inject_to(self):
         inj = _injector_with_rules([

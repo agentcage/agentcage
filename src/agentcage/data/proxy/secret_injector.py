@@ -104,7 +104,7 @@ class SecretInjector:
         for rule in self.rules:
             if not self._find_placeholder(flow, rule):
                 continue
-            if rule.inject_to and not self._domain_matches(host, rule.inject_to):
+            if not rule.inject_to or not self._domain_matches(host, rule.inject_to):
                 return InspectionResult(
                     inspector="secret-injector",
                     action="flag",
@@ -139,8 +139,8 @@ class SecretInjector:
             if not self._find_placeholder(flow, rule):
                 continue
 
-            # Skip injection if domain not authorized for this rule
-            if rule.inject_to and not self._domain_matches(host, rule.inject_to):
+            # Skip injection if no authorized domains or domain not authorized
+            if not rule.inject_to or not self._domain_matches(host, rule.inject_to):
                 continue
 
             # Replace placeholder → real value
