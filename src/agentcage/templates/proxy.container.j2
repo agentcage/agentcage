@@ -19,7 +19,7 @@ Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 {% endif %}
 {% if inbound_forwards %}
-Exec=mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080{% for fwd in inbound_forwards %} --mode reverse:http://10.89.0.2:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
+Exec=mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080{% for fwd in inbound_forwards %} --mode reverse:http://10.89.0.2:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
 
 {% for fwd in inbound_forwards %}
 PublishPort={{ fwd.publish_spec }}

@@ -3,7 +3,6 @@
 # Quick start:
 #   1. Set secrets:
 #        agentcage secret set {{ name }} ANTHROPIC_API_KEY
-#        agentcage secret set {{ name }} OPENCLAW_GATEWAY_TOKEN
 #        agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
 #   2. Uncomment additional providers / domains you need
 #   3. Deploy:  agentcage cage create -c config.yaml
@@ -35,7 +34,7 @@ container:
     - "/home/node/.npm:rw,size=128M"
     - "/scratch:rw,exec,nosuid,size=2G"
 
-  # Gateway web UI — bind to localhost only
+  # Gateway web UI — published on the host via reverse proxy
   ports:
     - "0.0.0.0:18789:18789"
 
@@ -44,11 +43,8 @@ container:
     OPENCLAW_DISABLE_BONJOUR: "1"
 
   # Cage-internal secrets (not API keys — use secret_injection for those).
-  # Create each first:
-  #   agentcage secret set {{ name }} OPENCLAW_GATEWAY_TOKEN
-  #   agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
+  # Create first:  agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
   podman_secrets:
-    - OPENCLAW_GATEWAY_TOKEN
     - OPENCLAW_GATEWAY_PASSWORD
 
   # Resource limits

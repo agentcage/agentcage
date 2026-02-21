@@ -87,7 +87,6 @@ def openclaw_yaml(tmp_path):
           env:
             OPENCLAW_DISABLE_BONJOUR: "1"
           podman_secrets:
-            - OPENCLAW_GATEWAY_TOKEN
             - OPENCLAW_GATEWAY_PASSWORD
           memory: "4g"
           cpus: "2.0"

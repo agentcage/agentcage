@@ -29,9 +29,6 @@ OpenClaw needs secrets injected via Podman:
 # Anthropic secret (required)
 echo -n "sk-ant-..." | podman secret create ANTHROPIC_API_KEY -
 
-# Gateway authentication token (used by OpenClaw clients to connect)
-echo -n "your-token-here" | podman secret create OPENCLAW_GATEWAY_TOKEN -
-
 # Gateway password
 echo -n "your-password-here" | podman secret create OPENCLAW_GATEWAY_PASSWORD -
 
@@ -47,7 +44,7 @@ podman secret ls
 
 If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `config.yaml`.
 
-> **Secret injection:** The example config uses `secret_injection` for secrets (Anthropic, Brave). This means the cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. Gateway secrets (`OPENCLAW_GATEWAY_TOKEN`, `OPENCLAW_GATEWAY_PASSWORD`) stay in `podman_secrets` since they are used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
+> **Secret injection:** The example config uses `secret_injection` for secrets (Anthropic, Brave). This means the cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway secret (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
 
 ### 3. Create workspace directory
 
@@ -174,6 +171,32 @@ Regenerate and restart:
 agentcage generate -c config.yaml
 agentcage deploy ./openclaw-cage
 ```
+
+## Reverse proxy & device pairing
+
+agentcage runs a reverse proxy (mitmproxy) in front of the cage container. When you connect a browser to OpenClaw through this proxy, there are two things to be aware of:
+
+**Trusted proxies** — The proxy forwards `X-Forwarded-For` headers so OpenClaw can identify the real client IP. To make OpenClaw trust these headers, create a config file in the persistent state volume:
+
+```bash
+podman exec <name>-cage sh -c 'cat > /home/node/.openclaw/openclaw.json << EOF
+{ "gateway": { "trustedProxies": ["10.89.0.11"] } }
+EOF'
+```
+
+Then restart the cage (`systemctl --user restart <name>-cage`).
+
+**Device pairing** — The first browser connection from a new device triggers a one-time pairing approval. To approve, check the cage logs for the pairing request and approve it:
+
+```bash
+# Find the pairing request ID in the logs
+journalctl --user -u <name>-cage -f
+
+# Approve the device
+podman exec <name>-cage openclaw pairing approve <request-id>
+```
+
+Subsequent connections from the same browser are automatic.
 
 ## Troubleshooting
 

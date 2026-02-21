@@ -372,7 +372,6 @@ class TestCageQuadlet:
         content = files["openclaw-cage.container"]
         assert "Image=ghcr.io/openclaw/openclaw:latest" in content
         assert "Exec=node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password" in content
-        assert "Secret=OPENCLAW_GATEWAY_TOKEN,type=env" in content
         assert "Secret=OPENCLAW_GATEWAY_PASSWORD,type=env" in content
         assert 'Environment="ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}"' in content
         assert 'Environment="OPENCLAW_DISABLE_BONJOUR=1"' in content
@@ -478,6 +477,7 @@ class TestProxyReverseMode:
         proxy = files["test-proxy.container"]
         assert "--mode regular@10.89.0.11:8080" in proxy
         assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in proxy
+        assert "--set keep_host_header=true" in proxy
         assert "PublishPort=127.0.0.1:3000:3000" in proxy
 
     def test_proxy_no_reverse_without_ports(self, minimal_yaml):
@@ -486,6 +486,7 @@ class TestProxyReverseMode:
         proxy = files["test-proxy.container"]
         assert "--listen-port 8080" in proxy
         assert "--mode" not in proxy
+        assert "keep_host_header" not in proxy
         assert "PublishPort=" not in proxy
 
     def test_proxy_multiple_reverse_ports(self, tmp_path):
@@ -507,5 +508,6 @@ class TestProxyReverseMode:
         assert "--mode reverse:http://10.89.0.2:9090@0.0.0.0:9090" in proxy
         assert "PublishPort=127.0.0.1:3000:3000" in proxy
         assert "PublishPort=0.0.0.0:9090:9090" in proxy
+        assert "--set keep_host_header=true" in proxy
         # Cage has no PublishPort
         assert "PublishPort=" not in cage

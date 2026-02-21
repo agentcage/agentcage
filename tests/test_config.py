@@ -146,7 +146,7 @@ class TestLoadConfigOpenclaw:
 
     def test_openclaw_podman_secrets_preserved(self, openclaw_yaml):
         cfg = load_config(openclaw_yaml)
-        assert "OPENCLAW_GATEWAY_TOKEN" in cfg.container.podman_secrets
+        assert "OPENCLAW_GATEWAY_TOKEN" not in cfg.container.podman_secrets
         assert "OPENCLAW_GATEWAY_PASSWORD" in cfg.container.podman_secrets
 
 

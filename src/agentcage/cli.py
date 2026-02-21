@@ -101,10 +101,9 @@ def init(name: str | None, output: str, image: str, isolation: str,
     if preset == "openclaw":
         click.echo(f"\nNext steps:")
         click.echo(f"  1. agentcage secret set {name} ANTHROPIC_API_KEY")
-        click.echo(f"  2. agentcage secret set {name} OPENCLAW_GATEWAY_TOKEN")
-        click.echo(f"  3. agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD")
-        click.echo(f"  4. Edit {dest} — uncomment additional providers/domains")
-        click.echo(f"  5. agentcage cage create -c {dest}")
+        click.echo(f"  2. agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD")
+        click.echo(f"  3. Edit {dest} — uncomment additional providers/domains")
+        click.echo(f"  4. agentcage cage create -c {dest}")
     elif preset == "picoclaw":
         click.echo(f"\nNext steps:")
         click.echo(f"  1. Create ~/.picoclaw/config.json with your API keys and channels")
