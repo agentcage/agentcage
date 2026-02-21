@@ -18,6 +18,7 @@ agentcage <group> <command> [options]
 | `cage reload NAME` | Restart containers without rebuilding images |
 | `cage logs NAME [OPTIONS]` | Follow journalctl logs for a cage |
 | `cage audit NAME [OPTIONS]` | Query, filter, and summarize proxy audit logs |
+| `cage har NAME [OPTIONS]` | Export captured HTTP traffic as HAR 1.2 JSON |
 
 ## `secret` -- Manage cage-scoped secrets
 
@@ -222,6 +223,53 @@ agentcage cage audit myapp -d blocked --inspector secrets
 # Pipe to an alerting webhook
 agentcage cage audit myapp -f --json -d blocked | ./alert-webhook.sh
 ```
+
+## `cage har`
+
+```
+agentcage cage har <name> [options]
+```
+
+Export captured HTTP traffic as HAR 1.2 JSON. Requires `capture: enabled: true` in the cage config. The capture file records full decrypted request/response bodies with two perspectives per flow.
+
+Two perspectives are available:
+
+- **inbound** (default) — What the bot saw inside the cage. Secrets are replaced with placeholders. Safe to share with researchers.
+- **outbound** — What went on the wire. Contains real API keys and tokens. Treat as sensitive.
+
+Output is valid HAR 1.2 JSON, loadable in Chrome DevTools (Network > Import HAR).
+
+### Options
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--view` | choice: `inbound`/`outbound` | Perspective to export (default: `inbound`) |
+| `-d, --decision` | repeatable choice: `blocked`/`flagged`/`allowed` | Filter by decision |
+| `--host` | repeatable string | Filter by host (substring match) |
+| `--method` | repeatable string | Filter by HTTP method |
+| `--direction` | repeatable choice: `inbound`/`outbound` | Filter by traffic direction |
+| `--since` | string | Time window: `1h`, `30m`, `7d`, or ISO date |
+| `-n, --max-entries` | int (default 0) | Max entries (0 = unlimited) |
+| `-o, --output` | path | Output file (default: stdout) |
+| `--json-lines` | flag | Output raw capture JSONL instead of HAR |
+
+### Examples
+
+```bash
+# Export everything the agent saw (inbound perspective)
+agentcage cage har mycage -o agent-view.har
+
+# Export only blocked requests as seen on the wire
+agentcage cage har mycage --view outbound --decision blocked -o blocked.har
+
+# Export last hour of traffic to anthropic
+agentcage cage har mycage --host api.anthropic.com --since 1h -o anthropic.har
+
+# Pipe raw capture data for custom processing
+agentcage cage har mycage --json-lines | jq '.outbound.request.url'
+```
+
+---
 
 ## `secret set`
 

@@ -106,6 +106,14 @@ def generate_quadlets(
         dns_allowlist=dns_allowlist,
     )
 
+    # Capture volume — host path for capture JSONL
+    capture_enabled = config.capture.enabled
+    if capture_enabled:
+        from agentcage.state import capture_dir as _capture_dir
+        capture_host_dir = str(_capture_dir(deploy_name or name))
+    else:
+        capture_host_dir = ""
+
     # Proxy container — published ports are served here via reverse proxy mode
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
@@ -115,6 +123,8 @@ def generate_quadlets(
         log_proxy_connections=config.logging.proxy_connections,
         dns_servers=config.dns_servers,
         inbound_forwards=inbound_forwards,
+        capture_enabled=capture_enabled,
+        capture_host_dir=capture_host_dir,
     )
 
     # Cage container — no published ports (traffic arrives via proxy reverse mode)

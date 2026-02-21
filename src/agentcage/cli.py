@@ -899,6 +899,117 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
         _audit_batch(name, cfg, filt, lines, since, as_json, no_color)
 
 
+# ── cage har ───────────────────────────────────────────────
+
+
+@cage.command("har")
+@click.argument("name")
+@click.option("--view", type=click.Choice(["inbound", "outbound"]), default="inbound",
+              show_default=True,
+              help="Perspective to export: inbound (cage sees, safe to share) or outbound (wire, contains secrets).")
+@click.option("-d", "--decision", "decisions", multiple=True,
+              type=click.Choice(["blocked", "flagged", "allowed"]),
+              help="Filter by decision (repeatable).")
+@click.option("--host", "hosts", multiple=True,
+              help="Filter by host (substring match, repeatable).")
+@click.option("--method", "methods", multiple=True,
+              help="Filter by HTTP method (repeatable).")
+@click.option("--direction", "directions", multiple=True,
+              type=click.Choice(["inbound", "outbound"]),
+              help="Filter by traffic direction (repeatable).")
+@click.option("--since", default=None,
+              help="Time window: 1h, 30m, 7d, or ISO date.")
+@click.option("-n", "--max-entries", default=0, show_default=True,
+              help="Max entries (0 = unlimited).")
+@click.option("-o", "--output", "output_file", default=None,
+              type=click.Path(),
+              help="Output file (default: stdout).")
+@click.option("--json-lines", is_flag=True,
+              help="Output raw capture JSONL instead of HAR.")
+def cage_har(name, view, decisions, hosts, methods, directions, since,
+             max_entries, output_file, json_lines):
+    """Export captured HTTP traffic as HAR 1.2 JSON.
+
+    Reads the capture JSONL file for a cage and produces standard HAR JSON
+    loadable in Chrome DevTools (Network > Import HAR).
+
+    Two perspectives are available:
+
+    \b
+      inbound   What the bot saw inside the cage (placeholders, redacted
+                secrets). Safe to share. This is the default.
+      outbound  What went on the wire (real injected secrets, raw server
+                responses). Treat as sensitive.
+    """
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    from agentcage.har import CaptureFilter, capture_to_har, parse_since
+
+    capture_path = state.capture_file(name)
+    if not capture_path.is_file():
+        click.echo(f"error: no capture file found for cage '{name}'", err=True)
+        click.echo(f"  Expected: {capture_path}", err=True)
+        click.echo("  Is capture enabled in the cage config?", err=True)
+        sys.exit(1)
+
+    # Warn about sensitive outbound data
+    if view == "outbound" and not json_lines:
+        click.echo(
+            "WARNING: --view outbound includes real secrets (API keys, tokens). "
+            "Treat the output as sensitive.",
+            err=True,
+        )
+
+    # Build filter
+    since_dt = parse_since(since) if since else None
+    filt = CaptureFilter(
+        decisions=list(decisions),
+        directions=list(directions),
+        hosts=list(hosts),
+        methods=list(methods),
+        since=since_dt,
+    )
+
+    # Read and filter capture entries
+    entries = []
+    with open(capture_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if filt.matches(entry):
+                entries.append(entry)
+
+    # Apply max-entries limit (keep last N)
+    if max_entries > 0:
+        entries = entries[-max_entries:]
+
+    # Output
+    if json_lines:
+        out = sys.stdout if output_file is None else open(output_file, "w")
+        try:
+            for entry in entries:
+                out.write(json.dumps(entry) + "\n")
+        finally:
+            if output_file is not None:
+                out.close()
+    else:
+        har = capture_to_har(entries, view=view)
+        text = json.dumps(har, indent=2)
+        if output_file:
+            with open(output_file, "w") as f:
+                f.write(text + "\n")
+            click.echo(f"Wrote {len(entries)} entries to {output_file}", err=True)
+        else:
+            click.echo(text)
+
+
 # ── secret group ─────────────────────────────────────────
 
 

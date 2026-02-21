@@ -10,6 +10,7 @@ Example configs: [`basic/config.yaml`](../examples/basic/) | [`openclaw/config.y
 - [Top-level settings](#top-level-settings)
 - [Container settings](#container-settings-container)
 - [Container hardening](#container-hardening)
+- [Traffic capture](#traffic-capture-capture)
 - [Restart policy and timeouts](#restart-policy-and-timeouts)
 - [Secret injection](#secret-injection-secret_injection)
 - [Domain filtering](#domain-filtering-domains)
@@ -243,6 +244,70 @@ secrets:
     brave_api_key:
       - search.brave.com
 ```
+
+---
+
+## Traffic capture (`capture:`)
+
+Traffic capture records full request/response bodies (decrypted) to a JSONL file for forensic analysis and HAR export. This is opt-in and disabled by default.
+
+Each captured flow contains two perspectives:
+- **INBOUND** — what the bot sees inside the cage (placeholders, redacted secrets). Safe to share.
+- **OUTBOUND** — what goes on the wire (real injected secrets, raw server responses). Treat as sensitive.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable traffic capture. Creates a volume mount for the capture file. |
+| `max_body_size` | `int` | `10485760` (10 MB) | Truncate bodies larger than this. Truncated entries are marked with `bodyTruncated: true`. |
+| `min_action` | `string` | `"all"` | Minimum inspector action to trigger capture: `"all"` (capture everything), `"flag"` (flagged + blocked only), `"block"` (blocked only). |
+| `domains` | `list[string]` | `[]` | Domain allowlist — only capture flows to matching domains. Empty = capture all. Subdomains are matched automatically. |
+| `exclude_domains` | `list[string]` | `[]` | Domain blocklist — skip flows to matching domains. |
+
+### Example
+
+```yaml
+capture:
+  enabled: true
+  max_body_size: 10485760     # 10MB (default)
+  min_action: all             # capture everything
+  domains: []                 # all domains
+  exclude_domains: []         # no exclusions
+```
+
+### Capture only blocked/flagged traffic to specific domains
+
+```yaml
+capture:
+  enabled: true
+  min_action: flag            # skip allowed requests
+  domains:
+    - anthropic.com           # only capture anthropic traffic
+  max_body_size: 1048576      # 1MB — keep capture file small
+```
+
+### Storage considerations
+
+- Each simple API call generates ~1-5 KB of capture data.
+- Large request/response bodies (file uploads, model outputs) can be much larger — use `max_body_size` to cap per-body size.
+- The capture file grows indefinitely. For long-running cages, use `min_action: flag` or `domains` to limit what's recorded.
+- Export with `agentcage cage har --since 1h` to get time-bounded snapshots.
+
+### Exporting captured traffic
+
+Use `agentcage cage har` to export captured traffic as HAR 1.2 JSON:
+
+```bash
+# Export inbound perspective (safe to share)
+agentcage cage har mycage -o agent-view.har
+
+# Export outbound perspective (contains real secrets)
+agentcage cage har mycage --view outbound -o wire-view.har
+
+# Export only blocked requests from last hour
+agentcage cage har mycage --decision blocked --since 1h
+```
+
+See [CLI Reference — cage har](cli.md#cage-har) for full options.
 
 ---
 

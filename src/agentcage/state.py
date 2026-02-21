@@ -81,8 +81,25 @@ def save_raw_config(name: str, raw: dict) -> None:
 # Keys from config.yaml that the proxy addon actually reads
 _PROXY_KEYS = frozenset({
     "domains", "secrets", "max_request_body", "entropy", "content_type",
-    "inspectors", "rate_limit", "logging", "secret_injection",
+    "inspectors", "rate_limit", "logging", "secret_injection", "capture",
 })
+
+
+_DATA_DIR = Path(
+    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
+) / "agentcage"
+
+
+def capture_dir(name: str) -> Path:
+    """Return (and create) ~/.local/share/agentcage/<name>/capture/."""
+    d = _DATA_DIR / name / "capture"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def capture_file(name: str) -> Path:
+    """Return path to capture.jsonl for a cage."""
+    return capture_dir(name) / "capture.jsonl"
 
 
 def save_proxy_config(name: str) -> str:
