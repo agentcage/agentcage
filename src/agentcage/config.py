@@ -69,6 +69,15 @@ class DomainConfig:
 
 
 @dataclass
+class CaptureConfig:
+    enable_har: bool = False
+    max_body_size: int = 10485760  # 10MB
+    min_action: str = "all"  # "all" | "flag" | "block"
+    domains: list[str] = field(default_factory=list)
+    exclude_domains: list[str] = field(default_factory=list)
+
+
+@dataclass
 class FirecrackerConfig:
     kernel: str = ""  # path to vmlinux
     vcpus: int = 2
@@ -85,6 +94,7 @@ class Config:
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    capture: CaptureConfig = field(default_factory=CaptureConfig)
     firecracker: FirecrackerConfig = field(default_factory=FirecrackerConfig)
 
 
@@ -251,6 +261,16 @@ def load_config(path: str) -> Config:
     lc.proxy = str(log_raw.get("proxy", "") or "")
     lc.cage = str(log_raw.get("cage", "") or "")
     cfg.logging = lc
+
+    # Capture
+    cap_raw = raw.get("capture") or {}
+    cap = CaptureConfig()
+    cap.enable_har = bool(cap_raw.get("enable_har", False))
+    cap.max_body_size = int(cap_raw.get("max_body_size", 10485760))
+    cap.min_action = str(cap_raw.get("min_action", "all") or "all")
+    cap.domains = list(cap_raw.get("domains") or [])
+    cap.exclude_domains = list(cap_raw.get("exclude_domains") or [])
+    cfg.capture = cap
 
     return cfg
 

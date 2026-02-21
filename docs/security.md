@@ -137,6 +137,38 @@ The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` c
 
 Firecracker mode eliminates this limitation. Each cage runs in a dedicated microVM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host — and the VM has no host filesystem access. Set `isolation: firecracker` to use this mode. See [Firecracker MicroVM Isolation](firecracker.md) for setup and tradeoffs.
 
+## Traffic Capture and HAR Export
+
+When `capture: enable_har: true` is set, the proxy records full decrypted request/response bodies to a JSONL file. This data is exported via `agentcage cage har`.
+
+### OUTBOUND captures contain real secrets
+
+The OUTBOUND perspective records what actually went on the wire, including real API keys, tokens, and session cookies after secret injection. OUTBOUND HAR files must be treated with the same access controls as the secrets themselves.
+
+- The default `--view` is `inbound` (safe perspective with placeholders)
+- The CLI prints a warning to stderr when exporting with `--view outbound`
+- The capture volume has the same ownership/permissions as the podman user (not world-readable)
+
+### INBOUND captures may contain sensitive content
+
+Even INBOUND captures (with secrets replaced by placeholders) may contain PII, user queries, model responses, or other sensitive content in request/response bodies. Handle HAR files under the same data governance as the agent's operational data. The Okta breach (2023) is a cautionary reference — HAR files uploaded to support portals led to session hijacking of 134 customers.
+
+### Disk exhaustion risk
+
+With `min_action: all` and heavy traffic, the capture JSONL grows indefinitely. Mitigations:
+- `max_body_size` truncates bodies (default 10 MB per body)
+- `domains` filter limits which hosts are recorded
+- `min_action: flag` or `min_action: block` reduces capture volume
+- Periodically truncate or archive the capture file for long-running deployments
+
+### Capture file integrity
+
+The capture file is plain JSON lines on disk. An attacker with host access could modify entries. For forensic chain of custody, hash the file at export time (`sha256sum capture.jsonl`). Per-entry HMAC or signed HAR wrappers are a potential follow-up.
+
+### Same trust boundary as podman secrets
+
+The capture volume is accessible to the host user running podman. This is the same trust boundary as podman secrets — if an attacker has access to the host user's files, they already have access to the secrets.
+
 ## Reporting Security Issues
 
 Please report security issues via [GitHub Issues](https://github.com/agentcage/agentcage/issues).

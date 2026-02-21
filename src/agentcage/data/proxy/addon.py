@@ -22,6 +22,7 @@ from inspectors.util import load_inspector_from_file, shannon_entropy
 from secret_injector import SecretInjector
 
 CONFIG_PATH = os.environ.get("AGENTCAGE_CONFIG", "/etc/agentcage/config.yaml")
+CAPTURE_PATH = os.environ.get("AGENTCAGE_CAPTURE", "")
 
 
 # ── Built-in inspector registry ──────────────────────────
@@ -85,6 +86,20 @@ class Agentcage:
                 self._audit_file = open(audit_path, "a")
             except OSError as e:
                 ctx.log.warn(f"agentcage: cannot open audit log {audit_path}: {e}")
+
+        # Capture JSONL — full request/response bodies for HAR export
+        self._capture = None
+        cap_cfg = self.cfg.get("capture") or {}
+        if cap_cfg.get("enable_har") and CAPTURE_PATH:
+            try:
+                from capture import CaptureWriter
+                self._capture = CaptureWriter(cap_cfg, CAPTURE_PATH)
+                ctx.log.info(f"agentcage: capture enabled → {CAPTURE_PATH}")
+            except Exception as e:
+                ctx.log.warn(f"agentcage: cannot init capture: {e}")
+
+        # Per-flow capture staging — stores partial snapshots between hooks
+        self._cap_pending: dict[str, dict] = {}
 
         names = [i.name for i in self.inspectors]
         ctx.log.info(
@@ -269,9 +284,35 @@ class Agentcage:
             )
             flow.metadata["agentcage_blocked"] = True
             self._log(flow, "blocked", reason, results, direction=direction, source=source)
+
+            # Capture blocked flow — both perspectives see the same request
+            if self._capture and self._capture.should_capture("blocked", flow.request.host):
+                inbound_req = self._capture.snapshot_request(flow)
+                inbound_resp = self._capture.snapshot_response(flow)
+                self._capture.write_entry(
+                    flow_id=flow.id, direction=direction, decision="blocked",
+                    host=flow.request.host, method=flow.request.method,
+                    path=flow.request.path,
+                    inspectors=[{"name": r.inspector, "action": r.action,
+                                 "reason": r.reason, "severity": r.severity}
+                                for r in results],
+                    inbound_req=inbound_req, inbound_resp=inbound_resp,
+                    outbound_req=inbound_req, outbound_resp=inbound_resp,
+                )
         else:
+            # ── SNAPSHOT request for INBOUND (placeholders still present) ──
+            cap_inbound_req = None
+            if self._capture:
+                cap_inbound_req = self._capture.snapshot_request(flow)
+
             # Inject real secrets only AFTER inspectors have approved
             injected = self.injector.inject_request(flow)
+
+            # ── SNAPSHOT request for OUTBOUND (real secrets on the wire) ──
+            cap_outbound_req = None
+            if self._capture:
+                cap_outbound_req = self._capture.snapshot_request(flow)
+
             flagged = [r for r in results if r.action == "flag"]
             if flagged:
                 reasons = "; ".join(r.reason for r in flagged)
@@ -279,9 +320,26 @@ class Agentcage:
             else:
                 self._log(flow, "allowed", None, results, direction=direction, source=source, secrets_injected=injected)
 
+            # Stage partial capture for completion in response()
+            if self._capture and cap_inbound_req is not None:
+                decision = "flagged" if flagged else "allowed"
+                self._cap_pending[flow.id] = {
+                    "direction": direction,
+                    "decision": decision,
+                    "host": flow.request.host,
+                    "method": flow.request.method,
+                    "path": flow.request.path,
+                    "inspectors": [{"name": r.inspector, "action": r.action,
+                                    "reason": r.reason, "severity": r.severity}
+                                   for r in results],
+                    "inbound_req": cap_inbound_req,
+                    "outbound_req": cap_outbound_req,
+                }
+
     def response(self, flow: http.HTTPFlow) -> None:
         # Only run response inspectors if the request wasn't blocked
         if flow.metadata.get("agentcage_blocked"):
+            self._cap_pending.pop(flow.id, None)
             return
 
         is_reverse = isinstance(
@@ -313,9 +371,58 @@ class Agentcage:
             )
             redacted = self.injector.redact_response(flow)
             self._log(flow, "blocked", reason, results, direction=direction, secrets_redacted=redacted)
+
+            # Write capture for response-blocked flow
+            pending = self._cap_pending.pop(flow.id, None)
+            if self._capture and pending:
+                resp_snap = self._capture.snapshot_response(flow)
+                self._capture.write_entry(
+                    flow_id=flow.id,
+                    direction=pending["direction"],
+                    decision="blocked",
+                    host=pending["host"],
+                    method=pending["method"],
+                    path=pending["path"],
+                    inspectors=pending["inspectors"] + [
+                        {"name": r.inspector, "action": r.action,
+                         "reason": r.reason, "severity": r.severity}
+                        for r in results
+                    ],
+                    inbound_req=pending["inbound_req"],
+                    inbound_resp=resp_snap,
+                    outbound_req=pending["outbound_req"],
+                    outbound_resp=resp_snap,
+                )
         else:
+            # ── SNAPSHOT response for OUTBOUND (real secrets from server) ──
+            cap_outbound_resp = None
+            if self._capture and flow.id in self._cap_pending:
+                cap_outbound_resp = self._capture.snapshot_response(flow)
+
             # Redact real secrets from response before it reaches the cage
             self.injector.redact_response(flow)
+
+            # ── SNAPSHOT response for INBOUND (secrets replaced with placeholders) ──
+            # Write complete capture entry
+            pending = self._cap_pending.pop(flow.id, None)
+            if self._capture and pending and cap_outbound_resp is not None:
+                if self._capture.should_capture(pending["decision"], pending["host"]):
+                    cap_inbound_resp = self._capture.snapshot_response(flow)
+                    ws_msgs = self._capture.pop_ws_messages(flow.id)
+                    self._capture.write_entry(
+                        flow_id=flow.id,
+                        direction=pending["direction"],
+                        decision=pending["decision"],
+                        host=pending["host"],
+                        method=pending["method"],
+                        path=pending["path"],
+                        inspectors=pending["inspectors"],
+                        inbound_req=pending["inbound_req"],
+                        inbound_resp=cap_inbound_resp,
+                        outbound_req=pending["outbound_req"],
+                        outbound_resp=cap_outbound_resp,
+                        ws_messages=ws_msgs or None,
+                    )
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         """Inspect, inject, and redact WebSocket frame payloads."""
@@ -324,6 +431,17 @@ class Agentcage:
         content = msg.content
         if not content:
             return
+
+        # Buffer WS frame for capture before any mutation
+        if self._capture and flow.id in self._cap_pending:
+            ws_type = "send" if msg.from_client else "receive"
+            ws_data = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
+            self._capture.add_ws_message(flow.id, {
+                "type": ws_type,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "opcode": 1 if isinstance(content, str) else 2,
+                "data": ws_data,
+            })
 
         body_bytes = content if isinstance(content, bytes) else content.encode()
         body_text = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
