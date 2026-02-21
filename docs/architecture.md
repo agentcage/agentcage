@@ -92,6 +92,9 @@ The cage container never receives real secrets. Instead it gets placeholder toke
 Outbound (cage → upstream):
   cage sends:     Authorization: Bearer {{ANTHROPIC_API_KEY}}
        ↓
+  policy check:   literal real value in request? → block (critical)
+                  placeholder to unauthorized domain? → flag
+       ↓
   injector:       domain in inject_to? → replace placeholder with real value
        ↓
   inspector chain runs on the modified request (domain, secrets, entropy, etc.)
@@ -108,7 +111,10 @@ Inbound (upstream → cage):
   cage receives placeholder only
 ```
 
-If a placeholder is found heading to a domain not in the rule's `inject_to` list, the request is blocked before reaching the inspector chain.
+Two policy checks run before injection:
+
+1. **Literal value blocking** — If a real secret value appears anywhere in the request (URL, headers, or body), the request is blocked with severity `critical`. The cage should never know real values, so their presence indicates the agent learned the secret outside the placeholder system. This applies to all domains (including `inject_to` domains), except `redact_to` domains where redaction handles the substitution.
+2. **Placeholder domain restriction** — If a placeholder is found heading to a domain not in the rule's `inject_to` list, the request is flagged.
 
 See the [Configuration Reference](configuration.md#secret-injection-secret_injection) for setup and examples.
 

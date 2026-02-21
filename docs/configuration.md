@@ -101,9 +101,13 @@ Secrets listed in `secret_injection` are **automatically excluded** from the cag
 
 ### Domain restrictions
 
-When `inject_to` is set for a rule, the proxy only injects the real value for requests to matching domains (subdomains are matched automatically). If the cage sends a placeholder to any other domain, the request is **blocked** with a 403 response.
+When `inject_to` is set for a rule, the proxy only injects the real value for requests to matching domains (subdomains are matched automatically). If the cage sends a placeholder to any other domain, the request is **flagged**.
 
 When `inject_to` is omitted, the real value is injected for all outbound requests and redacted from all inbound responses.
+
+### Literal value blocking
+
+If a real secret value appears in any outbound request or WebSocket frame (in the URL, headers, or body), the request is **blocked** with severity `critical`. This is a defense-in-depth measure: the cage should never know real secret values, so their presence indicates the agent learned the secret outside the placeholder system (e.g. through conversation context). This check applies to all domains, including `inject_to` domains. Domains listed in `redact_to` are exempt because outbound redaction handles the substitution.
 
 ### Response redaction
 
