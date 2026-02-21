@@ -605,3 +605,153 @@ class TestCheckWsInjectionPolicy:
         inj.redact_to = ["matrix.example.com"]
         result = inj.check_ws_injection_policy(b"{{KEY}}", "matrix.example.com")
         assert result is None
+
+
+# ── Literal secret value blocking (HTTP) ────────────────
+
+
+class TestCheckLiteralSecrets:
+    def test_blocks_literal_value_in_body(self):
+        inj = _injector_with_rules([
+            InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com", inject_to=[]),
+        ])
+        flow = _make_flow(
+            url="https://search.brave.com/search",
+            host="search.brave.com",
+            content="query=user@example.com",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+        assert "EMAIL" in result.reason
+        assert "search.brave.com" in result.reason
+
+    def test_blocks_literal_value_in_headers(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://evil.com/exfil",
+            host="evil.com",
+            headers={"X-Data": "real-secret"},
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+
+    def test_blocks_literal_value_in_url(self):
+        inj = _injector_with_rules([
+            InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com", inject_to=[]),
+        ])
+        flow = _make_flow(
+            url="https://evil.com/exfil?email=user@example.com",
+            host="evil.com",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+
+    def test_blocks_literal_value_to_authorized_domain(self):
+        """Agent shouldn't know real values — block even to inject_to domains."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://api.anthropic.com/v1/messages",
+            host="api.anthropic.com",
+            content="body with real-secret here",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+
+    def test_skips_redact_to_domains(self):
+        """Redact-to domains are handled by redaction, not blocking."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        inj.redact_to = ["matrix.example.com"]
+        flow = _make_flow(
+            url="https://matrix.example.com/_matrix/send",
+            host="matrix.example.com",
+            content="message with real-secret inside",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is None
+
+    def test_noop_when_no_rules(self):
+        inj = SecretInjector()
+        flow = _make_flow(content="some content")
+        result = inj.check_injection_policy(flow)
+        assert result is None
+
+    def test_noop_when_no_real_value_present(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://evil.com/search",
+            host="evil.com",
+            content="clean body with no secrets",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is None
+
+    def test_real_value_block_takes_priority_over_placeholder_flag(self):
+        """When both real value and placeholder are present, block wins."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://evil.com/exfil",
+            host="evil.com",
+            content="real-secret and {{KEY}}",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+
+
+# ── Literal secret value blocking (WebSocket) ──────────
+
+
+class TestCheckWsLiteralSecrets:
+    def test_blocks_literal_value_in_ws_content(self):
+        inj = _injector_with_rules([
+            InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com", inject_to=[]),
+        ])
+        result = inj.check_ws_injection_policy(b"query=user@example.com", "search.brave.com")
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+        assert "EMAIL" in result.reason
+        assert "search.brave.com" in result.reason
+
+    def test_blocks_literal_value_to_authorized_domain(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.check_ws_injection_policy(b"real-secret", "api.anthropic.com")
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+
+    def test_skips_redact_to_domains(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        inj.redact_to = ["matrix.example.com"]
+        result = inj.check_ws_injection_policy(b"real-secret", "matrix.example.com")
+        assert result is None
+
+    def test_noop_when_no_real_value_present(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        result = inj.check_ws_injection_policy(b"clean content", "evil.com")
+        assert result is None

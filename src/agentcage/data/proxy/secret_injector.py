@@ -73,6 +73,18 @@ class SecretInjector:
                 )
             )
 
+    def _find_real_value(self, flow: http.HTTPFlow, rule: InjectionRule) -> bool:
+        """Check if a rule's real secret value is present in the flow."""
+        rv = rule.real_value
+        if rv in flow.request.url:
+            return True
+        for v in flow.request.headers.values():
+            if rv in v:
+                return True
+        if flow.request.content and rv.encode() in flow.request.content:
+            return True
+        return False
+
     def _find_placeholder(self, flow: http.HTTPFlow, rule: InjectionRule) -> bool:
         """Check if a rule's placeholder is present in the flow."""
         ph = rule.placeholder
@@ -101,6 +113,20 @@ class SecretInjector:
         if self.redact_to and self._domain_matches(host, self.redact_to):
             return None
 
+        # Block literal real values — the agent should never send these
+        for rule in self.rules:
+            if self._find_real_value(flow, rule):
+                return InspectionResult(
+                    inspector="secret-injector",
+                    action="block",
+                    reason=(
+                        f"literal secret value {rule.name} found in "
+                        f"outbound request to {host}"
+                    ),
+                    severity="critical",
+                )
+
+        # Flag placeholders heading to unauthorized domains
         for rule in self.rules:
             if not self._find_placeholder(flow, rule):
                 continue
@@ -244,6 +270,20 @@ class SecretInjector:
         if self.redact_to and self._domain_matches(host, self.redact_to):
             return None
 
+        # Block literal real values
+        for rule in self.rules:
+            if rule.real_value.encode() in content:
+                return InspectionResult(
+                    inspector="secret-injector",
+                    action="block",
+                    reason=(
+                        f"literal secret value {rule.name} found in "
+                        f"outbound WebSocket frame to {host}"
+                    ),
+                    severity="critical",
+                )
+
+        # Flag placeholders heading to unauthorized domains
         for rule in self.rules:
             if rule.placeholder.encode() not in content:
                 continue
