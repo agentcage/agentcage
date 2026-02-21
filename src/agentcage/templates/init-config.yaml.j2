@@ -1,0 +1,81 @@
+# agentcage configuration for {{ name }}
+# Full reference: https://github.com/agentcage/agentcage/blob/master/docs/configuration.md
+#
+# Quick start:
+#   1. Set container.image and container.command below
+#   2. Add domains your agent needs to the allowlist
+#   3. Run:  agentcage cage create -c config.yaml
+
+name: {{ name }}
+{% if isolation == "firecracker" %}
+
+isolation: firecracker
+
+firecracker:
+  vcpus: 2
+  mem_mb: 2048
+  # kernel: ""            # auto-detected; set to override
+  # firecracker_bin: ""   # auto-detected; set to override
+{% endif %}
+
+container:
+  image: "{{ image }}"
+  # command: ["node", "/app/agent.js"]
+
+  # Host directories mounted into the cage (read-only recommended)
+  # volumes:
+  #   - "${HOME}/my-project:/workspace:ro"
+
+  # Podman named volumes for persistent state
+  # named_volumes:
+  #   my-data: "/data:rw"
+
+  # Writable directories on the read-only root filesystem
+  # tmpfs:
+  #   - "/tmp:rw,noexec,nosuid,size=64M"
+
+  # Ports exposed to localhost
+  # ports:
+  #   - "127.0.0.1:3000:3000"
+
+  # Environment variables
+  # env:
+  #   MY_VAR: "value"
+
+  # Podman secrets injected as environment variables directly into the cage.
+  # Create first:  agentcage secret set {{ name }} MY_SECRET
+  # podman_secrets:
+  #   - MY_SECRET
+
+  # Resource limits
+  # memory: "4g"
+  # cpus: "2.0"
+
+# ── Domain filtering ──
+# Restrict which hosts the cage can reach.
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com").
+domains:
+  mode: allowlist
+  list:
+    - example.com
+    # - github.com
+    # - githubusercontent.com
+    # - npmjs.org
+    # - pypi.org
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Create each secret first:  agentcage secret set {{ name }} MY_API_KEY
+# secret_injection:
+#   - env: MY_API_KEY
+#     placeholder: "{%raw%}{{MY_API_KEY}}{%endraw%}"
+#     inject_to:
+#       - api.example.com
+
+# ── Logging ──
+# logging:
+#   level: info              # debug | info | warning | error | critical
+#   allowed_requests: false  # log every allowed request
+#   dns_queries: false       # log DNS queries
+#   proxy_connections: false  # log all proxy connections

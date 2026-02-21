@@ -98,18 +98,40 @@ class TestDefaultInspectors:
         names = sorted(i.name for i in addon.inspectors)
         assert names == ["body-size", "content-type", "domain", "entropy", "secrets"]
 
-    def test_openclaw_simplified_config_still_loads_inspectors(self):
-        """The simplified openclaw config (no inspectors: section) should still
-        get entropy + content-type loaded by default."""
-        openclaw_cfg = Path(__file__).resolve().parent.parent / "examples" / "openclaw" / "config.yaml"
-        with open(openclaw_cfg) as f:
-            cfg_text = f.read()
+    def test_openclaw_preset_loads_inspectors(self):
+        """The openclaw preset config should load entropy + content-type."""
+        from agentcage.init import render_config
+        cfg_text = render_config("test-oc", preset="openclaw")
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
         assert "entropy" in names
         assert "content-type" in names
         assert "domain" in names
         assert "secrets" in names
+
+    def test_picoclaw_preset_loads_inspectors(self):
+        """The picoclaw preset config should load entropy + content-type."""
+        from agentcage.init import render_config
+        cfg_text = render_config("test-pico", preset="picoclaw")
+        addon = self._make_addon(cfg_text)
+        names = [i.name for i in addon.inspectors]
+        assert "entropy" in names
+        assert "content-type" in names
+        assert "domain" in names
+
+    def test_picoclaw_preset_parses_via_load_config(self, tmp_path):
+        """The picoclaw preset should produce valid YAML that load_config accepts."""
+        from agentcage.init import render_config
+        from agentcage.config import load_config
+        cfg_text = render_config("test-pico", preset="picoclaw")
+        cfg_file = tmp_path / "picoclaw.yaml"
+        cfg_file.write_text(cfg_text)
+        cfg = load_config(str(cfg_file))
+        assert cfg.name == "test-pico"
+        assert cfg.container.image == "docker.io/sipeed/picoclaw:latest"
+        assert cfg.container.command == ["gateway"]
+        assert cfg.container.memory == "256m"
+        assert cfg.container.cpus == "0.5"
 
 
 # ── CLI: verify and deploy arg parsing ────────────────────

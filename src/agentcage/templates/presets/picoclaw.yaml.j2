@@ -1,0 +1,93 @@
+# agentcage configuration for {{ name }} (PicoClaw preset)
+#
+# Quick start:
+#   1. Create ~/.picoclaw/config.json with your API keys and channels
+#      (see https://github.com/sipeed/picoclaw for config format)
+#   2. Deploy:  agentcage cage create -c config.yaml
+
+name: {{ name }}
+{% if isolation == "firecracker" %}
+
+isolation: firecracker
+
+firecracker:
+  vcpus: 1
+  mem_mb: 512
+  # kernel: ""            # auto-detected; set to override
+  # firecracker_bin: ""   # auto-detected; set to override
+{% endif %}
+
+container:
+  image: "docker.io/sipeed/picoclaw:latest"
+  command: ["gateway"]
+
+  # Mount your config file (create it before deploying)
+  volumes:
+    - "~/.picoclaw/config.json:/home/picoclaw/.picoclaw/config.json:ro"
+
+  # Podman named volume for persistent workspace (sessions, memory, templates)
+  named_volumes:
+    picoclaw-workspace: "/home/picoclaw/.picoclaw/workspace:rw"
+
+  # Writable directories on the read-only root filesystem
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=64M"
+
+  # Gateway web UI — bind to localhost only
+  ports:
+    - "127.0.0.1:18790:18790"
+    # Webhook ports (uncomment as needed):
+    #- "127.0.0.1:18791:18791"   # LINE
+    #- "127.0.0.1:18792:18792"   # WeCom App
+    #- "127.0.0.1:18793:18793"   # WeCom Bot
+
+  # Resource limits — PicoClaw is ultra-lightweight (~10 MB image, ~10-20 MB RAM)
+  memory: "256m"
+  cpus: "0.5"
+
+  # Fast Go binary — starts in ~1 second
+  timeout_start_sec: 30
+
+# ── Domain allowlist ──
+# PicoClaw reads API keys from config.json, not environment variables,
+# so secret_injection is not used. Only domain filtering applies.
+#
+# Subdomains are matched automatically (e.g. "openai.com" also allows
+# "api.openai.com"). Sibling domains are NOT matched.
+domains:
+  mode: allowlist
+  list:
+    # ── AI providers (uncomment those you configure in config.json) ──
+    - anthropic.com
+    - openai.com
+    #- openrouter.ai
+    #- generativelanguage.googleapis.com   # Gemini
+    #- api.deepseek.com
+    #- api.groq.com
+    #- open.bigmodel.cn                    # Zhipu
+
+    # ── Web search ──
+    #- search.brave.com
+    #- duckduckgo.com
+    #- api.perplexity.ai
+
+    # ── Skills registry ──
+    #- clawhub.ai
+
+    # ── Messaging channels (uncomment those you use) ──
+    #- api.telegram.org
+    #- discord.com
+    #- gateway.discord.gg
+
+    # Add domains your agent needs access to:
+    #- example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: entropy
+  - name: content-type

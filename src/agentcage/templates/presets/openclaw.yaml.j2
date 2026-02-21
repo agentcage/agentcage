@@ -1,0 +1,156 @@
+# agentcage configuration for {{ name }} (OpenClaw preset)
+#
+# Quick start:
+#   1. Set secrets:
+#        agentcage secret set {{ name }} ANTHROPIC_API_KEY
+#        agentcage secret set {{ name }} OPENCLAW_GATEWAY_TOKEN
+#        agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
+#   2. Uncomment additional providers / domains you need
+#   3. Deploy:  agentcage cage create -c config.yaml
+
+name: {{ name }}
+{% if isolation == "firecracker" %}
+
+isolation: firecracker
+
+firecracker:
+  vcpus: 2
+  mem_mb: 4096
+  # kernel: ""            # auto-detected; set to override
+  # firecracker_bin: ""   # auto-detected; set to override
+{% endif %}
+
+container:
+  image: "ghcr.io/openclaw/openclaw:latest"
+  command: ["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan", "--auth", "password"]
+
+  # Podman named volumes for persistent state
+  named_volumes:
+    openclaw-workspace: "/workspace:rw"
+    openclaw-state: "/home/node/.openclaw:rw"
+
+  # Writable directories on the read-only root filesystem
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=512M"
+    - "/home/node/.npm:rw,size=128M"
+    - "/scratch:rw,exec,nosuid,size=2G"
+
+  # Gateway web UI — bind to localhost only
+  ports:
+    - "127.0.0.1:18789:18789"
+
+  # Disable mDNS/Bonjour broadcasts (not useful inside a container)
+  env:
+    OPENCLAW_DISABLE_BONJOUR: "1"
+
+  # Cage-internal secrets (not API keys — use secret_injection for those).
+  # Create each first:
+  #   agentcage secret set {{ name }} OPENCLAW_GATEWAY_TOKEN
+  #   agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
+  podman_secrets:
+    - OPENCLAW_GATEWAY_TOKEN
+    - OPENCLAW_GATEWAY_PASSWORD
+
+  # Resource limits
+  memory: "4g"
+  cpus: "2.0"
+
+  # OpenClaw startup is slow — give it time
+  timeout_start_sec: 120
+
+# ── Upstream DNS ──
+# Default: 1.1.1.1, 8.8.8.8 (Cloudflare + Google)
+# Uncomment for Tailscale MagicDNS (resolves *.ts.net hostnames):
+# dns_servers:
+#   - 100.100.100.100
+#   - 1.1.1.1
+#   - 8.8.8.8
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
+secret_injection:
+  # Core AI provider
+  - env: ANTHROPIC_API_KEY
+    placeholder: "{%raw%}{{ANTHROPIC_API_KEY}}{%endraw%}"
+    inject_to:
+      - anthropic.com
+
+  # Uncomment providers as needed:
+  #- env: OPENAI_API_KEY
+  #  placeholder: "{%raw%}{{OPENAI_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - openai.com
+  #- env: OPENROUTER_API_KEY
+  #  placeholder: "{%raw%}{{OPENROUTER_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - openrouter.ai
+
+  # Web search
+  #- env: BRAVE_API_KEY
+  #  placeholder: "{%raw%}{{BRAVE_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - search.brave.com
+
+  # Web scraping
+  #- env: FIRECRAWL_API_KEY
+  #  placeholder: "{%raw%}{{FIRECRAWL_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - firecrawl.dev
+
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com"). Sibling domains are NOT matched — "github.com" does
+# not allow "githubusercontent.com", so add it separately.
+domains:
+  mode: allowlist
+  list:
+    # ── Core AI providers ──
+    - anthropic.com
+    #- openai.com
+    #- openrouter.ai
+
+    # ── Package registries ──
+    - npmjs.org
+    - npmjs.com
+    - pypi.org
+    - files.pythonhosted.org
+    - nodejs.org
+
+    # ── CDNs ──
+    - cdn.jsdelivr.net
+    - unpkg.com
+    - esm.sh
+
+    # ── Code hosting ──
+    - github.com
+    - githubusercontent.com
+    #- gitlab.com
+
+    # ── Web search ──
+    #- search.brave.com        # requires BRAVE_API_KEY secret
+    #- perplexity.ai
+    #- firecrawl.dev           # requires FIRECRAWL_API_KEY secret
+
+    # ── AI/ML services ──
+    #- huggingface.co
+    #- hf.co
+    #- pytorch.org
+
+    # ── Messaging ──
+    #- api.telegram.org
+    #- discord.com
+    #- slack.com
+
+    # Add domains your agents need access to:
+    #- example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: entropy
+  - name: content-type

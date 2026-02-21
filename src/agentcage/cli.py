@@ -38,6 +38,85 @@ def main():
     """Defense-in-depth proxy sandbox for AI agents."""
 
 
+# ── init ─────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("name", required=False, default=None)
+@click.option("-o", "--output", default="config.yaml",
+              help="Output file path.", show_default=True)
+@click.option("--image", default="node:22-slim",
+              help="Container image.", show_default=True)
+@click.option("--isolation", type=click.Choice(["container", "firecracker"]),
+              default="container", help="Isolation backend.", show_default=True)
+@click.option("--force", is_flag=True, help="Overwrite existing file.")
+@click.option("--preset", default=None,
+              help="Use a preset template (e.g. openclaw).")
+@click.option("--list-presets", is_flag=True,
+              help="List available presets and exit.")
+def init(name: str | None, output: str, image: str, isolation: str,
+         force: bool, preset: str | None, list_presets: bool):
+    """Scaffold a new agentcage config file."""
+    from agentcage.init import list_presets as _list_presets, render_config
+
+    if list_presets:
+        presets = _list_presets()
+        if not presets:
+            click.echo("No presets available.")
+        else:
+            click.echo("Available presets:")
+            for p in presets:
+                click.echo(f"  {p}")
+        return
+
+    if name is None:
+        click.echo("error: missing argument 'NAME'", err=True)
+        sys.exit(1)
+
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', name):
+        click.echo(
+            "error: name must be 1-63 lowercase alphanumeric characters or "
+            f"hyphens, starting with a letter or digit (got: {name!r})",
+            err=True,
+        )
+        sys.exit(1)
+
+    if preset is not None and preset not in _list_presets():
+        click.echo(
+            f"error: unknown preset {preset!r} "
+            f"(available: {', '.join(_list_presets()) or 'none'})",
+            err=True,
+        )
+        sys.exit(1)
+
+    dest = Path(output)
+    if dest.exists() and not force:
+        click.echo(f"error: {dest} already exists (use --force to overwrite)", err=True)
+        sys.exit(1)
+
+    content = render_config(name, image=image, isolation=isolation, preset=preset)
+    dest.write_text(content)
+    click.echo(f"Created {dest}")
+
+    if preset == "openclaw":
+        click.echo(f"\nNext steps:")
+        click.echo(f"  1. agentcage secret set {name} ANTHROPIC_API_KEY")
+        click.echo(f"  2. agentcage secret set {name} OPENCLAW_GATEWAY_TOKEN")
+        click.echo(f"  3. agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD")
+        click.echo(f"  4. Edit {dest} — uncomment additional providers/domains")
+        click.echo(f"  5. agentcage cage create -c {dest}")
+    elif preset == "picoclaw":
+        click.echo(f"\nNext steps:")
+        click.echo(f"  1. Create ~/.picoclaw/config.json with your API keys and channels")
+        click.echo(f"     (see https://github.com/sipeed/picoclaw for config format)")
+        click.echo(f"  2. Edit {dest} — uncomment domains for your providers/channels")
+        click.echo(f"  3. agentcage cage create -c {dest}")
+    else:
+        click.echo(f"\nNext steps:")
+        click.echo(f"  1. Edit {dest} — set your image, domains, and secrets")
+        click.echo(f"  2. agentcage cage create -c {dest}")
+
+
 # ── helpers ──────────────────────────────────────────────
 
 
