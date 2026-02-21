@@ -248,6 +248,14 @@ class Agentcage:
                 if result.action == "block":
                     break  # short-circuit on hard block
 
+        # Source IP for inbound requests
+        source = ""
+        if is_reverse:
+            try:
+                source = flow.client_conn.address[0]
+            except (AttributeError, IndexError, TypeError):
+                pass
+
         blocked = [r for r in results if r.action == "block"]
         if blocked:
             reason = blocked[0].reason
@@ -260,16 +268,16 @@ class Agentcage:
                 {"Content-Type": "application/json"},
             )
             flow.metadata["agentcage_blocked"] = True
-            self._log(flow, "blocked", reason, results, direction=direction)
+            self._log(flow, "blocked", reason, results, direction=direction, source=source)
         else:
             # Inject real secrets only AFTER inspectors have approved
-            self.injector.inject_request(flow)
+            injected = self.injector.inject_request(flow)
             flagged = [r for r in results if r.action == "flag"]
             if flagged:
                 reasons = "; ".join(r.reason for r in flagged)
-                self._log(flow, "flagged", reasons, results, direction=direction)
+                self._log(flow, "flagged", reasons, results, direction=direction, source=source, secrets_injected=injected)
             else:
-                self._log(flow, "allowed", None, results, direction=direction)
+                self._log(flow, "allowed", None, results, direction=direction, source=source, secrets_injected=injected)
 
     def response(self, flow: http.HTTPFlow) -> None:
         # Only run response inspectors if the request wasn't blocked
@@ -303,10 +311,11 @@ class Agentcage:
                 ).encode(),
                 {"Content-Type": "application/json"},
             )
-            self._log(flow, "blocked", reason, results, direction=direction)
-
-        # Redact real secrets from response before it reaches the cage
-        self.injector.redact_response(flow)
+            redacted = self.injector.redact_response(flow)
+            self._log(flow, "blocked", reason, results, direction=direction, secrets_redacted=redacted)
+        else:
+            # Redact real secrets from response before it reaches the cage
+            self.injector.redact_response(flow)
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         """Inspect, inject, and redact WebSocket frame payloads."""
@@ -358,17 +367,18 @@ class Agentcage:
                 msg.drop()
                 self._log(flow, "blocked", f"websocket: {reason}", results, direction="outbound")
             else:
-                msg.content = self.injector.inject_ws_content(
+                content, injected = self.injector.inject_ws_content(
                     body_bytes, host
                 )
+                msg.content = content
                 flagged = [r for r in results if r.action == "flag"]
                 if flagged:
                     reasons = "; ".join(r.reason for r in flagged)
                     self._log(
-                        flow, "flagged", f"websocket: {reasons}", results, direction="outbound"
+                        flow, "flagged", f"websocket: {reasons}", results, direction="outbound", secrets_injected=injected
                     )
                 elif self.log_allowed:
-                    self._log(flow, "allowed", "websocket", results, direction="outbound")
+                    self._log(flow, "allowed", "websocket", results, direction="outbound", secrets_injected=injected)
         else:
             # ── Inbound (remote → cage) ───────────────────
             for inspector in self.inspectors:
@@ -389,7 +399,8 @@ class Agentcage:
                     self._log(flow, "allowed", "websocket", results, direction="inbound")
 
             # Redact real secrets before content reaches the cage
-            msg.content = self.injector.redact_ws_content(body_bytes)
+            content, _redacted = self.injector.redact_ws_content(body_bytes)
+            msg.content = content
 
     # ── Context building ─────────────────────────────────
 
@@ -432,6 +443,9 @@ class Agentcage:
         results: list[InspectionResult],
         *,
         direction: str = "outbound",
+        source: str = "",
+        secrets_injected: list[str] | None = None,
+        secrets_redacted: list[str] | None = None,
     ) -> None:
         if decision == "allowed" and not self.log_allowed:
             return
@@ -440,10 +454,18 @@ class Agentcage:
             "direction": direction,
             "method": flow.request.method,
             "host": flow.request.host,
+            "port": flow.request.port,
+            "path": flow.request.path,
             "url": flow.request.url,
             "decision": decision,
             "reason": reason or "",
         }
+        if source:
+            entry["source"] = source
+        if secrets_injected:
+            entry["secrets_injected"] = secrets_injected
+        if secrets_redacted:
+            entry["secrets_redacted"] = secrets_redacted
         if results:
             entry["inspectors"] = [
                 {

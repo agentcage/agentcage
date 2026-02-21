@@ -61,16 +61,18 @@ class TestInjectRequest:
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         flow = _make_flow(content="body with {{KEY}} here")
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"body with real-secret here"
+        assert names == ["KEY"]
 
     def test_replaces_placeholder_in_headers(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         flow = _make_flow(headers={"Authorization": "Bearer {{KEY}}"})
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.headers["Authorization"] == "Bearer real-secret"
+        assert names == ["KEY"]
 
     def test_replaces_placeholder_in_url(self):
         inj = _injector_with_rules([
@@ -80,8 +82,9 @@ class TestInjectRequest:
             url="https://api.anthropic.com/v1?key={{KEY}}",
             host="api.anthropic.com",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.url == "https://api.anthropic.com/v1?key=real-secret"
+        assert names == ["KEY"]
 
     def test_flags_placeholder_to_unauthorized_domain(self):
         inj = _injector_with_rules([
@@ -109,8 +112,9 @@ class TestInjectRequest:
             host="evil.com",
             content="body with {{KEY}} here",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"body with {{KEY}} here"
+        assert names == []
 
     def test_inject_mixed_rules(self):
         """Authorized rule gets injected, unauthorized rule's placeholder stays."""
@@ -123,8 +127,9 @@ class TestInjectRequest:
             host="api.anthropic.com",
             content="key={{KEY}}&email={{EMAIL}}",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"key=real-secret&email={{EMAIL}}"
+        assert names == ["KEY"]
 
     def test_no_inject_to_leaves_placeholder(self):
         """Empty inject_to means the secret is never injected — placeholder stays."""
@@ -136,8 +141,9 @@ class TestInjectRequest:
             host="any-domain.com",
             content="contact: {{EMAIL}}",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"contact: {{EMAIL}}"
+        assert names == []
 
     def test_no_inject_to_flags_policy(self):
         """Empty inject_to → placeholder sent anywhere triggers a flag."""
@@ -163,22 +169,25 @@ class TestInjectRequest:
             host="api.anthropic.com",
             content="{{KEY}}",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"real-secret"
+        assert names == ["KEY"]
 
     def test_noop_when_no_rules(self):
         inj = SecretInjector()
         flow = _make_flow(content="no placeholders")
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"no placeholders"
+        assert names == []
 
     def test_noop_when_no_placeholder_present(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         flow = _make_flow(content="clean body with no placeholders")
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"clean body with no placeholders"
+        assert names == []
 
     def test_multiple_rules(self):
         inj = _injector_with_rules([
@@ -186,8 +195,9 @@ class TestInjectRequest:
             InjectionRule("KEY2", "{{KEY2}}", "secret-2", inject_to=["anthropic.com"]),
         ])
         flow = _make_flow(content="a={{KEY1}}&b={{KEY2}}")
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"a=secret-1&b=secret-2"
+        assert sorted(names) == ["KEY1", "KEY2"]
 
 
 # ── Response redaction ───────────────────────────────────
@@ -199,16 +209,18 @@ class TestRedactResponse:
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         flow = _make_response_flow(resp_content='{"key": "real-secret"}')
-        inj.redact_response(flow)
+        names = inj.redact_response(flow)
         assert flow.response.content == b'{"key": "{{KEY}}"}'
+        assert names == ["KEY"]
 
     def test_redacts_real_value_in_headers(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         flow = _make_response_flow(resp_headers={"X-Key": "real-secret"})
-        inj.redact_response(flow)
+        names = inj.redact_response(flow)
         assert flow.response.headers["X-Key"] == "{{KEY}}"
+        assert names == ["KEY"]
 
     def test_longest_first_ordering(self):
         """When one real value is a substring of another, the longer one
@@ -218,14 +230,16 @@ class TestRedactResponse:
             InjectionRule("LONG", "{{LONG}}", "secret-long-value", inject_to=[]),
         ])
         flow = _make_response_flow(resp_content="the value is secret-long-value here")
-        inj.redact_response(flow)
+        names = inj.redact_response(flow)
         assert flow.response.content == b"the value is {{LONG}} here"
+        assert "LONG" in names
 
     def test_noop_when_no_rules(self):
         inj = SecretInjector()
         flow = _make_response_flow(resp_content="clean body")
-        inj.redact_response(flow)
+        names = inj.redact_response(flow)
         assert flow.response.content == b"clean body"
+        assert names == []
 
     def test_noop_when_no_response(self):
         inj = _injector_with_rules([
@@ -233,7 +247,8 @@ class TestRedactResponse:
         ])
         flow = _make_flow(content="irrelevant")
         flow.response = None
-        inj.redact_response(flow)  # should not raise
+        names = inj.redact_response(flow)  # should not raise
+        assert names == []
 
     def test_redacts_regardless_of_domain(self):
         """Inbound redaction applies to all domains, not just inject_to."""
@@ -245,8 +260,9 @@ class TestRedactResponse:
             host="other.com",
             resp_content="leaked: real-secret",
         )
-        inj.redact_response(flow)
+        names = inj.redact_response(flow)
         assert flow.response.content == b"leaked: {{KEY}}"
+        assert names == ["KEY"]
 
 
 # ── Configuration ────────────────────────────────────────
@@ -326,8 +342,9 @@ class TestRedactRequest:
             host="matrix.example.com",
             content="message with real-secret inside",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"message with {{KEY}} inside"
+        assert names == ["KEY"]
 
     def test_redacts_real_value_in_headers(self):
         inj = _injector_with_rules([
@@ -339,8 +356,9 @@ class TestRedactRequest:
             host="matrix.example.com",
             headers={"Authorization": "Bearer real-secret"},
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.headers["Authorization"] == "Bearer {{KEY}}"
+        assert names == ["KEY"]
 
     def test_placeholder_passes_through(self):
         """Placeholders should NOT be blocked or injected for redact_to domains."""
@@ -353,8 +371,9 @@ class TestRedactRequest:
             host="matrix.example.com",
             content="my key is {{KEY}}",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"my key is {{KEY}}"
+        assert names == []
 
     def test_redact_to_priority_over_inject_to(self):
         """If a domain is in both redact_to and inject_to, redact wins."""
@@ -367,8 +386,9 @@ class TestRedactRequest:
             host="shared.com",
             content="value is real-secret",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"value is {{KEY}}"
+        assert names == ["KEY"]
 
     def test_no_inject_to_not_injected_for_redact_domain(self):
         """USER_EMAIL (no inject_to) should NOT be injected to redact_to domains."""
@@ -381,9 +401,10 @@ class TestRedactRequest:
             host="matrix.example.com",
             content="contact: {{EMAIL}}",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         # Placeholder passes through, NOT replaced with real value
         assert flow.request.content == b"contact: {{EMAIL}}"
+        assert names == []
 
     def test_real_email_redacted_for_redact_domain(self):
         """If real email leaks into request to redact_to domain, it gets redacted."""
@@ -396,8 +417,9 @@ class TestRedactRequest:
             host="matrix.example.com",
             content="contact: user@example.com",
         )
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"contact: {{EMAIL}}"
+        assert names == ["EMAIL"]
 
     def test_non_redact_domain_still_injects(self):
         """Normal inject_to behavior unchanged for non-redact_to domains."""
@@ -406,8 +428,9 @@ class TestRedactRequest:
         ])
         inj.redact_to = ["matrix.example.com"]
         flow = _make_flow(content="body with {{KEY}} here")
-        inj.inject_request(flow)
+        names = inj.inject_request(flow)
         assert flow.request.content == b"body with real-secret here"
+        assert names == ["KEY"]
 
 
 # ── Config format (dict vs list) ────────────────────────
@@ -456,65 +479,74 @@ class TestInjectWsContent:
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
-        result = inj.inject_ws_content(b"token={{KEY}}", "api.anthropic.com")
-        assert result == b"token=real-secret"
+        content, names = inj.inject_ws_content(b"token={{KEY}}", "api.anthropic.com")
+        assert content == b"token=real-secret"
+        assert names == ["KEY"]
 
     def test_skips_unauthorized_domain(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
-        result = inj.inject_ws_content(b"token={{KEY}}", "evil.com")
-        assert result == b"token={{KEY}}"
+        content, names = inj.inject_ws_content(b"token={{KEY}}", "evil.com")
+        assert content == b"token={{KEY}}"
+        assert names == []
 
     def test_empty_inject_to_leaves_placeholder(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=[]),
         ])
-        result = inj.inject_ws_content(b"token={{KEY}}", "any-domain.com")
-        assert result == b"token={{KEY}}"
+        content, names = inj.inject_ws_content(b"token={{KEY}}", "any-domain.com")
+        assert content == b"token={{KEY}}"
+        assert names == []
 
     def test_noop_when_no_rules(self):
         inj = SecretInjector()
-        result = inj.inject_ws_content(b"hello world", "example.com")
-        assert result == b"hello world"
+        content, names = inj.inject_ws_content(b"hello world", "example.com")
+        assert content == b"hello world"
+        assert names == []
 
     def test_noop_when_no_placeholder_present(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
-        result = inj.inject_ws_content(b"clean content", "api.anthropic.com")
-        assert result == b"clean content"
+        content, names = inj.inject_ws_content(b"clean content", "api.anthropic.com")
+        assert content == b"clean content"
+        assert names == []
 
     def test_multiple_rules(self):
         inj = _injector_with_rules([
             InjectionRule("K1", "{{K1}}", "secret-1", inject_to=["anthropic.com"]),
             InjectionRule("K2", "{{K2}}", "secret-2", inject_to=["anthropic.com"]),
         ])
-        result = inj.inject_ws_content(b"a={{K1}}&b={{K2}}", "api.anthropic.com")
-        assert result == b"a=secret-1&b=secret-2"
+        content, names = inj.inject_ws_content(b"a={{K1}}&b={{K2}}", "api.anthropic.com")
+        assert content == b"a=secret-1&b=secret-2"
+        assert sorted(names) == ["K1", "K2"]
 
     def test_subdomain_matching(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
-        result = inj.inject_ws_content(b"{{KEY}}", "deep.sub.anthropic.com")
-        assert result == b"real-secret"
+        content, names = inj.inject_ws_content(b"{{KEY}}", "deep.sub.anthropic.com")
+        assert content == b"real-secret"
+        assert names == ["KEY"]
 
     def test_redact_to_domain_redacts_real_values(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         inj.redact_to = ["matrix.example.com"]
-        result = inj.inject_ws_content(b"message with real-secret", "matrix.example.com")
-        assert result == b"message with {{KEY}}"
+        content, names = inj.inject_ws_content(b"message with real-secret", "matrix.example.com")
+        assert content == b"message with {{KEY}}"
+        assert names == ["KEY"]
 
     def test_redact_to_domain_placeholder_passes_through(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         inj.redact_to = ["matrix.example.com"]
-        result = inj.inject_ws_content(b"my key is {{KEY}}", "matrix.example.com")
-        assert result == b"my key is {{KEY}}"
+        content, names = inj.inject_ws_content(b"my key is {{KEY}}", "matrix.example.com")
+        assert content == b"my key is {{KEY}}"
+        assert names == []
 
 
 # ── WebSocket content redaction ─────────────────────────
@@ -525,36 +557,41 @@ class TestRedactWsContent:
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
-        result = inj.redact_ws_content(b'{"key": "real-secret"}')
-        assert result == b'{"key": "{{KEY}}"}'
+        content, names = inj.redact_ws_content(b'{"key": "real-secret"}')
+        assert content == b'{"key": "{{KEY}}"}'
+        assert names == ["KEY"]
 
     def test_longest_first_ordering(self):
         inj = _injector_with_rules([
             InjectionRule("SHORT", "{{SHORT}}", "secret", inject_to=[]),
             InjectionRule("LONG", "{{LONG}}", "secret-long-value", inject_to=[]),
         ])
-        result = inj.redact_ws_content(b"the value is secret-long-value here")
-        assert result == b"the value is {{LONG}} here"
+        content, names = inj.redact_ws_content(b"the value is secret-long-value here")
+        assert content == b"the value is {{LONG}} here"
+        assert "LONG" in names
 
     def test_noop_when_no_rules(self):
         inj = SecretInjector()
-        result = inj.redact_ws_content(b"clean body")
-        assert result == b"clean body"
+        content, names = inj.redact_ws_content(b"clean body")
+        assert content == b"clean body"
+        assert names == []
 
     def test_noop_when_no_secret_present(self):
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
-        result = inj.redact_ws_content(b"nothing to redact")
-        assert result == b"nothing to redact"
+        content, names = inj.redact_ws_content(b"nothing to redact")
+        assert content == b"nothing to redact"
+        assert names == []
 
     def test_redacts_regardless_of_inject_to(self):
         """Inbound redaction applies even when inject_to is empty."""
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=[]),
         ])
-        result = inj.redact_ws_content(b"leaked: real-secret")
-        assert result == b"leaked: {{KEY}}"
+        content, names = inj.redact_ws_content(b"leaked: real-secret")
+        assert content == b"leaked: {{KEY}}"
+        assert names == ["KEY"]
 
 
 # ── WebSocket injection policy check ───────────────────

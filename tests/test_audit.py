@@ -20,6 +20,8 @@ _ALLOWED = {
     "direction": "outbound",
     "method": "GET",
     "host": "api.anthropic.com",
+    "port": 443,
+    "path": "/v1/messages",
     "url": "https://api.anthropic.com/v1/messages",
     "decision": "allowed",
     "reason": "",
@@ -31,6 +33,8 @@ _BLOCKED = {
     "direction": "outbound",
     "method": "POST",
     "host": "evil.com",
+    "port": 443,
+    "path": "/exfil",
     "url": "https://evil.com/exfil",
     "decision": "blocked",
     "reason": "domain not in allowlist",
@@ -44,6 +48,8 @@ _FLAGGED = {
     "direction": "outbound",
     "method": "POST",
     "host": "api.anthropic.com",
+    "port": 443,
+    "path": "/v1/messages",
     "url": "https://api.anthropic.com/v1/messages",
     "decision": "flagged",
     "reason": "high entropy in body",
@@ -57,6 +63,8 @@ _SECRETS_BLOCKED = {
     "direction": "outbound",
     "method": "POST",
     "host": "httpbin.org",
+    "port": 443,
+    "path": "/post",
     "url": "https://httpbin.org/post",
     "decision": "blocked",
     "reason": "secret detected",
@@ -70,9 +78,26 @@ _INBOUND = {
     "direction": "inbound",
     "method": "GET",
     "host": "10.89.0.2",
+    "port": 8080,
+    "path": "/api/health",
     "url": "http://10.89.0.2:8080/api/health",
     "decision": "allowed",
     "reason": "",
+    "source": "10.0.0.5",
+    "inspectors": [],
+}
+
+_INJECTED = {
+    "ts": "2026-02-20T10:05:00+00:00",
+    "direction": "outbound",
+    "method": "POST",
+    "host": "api.anthropic.com",
+    "port": 443,
+    "path": "/v1/messages",
+    "url": "https://api.anthropic.com/v1/messages",
+    "decision": "allowed",
+    "reason": "",
+    "secrets_injected": ["ANTHROPIC_API_KEY"],
     "inspectors": [],
 }
 
@@ -246,6 +271,9 @@ class TestFormatting:
         assert "TIMESTAMP" in h
         assert "DIR" in h
         assert "METHOD" in h
+        assert "HOST" in h
+        assert "PORT" in h
+        assert "PATH" in h
         assert "DECISION" in h
 
     def test_table_row_no_color(self):
@@ -254,6 +282,8 @@ class TestFormatting:
         assert "blocked" in row
         assert "evil.com" in row
         assert "POST" in row
+        assert "443" in row
+        assert "/exfil" in row
 
     def test_table_row_direction_outbound(self):
         entry = AuditEntry.from_dict(_ALLOWED)
@@ -278,6 +308,28 @@ class TestFormatting:
         entry = AuditEntry.from_dict({**_BLOCKED, "reason": ""})
         row = format_table_row(entry, color=False)
         assert "domain" in row
+
+    def test_table_row_shows_source(self):
+        entry = AuditEntry.from_dict(_INBOUND)
+        row = format_table_row(entry, color=False)
+        assert "source 10.0.0.5" in row
+
+    def test_table_row_shows_injected_secrets(self):
+        entry = AuditEntry.from_dict(_INJECTED)
+        row = format_table_row(entry, color=False)
+        assert "[injected: ANTHROPIC_API_KEY]" in row
+
+    def test_table_row_shows_redacted_secrets(self):
+        d = {**_ALLOWED, "secrets_redacted": ["KEY1", "KEY2"]}
+        entry = AuditEntry.from_dict(d)
+        row = format_table_row(entry, color=False)
+        assert "[redacted: KEY1, KEY2]" in row
+
+    def test_table_row_shows_port_and_path(self):
+        entry = AuditEntry.from_dict(_INBOUND)
+        row = format_table_row(entry, color=False)
+        assert "8080" in row
+        assert "/api/health" in row
 
     def test_format_summary(self):
         entries = [AuditEntry.from_dict(_ALLOWED), AuditEntry.from_dict(_BLOCKED)]
@@ -364,3 +416,47 @@ class TestDirection:
         entries = [self._entry(d)]
         s = compute_summary(entries)
         assert s["directions"] == {}
+
+
+# ── TestNewFields ────────────────────────────────────────
+
+
+class TestNewFields:
+    def _entry(self, d: dict) -> AuditEntry:
+        return AuditEntry.from_dict(d)
+
+    def test_from_dict_populates_port_and_path(self):
+        entry = self._entry(_ALLOWED)
+        assert entry.port == 443
+        assert entry.path == "/v1/messages"
+
+    def test_from_dict_populates_source(self):
+        entry = self._entry(_INBOUND)
+        assert entry.source == "10.0.0.5"
+
+    def test_from_dict_populates_secrets_injected(self):
+        entry = self._entry(_INJECTED)
+        assert entry.secrets_injected == ["ANTHROPIC_API_KEY"]
+
+    def test_from_dict_populates_secrets_redacted(self):
+        d = {**_ALLOWED, "secrets_redacted": ["KEY1"]}
+        entry = self._entry(d)
+        assert entry.secrets_redacted == ["KEY1"]
+
+    def test_backwards_compat_missing_fields(self):
+        """Old entries without new fields get sensible defaults."""
+        d = {
+            "ts": "2026-02-20T10:00:00+00:00",
+            "direction": "outbound",
+            "method": "GET",
+            "host": "example.com",
+            "url": "https://example.com/",
+            "decision": "allowed",
+            "reason": "",
+        }
+        entry = self._entry(d)
+        assert entry.port == 0
+        assert entry.path == ""
+        assert entry.source == ""
+        assert entry.secrets_injected == []
+        assert entry.secrets_redacted == []

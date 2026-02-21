@@ -25,6 +25,11 @@ class AuditEntry:
     reason: str
     inspectors: list[dict]
     raw: dict
+    port: int
+    path: str
+    source: str
+    secrets_injected: list[str]
+    secrets_redacted: list[str]
 
     @classmethod
     def from_dict(cls, d: dict) -> AuditEntry:
@@ -38,6 +43,11 @@ class AuditEntry:
             reason=d.get("reason", ""),
             inspectors=d.get("inspectors", []),
             raw=d,
+            port=d.get("port", 0),
+            path=d.get("path", ""),
+            source=d.get("source", ""),
+            secrets_injected=d.get("secrets_injected", []),
+            secrets_redacted=d.get("secrets_redacted", []),
         )
 
 
@@ -158,7 +168,11 @@ _DECISION_COLORS = {
 
 def format_table_header() -> str:
     """Return column header for table output."""
-    return f"{'TIMESTAMP':<26} {'DIR':<4} {'METHOD':<8} {'HOST':<30} {'DECISION':<10} REASON"
+    return (
+        f"{'TIMESTAMP':<26} {'DIR':<4} {'METHOD':<8} "
+        f"{'HOST':<25} {'PORT':<5} {'PATH':<20} "
+        f"{'DECISION':<10} REASON"
+    )
 
 
 def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
@@ -166,7 +180,9 @@ def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
     ts = entry.ts[:25] if len(entry.ts) > 25 else entry.ts
     dir_label = {"inbound": "in", "outbound": "out"}.get(entry.direction, "")
     method = entry.method[:7]
-    host = entry.host[:29] if len(entry.host) > 29 else entry.host
+    host = entry.host[:24] if len(entry.host) > 24 else entry.host
+    port = str(entry.port) if entry.port else ""
+    path = entry.path[:19] if len(entry.path) > 19 else entry.path
     decision = entry.decision
     reason = entry.reason
 
@@ -182,13 +198,33 @@ def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
                 parts.append(r)
         reason = "; ".join(parts)
 
-    row = f"{ts:<26} {dir_label:<4} {method:<8} {host:<30} {decision:<10} {reason}"
+    # Append source IP for inbound requests
+    if entry.source:
+        reason = f"source {entry.source}; {reason}" if reason else f"source {entry.source}"
+
+    # Append secret operation indicators
+    if entry.secrets_injected:
+        tag = f"[injected: {', '.join(entry.secrets_injected)}]"
+        reason = f"{reason}; {tag}" if reason else tag
+    if entry.secrets_redacted:
+        tag = f"[redacted: {', '.join(entry.secrets_redacted)}]"
+        reason = f"{reason}; {tag}" if reason else tag
+
+    row = (
+        f"{ts:<26} {dir_label:<4} {method:<8} "
+        f"{host:<25} {port:<5} {path:<20} "
+        f"{decision:<10} {reason}"
+    )
 
     if color and decision in _DECISION_COLORS:
         from click import style
         # Color just the decision column
         colored_decision = style(f"{decision:<10}", fg=_DECISION_COLORS[decision])
-        row = f"{ts:<26} {dir_label:<4} {method:<8} {host:<30} {colored_decision} {reason}"
+        row = (
+            f"{ts:<26} {dir_label:<4} {method:<8} "
+            f"{host:<25} {port:<5} {path:<20} "
+            f"{colored_decision} {reason}"
+        )
 
     return row
 

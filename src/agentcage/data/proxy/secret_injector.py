@@ -142,7 +142,7 @@ class SecretInjector:
                 )
         return None
 
-    def inject_request(self, flow: http.HTTPFlow) -> None:
+    def inject_request(self, flow: http.HTTPFlow) -> list[str]:
         """Replace placeholders with real values in the outbound request.
 
         If the host matches ``redact_to``, outbound redaction is performed
@@ -150,17 +150,20 @@ class SecretInjector:
 
         Rules whose ``inject_to`` list does not match the request host are
         skipped, leaving the placeholder in place.
+
+        Returns a list of secret names that were injected (or redacted for
+        ``redact_to`` domains).
         """
         if not self.rules:
-            return
+            return []
 
         host = flow.request.host.lower()
 
         # Redact-to domains: replace real values with placeholders
         if self.redact_to and self._domain_matches(host, self.redact_to):
-            self._redact_request(flow)
-            return
+            return self._redact_request(flow)
 
+        names: list[str] = []
         for rule in self.rules:
             if not self._find_placeholder(flow, rule):
                 continue
@@ -188,69 +191,96 @@ class SecretInjector:
                     ph_bytes, real_bytes
                 )
 
-    def _redact_request(self, flow: http.HTTPFlow) -> None:
+            names.append(rule.name)
+        return names
+
+    def _redact_request(self, flow: http.HTTPFlow) -> list[str]:
         """Replace real secret values with placeholders in the outbound request.
 
         Used for ``redact_to`` domains — the inverse of injection.
         Processes rules sorted by real-value length descending to prevent
         partial matches when one value is a substring of another.
+
+        Returns a list of secret names that were redacted.
         """
         sorted_rules = sorted(
             self.rules, key=lambda r: len(r.real_value), reverse=True
         )
 
+        names: list[str] = []
         for rule in sorted_rules:
             real = rule.real_value
             real_bytes = real.encode()
             ph = rule.placeholder
             ph_bytes = ph.encode()
 
+            found = False
+
             # Redact URL
-            flow.request.url = flow.request.url.replace(real, ph)
+            if real in flow.request.url:
+                flow.request.url = flow.request.url.replace(real, ph)
+                found = True
 
             # Redact headers
             for k in list(flow.request.headers.keys()):
                 v = flow.request.headers[k]
                 if real in v:
                     flow.request.headers[k] = v.replace(real, ph)
+                    found = True
 
             # Redact body
             if flow.request.content and real_bytes in flow.request.content:
                 flow.request.content = flow.request.content.replace(
                     real_bytes, ph_bytes
                 )
+                found = True
 
-    def redact_response(self, flow: http.HTTPFlow) -> None:
+            if found:
+                names.append(rule.name)
+        return names
+
+    def redact_response(self, flow: http.HTTPFlow) -> list[str]:
         """Replace real secret values with placeholders in the response.
 
         Processes rules sorted by real-value length descending to prevent
         partial matches when one value is a substring of another.
+
+        Returns a list of secret names that were redacted.
         """
         if not self.rules or not flow.response:
-            return
+            return []
 
         # Sort longest real value first to avoid partial-match issues
         sorted_rules = sorted(
             self.rules, key=lambda r: len(r.real_value), reverse=True
         )
 
+        names: list[str] = []
         for rule in sorted_rules:
             real = rule.real_value
             real_bytes = real.encode()
             ph = rule.placeholder
             ph_bytes = ph.encode()
 
+            found = False
+
             # Redact response headers
             for k in list(flow.response.headers.keys()):
                 v = flow.response.headers[k]
                 if real in v:
                     flow.response.headers[k] = v.replace(real, ph)
+                    found = True
 
             # Redact response body
             if flow.response.content and real_bytes in flow.response.content:
                 flow.response.content = flow.response.content.replace(
                     real_bytes, ph_bytes
                 )
+                found = True
+
+            if found:
+                names.append(rule.name)
+        return names
 
     # ── WebSocket (raw bytes) methods ───────────────────────
 
@@ -299,20 +329,25 @@ class SecretInjector:
                 )
         return None
 
-    def inject_ws_content(self, content: bytes, host: str) -> bytes:
+    def inject_ws_content(
+        self, content: bytes, host: str
+    ) -> tuple[bytes, list[str]]:
         """Replace placeholders with real values in outbound WebSocket content.
 
         If the host matches ``redact_to``, outbound redaction is performed
         instead (real values → placeholders).
+
+        Returns ``(content, names)`` where *names* lists the secrets acted on.
         """
         if not self.rules:
-            return content
+            return content, []
 
         host = host.lower()
 
         if self.redact_to and self._domain_matches(host, self.redact_to):
             return self._redact_ws_content(content)
 
+        names: list[str] = []
         for rule in self.rules:
             ph_bytes = rule.placeholder.encode()
             if ph_bytes not in content:
@@ -320,30 +355,37 @@ class SecretInjector:
             if not rule.inject_to or not self._domain_matches(host, rule.inject_to):
                 continue
             content = content.replace(ph_bytes, rule.real_value.encode())
+            names.append(rule.name)
 
-        return content
+        return content, names
 
-    def redact_ws_content(self, content: bytes) -> bytes:
+    def redact_ws_content(self, content: bytes) -> tuple[bytes, list[str]]:
         """Replace real secret values with placeholders in WebSocket content.
 
         Processes rules sorted by real-value length descending to prevent
         partial matches when one value is a substring of another.
+
+        Returns ``(content, names)`` where *names* lists the secrets redacted.
         """
         if not self.rules:
-            return content
+            return content, []
 
         sorted_rules = sorted(
             self.rules, key=lambda r: len(r.real_value), reverse=True
         )
 
+        names: list[str] = []
         for rule in sorted_rules:
             real_bytes = rule.real_value.encode()
             if real_bytes in content:
                 content = content.replace(real_bytes, rule.placeholder.encode())
+                names.append(rule.name)
 
-        return content
+        return content, names
 
-    def _redact_ws_content(self, content: bytes) -> bytes:
+    def _redact_ws_content(
+        self, content: bytes
+    ) -> tuple[bytes, list[str]]:
         """Private helper — redact real values in outbound WS content.
 
         Used by ``inject_ws_content`` for ``redact_to`` domains.
