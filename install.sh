@@ -411,6 +411,8 @@ main() {
     info "agentcage is ready!"
     info ""
     info "Get started:"
+    info "  agentcage init my-cage             # scaffold a new config"
+    info "  agentcage init --list-presets       # show available presets"
     info "  agentcage --help"
     info ""
     info "Docs: https://github.com/agentcage/agentcage"
