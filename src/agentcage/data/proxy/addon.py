@@ -231,6 +231,13 @@ class Agentcage:
             getattr(flow.client_conn, "proxy_mode", None), ReverseMode
         )
 
+        if is_reverse:
+            # Rewrite Origin so the cage sees requests as "local"
+            # and origin-checking middleware (e.g. OpenClaw) doesn't reject them.
+            upstream = flow.request.host_header or f"{flow.request.host}:{flow.request.port}"
+            if flow.request.headers.get("origin"):
+                flow.request.headers["origin"] = f"http://{upstream}"
+
         for inspector in self.inspectors:
             if is_reverse and isinstance(inspector, DomainInspector):
                 continue
