@@ -246,12 +246,23 @@ class Agentcage:
             results.append(inject_result)
             ctx_obj.prior_results.append(inject_result)
 
+        client_ip = ""
         if is_reverse:
-            # Rewrite Origin so the cage sees requests as "local"
-            # and origin-checking middleware (e.g. OpenClaw) doesn't reject them.
-            upstream = flow.request.host_header or f"{flow.request.host}:{flow.request.port}"
+            # Standard forwarding headers so the upstream app can identify
+            # the real client (e.g. OpenClaw gateway.trustedProxies).
+            try:
+                client_ip = flow.client_conn.address[0]
+            except (AttributeError, IndexError, TypeError):
+                pass
+            if client_ip:
+                flow.request.headers["x-forwarded-for"] = client_ip
+            flow.request.headers["x-forwarded-proto"] = "http"
+
+            # Rewrite Origin to match the (now-preserved) Host header so
+            # origin-checking middleware doesn't see a mismatch.
+            host_hdr = flow.request.host_header or f"{flow.request.host}:{flow.request.port}"
             if flow.request.headers.get("origin"):
-                flow.request.headers["origin"] = f"http://{upstream}"
+                flow.request.headers["origin"] = f"http://{host_hdr}"
 
         for inspector in self.inspectors:
             if is_reverse and isinstance(inspector, DomainInspector):
@@ -263,13 +274,8 @@ class Agentcage:
                 if result.action == "block":
                     break  # short-circuit on hard block
 
-        # Source IP for inbound requests
-        source = ""
-        if is_reverse:
-            try:
-                source = flow.client_conn.address[0]
-            except (AttributeError, IndexError, TypeError):
-                pass
+        # Source IP for inbound requests (extracted above for X-Forwarded-For)
+        source = client_ip
 
         blocked = [r for r in results if r.action == "block"]
         if blocked:

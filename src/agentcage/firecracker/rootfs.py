@@ -157,7 +157,7 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
             else:
                 continue
             proxy_cmd += f" --mode reverse:http://10.89.0.2:{container_port}@0.0.0.0:{container_port}"
-        proxy_cmd += " --set connection_strategy=lazy"
+        proxy_cmd += " --set connection_strategy=lazy --set keep_host_header=true"
     else:
         proxy_cmd = (
             "mitmdump -s /app/addon.py --listen-port 8080"

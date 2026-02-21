@@ -175,6 +175,32 @@ agentcage generate -c config.yaml
 agentcage deploy ./openclaw-cage
 ```
 
+## Reverse proxy & device pairing
+
+agentcage runs a reverse proxy (mitmproxy) in front of the cage container. When you connect a browser to OpenClaw through this proxy, there are two things to be aware of:
+
+**Trusted proxies** — The proxy forwards `X-Forwarded-For` headers so OpenClaw can identify the real client IP. To make OpenClaw trust these headers, create a config file in the persistent state volume:
+
+```bash
+podman exec <name>-cage sh -c 'cat > /home/node/.openclaw/openclaw.json << EOF
+{ "gateway": { "trustedProxies": ["10.89.0.11"] } }
+EOF'
+```
+
+Then restart the cage (`systemctl --user restart <name>-cage`).
+
+**Device pairing** — The first browser connection from a new device triggers a one-time pairing approval. To approve, check the cage logs for the pairing request and approve it:
+
+```bash
+# Find the pairing request ID in the logs
+journalctl --user -u <name>-cage -f
+
+# Approve the device
+podman exec <name>-cage openclaw pairing approve <request-id>
+```
+
+Subsequent connections from the same browser are automatic.
+
 ## Troubleshooting
 
 **Container fails to start / times out**: OpenClaw's Node.js gateway can take over 60 seconds to initialize. The example config sets `timeout_start_sec: 120` to accommodate this. Check logs with `journalctl --user -u openclaw-cage -f`.

@@ -35,7 +35,7 @@ container:
     - "/home/node/.npm:rw,size=128M"
     - "/scratch:rw,exec,nosuid,size=2G"
 
-  # Gateway web UI — bind to localhost only
+  # Gateway web UI — published on the host via reverse proxy
   ports:
     - "0.0.0.0:18789:18789"
 
