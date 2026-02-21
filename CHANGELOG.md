@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] - 2026-02-21
+
+### Fixed
+- Reverse proxy now preserves the browser's original `Host` header (`keep_host_header=true`), eliminating the need to whitelist internal container IPs in OpenClaw
+- Reverse proxy now sends `X-Forwarded-For` and `X-Forwarded-Proto` headers so upstream apps (e.g. OpenClaw `gateway.trustedProxies`) can identify real client IPs
+- Removed unused `OPENCLAW_GATEWAY_TOKEN` from OpenClaw preset, CLI output, and docs
+
+### Added
+- Documentation for reverse proxy trusted proxies configuration and device pairing workflow (`docs/openclaw.md`)
+
 ## [0.3.9] - 2026-02-21
 
 ### Added
@@ -144,6 +154,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.3.10]: https://github.com/agentcage/agentcage/releases/tag/v0.3.10
+[0.3.9]: https://github.com/agentcage/agentcage/releases/tag/v0.3.9
+[0.3.8]: https://github.com/agentcage/agentcage/releases/tag/v0.3.8
+[0.3.7]: https://github.com/agentcage/agentcage/releases/tag/v0.3.7
+[0.3.6]: https://github.com/agentcage/agentcage/releases/tag/v0.3.6
 [0.3.5]: https://github.com/agentcage/agentcage/releases/tag/v0.3.5
 [0.3.4]: https://github.com/agentcage/agentcage/releases/tag/v0.3.4
 [0.3.3]: https://github.com/agentcage/agentcage/releases/tag/v0.3.3
