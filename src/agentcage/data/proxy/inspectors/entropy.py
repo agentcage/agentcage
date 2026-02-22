@@ -9,6 +9,23 @@ from inspectors.base import Inspector, InspectionContext, InspectionResult
 from inspectors.util import shannon_entropy
 
 
+_DEFAULT_HOST_URL_PARAM_ALLOWLIST: dict[str, list[str]] = {
+    # CloudFront (used by HuggingFace, many CDNs)
+    "cloudfront.net": ["Policy", "Signature", "Key-Pair-Id"],
+    "xethub.hf.co": [
+        "Policy", "Signature", "Key-Pair-Id",
+        # xethub serves S3-presigned URLs from its own domain
+        "X-Amz-Signature", "X-Amz-Credential",
+    ],
+    # S3 presigned URLs
+    "amazonaws.com": ["X-Amz-Signature", "X-Amz-Credential"],
+    # Google Cloud Storage
+    "storage.googleapis.com": ["X-Goog-Signature"],
+    # Azure Blob SAS
+    "blob.core.windows.net": ["sig", "se", "sp"],
+}
+
+
 class EntropyInspector(Inspector):
     """Flags or blocks requests with high-entropy bodies.
 
@@ -46,6 +63,14 @@ class EntropyInspector(Inspector):
                                 achievable entropy. Default 5.5.
         url_min_value_bytes (int)  Minimum query param value length to check.
                                 Default 64.
+        host_url_param_allowlist (dict[str, list[str]])
+                                Per-host URL parameter allowlist. Keys are
+                                hostnames (subdomain matching supported),
+                                values are lists of query parameter names
+                                that are allowed to have high entropy on
+                                that host. Built-in defaults cover common
+                                CDN providers (CloudFront, S3, GCS, Azure).
+                                User config is merged on top of defaults.
     """
 
     name = "entropy"
@@ -66,6 +91,13 @@ class EntropyInspector(Inspector):
         self.check_url_path: bool = config.get("check_url_path", True)
         self.url_threshold: float = config.get("url_threshold", 5.5)
         self.url_min_value_bytes: int = config.get("url_min_value_bytes", 64)
+        # Merge user host_url_param_allowlist on top of built-in defaults
+        merged: dict[str, list[str]] = dict(_DEFAULT_HOST_URL_PARAM_ALLOWLIST)
+        merged.update(config.get("host_url_param_allowlist", {}))
+        self.host_url_param_allowlist: dict[str, set[str]] = {
+            h.lower(): {p.lower() for p in params}
+            for h, params in merged.items()
+        }
 
     def inspect_request(
         self, ctx: InspectionContext
@@ -125,7 +157,15 @@ class EntropyInspector(Inspector):
         parsed = urlparse(ctx.url)
         if not parsed.query:
             return None
+        # Build set of param names allowed for this host
+        allowed_params: set[str] = set()
+        host = ctx.host.lower()
+        for h, params in self.host_url_param_allowlist.items():
+            if host == h or host.endswith("." + h):
+                allowed_params |= params
         for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
+            if key.lower() in allowed_params:
+                continue
             for val in values:
                 val_bytes = val.encode("utf-8", errors="replace")
                 if len(val_bytes) < self.url_min_value_bytes:

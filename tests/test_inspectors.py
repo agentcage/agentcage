@@ -788,6 +788,81 @@ class TestEntropyInspector:
         )
         assert e.inspect_request(ctx) is None
 
+    # ── host_url_param_allowlist tests ──
+
+    def test_url_param_host_allowlist_skips_on_matching_host(self):
+        """High-entropy 'Policy' param on xethub.hf.co should be allowed (default allowlist)."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+        })
+        # Simulated CloudFront Policy param (base64-encoded JSON, ~5.5-6.0 entropy)
+        import base64
+        policy_val = base64.b64encode(
+            b'{"Statement":[{"Resource":"https://cdn.example.com/*",'
+            b'"Condition":{"DateLessThan":{"AWS:EpochTime":1700000000}}}]}'
+        ).decode()
+        ctx = _ctx(
+            url=(
+                f"https://transfer.xethub.hf.co/some/model?Policy={policy_val}"
+                f"&Signature=aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkL"
+                f"&Key-Pair-Id=APKAEIBAERJR2EXAMPLE"
+            ),
+            host="transfer.xethub.hf.co",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        assert e.inspect_request(ctx) is None
+
+    def test_url_param_host_allowlist_blocks_on_different_host(self):
+        """Same high-entropy 'Policy' param on evil.com should be blocked."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+        })
+        import base64
+        policy_val = base64.b64encode(
+            b'{"Statement":[{"Resource":"https://cdn.example.com/*",'
+            b'"Condition":{"DateLessThan":{"AWS:EpochTime":1700000000}}}]}'
+        ).decode()
+        ctx = _ctx(
+            url=f"https://evil.com/exfil?Policy={policy_val}",
+            host="evil.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        r = e.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert "Policy" in r.reason
+
+    def test_url_param_host_allowlist_custom_config(self):
+        """User-provided host_url_param_allowlist merges with defaults."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+            "host_url_param_allowlist": {
+                "custom-cdn.example.com": ["token", "sig"],
+            },
+        })
+        # Default entry still present
+        assert "policy" in e.host_url_param_allowlist["xethub.hf.co"]
+        # Custom entry merged in
+        assert "token" in e.host_url_param_allowlist["custom-cdn.example.com"]
+        assert "sig" in e.host_url_param_allowlist["custom-cdn.example.com"]
+
 
 # ── ContentTypeInspector ─────────────────────────────────
 
