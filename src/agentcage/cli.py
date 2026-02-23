@@ -32,10 +32,40 @@ from agentcage import state, systemd
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
+class AliasGroup(click.Group):
+    """Click group with command aliases."""
+
+    def __init__(self, *args, aliases=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._aliases = aliases or {}
+
+    def get_command(self, ctx, cmd_name):
+        return super().get_command(ctx, self._aliases.get(cmd_name, cmd_name))
+
+    def format_help(self, ctx, formatter):
+        super().format_help(ctx, formatter)
+        if self._aliases:
+            formatter.write_paragraph()
+            formatter.write_text("Aliases:")
+            with formatter.indentation():
+                for alias, target in sorted(self._aliases.items()):
+                    formatter.write_text(f"{alias} → {target}")
+
+
 @click.group()
 @click.version_option(version=version("agentcage"), prog_name="agentcage")
 def main():
     """Defense-in-depth proxy sandbox for AI agents."""
+
+
+# ── completions ──────────────────────────────────────────
+
+
+@main.command("completions")
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completions(shell: str):
+    """Print shell completion script."""
+    click.echo(f'eval "$(_AGENTCAGE_COMPLETE={shell}_source agentcage)"')
 
 
 # ── init ─────────────────────────────────────────────────
@@ -232,7 +262,7 @@ def _restart_cage(name: str, cfg=None):
 # ── cage group ────────────────────────────────────────────
 
 
-@main.group()
+@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list"})
 def cage():
     """Manage cages."""
 
@@ -1049,7 +1079,7 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
 # ── secret group ─────────────────────────────────────────
 
 
-@main.group()
+@main.group(cls=AliasGroup, aliases={"ls": "list"})
 def secret():
     """Manage cage-scoped secrets."""
 
@@ -1160,7 +1190,7 @@ def secret_rm(cage_name: str, key: str):
 # ── domain group ─────────────────────────────────────────
 
 
-@main.group()
+@main.group(cls=AliasGroup, aliases={"ls": "list"})
 def domain():
     """Manage cage domain allowlists."""
 

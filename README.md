@@ -114,10 +114,11 @@ agentcage cage destroy myapp
 | Command / Group | Commands |
 |---|---|
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har` |
-| `secret` | `set`, `list`, `rm` |
-| `domain` | `list`, `add`, `rm` |
+| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`) |
+| `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
+| `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `firecracker` | `setup` |
+| `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |
 
 See [CLI Reference](docs/cli.md) for full documentation of all commands and options.
 

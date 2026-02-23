@@ -56,6 +56,8 @@ agentcage init --list-presets
 | `cage audit NAME [OPTIONS]` | Query, filter, and summarize proxy audit logs |
 | `cage har NAME [OPTIONS]` | Export captured HTTP traffic as HAR 1.2 JSON |
 
+**Aliases:** `ls` → `list`, `ps` → `list`, `status` → `list`, `rm` → `destroy`
+
 ## `secret` -- Manage cage-scoped secrets
 
 | Command | Description |
@@ -64,6 +66,8 @@ agentcage init --list-presets
 | `secret set NAME KEY` | Set a secret (prompts for value or reads stdin) |
 | `secret rm NAME KEY` | Remove a secret |
 
+**Aliases:** `ls` → `list`
+
 ## `domain` -- Manage cage domain allowlists
 
 | Command | Description |
@@ -71,6 +75,8 @@ agentcage init --list-presets
 | `domain list NAME` | List domains and filtering mode for a cage |
 | `domain add NAME DOMAIN` | Add a domain to a cage's allowlist (auto-reloads if running) |
 | `domain rm NAME DOMAIN` | Remove a domain from a cage's allowlist (auto-reloads if running) |
+
+**Aliases:** `ls` → `list`
 
 ---
 
@@ -456,4 +462,27 @@ sudo agentcage firecracker setup
 # All prerequisites met.
 #
 # Network bridge (agentcage-br0) already exists.
+```
+
+---
+
+## `completions` -- Shell completion
+
+```
+agentcage completions <shell>
+```
+
+Prints an `eval` snippet that activates tab completion for agentcage. Supported shells: `bash`, `zsh`, `fish`.
+
+Add the output to your shell profile to enable completions permanently:
+
+```bash
+# Bash (~/.bashrc)
+eval "$(_AGENTCAGE_COMPLETE=bash_source agentcage)"
+
+# Zsh (~/.zshrc)
+eval "$(_AGENTCAGE_COMPLETE=zsh_source agentcage)"
+
+# Fish (~/.config/fish/config.fish)
+eval "$(_AGENTCAGE_COMPLETE=fish_source agentcage)"
 ```
