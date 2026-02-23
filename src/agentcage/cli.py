@@ -579,6 +579,40 @@ def _verify_firecracker(name: str, _pass, _fail):
     click.echo("  [INFO] Use 'agentcage cage logs {name}' to verify internal health")
 
 
+@cage.command("edit")
+@click.argument("name")
+def cage_edit(name: str):
+    """Open the stored cage config in $EDITOR."""
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    config_path = state.stored_config_path(name)
+    click.edit(filename=config_path, extension='.yaml')
+
+    try:
+        cfg = load_config(config_path)
+        warnings = validate_config(cfg)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    for w in warnings:
+        click.echo(f"warning: {w}", err=True)
+
+    state.save_proxy_config(name)
+
+    reloaded = False
+    backend = get_backend(cfg)
+    if backend.is_running(name, "cage"):
+        _restart_cage(name, cfg)
+        reloaded = True
+
+    msg = f"Config updated for cage '{name}'."
+    if reloaded:
+        msg += " Cage reloaded."
+    click.echo(msg)
+
+
 @cage.command("reload")
 @click.argument("name")
 def cage_reload(name: str):

@@ -114,7 +114,7 @@ agentcage cage destroy myapp
 | Command / Group | Commands |
 |---|---|
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har` |
+| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har` |
 | `secret` | `set`, `list`, `rm` |
 | `domain` | `list`, `add`, `rm` |
 | `firecracker` | `setup` |

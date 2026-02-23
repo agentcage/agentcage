@@ -50,6 +50,7 @@ agentcage init --list-presets
 | `cage list` | List all cages with status |
 | `cage destroy NAME [-y]` | Stop containers, remove quadlets, state, and scoped secrets |
 | `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
+| `cage edit NAME` | Open stored config in `$EDITOR`, validate, and reload if running |
 | `cage reload NAME` | Restart containers without rebuilding images |
 | `cage logs NAME [OPTIONS]` | Follow journalctl logs for a cage |
 | `cage audit NAME [OPTIONS]` | Query, filter, and summarize proxy audit logs |
@@ -187,6 +188,24 @@ Example output:
   [PASS] Podman is running rootless
 
 === Results: 8 passed, 0 failed, 0 warnings ===
+```
+
+## `cage edit`
+
+```
+agentcage cage edit <name>
+```
+
+Opens the stored cage config (`~/.config/agentcage/cages/<name>/cage.yaml`) in `$EDITOR`. After saving, the config is validated and the proxy config is synced. If the cage is running, it is automatically reloaded.
+
+For changes that require an image rebuild (e.g. `container.image`), use `cage update` instead.
+
+**Example:**
+
+```
+agentcage cage edit myapp
+# → opens $EDITOR with the cage config
+# → validates on save, reloads if running
 ```
 
 ## `cage reload`
