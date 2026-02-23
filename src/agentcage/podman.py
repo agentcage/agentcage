@@ -89,6 +89,32 @@ class Podman:
                            capture_output=True)
         return r.returncode == 0
 
+    def volume_exists(self, name: str) -> bool:
+        r = subprocess.run([*_podman_cmd(), "volume", "exists", name])
+        return r.returncode == 0
+
+    def volume_export(self, name: str, output_path: str) -> None:
+        """Export a Podman volume to a tar file."""
+        with open(output_path, "wb") as f:
+            subprocess.run(
+                [*_podman_cmd(), "volume", "export", name],
+                stdout=f, check=True,
+            )
+
+    def volume_create(self, name: str) -> None:
+        subprocess.run(
+            [*_podman_cmd(), "volume", "create", name],
+            capture_output=True, check=True,
+        )
+
+    def volume_import(self, name: str, tar_path: str) -> None:
+        """Import a tar archive into a Podman volume."""
+        with open(tar_path, "rb") as f:
+            subprocess.run(
+                [*_podman_cmd(), "volume", "import", name, "-"],
+                stdin=f, check=True,
+            )
+
     def info(self) -> dict:
         r = subprocess.run(
             [*_podman_cmd(), "info", "--format", "json"],

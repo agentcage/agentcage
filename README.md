@@ -107,6 +107,10 @@ agentcage cage update myapp -c cage.yaml
 # Restart without rebuild
 agentcage cage reload myapp
 
+# Backup and restore
+agentcage cage backup myapp --include-secrets -o backup.tar.gz
+agentcage cage restore backup.tar.gz --name myapp-clone
+
 # Tear it all down
 agentcage cage destroy myapp
 ```
@@ -114,7 +118,7 @@ agentcage cage destroy myapp
 | Command / Group | Commands |
 |---|---|
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`) |
+| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `firecracker` | `setup` |
