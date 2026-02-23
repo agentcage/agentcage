@@ -96,6 +96,8 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     firecracker: FirecrackerConfig = field(default_factory=FirecrackerConfig)
+    help: str = ""
+    exec_aliases: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _is_loopback(addr: str) -> bool:
@@ -271,6 +273,15 @@ def load_config(path: str) -> Config:
     cap.domains = list(cap_raw.get("domains") or [])
     cap.exclude_domains = list(cap_raw.get("exclude_domains") or [])
     cfg.capture = cap
+
+    # Help text
+    cfg.help = str(raw.get("help", "") or "")
+
+    # Exec aliases
+    aliases_raw = raw.get("exec_aliases") or {}
+    cfg.exec_aliases = {
+        k: list(v) for k, v in aliases_raw.items() if isinstance(v, list)
+    }
 
     return cfg
 

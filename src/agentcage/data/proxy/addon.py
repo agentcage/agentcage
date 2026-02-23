@@ -468,7 +468,14 @@ class Agentcage:
 
         results: list[InspectionResult] = []
 
-        if msg.from_client:
+        # Reverse proxy flows invert direction: from_client means
+        # browser→proxy→cage (inbound), not cage→remote (outbound).
+        is_reverse = isinstance(
+            getattr(flow.client_conn, "proxy_mode", None), ReverseMode
+        )
+        is_outbound = msg.from_client if not is_reverse else not msg.from_client
+
+        if is_outbound:
             # ── Outbound (cage → remote) ──────────────────
             inject_result = self.injector.check_ws_injection_policy(
                 body_bytes, host
@@ -478,6 +485,8 @@ class Agentcage:
                 ws_ctx.prior_results.append(inject_result)
 
             for inspector in self.inspectors:
+                if is_reverse and isinstance(inspector, DomainInspector):
+                    continue
                 result = inspector.inspect_request(ws_ctx)
                 if result is not None:
                     results.append(result)
@@ -506,6 +515,8 @@ class Agentcage:
         else:
             # ── Inbound (remote → cage) ───────────────────
             for inspector in self.inspectors:
+                if is_reverse and isinstance(inspector, DomainInspector):
+                    continue
                 result = inspector.inspect_response(ws_ctx)
                 if result is not None:
                     results.append(result)

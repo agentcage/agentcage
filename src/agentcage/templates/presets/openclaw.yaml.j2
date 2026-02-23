@@ -21,7 +21,10 @@ firecracker:
 
 container:
   image: "ghcr.io/openclaw/openclaw:latest"
-  command: ["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan", "--auth", "password"]
+  command:
+    - "sh"
+    - "-c"
+    - "test -f /home/node/.openclaw/openclaw.json || printf '{\"gateway\": {\"trustedProxies\": [\"10.89.0.11\"]} }' > /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
 
   # Podman named volumes for persistent state
   named_volumes:
@@ -150,3 +153,23 @@ logging:
 inspectors:
   - name: entropy
   - name: content-type
+
+# ── Exec aliases ──
+# Shorthand for 'agentcage cage exec' commands
+exec_aliases:
+  openclaw: ["node", "openclaw.mjs"]
+
+# ── Help ──
+# Shown after 'cage create' and 'cage update'
+help: |
+  Open http://localhost:18789 in your browser.
+
+  On first connection, approve the device pairing:
+    agentcage cage exec {{ name }} -- openclaw devices list
+    agentcage cage exec {{ name }} -- openclaw devices approve <request-id>
+
+  Common commands:
+    agentcage cage exec {{ name }} -- openclaw health
+    agentcage cage exec {{ name }} -- openclaw status
+    agentcage cage logs {{ name }}
+    agentcage cage logs {{ name }} -s proxy

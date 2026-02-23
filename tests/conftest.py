@@ -73,7 +73,10 @@ def openclaw_yaml(tmp_path):
         name: openclaw
         container:
           image: "ghcr.io/openclaw/openclaw:latest"
-          command: ["node", "openclaw.mjs", "gateway", "--allow-unconfigured", "--bind", "lan", "--auth", "password"]
+          command:
+            - "sh"
+            - "-c"
+            - "test -f /home/node/.openclaw/openclaw.json || printf '{} ' > /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
           volumes:
             - "${HOME}/openclaw-workspace:/workspace:rw"
           named_volumes:
@@ -102,5 +105,9 @@ def openclaw_yaml(tmp_path):
             - anthropic.com
             - npmjs.org
             - github.com
+        exec_aliases:
+          openclaw: ["node", "openclaw.mjs"]
+        help: |
+          Open http://localhost:18789 in your browser.
     """))
     return str(p)

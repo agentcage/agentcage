@@ -136,7 +136,7 @@ class TestLoadConfigOpenclaw:
         cfg = load_config(openclaw_yaml)
         assert cfg.name == "openclaw"
         assert cfg.container.image == "ghcr.io/openclaw/openclaw:latest"
-        assert len(cfg.container.command) == 8
+        assert len(cfg.container.command) == 3  # ["sh", "-c", "..."]
         assert cfg.container.memory == "4g"
         assert cfg.container.cpus == "2.0"
         assert len(cfg.secret_injection) == 1

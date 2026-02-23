@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
@@ -13,14 +14,36 @@ from agentcage.config import Config
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+# Characters that require quoting in systemd Exec= lines.
+_SYSTEMD_NEEDS_QUOTE = re.compile(r'[\s"\\$%]')
+
+
+def _systemd_exec_join(args: list[str]) -> str:
+    """Join a command list into a systemd ``Exec=`` value.
+
+    Arguments containing spaces or special characters are wrapped in
+    double-quotes with inner ``"`` and ``\\`` escaped per the systemd
+    exec parsing rules.
+    """
+    parts: list[str] = []
+    for arg in args:
+        if _SYSTEMD_NEEDS_QUOTE.search(arg):
+            escaped = arg.replace("\\", "\\\\").replace('"', '\\"')
+            parts.append(f'"{escaped}"')
+        else:
+            parts.append(arg)
+    return " ".join(parts)
+
 
 def _make_env() -> SandboxedEnvironment:
-    return SandboxedEnvironment(
+    env = SandboxedEnvironment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
         keep_trailing_newline=True,
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    env.filters["systemd_exec"] = _systemd_exec_join
+    return env
 
 
 def generate_quadlets(

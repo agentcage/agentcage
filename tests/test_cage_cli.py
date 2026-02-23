@@ -628,3 +628,82 @@ class TestCageAudit:
         ])
         assert result.exit_code != 0
         assert "incompatible" in result.output
+
+
+class TestCageExec:
+    @patch("agentcage.cli.state")
+    def test_exec_nonexistent(self, mock_state):
+        mock_state.deployment_exists.return_value = False
+        result = _runner().invoke(main, ["cage", "exec", "nope", "--", "ls"])
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.state")
+    def test_exec_simple_command(self, mock_state, mock_run):
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        cfg.exec_aliases = {}
+        mock_state.load_deployment_config.return_value = cfg
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = _runner().invoke(main, ["cage", "exec", "myapp", "--", "ls", "-la"])
+        mock_run.assert_called_once_with(["podman", "exec", "myapp-cage", "ls", "-la"])
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.state")
+    def test_exec_alias_expansion(self, mock_state, mock_run):
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        cfg.exec_aliases = {"openclaw": ["node", "openclaw.mjs"]}
+        mock_state.load_deployment_config.return_value = cfg
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = _runner().invoke(main, [
+            "cage", "exec", "myapp", "--", "openclaw", "devices", "list",
+        ])
+        mock_run.assert_called_once_with(
+            ["podman", "exec", "myapp-cage", "node", "openclaw.mjs", "devices", "list"]
+        )
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.state")
+    def test_exec_custom_service(self, mock_state, mock_run):
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        cfg.exec_aliases = {}
+        mock_state.load_deployment_config.return_value = cfg
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = _runner().invoke(main, [
+            "cage", "exec", "myapp", "-s", "proxy", "--", "ls",
+        ])
+        mock_run.assert_called_once_with(["podman", "exec", "myapp-proxy", "ls"])
+
+    @patch("agentcage.cli.state")
+    def test_exec_firecracker_rejected(self, mock_state):
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("firecracker")
+        cfg.exec_aliases = {}
+        mock_state.load_deployment_config.return_value = cfg
+
+        result = _runner().invoke(main, ["cage", "exec", "myvm", "--", "ls"])
+        assert result.exit_code != 0
+        assert "not supported" in result.output
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.state")
+    def test_exec_no_alias_match(self, mock_state, mock_run):
+        """When command doesn't match any alias, it passes through unchanged."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        cfg.exec_aliases = {"openclaw": ["node", "openclaw.mjs"]}
+        mock_state.load_deployment_config.return_value = cfg
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = _runner().invoke(main, [
+            "cage", "exec", "myapp", "--", "cat", "/etc/hostname",
+        ])
+        mock_run.assert_called_once_with(
+            ["podman", "exec", "myapp-cage", "cat", "/etc/hostname"]
+        )

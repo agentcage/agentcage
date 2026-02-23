@@ -65,7 +65,7 @@ PodmanArgs=--memory={{ memory }}
 PodmanArgs=--cpus={{ cpus }}
 {% endif %}
 {% if command %}
-Exec={{ command | join(' ') }}
+Exec={{ command | systemd_exec }}
 {% endif %}
 
 [Service]

@@ -1,6 +1,6 @@
 # OpenClaw Setup Guide
 
-[OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside a agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
+[OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
 For the full list of configuration options, see the [Configuration Reference](configuration.md).
 
@@ -8,73 +8,109 @@ For the full list of configuration options, see the [Configuration Reference](co
 
 - [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../README.md#prerequisites) for your platform
 - An OpenClaw container image (`ghcr.io/openclaw/openclaw:latest` or custom-built)
-- An Anthropic secret (`ANTHROPIC_API_KEY`)
+- An Anthropic API key (`ANTHROPIC_API_KEY`)
 
-## Setup
+## Quick start
 
-### 1. Copy the example config
+### 1. Scaffold the config
 
 ```bash
-cd /path/to/agentcage
-cp examples/openclaw/cage.yaml cage.yaml
+agentcage init myapp --preset openclaw
 ```
 
-Review `cage.yaml` and adjust the domain allowlist, resource limits, and image as needed. The config file comments explain each option.
+This creates `cage.yaml` with sensible defaults: domain allowlist, secret injection, resource limits, and inline help. Review it and adjust as needed -- the comments explain each option.
 
-### 2. Create Podman secrets
-
-OpenClaw needs secrets injected via Podman:
+### 2. Set secrets
 
 ```bash
-# Anthropic secret (required)
-echo -n "sk-ant-..." | podman secret create ANTHROPIC_API_KEY -
+# Anthropic API key (required)
+agentcage secret set myapp ANTHROPIC_API_KEY
 
-# Gateway password
-echo -n "your-password-here" | podman secret create OPENCLAW_GATEWAY_PASSWORD -
+# Gateway password (required — used for browser auth)
+agentcage secret set myapp OPENCLAW_GATEWAY_PASSWORD
 
-# Brave Search secret (optional — for web_search tool)
-# echo -n "BSA..." | podman secret create BRAVE_API_KEY -
-```
-
-Verify secrets are created:
-
-```bash
-podman secret ls
+# Brave Search API key (optional — for web_search tool)
+# agentcage secret set myapp BRAVE_API_KEY
 ```
 
 If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `cage.yaml`.
 
-> **Secret injection:** The example config uses `secret_injection` for secrets (Anthropic, Brave). This means the cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway secret (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
+> **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
 
-### 3. Create workspace directory
-
-```bash
-mkdir -p ~/openclaw-workspace
-```
-
-This is bind-mounted into the container at `/workspace`. Agent file operations happen here.
-
-### 4. Generate quadlets and deploy
+### 3. Create the cage
 
 ```bash
-agentcage generate -c cage.yaml
-agentcage deploy ./openclaw-cage
+agentcage cage create -c cage.yaml
 ```
+
+This builds the proxy and DNS images, generates systemd quadlet files, and starts all three services (cage, proxy, dns). After startup, inline help is printed showing next steps.
+
+### 4. Connect and pair your browser
+
+Open `http://localhost:18789` in your browser. Navigate to **Overview** and enter your gateway password in the **Password** field, then click **Connect**. The first connection triggers a device pairing request.
+
+Approve the device from the command line:
+
+```bash
+# List pending device pairing requests
+agentcage cage exec myapp -- openclaw devices list
+
+# Approve a device
+agentcage cage exec myapp -- openclaw devices approve <request-id>
+```
+
+After approval, click **Connect** again in the browser. The dashboard should show **Health: OK** and **STATUS: Connected**.
+
+Subsequent connections from the same browser are automatic.
 
 ### 5. Verify
 
 ```bash
 # Check containers are running
-podman ps --format "{{.Names}} {{.Status}}"
+agentcage cage list
 
-# Check OpenClaw is responding
-curl -s http://127.0.0.1:18789/api/health
+# Check health from inside the cage
+agentcage cage exec myapp -- openclaw health
 
 # View logs
-journalctl --user -u openclaw-cage -f    # agent container
-journalctl --user -u openclaw-proxy -f   # mitmproxy (traffic inspection)
-journalctl --user -u openclaw-dns -f     # DNS sidecar
+agentcage cage logs myapp           # cage container
+agentcage cage logs myapp -s proxy  # mitmproxy (traffic inspection)
+agentcage cage logs myapp -s dns    # DNS sidecar
 ```
+
+## Managing your cage
+
+```bash
+# Edit the config in $EDITOR, validate, and reload if running
+agentcage cage edit myapp
+
+# Rebuild and restart (after config or image changes)
+agentcage cage update myapp
+
+# Restart without rebuilding
+agentcage cage reload myapp
+
+# View proxy audit logs
+agentcage cage audit myapp
+
+# Destroy the cage (stops containers, removes quadlets and state)
+agentcage cage destroy myapp
+```
+
+## Reverse proxy & device pairing
+
+agentcage runs a reverse proxy (mitmproxy) in front of the cage container. When you connect a browser to OpenClaw through this proxy, there are two things to be aware of:
+
+**Trusted proxies** — The OpenClaw preset auto-configures `trustedProxies` in `openclaw.json` on first start (writing `{"gateway": {"trustedProxies": ["10.89.0.11"]}}` into the state volume). No manual setup is needed. If you need to customize this, edit the file inside the container or provide your own `openclaw.json` in the state volume before starting the cage.
+
+**Device pairing** — The first browser connection from a new device triggers a one-time pairing approval. Use `cage exec` to list pending requests and approve them:
+
+```bash
+agentcage cage exec myapp -- openclaw devices list
+agentcage cage exec myapp -- openclaw devices approve <request-id>
+```
+
+The `openclaw` alias is expanded to `node openclaw.mjs` automatically via `exec_aliases` in the preset config.
 
 ## Secret detection defaults
 
@@ -107,12 +143,13 @@ See [Secret detection](configuration.md#secret-detection-secrets) for the full r
 
 ## Domain allowlist tiers
 
-The example config organizes domains into tiers. Enable what you need:
+The preset config organizes domains into tiers. Enable what you need:
 
-**Essential** (enabled by default in the example):
+**Essential** (enabled by default):
 - `anthropic.com` — AI provider API
 - `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — package registries
 - `github.com`, `githubusercontent.com` — code hosting
+- `cdn.jsdelivr.net`, `unpkg.com`, `esm.sh` — CDNs
 
 **Web access** (commented out, uncomment as needed):
 - `search.brave.com` — web search (requires `BRAVE_API_KEY`)
@@ -124,23 +161,7 @@ The example config organizes domains into tiers. Enable what you need:
 - `openai.com`, `openrouter.ai` — alternative AI providers
 
 **Messaging**:
-- `api.telegram.org`, `discord.com` — bot integrations
-
-## Customizing the domain allowlist
-
-The example config allows the minimum set of domains OpenClaw needs: `anthropic.com` (API calls), package registries (npm, PyPI), and GitHub. Add domains as your agents need them:
-
-```yaml
-domains:
-  mode: allowlist
-  list:
-    - anthropic.com
-    - npmjs.org
-    # ... existing entries ...
-    - search.brave.com      # web search (requires BRAVE_API_KEY)
-    - huggingface.co         # model downloads
-    - cdn.jsdelivr.net       # CDN
-```
+- `api.telegram.org`, `discord.com`, `slack.com` — bot integrations
 
 Subdomains are matched automatically -- adding `anthropic.com` also allows `api.anthropic.com`, `docs.anthropic.com`, etc. However, sibling domains are not matched: adding `github.com` does **not** allow `githubusercontent.com` -- add it separately.
 
@@ -165,45 +186,18 @@ container:
   image: "localhost/openclaw-custom:latest"
 ```
 
-Regenerate and restart:
+Rebuild:
 
 ```bash
-agentcage generate -c cage.yaml
-agentcage deploy ./openclaw-cage
+agentcage cage update myapp
 ```
-
-## Reverse proxy & device pairing
-
-agentcage runs a reverse proxy (mitmproxy) in front of the cage container. When you connect a browser to OpenClaw through this proxy, there are two things to be aware of:
-
-**Trusted proxies** — The proxy forwards `X-Forwarded-For` headers so OpenClaw can identify the real client IP. To make OpenClaw trust these headers, create a config file in the persistent state volume:
-
-```bash
-podman exec <name>-cage sh -c 'cat > /home/node/.openclaw/openclaw.json << EOF
-{ "gateway": { "trustedProxies": ["10.89.0.11"] } }
-EOF'
-```
-
-Then restart the cage (`systemctl --user restart <name>-cage`).
-
-**Device pairing** — The first browser connection from a new device triggers a one-time pairing approval. To approve, check the cage logs for the pairing request and approve it:
-
-```bash
-# Find the pairing request ID in the logs
-journalctl --user -u <name>-cage -f
-
-# Approve the device
-podman exec <name>-cage openclaw pairing approve <request-id>
-```
-
-Subsequent connections from the same browser are automatic.
 
 ## Troubleshooting
 
-**Container fails to start / times out**: OpenClaw's Node.js gateway can take over 60 seconds to initialize. The example config sets `timeout_start_sec: 120` to accommodate this. Check logs with `journalctl --user -u openclaw-cage -f`.
+**Container fails to start / times out**: OpenClaw's Node.js gateway can take over 60 seconds to initialize. The preset config sets `timeout_start_sec: 120` to accommodate this. Check logs with `agentcage cage logs myapp`.
 
-**403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `journalctl --user -u openclaw-proxy -f` -- the JSON log entries include a `reason` field explaining the block.
+**403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `agentcage cage logs myapp -s proxy` -- the JSON log entries include a `reason` field explaining the block.
 
-**Certificate errors**: The mitmproxy CA certificate is shared via a named volume (see [Certificate Sharing](architecture.md#certificate-sharing)). If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. The generated quadlet files include a start-up check that waits up to 30 seconds for the certificate. If it still fails, restart the cage: `systemctl --user restart openclaw-cage`.
+**Certificate errors**: The mitmproxy CA certificate is shared via a named volume (see [Certificate Sharing](architecture.md#certificate-sharing)). If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. The generated quadlet files include a start-up check that waits up to 30 seconds for the certificate. If it still fails, restart the cage: `agentcage cage reload myapp`.
 
-**DNS resolution failures**: Verify the DNS sidecar is running: `podman ps --filter name=openclaw-dns`. If you are using custom `dns_servers` (e.g., Tailscale MagicDNS), make sure those servers are reachable from the host.
+**DNS resolution failures**: Verify the DNS sidecar is running: `agentcage cage list`. If you are using custom `dns_servers` (e.g., Tailscale MagicDNS), make sure those servers are reachable from the host.

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `cage exec` command — run commands inside cage containers with alias expansion (`agentcage cage exec <name> -- <command>`)
+- `exec_aliases` config field — define shorthand commands expanded by `cage exec` (e.g. `openclaw` → `node openclaw.mjs`)
+- `help` config field — inline guidance printed after `cage create` and `cage update`
+- `systemd_exec` Jinja filter for proper quoting of `Exec=` arguments containing spaces
+- OpenClaw preset: auto-configures `trustedProxies` in `openclaw.json` on first start
+- OpenClaw preset: `exec_aliases` and `help` fields for streamlined device pairing workflow
+
+### Fixed
+- Reverse-proxy WebSocket frames were blocked by the domain inspector — the proxy now correctly identifies reverse-proxy WebSocket flows and skips domain checks, fixing "domain not in allowlist" errors for inbound WebSocket connections (e.g. OpenClaw Control UI)
+
 ## [0.3.11] - 2026-02-23
 
 ### Added

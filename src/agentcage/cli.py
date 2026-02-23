@@ -325,6 +325,10 @@ def cage_create(config_path: str):
     click.echo("Logs:")
     click.echo(f"  agentcage cage logs {name}")
 
+    if cfg.help:
+        click.echo()
+        click.echo(cfg.help.rstrip())
+
 
 @cage.command("update")
 @click.argument("name")
@@ -387,6 +391,10 @@ def cage_update(name: str, config_path: str | None):
 
     _build_and_deploy(cfg, config_host_path, name, podman)
     click.echo(f"Updated cage '{name}'")
+
+    if cfg.help:
+        click.echo()
+        click.echo(cfg.help.rstrip())
 
 
 @cage.command("list")
@@ -787,6 +795,49 @@ def _logs_firecracker(name, services, lines, no_follow, min_level=None):
         )
         journal.stdout.close()  # allow SIGPIPE if grep exits
         sys.exit(grep.wait())
+
+
+@cage.command("exec", context_settings={"ignore_unknown_options": True})
+@click.argument("name")
+@click.option("-s", "--service", default="cage",
+              type=click.Choice(["cage", "proxy", "dns"]),
+              help="Container service to exec into.", show_default=True)
+@click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
+def cage_exec(name: str, service: str, command: tuple[str, ...]):
+    """Run a command inside a cage container.
+
+    \b
+    Example:
+      agentcage cage exec myapp -- openclaw devices list
+    """
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    cfg = state.load_deployment_config(name)
+
+    if cfg.isolation == "firecracker":
+        click.echo(
+            "error: exec is not supported for Firecracker cages; "
+            "use published ports or SSH",
+            err=True,
+        )
+        sys.exit(1)
+
+    cmd = list(command)
+    if not cmd:
+        click.echo("error: no command specified", err=True)
+        sys.exit(1)
+
+    # Alias expansion: if the first word matches an exec_alias, expand it
+    if cmd[0] in cfg.exec_aliases:
+        cmd = cfg.exec_aliases[cmd[0]] + cmd[1:]
+
+    container = f"{name}-{service}"
+    result = subprocess.run(
+        ["podman", "exec", container] + cmd,
+    )
+    sys.exit(result.returncode)
 
 
 # ── cage audit ─────────────────────────────────────────────

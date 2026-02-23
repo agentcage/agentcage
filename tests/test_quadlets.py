@@ -6,7 +6,7 @@ import textwrap
 import pytest
 
 from agentcage.config import load_config
-from agentcage.quadlets import generate_quadlets
+from agentcage.quadlets import generate_quadlets, _systemd_exec_join
 
 
 class TestQuadletFileNames:
@@ -372,7 +372,9 @@ class TestCageQuadlet:
         files = generate_quadlets(cfg, "/etc/agentcage/config.yaml", "/patches")
         content = files["openclaw-cage.container"]
         assert "Image=ghcr.io/openclaw/openclaw:latest" in content
-        assert "Exec=node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password" in content
+        # Shell wrapper command — sh -c arg is quoted by systemd_exec filter
+        assert 'Exec=sh -c "' in content
+        assert "exec node openclaw.mjs gateway" in content
         assert "Secret=OPENCLAW_GATEWAY_PASSWORD,type=env" in content
         assert 'Environment="ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}"' in content
         assert 'Environment="OPENCLAW_DISABLE_BONJOUR=1"' in content
@@ -512,3 +514,32 @@ class TestProxyReverseMode:
         assert "--set keep_host_header=true" in proxy
         # Cage has no PublishPort
         assert "PublishPort=" not in cage
+
+
+class TestSystemdExecFilter:
+    def test_simple_args(self):
+        assert _systemd_exec_join(["node", "app.js"]) == "node app.js"
+
+    def test_arg_with_spaces_quoted(self):
+        result = _systemd_exec_join(["sh", "-c", "echo hello world"])
+        assert result == 'sh -c "echo hello world"'
+
+    def test_arg_with_double_quotes_escaped(self):
+        result = _systemd_exec_join(["sh", "-c", 'echo "hi"'])
+        assert result == r'sh -c "echo \"hi\""'
+
+    def test_arg_with_backslash_escaped(self):
+        result = _systemd_exec_join(["echo", "a\\b"])
+        assert result == r'echo "a\\b"'
+
+    def test_empty_list(self):
+        assert _systemd_exec_join([]) == ""
+
+    def test_arg_with_dollar_quoted(self):
+        result = _systemd_exec_join(["sh", "-c", "echo $HOME"])
+        assert result == 'sh -c "echo $HOME"'
+
+    def test_backward_compatible_simple_command(self):
+        """Simple commands without spaces produce identical output to join(' ')."""
+        args = ["node", "openclaw.mjs", "gateway", "--bind", "lan"]
+        assert _systemd_exec_join(args) == " ".join(args)
