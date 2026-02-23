@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.12] - 2026-02-23
 
 ### Added
 - `cage exec` command — run commands inside cage containers with alias expansion (`agentcage cage exec <name> -- <command>`)
@@ -178,6 +178,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.3.12]: https://github.com/agentcage/agentcage/releases/tag/v0.3.12
+[0.3.11]: https://github.com/agentcage/agentcage/releases/tag/v0.3.11
 [0.3.10]: https://github.com/agentcage/agentcage/releases/tag/v0.3.10
 [0.3.9]: https://github.com/agentcage/agentcage/releases/tag/v0.3.9
 [0.3.8]: https://github.com/agentcage/agentcage/releases/tag/v0.3.8
