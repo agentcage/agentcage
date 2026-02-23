@@ -281,6 +281,7 @@ class TestCageQuadlet:
         assert 'Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"' in content
+        assert 'Environment="AGENTCAGE_VERSION=' in content
         assert "Volume=test-certs.volume:/certs:ro,Z" in content
         assert "Volume=/home/patches:/agentcage:ro,Z" in content
 

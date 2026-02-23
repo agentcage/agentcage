@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import click
@@ -348,6 +349,7 @@ podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \\
     -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \\
     -e "NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs" \\
+    -e "AGENTCAGE_VERSION={_pkg_version('agentcage')}" \\
     -v "$CERT_DIR:/certs:ro" \\
     -v /var/lib/agentcage/patches:/agentcage:ro \\
     --dns 10.89.0.10 \\

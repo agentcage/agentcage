@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from jinja2 import FileSystemLoader
@@ -131,6 +132,7 @@ def generate_quadlets(
     files[f"{name}-cage.container"] = env.get_template("cage.container.j2").render(
         **common,
         image=cc.image,
+        agentcage_version=_pkg_version("agentcage"),
         patches_host_dir=patches_host_dir,
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,

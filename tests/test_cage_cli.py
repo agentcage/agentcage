@@ -124,6 +124,7 @@ class TestCageList:
     def test_list_shows_container_cage(self, mock_state, mock_get_backend):
         mock_state.list_deployments.return_value = ["myapp"]
         mock_state.load_deployment_config.return_value = _mock_config("container")
+        mock_state.load_metadata.return_value = {"agentcage_version": "1.2.3"}
         backend = mock_get_backend.return_value
         backend.service_names.return_value = ["cage", "proxy", "dns"]
         backend.is_running.return_value = True
@@ -131,6 +132,7 @@ class TestCageList:
         assert result.exit_code == 0
         assert "myapp" in result.output
         assert "container" in result.output
+        assert "1.2.3" in result.output
         assert "running (3/3)" in result.output
 
     @patch("agentcage.cli.get_backend")
@@ -138,6 +140,7 @@ class TestCageList:
     def test_list_shows_firecracker_cage(self, mock_state, mock_get_backend):
         mock_state.list_deployments.return_value = ["myvm"]
         mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.9.0"}
         backend = mock_get_backend.return_value
         backend.service_names.return_value = ["cage"]
         backend.is_running.return_value = True
@@ -145,7 +148,26 @@ class TestCageList:
         assert result.exit_code == 0
         assert "myvm" in result.output
         assert "firecracker" in result.output
+        assert "0.9.0" in result.output
         assert "running (1/1)" in result.output
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_list_missing_metadata_shows_dash(self, mock_state, mock_get_backend):
+        mock_state.list_deployments.return_value = ["old"]
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        mock_state.load_metadata.return_value = {}
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.is_running.return_value = True
+        result = _runner().invoke(main, ["cage", "list"])
+        assert result.exit_code == 0
+        assert "old" in result.output
+        # VERSION column header present, value is "-"
+        assert "VERSION" in result.output
+        lines = result.output.strip().split("\n")
+        data_line = [l for l in lines if "old" in l][0]
+        assert "-" in data_line
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
