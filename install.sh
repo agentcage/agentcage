@@ -424,7 +424,7 @@ main() {
 
     if [ "$WANT_FIRECRACKER" = true ]; then
         info ""
-        info "Firecracker is set up. Use 'isolation: firecracker' in config.yaml."
+        info "Firecracker is set up. Use 'isolation: firecracker' in cage.yaml."
     fi
 
     # Check if agentcage is on PATH for future shells (use original PATH,

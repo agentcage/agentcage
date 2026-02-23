@@ -13,13 +13,13 @@ agentcage <group> <command> [options]
 agentcage init [NAME] [options]
 ```
 
-Generates a starter `config.yaml` for a new cage. With `--preset`, uses a curated template; without it, produces a generic scaffold you can edit.
+Generates a starter `cage.yaml` for a new cage. With `--preset`, uses a curated template; without it, produces a generic scaffold you can edit.
 
 ### Options
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `-o, --output` | path | `config.yaml` | Output file path |
+| `-o, --output` | path | `cage.yaml` | Output file path |
 | `--image` | string | `node:22-slim` | Container image |
 | `--isolation` | choice: `container`/`firecracker` | `container` | Isolation backend |
 | `--force` | flag | | Overwrite existing file |
@@ -83,7 +83,7 @@ Creates a new cage from a config file. This single command:
 
 1. Validates the config
 2. Checks that all required secrets exist in Podman
-3. Saves deployment state to `~/.config/agentcage/deployments/<name>/config.yaml`
+3. Saves deployment state to `~/.config/agentcage/deployments/<name>/cage.yaml`
 4. Builds the proxy and DNS container images
 5. Generates and installs 5 quadlet files into `~/.config/containers/systemd/`
 6. Reloads systemd and starts the cage

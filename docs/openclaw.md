@@ -16,10 +16,10 @@ For the full list of configuration options, see the [Configuration Reference](co
 
 ```bash
 cd /path/to/agentcage
-cp examples/openclaw/config.yaml config.yaml
+cp examples/openclaw/cage.yaml cage.yaml
 ```
 
-Review `config.yaml` and adjust the domain allowlist, resource limits, and image as needed. The config file comments explain each option.
+Review `cage.yaml` and adjust the domain allowlist, resource limits, and image as needed. The config file comments explain each option.
 
 ### 2. Create Podman secrets
 
@@ -42,7 +42,7 @@ Verify secrets are created:
 podman secret ls
 ```
 
-If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `config.yaml`.
+If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `cage.yaml`.
 
 > **Secret injection:** The example config uses `secret_injection` for secrets (Anthropic, Brave). This means the cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway secret (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
 
@@ -57,7 +57,7 @@ This is bind-mounted into the container at `/workspace`. Agent file operations h
 ### 4. Generate quadlets and deploy
 
 ```bash
-agentcage generate -c config.yaml
+agentcage generate -c cage.yaml
 agentcage deploy ./openclaw-cage
 ```
 
@@ -158,7 +158,7 @@ RUN npm install -g some-extension
 podman build -t localhost/openclaw-custom:latest -f Containerfile .
 ```
 
-Then update `config.yaml`:
+Then update `cage.yaml`:
 
 ```yaml
 container:
@@ -168,7 +168,7 @@ container:
 Regenerate and restart:
 
 ```bash
-agentcage generate -c config.yaml
+agentcage generate -c cage.yaml
 agentcage deploy ./openclaw-cage
 ```
 

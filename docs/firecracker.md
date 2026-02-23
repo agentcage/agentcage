@@ -94,7 +94,7 @@ The rootfs for a Firecracker VM is a self-contained ext4 image built at `cage cr
 
 4. **Generate `start-cage.sh`.** A startup script is generated that encodes the exact `podman run` commands for this cage's DNS, proxy, and agent containers, including all environment variables, mounts, and network settings. The script is written into the staging directory at `/var/lib/agentcage/start-cage.sh`.
 
-5. **Copy cage configuration.** The rendered `config.yaml` for this cage is copied into the staging directory at `/etc/agentcage/config.yaml`, where the proxy container will mount it at runtime.
+5. **Copy cage configuration.** The rendered `cage.yaml` for this cage is copied into the staging directory at `/etc/agentcage/config.yaml`, where the proxy container will mount it at runtime.
 
 6. **Build the ext4 image.** `mkfs.ext4 -d <staging-dir>` creates a 4GB sparse ext4 image directly from the staging directory. No loop device, no mount, no root required.
 
@@ -118,7 +118,7 @@ On boot it performs the following steps in order:
 
 ## Configuration Reference
 
-Firecracker-specific settings live under the `firecracker:` key in `config.yaml`.
+Firecracker-specific settings live under the `firecracker:` key in `cage.yaml`.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
@@ -183,7 +183,7 @@ This will:
 
 ```bash
 # Create the cage (builds rootfs, exports images — takes 1–2 minutes on first run)
-sudo agentcage cage create --config config-firecracker.yaml
+sudo agentcage cage create --config cage-firecracker.yaml
 
 # Tail logs
 journalctl --user -u basic-cage -f

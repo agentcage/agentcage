@@ -51,7 +51,7 @@ pytestmark = [
 CAGE_NAME = "basic"
 BASE_URL = "http://127.0.0.1:3000"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(REPO_ROOT, "examples", "basic", "config-firecracker.yaml")
+CONFIG_PATH = os.path.join(REPO_ROOT, "examples", "basic", "cage-firecracker.yaml")
 BOOT_TIMEOUT = 180  # seconds — VM boot + image loading is slow
 
 

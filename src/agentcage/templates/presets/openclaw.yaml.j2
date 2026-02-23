@@ -5,7 +5,7 @@
 #        agentcage secret set {{ name }} ANTHROPIC_API_KEY
 #        agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
 #   2. Uncomment additional providers / domains you need
-#   3. Deploy:  agentcage cage create -c config.yaml
+#   3. Deploy:  agentcage cage create -c cage.yaml
 
 name: {{ name }}
 {% if isolation == "firecracker" %}

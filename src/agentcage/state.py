@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -21,14 +22,14 @@ def _deploy_dir(name: str) -> Path:
 
 
 def deployment_exists(name: str) -> bool:
-    return (_deploy_dir(name) / "config.yaml").is_file()
+    return (_deploy_dir(name) / "cage.yaml").is_file()
 
 
 def save_deployment(name: str, config_path: str) -> None:
     """Copy a config file into the state directory for a deployment."""
     d = _deploy_dir(name)
     d.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(config_path, d / "config.yaml")
+    shutil.copy2(config_path, d / "cage.yaml")
 
 
 def remove_deployment(name: str) -> None:
@@ -40,7 +41,7 @@ def remove_deployment(name: str) -> None:
 
 def load_deployment_config(name: str) -> Config:
     """Load the stored config for a deployment."""
-    p = _deploy_dir(name) / "config.yaml"
+    p = _deploy_dir(name) / "cage.yaml"
     if not p.is_file():
         raise FileNotFoundError(f"No stored config for deployment '{name}'")
     return load_config(str(p))
@@ -48,7 +49,7 @@ def load_deployment_config(name: str) -> Config:
 
 def stored_config_path(name: str) -> str:
     """Return the absolute path to the stored config for a deployment."""
-    return str(_deploy_dir(name) / "config.yaml")
+    return str(_deploy_dir(name) / "cage.yaml")
 
 
 def list_deployments() -> list[str]:
@@ -58,13 +59,13 @@ def list_deployments() -> list[str]:
     return sorted(
         d.name
         for d in _DEPLOYMENTS_DIR.iterdir()
-        if d.is_dir() and (d / "config.yaml").is_file()
+        if d.is_dir() and (d / "cage.yaml").is_file()
     )
 
 
 def load_raw_config(name: str) -> dict:
     """Load stored config as raw dict (preserves all fields)."""
-    p = _deploy_dir(name) / "config.yaml"
+    p = _deploy_dir(name) / "cage.yaml"
     if not p.is_file():
         raise FileNotFoundError(f"No stored config for cage '{name}'")
     with open(p) as f:
@@ -73,12 +74,12 @@ def load_raw_config(name: str) -> dict:
 
 def save_raw_config(name: str, raw: dict) -> None:
     """Write raw config dict back to state dir."""
-    p = _deploy_dir(name) / "config.yaml"
+    p = _deploy_dir(name) / "cage.yaml"
     with open(p, "w") as f:
         yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
 
 
-# Keys from config.yaml that the proxy addon actually reads
+# Keys from cage.yaml that the proxy addon actually reads
 _PROXY_KEYS = frozenset({
     "domains", "secrets", "max_request_body", "entropy", "content_type",
     "inspectors", "rate_limit", "logging", "secret_injection", "capture",
@@ -100,6 +101,23 @@ def capture_dir(name: str) -> Path:
 def capture_file(name: str) -> Path:
     """Return path to capture.jsonl for a cage."""
     return capture_dir(name) / "capture.jsonl"
+
+
+def save_metadata(name: str, metadata: dict) -> None:
+    """Write metadata.json to the deployment state directory."""
+    d = _deploy_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / "metadata.json", "w") as f:
+        json.dump(metadata, f)
+
+
+def load_metadata(name: str) -> dict:
+    """Read metadata.json for a deployment, returning {} if missing."""
+    p = _deploy_dir(name) / "metadata.json"
+    if not p.is_file():
+        return {}
+    with open(p) as f:
+        return json.load(f)
 
 
 def save_proxy_config(name: str) -> str:

@@ -3,7 +3,7 @@
 Full reference for all agentcage configuration settings — types, defaults, and examples.
 
 For architecture details, see [Architecture](architecture.md).
-Example configs: [`basic/config.yaml`](../examples/basic/) | [`openclaw/config.yaml`](../examples/openclaw/)
+Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`](../examples/openclaw/)
 
 ## Table of Contents
 

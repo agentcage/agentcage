@@ -10,7 +10,7 @@ The agent runs an HTTP server on port 3000 with endpoints you can curl from the 
 cd /path/to/agentcage
 
 # Create and start the cage
-AGENT_DIR=$(pwd)/examples/basic/agent agentcage cage create -c examples/basic/config.yaml
+AGENT_DIR=$(pwd)/examples/basic/agent agentcage cage create -c examples/basic/cage.yaml
 
 # Wait a few seconds for startup, then interact with the agent
 curl http://localhost:3000/

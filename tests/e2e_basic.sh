@@ -36,9 +36,9 @@ agentcage cage destroy "$CAGE_NAME" 2>/dev/null || true
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-echo "==> Creating cage from $REPO_ROOT/examples/basic/config.yaml"
+echo "==> Creating cage from $REPO_ROOT/examples/basic/cage.yaml"
 AGENT_DIR="$REPO_ROOT/examples/basic/agent" \
-  agentcage cage create -c "$REPO_ROOT/examples/basic/config.yaml"
+  agentcage cage create -c "$REPO_ROOT/examples/basic/cage.yaml"
 
 # ── wait for readiness ───────────────────────────────────────────────
 

@@ -10,7 +10,7 @@ Because "the agent would never do that" is not a security policy.
 
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
-> **Setting up OpenClaw?** See the [OpenClaw guide](docs/openclaw.md) and [`openclaw/config.yaml`](examples/openclaw/).
+> **Setting up OpenClaw?** See the [OpenClaw guide](docs/openclaw.md) and [`openclaw/cage.yaml`](examples/openclaw/).
 
 ## What is it?
 
@@ -40,7 +40,7 @@ agentcage init myapp --image node:22-slim
 agentcage secret set myapp ANTHROPIC_API_KEY
 
 # Create and start the cage
-agentcage cage create -c config.yaml
+agentcage cage create -c cage.yaml
 
 # Verify it's healthy
 agentcage cage verify myapp
@@ -102,7 +102,7 @@ agentcage cage audit myapp --summary --since 24h
 agentcage secret set myapp ANTHROPIC_API_KEY
 
 # Update after code/config changes
-agentcage cage update myapp -c config.yaml
+agentcage cage update myapp -c cage.yaml
 
 # Restart without rebuild
 agentcage cage reload myapp
@@ -123,7 +123,7 @@ See [CLI Reference](docs/cli.md) for full documentation of all commands and opti
 
 ## Configuration
 
-See the [Configuration Reference](docs/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/config.yaml`](examples/basic/) | [`openclaw/config.yaml`](examples/openclaw/). Deployment state is tracked per-cage in `~/.config/agentcage/deployments/<name>/`.
+See the [Configuration Reference](docs/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/) | [`openclaw/cage.yaml`](examples/openclaw/). Deployment state is tracked per-cage in `~/.config/agentcage/deployments/<name>/`.
 
 ## Security
 

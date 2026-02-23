@@ -43,7 +43,7 @@ def main():
 
 @main.command()
 @click.argument("name", required=False, default=None)
-@click.option("-o", "--output", default="config.yaml",
+@click.option("-o", "--output", default="cage.yaml",
               help="Output file path.", show_default=True)
 @click.option("--image", default="node:22-slim",
               help="Container image.", show_default=True)
@@ -286,6 +286,7 @@ def cage_create(config_path: str):
 
     # Save state
     state.save_deployment(name, config_path)
+    state.save_metadata(name, {"agentcage_version": version("agentcage")})
 
     config_host_path = state.save_proxy_config(name)
     _build_and_deploy(cfg, config_host_path, name, podman)
@@ -333,6 +334,7 @@ def cage_update(name: str, config_path: str | None):
     if cfg.isolation == "firecracker":
         _require_root("cage update")
 
+    state.save_metadata(name, {"agentcage_version": version("agentcage")})
     config_host_path = state.save_proxy_config(name)
 
     podman = Podman()
@@ -365,16 +367,17 @@ def cage_list():
         click.echo("No cages found.")
         return
 
-    click.echo(f"{'NAME':<20} {'ISOLATION':<14} STATUS")
+    click.echo(f"{'NAME':<20} {'ISOLATION':<14} {'VERSION':<12} STATUS")
     for name in names:
         try:
             cfg = state.load_deployment_config(name)
             backend = get_backend(cfg)
         except Exception:
-            click.echo(f"{name:<20} {'?':<14} unknown (config error)")
+            click.echo(f"{name:<20} {'?':<14} {'-':<12} unknown (config error)")
             continue
 
         isolation = cfg.isolation
+        ver = state.load_metadata(name).get("agentcage_version", "-")
         services = backend.service_names(name)
         total = len(services)
         running = sum(
@@ -387,7 +390,7 @@ def cage_list():
             status = f"stopped (0/{total})"
         else:
             status = f"degraded ({running}/{total})"
-        click.echo(f"{name:<20} {isolation:<14} {status}")
+        click.echo(f"{name:<20} {isolation:<14} {ver:<12} {status}")
 
 
 @cage.command("destroy")
