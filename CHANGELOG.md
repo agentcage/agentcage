@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.13] - 2026-02-23
 
 ### Added
 - `cage backup` command — create a compressed tarball of a cage's config, named volumes, capture logs, and optionally secrets (`--include-secrets`)
@@ -184,6 +184,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.3.13]: https://github.com/agentcage/agentcage/releases/tag/v0.3.13
 [0.3.12]: https://github.com/agentcage/agentcage/releases/tag/v0.3.12
 [0.3.11]: https://github.com/agentcage/agentcage/releases/tag/v0.3.11
 [0.3.10]: https://github.com/agentcage/agentcage/releases/tag/v0.3.10
