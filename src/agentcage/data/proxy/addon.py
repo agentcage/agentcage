@@ -299,13 +299,14 @@ class Agentcage:
                 pass
             if client_ip:
                 flow.request.headers["x-forwarded-for"] = client_ip
-            flow.request.headers["x-forwarded-proto"] = "http"
+            proto = "https" if flow.client_conn.tls_established else "http"
+            flow.request.headers["x-forwarded-proto"] = proto
 
             # Rewrite Origin to match the (now-preserved) Host header so
             # origin-checking middleware doesn't see a mismatch.
             host_hdr = flow.request.host_header or f"{flow.request.host}:{flow.request.port}"
             if flow.request.headers.get("origin"):
-                flow.request.headers["origin"] = f"http://{host_hdr}"
+                flow.request.headers["origin"] = f"{proto}://{host_hdr}"
 
         for inspector in self.inspectors:
             if is_reverse and isinstance(inspector, DomainInspector):
