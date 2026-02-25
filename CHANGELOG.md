@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.15] - 2026-02-25
+
+### Added
+- Hot-reload proxy config — `domain add/rm` no longer restarts cage services; the proxy detects config file changes via mtime and reloads inspectors in-place
+
+### Changed
+- Renamed `cage reload` to `cage restart` (`reload` kept as alias)
+- `domain add/rm` prints "Proxy updated." instead of restarting the cage
+
+### Fixed
+- Proxy container startup failure under rootless Podman when cert volume was inaccessible due to `/home/mitmproxy` being root-owned mode 700 in the upstream mitmproxy image
+
 ## [0.3.14] - 2026-02-25
 
 ### Added
