@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Scaffold name → base image (without tag) for version pinning
+_SCAFFOLD_IMAGES: dict[str, str] = {
+    "openclaw": "ghcr.io/openclaw/openclaw",
+    "picoclaw": "docker.io/sipeed/picoclaw",
+}
 
 
 def _make_env() -> SandboxedEnvironment:
@@ -47,4 +54,18 @@ def render_config(
         tmpl = env.get_template("init-config.yaml.j2")
         return tmpl.render(name=name, image=image, isolation=isolation, port=port)
     tmpl = env.get_template(f"presets/{scaffold}.yaml.j2")
-    return tmpl.render(name=name, isolation=isolation, port=port)
+
+    image_tag: str | None = None
+    image_base = _SCAFFOLD_IMAGES.get(scaffold)
+    if image_base:
+        from agentcage.registry import resolve_latest_tag
+
+        image_tag = resolve_latest_tag(image_base)
+        if image_tag is None:
+            print(
+                f"warning: could not resolve latest tag for {image_base}, "
+                f"falling back to 'latest'",
+                file=sys.stderr,
+            )
+
+    return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag)

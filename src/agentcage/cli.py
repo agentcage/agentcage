@@ -373,6 +373,15 @@ def cage_create(config_path: str):
     state.save_metadata(name, {"agentcage_version": version("agentcage")})
 
     config_host_path = state.save_proxy_config(name)
+
+    click.echo(f"Pulling {cfg.container.image}...")
+    if not podman.pull(cfg.container.image):
+        click.echo(
+            f"warning: pull failed for {cfg.container.image} "
+            f"(local image or no network — continuing with cached image)",
+            err=True,
+        )
+
     try:
         _build_and_deploy(cfg, config_host_path, name, podman)
     except Exception:
@@ -424,6 +433,25 @@ def cage_update(name: str, config_path: str | None):
             sys.exit(1)
         state.save_deployment(name, config_path)
     else:
+        # Auto-resolve latest image tag for stored configs
+        from agentcage.registry import resolve_latest_tag
+
+        raw = state.load_raw_config(name)
+        current_image = raw.get("container", {}).get("image", "")
+        image_base, _, current_tag = current_image.rpartition(":")
+        if image_base and current_tag:
+            new_tag = resolve_latest_tag(image_base)
+            if new_tag and new_tag != current_tag:
+                raw["container"]["image"] = f"{image_base}:{new_tag}"
+                state.save_raw_config(name, raw)
+                click.echo(f"Image: {image_base}:{current_tag} \u2192 {new_tag}")
+            elif new_tag is None:
+                click.echo(
+                    f"warning: could not resolve latest tag for {image_base}, "
+                    f"keeping {current_tag}",
+                    err=True,
+                )
+
         cfg = state.load_deployment_config(name)
         try:
             warnings = validate_config(cfg)
@@ -471,6 +499,14 @@ def cage_update(name: str, config_path: str | None):
                 err=True,
             )
         sys.exit(1)
+
+    click.echo(f"Pulling {cfg.container.image}...")
+    if not podman.pull(cfg.container.image):
+        click.echo(
+            f"warning: pull failed for {cfg.container.image} "
+            f"(local image or no network — continuing with cached image)",
+            err=True,
+        )
 
     _build_and_deploy(cfg, config_host_path, name, podman)
     click.echo(f"Updated cage '{name}'")

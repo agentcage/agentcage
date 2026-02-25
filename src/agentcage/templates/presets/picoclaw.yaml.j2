@@ -19,7 +19,7 @@ firecracker:
 {% endif %}
 
 container:
-  image: "docker.io/sipeed/picoclaw:latest"
+  image: "docker.io/sipeed/picoclaw:{{ image_tag | default('latest', true) }}"
   command: ["gateway"]
 
   # Mount your config file (create it before deploying)

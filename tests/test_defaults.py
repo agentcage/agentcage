@@ -4,7 +4,7 @@ import sys
 import textwrap
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import yaml
 import pytest
@@ -98,7 +98,8 @@ class TestDefaultInspectors:
         names = sorted(i.name for i in addon.inspectors)
         assert names == ["body-size", "content-type", "domain", "entropy", "secrets"]
 
-    def test_openclaw_preset_loads_inspectors(self):
+    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
+    def test_openclaw_preset_loads_inspectors(self, mock_resolve):
         """The openclaw scaffold config should load entropy + content-type."""
         from agentcage.init import render_config
         cfg_text = render_config("test-oc", scaffold="openclaw")
@@ -109,7 +110,8 @@ class TestDefaultInspectors:
         assert "domain" in names
         assert "secrets" in names
 
-    def test_picoclaw_preset_loads_inspectors(self):
+    @patch("agentcage.registry.resolve_latest_tag", return_value="v0.1.2")
+    def test_picoclaw_preset_loads_inspectors(self, mock_resolve):
         """The picoclaw scaffold config should load entropy + content-type."""
         from agentcage.init import render_config
         cfg_text = render_config("test-pico", scaffold="picoclaw")
@@ -119,7 +121,8 @@ class TestDefaultInspectors:
         assert "content-type" in names
         assert "domain" in names
 
-    def test_picoclaw_preset_parses_via_load_config(self, tmp_path):
+    @patch("agentcage.registry.resolve_latest_tag", return_value="v0.1.2")
+    def test_picoclaw_preset_parses_via_load_config(self, mock_resolve, tmp_path):
         """The picoclaw scaffold should produce valid YAML that load_config accepts."""
         from agentcage.init import render_config
         from agentcage.config import load_config
@@ -128,7 +131,7 @@ class TestDefaultInspectors:
         cfg_file.write_text(cfg_text)
         cfg = load_config(str(cfg_file))
         assert cfg.name == "test-pico"
-        assert cfg.container.image == "docker.io/sipeed/picoclaw:latest"
+        assert cfg.container.image == "docker.io/sipeed/picoclaw:v0.1.2"
         assert cfg.container.command == ["gateway"]
         assert cfg.container.memory == "256m"
         assert cfg.container.cpus == "0.5"

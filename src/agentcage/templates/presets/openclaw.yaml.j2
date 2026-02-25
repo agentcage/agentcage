@@ -21,7 +21,7 @@ firecracker:
 {% endif %}
 
 container:
-  image: "ghcr.io/openclaw/openclaw:latest"
+  image: "ghcr.io/openclaw/openclaw:{{ image_tag | default('latest', true) }}"
   command:
     - "sh"
     - "-c"

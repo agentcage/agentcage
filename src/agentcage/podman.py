@@ -115,6 +115,15 @@ class Podman:
                 stdin=f, check=True,
             )
 
+    def pull(self, image: str) -> bool:
+        """Pull a container image from the registry.
+
+        Returns ``True`` on success, ``False`` on failure (e.g. local-only
+        images or no network).
+        """
+        r = subprocess.run([*_podman_cmd(), "pull", image])
+        return r.returncode == 0
+
     def info(self) -> dict:
         r = subprocess.run(
             [*_podman_cmd(), "info", "--format", "json"],
