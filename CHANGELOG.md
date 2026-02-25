@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] - 2026-02-25
+
+### Added
+- `--port` option on `agentcage init` — set the host port for scaffold templates (e.g. `--scaffold openclaw --port 28789`)
+- Port conflict detection in `cage create` and `cage update` — checks host ports with `socket.bind()` before building, with clear error messages and suggested alternatives
+- Port format and range (1–65535) validation in config validation
+
+### Changed
+- Renamed `--preset` / `--list-presets` CLI flags to `--scaffold` / `--list-scaffolds`
+- Renamed "preset" to "scaffold" in all user-facing text, docs, and template comments
+
+### Fixed
+- `cage create` no longer fails with a cryptic rootlessport error when a host port is already in use — the conflict is detected early with actionable guidance
+- Incomplete cleanup when `cage create` fails after quadlet install
+- Build-failure orphan state, `--keep-secrets` flag on `cage destroy`
+
 ## [0.3.13] - 2026-02-23
 
 ### Added
