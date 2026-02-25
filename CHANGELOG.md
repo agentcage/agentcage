@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.17] - 2026-02-25
+
+### Fixed
+- `cage update` no longer fails with "port already in use" when the running cage's own ports are bound
+- Port conflict suggestion now suggests port+1 (e.g. 18790) instead of port+10000 (e.g. 28789)
+- OpenClaw scaffold: restrict permissions on `.openclaw/` (mode 700) and `openclaw.json` (mode 600) to prevent world-readable config
+- Stale `--list-presets` references in install script and README (renamed to `--list-scaffolds` in v0.3.14)
+
 ## [0.3.16] - 2026-02-25
 
 ### Fixed
