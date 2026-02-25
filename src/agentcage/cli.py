@@ -325,6 +325,16 @@ def cage_create(config_path: str):
     try:
         _build_and_deploy(cfg, config_host_path, name, podman)
     except Exception:
+        # Clean up everything: stop services, remove quadlets, state
+        backend = get_backend(cfg)
+        try:
+            backend.stop(name)
+        except Exception:
+            pass
+        try:
+            backend.destroy_resources(name, keep_secrets=True)
+        except Exception:
+            pass
         state.remove_deployment(name)
         raise
 
