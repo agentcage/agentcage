@@ -33,7 +33,7 @@ Both container mode (rootless Podman) and Firecracker mode (KVM microVM) are sup
 # Install
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 
-# Scaffold a config (or use --preset openclaw)
+# Scaffold a config (or use --scaffold openclaw)
 agentcage init myapp --image node:22-slim
 
 # Store secrets
@@ -46,7 +46,7 @@ agentcage cage create -c cage.yaml
 agentcage cage verify myapp
 ```
 
-Run `agentcage init --list-presets` to see available presets. See [CLI Reference](docs/cli.md) for the full command set.
+Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Reference](docs/cli.md) for the full command set.
 
 ## Install
 

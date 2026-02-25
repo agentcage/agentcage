@@ -412,7 +412,7 @@ main() {
     info ""
     info "Get started:"
     info "  agentcage init my-cage             # scaffold a new config"
-    info "  agentcage init --list-presets       # show available presets"
+    info "  agentcage init --list-scaffolds     # show available scaffolds"
     info "  agentcage --help"
     info ""
     info "Docs: https://github.com/agentcage/agentcage"
