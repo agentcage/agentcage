@@ -32,7 +32,15 @@ def resolve_latest_tag(image: str) -> str | None:
             ["skopeo", "list-tags", f"docker://{image}"],
             capture_output=True, text=True, timeout=30,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
+        import sys
+        print(
+            "warning: skopeo is not installed — "
+            "install it for automatic image version pinning",
+            file=sys.stderr,
+        )
+        return None
+    except subprocess.TimeoutExpired:
         return None
     if r.returncode != 0:
         return None

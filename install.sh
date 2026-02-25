@@ -156,23 +156,43 @@ has_agentcage() {
 install_podman() {
     if has_podman; then
         info "Podman is already installed ($(podman --version))"
-        return
+    else
+        info "Installing Podman..."
+        case "$DISTRO" in
+            arch)     run_pkg pacman -S --noconfirm --needed podman ;;
+            debian)   run_pkg apt-get update -qq && run_pkg apt-get install -y -qq podman ;;
+            fedora)   run_pkg dnf install -y -q podman ;;
+            rhel)     run_pkg dnf install -y -q podman ;;
+            opensuse) run_pkg zypper install -y podman ;;
+            macos)    brew install podman ;;
+        esac
+
+        if ! has_podman; then
+            err "Podman installation failed"
+        fi
+        info "Podman installed ($(podman --version))"
     fi
 
-    info "Installing Podman..."
-    case "$DISTRO" in
-        arch)     run_pkg pacman -S --noconfirm --needed podman ;;
-        debian)   run_pkg apt-get update -qq && run_pkg apt-get install -y -qq podman ;;
-        fedora)   run_pkg dnf install -y -q podman ;;
-        rhel)     run_pkg dnf install -y -q podman ;;
-        opensuse) run_pkg zypper install -y podman ;;
-        macos)    brew install podman ;;
-    esac
+    # skopeo is used by 'cage update' to resolve latest image tags
+    if command -v skopeo >/dev/null 2>&1; then
+        info "skopeo is already installed"
+    else
+        info "Installing skopeo..."
+        case "$DISTRO" in
+            arch)     run_pkg pacman -S --noconfirm --needed skopeo ;;
+            debian)   run_pkg apt-get install -y -qq skopeo ;;
+            fedora)   run_pkg dnf install -y -q skopeo ;;
+            rhel)     run_pkg dnf install -y -q skopeo ;;
+            opensuse) run_pkg zypper install -y skopeo ;;
+            macos)    brew install skopeo ;;
+        esac
 
-    if ! has_podman; then
-        err "Podman installation failed"
+        if command -v skopeo >/dev/null 2>&1; then
+            info "skopeo installed"
+        else
+            warn "skopeo installation failed (image version pinning will be unavailable)"
+        fi
     fi
-    info "Podman installed ($(podman --version))"
 }
 
 # ---------------------------------------------------------------------------
