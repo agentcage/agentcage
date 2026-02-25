@@ -1,5 +1,5 @@
 # agentcage configuration for {{ name }} (OpenClaw scaffold)
-{% set gateway_port = port | default(18789) %}
+{% set gateway_port = port | default(18789, true) %}
 #
 # Quick start:
 #   1. Set secrets:

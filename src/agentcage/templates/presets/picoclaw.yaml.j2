@@ -1,5 +1,5 @@
 # agentcage configuration for {{ name }} (PicoClaw scaffold)
-{% set gateway_port = port | default(18790) %}
+{% set gateway_port = port | default(18790, true) %}
 #
 # Quick start:
 #   1. Create ~/.picoclaw/config.json with your API keys and channels
