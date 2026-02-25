@@ -168,7 +168,7 @@ class TestCLI:
         assert "destroy" in result.output
         assert "verify" in result.output
         assert "list" in result.output
-        assert "reload" in result.output
+        assert "restart" in result.output
 
     def test_secret_help_shows_subcommands(self):
         result = self._run(["secret", "--help"])

@@ -67,7 +67,7 @@ class TestDomainAdd:
         result = _runner().invoke(main, ["domain", "add", "basic", "github.com"])
         assert result.exit_code == 0
         assert "Added 'github.com' to cage 'basic'" in result.output
-        assert "Cage reloaded." in result.output
+        assert "Proxy updated." in result.output
         mock_state.save_raw_config.assert_called_once()
         saved = mock_state.save_raw_config.call_args[0][1]
         assert "github.com" in saved["domains"]["list"]
@@ -122,7 +122,7 @@ class TestDomainRm:
         result = _runner().invoke(main, ["domain", "rm", "basic", "github.com"])
         assert result.exit_code == 0
         assert "Removed 'github.com' from cage 'basic'" in result.output
-        assert "Cage reloaded." in result.output
+        assert "Proxy updated." in result.output
         saved = mock_state.save_raw_config.call_args[0][1]
         assert "github.com" not in saved["domains"]["list"]
         assert "httpbin.org" in saved["domains"]["list"]

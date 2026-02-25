@@ -48,6 +48,7 @@ class Agentcage:
     def load(self, loader) -> None:
         with open(CONFIG_PATH) as f:
             self.cfg = yaml.safe_load(f) or {}
+        self._config_mtime = os.stat(CONFIG_PATH).st_mtime
         logging_cfg = self.cfg.get("logging") or {}
         if "allowed_requests" in logging_cfg:
             self.log_allowed = bool(logging_cfg["allowed_requests"])
@@ -193,6 +194,46 @@ class Agentcage:
             inspector.configure(cfg)
             self.inspectors.append(inspector)
 
+    # ── Hot-reload ────────────────────────────────────────
+
+    def _maybe_reload(self) -> None:
+        """Re-read config if the file has been modified since last load."""
+        try:
+            mtime = os.stat(CONFIG_PATH).st_mtime
+        except OSError:
+            return
+        if mtime == self._config_mtime:
+            return
+        try:
+            with open(CONFIG_PATH) as f:
+                new_cfg = yaml.safe_load(f) or {}
+        except Exception as e:
+            ctx.log.warn(f"agentcage: config reload failed, keeping old config: {e}")
+            return
+        self.cfg = new_cfg
+
+        # Reconfigure built-in inspectors in-place
+        legacy_map = self._build_legacy_config()
+        for inspector in self.inspectors:
+            if inspector.name in legacy_map and legacy_map[inspector.name] is not None:
+                inspector.configure(legacy_map[inspector.name])
+
+        # Update rate-limit settings
+        rl_cfg = self.cfg.get("rate_limit") or {}
+        self._rl_rate = float(rl_cfg.get("requests_per_second", 10))
+        self._rl_burst = int(rl_cfg.get("burst", 50))
+
+        # Update logging settings
+        logging_cfg = self.cfg.get("logging") or {}
+        if "allowed_requests" in logging_cfg:
+            self.log_allowed = bool(logging_cfg["allowed_requests"])
+        else:
+            self.log_allowed = bool(self.cfg.get("log_allowed", True))
+
+        self._config_mtime = mtime
+        names = [i.name for i in self.inspectors]
+        ctx.log.info(f"agentcage: config reloaded, inspectors={names}")
+
     # ── Request handling ─────────────────────────────────
 
     def _check_rate_limit(self, host: str) -> bool:
@@ -210,6 +251,8 @@ class Agentcage:
         return False
 
     def request(self, flow: http.HTTPFlow) -> None:
+        self._maybe_reload()
+
         # Rate limiting
         if not self._check_rate_limit(flow.request.host):
             flow.response = http.Response.make(

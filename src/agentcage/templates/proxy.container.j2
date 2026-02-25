@@ -37,6 +37,7 @@ Secret={{ secret }},type=env
 {% endfor %}
 
 [Service]
+ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && podman unshare chown 1000:1000 "$mp"'
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "printf '{% for srv in dns_servers %}nameserver {{ srv }}\n{% endfor %}' > /etc/resolv.conf"
 Restart=on-failure
 

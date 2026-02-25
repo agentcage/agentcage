@@ -304,7 +304,7 @@ def _restart_cage(name: str, cfg=None):
 # ── cage group ────────────────────────────────────────────
 
 
-@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list"})
+@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list", "reload": "restart"})
 def cage():
     """Manage cages."""
 
@@ -737,13 +737,13 @@ def cage_edit(name: str):
 
     msg = f"Config updated for cage '{name}'."
     if reloaded:
-        msg += " Cage reloaded."
+        msg += " Cage restarted."
     click.echo(msg)
 
 
-@cage.command("reload")
+@cage.command("restart")
 @click.argument("name")
-def cage_reload(name: str):
+def cage_restart(name: str):
     """Restart services without rebuilding images."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
@@ -755,7 +755,7 @@ def cage_reload(name: str):
     _ensure_patches(Podman())
 
     _restart_cage(name, cfg)
-    click.echo(f"Reloaded cage '{name}'")
+    click.echo(f"Restarted cage '{name}'")
 
 
 @cage.command("logs")
@@ -1638,7 +1638,7 @@ def secret_set(cage_name: str, key: str):
         name = cfg.name
         backend = get_backend(cfg)
         if backend.is_running(name, "cage"):
-            click.echo(f"Reloading cage '{name}'...")
+            click.echo(f"Restarting cage '{name}'...")
             _restart_cage(name, cfg)
 
 
@@ -1663,7 +1663,7 @@ def secret_rm(cage_name: str, key: str):
         name = cfg.name
         backend = get_backend(cfg)
         if backend.is_running(name, "cage"):
-            click.echo(f"Reloading cage '{name}'...")
+            click.echo(f"Restarting cage '{name}'...")
             _restart_cage(name, cfg)
 
 
@@ -1718,17 +1718,14 @@ def domain_add(cage_name: str, domain_name: str):
     state.save_raw_config(cage_name, raw)
     state.save_proxy_config(cage_name)
 
-    reloaded = False
     cfg = state.load_deployment_config(cage_name)
     name = cfg.name
     backend = get_backend(cfg)
-    if backend.is_running(name, "cage"):
-        _restart_cage(name, cfg)
-        reloaded = True
+    running = backend.is_running(name, "cage")
 
     msg = f"Added '{domain_name}' to cage '{cage_name}'."
-    if reloaded:
-        msg += " Cage reloaded."
+    if running:
+        msg += " Proxy updated."
     click.echo(msg)
 
 
@@ -1752,17 +1749,14 @@ def domain_rm(cage_name: str, domain_name: str):
     state.save_raw_config(cage_name, raw)
     state.save_proxy_config(cage_name)
 
-    reloaded = False
     cfg = state.load_deployment_config(cage_name)
     name = cfg.name
     backend = get_backend(cfg)
-    if backend.is_running(name, "cage"):
-        _restart_cage(name, cfg)
-        reloaded = True
+    running = backend.is_running(name, "cage")
 
     msg = f"Removed '{domain_name}' from cage '{cage_name}'."
-    if reloaded:
-        msg += " Cage reloaded."
+    if running:
+        msg += " Proxy updated."
     click.echo(msg)
 
 

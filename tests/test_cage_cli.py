@@ -180,34 +180,34 @@ class TestCageList:
         assert "config error" in result.output
 
 
-class TestCageReload:
+class TestCageRestart:
     @patch("agentcage.cli.state")
-    def test_reload_fails_if_not_exists(self, mock_state):
+    def test_restart_fails_if_not_exists(self, mock_state):
         mock_state.deployment_exists.return_value = False
-        result = _runner().invoke(main, ["cage", "reload", "test"])
+        result = _runner().invoke(main, ["cage", "restart", "test"])
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_reload_restarts_container(self, mock_state, mock_get_backend):
+    def test_restart_restarts_container(self, mock_state, mock_get_backend):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("container")
         backend = mock_get_backend.return_value
-        result = _runner().invoke(main, ["cage", "reload", "test"])
+        result = _runner().invoke(main, ["cage", "restart", "test"])
         assert result.exit_code == 0
-        assert "Reloaded" in result.output
+        assert "Restarted" in result.output
         backend.restart.assert_called_once_with("test")
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_reload_restarts_firecracker(self, mock_state, mock_get_backend):
+    def test_restart_restarts_firecracker(self, mock_state, mock_get_backend):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("firecracker")
         backend = mock_get_backend.return_value
-        result = _runner().invoke(main, ["cage", "reload", "test"])
+        result = _runner().invoke(main, ["cage", "restart", "test"])
         assert result.exit_code == 0
-        assert "Reloaded" in result.output
+        assert "Restarted" in result.output
         backend.restart.assert_called_once_with("test")
 
 
@@ -285,7 +285,7 @@ class TestCageEdit:
         mock_get_backend.return_value.is_running.return_value = True
         result = _runner().invoke(main, ["cage", "edit", "test"])
         assert result.exit_code == 0
-        assert "reloaded" in result.output.lower()
+        assert "restarted" in result.output.lower()
         mock_restart.assert_called_once_with("test", cfg)
 
     @patch("agentcage.cli._restart_cage")
@@ -304,7 +304,7 @@ class TestCageEdit:
         mock_get_backend.return_value.is_running.return_value = False
         result = _runner().invoke(main, ["cage", "edit", "test"])
         assert result.exit_code == 0
-        assert "reloaded" not in result.output.lower()
+        assert "restarted" not in result.output.lower()
         mock_restart.assert_not_called()
 
 

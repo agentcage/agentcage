@@ -53,7 +53,7 @@ class TestSecretSet:
 
         result = _runner().invoke(main, ["secret", "set", "myapp", "API_KEY"], input="val\n")
         assert result.exit_code == 0
-        assert "Reloading" in result.output
+        assert "Restarting" in result.output
 
 
 class TestSecretList:
