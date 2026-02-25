@@ -197,11 +197,9 @@ def _file_sha256(path: str) -> str:
 
 def _suggest_alt_port(port: int) -> int:
     """Return a suggested alternative port that stays within 1-65535."""
-    alt = port + 10000
+    alt = port + 1
     if alt > 65535:
-        alt = port - 10000
-    if alt < 1:
-        alt = port + 1
+        alt = port - 1
     return alt
 
 
