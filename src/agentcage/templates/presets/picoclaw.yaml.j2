@@ -34,7 +34,7 @@ container:
   tmpfs:
     - "/tmp:rw,noexec,nosuid,size=64M"
 
-  # Gateway web UI — bind to localhost only
+  # Gateway web UI — bind to localhost only (BIND:HOST_PORT:CONTAINER_PORT)
   ports:
     - "127.0.0.1:{{ gateway_port }}:18790"
     # Webhook ports (uncomment as needed):

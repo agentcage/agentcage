@@ -34,7 +34,7 @@ container:
   # tmpfs:
   #   - "/tmp:rw,noexec,nosuid,size=64M"
 
-  # Ports exposed to localhost
+  # Ports exposed to the host (BIND:HOST_PORT:CONTAINER_PORT)
 {% if port %}
   ports:
     - "127.0.0.1:{{ port }}:{{ port }}"

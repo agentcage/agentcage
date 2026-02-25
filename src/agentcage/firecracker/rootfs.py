@@ -475,11 +475,20 @@ def prepare_vm_rootfs(
 
     with tempfile.TemporaryDirectory(prefix="agentcage-rootfs-") as staging:
         # When running as root via sudo, the real user's Podman needs to
-        # write into the staging directory (via runuser).
-        sudo_uid = os.environ.get("SUDO_UID")
-        sudo_gid = os.environ.get("SUDO_GID")
-        if sudo_uid and sudo_gid:
-            os.chown(staging, int(sudo_uid), int(sudo_gid))
+        # write into the staging directory (via runuser).  SUDO_USER takes
+        # precedence over SUDO_UID/GID because _podman_cmd() uses
+        # ``runuser -u $SUDO_USER`` — the UIDs may not match when sudo was
+        # invoked by a different user than the one set in SUDO_USER.
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and os.geteuid() == 0:
+            import pwd
+            pw = pwd.getpwnam(sudo_user)
+            os.chown(staging, pw.pw_uid, pw.pw_gid)
+        else:
+            sudo_uid = os.environ.get("SUDO_UID")
+            sudo_gid = os.environ.get("SUDO_GID")
+            if sudo_uid and sudo_gid:
+                os.chown(staging, int(sudo_uid), int(sudo_gid))
 
         click.echo("Exporting base VM image to staging directory...")
         _export_base_to_dir(podman, staging)

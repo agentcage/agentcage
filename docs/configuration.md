@@ -9,6 +9,7 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 
 - [Top-level settings](#top-level-settings)
 - [Container settings](#container-settings-container)
+  - [Ports](#ports)
 - [Container hardening](#container-hardening)
 - [Traffic capture](#traffic-capture-capture)
 - [Restart policy and timeouts](#restart-policy-and-timeouts)
@@ -53,11 +54,37 @@ dns_servers:
 | `env` | `map[string, string]` | `{}` | Environment variables. `${VAR}` references are expanded from your current shell environment at generation time — the values are baked into the generated quadlet files, not resolved at container start |
 | `named_volumes` | `map[string, string]` | `{}` | Podman named volume to mount spec (e.g. `mydata: "/data:rw"`). Not resolved with realpath |
 | `tmpfs` | `list[string]` | `[]` | tmpfs mount specs (useful for writable areas on read-only containers) |
-| `ports` | `list[string]` | `[]` | Published port specs (e.g. `"127.0.0.1:8080:8080"`) |
+| `ports` | `list[string]` | `[]` | Published port specs — see [Ports](#ports) below |
 | `podman_secrets` | `list[string]` | `[]` | [Podman secret](https://docs.podman.io/en/latest/markdown/podman-secret.1.html) names (injected as env vars) |
 | `user` | `string` | `"1000:1000"` | UID:GID to run as. Set to `""` to use the image default. See [Podman `--user`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `memory` | `string` | *(none)* | Memory limit (e.g. `"4g"`). See [Podman `--memory`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `cpus` | `string` | *(none)* | CPU limit (e.g. `"2.0"`). See [Podman `--cpus`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
+
+### Ports
+
+Publish container ports to the host. Each entry is a string in one of two formats:
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| `"BIND:HOST_PORT:CONTAINER_PORT"` | `"127.0.0.1:8080:80"` | Bind to a specific interface |
+| `"HOST_PORT:CONTAINER_PORT"` | `"8080:80"` | Bind to all interfaces (`0.0.0.0`) |
+
+Ports must be integers between 1 and 65535. The three-part form with an explicit bind address is recommended — binding to `127.0.0.1` ensures the port is only accessible from the host, not from the network.
+
+```yaml
+container:
+  ports:
+    # Recommended: bind to localhost only
+    - "127.0.0.1:8080:8080"
+
+    # Bind to all interfaces (accessible from LAN)
+    - "0.0.0.0:3000:3000"
+
+    # Short form (binds to all interfaces)
+    - "9090:9090"
+```
+
+Port conflicts are detected at `cage create` / `cage update` time — if a host port is already in use, the command fails with a suggestion to pick a different port.
 
 ---
 

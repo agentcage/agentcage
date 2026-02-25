@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.16] - 2026-02-25
+
+### Fixed
+- Scaffold templates (`--scaffold openclaw/picoclaw`) rendered port as `None` when `--port` was not specified
+- Firecracker rootfs build failed with "permission denied" when `SUDO_USER` differs from `SUDO_UID` user
+
+### Added
+- Ports documentation in configuration reference with format table and examples
+
 ## [0.3.15] - 2026-02-25
 
 ### Added

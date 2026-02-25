@@ -38,7 +38,7 @@ container:
     - "/home/node/.npm:rw,size=128M"
     - "/scratch:rw,exec,nosuid,size=2G"
 
-  # Gateway web UI — published on the host
+  # Gateway web UI — published on the host (BIND:HOST_PORT:CONTAINER_PORT)
   # Change 127.0.0.1 to 0.0.0.0 to allow access from other machines on the LAN
   ports:
     - "127.0.0.1:{{ gateway_port }}:18789"
