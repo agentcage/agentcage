@@ -454,7 +454,13 @@ def cage_update(name: str, config_path: str | None):
             click.echo(f"  agentcage secret set {name} {key}", err=True)
         sys.exit(1)
 
-    # Check port availability
+    # Stop existing services before port check — the running cage's own
+    # ports would otherwise be detected as conflicts.
+    click.echo("Stopping services...")
+    backend = get_backend(cfg)
+    backend.stop(name)
+
+    # Check port availability (after stop so the cage's own ports are free)
     conflicts = _check_port_availability(cfg)
     if conflicts:
         for port_spec, host_bind, host_port in conflicts:
@@ -467,11 +473,6 @@ def cage_update(name: str, config_path: str | None):
                 err=True,
             )
         sys.exit(1)
-
-    # Stop existing
-    click.echo("Stopping services...")
-    backend = get_backend(cfg)
-    backend.stop(name)
 
     _build_and_deploy(cfg, config_host_path, name, podman)
     click.echo(f"Updated cage '{name}'")
