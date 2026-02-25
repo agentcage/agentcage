@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -83,22 +84,25 @@ def completions(shell: str):
 @click.option("--isolation", type=click.Choice(["container", "firecracker"]),
               default="container", help="Isolation backend.", show_default=True)
 @click.option("--force", is_flag=True, help="Overwrite existing file.")
-@click.option("--preset", default=None,
-              help="Use a preset template (e.g. openclaw).")
-@click.option("--list-presets", is_flag=True,
-              help="List available presets and exit.")
+@click.option("--scaffold", default=None,
+              help="Use a scaffold template (e.g. openclaw).")
+@click.option("--list-scaffolds", is_flag=True,
+              help="List available scaffolds and exit.")
+@click.option("--port", type=int, default=None,
+              help="Host port to publish (scaffold-specific).")
 def init(name: str | None, output: str, image: str, isolation: str,
-         force: bool, preset: str | None, list_presets: bool):
+         force: bool, scaffold: str | None, list_scaffolds: bool,
+         port: int | None):
     """Scaffold a new agentcage config file."""
-    from agentcage.init import list_presets as _list_presets, render_config
+    from agentcage.init import list_scaffolds as _list_scaffolds, render_config
 
-    if list_presets:
-        presets = _list_presets()
-        if not presets:
-            click.echo("No presets available.")
+    if list_scaffolds:
+        scaffolds = _list_scaffolds()
+        if not scaffolds:
+            click.echo("No scaffolds available.")
         else:
-            click.echo("Available presets:")
-            for p in presets:
+            click.echo("Available scaffolds:")
+            for p in scaffolds:
                 click.echo(f"  {p}")
         return
 
@@ -114,10 +118,10 @@ def init(name: str | None, output: str, image: str, isolation: str,
         )
         sys.exit(1)
 
-    if preset is not None and preset not in _list_presets():
+    if scaffold is not None and scaffold not in _list_scaffolds():
         click.echo(
-            f"error: unknown preset {preset!r} "
-            f"(available: {', '.join(_list_presets()) or 'none'})",
+            f"error: unknown scaffold {scaffold!r} "
+            f"(available: {', '.join(_list_scaffolds()) or 'none'})",
             err=True,
         )
         sys.exit(1)
@@ -127,17 +131,17 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"error: {dest} already exists (use --force to overwrite)", err=True)
         sys.exit(1)
 
-    content = render_config(name, image=image, isolation=isolation, preset=preset)
+    content = render_config(name, image=image, isolation=isolation, scaffold=scaffold, port=port)
     dest.write_text(content)
     click.echo(f"Created {dest}")
 
-    if preset == "openclaw":
+    if scaffold == "openclaw":
         click.echo(f"\nNext steps:")
         click.echo(f"  1. agentcage secret set {name} ANTHROPIC_API_KEY")
         click.echo(f"  2. agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD")
         click.echo(f"  3. Edit {dest} — uncomment additional providers/domains")
         click.echo(f"  4. agentcage cage create -c {dest}")
-    elif preset == "picoclaw":
+    elif scaffold == "picoclaw":
         click.echo(f"\nNext steps:")
         click.echo(f"  1. Create ~/.picoclaw/config.json with your API keys and channels")
         click.echo(f"     (see https://github.com/sipeed/picoclaw for config format)")
@@ -189,6 +193,41 @@ def _file_sha256(path: str) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _suggest_alt_port(port: int) -> int:
+    """Return a suggested alternative port that stays within 1-65535."""
+    alt = port + 10000
+    if alt > 65535:
+        alt = port - 10000
+    if alt < 1:
+        alt = port + 1
+    return alt
+
+
+def _check_port_availability(cfg) -> list[tuple[str, str, str]]:
+    """Return list of (port_spec, host_bind, host_port) that are already in use."""
+    unavailable = []
+    for port_spec in cfg.container.ports:
+        parts = port_spec.split(":")
+        if len(parts) == 3:
+            host_bind, host_port, _container_port = parts
+        elif len(parts) == 2:
+            host_bind, host_port = "0.0.0.0", parts[0]
+        else:
+            continue
+        try:
+            port_num = int(host_port)
+        except ValueError:
+            continue
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((host_bind, port_num))
+        except OSError:
+            unavailable.append((port_spec, host_bind, host_port))
+        finally:
+            sock.close()
+    return unavailable
 
 
 def _patches_work_dir() -> str:
@@ -317,6 +356,20 @@ def cage_create(config_path: str):
             click.echo(f"  agentcage secret set {name} {key}", err=True)
         sys.exit(1)
 
+    # Check port availability
+    conflicts = _check_port_availability(cfg)
+    if conflicts:
+        for port_spec, host_bind, host_port in conflicts:
+            click.echo(
+                f"error: port {host_port} on {host_bind} is already in use\n"
+                f"  Another cage or service may be using this port.\n"
+                f"  Change the host port in your cage config, e.g.:\n"
+                f"    ports:\n"
+                f'      - "{host_bind}:{_suggest_alt_port(int(host_port))}:{port_spec.split(":")[-1]}"',
+                err=True,
+            )
+        sys.exit(1)
+
     # Save state
     state.save_deployment(name, config_path)
     state.save_metadata(name, {"agentcage_version": version("agentcage")})
@@ -399,6 +452,20 @@ def cage_update(name: str, config_path: str | None):
         click.echo("Create them with:", err=True)
         for key in missing:
             click.echo(f"  agentcage secret set {name} {key}", err=True)
+        sys.exit(1)
+
+    # Check port availability
+    conflicts = _check_port_availability(cfg)
+    if conflicts:
+        for port_spec, host_bind, host_port in conflicts:
+            click.echo(
+                f"error: port {host_port} on {host_bind} is already in use\n"
+                f"  Another cage or service may be using this port.\n"
+                f"  Change the host port in your cage config, e.g.:\n"
+                f"    ports:\n"
+                f'      - "{host_bind}:{_suggest_alt_port(int(host_port))}:{port_spec.split(":")[-1]}"',
+                err=True,
+            )
         sys.exit(1)
 
     # Stop existing

@@ -13,7 +13,7 @@ agentcage <group> <command> [options]
 agentcage init [NAME] [options]
 ```
 
-Generates a starter `cage.yaml` for a new cage. With `--preset`, uses a curated template; without it, produces a generic scaffold you can edit.
+Generates a starter `cage.yaml` for a new cage. With `--scaffold`, uses a curated template; without it, produces a generic scaffold you can edit.
 
 ### Options
 
@@ -23,8 +23,9 @@ Generates a starter `cage.yaml` for a new cage. With `--preset`, uses a curated 
 | `--image` | string | `node:22-slim` | Container image |
 | `--isolation` | choice: `container`/`firecracker` | `container` | Isolation backend |
 | `--force` | flag | | Overwrite existing file |
-| `--preset` | string | | Use a preset template (e.g. `openclaw`, `picoclaw`) |
-| `--list-presets` | flag | | List available presets and exit |
+| `--scaffold` | string | | Use a scaffold template (e.g. `openclaw`, `picoclaw`) |
+| `--list-scaffolds` | flag | | List available scaffolds and exit |
+| `--port` | int | | Host port to publish (scaffold-specific) |
 
 ### Examples
 
@@ -32,11 +33,11 @@ Generates a starter `cage.yaml` for a new cage. With `--preset`, uses a curated 
 # Generic scaffold
 agentcage init myapp --image python:3.12-slim
 
-# OpenClaw preset
-agentcage init myclaw --preset openclaw
+# OpenClaw scaffold
+agentcage init myclaw --scaffold openclaw
 
-# List available presets
-agentcage init --list-presets
+# List available scaffolds
+agentcage init --list-scaffolds
 ```
 
 ---

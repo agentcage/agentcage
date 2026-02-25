@@ -335,6 +335,31 @@ def validate_config(config: Config) -> list[str]:
                 f"(got: {val!r})"
             )
 
+    # Validate port specs
+    for port_spec in config.container.ports:
+        parts = port_spec.split(":")
+        if len(parts) == 3:
+            _bind, host_port_s, container_port_s = parts
+            port_strs = [host_port_s, container_port_s]
+        elif len(parts) == 2:
+            port_strs = list(parts)
+        else:
+            raise ValueError(
+                f"invalid port spec {port_spec!r}: "
+                f"expected HOST_PORT:CONTAINER_PORT or BIND:HOST_PORT:CONTAINER_PORT"
+            )
+        for ps in port_strs:
+            try:
+                pn = int(ps)
+            except ValueError:
+                raise ValueError(
+                    f"invalid port number {ps!r} in port spec {port_spec!r}"
+                )
+            if pn < 1 or pn > 65535:
+                raise ValueError(
+                    f"port {pn} out of range (1-65535) in port spec {port_spec!r}"
+                )
+
     warnings = []
 
     # Warn about unset env var references

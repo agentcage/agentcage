@@ -1,4 +1,5 @@
-# agentcage configuration for {{ name }} (OpenClaw preset)
+# agentcage configuration for {{ name }} (OpenClaw scaffold)
+{% set gateway_port = port | default(18789) %}
 #
 # Quick start:
 #   1. Set secrets:
@@ -40,7 +41,7 @@ container:
   # Gateway web UI — published on the host
   # Change 127.0.0.1 to 0.0.0.0 to allow access from other machines on the LAN
   ports:
-    - "127.0.0.1:18789:18789"
+    - "127.0.0.1:{{ gateway_port }}:18789"
 
   # Disable mDNS/Bonjour broadcasts (not useful inside a container)
   env:
@@ -162,9 +163,8 @@ exec_aliases:
 
 # ── Help ──
 # Shown after 'cage create' and 'cage update'
-# Note: if you change the port above, update the URL below to match
 help: |
-  Open http://localhost:18789 in your browser.
+  Open http://localhost:{{ gateway_port }} in your browser.
 
   On first connection, approve the device pairing:
     agentcage cage exec {{ name }} -- openclaw devices list

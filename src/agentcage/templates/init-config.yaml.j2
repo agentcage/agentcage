@@ -35,8 +35,13 @@ container:
   #   - "/tmp:rw,noexec,nosuid,size=64M"
 
   # Ports exposed to localhost
+{% if port %}
+  ports:
+    - "127.0.0.1:{{ port }}:{{ port }}"
+{% else %}
   # ports:
   #   - "127.0.0.1:3000:3000"
+{% endif %}
 
   # Environment variables
   # env:

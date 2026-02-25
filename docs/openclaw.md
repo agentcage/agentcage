@@ -15,7 +15,7 @@ For the full list of configuration options, see the [Configuration Reference](co
 ### 1. Scaffold the config
 
 ```bash
-agentcage init myapp --preset openclaw
+agentcage init myapp --scaffold openclaw
 ```
 
 This creates `cage.yaml` with sensible defaults: domain allowlist, secret injection, resource limits, and inline help. Review it and adjust as needed -- the comments explain each option.
@@ -101,7 +101,7 @@ agentcage cage destroy myapp
 
 agentcage runs a reverse proxy (mitmproxy) in front of the cage container. When you connect a browser to OpenClaw through this proxy, there are two things to be aware of:
 
-**Trusted proxies** — The OpenClaw preset auto-configures `trustedProxies` in `openclaw.json` on first start (writing `{"gateway": {"trustedProxies": ["10.89.0.11"]}}` into the state volume). No manual setup is needed. If you need to customize this, edit the file inside the container or provide your own `openclaw.json` in the state volume before starting the cage.
+**Trusted proxies** — The OpenClaw scaffold auto-configures `trustedProxies` in `openclaw.json` on first start (writing `{"gateway": {"trustedProxies": ["10.89.0.11"]}}` into the state volume). No manual setup is needed. If you need to customize this, edit the file inside the container or provide your own `openclaw.json` in the state volume before starting the cage.
 
 **Device pairing** — The first browser connection from a new device triggers a one-time pairing approval. Use `cage exec` to list pending requests and approve them:
 
@@ -110,7 +110,7 @@ agentcage cage exec myapp -- openclaw devices list
 agentcage cage exec myapp -- openclaw devices approve <request-id>
 ```
 
-The `openclaw` alias is expanded to `node openclaw.mjs` automatically via `exec_aliases` in the preset config.
+The `openclaw` alias is expanded to `node openclaw.mjs` automatically via `exec_aliases` in the scaffold config.
 
 ## Secret detection defaults
 
@@ -143,7 +143,7 @@ See [Secret detection](configuration.md#secret-detection-secrets) for the full r
 
 ## Domain allowlist tiers
 
-The preset config organizes domains into tiers. Enable what you need:
+The scaffold config organizes domains into tiers. Enable what you need:
 
 **Essential** (enabled by default):
 - `anthropic.com` — AI provider API
@@ -194,7 +194,7 @@ agentcage cage update myapp
 
 ## Troubleshooting
 
-**Container fails to start / times out**: OpenClaw's Node.js gateway can take over 60 seconds to initialize. The preset config sets `timeout_start_sec: 120` to accommodate this. Check logs with `agentcage cage logs myapp`.
+**Container fails to start / times out**: OpenClaw's Node.js gateway can take over 60 seconds to initialize. The scaffold config sets `timeout_start_sec: 120` to accommodate this. Check logs with `agentcage cage logs myapp`.
 
 **403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `agentcage cage logs myapp -s proxy` -- the JSON log entries include a `reason` field explaining the block.
 

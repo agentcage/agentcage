@@ -19,8 +19,8 @@ def _make_env() -> SandboxedEnvironment:
     )
 
 
-def list_presets() -> list[str]:
-    """Return sorted names of available preset templates."""
+def list_scaffolds() -> list[str]:
+    """Return sorted names of available scaffold templates."""
     preset_dir = _TEMPLATES_DIR / "presets"
     if not preset_dir.is_dir():
         return []
@@ -34,16 +34,17 @@ def render_config(
     *,
     image: str = "node:22-slim",
     isolation: str = "container",
-    preset: str | None = None,
+    scaffold: str | None = None,
+    port: int | None = None,
 ) -> str:
     """Render a starter config.yaml from a template.
 
-    When *preset* is ``None`` the default blank scaffold is used.
-    Otherwise *preset* selects a file from ``templates/presets/``.
+    When *scaffold* is ``None`` the default blank scaffold is used.
+    Otherwise *scaffold* selects a file from ``templates/presets/``.
     """
     env = _make_env()
-    if preset is None:
+    if scaffold is None:
         tmpl = env.get_template("init-config.yaml.j2")
-        return tmpl.render(name=name, image=image, isolation=isolation)
-    tmpl = env.get_template(f"presets/{preset}.yaml.j2")
-    return tmpl.render(name=name, isolation=isolation)
+        return tmpl.render(name=name, image=image, isolation=isolation, port=port)
+    tmpl = env.get_template(f"presets/{scaffold}.yaml.j2")
+    return tmpl.render(name=name, isolation=isolation, port=port)

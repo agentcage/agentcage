@@ -1,4 +1,5 @@
-# agentcage configuration for {{ name }} (PicoClaw preset)
+# agentcage configuration for {{ name }} (PicoClaw scaffold)
+{% set gateway_port = port | default(18790) %}
 #
 # Quick start:
 #   1. Create ~/.picoclaw/config.json with your API keys and channels
@@ -35,7 +36,7 @@ container:
 
   # Gateway web UI — bind to localhost only
   ports:
-    - "127.0.0.1:18790:18790"
+    - "127.0.0.1:{{ gateway_port }}:18790"
     # Webhook ports (uncomment as needed):
     #- "127.0.0.1:18791:18791"   # LINE
     #- "127.0.0.1:18792:18792"   # WeCom App
