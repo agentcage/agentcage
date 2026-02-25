@@ -28,8 +28,8 @@ container:
 
   # Podman named volumes for persistent state
   named_volumes:
-    openclaw-workspace: "/workspace:rw"
-    openclaw-state: "/home/node/.openclaw:rw"
+    {{ name }}-workspace: "/workspace:rw"
+    {{ name }}-state: "/home/node/.openclaw:rw"
 
   # Writable directories on the read-only root filesystem
   tmpfs:
@@ -37,9 +37,10 @@ container:
     - "/home/node/.npm:rw,size=128M"
     - "/scratch:rw,exec,nosuid,size=2G"
 
-  # Gateway web UI — published on the host via reverse proxy
+  # Gateway web UI — published on the host
+  # Change 127.0.0.1 to 0.0.0.0 to allow access from other machines on the LAN
   ports:
-    - "0.0.0.0:18789:18789"
+    - "127.0.0.1:18789:18789"
 
   # Disable mDNS/Bonjour broadcasts (not useful inside a container)
   env:
@@ -161,6 +162,7 @@ exec_aliases:
 
 # ── Help ──
 # Shown after 'cage create' and 'cage update'
+# Note: if you change the port above, update the URL below to match
 help: |
   Open http://localhost:18789 in your browser.
 

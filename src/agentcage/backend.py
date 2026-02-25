@@ -49,7 +49,7 @@ class Backend(Protocol):
         """Restart all services for a cage."""
         ...
 
-    def destroy_resources(self, name: str) -> list[str]:
+    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:
         """Remove backend-specific resources. Return list of removed items."""
         ...
 

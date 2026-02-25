@@ -276,7 +276,7 @@ class FirecrackerBackend:
         except Exception as e:
             click.echo(f"warning: failed to restart {name}: {e}", err=True)
 
-    def destroy_resources(self, name: str) -> list[str]:
+    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:
         removed: list[str] = []
 
         # Remove unit file
@@ -299,15 +299,16 @@ class FirecrackerBackend:
             removed.append("rootfs")
 
         # Remove secrets
-        secret_keys = remove_all_secrets(name)
-        for key in secret_keys:
-            removed.append(f"secret:{key}")
+        if not keep_secrets:
+            secret_keys = remove_all_secrets(name)
+            for key in secret_keys:
+                removed.append(f"secret:{key}")
 
-        # Remove secrets drive
-        sec_drive = secrets_drive_path(name)
-        if os.path.isfile(sec_drive):
-            os.unlink(sec_drive)
-            removed.append("secrets-drive")
+            # Remove secrets drive
+            sec_drive = secrets_drive_path(name)
+            if os.path.isfile(sec_drive):
+                os.unlink(sec_drive)
+                removed.append("secrets-drive")
 
         # Remove data drive
         d_drive = data_drive_path(name)

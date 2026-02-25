@@ -322,7 +322,11 @@ def cage_create(config_path: str):
     state.save_metadata(name, {"agentcage_version": version("agentcage")})
 
     config_host_path = state.save_proxy_config(name)
-    _build_and_deploy(cfg, config_host_path, name, podman)
+    try:
+        _build_and_deploy(cfg, config_host_path, name, podman)
+    except Exception:
+        state.remove_deployment(name)
+        raise
 
     click.echo()
     click.echo("Logs:")
@@ -437,12 +441,18 @@ def cage_list():
 @cage.command("destroy")
 @click.argument("name")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
-def cage_destroy(name: str, yes: bool):
+@click.option("--keep-secrets", is_flag=True,
+              help="Keep scoped secrets (useful for recreating the cage)")
+def cage_destroy(name: str, yes: bool, keep_secrets: bool):
     """Stop containers, remove quadlets, state, and scoped secrets."""
     if not yes:
+        detail = "This will stop containers, remove quadlets, and state."
+        if not keep_secrets:
+            detail += " Scoped secrets will also be removed."
+        else:
+            detail += " Scoped secrets will be kept."
         click.confirm(
-            f'Destroy cage "{name}"? '
-            "This will stop containers, remove quadlets, state, and scoped secrets.",
+            f'Destroy cage "{name}"? ' + detail,
             abort=True,
         )
 
@@ -460,7 +470,7 @@ def cage_destroy(name: str, yes: bool):
     backend.stop(name)
 
     click.echo("Removing quadlet files...")
-    removed = backend.destroy_resources(name)
+    removed = backend.destroy_resources(name, keep_secrets=keep_secrets)
 
     click.echo("Removing Podman resources...")
 

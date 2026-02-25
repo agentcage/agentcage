@@ -103,7 +103,7 @@ class ContainerBackend:
             except Exception as e:
                 click.echo(f"warning: failed to restart {name}-{svc}: {e}", err=True)
 
-    def destroy_resources(self, name: str) -> list[str]:
+    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:
         removed: list[str] = []
 
         # Remove quadlet files
@@ -130,10 +130,11 @@ class ContainerBackend:
             removed.append(f"volume:agentcage-certs-{name}")
 
         # Remove scoped secrets
-        for s in self._podman.secret_list(prefix=f"{name}."):
-            sname = s.get("Name", "")
-            if self._podman.secret_remove(sname):
-                removed.append(f"secret:{sname}")
+        if not keep_secrets:
+            for s in self._podman.secret_list(prefix=f"{name}."):
+                sname = s.get("Name", "")
+                if self._podman.secret_remove(sname):
+                    removed.append(f"secret:{sname}")
 
         return removed
 

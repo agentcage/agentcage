@@ -48,7 +48,7 @@ agentcage init --list-presets
 | `cage create -c CONFIG` | Build images, generate quadlets, install, and start a new cage |
 | `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
 | `cage list` | List all cages with status |
-| `cage destroy NAME [-y]` | Stop containers, remove quadlets, state, and scoped secrets |
+| `cage destroy NAME [-y] [--keep-secrets]` | Stop containers, remove quadlets, state, and scoped secrets |
 | `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
 | `cage edit NAME` | Open stored config in `$EDITOR`, validate, and reload if running |
 | `cage reload NAME` | Restart containers without rebuilding images |
@@ -145,7 +145,7 @@ broken               degraded (2/3)
 ## `cage destroy`
 
 ```
-agentcage cage destroy <name> [-y|--yes]
+agentcage cage destroy <name> [-y|--yes] [--keep-secrets]
 ```
 
 Tears down a cage completely:
@@ -153,10 +153,10 @@ Tears down a cage completely:
 1. Stops all containers (cage, proxy, DNS)
 2. Removes quadlet files from `~/.config/containers/systemd/`
 3. Removes the Podman network and certificate volume
-4. Removes all scoped secrets (e.g., `myapp.ANTHROPIC_API_KEY`)
+4. Removes all scoped secrets (e.g., `myapp.ANTHROPIC_API_KEY`) — unless `--keep-secrets` is passed
 5. Removes deployment state from `~/.config/agentcage/deployments/<name>/`
 
-User-defined named volumes and bind-mounted data are never removed. Pass `-y` to skip the confirmation prompt.
+User-defined named volumes and bind-mounted data are never removed. Pass `-y` to skip the confirmation prompt. Pass `--keep-secrets` to preserve scoped secrets (useful when destroying and recreating a cage).
 
 ## `cage verify`
 
@@ -449,7 +449,7 @@ If the cage is currently running, it is automatically reloaded after the secret 
 agentcage secret list <name>
 ```
 
-Lists secrets for a cage. If the cage has deployment state, cross-references with the config to show expected secrets and their status:
+Lists secrets for a cage. If the cage has deployment state (i.e. the cage has been created with `cage create`), cross-references with the config to show expected secrets and their status:
 
 ```
 NAME                           TYPE         STATUS
@@ -461,7 +461,7 @@ Secret types:
 - **injection** -- managed by the proxy's secret injection system (the cage sees a placeholder; the proxy swaps in the real value)
 - **direct** -- passed directly to the cage container via `podman_secrets`
 
-If no deployment state exists, lists all Podman secrets matching the `<name>.` prefix.
+If no deployment state exists (e.g. before `cage create` has been run), the TYPE and STATUS columns are not shown. Only the secret names matching the `<name>.` prefix are listed.
 
 ## `secret rm`
 

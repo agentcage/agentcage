@@ -7,10 +7,10 @@ COPY proxy/capture.py /app/capture.py
 COPY proxy/secret_injector.py /app/secret_injector.py
 ENV AGENTCAGE_CONFIG=/etc/agentcage/config.yaml
 ENV PYTHONUNBUFFERED=1
-# The upstream image sets /home/mitmproxy to root:root 700.  We bypass the
-# default entrypoint (it uses stat/usermod that fail under rootless podman),
-# so fix ownership here so the mitmproxy user can access its home dir.
-RUN chmod 755 /home/mitmproxy
+# The upstream mitmproxy image sets /home/mitmproxy to 1000:1000 mode 700 and
+# ships a custom entrypoint that uses stat/usermod (which fail under rootless
+# Podman).  We bypass the entrypoint and run as the mitmproxy user (UID 1000)
+# directly -- 700 is fine since the owner matches.
 ENTRYPOINT []
 USER mitmproxy
 CMD ["mitmdump", "-s", "/app/addon.py", "--listen-port", "8080", \
