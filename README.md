@@ -11,6 +11,8 @@ Because "the agent would never do that" is not a security policy.
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
 > **Setting up OpenClaw?** See the [OpenClaw guide](docs/openclaw.md) and [`openclaw/cage.yaml`](examples/openclaw/).
+>
+> **Setting up NanoClaw?** See the [NanoClaw guide](docs/nanoclaw.md) -- includes nested container support (podman-in-podman).
 
 ## What is it?
 
@@ -121,6 +123,7 @@ agentcage cage destroy myapp
 | `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
+| `build` | `nested-base` -- build base images for nested container support |
 | `firecracker` | `setup` |
 | `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |
 

@@ -59,6 +59,7 @@ dns_servers:
 | `user` | `string` | `"1000:1000"` | UID:GID to run as. Set to `""` to use the image default. See [Podman `--user`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `memory` | `string` | *(none)* | Memory limit (e.g. `"4g"`). See [Podman `--memory`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `cpus` | `string` | *(none)* | CPU limit (e.g. `"2.0"`). See [Podman `--cpus`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
+| `nested_containers` | `bool` | `false` | Enable podman-in-podman support. See [Nested containers](#nested-containers) below |
 
 ### Ports
 
@@ -85,6 +86,27 @@ container:
 ```
 
 Port conflicts are detected at `cage create` / `cage update` time — if a host port is already in use, the command fails with a suggestion to pick a different port.
+
+### Nested containers
+
+When `nested_containers: true` is set, the cage container can run podman (and docker via a shim) to spawn inner containers. This is required for AI agent frameworks like NanoClaw that create Docker containers as part of their workflow.
+
+Enabling this option automatically:
+- Adds 16 Linux capabilities (SYS_ADMIN, SYS_CHROOT, MKNOD, etc.) instead of the default `DropCapability=ALL`
+- Forces `User=0` and `NoNewPrivileges=false`
+- Adds `/dev/fuse` device and `seccomp=unconfined`
+- Creates a persistent storage volume for inner podman state
+- Bind-mounts a Docker CLI shim and podman config files
+
+The nested-containers base image must be built first with `agentcage build nested-base`. See the [NanoClaw guide](nanoclaw.md) for a complete walkthrough.
+
+```yaml
+container:
+  image: "localhost/agentcage-nested"
+  nested_containers: true
+```
+
+> **Security note:** Nested containers require elevated capabilities that weaken container hardening. All network-level protections (proxy inspection, domain filtering, secret detection) remain active. Not supported with Firecracker isolation. See [Security & Threat Model](security.md) for details.
 
 ---
 

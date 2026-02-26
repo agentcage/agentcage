@@ -99,6 +99,21 @@ The cage container is hardened by default: read-only root filesystem, all Linux 
 
 The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` capability (set via `setcap` at build time). The proxy container runs as the `mitmproxy` user and binds only to the internal network IP (not 0.0.0.0).
 
+### Nested containers (`nested_containers: true`)
+
+When nested container support is enabled, several hardening defaults are overridden to allow podman-in-podman:
+
+| Default | With `nested_containers: true` |
+|---|---|
+| `DropCapability=ALL` | 16 capabilities added (SYS_ADMIN, SYS_CHROOT, etc.) |
+| `NoNewPrivileges=true` | `false` (required for setuid helpers) |
+| `User=1000:1000` | `User=0` (root in user namespace) |
+| seccomp profile active | `seccomp=unconfined` |
+
+These changes increase the container escape attack surface. All network-level protections (proxy inspection, domain filtering, secret detection, DNS filtering) remain fully active. Inner containers default to `--network none` with no network access.
+
+`nested_containers` is not supported with Firecracker isolation (`isolation: firecracker`). For production nested workloads, consider running the cage on a dedicated host or VM to limit blast radius.
+
 ## Supply Chain Hardening
 
 - **Container base images** are pinned to specific `sha256` digests in the Containerfiles, preventing silent upstream changes

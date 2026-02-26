@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has a top-level **`init`** command for scaffolding configs, and four command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain allowlists), and **`firecracker`** (host setup for Firecracker mode).
+The CLI has a top-level **`init`** command for scaffolding configs, and five command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain allowlists), **`build`** (build base images), and **`firecracker`** (host setup for Firecracker mode).
 
 ```
 agentcage init [NAME] [options]
@@ -35,6 +35,9 @@ agentcage init myapp --image python:3.12-slim
 
 # OpenClaw scaffold
 agentcage init myclaw --scaffold openclaw
+
+# NanoClaw scaffold (nested containers)
+agentcage init myapp --scaffold nanoclaw
 
 # List available scaffolds
 agentcage init --list-scaffolds
@@ -105,6 +108,7 @@ The generated quadlet files are:
 - `<name>-dns.container` -- DNS sidecar (dnsmasq)
 - `<name>-proxy.container` -- mitmproxy with inspector chain
 - `<name>-cage.container` -- your agent container
+- `<name>-podman-storage.volume` -- *(nested containers only)* inner podman storage
 
 Fails if any required secrets are missing. The error message tells you exactly which secrets to create:
 
@@ -171,6 +175,7 @@ Runs health checks against a running cage:
 - CA certificate present in the shared volume
 - `HTTP_PROXY` / `HTTPS_PROXY` set in the cage container
 - Egress filtering working (blocked domain returns 403)
+- Inner podman and Docker shim available (when `nested_containers: true`)
 - Podman running rootless
 
 Example output:
@@ -522,6 +527,34 @@ agentcage domain rm myapp api.openai.com
 ```
 
 Fails if the domain is not in the list.
+
+---
+
+## `build` -- Build base images
+
+| Command | Description |
+|---|---|
+| `build nested-base` | Build the nested-containers base image (`localhost/agentcage-nested`) |
+
+### `build nested-base`
+
+```
+agentcage build nested-base
+```
+
+Builds `localhost/agentcage-nested`, a `node:22-slim`-based image with podman, fuse-overlayfs, crun, uidmap, and slirp4netns pre-installed. This image is required when using `nested_containers: true` in your cage config.
+
+The build uses `podman build` with capabilities needed for the image build process (SETFCAP, SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER).
+
+```bash
+agentcage build nested-base
+# Built localhost/agentcage-nested
+#
+# Use this image in your cage config:
+#   container:
+#     image: "localhost/agentcage-nested"
+#     nested_containers: true
+```
 
 ---
 

@@ -148,9 +148,36 @@ agentcage solves this by injecting a loader script via `NODE_OPTIONS=--import /a
 
 Non-Node.js applications (Python, Go, curl, etc.) natively respect `HTTP_PROXY` / `HTTPS_PROXY` and need no patching.
 
+## Nested Containers (Podman-in-Podman)
+
+When `nested_containers: true` is set, the cage container is configured to run podman internally, enabling AI agent frameworks that spawn Docker containers (e.g. NanoClaw). A Docker CLI shim at `/usr/local/bin/docker` translates `docker` commands to `podman`.
+
+The nested container topology adds a layer inside the cage:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Cage container (10.89.0.2)                                     │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────┐       │
+│  │  Inner containers (spawned by podman/docker shim)    │       │
+│  │                                                      │       │
+│  │  --network none  → no network access                 │       │
+│  │  --network host  → inherits cage proxy → inspected   │       │
+│  └──────────────────────────────────────────────────────┘       │
+│                                                                 │
+│  HTTP_PROXY → proxy → Internet (inspected)                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Inner containers default to `--network none` (configured via `containers.conf`), giving them no network access. Inner containers that explicitly use `--network host` inherit the cage's proxy environment variables, so their traffic passes through the full inspector chain.
+
+A persistent named volume (`agentcage-podman-<name>`) stores inner podman's image cache and container state at `/var/lib/containers`, so pulled images survive cage restarts.
+
+For the base image, security trade-offs, and setup, see the [NanoClaw guide](nanoclaw.md).
+
 ## Generated Files
 
-The `generate` command produces 5 quadlet files in `<name>-quadlets/`:
+The `generate` command produces 5 quadlet files in `<name>-quadlets/` (6 when `nested_containers` is enabled):
 
 | File | Role |
 |------|------|
@@ -159,3 +186,4 @@ The `generate` command produces 5 quadlet files in `<name>-quadlets/`:
 | `<name>-dns.container` | DNS sidecar (dnsmasq) |
 | `<name>-proxy.container` | mitmproxy with inspector chain |
 | `<name>-cage.container` | Agent container with proxy env vars, cert mount, and fetch patch |
+| `<name>-podman-storage.volume` | *(nested only)* Inner podman image/container storage |
