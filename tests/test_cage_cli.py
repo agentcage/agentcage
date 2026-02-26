@@ -371,6 +371,7 @@ class TestCageVerify:
 def _mock_config(isolation="container"):
     cfg = MagicMock()
     cfg.isolation = isolation
+    cfg.container.nested_containers = False
     return cfg
 
 

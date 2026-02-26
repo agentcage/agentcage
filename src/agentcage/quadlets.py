@@ -117,7 +117,9 @@ def generate_quadlets(
     files[f"{name}-net.network"] = env.get_template("network.j2").render(**common)
 
     # Volume
-    files[f"{name}-certs.volume"] = env.get_template("volume.j2").render(**common)
+    files[f"{name}-certs.volume"] = env.get_template("volume.j2").render(
+        volume_name=f"agentcage-certs-{name}",
+    )
 
     # DNS container — pass domain allowlist for DNS-level filtering
     dns_allowlist = (
@@ -151,6 +153,35 @@ def generate_quadlets(
         capture_host_dir=capture_host_dir,
     )
 
+    # Nested containers support
+    nested_containers = cc.nested_containers
+    cage_drop_caps = cc.drop_capabilities
+    cage_add_caps = list(cc.add_capabilities)
+    cage_no_new_privs = cc.no_new_privileges
+    cage_user = cc.user
+    if nested_containers:
+        cage_drop_caps = []
+        # Inner podman needs a broad capability set: SYS_ADMIN for namespaces,
+        # SYS_CHROOT for tar applier, CHOWN/FOWNER/DAC_OVERRIDE for file ops,
+        # SETUID/SETGID for user mapping, MKNOD for device nodes, etc.
+        nested_caps = (
+            "SYS_ADMIN", "SYS_CHROOT", "MKNOD", "SETUID", "SETGID",
+            "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL",
+            "NET_ADMIN", "NET_BIND_SERVICE", "NET_RAW", "SETFCAP", "SETPCAP",
+            "AUDIT_WRITE",
+        )
+        for cap in nested_caps:
+            if cap not in cage_add_caps:
+                cage_add_caps.append(cap)
+        cage_no_new_privs = False
+        # Run as root inside the user namespace so setuid helpers
+        # (newuidmap/newgidmap) work for inner rootless podman.
+        cage_user = "0"
+        # Storage volume for inner podman state
+        files[f"{name}-podman-storage.volume"] = env.get_template("volume.j2").render(
+            volume_name=f"agentcage-podman-{name}",
+        )
+
     # Cage container — no published ports (traffic arrives via proxy reverse mode)
     files[f"{name}-cage.container"] = env.get_template("cage.container.j2").render(
         **common,
@@ -163,12 +194,12 @@ def generate_quadlets(
         podman_secrets=cc.podman_secrets,
         cage_placeholders=cage_placeholders,
         env=expanded_env,
-        user=cc.user,
+        user=cage_user,
         read_only=cc.read_only,
         security_label_disable=cc.security_label_disable,
-        no_new_privileges=cc.no_new_privileges,
-        drop_capabilities=cc.drop_capabilities,
-        add_capabilities=cc.add_capabilities,
+        no_new_privileges=cage_no_new_privs,
+        drop_capabilities=cage_drop_caps,
+        add_capabilities=cage_add_caps,
         memory=cc.memory,
         cpus=cc.cpus,
         command=cc.command,
@@ -177,6 +208,7 @@ def generate_quadlets(
         timeout_start_sec=cc.timeout_start_sec,
         timeout_stop_sec=cc.timeout_stop_sec,
         deploy_name=deploy_name,
+        nested_containers=nested_containers,
     )
 
     return files

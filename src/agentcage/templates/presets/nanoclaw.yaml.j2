@@ -1,0 +1,95 @@
+# agentcage configuration for {{ name }} (NanoClaw scaffold)
+#
+# Requires the nested-containers base image:
+#   agentcage build nested-base
+#
+# Quick start:
+#   1. Set secrets:
+#        agentcage secret set {{ name }} ANTHROPIC_API_KEY
+#   2. Build base image:
+#        agentcage build nested-base
+#   3. Deploy:  agentcage cage create -c cage.yaml
+
+name: {{ name }}
+
+container:
+  image: "localhost/agentcage-nested"
+  nested_containers: true
+
+  # Writable directories on the read-only root filesystem
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=512M"
+    - "/scratch:rw,exec,nosuid,size=2G"
+
+  # Resource limits
+  memory: "4g"
+  cpus: "2.0"
+
+  # NanoClaw spawns containers — give it time to start
+  timeout_start_sec: 120
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
+secret_injection:
+  - env: ANTHROPIC_API_KEY
+    placeholder: "{%raw%}{{ANTHROPIC_API_KEY}}{%endraw%}"
+    inject_to:
+      - anthropic.com
+
+  # Uncomment providers as needed:
+  #- env: OPENAI_API_KEY
+  #  placeholder: "{%raw%}{{OPENAI_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - openai.com
+
+# ── Domain allowlist ──
+# NanoClaw inner containers run with --network none by default, so only
+# the outer cage (and its spawned containers that explicitly request
+# network) will reach these domains through the proxy.
+domains:
+  mode: allowlist
+  list:
+    # ── Core AI providers ──
+    - anthropic.com
+    #- openai.com
+    #- openrouter.ai
+
+    # ── Container registries (for pulling inner images) ──
+    - docker.io
+    - registry-1.docker.io
+    - auth.docker.io
+    - production.cloudflare.docker.com
+    - r2.cloudflarestorage.com
+
+    # ── Package registries ──
+    - npmjs.org
+    - npmjs.com
+    - pypi.org
+    - files.pythonhosted.org
+    - nodejs.org
+
+    # ── Code hosting ──
+    - github.com
+    - githubusercontent.com
+
+    # Add domains your agents need access to:
+    #- example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: entropy
+  - name: content-type
+  # Allow Docker registry JWT auth tokens to reach container registries
+  - name: secrets
+    config:
+      allow_to_domains:
+        azure_jwt:
+          - docker.io
+          - registry-1.docker.io
+          - auth.docker.io

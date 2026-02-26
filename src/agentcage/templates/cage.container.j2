@@ -58,6 +58,19 @@ DropCapability={{ cap }}
 {% for cap in add_capabilities %}
 AddCapability={{ cap }}
 {% endfor %}
+{% if nested_containers %}
+AddDevice=/dev/fuse
+Environment="CONTAINERS_STORAGE_CONF=/etc/containers/storage.conf"
+PodmanArgs=--security-opt seccomp=unconfined
+PodmanArgs=--security-opt unmask=ALL
+Volume={{ name }}-podman-storage.volume:/var/lib/containers:rw
+Volume={{ patches_host_dir }}/nested/docker:/usr/local/bin/docker:ro,Z
+Volume={{ patches_host_dir }}/nested/storage.conf:/etc/containers/storage.conf:ro,Z
+Volume={{ patches_host_dir }}/nested/containers.conf:/etc/containers/containers.conf:ro,Z
+Volume={{ patches_host_dir }}/nested/registries.conf:/etc/containers/registries.conf:ro,Z
+Tmpfs=/run:rw,exec,size=256M,mode=1777
+Tmpfs=/root:rw,size=64M
+{% endif %}
 {% if memory %}
 PodmanArgs=--memory={{ memory }}
 {% endif %}

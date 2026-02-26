@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-26
+
+### Added
+- **Nested container support (podman-in-podman)** — `container.nested_containers: true` enables running podman/docker inside a cage, for AI agent frameworks (like NanoClaw) that spawn their own containers
+  - Minimal capability elevation (SYS_ADMIN, MKNOD, SETUID, SETGID) instead of `--privileged`
+  - Docker CLI shim translates `docker` commands to `podman` inside the cage
+  - Inner containers inherit cage network isolation (proxy + DNS filtering still apply)
+  - Persistent storage volume for inner podman state
+  - Rejects `firecracker` + `nested_containers` combination (not supported)
+- `agentcage build nested-base` command — builds `localhost/agentcage-nested` base image with podman, fuse-overlayfs, crun, uidmap, and slirp4netns
+- NanoClaw scaffold (`--scaffold nanoclaw`) — pre-configured for AI agent frameworks that spawn Docker containers, with ANTHROPIC_API_KEY injection and Docker registry domains
+- Nested container verification in `cage verify` — checks inner podman and docker shim availability
+
 ## [0.3.19] - 2026-02-26
 
 ### Fixed

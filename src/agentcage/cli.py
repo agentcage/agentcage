@@ -147,6 +147,12 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"     (see https://github.com/sipeed/picoclaw for config format)")
         click.echo(f"  2. Edit {dest} — uncomment domains for your providers/channels")
         click.echo(f"  3. agentcage cage create -c {dest}")
+    elif scaffold == "nanoclaw":
+        click.echo(f"\nNext steps:")
+        click.echo(f"  1. agentcage build nested-base")
+        click.echo(f"  2. agentcage secret set {name} ANTHROPIC_API_KEY")
+        click.echo(f"  3. Edit {dest} — uncomment additional providers/domains")
+        click.echo(f"  4. agentcage cage create -c {dest}")
     else:
         click.echo(f"\nNext steps:")
         click.echo(f"  1. Edit {dest} — set your image, domains, and secrets")
@@ -261,6 +267,18 @@ def _ensure_patches(podman: Podman) -> str:
     resolv_path = os.path.join(patches_work, "resolv.conf")
     with open(resolv_path, "w") as f:
         f.write("nameserver 10.89.0.10\n")
+
+    # Copy nested container support files
+    nested_src = str(_DATA_DIR / "nested")
+    nested_dst = os.path.join(patches_work, "nested")
+    if os.path.isdir(nested_src):
+        if os.path.isdir(nested_dst):
+            shutil.rmtree(nested_dst)
+        shutil.copytree(nested_src, nested_dst)
+        # Ensure docker shim is executable
+        docker_shim = os.path.join(nested_dst, "docker")
+        if os.path.isfile(docker_shim):
+            os.chmod(docker_shim, 0o755)
 
     # Install undici deps if missing (npm ci uses lockfile for integrity)
     node_modules = os.path.join(patches_work, "node_modules", "undici")
@@ -717,6 +735,32 @@ def _verify_container(name: str, _pass, _fail):
             _fail(f"Blocked domain returned HTTP {status} — egress filtering may be broken")
     except Exception:
         _pass("Blocked domain (evil-exfil-server.io) is denied (HTTP 000)")
+
+    # Nested containers check
+    cfg = state.load_deployment_config(name)
+    if cfg.container.nested_containers:
+        click.echo()
+        click.echo("-- Nested Containers --")
+        try:
+            exit_code, output = podman.container_exec(
+                f"{name}-cage", ["podman", "--version"]
+            )
+            if exit_code == 0:
+                _pass(f"Inner podman available ({output.strip()})")
+            else:
+                _fail("Inner podman is NOT available")
+        except Exception:
+            _fail("Inner podman is NOT available")
+        try:
+            exit_code, output = podman.container_exec(
+                f"{name}-cage", ["docker", "--version"]
+            )
+            if exit_code == 0:
+                _pass("Docker shim available")
+            else:
+                _fail("Docker shim is NOT available")
+        except Exception:
+            _fail("Docker shim is NOT available")
 
     # Podman rootless check
     click.echo()
@@ -1801,6 +1845,32 @@ def domain_rm(cage_name: str, domain_name: str):
 @main.group(name="firecracker")
 def firecracker_group():
     """Firecracker host setup and management."""
+
+
+@main.group(name="build")
+def build_group():
+    """Build base images for agentcage."""
+
+
+@build_group.command("nested-base")
+def build_nested_base():
+    """Build the nested-containers base image (localhost/agentcage-nested)."""
+    podman = Podman()
+    data_dir = Path(__file__).resolve().parent / "data"
+    containerfile = str(data_dir / "containers" / "Containerfile.nested")
+    build_context = str(data_dir)
+    click.echo("Building nested-containers base image...")
+    podman.build_image(
+        "agentcage-nested", containerfile, build_context,
+        cap_add=["CAP_SETFCAP", "CAP_SETUID", "CAP_SETGID", "CAP_CHOWN",
+                 "CAP_DAC_OVERRIDE", "CAP_FOWNER"],
+    )
+    click.echo("Built localhost/agentcage-nested")
+    click.echo()
+    click.echo("Use this image in your cage config:")
+    click.echo('  container:')
+    click.echo('    image: "localhost/agentcage-nested"')
+    click.echo('    nested_containers: true')
 
 
 @firecracker_group.command("setup")

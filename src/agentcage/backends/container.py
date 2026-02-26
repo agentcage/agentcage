@@ -45,6 +45,7 @@ class ContainerBackend:
             os.path.join(containers_dir, "Containerfile.proxy"),
             build_context,
             no_cache=True,
+            cap_add=["CAP_CHOWN", "CAP_FOWNER"],
         )
         click.echo("Building DNS image...")
         self._podman.build_image(
@@ -86,6 +87,10 @@ class ContainerBackend:
             systemd.restart_unit(f"{name}-certs-volume.service")
         except Exception as e:
             click.echo(f"warning: failed to restart volume service: {e}", err=True)
+        try:
+            systemd.restart_unit(f"{name}-podman-storage-volume.service")
+        except Exception:
+            pass  # volume only exists when nested_containers is enabled
         systemd.start_unit(f"{name}-cage.service")
         click.echo(f"Started {name}-cage")
 
@@ -114,6 +119,7 @@ class ContainerBackend:
             f"{name}-dns.container",
             f"{name}-net.network",
             f"{name}-certs.volume",
+            f"{name}-podman-storage.volume",
         ]
         for fname in quadlet_files:
             fpath = quadlet_dir / fname
@@ -128,6 +134,8 @@ class ContainerBackend:
             removed.append(f"network:{name}-net")
         if self._podman.volume_remove(f"agentcage-certs-{name}"):
             removed.append(f"volume:agentcage-certs-{name}")
+        if self._podman.volume_remove(f"agentcage-podman-{name}"):
+            removed.append(f"volume:agentcage-podman-{name}")
 
         # Remove scoped secrets
         if not keep_secrets:

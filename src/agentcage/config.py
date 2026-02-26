@@ -35,6 +35,7 @@ class ContainerConfig:
     drop_capabilities: list[str] = field(default_factory=lambda: ["ALL"])
     add_capabilities: list[str] = field(default_factory=list)
     no_new_privileges: bool = True
+    nested_containers: bool = False
     security_label_disable: bool = True
     restart: str = "on-failure"
     restart_sec: int = 10
@@ -199,6 +200,7 @@ def load_config(path: str) -> Config:
 
     cc.read_only = c.get("read_only", True)
     cc.no_new_privileges = c.get("no_new_privileges", True)
+    cc.nested_containers = bool(c.get("nested_containers", False))
     cc.security_label_disable = c.get("security_label_disable", True)
 
     # drop_capabilities: default "ALL" (string or list)
@@ -361,6 +363,17 @@ def validate_config(config: Config) -> list[str]:
                 )
 
     warnings = []
+
+    # Nested containers validation
+    if config.container.nested_containers:
+        if config.isolation == "firecracker":
+            raise ValueError(
+                "nested_containers is not supported with Firecracker isolation"
+            )
+        warnings.append(
+            "nested_containers grants elevated capabilities, "
+            "disables NoNewPrivileges, and disables seccomp"
+        )
 
     # Warn about unset env var references
     for key, val in config.container.env.items():

@@ -1,0 +1,20 @@
+FROM docker.io/node:22-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        podman \
+        fuse-overlayfs \
+        crun \
+        uidmap \
+        slirp4netns \
+    && rm -rf /var/lib/apt/lists/*
+
+# Allow rootless podman for the node user (uid 1000)
+RUN echo "node:100000:65536" >> /etc/subuid \
+ && echo "node:100000:65536" >> /etc/subgid
+
+# Create user-level containers config so rootless podman uses the
+# bind-mounted /var/lib/containers volume instead of ~/.local/share
+RUN mkdir -p /home/node/.config/containers \
+ && printf '[storage]\ndriver = "overlay"\ngraphroot = "/var/lib/containers/storage"\nrunroot = "/run/containers/storage"\n\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
+    > /home/node/.config/containers/storage.conf \
+ && chown -R node:node /home/node/.config
