@@ -73,6 +73,36 @@ _SECRETS_BLOCKED = {
     ],
 }
 
+_DNS_BLOCKED = {
+    "ts": "2026-02-20T10:06:00+00:00",
+    "direction": "outbound",
+    "method": "DNS",
+    "host": "evil.com",
+    "port": 53,
+    "path": "",
+    "url": "dns://evil.com",
+    "decision": "blocked",
+    "reason": "domain not in allowlist",
+    "inspectors": [
+        {"name": "dns", "action": "block", "reason": "domain not in allowlist", "severity": "warning"},
+    ],
+}
+
+_DNS_ALLOWED = {
+    "ts": "2026-02-20T10:06:01+00:00",
+    "direction": "outbound",
+    "method": "DNS",
+    "host": "api.anthropic.com",
+    "port": 53,
+    "path": "",
+    "url": "dns://api.anthropic.com",
+    "decision": "allowed",
+    "reason": "",
+    "inspectors": [
+        {"name": "dns", "action": "allow", "reason": "domain in allowlist", "severity": "info"},
+    ],
+}
+
 _INBOUND = {
     "ts": "2026-02-20T10:04:00+00:00",
     "direction": "inbound",
@@ -143,6 +173,22 @@ class TestExtractAuditJson:
     def test_invalid_json(self):
         result = extract_audit_json("{bad json")
         assert result is None
+
+    def test_firecracker_dns_prefix_warning(self):
+        import json
+        line = f"[dns:warning] {json.dumps(_DNS_BLOCKED)}"
+        result = extract_audit_json(line)
+        assert result is not None
+        assert result["decision"] == "blocked"
+        assert result["method"] == "DNS"
+
+    def test_firecracker_dns_prefix_info(self):
+        import json
+        line = f"[dns:info] {json.dumps(_DNS_ALLOWED)}"
+        result = extract_audit_json(line)
+        assert result is not None
+        assert result["decision"] == "allowed"
+        assert result["method"] == "DNS"
 
     def test_firecracker_non_audit(self):
         result = extract_audit_json("[proxy:debug] not json at all")
@@ -460,3 +506,63 @@ class TestNewFields:
         assert entry.source == ""
         assert entry.secrets_injected == []
         assert entry.secrets_redacted == []
+
+
+# ── TestDnsAudit ─────────────────────────────────────────
+
+
+class TestDnsAudit:
+    def _entry(self, d: dict) -> AuditEntry:
+        return AuditEntry.from_dict(d)
+
+    def test_dns_blocked_entry_parsed(self):
+        import json
+        line = json.dumps(_DNS_BLOCKED)
+        result = extract_audit_json(line)
+        assert result is not None
+        entry = AuditEntry.from_dict(result)
+        assert entry.method == "DNS"
+        assert entry.host == "evil.com"
+        assert entry.port == 53
+        assert entry.decision == "blocked"
+        assert entry.url == "dns://evil.com"
+
+    def test_dns_allowed_entry_parsed(self):
+        import json
+        line = json.dumps(_DNS_ALLOWED)
+        result = extract_audit_json(line)
+        assert result is not None
+        entry = AuditEntry.from_dict(result)
+        assert entry.method == "DNS"
+        assert entry.decision == "allowed"
+
+    def test_method_filter_dns(self):
+        filt = AuditFilter(methods=["DNS"])
+        assert filt.matches(self._entry(_DNS_BLOCKED))
+        assert filt.matches(self._entry(_DNS_ALLOWED))
+        assert not filt.matches(self._entry(_ALLOWED))  # GET
+
+    def test_method_filter_dns_case_insensitive(self):
+        filt = AuditFilter(methods=["dns"])
+        assert filt.matches(self._entry(_DNS_BLOCKED))
+
+    def test_summary_includes_dns_method(self):
+        entries = [
+            self._entry(_ALLOWED),
+            self._entry(_DNS_BLOCKED),
+            self._entry(_DNS_ALLOWED),
+        ]
+        s = compute_summary(entries)
+        assert s["methods"]["DNS"] == 2
+        assert s["methods"]["GET"] == 1
+        assert s["decisions"]["blocked"] == 1
+        assert "evil.com" in s["top_blocked_hosts"]
+        assert "dns" in s["inspector_triggers"]
+
+    def test_dns_blocked_table_row(self):
+        entry = self._entry(_DNS_BLOCKED)
+        row = format_table_row(entry, color=False)
+        assert "DNS" in row
+        assert "evil.com" in row
+        assert "blocked" in row
+        assert "53" in row

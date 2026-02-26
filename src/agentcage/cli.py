@@ -863,6 +863,10 @@ def cage_logs(name, services, lines, no_follow, min_level):
 def _classify_line(service: str, line: str) -> str:
     """Classify a log line's severity for container-mode filtering."""
     if service == "dns":
+        if '"decision":"blocked"' in line or '"decision": "blocked"' in line:
+            return "warning"
+        if '"decision":"allowed"' in line or '"decision": "allowed"' in line:
+            return "info"
         low = line.lower()
         for pat in ("query[", "reply", "cached", "forwarded"):
             if pat in low:
@@ -1034,11 +1038,9 @@ def _build_audit_journal_cmd(
 ) -> list[str]:
     """Build the journalctl command for reading audit entries."""
     if cfg.isolation == "firecracker":
-        unit = f"{name}-cage"
+        cmd = ["journalctl", "--user", "-u", f"{name}-cage", "-o", "cat"]
     else:
-        unit = f"{name}-proxy"
-
-    cmd = ["journalctl", "--user", "-u", unit, "-o", "cat"]
+        cmd = ["journalctl", "--user", "-u", f"{name}-proxy", "-u", f"{name}-dns", "-o", "cat"]
 
     if since:
         cmd += ["--since", _normalize_since(since)]

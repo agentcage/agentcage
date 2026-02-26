@@ -93,8 +93,8 @@ class AuditFilter:
         return not entry.inspectors and min_ord == 0
 
 
-# Regex matching Firecracker-mode log prefix: [proxy:warning] {json...}
-_FC_PREFIX_RE = re.compile(r"^\[proxy:(?:debug|info|warning|error|critical)\]\s*(.*)$")
+# Regex matching Firecracker-mode log prefix: [proxy:warning] or [dns:warning] {json...}
+_FC_PREFIX_RE = re.compile(r"^\[(?:proxy|dns):(?:debug|info|warning|error|critical)\]\s*(.*)$")
 
 
 def extract_audit_json(line: str) -> dict | None:

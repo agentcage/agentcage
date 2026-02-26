@@ -154,6 +154,59 @@ class TestDnsQuadlet:
             for server in ("100.100.100.100", "1.1.1.1", "8.8.8.8"):
                 assert f"--server=/{domain}/{server}" in content
 
+    def test_dns_allowlist_uses_wrapper(self, tmp_path):
+        """When allowlist is active, dnsmasq is wrapped with dns-audit.sh."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              mode: allowlist
+              list:
+                - api.anthropic.com
+            dns_servers:
+              - 100.100.100.100
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        assert "Exec=/usr/local/bin/dns-audit.sh" in content
+        assert "-- dnsmasq" in content
+        assert "--log-queries" in content
+        # --log-allowed should NOT be present when dns_queries is false (default)
+        assert "--log-allowed" not in content
+
+    def test_dns_allowlist_log_allowed(self, tmp_path):
+        """When allowlist + dns_queries logging, --log-allowed flag is added."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              mode: allowlist
+              list:
+                - api.anthropic.com
+            dns_servers:
+              - 100.100.100.100
+            logging:
+              dns_queries: true
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        assert "Exec=/usr/local/bin/dns-audit.sh --log-allowed --" in content
+        assert "--log-queries" in content
+
+    def test_dns_no_allowlist_no_wrapper(self, minimal_yaml):
+        """Without allowlist, dnsmasq runs directly (no wrapper)."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        assert "dns-audit.sh" not in content
+        assert "Exec=dnsmasq --no-daemon" in content
+
     def test_dns_no_allowlist_filtering_in_blocklist_mode(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\

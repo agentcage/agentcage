@@ -133,18 +133,30 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
     dns_servers = config.dns_servers if config.dns_servers else ["1.1.1.1", "8.8.8.8"]
 
     # Build dnsmasq args
+    has_allowlist = config.domains.mode == "allowlist" and config.domains.list
     dns_args = ["dnsmasq", "--no-daemon", "--no-resolv"]
-    if config.logging.dns_queries:
+    if has_allowlist:
+        # Wrapper always needs --log-queries to parse dnsmasq output
+        dns_args.insert(2, "--log-queries")
+    elif config.logging.dns_queries:
         dns_args.insert(2, "--log-queries")
     for srv in dns_servers:
         dns_args += ["--server", srv]
-    if config.domains.mode == "allowlist" and config.domains.list:
+    if has_allowlist:
         dns_args += ["--address=/#/198.51.100.1"]
         for domain in config.domains.list:
             for srv in dns_servers:
                 dns_args += [f"--server=/{domain}/{srv}"]
 
-    dns_cmd = " ".join(_shell_quote(a) for a in dns_args)
+    if has_allowlist:
+        # Wrap with dns-audit.sh for audit logging
+        wrapper_args = ["/usr/local/bin/dns-audit.sh"]
+        if config.logging.dns_queries:
+            wrapper_args.append("--log-allowed")
+        wrapper_args.append("--")
+        dns_cmd = " ".join(_shell_quote(a) for a in wrapper_args + dns_args)
+    else:
+        dns_cmd = " ".join(_shell_quote(a) for a in dns_args)
 
     # Build proxy command — use multi-mode when ports are configured
     if cc.ports:
@@ -368,6 +380,8 @@ echo "start-cage: all containers started"
 # when test returns false (exit 1) and the && short-circuits.
 podman logs -f "${{CAGE_NAME}}-dns" 2>&1 | while IFS= read -r line; do
     case "$line" in
+        *'"decision":"blocked"'*) echo "[dns:warning] $line" ;;
+        *'"decision":"allowed"'*) test {min_level_dns} -le 1 && echo "[dns:info] $line" || : ;;
         *query\\[*|*reply*|*cached*|*forwarded*) test {min_level_dns} -le 0 && echo "[dns:debug] $line" || : ;;
         *error*|*REFUSED*|*SERVFAIL*) echo "[dns:error] $line" ;;
         *) test {min_level_dns} -le 1 && echo "[dns:info] $line" || : ;;
