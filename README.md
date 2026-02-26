@@ -105,7 +105,7 @@ agentcage secret set myapp ANTHROPIC_API_KEY
 agentcage cage update myapp -c cage.yaml
 
 # Restart without rebuild
-agentcage cage reload myapp
+agentcage cage restart myapp
 
 # Backup and restore
 agentcage cage backup myapp --include-secrets -o backup.tar.gz
@@ -118,7 +118,7 @@ agentcage cage destroy myapp
 | Command / Group | Commands |
 |---|---|
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `reload`, `logs`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`) |
+| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `firecracker` | `setup` |
