@@ -211,8 +211,12 @@ class TestCageBackup:
         podman = MockPodman.return_value
         podman.secret_list.return_value = []
 
-        # Run from tmp_path so the default output goes there
-        result = _runner().invoke(main, ["cage", "backup", "test"])
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = _runner().invoke(main, ["cage", "backup", "test"])
+        finally:
+            os.chdir(old_cwd)
         assert result.exit_code == 0, result.output
         assert "test-backup-" in result.output
         assert ".tar.gz" in result.output
