@@ -18,14 +18,15 @@ Volume={{ name }}-certs.volume:/home/mitmproxy/.mitmproxy:Z
 Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 {% endif %}
+AddCapability=NET_ADMIN
 {% if inbound_forwards %}
-Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080{% for fwd in inbound_forwards %} --mode reverse:http://{{ ip_cage }}:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
+Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080 --mode transparent@8443{% for fwd in inbound_forwards %} --mode reverse:http://{{ ip_cage }}:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
 
 {% for fwd in inbound_forwards %}
 PublishPort={{ fwd.publish_spec }}
 {% endfor %}
 {% else %}
-Exec=mitmdump -s /app/addon.py --listen-port 8080 --set connection_strategy=lazy --listen-host {{ ip_proxy }}{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
+Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080 --mode transparent@8443 --set connection_strategy=lazy{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
 
 {% endif %}
 {% for secret in proxy_secrets %}
@@ -39,6 +40,7 @@ Secret={{ secret }},type=env
 [Service]
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && podman unshare chown 1000:1000 "$mp"'
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "printf '{% for srv in dns_servers %}nameserver {{ srv }}\n{% endfor %}' > /etc/resolv.conf"
+ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80 -j REDIRECT --to-port 8443 && iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 443 -j REDIRECT --to-port 8443"
 Restart=on-failure
 
 [Install]

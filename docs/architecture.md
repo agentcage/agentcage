@@ -16,6 +16,8 @@ This document covers the shared architecture used by both modes. For Firecracker
   │  │               │    │               │    │                  │  │
   │  │ HTTP_PROXY=  ─┼────┼───────────────┼───►│ forward :8080   ─┼──┼─► Internet
   │  │  10.89.0.11   │    │               │    │                  │  │
+  │  │               │    │               │    │ transparent:8443│  │
+  │  │ default route─┼────┼───────────────┼───►│  ↕ iptables REDIR│  │
   │  │               │    │               │    │ reverse :port   ◄┼──┼── Host (published ports)
   │  │ resolv.conf  ─┼───►│ resolves via  │    │   ↕ inspects     │  │
   │  │               │    │ external net ─┼────┼──────────────────┼──┼─► Upstream DNS
@@ -47,16 +49,17 @@ In Firecracker mode, the entire topology runs inside a Firecracker microVM with 
 
 This is the **only** architectural difference between the modes. The inspector chain, secret injection, DNS filtering, and all other inspection logic are identical.
 
-**Agent** -- The user's container (e.g. an AI coding agent), at fixed IP `10.89.0.2`. It is connected *only* to the internal network and has no internet gateway. `HTTP_PROXY` and `HTTPS_PROXY` environment variables force all outbound HTTP traffic through the proxy container. The agent cannot reach the internet by any other path. Published ports are not exposed on the agent container — they are served by the proxy.
+**Agent** -- The user's container (e.g. an AI coding agent), at fixed IP `10.89.0.2`. It is connected *only* to the internal network. A default route via the proxy container and iptables REDIRECT rules provide **transparent proxy interception**: all outbound HTTP (port 80) and HTTPS (port 443) traffic is intercepted by mitmproxy regardless of whether the application respects `HTTP_PROXY` environment variables. `HTTP_PROXY` and `HTTPS_PROXY` are still set for proxy-aware applications on non-standard ports. Published ports are not exposed on the agent container — they are served by the proxy.
 
 **DNS sidecar (dnsmasq)** -- Dual-homed: connected to both the internal network (at `10.89.0.10`) and the default `podman` network. It handles DNS resolution for agents that resolve hostnames before proxying. In allowlist mode, non-allowlisted domains resolve to a placeholder IP (`198.51.100.1`, RFC 5737 TEST-NET-2) instead of failing, so SSRF guards that pre-resolve DNS continue to work. Upstream DNS servers default to `1.1.1.1` and `8.8.8.8` but are configurable via `dns_servers`.
 
-**Proxy (mitmproxy + addon.py)** -- Dual-homed: connected to both networks. Runs the [inspector chain](#inspector-chain) against every request. Operates in two modes simultaneously when ports are published:
+**Proxy (mitmproxy + addon.py)** -- Dual-homed: connected to both networks. Runs the [inspector chain](#inspector-chain) against every request. Operates in multiple modes simultaneously:
 
-- **Forward proxy** (`:8080`) -- handles outbound traffic from the agent, forwarding allowed requests to the internet
-- **Reverse proxy** (one listener per published port) -- handles inbound traffic from the host, forwarding to the agent at `10.89.0.2`
+- **Forward proxy** (`:8080`) -- handles outbound traffic from proxy-aware applications on non-standard ports
+- **Transparent proxy** (`:8443`) -- handles outbound HTTP/HTTPS traffic redirected by iptables from ports 80 and 443, intercepting traffic from applications that don't use proxy env vars
+- **Reverse proxy** (one listener per published port, when ports are configured) -- handles inbound traffic from the host, forwarding to the agent at `10.89.0.2`
 
-Both directions pass through the full inspector chain (domain filtering, secret detection, entropy analysis, etc.). When no ports are published, only the forward proxy mode is active.
+All directions pass through the full inspector chain (domain filtering, secret detection, entropy analysis, etc.). The `NET_ADMIN` capability is granted to the proxy container to allow iptables REDIRECT rules.
 
 ## Network Isolation
 
@@ -140,13 +143,21 @@ Two environment variables are set in the cage container so that common runtimes 
 - `NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem` -- Node.js
 - `SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem` -- Python, curl, and other OpenSSL-based tools
 
-## Node.js Fetch Patch
+## Transparent Proxy Interception
 
-Node.js's built-in `fetch()` (powered by undici) ignores the `HTTP_PROXY` / `HTTPS_PROXY` environment variables. Without intervention, `fetch()` calls from Node.js agents bypass the proxy entirely -- and since the agent has no internet gateway, they fail with connection errors instead of being inspected.
+In container mode, all outbound HTTP/HTTPS traffic is intercepted transparently at the network level, regardless of whether the application uses proxy environment variables:
 
-agentcage solves this by injecting a loader script via `NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs`. The script replaces `globalThis.fetch` with a wrapper that routes requests through an `EnvHttpProxyAgent` from the `undici` package, which reads the proxy env vars.
+1. **Default route** -- An `ExecStartPost` script uses `nsenter` to add a default route in the cage container's network namespace, pointing to the proxy container's IP. This gives the cage container a path to send packets to arbitrary IPs (which previously had no route on the internal network).
 
-Non-Node.js applications (Python, Go, curl, etc.) natively respect `HTTP_PROXY` / `HTTPS_PROXY` and need no patching.
+2. **iptables REDIRECT** -- The proxy container has `NET_ADMIN` capability and runs iptables rules that redirect inbound traffic on ports 80 and 443 to mitmproxy's transparent listener on port 8443. The `-i eth0` flag restricts this to traffic arriving from the internal network.
+
+3. **mitmproxy transparent mode** -- mitmproxy runs with `--mode transparent@8443` alongside its regular forward proxy mode on port 8080. It uses `SO_ORIGINAL_DST` to determine the original destination of redirected connections.
+
+This means Go's custom `http.Transport`, Node.js `fetch()`, Rust's `reqwest`, and any other HTTP client that creates direct connections to ports 80/443 will have their traffic intercepted and inspected — no runtime-specific patching required.
+
+`HTTP_PROXY` / `HTTPS_PROXY` environment variables are still set for proxy-aware applications that use non-standard ports (which are not covered by the iptables REDIRECT rules).
+
+In Firecracker mode, transparent interception is not yet implemented — applications must use `HTTP_PROXY` env vars.
 
 ## Nested Containers (Podman-in-Podman)
 
@@ -185,5 +196,5 @@ The `generate` command produces 5 quadlet files in `<name>-quadlets/` (6 when `n
 | `<name>-certs.volume` | Shared certificate volume |
 | `<name>-dns.container` | DNS sidecar (dnsmasq) |
 | `<name>-proxy.container` | mitmproxy with inspector chain |
-| `<name>-cage.container` | Agent container with proxy env vars, cert mount, and fetch patch |
+| `<name>-cage.container` | Agent container with proxy env vars, cert mount, and default route |
 | `<name>-podman-storage.volume` | *(nested only)* Inner podman image/container storage |

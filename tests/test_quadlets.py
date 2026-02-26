@@ -236,6 +236,10 @@ class TestProxyQuadlet:
         assert "After=test-dns.service" in content
         assert "Volume=/home/user/config.yaml:/etc/agentcage/config.yaml:ro,Z" in content
         assert "Volume=test-certs.volume:/home/mitmproxy/.mitmproxy:Z" in content
+        assert "AddCapability=NET_ADMIN" in content
+        assert "--mode transparent@8443" in content
+        assert "iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80 -j REDIRECT --to-port 8443" in content
+        assert "iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 443 -j REDIRECT --to-port 8443" in content
 
     def test_proxy_secrets(self, tmp_path):
         p = tmp_path / "config.yaml"
@@ -337,10 +341,12 @@ class TestCageQuadlet:
         assert f'Environment="https_proxy=http://{addrs["ip_proxy"]}:8080"' in content
         assert 'Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"' in content
-        assert 'Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"' in content
+        assert 'NODE_OPTIONS' not in content
         assert 'Environment="AGENTCAGE_VERSION=' in content
         assert "Volume=test-certs.volume:/certs:ro,Z" in content
         assert "Volume=/home/patches:/agentcage:ro,Z" in content
+        assert "nsenter" in content
+        assert f"ip route add default via {addrs['ip_proxy']}" in content
 
     def test_cage_defaults_hardening(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
@@ -523,6 +529,19 @@ class TestCageQuadlet:
         with pytest.raises(ValueError, match="container port 8080 conflicts"):
             generate_quadlets(cfg, "/c.yaml", "/patches")
 
+    def test_port_8443_conflict_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              ports:
+                - "127.0.0.1:8443:8443"
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match="container port 8443 conflicts"):
+            generate_quadlets(cfg, "/c.yaml", "/patches")
+
 
 class TestProxyReverseMode:
     def test_proxy_reverse_mode_with_ports(self, tmp_path):
@@ -539,16 +558,18 @@ class TestProxyReverseMode:
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         proxy = files["test-proxy.container"]
         assert f"--mode regular@{addrs['ip_proxy']}:8080" in proxy
+        assert "--mode transparent@8443" in proxy
         assert f"--mode reverse:http://{addrs['ip_cage']}:3000@0.0.0.0:3000" in proxy
         assert "--set keep_host_header=true" in proxy
         assert "PublishPort=127.0.0.1:3000:3000" in proxy
 
     def test_proxy_no_reverse_without_ports(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         proxy = files["test-proxy.container"]
-        assert "--listen-port 8080" in proxy
-        assert "--mode" not in proxy
+        assert f"--mode regular@{addrs['ip_proxy']}:8080" in proxy
+        assert "--mode transparent@8443" in proxy
         assert "keep_host_header" not in proxy
         assert "PublishPort=" not in proxy
 

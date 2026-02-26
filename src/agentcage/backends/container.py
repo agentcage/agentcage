@@ -45,7 +45,7 @@ class ContainerBackend:
             os.path.join(containers_dir, "Containerfile.proxy"),
             build_context,
             no_cache=True,
-            cap_add=["CAP_CHOWN", "CAP_FOWNER"],
+            cap_add=["CAP_CHOWN", "CAP_FOWNER", "CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE"],
         )
         click.echo("Building DNS image...")
         self._podman.build_image(

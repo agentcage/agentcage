@@ -362,7 +362,6 @@ podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     -e "https_proxy=http://{addrs['ip_proxy']}:8080" \\
     -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \\
     -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \\
-    -e "NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs" \\
     -e "AGENTCAGE_VERSION={_pkg_version('agentcage')}" \\
     -v "$CERT_DIR:/certs:ro" \\
     -v /var/lib/agentcage/patches:/agentcage:ro \\

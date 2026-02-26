@@ -13,7 +13,6 @@ Environment="http_proxy=http://{{ ip_proxy }}:8080"
 Environment="https_proxy=http://{{ ip_proxy }}:8080"
 Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
 Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
-Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
 Volume={{ name }}-certs.volume:/certs:ro,Z
 Volume={{ patches_host_dir }}:/agentcage:ro,Z
@@ -83,6 +82,7 @@ Exec={{ command | systemd_exec }}
 
 [Service]
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-proxy test -f /home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+ExecStartPost=-/bin/sh -c 'nsenter -t $(podman inspect --format "{{"{{"}}.State.Pid{{"}}"}}" {{ name }}-cage) -U -n -- ip route add default via {{ ip_proxy }}'
 Restart={{ restart }}
 RestartSec={{ restart_sec }}
 {% if timeout_start_sec %}

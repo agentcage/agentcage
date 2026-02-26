@@ -147,6 +147,11 @@ def generate_quadlets(
                 f"container port 8080 conflicts with the mitmproxy forward proxy "
                 f"(port spec: {port_spec!r}). Use a different container port."
             )
+        if container_port == "8443":
+            raise ValueError(
+                f"container port 8443 conflicts with the mitmproxy transparent proxy "
+                f"(port spec: {port_spec!r}). Use a different container port."
+            )
         inbound_forwards.append({
             "host_bind": host_bind,
             "host_port": host_port,

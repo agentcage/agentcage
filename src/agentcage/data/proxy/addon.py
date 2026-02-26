@@ -253,6 +253,14 @@ class Agentcage:
     def request(self, flow: http.HTTPFlow) -> None:
         self._maybe_reload()
 
+        # In transparent mode, flow.request.host is the raw destination IP
+        # (from SO_ORIGINAL_DST).  Rewrite it to the actual hostname from the
+        # Host header (HTTP) or TLS SNI (HTTPS) so domain filtering, logging,
+        # and secret injection all see the real hostname.
+        pretty = flow.request.pretty_host
+        if pretty != flow.request.host:
+            flow.request.host = pretty
+
         # Rate limiting
         if not self._check_rate_limit(flow.request.host):
             flow.response = http.Response.make(

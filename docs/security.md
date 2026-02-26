@@ -118,8 +118,7 @@ These changes increase the container escape attack surface. All network-level pr
 
 - **Container base images** are pinned to specific `sha256` digests in the Containerfiles, preventing silent upstream changes
 - **Python dependencies** (pyyaml) are pinned to exact versions
-- **Node.js patch dependencies** (undici) use `npm ci` with a committed lockfile containing integrity hashes
-- **Patch files** are re-copied from package data and SHA-256 verified on every cage create, update, and reload
+- **Patch files** (nested container support) are re-copied from package data on every cage create, update, and reload
 - **Custom inspector paths** are validated against an allowed directory list (default: `/etc/agentcage/inspectors/`)
 - **Cage names** are validated against `^[a-z0-9][a-z0-9-]{0,62}$` to prevent shell injection in generated systemd units
 - **Jinja2 templates** use `SandboxedEnvironment` to prevent template injection
@@ -145,20 +144,15 @@ These changes increase the container escape attack surface. All network-level pr
 
 **Multi-request evasion** -- An agent could split a secret across many requests to avoid regex matching. The entropy and content-type inspectors help catch encoded exfiltration, but are not foolproof against sophisticated splitting strategies. The GTG-1002 campaign demonstrated that AI agents can autonomously develop multi-step exfiltration strategies where each individual request appears legitimate.
 
-**Proxy-unaware applications** -- Applications that don't read `HTTP_PROXY` / `HTTPS_PROXY` get connection errors (blocked by network isolation) rather than 403 responses from the proxy. This applies to:
-  - Node.js `http.request()` / `https.request()` (agentcage patches `globalThis.fetch` automatically, but not the lower-level APIs)
-  - Go's `net/http` (does respect `HTTP_PROXY` by default)
-  - Rust's `reqwest` (requires explicit proxy configuration)
-  - Python's `urllib3` (does respect `HTTP_PROXY`, but `socket` does not)
-  - Any npm library (axios, got, node-fetch) that doesn't respect env vars
+**Proxy-unaware applications** -- In container mode, transparent proxy interception (default route + iptables REDIRECT) captures all outbound HTTP (port 80) and HTTPS (port 443) traffic regardless of whether the application uses `HTTP_PROXY` env vars. This covers Go, Rust, Node.js `fetch()`, and any other runtime. Applications using non-standard ports (not 80/443) that don't read `HTTP_PROXY` / `HTTPS_PROXY` will get connection errors — the security guarantee holds (no unfiltered internet access), but the error is a connection timeout rather than a 403 response.
 
-  In all cases, the requests *fail* (blocked by network isolation) rather than bypass inspection. The security guarantee holds — the agent cannot reach the internet — but the error messages are connection timeouts rather than informative 403 responses.
+  In Firecracker mode, transparent interception is not yet implemented, so proxy-unaware applications get connection errors for all ports. The same security guarantee applies — requests fail rather than bypass inspection.
 
 **DNS-based exfiltration** -- In allowlist mode, dnsmasq returns a placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for non-allowlisted domains, blocking direct DNS exfiltration. However, an agent with code execution can encode data in subdomain labels of *allowlisted* domains (e.g. `<encoded-data>.cdn.jsdelivr.net`). These queries are forwarded to the upstream resolver, which recursively resolves them — potentially reaching an attacker's authoritative nameserver if they control a subdomain delegation. Each DNS query can carry ~253 bytes; practical exfiltration rates of 10-50 KB/s are achievable. Mitigations include monitoring dnsmasq query logs for high-entropy subdomain labels and enabling rate limiting.
 
 **Exfiltration through allowed domains** -- The domain allowlist prevents direct exfiltration to attacker infrastructure, but data can be smuggled through *allowed* endpoints. For example, an agent could embed secrets in GitHub issue titles, Brave Search query parameters, or npm package metadata. The secrets inspector detects known secret patterns in URLs, but custom-encoded data in URL paths and query parameters is not subject to entropy analysis (only request bodies are). Rate limiting and audit log monitoring help bound this channel.
 
-**Published port limitations** -- Published ports (`ports` config option) are served through mitmproxy reverse mode, so HTTP traffic is inspected by the full inspector chain. However, non-HTTP protocols (raw TCP, WebSocket upgrade on non-standard ports) will fail at HTTP parsing. Container port 8080 cannot be published as it conflicts with the forward proxy listener.
+**Published port limitations** -- Published ports (`ports` config option) are served through mitmproxy reverse mode, so HTTP traffic is inspected by the full inspector chain. However, non-HTTP protocols (raw TCP, WebSocket upgrade on non-standard ports) will fail at HTTP parsing. Container ports 8080 and 8443 cannot be published as they conflict with the forward proxy and transparent proxy listeners respectively.
 
 **Supply chain poisoning** -- The agent can install arbitrary packages from allowlisted registries (npm, PyPI, etc.). A prompt injection could direct the agent to install a malicious package that runs code inside the container. Container hardening (read-only root, dropped caps, no-new-privileges) limits the impact but does not prevent data access within the agent's workspace. Consider pre-approved package lists for high-security deployments.
 

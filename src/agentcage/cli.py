@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 import os
 import re
@@ -184,15 +183,6 @@ def _check_secrets(podman: Podman, deploy_name: str, cfg) -> list[str]:
     return missing
 
 
-def _file_sha256(path: str) -> str:
-    """Return hex SHA-256 digest of a file."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _suggest_alt_port(port: int) -> int:
     """Return a suggested alternative port that stays within 1-65535."""
     alt = port + 1
@@ -237,23 +227,12 @@ def _patches_work_dir() -> str:
 
 
 def _ensure_patches(podman: Podman) -> str:
-    """Refresh patch files from package data and verify integrity.
+    """Refresh patch files from package data.
 
-    Always re-copies source files so that any tampering in the work
-    directory is overwritten.  Returns the patches work directory path.
+    Copies nested container support files so that any tampering in the
+    work directory is overwritten.  Returns the patches work directory path.
     """
     patches_work = _patches_work_dir()
-    patches_src = str(_DATA_DIR / "patches")
-
-    for fname in ("package.json", "package-lock.json", "proxy-fetch.mjs"):
-        src = os.path.join(patches_src, fname)
-        dst = os.path.join(patches_work, fname)
-        shutil.copy2(src, dst)
-        # Verify the copy matches the source
-        if _file_sha256(dst) != _file_sha256(src):
-            raise RuntimeError(
-                f"patch file integrity check failed: {dst} does not match source"
-            )
 
     # Copy nested container support files
     nested_src = str(_DATA_DIR / "nested")
@@ -262,23 +241,9 @@ def _ensure_patches(podman: Podman) -> str:
         if os.path.isdir(nested_dst):
             shutil.rmtree(nested_dst)
         shutil.copytree(nested_src, nested_dst)
-        # Ensure docker shim is executable
         docker_shim = os.path.join(nested_dst, "docker")
         if os.path.isfile(docker_shim):
             os.chmod(docker_shim, 0o755)
-
-    # Install undici deps if missing (npm ci uses lockfile for integrity)
-    node_modules = os.path.join(patches_work, "node_modules", "undici")
-    if not os.path.isdir(node_modules):
-        click.echo("Installing proxy-fetch patch dependencies...")
-        try:
-            podman.run_and_remove(
-                "docker.io/node:22-alpine",
-                ["npm", "ci", "--prefix", "/app", "--silent"],
-                volumes={patches_work: {"bind": "/app", "mode": "Z"}},
-            )
-        except Exception as e:
-            click.echo(f"warning: npm ci failed: {e}", err=True)
 
     return patches_work
 
