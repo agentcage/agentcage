@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.19] - 2026-02-26
+
+### Fixed
+- OpenClaw scaffold: configure `gateway.controlUi.allowedOrigins` so the gateway starts without errors on newer OpenClaw versions that require explicit origin config for non-loopback binds
+- Add LAN access instructions (0.0.0.0 binding) to the scaffold template comments
+
 ## [0.3.18] - 2026-02-25
 
 ### Fixed

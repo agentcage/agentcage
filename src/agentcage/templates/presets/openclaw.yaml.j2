@@ -25,7 +25,7 @@ container:
   command:
     - "sh"
     - "-c"
-    - "chmod 700 /home/node/.openclaw; test -f /home/node/.openclaw/openclaw.json || printf '{\"gateway\": {\"trustedProxies\": [\"10.89.0.11\"]} }' > /home/node/.openclaw/openclaw.json; chmod 600 /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
+    - "chmod 700 /home/node/.openclaw; test -f /home/node/.openclaw/openclaw.json || printf '{\"gateway\": {\"trustedProxies\": [\"10.89.0.11\"], \"controlUi\": {\"allowedOrigins\": [\"http://localhost:{{ gateway_port }}\", \"http://127.0.0.1:{{ gateway_port }}\"]} } }' > /home/node/.openclaw/openclaw.json; chmod 600 /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
 
   # Podman named volumes for persistent state
   named_volumes:
@@ -39,7 +39,13 @@ container:
     - "/scratch:rw,exec,nosuid,size=2G"
 
   # Gateway web UI — published on the host (BIND:HOST_PORT:CONTAINER_PORT)
-  # Change 127.0.0.1 to 0.0.0.0 to allow access from other machines on the LAN
+  # To allow access from other machines on the LAN:
+  #   1. Change 127.0.0.1 to 0.0.0.0 below
+  #   2. Delete the state volume so openclaw.json is regenerated:
+  #        podman volume rm {{ name }}-state
+  #   3. Replace the "controlUi" block in the command above with:
+  #        \"controlUi\": {\"dangerouslyAllowHostHeaderOriginFallback\": true}
+  #   4. Recreate the cage:  agentcage cage create -c cage.yaml
   ports:
     - "127.0.0.1:{{ gateway_port }}:18789"
 
