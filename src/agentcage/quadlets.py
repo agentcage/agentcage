@@ -65,6 +65,27 @@ def _make_env() -> SandboxedEnvironment:
     return env
 
 
+def render_dns_quadlet(config: Config) -> str:
+    """Render just the DNS container quadlet for a given config.
+
+    Used by ``domain add``/``domain rm`` to update DNS forwarding rules
+    without a full rebuild.
+    """
+    env = _make_env()
+    name = config.name
+    addrs = cage_network_addrs(name)
+    dns_allowlist = (
+        config.domains.list if config.domains.mode == "allowlist" else []
+    )
+    return env.get_template("dns.container.j2").render(
+        name=name,
+        **addrs,
+        dns_servers=config.dns_servers,
+        log_dns_queries=config.logging.dns_queries,
+        dns_allowlist=dns_allowlist,
+    )
+
+
 def generate_quadlets(
     config: Config,
     config_host_path: str,

@@ -143,11 +143,14 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"  4. agentcage cage create -c {dest}")
     elif scaffold == "picoclaw":
         click.echo(f"\nNext steps:")
-        click.echo(f"  1. Create ~/.picoclaw/config.json with placeholder API keys")
+        click.echo(f"  1. Build PicoClaw from source (v0.1.2 lacks HTTP proxy support):")
+        click.echo(f"       git clone https://github.com/sipeed/picoclaw.git")
+        click.echo(f"       cd picoclaw && podman build -t localhost/picoclaw:latest .")
+        click.echo(f"  2. Create ~/.picoclaw/config.json with placeholder API keys")
         click.echo(f"     (see https://github.com/sipeed/picoclaw for config format)")
-        click.echo(f"  2. agentcage secret set {name} ANTHROPIC_API_KEY")
-        click.echo(f"  3. Edit {dest} — uncomment additional providers/domains")
-        click.echo(f"  4. agentcage cage create -c {dest}")
+        click.echo(f"  3. agentcage secret set {name} ANTHROPIC_API_KEY")
+        click.echo(f"  4. Edit {dest} — uncomment additional providers/domains")
+        click.echo(f"  5. agentcage cage create -c {dest}")
     elif scaffold == "nanoclaw":
         from agentcage.init import _SCAFFOLDS_DIR
         script_dir = _SCAFFOLDS_DIR / "nanoclaw"
@@ -1785,6 +1788,20 @@ def domain_list(cage_name: str):
         click.echo(d)
 
 
+def _update_dns_quadlet(cfg) -> None:
+    """Regenerate the DNS quadlet and restart the DNS sidecar."""
+    from agentcage.quadlets import render_dns_quadlet
+
+    backend = get_backend(cfg)
+    name = cfg.name
+    dns_content = render_dns_quadlet(cfg)
+    quadlet_dir = backend.unit_dir()
+    (quadlet_dir / f"{name}-dns.container").write_text(dns_content)
+    systemd.daemon_reload()
+    if backend.is_running(name, "dns"):
+        systemd.restart_unit(f"{name}-dns.service")
+
+
 @domain.command("add")
 @click.argument("cage_name")
 @click.argument("domain_name")
@@ -1810,13 +1827,11 @@ def domain_add(cage_name: str, domain_name: str):
     state.save_proxy_config(cage_name)
 
     cfg = state.load_deployment_config(cage_name)
-    name = cfg.name
-    backend = get_backend(cfg)
-    running = backend.is_running(name, "cage")
+    _update_dns_quadlet(cfg)
 
     msg = f"Added '{domain_name}' to cage '{cage_name}'."
-    if running:
-        msg += " Proxy updated."
+    if get_backend(cfg).is_running(cfg.name, "cage"):
+        msg += " DNS and proxy updated."
     click.echo(msg)
 
 
@@ -1841,13 +1856,11 @@ def domain_rm(cage_name: str, domain_name: str):
     state.save_proxy_config(cage_name)
 
     cfg = state.load_deployment_config(cage_name)
-    name = cfg.name
-    backend = get_backend(cfg)
-    running = backend.is_running(name, "cage")
+    _update_dns_quadlet(cfg)
 
     msg = f"Removed '{domain_name}' from cage '{cage_name}'."
-    if running:
-        msg += " Proxy updated."
+    if get_backend(cfg).is_running(cfg.name, "cage"):
+        msg += " DNS and proxy updated."
     click.echo(msg)
 
 

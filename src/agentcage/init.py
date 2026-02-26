@@ -11,10 +11,11 @@ from jinja2.sandbox import SandboxedEnvironment
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _SCAFFOLDS_DIR = Path(__file__).parent / "scaffolds"
 
-# Scaffold name → base image (without tag) for version pinning
+# Scaffold name → base image (without tag) for version pinning.
+# picoclaw uses a local build (see scaffold comments) until a release
+# with HTTP proxy support ships upstream.
 _SCAFFOLD_IMAGES: dict[str, str] = {
     "openclaw": "ghcr.io/openclaw/openclaw",
-    "picoclaw": "docker.io/sipeed/picoclaw",
 }
 
 

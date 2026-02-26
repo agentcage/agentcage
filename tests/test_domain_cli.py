@@ -50,9 +50,10 @@ class TestDomainList:
 
 
 class TestDomainAdd:
+    @patch("agentcage.cli._update_dns_quadlet")
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_domain_add(self, mock_state, mock_get_backend):
+    def test_domain_add(self, mock_state, mock_get_backend, mock_update_dns):
         raw = {
             "name": "basic",
             "domains": {"mode": "allowlist", "list": ["httpbin.org"]},
@@ -67,10 +68,11 @@ class TestDomainAdd:
         result = _runner().invoke(main, ["domain", "add", "basic", "github.com"])
         assert result.exit_code == 0
         assert "Added 'github.com' to cage 'basic'" in result.output
-        assert "Proxy updated." in result.output
+        assert "DNS and proxy updated." in result.output
         mock_state.save_raw_config.assert_called_once()
         saved = mock_state.save_raw_config.call_args[0][1]
         assert "github.com" in saved["domains"]["list"]
+        mock_update_dns.assert_called_once_with(cfg)
 
     @patch("agentcage.cli.state")
     def test_domain_add_duplicate(self, mock_state):
@@ -85,9 +87,10 @@ class TestDomainAdd:
         assert "already in" in result.output
         mock_state.save_raw_config.assert_not_called()
 
+    @patch("agentcage.cli._update_dns_quadlet")
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_domain_add_creates_section(self, mock_state, mock_get_backend):
+    def test_domain_add_creates_section(self, mock_state, mock_get_backend, mock_update_dns):
         raw = {"name": "basic"}
         mock_state.load_raw_config.return_value = raw
         cfg = MagicMock()
@@ -102,12 +105,14 @@ class TestDomainAdd:
         saved = mock_state.save_raw_config.call_args[0][1]
         assert saved["domains"]["mode"] == "allowlist"
         assert "example.com" in saved["domains"]["list"]
+        mock_update_dns.assert_called_once_with(cfg)
 
 
 class TestDomainRm:
+    @patch("agentcage.cli._update_dns_quadlet")
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_domain_rm(self, mock_state, mock_get_backend):
+    def test_domain_rm(self, mock_state, mock_get_backend, mock_update_dns):
         raw = {
             "name": "basic",
             "domains": {"mode": "allowlist", "list": ["httpbin.org", "github.com"]},
@@ -122,10 +127,11 @@ class TestDomainRm:
         result = _runner().invoke(main, ["domain", "rm", "basic", "github.com"])
         assert result.exit_code == 0
         assert "Removed 'github.com' from cage 'basic'" in result.output
-        assert "Proxy updated." in result.output
+        assert "DNS and proxy updated." in result.output
         saved = mock_state.save_raw_config.call_args[0][1]
         assert "github.com" not in saved["domains"]["list"]
         assert "httpbin.org" in saved["domains"]["list"]
+        mock_update_dns.assert_called_once_with(cfg)
 
     @patch("agentcage.cli.state")
     def test_domain_rm_not_found(self, mock_state):

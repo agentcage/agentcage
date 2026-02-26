@@ -121,8 +121,7 @@ class TestDefaultInspectors:
         assert "content-type" in names
         assert "domain" in names
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="v0.1.2")
-    def test_picoclaw_preset_parses_via_load_config(self, mock_resolve, tmp_path):
+    def test_picoclaw_preset_parses_via_load_config(self, tmp_path):
         """The picoclaw scaffold should produce valid YAML that load_config accepts."""
         from agentcage.init import render_config
         from agentcage.config import load_config
@@ -131,7 +130,7 @@ class TestDefaultInspectors:
         cfg_file.write_text(cfg_text)
         cfg = load_config(str(cfg_file))
         assert cfg.name == "test-pico"
-        assert cfg.container.image == "docker.io/sipeed/picoclaw:v0.1.2"
+        assert cfg.container.image == "localhost/picoclaw:latest"
         assert cfg.container.command == ["gateway"]
         assert cfg.container.memory == "256m"
         assert cfg.container.cpus == "0.5"
