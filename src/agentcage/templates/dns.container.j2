@@ -4,7 +4,7 @@ Description=agentcage DNS sidecar
 [Container]
 ContainerName={{ name }}-dns
 Image=localhost/agentcage-dns
-Network={{ name }}-net.network:ip=10.89.0.10
+Network={{ name }}-net.network:ip={{ ip_dns }}
 Network=podman
 AddCapability=NET_BIND_SERVICE
 Exec=dnsmasq --no-daemon{% if log_dns_queries %} --log-queries{% endif %} --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %}{% if dns_allowlist %} --address=/#/198.51.100.1{% for domain in dns_allowlist %}{% for srv in dns_servers %} --server=/{{ domain }}/{{ srv }}{% endfor %}{% endfor %}{% endif %}

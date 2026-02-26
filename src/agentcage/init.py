@@ -68,4 +68,7 @@ def render_config(
                 file=sys.stderr,
             )
 
-    return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag)
+    from agentcage.quadlets import cage_network_addrs
+
+    addrs = cage_network_addrs(name)
+    return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag, **addrs)

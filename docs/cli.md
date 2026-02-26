@@ -535,6 +535,8 @@ Fails if the domain is not in the list.
 | Command | Description |
 |---|---|
 | `build nested-base` | Build the nested-containers base image (`localhost/agentcage-nested`) |
+| `build nanoclaw` | Build the NanoClaw cage image (`localhost/agentcage-nanoclaw`) |
+| `build nanoclaw-agent` | Build the NanoClaw agent image (`localhost/nanoclaw-agent`) |
 
 ### `build nested-base`
 
@@ -554,6 +556,39 @@ agentcage build nested-base
 #   container:
 #     image: "localhost/agentcage-nested"
 #     nested_containers: true
+```
+
+### `build nanoclaw`
+
+```
+agentcage build nanoclaw
+```
+
+Builds `localhost/agentcage-nanoclaw`, which extends `agentcage-nested` with NanoClaw pre-installed and patched for agentcage. Requires `agentcage-nested` to be built first (`build nested-base`).
+
+The image:
+- Clones and builds NanoClaw from GitHub
+- Patches `dist/container-runner.js` so inner agent containers use `--network host`, forward proxy/cert env vars, and mount `/certs` and `/agentcage` volumes
+- Writes a `.env` file with the `{{ANTHROPIC_API_KEY}}` placeholder (the proxy swaps it for the real key)
+
+```bash
+agentcage build nanoclaw
+# Built localhost/agentcage-nanoclaw
+```
+
+### `build nanoclaw-agent`
+
+```
+agentcage build nanoclaw-agent
+```
+
+Builds `localhost/nanoclaw-agent`, the agent container image that NanoClaw spawns for each task. Clones the NanoClaw repository into a temporary directory and builds from `container/Dockerfile`.
+
+The agent image includes claude-code, chromium, and the agent-runner. It is preloaded into the cage's inner podman automatically during `cage create` / `cage update`.
+
+```bash
+agentcage build nanoclaw-agent
+# Built localhost/nanoclaw-agent
 ```
 
 ---

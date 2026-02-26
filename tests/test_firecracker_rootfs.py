@@ -15,6 +15,7 @@ from agentcage.firecracker.rootfs import (
     _generate_startup_script, _shell_quote,
     ensure_data_drive, data_drive_path,
 )
+from agentcage.quadlets import cage_network_addrs
 
 
 def _make_config(**overrides) -> Config:
@@ -201,9 +202,10 @@ class TestGenerateStartupScript:
     def test_port_forward_socat(self):
         """Ports should use socat forwarding to the proxy container."""
         cfg = _make_config(container={"ports": ["127.0.0.1:3000:3000", "8080:8080"]})
+        addrs = cage_network_addrs("testcage")
         script = _generate_startup_script(cfg, "testcage")
-        assert "socat TCP-LISTEN:3000,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:3000 &" in script
-        assert "socat TCP-LISTEN:8080,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:8080 &" in script
+        assert f"socat TCP-LISTEN:3000,bind=0.0.0.0,fork,reuseaddr TCP:{addrs['ip_proxy']}:3000 &" in script
+        assert f"socat TCP-LISTEN:8080,bind=0.0.0.0,fork,reuseaddr TCP:{addrs['ip_proxy']}:8080 &" in script
 
     def test_no_port_forward_without_ports(self):
         cfg = _make_config(container={"ports": []})
@@ -254,10 +256,11 @@ class TestGenerateStartupScript:
     def test_proxy_reverse_mode_in_script(self):
         """Proxy should use multi-mode with reverse listeners for each port."""
         cfg = _make_config(container={"ports": ["127.0.0.1:3000:3000", "9090:9090"]})
+        addrs = cage_network_addrs("testcage")
         script = _generate_startup_script(cfg, "testcage")
-        assert "--mode regular@10.89.0.11:8080" in script
-        assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in script
-        assert "--mode reverse:http://10.89.0.2:9090@0.0.0.0:9090" in script
+        assert f"--mode regular@{addrs['ip_proxy']}:8080" in script
+        assert f"--mode reverse:http://{addrs['ip_cage']}:3000@0.0.0.0:3000" in script
+        assert f"--mode reverse:http://{addrs['ip_cage']}:9090@0.0.0.0:9090" in script
 
     def test_proxy_no_reverse_without_ports(self):
         """Without ports, proxy should use simple --listen-port form."""
@@ -295,10 +298,11 @@ class TestGenerateStartupScript:
         script = _generate_startup_script(cfg, "testcage")
         # Should contain all the key elements
         assert "localhost/openclaw:latest" in script
+        addrs = cage_network_addrs("testcage")
         # Proxy should have reverse mode for port 18789
-        assert "--mode reverse:http://10.89.0.2:18789@0.0.0.0:18789" in script
+        assert f"--mode reverse:http://{addrs['ip_cage']}:18789@0.0.0.0:18789" in script
         # socat forwards to proxy, not cage
-        assert "socat TCP-LISTEN:18789,bind=0.0.0.0,fork,reuseaddr TCP:10.89.0.11:18789 &" in script
+        assert f"socat TCP-LISTEN:18789,bind=0.0.0.0,fork,reuseaddr TCP:{addrs['ip_proxy']}:18789 &" in script
         assert "--memory 8g" in script
         assert "--cap-drop ALL" in script
         assert "--cap-add NET_BIND_SERVICE" in script

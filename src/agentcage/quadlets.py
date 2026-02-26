@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from importlib.metadata import version as _pkg_version
@@ -11,6 +12,24 @@ from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 from agentcage.config import Config
+
+
+def cage_network_addrs(name: str) -> dict[str, str]:
+    """Derive deterministic, unique network addresses for a cage.
+
+    Each cage gets a ``/24`` subnet under ``10.89.x.0`` where *x* is
+    derived from the cage name via a hash (range 1–254).  This avoids
+    subnet collisions when multiple cages run simultaneously.
+    """
+    h = hashlib.md5(name.encode()).hexdigest()
+    octet = (int(h[:8], 16) % 254) + 1
+    prefix = f"10.89.{octet}"
+    return {
+        "subnet": f"{prefix}.0/24",
+        "ip_cage": f"{prefix}.2",
+        "ip_dns": f"{prefix}.10",
+        "ip_proxy": f"{prefix}.11",
+    }
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -111,7 +130,8 @@ def generate_quadlets(
             "publish_spec": f"{host_bind}:{host_port}:{container_port}",
         })
 
-    common = {"name": name}
+    addrs = cage_network_addrs(name)
+    common = {"name": name, **addrs}
 
     # Network
     files[f"{name}-net.network"] = env.get_template("network.j2").render(**common)

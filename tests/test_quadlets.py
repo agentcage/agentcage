@@ -6,7 +6,7 @@ import textwrap
 import pytest
 
 from agentcage.config import load_config
-from agentcage.quadlets import generate_quadlets, _systemd_exec_join
+from agentcage.quadlets import generate_quadlets, _systemd_exec_join, cage_network_addrs
 
 
 class TestQuadletFileNames:
@@ -30,11 +30,12 @@ class TestQuadletFileNames:
 class TestNetworkQuadlet:
     def test_network_content(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-net.network"]
         assert "NetworkName=test-net" in content
         assert "Internal=true" in content
-        assert "Subnet=10.89.0.0/24" in content
+        assert f"Subnet={addrs['subnet']}" in content
 
 
 class TestVolumeQuadlet:
@@ -48,11 +49,12 @@ class TestVolumeQuadlet:
 class TestDnsQuadlet:
     def test_dns_default_no_log_queries(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
         assert "ContainerName=test-dns" in content
         assert "Image=localhost/agentcage-dns" in content
-        assert "Network=test-net.network:ip=10.89.0.10" in content
+        assert f"Network=test-net.network:ip={addrs['ip_dns']}" in content
         assert "--log-queries" not in content
 
     def test_dns_custom_servers(self, tmp_path):
@@ -256,28 +258,30 @@ class TestProxyQuadlet:
               - 1.1.1.1
         """))
         cfg = load_config(str(p))
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-proxy.container"]
         assert "ExecStartPost=" in content
         assert "nameserver 100.100.100.100" in content
         assert "nameserver 1.1.1.1" in content
         # Proxy should NOT use dnsmasq
-        assert "nameserver 10.89.0.10" not in content
+        assert f"nameserver {addrs['ip_dns']}" not in content
 
 
 class TestCageQuadlet:
     def test_cage_basics(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/home/patches")
         content = files["test-cage.container"]
         assert "ContainerName=test-cage" in content
         assert "Image=localhost/test:latest" in content
         assert "Requires=test-proxy.service" in content
         assert "After=test-proxy.service" in content
-        assert 'Environment="HTTP_PROXY=http://10.89.0.11:8080"' in content
-        assert 'Environment="HTTPS_PROXY=http://10.89.0.11:8080"' in content
-        assert 'Environment="http_proxy=http://10.89.0.11:8080"' in content
-        assert 'Environment="https_proxy=http://10.89.0.11:8080"' in content
+        assert f'Environment="HTTP_PROXY=http://{addrs["ip_proxy"]}:8080"' in content
+        assert f'Environment="HTTPS_PROXY=http://{addrs["ip_proxy"]}:8080"' in content
+        assert f'Environment="http_proxy=http://{addrs["ip_proxy"]}:8080"' in content
+        assert f'Environment="https_proxy=http://{addrs["ip_proxy"]}:8080"' in content
         assert 'Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"' in content
@@ -306,7 +310,7 @@ class TestCageQuadlet:
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-cage.container"]
-        assert "Volume=/patches/resolv.conf:/etc/resolv.conf:ro,Z" in content
+        assert "Volume=/patches/resolv-test.conf:/etc/resolv.conf:ro,Z" in content
 
     def test_cage_no_dns_directive(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
@@ -325,6 +329,7 @@ class TestCageQuadlet:
 
     def test_cage_full_config(self, full_yaml):
         cfg = load_config(full_yaml)
+        addrs = cage_network_addrs("myapp")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["myapp-cage.container"]
         proxy_content = files["myapp-proxy.container"]
@@ -342,7 +347,7 @@ class TestCageQuadlet:
         assert "PublishPort=" not in content
         assert "PublishPort=127.0.0.1:3000:3000" in proxy_content
         # Cage has static IP
-        assert "ip=10.89.0.2" in content
+        assert f"ip={addrs['ip_cage']}" in content
         # Podman secrets (INJECTED_KEY removed, MY_API_KEY kept)
         assert "Secret=MY_API_KEY,type=env" in content
         # Cage placeholder for injected secret
@@ -447,9 +452,10 @@ class TestCageQuadlet:
 
     def test_cage_has_static_ip(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-cage.container"]
-        assert "Network=test-net.network:ip=10.89.0.2" in content
+        assert f"Network=test-net.network:ip={addrs['ip_cage']}" in content
 
     def test_port_8080_conflict_rejected(self, tmp_path):
         p = tmp_path / "config.yaml"
@@ -476,10 +482,11 @@ class TestProxyReverseMode:
                 - "127.0.0.1:3000:3000"
         """))
         cfg = load_config(str(p))
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         proxy = files["test-proxy.container"]
-        assert "--mode regular@10.89.0.11:8080" in proxy
-        assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in proxy
+        assert f"--mode regular@{addrs['ip_proxy']}:8080" in proxy
+        assert f"--mode reverse:http://{addrs['ip_cage']}:3000@0.0.0.0:3000" in proxy
         assert "--set keep_host_header=true" in proxy
         assert "PublishPort=127.0.0.1:3000:3000" in proxy
 
@@ -503,17 +510,41 @@ class TestProxyReverseMode:
                 - "0.0.0.0:9090:9090"
         """))
         cfg = load_config(str(p))
+        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         proxy = files["test-proxy.container"]
         cage = files["test-cage.container"]
         # Proxy has both reverse modes and both PublishPorts
-        assert "--mode reverse:http://10.89.0.2:3000@0.0.0.0:3000" in proxy
-        assert "--mode reverse:http://10.89.0.2:9090@0.0.0.0:9090" in proxy
+        assert f"--mode reverse:http://{addrs['ip_cage']}:3000@0.0.0.0:3000" in proxy
+        assert f"--mode reverse:http://{addrs['ip_cage']}:9090@0.0.0.0:9090" in proxy
         assert "PublishPort=127.0.0.1:3000:3000" in proxy
         assert "PublishPort=0.0.0.0:9090:9090" in proxy
         assert "--set keep_host_header=true" in proxy
         # Cage has no PublishPort
         assert "PublishPort=" not in cage
+
+
+class TestCageNetworkAddrs:
+    def test_returns_all_keys(self):
+        addrs = cage_network_addrs("test")
+        assert "subnet" in addrs
+        assert "ip_cage" in addrs
+        assert "ip_dns" in addrs
+        assert "ip_proxy" in addrs
+
+    def test_deterministic(self):
+        assert cage_network_addrs("foo") == cage_network_addrs("foo")
+
+    def test_different_names_different_subnets(self):
+        a = cage_network_addrs("cage-alpha")
+        b = cage_network_addrs("cage-beta")
+        assert a["subnet"] != b["subnet"]
+
+    def test_octet_in_valid_range(self):
+        for name in ("a", "z", "test", "my-cage-99", "x" * 63):
+            addrs = cage_network_addrs(name)
+            octet = int(addrs["subnet"].split(".")[2])
+            assert 1 <= octet <= 254
 
 
 class TestSystemdExecFilter:

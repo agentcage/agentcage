@@ -6,7 +6,7 @@ After={{ name }}-dns.service
 [Container]
 ContainerName={{ name }}-proxy
 Image=localhost/agentcage-proxy
-Network={{ name }}-net.network:ip=10.89.0.11
+Network={{ name }}-net.network:ip={{ ip_proxy }}
 Network=podman
 {% for srv in dns_servers %}
 DNS={{ srv }}
@@ -19,13 +19,13 @@ Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 {% endif %}
 {% if inbound_forwards %}
-Exec=mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080{% for fwd in inbound_forwards %} --mode reverse:http://10.89.0.2:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
+Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080{% for fwd in inbound_forwards %} --mode reverse:http://{{ ip_cage }}:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
 
 {% for fwd in inbound_forwards %}
 PublishPort={{ fwd.publish_spec }}
 {% endfor %}
 {% else %}
-Exec=mitmdump -s /app/addon.py --listen-port 8080 --set connection_strategy=lazy --listen-host 10.89.0.11{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
+Exec=mitmdump -s /app/addon.py --listen-port 8080 --set connection_strategy=lazy --listen-host {{ ip_proxy }}{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
 
 {% endif %}
 {% for secret in proxy_secrets %}

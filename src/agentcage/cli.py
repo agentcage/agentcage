@@ -150,9 +150,10 @@ def init(name: str | None, output: str, image: str, isolation: str,
     elif scaffold == "nanoclaw":
         click.echo(f"\nNext steps:")
         click.echo(f"  1. agentcage build nested-base")
-        click.echo(f"  2. agentcage secret set {name} ANTHROPIC_API_KEY")
-        click.echo(f"  3. Edit {dest} — uncomment additional providers/domains")
-        click.echo(f"  4. agentcage cage create -c {dest}")
+        click.echo(f"  2. agentcage build nanoclaw")
+        click.echo(f"  3. agentcage build nanoclaw-agent")
+        click.echo(f"  4. agentcage secret set {name} ANTHROPIC_API_KEY")
+        click.echo(f"  5. agentcage cage create -c {dest}")
     else:
         click.echo(f"\nNext steps:")
         click.echo(f"  1. Edit {dest} — set your image, domains, and secrets")
@@ -263,11 +264,6 @@ def _ensure_patches(podman: Podman) -> str:
                 f"patch file integrity check failed: {dst} does not match source"
             )
 
-    # Write resolv.conf for cage DNS (always points to dnsmasq sidecar)
-    resolv_path = os.path.join(patches_work, "resolv.conf")
-    with open(resolv_path, "w") as f:
-        f.write("nameserver 10.89.0.10\n")
-
     # Copy nested container support files
     nested_src = str(_DATA_DIR / "nested")
     nested_dst = os.path.join(patches_work, "nested")
@@ -298,15 +294,31 @@ def _ensure_patches(podman: Podman) -> str:
 
 def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podman):
     """Build images, generate quadlets, install, and start."""
+    from agentcage.quadlets import cage_network_addrs
+
     backend = get_backend(cfg)
 
     patches_work_dir = _ensure_patches(podman)
+
+    # Write per-cage resolv.conf pointing to this cage's dnsmasq sidecar
+    addrs = cage_network_addrs(cfg.name)
+    resolv_path = os.path.join(patches_work_dir, f"resolv-{cfg.name}.conf")
+    with open(resolv_path, "w") as f:
+        f.write(f"nameserver {addrs['ip_dns']}\n")
 
     backend.build_artifacts(cfg, deploy_name)
 
     units = backend.generate_units(cfg, config_host_path, patches_work_dir, deploy_name)
     backend.install_units(units)
     backend.start(cfg.name)
+
+    # Preload agent images into nested podman if applicable
+    if (cfg.isolation == "container"
+            and cfg.container.nested_containers
+            and "agentcage-nanoclaw" in cfg.container.image):
+        from agentcage.backends.container import ContainerBackend
+        if isinstance(backend, ContainerBackend):
+            backend.preload_agent_image(cfg.name, "nanoclaw-agent")
 
 
 def _restart_cage(name: str, cfg=None):
@@ -1003,8 +1015,11 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
         cmd = cfg.exec_aliases[cmd[0]] + cmd[1:]
 
     container = f"{name}-{service}"
+    exec_flags = []
+    if sys.stdin.isatty():
+        exec_flags = ["-it"]
     result = subprocess.run(
-        ["podman", "exec", container] + cmd,
+        ["podman", "exec"] + exec_flags + [container] + cmd,
     )
     sys.exit(result.returncode)
 
@@ -1871,6 +1886,55 @@ def build_nested_base():
     click.echo('  container:')
     click.echo('    image: "localhost/agentcage-nested"')
     click.echo('    nested_containers: true')
+
+
+@build_group.command("nanoclaw")
+def build_nanoclaw():
+    """Build the NanoClaw cage image (localhost/agentcage-nanoclaw)."""
+    podman = Podman()
+    if not podman.image_exists("localhost/agentcage-nested"):
+        click.echo(
+            "error: localhost/agentcage-nested not found\n"
+            "  Run: agentcage build nested-base",
+            err=True,
+        )
+        sys.exit(1)
+    data_dir = Path(__file__).resolve().parent / "data"
+    containerfile = str(data_dir / "containers" / "Containerfile.nanoclaw")
+    build_context = str(data_dir)
+    click.echo("Building NanoClaw cage image...")
+    podman.build_image(
+        "agentcage-nanoclaw", containerfile, build_context,
+        cap_add=["CAP_SETFCAP", "CAP_SETUID", "CAP_SETGID", "CAP_CHOWN",
+                 "CAP_DAC_OVERRIDE", "CAP_FOWNER"],
+    )
+    click.echo("Built localhost/agentcage-nanoclaw")
+
+
+@build_group.command("nanoclaw-agent")
+def build_nanoclaw_agent():
+    """Build the NanoClaw agent image (localhost/nanoclaw-agent)."""
+    podman = Podman()
+    click.echo("Building NanoClaw agent image...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        click.echo("Cloning nanoclaw repository...")
+        subprocess.run(
+            ["git", "clone", "--depth", "1",
+             "https://github.com/qwibitai/nanoclaw.git", tmpdir],
+            check=True,
+        )
+        container_dir = os.path.join(tmpdir, "container")
+        dockerfile = os.path.join(container_dir, "Dockerfile")
+        if not os.path.isfile(dockerfile):
+            click.echo(
+                "error: container/Dockerfile not found in nanoclaw repo",
+                err=True,
+            )
+            sys.exit(1)
+        podman.build_image(
+            "nanoclaw-agent", dockerfile, container_dir,
+        )
+    click.echo("Built localhost/nanoclaw-agent")
 
 
 @firecracker_group.command("setup")

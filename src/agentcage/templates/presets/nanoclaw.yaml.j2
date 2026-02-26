@@ -1,20 +1,33 @@
 # agentcage configuration for {{ name }} (NanoClaw scaffold)
 #
-# Requires the nested-containers base image:
+# Requires three images (build in order):
 #   agentcage build nested-base
+#   agentcage build nanoclaw
+#   agentcage build nanoclaw-agent
 #
 # Quick start:
-#   1. Set secrets:
+#   1. Build images (see above)
+#   2. Set secrets:
 #        agentcage secret set {{ name }} ANTHROPIC_API_KEY
-#   2. Build base image:
-#        agentcage build nested-base
 #   3. Deploy:  agentcage cage create -c cage.yaml
+#
+# The cage runs NanoClaw with the nanoclaw-agent image preloaded.
+# Inner agent containers use --network host to reach the API
+# through the cage's proxy. The .env placeholder is swapped by
+# the proxy so no real secret enters the cage.
 
 name: {{ name }}
 
 container:
-  image: "localhost/agentcage-nested"
+  image: "localhost/agentcage-nanoclaw"
   nested_containers: true
+  command: ["node", "dist/index.js"]
+
+  # Persistent state (named volumes survive cage rebuilds)
+  named_volumes:
+    nanoclaw-{{ name }}-store: "/app/store:rw"
+    nanoclaw-{{ name }}-groups: "/app/groups:rw"
+    nanoclaw-{{ name }}-data: "/app/data:rw"
 
   # Writable directories on the read-only root filesystem
   tmpfs:
@@ -30,6 +43,9 @@ container:
 
 # ── Secret injection ──
 # API keys are swapped by the proxy — the cage only sees placeholders.
+# The .env inside the image contains {{ANTHROPIC_API_KEY}} which NanoClaw
+# reads and passes to agent containers. The proxy replaces placeholders
+# with real keys on the wire.
 # Create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
 secret_injection:
   - env: ANTHROPIC_API_KEY
@@ -44,9 +60,8 @@ secret_injection:
   #    - openai.com
 
 # ── Domain allowlist ──
-# NanoClaw inner containers run with --network none by default, so only
-# the outer cage (and its spawned containers that explicitly request
-# network) will reach these domains through the proxy.
+# Inner agent containers use --network host (patched), so all traffic
+# flows through the cage's proxy and is subject to domain filtering.
 domains:
   mode: allowlist
   list:

@@ -18,6 +18,7 @@ import click
 
 from agentcage.config import Config, _LEVEL_ORDER
 from agentcage.podman import Podman, _podman_cmd
+from agentcage.quadlets import cage_network_addrs
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _BASE_ROOTFS_NAME = "agentcage-vmbase"
@@ -126,6 +127,7 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
     """Generate a shell script that starts the cage containers via podman."""
     name = config.name
     cc = config.container
+    addrs = cage_network_addrs(name)
 
     # DNS server config — use configured servers, fallback to public DNS
     dns_servers = config.dns_servers if config.dns_servers else ["1.1.1.1", "8.8.8.8"]
@@ -147,7 +149,7 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
     # Build proxy command — use multi-mode when ports are configured
     if cc.ports:
         proxy_cmd = (
-            "mitmdump -s /app/addon.py --mode regular@10.89.0.11:8080"
+            f"mitmdump -s /app/addon.py --mode regular@{addrs['ip_proxy']}:8080"
         )
         for port_spec in cc.ports:
             parts = port_spec.split(":")
@@ -157,12 +159,12 @@ def _generate_startup_script(config: Config, deploy_name: str) -> str:
                 container_port = parts[1]
             else:
                 continue
-            proxy_cmd += f" --mode reverse:http://10.89.0.2:{container_port}@0.0.0.0:{container_port}"
+            proxy_cmd += f" --mode reverse:http://{addrs['ip_cage']}:{container_port}@0.0.0.0:{container_port}"
         proxy_cmd += " --set connection_strategy=lazy --set keep_host_header=true"
     else:
         proxy_cmd = (
             "mitmdump -s /app/addon.py --listen-port 8080"
-            " --set connection_strategy=lazy --listen-host 10.89.0.11"
+            f" --set connection_strategy=lazy --listen-host {addrs['ip_proxy']}"
         )
     # In Firecracker mode, use flow_detail=0 instead of --quiet so that
     # ctx.log.warn() (blocked/flagged decisions) still reaches the severity
@@ -236,9 +238,9 @@ fi
         else:
             host_port = container_port = parts[0]
         port_forwards_script += (
-            f'echo "start-cage: port-forward 0.0.0.0:{host_port} -> 10.89.0.11:{container_port}"\n'
+            f'echo "start-cage: port-forward 0.0.0.0:{host_port} -> {addrs["ip_proxy"]}:{container_port}"\n'
             f'socat TCP-LISTEN:{host_port},bind=0.0.0.0,fork,reuseaddr'
-            f' TCP:10.89.0.11:{container_port} &\n'
+            f' TCP:{addrs["ip_proxy"]}:{container_port} &\n'
         )
 
     # Capabilities
@@ -290,7 +292,7 @@ CAGE_NAME={name_q}
 
 {volume_warnings}echo "start-cage: creating networks"
 # Internal network — agent container only (no internet gateway)
-podman network create --internal --subnet=10.89.0.0/24 "${{CAGE_NAME}}-net" 2>/dev/null || true
+podman network create --internal --subnet={addrs['subnet']} "${{CAGE_NAME}}-net" 2>/dev/null || true
 # External network — for DNS and proxy outbound connectivity
 podman network create --subnet=10.90.0.0/24 "${{CAGE_NAME}}-ext" 2>/dev/null || true
 
@@ -308,7 +310,7 @@ fi
 {named_volume_setup}echo "start-cage: starting DNS container (dual-homed)"
 podman run -d --replace --name "${{CAGE_NAME}}-dns" \\
     --log-driver k8s-file \\
-    --network "${{CAGE_NAME}}-net:ip=10.89.0.10" \\
+    --network "${{CAGE_NAME}}-net:ip={addrs['ip_dns']}" \\
     --network "${{CAGE_NAME}}-ext" \\
     --cap-add NET_BIND_SERVICE \\
     localhost/agentcage-dns \\
@@ -317,10 +319,10 @@ podman run -d --replace --name "${{CAGE_NAME}}-dns" \\
 echo "start-cage: starting proxy container (dual-homed)"
 podman run -d --replace --name "${{CAGE_NAME}}-proxy" \\
     --log-driver k8s-file \\
-    --network "${{CAGE_NAME}}-net:ip=10.89.0.11" \\
+    --network "${{CAGE_NAME}}-net:ip={addrs['ip_proxy']}" \\
     --network "${{CAGE_NAME}}-ext" \\
     -v /etc/agentcage/config.yaml:/etc/agentcage/config.yaml:ro \\
-    --dns 10.89.0.10 \\
+    --dns {addrs['ip_dns']} \\
 {proxy_secret_args}    localhost/agentcage-proxy \\
     {proxy_cmd}
 
@@ -341,18 +343,18 @@ podman cp "${{CAGE_NAME}}-proxy:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem
 echo "start-cage: starting cage container (internal network only)"
 podman run -d --replace --name "${{CAGE_NAME}}-cage" \\
     --log-driver k8s-file \\
-    --network "${{CAGE_NAME}}-net:ip=10.89.0.2" \\
-    -e "HTTP_PROXY=http://10.89.0.11:8080" \\
-    -e "HTTPS_PROXY=http://10.89.0.11:8080" \\
-    -e "http_proxy=http://10.89.0.11:8080" \\
-    -e "https_proxy=http://10.89.0.11:8080" \\
+    --network "${{CAGE_NAME}}-net:ip={addrs['ip_cage']}" \\
+    -e "HTTP_PROXY=http://{addrs['ip_proxy']}:8080" \\
+    -e "HTTPS_PROXY=http://{addrs['ip_proxy']}:8080" \\
+    -e "http_proxy=http://{addrs['ip_proxy']}:8080" \\
+    -e "https_proxy=http://{addrs['ip_proxy']}:8080" \\
     -e "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" \\
     -e "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" \\
     -e "NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs" \\
     -e "AGENTCAGE_VERSION={_pkg_version('agentcage')}" \\
     -v "$CERT_DIR:/certs:ro" \\
     -v /var/lib/agentcage/patches:/agentcage:ro \\
-    --dns 10.89.0.10 \\
+    --dns {addrs['ip_dns']} \\
 {cage_extra_args}    {agent_image} \\
     {agent_cmd}
 

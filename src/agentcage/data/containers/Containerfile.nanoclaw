@@ -1,0 +1,21 @@
+FROM localhost/agentcage-nested
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+RUN git clone https://github.com/qwibitai/nanoclaw.git .
+RUN npm install && npm run build
+
+# Patch container-runner.js for agentcage:
+#   - --network host so inner containers reach the proxy
+#   - forward proxy/cert env vars to inner containers
+#   - mount /certs and /agentcage volumes into inner containers
+COPY containers/patch-nanoclaw.js /tmp/patch-nanoclaw.js
+RUN node /tmp/patch-nanoclaw.js && rm /tmp/patch-nanoclaw.js
+
+# Write .env with placeholder (proxy swaps for real key)
+RUN echo 'ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}' > .env
+
+# Create writable dirs (named volumes mount over these)
+RUN mkdir -p store groups data

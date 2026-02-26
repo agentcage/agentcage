@@ -6,18 +6,18 @@ After={{ name }}-proxy.service
 [Container]
 ContainerName={{ name }}-cage
 Image={{ image }}
-Network={{ name }}-net.network:ip=10.89.0.2
-Environment="HTTP_PROXY=http://10.89.0.11:8080"
-Environment="HTTPS_PROXY=http://10.89.0.11:8080"
-Environment="http_proxy=http://10.89.0.11:8080"
-Environment="https_proxy=http://10.89.0.11:8080"
+Network={{ name }}-net.network:ip={{ ip_cage }}
+Environment="HTTP_PROXY=http://{{ ip_proxy }}:8080"
+Environment="HTTPS_PROXY=http://{{ ip_proxy }}:8080"
+Environment="http_proxy=http://{{ ip_proxy }}:8080"
+Environment="https_proxy=http://{{ ip_proxy }}:8080"
 Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
 Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
 Environment="NODE_OPTIONS=--import /agentcage/proxy-fetch.mjs"
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
 Volume={{ name }}-certs.volume:/certs:ro,Z
 Volume={{ patches_host_dir }}:/agentcage:ro,Z
-Volume={{ patches_host_dir }}/resolv.conf:/etc/resolv.conf:ro,Z
+Volume={{ patches_host_dir }}/resolv-{{ name }}.conf:/etc/resolv.conf:ro,Z
 {% for vol in volumes %}
 Volume={{ vol }}
 {% endfor %}
