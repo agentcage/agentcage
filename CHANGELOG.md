@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-02-26
+
+### Added
+- **Generic scaffold metadata** — scaffolds can now declare `build`, `provision`, and `next_steps` in a `scaffold.yaml` file, replacing hardcoded per-scaffold logic in the CLI
+  - `build`: auto-clone and build container images (with `cap_add` support) during `agentcage init`
+  - `provision`: copy config files from the scaffold directory to the user's home
+  - `next_steps`: templated post-init instructions shown to the user
+- PicoClaw scaffold now auto-builds the image and provisions `~/.picoclaw/config.json` during init
+
+### Fixed
+- `~` in volume host paths (e.g. `~/.picoclaw/config.json:/app/config.json`) was not expanded, causing podman to create a named volume instead of a bind mount
+- `podman.build_image()` now accepts `containerfile=None` to auto-detect Dockerfile/Containerfile
+
 ## [0.4.0] - 2026-02-26
 
 ### Added
