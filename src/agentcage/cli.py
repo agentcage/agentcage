@@ -1775,7 +1775,13 @@ def domain_list(cage_name: str):
 
 
 def _update_dns_quadlet(cfg) -> None:
-    """Regenerate the DNS quadlet and restart the DNS sidecar."""
+    """Regenerate the DNS quadlet and restart all cage services.
+
+    A DNS-only restart cascades via the Requires= dependency chain
+    (proxy Requires dns, cage Requires proxy) and leaves proxy/cage
+    stopped.  We stop all three explicitly, then start in dependency
+    order so everything comes back up cleanly.
+    """
     from agentcage.quadlets import render_dns_quadlet
 
     backend = get_backend(cfg)
@@ -1785,7 +1791,15 @@ def _update_dns_quadlet(cfg) -> None:
     (quadlet_dir / f"{name}-dns.container").write_text(dns_content)
     systemd.daemon_reload()
     if backend.is_running(name, "dns"):
-        systemd.restart_unit(f"{name}-dns.service")
+        # Stop most-dependent first, start dependencies first.
+        services = backend.service_names(name)
+        for svc in services:
+            try:
+                systemd.stop_unit(f"{name}-{svc}.service")
+            except Exception:
+                pass
+        for svc in reversed(services):
+            systemd.start_unit(f"{name}-{svc}.service")
 
 
 @domain.command("add")
