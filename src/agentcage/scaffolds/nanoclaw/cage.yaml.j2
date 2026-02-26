@@ -1,9 +1,9 @@
 # agentcage configuration for {{ name }} (NanoClaw scaffold)
 #
 # Requires three images (build in order):
-#   agentcage build nested-base
-#   agentcage build nanoclaw
-#   agentcage build nanoclaw-agent
+#   ./build.sh                    (or: agentcage build nested-base first)
+#   ./build-agent.sh
+#   ./preload-agent.sh {{ name }}
 #
 # Quick start:
 #   1. Build images (see above)

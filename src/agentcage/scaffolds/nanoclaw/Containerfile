@@ -1,6 +1,6 @@
 FROM localhost/agentcage-nested
 
-RUN apt-get update && apt-get install -y --no-install-recommends git \
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -11,8 +11,8 @@ RUN npm install && npm run build
 #   - --network host so inner containers reach the proxy
 #   - forward proxy/cert env vars to inner containers
 #   - mount /certs and /agentcage volumes into inner containers
-COPY containers/patch-nanoclaw.js /tmp/patch-nanoclaw.js
-RUN node /tmp/patch-nanoclaw.js && rm /tmp/patch-nanoclaw.js
+COPY patch-container-runner.js /tmp/patch-container-runner.js
+RUN node /tmp/patch-container-runner.js && rm /tmp/patch-container-runner.js
 
 # Write .env with placeholder (proxy swaps for real key)
 RUN echo 'ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}' > .env

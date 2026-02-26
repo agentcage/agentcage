@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import click
@@ -94,36 +93,6 @@ class ContainerBackend:
             pass  # volume only exists when nested_containers is enabled
         systemd.start_unit(f"{name}-cage.service")
         click.echo(f"Started {name}-cage")
-
-    def preload_agent_image(self, name: str, image: str) -> None:
-        """Import an agent image into the cage's inner podman.
-
-        Saves the image from the host and loads it into the nested podman
-        instance running inside the cage container.
-        """
-        if not self._podman.image_exists(f"localhost/{image}"):
-            return
-        click.echo(f"Preloading {image} into cage...")
-        save = subprocess.Popen(
-            ["podman", "save", f"localhost/{image}"],
-            stdout=subprocess.PIPE,
-        )
-        load = subprocess.Popen(
-            ["podman", "exec", "-i", f"{name}-cage", "podman", "load"],
-            stdin=save.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        save.stdout.close()
-        _, stderr = load.communicate()
-        save.wait()
-        if load.returncode == 0:
-            click.echo(f"Preloaded {image} into cage")
-        else:
-            click.echo(
-                f"warning: failed to preload {image}: {stderr.decode().strip()}",
-                err=True,
-            )
 
     def stop(self, name: str) -> None:
         for svc in self.service_names(name):

@@ -9,7 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const file = path.join(__dirname, 'dist', 'container-runner.js');
+const file = path.join('/app', 'dist', 'container-runner.js');
 let code = fs.readFileSync(file, 'utf8');
 
 // 1. --network host: insert after ['run', '-i', '--rm'

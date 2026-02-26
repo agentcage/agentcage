@@ -16,7 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Rejects `firecracker` + `nested_containers` combination (not supported)
 - `agentcage build nested-base` command — builds `localhost/agentcage-nested` base image with podman, fuse-overlayfs, crun, uidmap, and slirp4netns
 - NanoClaw scaffold (`--scaffold nanoclaw`) — pre-configured for AI agent frameworks that spawn Docker containers, with ANTHROPIC_API_KEY injection and Docker registry domains
+- Self-contained scaffold directory (`scaffolds/nanoclaw/`) with `build.sh`, `build-agent.sh`, `preload-agent.sh`, Containerfile, and README — decouples NanoClaw from the core CLI
+- Scaffold discovery from `scaffolds/*/cage.yaml.j2` in addition to `templates/presets/`
 - Nested container verification in `cage verify` — checks inner podman and docker shim availability
+
+### Removed
+- `agentcage build nanoclaw` and `agentcage build nanoclaw-agent` CLI subcommands — replaced by scaffold scripts
+- Auto-preload of `nanoclaw-agent` during `cage create` / `cage update` — use `preload-agent.sh` instead
 
 ## [0.3.19] - 2026-02-26
 

@@ -4,7 +4,7 @@
 
 All HTTP traffic from the cage (and from inner agent containers) passes through agentcage's inspecting proxy for domain filtering, secret leak detection, and payload analysis. Inner agent containers are patched to use `--network host` so they inherit the cage's proxy, and proxy/cert environment variables are forwarded automatically.
 
-For the full list of configuration options, see the [Configuration Reference](configuration.md).
+For the full list of configuration options, see the agentcage configuration reference.
 
 ## Architecture
 
@@ -20,11 +20,11 @@ Cage (runs agentcage-nanoclaw):
        └─ --network host → inherits cage proxy → API calls inspected
 ```
 
-Three images are built on the host. The `nanoclaw-agent` image is automatically imported into the cage's inner podman during `cage create` / `cage update` via `podman save | podman exec podman load`.
+Three images are built on the host. The `nanoclaw-agent` image must be imported into the cage's inner podman using `./preload-agent.sh <cage-name>`.
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) -- see [installation instructions](../README.md#install) for your platform
+- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) -- see [installation instructions](../../README.md#install) for your platform
 - An Anthropic API key (`ANTHROPIC_API_KEY`)
 
 ## Quick start
@@ -46,10 +46,10 @@ Three images are required, built in order:
 agentcage build nested-base
 
 # Cage image: NanoClaw installed + patched for agentcage
-agentcage build nanoclaw
+./build.sh
 
 # Agent image: claude-code + chromium (what NanoClaw spawns per task)
-agentcage build nanoclaw-agent
+./build-agent.sh
 ```
 
 - `agentcage-nested` -- base image with podman-in-podman support
@@ -70,9 +70,17 @@ The config uses `secret_injection` for the API key. The cage image has a `.env` 
 agentcage cage create -c cage.yaml
 ```
 
-This builds the proxy and DNS images, generates systemd quadlet files, starts all services, and preloads the `nanoclaw-agent` image into the cage's inner podman.
+This builds the proxy and DNS images, generates systemd quadlet files, and starts all services.
 
-### 5. Verify
+### 5. Preload the agent image
+
+```bash
+./preload-agent.sh myapp
+```
+
+This imports `nanoclaw-agent` into the cage's inner podman so NanoClaw can spawn agent containers without pulling from a registry.
+
+### 6. Verify
 
 ```bash
 agentcage cage verify myapp
@@ -90,7 +98,7 @@ agentcage cage exec myapp -- podman images
 # Should show nanoclaw-agent:latest
 ```
 
-### 6. Check NanoClaw is running
+### 7. Check NanoClaw is running
 
 ```bash
 agentcage cage logs myapp
@@ -113,7 +121,13 @@ No real secret ever enters the cage.
 
 ### Agent image preload
 
-The `nanoclaw-agent` image is built on the host but must be available inside the cage's inner podman. During `cage create` and `cage update`, agentcage automatically runs:
+The `nanoclaw-agent` image is built on the host but must be available inside the cage's inner podman. After creating the cage, run:
+
+```bash
+./preload-agent.sh <cage-name>
+```
+
+This is equivalent to:
 
 ```
 podman save nanoclaw-agent:latest | podman exec -i <name>-cage podman load
@@ -235,17 +249,17 @@ All agentcage network-level protections remain fully active:
 
 For production nested workloads with untrusted agents, consider using Firecracker mode (`isolation: firecracker`) for hardware-level isolation around the cage. Note that `nested_containers` is not currently supported with Firecracker isolation.
 
-See [Security & Threat Model](security.md) for the full threat model and defense layers.
+See [Security & Threat Model](../../docs/security.md) for the full threat model and defense layers.
 
 ## Troubleshooting
 
 **`agentcage build nested-base` fails**: The build requires several capabilities (`CAP_SETFCAP`, `CAP_SETUID`, `CAP_SETGID`, `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`). These are passed automatically. If the build still fails, check that rootless podman is working: `podman run --rm alpine echo hello`.
 
-**`agentcage build nanoclaw` fails**: Requires `localhost/agentcage-nested` to be built first. The build clones the NanoClaw repository from GitHub and patches the compiled JavaScript. If the patch fails, the NanoClaw source may have changed -- check the error message for which pattern failed to match.
+**`./build.sh` fails**: Requires `localhost/agentcage-nested` to be built first. The build clones the NanoClaw repository from GitHub and patches the compiled JavaScript. If the patch fails, the NanoClaw source may have changed -- check the error message for which pattern failed to match.
 
-**`agentcage build nanoclaw-agent` fails**: Clones the NanoClaw repository and builds from `container/Dockerfile`. This installs claude-code, chromium, and the agent-runner. Requires internet access for npm and apt packages.
+**`./build-agent.sh` fails**: Clones the NanoClaw repository and builds from `container/Dockerfile`. This installs claude-code, chromium, and the agent-runner. Requires internet access for npm and apt packages.
 
-**Agent image not preloaded**: If `agentcage cage exec myapp -- podman images` doesn't show `nanoclaw-agent`, the preload may have failed. Check logs with `agentcage cage logs myapp`. You can manually preload with: `podman save localhost/nanoclaw-agent | podman exec -i myapp-cage podman load`.
+**Agent image not preloaded**: If `agentcage cage exec myapp -- podman images` doesn't show `nanoclaw-agent`, run `./preload-agent.sh myapp`. You can also manually preload with: `podman save localhost/nanoclaw-agent | podman exec -i myapp-cage podman load`.
 
 **Inner `docker pull` fails with 403**: A domain is missing from the allowlist. Docker Hub uses multiple domains for image pulls. Check proxy logs: `agentcage cage logs myapp -s proxy`. The JSON log entries include a `reason` field explaining the block. Add any missing domains with `agentcage domain add myapp <domain>`.
 

@@ -9,6 +9,7 @@ from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+_SCAFFOLDS_DIR = Path(__file__).parent / "scaffolds"
 
 # Scaffold name → base image (without tag) for version pinning
 _SCAFFOLD_IMAGES: dict[str, str] = {
@@ -29,11 +30,13 @@ def _make_env() -> SandboxedEnvironment:
 def list_scaffolds() -> list[str]:
     """Return sorted names of available scaffold templates."""
     preset_dir = _TEMPLATES_DIR / "presets"
-    if not preset_dir.is_dir():
-        return []
-    return sorted(
-        p.stem.removesuffix(".yaml") for p in preset_dir.glob("*.yaml.j2")
-    )
+    names: set[str] = set()
+    if preset_dir.is_dir():
+        names.update(p.stem.removesuffix(".yaml") for p in preset_dir.glob("*.yaml.j2"))
+    if _SCAFFOLDS_DIR.is_dir():
+        names.update(d.name for d in _SCAFFOLDS_DIR.iterdir()
+                     if d.is_dir() and (d / "cage.yaml.j2").exists())
+    return sorted(names)
 
 
 def render_config(
@@ -47,13 +50,26 @@ def render_config(
     """Render a starter config.yaml from a template.
 
     When *scaffold* is ``None`` the default blank scaffold is used.
-    Otherwise *scaffold* selects a file from ``templates/presets/``.
+    Otherwise *scaffold* selects a file from ``templates/presets/``
+    or ``scaffolds/<name>/cage.yaml.j2``.
     """
     env = _make_env()
     if scaffold is None:
         tmpl = env.get_template("init-config.yaml.j2")
         return tmpl.render(name=name, image=image, isolation=isolation, port=port)
-    tmpl = env.get_template(f"presets/{scaffold}.yaml.j2")
+
+    # Check scaffolds/ directory first, then fall back to templates/presets/
+    scaffold_file = _SCAFFOLDS_DIR / scaffold / "cage.yaml.j2"
+    if scaffold_file.exists():
+        env = SandboxedEnvironment(
+            loader=FileSystemLoader(str(scaffold_file.parent)),
+            keep_trailing_newline=True,
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+        tmpl = env.get_template("cage.yaml.j2")
+    else:
+        tmpl = env.get_template(f"presets/{scaffold}.yaml.j2")
 
     image_tag: str | None = None
     image_base = _SCAFFOLD_IMAGES.get(scaffold)
