@@ -143,10 +143,11 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"  4. agentcage cage create -c {dest}")
     elif scaffold == "picoclaw":
         click.echo(f"\nNext steps:")
-        click.echo(f"  1. Create ~/.picoclaw/config.json with your API keys and channels")
+        click.echo(f"  1. Create ~/.picoclaw/config.json with placeholder API keys")
         click.echo(f"     (see https://github.com/sipeed/picoclaw for config format)")
-        click.echo(f"  2. Edit {dest} — uncomment domains for your providers/channels")
-        click.echo(f"  3. agentcage cage create -c {dest}")
+        click.echo(f"  2. agentcage secret set {name} ANTHROPIC_API_KEY")
+        click.echo(f"  3. Edit {dest} — uncomment additional providers/domains")
+        click.echo(f"  4. agentcage cage create -c {dest}")
     elif scaffold == "nanoclaw":
         from agentcage.init import _SCAFFOLDS_DIR
         script_dir = _SCAFFOLDS_DIR / "nanoclaw"

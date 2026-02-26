@@ -2,11 +2,11 @@
 
 [OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
-For the full list of configuration options, see the [Configuration Reference](configuration.md).
+For the full list of configuration options, see the [Configuration Reference](../../docs/configuration.md).
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../README.md#prerequisites) for your platform
+- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../../README.md#prerequisites) for your platform
 - An OpenClaw container image (`ghcr.io/openclaw/openclaw:latest` or custom-built)
 - An Anthropic API key (`ANTHROPIC_API_KEY`)
 
@@ -35,7 +35,7 @@ agentcage secret set myapp OPENCLAW_GATEWAY_PASSWORD
 
 If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `cage.yaml`.
 
-> **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](configuration.md#secret-injection-secret_injection) for details.
+> **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](../../docs/configuration.md#secret-injection-secret_injection) for details.
 
 ### 3. Create the cage
 
@@ -139,7 +139,7 @@ secrets:
   builtin_allow_to_domains: false
 ```
 
-See [Secret detection](configuration.md#secret-detection-secrets) for the full reference.
+See [Secret detection](../../docs/configuration.md#secret-detection-secrets) for the full reference.
 
 ## Domain allowlist tiers
 
@@ -198,6 +198,6 @@ agentcage cage update myapp
 
 **403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `agentcage cage logs myapp -s proxy` -- the JSON log entries include a `reason` field explaining the block.
 
-**Certificate errors**: The mitmproxy CA certificate is shared via a named volume (see [Certificate Sharing](architecture.md#certificate-sharing)). If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. The generated quadlet files include a start-up check that waits up to 30 seconds for the certificate. If it still fails, restart the cage: `agentcage cage reload myapp`.
+**Certificate errors**: The mitmproxy CA certificate is shared via a named volume (see [Certificate Sharing](../../docs/architecture.md#certificate-sharing)). If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. The generated quadlet files include a start-up check that waits up to 30 seconds for the certificate. If it still fails, restart the cage: `agentcage cage reload myapp`.
 
 **DNS resolution failures**: Verify the DNS sidecar is running: `agentcage cage list`. If you are using custom `dns_servers` (e.g., Tailscale MagicDNS), make sure those servers are reachable from the host.

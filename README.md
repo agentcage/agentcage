@@ -10,9 +10,9 @@ Because "the agent would never do that" is not a security policy.
 
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
-> **Setting up OpenClaw?** See the [OpenClaw guide](docs/openclaw.md)
+> **Setting up OpenClaw?** See the [OpenClaw guide](src/agentcage/scaffolds/openclaw/README.md).
 >
-> **Setting up NanoClaw?** See the [NanoClaw guide](docs/nanoclaw.md)
+> **Setting up NanoClaw?** See the [NanoClaw guide](src/agentcage/scaffolds/nanoclaw/README.md) -- includes nested container support (podman-in-podman).
 
 ## What is it?
 
@@ -131,7 +131,7 @@ See [CLI Reference](docs/cli.md) for full documentation of all commands and opti
 
 ## Configuration
 
-See the [Configuration Reference](docs/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/) | [`openclaw/cage.yaml`](examples/openclaw/). Deployment state is tracked per-cage in `~/.config/agentcage/deployments/<name>/`.
+See the [Configuration Reference](docs/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/). Deployment state is tracked per-cage in `~/.config/agentcage/deployments/<name>/`.
 
 ## Security
 

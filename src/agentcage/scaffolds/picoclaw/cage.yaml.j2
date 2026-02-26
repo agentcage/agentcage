@@ -2,9 +2,10 @@
 {% set gateway_port = port | default(18790, true) %}
 #
 # Quick start:
-#   1. Create ~/.picoclaw/config.json with your API keys and channels
+#   1. Create ~/.picoclaw/config.json with placeholder API keys
 #      (see https://github.com/sipeed/picoclaw for config format)
-#   2. Deploy:  agentcage cage create -c cage.yaml
+#   2. Store real keys:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
+#   3. Deploy:  agentcage cage create -c cage.yaml
 
 name: {{ name }}
 {% if isolation == "firecracker" %}
@@ -49,10 +50,28 @@ container:
   # Fast Go binary — starts in ~1 second
   timeout_start_sec: 30
 
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Put placeholders (e.g. {{ANTHROPIC_API_KEY}}) in ~/.picoclaw/config.json
+# and create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
+secret_injection:
+  # Core AI provider
+  - env: ANTHROPIC_API_KEY
+    placeholder: "{%raw%}{{ANTHROPIC_API_KEY}}{%endraw%}"
+    inject_to:
+      - anthropic.com
+
+  # Uncomment providers as needed:
+  #- env: OPENAI_API_KEY
+  #  placeholder: "{%raw%}{{OPENAI_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - openai.com
+  #- env: OPENROUTER_API_KEY
+  #  placeholder: "{%raw%}{{OPENROUTER_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - openrouter.ai
+
 # ── Domain allowlist ──
-# PicoClaw reads API keys from config.json, not environment variables,
-# so secret_injection is not used. Only domain filtering applies.
-#
 # Subdomains are matched automatically (e.g. "openai.com" also allows
 # "api.openai.com"). Sibling domains are NOT matched.
 domains:
