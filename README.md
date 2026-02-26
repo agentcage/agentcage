@@ -10,9 +10,9 @@ Because "the agent would never do that" is not a security policy.
 
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
-> **Setting up OpenClaw?** See the [OpenClaw guide](docs/openclaw.md) and [`openclaw/cage.yaml`](examples/openclaw/).
+> **Setting up OpenClaw?** See the [OpenClaw guide](docs/openclaw.md)
 >
-> **Setting up NanoClaw?** See the [NanoClaw guide](docs/nanoclaw.md) -- includes nested container support (podman-in-podman).
+> **Setting up NanoClaw?** See the [NanoClaw guide](docs/nanoclaw.md)
 
 ## What is it?
 
