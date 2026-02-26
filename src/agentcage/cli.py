@@ -135,33 +135,17 @@ def init(name: str | None, output: str, image: str, isolation: str,
     dest.write_text(content)
     click.echo(f"Created {dest}")
 
-    if scaffold == "openclaw":
-        click.echo(f"\nNext steps:")
-        click.echo(f"  1. agentcage secret set {name} ANTHROPIC_API_KEY")
-        click.echo(f"  2. agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD")
-        click.echo(f"  3. Edit {dest} — uncomment additional providers/domains")
-        click.echo(f"  4. agentcage cage create -c {dest}")
-    elif scaffold == "picoclaw":
-        click.echo(f"\nNext steps:")
-        click.echo(f"  1. Build PicoClaw from source (v0.1.2 lacks HTTP proxy support):")
-        click.echo(f"       git clone https://github.com/sipeed/picoclaw.git")
-        click.echo(f"       cd picoclaw && podman build -t localhost/picoclaw:latest .")
-        click.echo(f"  2. Create ~/.picoclaw/config.json with placeholder API keys")
-        click.echo(f"     (see https://github.com/sipeed/picoclaw for config format)")
-        click.echo(f"  3. agentcage secret set {name} ANTHROPIC_API_KEY")
-        click.echo(f"  4. Edit {dest} — uncomment additional providers/domains")
-        click.echo(f"  5. agentcage cage create -c {dest}")
-    elif scaffold == "nanoclaw":
-        from agentcage.init import _SCAFFOLDS_DIR
-        script_dir = _SCAFFOLDS_DIR / "nanoclaw"
-        click.echo(f"\nNext steps:")
-        click.echo(f"  1. agentcage build nested-base")
-        click.echo(f"  2. {script_dir}/build.sh")
-        click.echo(f"  3. {script_dir}/build-agent.sh")
-        click.echo(f"  4. agentcage secret set {name} ANTHROPIC_API_KEY")
-        click.echo(f"  5. agentcage cage create -c {dest}")
-        click.echo(f"  6. {script_dir}/preload-agent.sh {name}")
-    else:
+    from agentcage.init import load_scaffold_meta, run_scaffold_setup, _SCAFFOLDS_DIR
+
+    meta = load_scaffold_meta(scaffold) if scaffold else None
+    if scaffold and meta:
+        run_scaffold_setup(scaffold, name, str(dest))
+    scaffold_dir = _SCAFFOLDS_DIR / scaffold if scaffold else None
+    if meta and meta.get("next_steps"):
+        click.echo("\nNext steps:")
+        for i, step in enumerate(meta["next_steps"], 1):
+            click.echo(f"  {i}. {step.format(name=name, dest=dest, scaffold_dir=scaffold_dir)}")
+    elif scaffold is None:
         click.echo(f"\nNext steps:")
         click.echo(f"  1. Edit {dest} — set your image, domains, and secrets")
         click.echo(f"  2. agentcage cage create -c {dest}")

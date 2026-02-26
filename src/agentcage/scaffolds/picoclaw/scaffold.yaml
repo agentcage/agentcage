@@ -1,0 +1,17 @@
+build:
+  - image: "localhost/picoclaw:latest"
+    git: "https://github.com/sipeed/picoclaw.git"
+    depth: 1
+    cap_add:
+      - CAP_SETFCAP
+      - CAP_SETUID
+      - CAP_SETGID
+      - CAP_CHOWN
+      - CAP_DAC_OVERRIDE
+      - CAP_FOWNER
+provision:
+  - src: config.json
+    dest: ~/.picoclaw/config.json
+next_steps:
+  - "agentcage secret set {name} ANTHROPIC_API_KEY"
+  - "agentcage cage create -c {dest}"

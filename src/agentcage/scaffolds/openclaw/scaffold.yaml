@@ -1,0 +1,5 @@
+next_steps:
+  - "agentcage secret set {name} ANTHROPIC_API_KEY"
+  - "agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD"
+  - "Edit {dest} — uncomment additional providers/domains"
+  - "agentcage cage create -c {dest}"

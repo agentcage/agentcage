@@ -107,10 +107,13 @@ def generate_quadlets(
     cc = config.container
     files: dict[str, str] = {}
 
-    # Expand env vars in volume paths and env values
+    # Expand ~ and env vars in volume paths and env values
     expanded_volumes = []
     for v in cc.volumes:
-        expanded = os.path.expandvars(v)
+        # Expand ~ in the host path portion (before the first ':')
+        parts = v.split(":", 1)
+        parts[0] = os.path.expanduser(parts[0])
+        expanded = os.path.expandvars(":".join(parts))
         # Validate host path portion (before first ':') resolves safely
         host_path = expanded.split(":")[0]
         real = os.path.realpath(host_path)

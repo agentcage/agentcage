@@ -27,12 +27,14 @@ class Podman:
     def build_image(
         self,
         tag: str,
-        containerfile: str,
+        containerfile: str | None,
         context_dir: str,
         cap_add: list[str] | None = None,
         no_cache: bool = False,
     ) -> None:
-        cmd = [*_podman_cmd(), "build", "-t", tag, "-f", containerfile]
+        cmd = [*_podman_cmd(), "build", "-t", tag]
+        if containerfile is not None:
+            cmd.extend(["-f", containerfile])
         if no_cache:
             cmd.append("--no-cache")
         for cap in cap_add or []:

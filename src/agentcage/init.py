@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
+import click
+import yaml
 from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
@@ -89,3 +94,50 @@ def render_config(
 
     addrs = cage_network_addrs(name)
     return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag, **addrs)
+
+
+def load_scaffold_meta(scaffold: str) -> dict | None:
+    """Load scaffold.yaml from a scaffold directory, if present."""
+    meta_file = _SCAFFOLDS_DIR / scaffold / "scaffold.yaml"
+    if not meta_file.exists():
+        return None
+    with open(meta_file) as f:
+        return yaml.safe_load(f) or {}
+
+
+def run_scaffold_setup(scaffold: str, name: str, dest: str) -> None:
+    """Execute build/provision steps from scaffold.yaml."""
+    meta = load_scaffold_meta(scaffold)
+    if meta is None:
+        return
+
+    from agentcage.podman import Podman
+
+    podman = Podman()
+    scaffold_dir = _SCAFFOLDS_DIR / scaffold
+
+    # 1. Process build entries
+    for entry in meta.get("build", []):
+        image = entry["image"]
+        if podman.image_exists(image):
+            click.echo(f"Image {image} already exists, skipping build.")
+            continue
+        git_url = entry["git"]
+        depth = entry.get("depth", 1)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            click.echo(f"Cloning {git_url}...")
+            cmd = ["git", "clone", f"--depth={depth}", git_url, tmpdir]
+            subprocess.run(cmd, check=True)
+            click.echo(f"Building {image}...")
+            podman.build_image(image, None, tmpdir, cap_add=entry.get("cap_add"))
+
+    # 2. Process provision entries
+    for entry in meta.get("provision", []):
+        src = scaffold_dir / entry["src"]
+        dest_path = Path(entry["dest"]).expanduser()
+        if dest_path.exists():
+            click.echo(f"{dest_path} already exists, skipping.")
+            continue
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src), str(dest_path))
+        click.echo(f"Created {dest_path}")

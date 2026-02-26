@@ -1,25 +1,5 @@
 # agentcage configuration for {{ name }} (PicoClaw scaffold)
 {% set gateway_port = port | default(18790, true) %}
-#
-# Quick start:
-#   1. Build PicoClaw from source (see below)
-#   2. Create ~/.picoclaw/config.json with placeholder API keys
-#      (see https://github.com/sipeed/picoclaw for config format)
-#   3. Store real keys:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
-#   4. Deploy:  agentcage cage create -c cage.yaml
-#
-# Build from source:
-#   The latest release (v0.1.2) does not route web tool traffic through
-#   HTTP_PROXY, so web_fetch/web_search bypass the agentcage proxy.
-#   This is fixed on main. Build a local image until the next release:
-#
-#     git clone https://github.com/sipeed/picoclaw.git
-#     cd picoclaw
-#     podman build -t localhost/picoclaw:latest .
-#
-#   Once a release ships with proxy support, switch back to:
-#     image: "docker.io/sipeed/picoclaw:<tag>"
-#   and remove the PICOCLAW_TOOLS_WEB_PROXY env var below.
 
 name: {{ name }}
 {% if isolation == "firecracker" %}

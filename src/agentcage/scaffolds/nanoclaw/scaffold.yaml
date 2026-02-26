@@ -1,0 +1,7 @@
+next_steps:
+  - "agentcage build nested-base"
+  - "{scaffold_dir}/build.sh"
+  - "{scaffold_dir}/build-agent.sh"
+  - "agentcage secret set {name} ANTHROPIC_API_KEY"
+  - "agentcage cage create -c {dest}"
+  - "{scaffold_dir}/preload-agent.sh {name}"
