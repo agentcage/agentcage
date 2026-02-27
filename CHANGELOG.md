@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-27
+
+### Added
+- **Transparent HTTP/HTTPS proxy interception** — all outbound port 80/443 traffic from the cage is now intercepted at the network level via iptables REDIRECT rules, regardless of whether the application uses `HTTP_PROXY` env vars. This covers Go, Rust, Node.js `fetch()`, and any other runtime without per-language patching.
+  - Default route added to the cage's network namespace via `nsenter` (ExecStartPost)
+  - iptables PREROUTING rules redirect ports 80/443 to mitmproxy's transparent listener on port 8443
+  - mitmproxy runs with `--mode transparent@8443` alongside the regular forward proxy on port 8080
+  - Proxy container gets `NET_ADMIN` capability and `iptables` package
+- Port 8443 conflict check — container port 8443 is now rejected (conflicts with transparent proxy)
+- `flow.request.pretty_host` normalization in addon.py — transparent mode flows now resolve to the real hostname (from Host header / TLS SNI) instead of the raw destination IP
+
+### Removed
+- **Node.js proxy-fetch.mjs patch** — replaced by network-level transparent interception; `NODE_OPTIONS`, `proxy-fetch.mjs`, `package.json`, `package-lock.json`, and `node_modules/undici` are no longer needed
+- `_file_sha256()` helper in CLI (only used by removed patch verification)
+- `npm ci` step during cage create/update (undici dependency installation)
+
+### Changed
+- Proxy container image now installs `iptables` via apt-get (Debian-based mitmproxy image)
+- Proxy image build requires additional capabilities (`CAP_SETUID`, `CAP_SETGID`, `CAP_DAC_OVERRIDE`) for apt-get in rootless builds
+- Firecracker mode: removed `NODE_OPTIONS` env var from VM startup script (transparent proxy for firecracker is a future task)
+
 ## [0.4.1] - 2026-02-26
 
 ### Added
