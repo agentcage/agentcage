@@ -57,13 +57,15 @@ def _systemd_exec_join(args: list[str]) -> str:
 def _passthrough_regex(domains: list[str]) -> str:
     """Build a mitmproxy --ignore-hosts regex from a list of domains.
 
-    Each domain becomes ``^(.+\\.)?example\\.com$`` so both the bare domain
-    and any subdomain match.  Multiple domains are OR-joined.
+    Each domain becomes ``^(.+\\.)?example\\.com(:\\d+)?$`` so both the bare
+    domain and any subdomain match (with optional port).  Multiple domains
+    are OR-joined.  mitmproxy matches against ``host:port``, so the port
+    suffix is required.
     """
     parts = []
     for domain in domains:
         escaped = re.escape(domain)
-        parts.append(f"^(.+\\.)?{escaped}$")
+        parts.append(f"^(.+\\.)?{escaped}(:\\d+)?$")
     return "|".join(parts)
 
 

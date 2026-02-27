@@ -108,6 +108,10 @@ class Agentcage:
             f"injection_rules={len(self.injector.rules)}"
         )
 
+    def running(self) -> None:
+        """Called after the proxy is fully started — apply TLS passthrough."""
+        self._apply_passthrough()
+
     # ── Inspector loading ────────────────────────────────
 
     def _load_builtin_inspectors(self) -> None:
@@ -194,6 +198,23 @@ class Agentcage:
             inspector.configure(cfg)
             self.inspectors.append(inspector)
 
+    # ── TLS passthrough ────────────────────────────────────
+
+    def _apply_passthrough(self) -> None:
+        """Set mitmproxy ignore_hosts from the passthrough config."""
+        passthrough = (self.cfg.get("domains") or {}).get("passthrough") or []
+        if passthrough:
+            import re as _re
+            parts = []
+            for domain in passthrough:
+                escaped = _re.escape(domain)
+                parts.append(f"^(.+\\.)?{escaped}(:\\d+)?$")
+            regex = "|".join(parts)
+            ctx.options.update(ignore_hosts=[regex])
+            ctx.log.info(f"agentcage: TLS passthrough for {passthrough}")
+        else:
+            ctx.options.update(ignore_hosts=[])
+
     # ── Hot-reload ────────────────────────────────────────
 
     def _maybe_reload(self) -> None:
@@ -231,17 +252,7 @@ class Agentcage:
             self.log_allowed = bool(self.cfg.get("log_allowed", True))
 
         # Update TLS passthrough (--ignore-hosts)
-        passthrough = (self.cfg.get("domains") or {}).get("passthrough") or []
-        if passthrough:
-            import re as _re
-            parts = []
-            for domain in passthrough:
-                escaped = _re.escape(domain)
-                parts.append(f"^(.+\\.)?{escaped}$")
-            regex = "|".join(parts)
-            ctx.options.update(ignore_hosts=[regex])
-        else:
-            ctx.options.update(ignore_hosts=[])
+        self._apply_passthrough()
 
         self._config_mtime = mtime
         names = [i.name for i in self.inspectors]

@@ -648,12 +648,12 @@ class TestSystemdExecFilter:
 class TestPassthroughRegex:
     def test_single_domain(self):
         regex = _passthrough_regex(["whatsapp.com"])
-        assert regex == r"^(.+\.)?whatsapp\.com$"
+        assert regex == r"^(.+\.)?whatsapp\.com(:\d+)?$"
 
     def test_multiple_domains(self):
         regex = _passthrough_regex(["whatsapp.com", "signal.org"])
-        assert r"^(.+\.)?whatsapp\.com$" in regex
-        assert r"^(.+\.)?signal\.org$" in regex
+        assert r"^(.+\.)?whatsapp\.com(:\d+)?$" in regex
+        assert r"^(.+\.)?signal\.org(:\d+)?$" in regex
         assert "|" in regex
 
     def test_empty_list(self):
