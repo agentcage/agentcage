@@ -6,7 +6,7 @@ import textwrap
 import pytest
 
 from agentcage.config import load_config
-from agentcage.quadlets import generate_quadlets, _systemd_exec_join, cage_network_addrs
+from agentcage.quadlets import generate_quadlets, _systemd_exec_join, cage_network_addrs, _passthrough_regex, _effective_dns_allowlist
 
 
 class TestQuadletFileNames:
@@ -113,8 +113,7 @@ class TestDnsQuadlet:
             container:
               image: test:latest
             domains:
-              mode: allowlist
-              list:
+              allow:
                 - api.anthropic.com
                 - github.com
             dns_servers:
@@ -136,8 +135,7 @@ class TestDnsQuadlet:
             container:
               image: test:latest
             domains:
-              mode: allowlist
-              list:
+              allow:
                 - github.com
                 - pypi.org
             dns_servers:
@@ -162,8 +160,7 @@ class TestDnsQuadlet:
             container:
               image: test:latest
             domains:
-              mode: allowlist
-              list:
+              allow:
                 - api.anthropic.com
             dns_servers:
               - 100.100.100.100
@@ -185,8 +182,7 @@ class TestDnsQuadlet:
             container:
               image: test:latest
             domains:
-              mode: allowlist
-              list:
+              allow:
                 - api.anthropic.com
             dns_servers:
               - 100.100.100.100
@@ -214,8 +210,7 @@ class TestDnsQuadlet:
             container:
               image: test:latest
             domains:
-              mode: blocklist
-              list:
+              block:
                 - evil.com
         """))
         cfg = load_config(str(p))
@@ -648,3 +643,140 @@ class TestSystemdExecFilter:
         """Simple commands without spaces produce identical output to join(' ')."""
         args = ["node", "openclaw.mjs", "gateway", "--bind", "lan"]
         assert _systemd_exec_join(args) == " ".join(args)
+
+
+class TestPassthroughRegex:
+    def test_single_domain(self):
+        regex = _passthrough_regex(["whatsapp.com"])
+        assert regex == r"^(.+\.)?whatsapp\.com$"
+
+    def test_multiple_domains(self):
+        regex = _passthrough_regex(["whatsapp.com", "signal.org"])
+        assert r"^(.+\.)?whatsapp\.com$" in regex
+        assert r"^(.+\.)?signal\.org$" in regex
+        assert "|" in regex
+
+    def test_empty_list(self):
+        assert _passthrough_regex([]) == ""
+
+    def test_domain_with_dots_escaped(self):
+        regex = _passthrough_regex(["web.whatsapp.com"])
+        assert r"web\.whatsapp\.com" in regex
+
+
+class TestEffectiveDnsAllowlist:
+    def test_merges_passthrough(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - anthropic.com
+              passthrough:
+                - whatsapp.com
+        """))
+        cfg = load_config(str(p))
+        merged = _effective_dns_allowlist(cfg)
+        assert "anthropic.com" in merged
+        assert "whatsapp.com" in merged
+
+    def test_no_duplicates(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - whatsapp.com
+                - anthropic.com
+              passthrough:
+                - whatsapp.com
+        """))
+        cfg = load_config(str(p))
+        merged = _effective_dns_allowlist(cfg)
+        assert merged.count("whatsapp.com") == 1
+
+    def test_empty_for_non_allowlist(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              block:
+                - evil.com
+              passthrough:
+                - whatsapp.com
+        """))
+        cfg = load_config(str(p))
+        assert _effective_dns_allowlist(cfg) == []
+
+
+class TestPassthroughQuadlets:
+    def test_proxy_ignore_hosts_present(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - anthropic.com
+                - whatsapp.com
+              passthrough:
+                - whatsapp.com
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        proxy = files["test-proxy.container"]
+        assert "--ignore-hosts" in proxy
+        assert "whatsapp" in proxy
+
+    def test_proxy_no_ignore_hosts_without_passthrough(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        proxy = files["test-proxy.container"]
+        assert "--ignore-hosts" not in proxy
+
+    def test_dns_includes_passthrough_domains(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - anthropic.com
+              passthrough:
+                - whatsapp.com
+            dns_servers:
+              - 100.100.100.100
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        dns = files["test-dns.container"]
+        assert "--server=/whatsapp.com/100.100.100.100" in dns
+        assert "--server=/anthropic.com/100.100.100.100" in dns
+
+    def test_backward_compat_mode_list_quadlets(self, tmp_path):
+        """Old mode+list format still generates correct quadlets."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              mode: allowlist
+              list:
+                - api.anthropic.com
+            dns_servers:
+              - 100.100.100.100
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        dns = files["test-dns.container"]
+        assert "--server=/api.anthropic.com/100.100.100.100" in dns
+        assert "--address=/#/198.51.100.1" in dns

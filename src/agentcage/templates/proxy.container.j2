@@ -20,13 +20,13 @@ Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 {% endif %}
 AddCapability=NET_ADMIN
 {% if inbound_forwards %}
-Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080 --mode transparent@8443{% for fwd in inbound_forwards %} --mode reverse:http://{{ ip_cage }}:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
+Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080 --mode transparent@8443{% for fwd in inbound_forwards %} --mode reverse:http://{{ ip_cage }}:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}{% if passthrough_regex %} --ignore-hosts "{{ passthrough_regex }}"{% endif %}
 
 {% for fwd in inbound_forwards %}
 PublishPort={{ fwd.publish_spec }}
 {% endfor %}
 {% else %}
-Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080 --mode transparent@8443 --set connection_strategy=lazy{% if not log_proxy_connections %} --set flow_detail=0{% endif %}
+Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080 --mode transparent@8443 --set connection_strategy=lazy{% if not log_proxy_connections %} --set flow_detail=0{% endif %}{% if passthrough_regex %} --ignore-hosts "{{ passthrough_regex }}"{% endif %}
 
 {% endif %}
 {% for secret in proxy_secrets %}

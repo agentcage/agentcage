@@ -54,6 +54,34 @@ def _systemd_exec_join(args: list[str]) -> str:
     return " ".join(parts)
 
 
+def _passthrough_regex(domains: list[str]) -> str:
+    """Build a mitmproxy --ignore-hosts regex from a list of domains.
+
+    Each domain becomes ``^(.+\\.)?example\\.com$`` so both the bare domain
+    and any subdomain match.  Multiple domains are OR-joined.
+    """
+    parts = []
+    for domain in domains:
+        escaped = re.escape(domain)
+        parts.append(f"^(.+\\.)?{escaped}$")
+    return "|".join(parts)
+
+
+def _effective_dns_allowlist(config: Config) -> list[str]:
+    """Merge passthrough domains into the DNS allowlist.
+
+    Passthrough domains must resolve via upstream DNS (not the sinkhole),
+    so they are auto-added to the allowlist when in allowlist mode.
+    """
+    if config.domains.mode != "allowlist":
+        return []
+    merged = list(config.domains.allow)
+    for d in config.domains.passthrough:
+        if d not in merged:
+            merged.append(d)
+    return merged
+
+
 def _make_env() -> SandboxedEnvironment:
     env = SandboxedEnvironment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
@@ -74,9 +102,7 @@ def render_dns_quadlet(config: Config) -> str:
     env = _make_env()
     name = config.name
     addrs = cage_network_addrs(name)
-    dns_allowlist = (
-        config.domains.list if config.domains.mode == "allowlist" else []
-    )
+    dns_allowlist = _effective_dns_allowlist(config)
     return env.get_template("dns.container.j2").render(
         name=name,
         **addrs,
@@ -171,9 +197,7 @@ def generate_quadlets(
     )
 
     # DNS container — pass domain allowlist for DNS-level filtering
-    dns_allowlist = (
-        config.domains.list if config.domains.mode == "allowlist" else []
-    )
+    dns_allowlist = _effective_dns_allowlist(config)
     files[f"{name}-dns.container"] = env.get_template("dns.container.j2").render(
         **common,
         dns_servers=config.dns_servers,
@@ -190,6 +214,10 @@ def generate_quadlets(
         capture_host_dir = ""
 
     # Proxy container — published ports are served here via reverse proxy mode
+    pt_regex = (
+        _passthrough_regex(config.domains.passthrough)
+        if config.domains.passthrough else ""
+    )
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
         config_host_path=config_host_path,
@@ -200,6 +228,7 @@ def generate_quadlets(
         inbound_forwards=inbound_forwards,
         capture_enabled=capture_enabled,
         capture_host_dir=capture_host_dir,
+        passthrough_regex=pt_regex,
     )
 
     # Nested containers support

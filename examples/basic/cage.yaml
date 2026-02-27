@@ -15,8 +15,7 @@ container:
     - "127.0.0.1:3000:3000"
 
 domains:
-  mode: allowlist
-  list:
+  allow:
     - httpbin.org
 
 secrets:

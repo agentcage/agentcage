@@ -63,8 +63,7 @@ secret_injection:
 # Inner agent containers use --network host (patched), so all traffic
 # flows through the cage's proxy and is subject to domain filtering.
 domains:
-  mode: allowlist
-  list:
+  allow:
     # ── Core AI providers ──
     - anthropic.com
     #- openai.com

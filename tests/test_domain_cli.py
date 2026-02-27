@@ -16,7 +16,7 @@ def _runner():
 SAMPLE_CONFIG = {
     "name": "basic",
     "container": {"image": "node:22-slim", "command": ["node", "/app/agent.js"]},
-    "domains": {"mode": "allowlist", "list": ["anthropic.com", "httpbin.org", "github.com"]},
+    "domains": {"allow": ["anthropic.com", "httpbin.org", "github.com"]},
 }
 
 
@@ -48,6 +48,31 @@ class TestDomainList:
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
+    @patch("agentcage.cli.state")
+    def test_domain_list_with_passthrough(self, mock_state):
+        raw = {
+            "name": "basic",
+            "domains": {"allow": ["anthropic.com", "whatsapp.com"], "passthrough": ["whatsapp.com"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+
+        result = _runner().invoke(main, ["domain", "list", "basic"])
+        assert result.exit_code == 0
+        assert "whatsapp.com [passthrough]" in result.output
+
+    @patch("agentcage.cli.state")
+    def test_domain_list_legacy_format(self, mock_state):
+        raw = {
+            "name": "basic",
+            "domains": {"mode": "allowlist", "list": ["httpbin.org"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+
+        result = _runner().invoke(main, ["domain", "list", "basic"])
+        assert result.exit_code == 0
+        assert "Mode: allowlist" in result.output
+        assert "httpbin.org" in result.output
+
 
 class TestDomainAdd:
     @patch("agentcage.cli._update_dns_quadlet")
@@ -56,7 +81,7 @@ class TestDomainAdd:
     def test_domain_add(self, mock_state, mock_get_backend, mock_update_dns):
         raw = {
             "name": "basic",
-            "domains": {"mode": "allowlist", "list": ["httpbin.org"]},
+            "domains": {"allow": ["httpbin.org"]},
         }
         mock_state.load_raw_config.return_value = raw
         cfg = MagicMock()
@@ -71,14 +96,14 @@ class TestDomainAdd:
         assert "DNS and proxy updated." in result.output
         mock_state.save_raw_config.assert_called_once()
         saved = mock_state.save_raw_config.call_args[0][1]
-        assert "github.com" in saved["domains"]["list"]
+        assert "github.com" in saved["domains"]["allow"]
         mock_update_dns.assert_called_once_with(cfg)
 
     @patch("agentcage.cli.state")
     def test_domain_add_duplicate(self, mock_state):
         raw = {
             "name": "basic",
-            "domains": {"mode": "allowlist", "list": ["httpbin.org"]},
+            "domains": {"allow": ["httpbin.org"]},
         }
         mock_state.load_raw_config.return_value = raw
 
@@ -103,9 +128,54 @@ class TestDomainAdd:
         assert result.exit_code == 0
         assert "Added 'example.com'" in result.output
         saved = mock_state.save_raw_config.call_args[0][1]
-        assert saved["domains"]["mode"] == "allowlist"
-        assert "example.com" in saved["domains"]["list"]
+        assert "example.com" in saved["domains"]["allow"]
         mock_update_dns.assert_called_once_with(cfg)
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_domain_add_with_passthrough(self, mock_state, mock_get_backend, mock_update_dns):
+        raw = {
+            "name": "basic",
+            "domains": {"allow": ["anthropic.com"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
+
+        result = _runner().invoke(main, ["domain", "add", "basic", "whatsapp.com", "--passthrough"])
+        assert result.exit_code == 0
+        assert "passthrough" in result.output
+        saved = mock_state.save_raw_config.call_args[0][1]
+        assert "whatsapp.com" in saved["domains"]["allow"]
+        assert "whatsapp.com" in saved["domains"]["passthrough"]
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_domain_add_legacy_format_migrates(self, mock_state, mock_get_backend, mock_update_dns):
+        """Adding to a legacy mode+list config migrates it to allow format."""
+        raw = {
+            "name": "basic",
+            "domains": {"mode": "allowlist", "list": ["httpbin.org"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = False
+
+        result = _runner().invoke(main, ["domain", "add", "basic", "github.com"])
+        assert result.exit_code == 0
+        saved = mock_state.save_raw_config.call_args[0][1]
+        # Should have been migrated to new format
+        assert "allow" in saved["domains"]
+        assert "github.com" in saved["domains"]["allow"]
+        assert "httpbin.org" in saved["domains"]["allow"]
 
 
 class TestDomainRm:
@@ -115,7 +185,7 @@ class TestDomainRm:
     def test_domain_rm(self, mock_state, mock_get_backend, mock_update_dns):
         raw = {
             "name": "basic",
-            "domains": {"mode": "allowlist", "list": ["httpbin.org", "github.com"]},
+            "domains": {"allow": ["httpbin.org", "github.com"]},
         }
         mock_state.load_raw_config.return_value = raw
         cfg = MagicMock()
@@ -129,18 +199,61 @@ class TestDomainRm:
         assert "Removed 'github.com' from cage 'basic'" in result.output
         assert "DNS and proxy updated." in result.output
         saved = mock_state.save_raw_config.call_args[0][1]
-        assert "github.com" not in saved["domains"]["list"]
-        assert "httpbin.org" in saved["domains"]["list"]
+        assert "github.com" not in saved["domains"]["allow"]
+        assert "httpbin.org" in saved["domains"]["allow"]
         mock_update_dns.assert_called_once_with(cfg)
 
     @patch("agentcage.cli.state")
     def test_domain_rm_not_found(self, mock_state):
         raw = {
             "name": "basic",
-            "domains": {"mode": "allowlist", "list": ["httpbin.org"]},
+            "domains": {"allow": ["httpbin.org"]},
         }
         mock_state.load_raw_config.return_value = raw
 
         result = _runner().invoke(main, ["domain", "rm", "basic", "nope.com"])
         assert result.exit_code != 0
         assert "not in" in result.output
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_domain_rm_also_removes_passthrough(self, mock_state, mock_get_backend, mock_update_dns):
+        raw = {
+            "name": "basic",
+            "domains": {"allow": ["anthropic.com", "whatsapp.com"], "passthrough": ["whatsapp.com"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = False
+
+        result = _runner().invoke(main, ["domain", "rm", "basic", "whatsapp.com"])
+        assert result.exit_code == 0
+        saved = mock_state.save_raw_config.call_args[0][1]
+        assert "whatsapp.com" not in saved["domains"]["allow"]
+        assert "whatsapp.com" not in saved["domains"]["passthrough"]
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_domain_rm_passthrough_only(self, mock_state, mock_get_backend, mock_update_dns):
+        raw = {
+            "name": "basic",
+            "domains": {"allow": ["whatsapp.com"], "passthrough": ["whatsapp.com"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = False
+
+        result = _runner().invoke(main, ["domain", "rm", "basic", "whatsapp.com", "--passthrough"])
+        assert result.exit_code == 0
+        saved = mock_state.save_raw_config.call_args[0][1]
+        # Should still be in allow, but removed from passthrough
+        assert "whatsapp.com" in saved["domains"]["allow"]
+        assert "whatsapp.com" not in saved["domains"]["passthrough"]

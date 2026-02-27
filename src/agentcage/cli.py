@@ -1720,6 +1720,40 @@ def domain():
     """Manage cage domain allowlists."""
 
 
+def _read_domain_config(raw: dict) -> tuple[str, list[str], list[str]]:
+    """Extract (mode, domain_list, passthrough) from raw config dict.
+
+    Supports both new (allow/block) and legacy (mode+list) formats.
+    """
+    domains = raw.get("domains") or {}
+    passthrough = list(domains.get("passthrough") or [])
+    if "allow" in domains:
+        return "allowlist", list(domains.get("allow") or []), passthrough
+    if "block" in domains:
+        return "blocklist", list(domains.get("block") or []), passthrough
+    # Legacy format
+    mode = domains.get("mode", "allowlist")
+    entries = list(domains.get("list") or [])
+    return mode, entries, passthrough
+
+
+def _ensure_domain_section(raw: dict) -> None:
+    """Ensure raw config has a domains section with allow key."""
+    if "domains" not in raw:
+        raw["domains"] = {"allow": []}
+    dom = raw["domains"]
+    # Migrate legacy mode+list to allow
+    if "allow" not in dom and "block" not in dom:
+        mode = dom.pop("mode", "allowlist")
+        entries = dom.pop("list", [])
+        if mode == "allowlist":
+            dom["allow"] = list(entries)
+        elif mode == "blocklist":
+            dom["block"] = list(entries)
+        else:
+            dom["allow"] = list(entries)
+
+
 @domain.command("list")
 @click.argument("cage_name")
 def domain_list(cage_name: str):
@@ -1730,13 +1764,17 @@ def domain_list(cage_name: str):
         click.echo(f"error: cage '{cage_name}' does not exist", err=True)
         sys.exit(1)
 
-    domains = raw.get("domains", {})
-    mode = domains.get("mode", "allowlist")
-    domain_list_val = domains.get("list", [])
+    mode, domain_entries, passthrough = _read_domain_config(raw)
+    pt_set = set(passthrough)
 
     click.echo(f"Mode: {mode}")
-    for d in sorted(domain_list_val):
-        click.echo(d)
+    for d in sorted(domain_entries):
+        suffix = " [passthrough]" if d in pt_set else ""
+        click.echo(f"{d}{suffix}")
+    # Show passthrough-only domains (in passthrough but not in the main list)
+    for d in sorted(passthrough):
+        if d not in domain_entries:
+            click.echo(f"{d} [passthrough only]")
 
 
 def _update_dns_quadlet(cfg) -> None:
@@ -1770,7 +1808,9 @@ def _update_dns_quadlet(cfg) -> None:
 @domain.command("add")
 @click.argument("cage_name")
 @click.argument("domain_name")
-def domain_add(cage_name: str, domain_name: str):
+@click.option("--passthrough", is_flag=True,
+              help="Also add to TLS passthrough list (no MITM interception).")
+def domain_add(cage_name: str, domain_name: str, passthrough: bool):
     """Add a domain to a cage's allowlist."""
     try:
         raw = state.load_raw_config(cage_name)
@@ -1778,23 +1818,36 @@ def domain_add(cage_name: str, domain_name: str):
         click.echo(f"error: cage '{cage_name}' does not exist", err=True)
         sys.exit(1)
 
-    if "domains" not in raw:
-        raw["domains"] = {"mode": "allowlist", "list": []}
-    if "list" not in raw["domains"]:
-        raw["domains"]["list"] = []
+    _ensure_domain_section(raw)
+    dom = raw["domains"]
 
-    if domain_name in raw["domains"]["list"]:
+    # Determine the active list key
+    list_key = "allow" if "allow" in dom else "block" if "block" in dom else "allow"
+    if list_key not in dom:
+        dom[list_key] = []
+
+    already_in_list = domain_name in dom[list_key]
+    already_passthrough = domain_name in dom.get("passthrough", [])
+
+    if already_in_list and (not passthrough or already_passthrough):
         click.echo(f"'{domain_name}' is already in cage '{cage_name}'.")
         return
 
-    raw["domains"]["list"].append(domain_name)
+    if not already_in_list:
+        dom[list_key].append(domain_name)
+    if passthrough and not already_passthrough:
+        if "passthrough" not in dom:
+            dom["passthrough"] = []
+        dom["passthrough"].append(domain_name)
+
     state.save_raw_config(cage_name, raw)
     state.save_proxy_config(cage_name)
 
     cfg = state.load_deployment_config(cage_name)
     _update_dns_quadlet(cfg)
 
-    msg = f"Added '{domain_name}' to cage '{cage_name}'."
+    pt_note = " (passthrough)" if passthrough else ""
+    msg = f"Added '{domain_name}'{pt_note} to cage '{cage_name}'."
     if get_backend(cfg).is_running(cfg.name, "cage"):
         msg += " DNS and proxy updated."
     click.echo(msg)
@@ -1803,7 +1856,9 @@ def domain_add(cage_name: str, domain_name: str):
 @domain.command("rm")
 @click.argument("cage_name")
 @click.argument("domain_name")
-def domain_rm(cage_name: str, domain_name: str):
+@click.option("--passthrough", is_flag=True,
+              help="Remove only from passthrough list (keep in allow/block).")
+def domain_rm(cage_name: str, domain_name: str, passthrough: bool):
     """Remove a domain from a cage's allowlist."""
     try:
         raw = state.load_raw_config(cage_name)
@@ -1811,12 +1866,29 @@ def domain_rm(cage_name: str, domain_name: str):
         click.echo(f"error: cage '{cage_name}' does not exist", err=True)
         sys.exit(1)
 
-    domain_entries = raw.get("domains", {}).get("list", [])
-    if domain_name not in domain_entries:
-        click.echo(f"error: '{domain_name}' is not in cage '{cage_name}'", err=True)
-        sys.exit(1)
+    _ensure_domain_section(raw)
+    dom = raw["domains"]
 
-    raw["domains"]["list"].remove(domain_name)
+    # Determine the active list key
+    list_key = "allow" if "allow" in dom else "block" if "block" in dom else "allow"
+    domain_entries = dom.get(list_key, [])
+    pt_entries = dom.get("passthrough", [])
+
+    if passthrough:
+        # Only remove from passthrough
+        if domain_name not in pt_entries:
+            click.echo(f"error: '{domain_name}' is not in passthrough for cage '{cage_name}'", err=True)
+            sys.exit(1)
+        dom["passthrough"].remove(domain_name)
+    else:
+        # Remove from both main list and passthrough
+        if domain_name not in domain_entries:
+            click.echo(f"error: '{domain_name}' is not in cage '{cage_name}'", err=True)
+            sys.exit(1)
+        dom[list_key].remove(domain_name)
+        if domain_name in pt_entries:
+            dom["passthrough"].remove(domain_name)
+
     state.save_raw_config(cage_name, raw)
     state.save_proxy_config(cage_name)
 

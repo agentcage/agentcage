@@ -13,8 +13,17 @@ class DomainInspector(Inspector):
     name = "domain"
 
     def configure(self, config: dict) -> None:
-        self.mode = config.get("mode")  # "allowlist" | "blocklist" | None
-        self.domain_set: set[str] = {d.lower() for d in config.get("list", [])}
+        # New format: allow/block keys
+        if "allow" in config:
+            self.mode = "allowlist"
+            self.domain_set: set[str] = {d.lower() for d in config.get("allow", [])}
+        elif "block" in config:
+            self.mode = "blocklist"
+            self.domain_set = {d.lower() for d in config.get("block", [])}
+        else:
+            # Backward compat: mode + list
+            self.mode = config.get("mode")  # "allowlist" | "blocklist" | None
+            self.domain_set = {d.lower() for d in config.get("list", [])}
 
     def _matches(self, host: str) -> bool:
         parts = host.lower().split(".")

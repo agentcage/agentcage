@@ -65,8 +65,19 @@ class LoggingConfig:
 
 @dataclass
 class DomainConfig:
-    mode: str = ""  # "allowlist" | "blocklist" | ""
-    list: list[str] = field(default_factory=list)
+    mode: str = ""  # "allowlist" | "blocklist" | "" — derived from allow/block
+    allow: list[str] = field(default_factory=list)
+    block: list[str] = field(default_factory=list)
+    passthrough: list[str] = field(default_factory=list)
+
+    @property
+    def list(self) -> list[str]:
+        """Return the active domain list (allow or block) for backward compat."""
+        if self.mode == "allowlist":
+            return self.allow
+        if self.mode == "blocklist":
+            return self.block
+        return []
 
 
 @dataclass
@@ -247,8 +258,25 @@ def load_config(path: str) -> Config:
     # Domains
     dom_raw = raw.get("domains") or {}
     dc = DomainConfig()
-    dc.mode = dom_raw.get("mode", "")
-    dc.list = list(dom_raw.get("list") or [])
+    dc.passthrough = list(dom_raw.get("passthrough") or [])
+
+    # New format: explicit allow/block lists
+    if "allow" in dom_raw:
+        dc.allow = list(dom_raw["allow"] or [])
+        dc.mode = "allowlist"
+        if "block" in dom_raw:
+            dc.block = list(dom_raw["block"] or [])
+    elif "block" in dom_raw:
+        dc.block = list(dom_raw["block"] or [])
+        dc.mode = "blocklist"
+    elif "mode" in dom_raw:
+        # Backward compat: mode + list
+        dc.mode = dom_raw["mode"]
+        entries = list(dom_raw.get("list") or [])
+        if dc.mode == "allowlist":
+            dc.allow = entries
+        elif dc.mode == "blocklist":
+            dc.block = entries
     cfg.domains = dc
 
     # Logging
@@ -362,7 +390,29 @@ def validate_config(config: Config) -> list[str]:
                     f"port {pn} out of range (1-65535) in port spec {port_spec!r}"
                 )
 
+    # Validate domain config
+    if config.domains.allow and config.domains.block:
+        raise ValueError(
+            "domains: cannot specify both 'allow' and 'block' lists"
+        )
+
     warnings = []
+
+    # Warn about passthrough implications
+    if config.domains.passthrough:
+        warnings.append(
+            "domains.passthrough bypasses TLS interception for listed domains "
+            "(proxy inspectors will not see this traffic)"
+        )
+        # Warn if passthrough domain not covered by allowlist
+        if config.domains.mode == "allowlist":
+            allow_set = set(config.domains.allow)
+            for d in config.domains.passthrough:
+                if d not in allow_set:
+                    warnings.append(
+                        f"passthrough domain '{d}' is not in the allow list "
+                        f"and will be added automatically for DNS resolution"
+                    )
 
     # Nested containers validation
     if config.container.nested_containers:

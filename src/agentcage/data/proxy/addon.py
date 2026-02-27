@@ -230,6 +230,19 @@ class Agentcage:
         else:
             self.log_allowed = bool(self.cfg.get("log_allowed", True))
 
+        # Update TLS passthrough (--ignore-hosts)
+        passthrough = (self.cfg.get("domains") or {}).get("passthrough") or []
+        if passthrough:
+            import re as _re
+            parts = []
+            for domain in passthrough:
+                escaped = _re.escape(domain)
+                parts.append(f"^(.+\\.)?{escaped}$")
+            regex = "|".join(parts)
+            ctx.options.update(ignore_hosts=[regex])
+        else:
+            ctx.options.update(ignore_hosts=[])
+
         self._config_mtime = mtime
         names = [i.name for i in self.inspectors]
         ctx.log.info(f"agentcage: config reloaded, inspectors={names}")

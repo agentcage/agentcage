@@ -5,7 +5,7 @@ import textwrap
 
 import pytest
 
-from agentcage.config import Config, ContainerConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, _VALID_LEVELS, load_config, validate_config
+from agentcage.config import Config, ContainerConfig, DomainConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, _VALID_LEVELS, load_config, validate_config
 
 
 class TestLoadConfigMinimal:
@@ -461,3 +461,159 @@ class TestHostDnsServers:
         )
         with pytest.raises(RuntimeError, match="Could not detect usable DNS"):
             _host_dns_servers()
+
+
+class TestDomainConfigNewFormat:
+    def test_allow_list(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - github.com
+                - pypi.org
+        """))
+        cfg = load_config(str(p))
+        assert cfg.domains.mode == "allowlist"
+        assert cfg.domains.allow == ["github.com", "pypi.org"]
+        assert cfg.domains.list == ["github.com", "pypi.org"]
+        assert cfg.domains.block == []
+        assert cfg.domains.passthrough == []
+
+    def test_block_list(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              block:
+                - evil.com
+        """))
+        cfg = load_config(str(p))
+        assert cfg.domains.mode == "blocklist"
+        assert cfg.domains.block == ["evil.com"]
+        assert cfg.domains.list == ["evil.com"]
+        assert cfg.domains.allow == []
+
+    def test_passthrough(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - anthropic.com
+                - whatsapp.com
+              passthrough:
+                - whatsapp.com
+        """))
+        cfg = load_config(str(p))
+        assert cfg.domains.passthrough == ["whatsapp.com"]
+        assert cfg.domains.allow == ["anthropic.com", "whatsapp.com"]
+        assert cfg.domains.mode == "allowlist"
+
+    def test_passthrough_default_empty(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        assert cfg.domains.passthrough == []
+
+    def test_backward_compat_mode_allowlist(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              mode: allowlist
+              list:
+                - github.com
+        """))
+        cfg = load_config(str(p))
+        assert cfg.domains.mode == "allowlist"
+        assert cfg.domains.allow == ["github.com"]
+        assert cfg.domains.list == ["github.com"]
+
+    def test_backward_compat_mode_blocklist(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              mode: blocklist
+              list:
+                - evil.com
+        """))
+        cfg = load_config(str(p))
+        assert cfg.domains.mode == "blocklist"
+        assert cfg.domains.block == ["evil.com"]
+        assert cfg.domains.list == ["evil.com"]
+
+    def test_no_domains_section(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+        """))
+        cfg = load_config(str(p))
+        assert cfg.domains.mode == ""
+        assert cfg.domains.allow == []
+        assert cfg.domains.block == []
+        assert cfg.domains.passthrough == []
+        assert cfg.domains.list == []
+
+    def test_validation_allow_and_block_error(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - good.com
+              block:
+                - bad.com
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match="cannot specify both"):
+            validate_config(cfg)
+
+    def test_validation_passthrough_warning(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - anthropic.com
+              passthrough:
+                - whatsapp.com
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any("passthrough bypasses TLS" in w for w in warnings)
+        assert any("whatsapp.com" in w and "not in the allow list" in w for w in warnings)
+
+    def test_validation_passthrough_covered(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - anthropic.com
+                - whatsapp.com
+              passthrough:
+                - whatsapp.com
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        # Should warn about passthrough but NOT about uncovered domain
+        assert any("passthrough bypasses TLS" in w for w in warnings)
+        assert not any("not in the allow list" in w for w in warnings)

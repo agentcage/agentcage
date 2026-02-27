@@ -61,13 +61,18 @@ container:
 # Subdomains are matched automatically (e.g. "github.com" also allows
 # "api.github.com").
 domains:
-  mode: allowlist
-  list:
+  allow:
     - example.com
     # - github.com
     # - githubusercontent.com
     # - npmjs.org
     # - pypi.org
+
+  # Domains that bypass TLS interception (for protocols that break
+  # under MITM, like WhatsApp/Noise Protocol or gRPC with cert pinning).
+  # These are still subject to DNS filtering.
+  # passthrough:
+  #   - whatsapp.com
 
 # ── Secret injection ──
 # API keys are swapped by the proxy — the cage only sees placeholders.

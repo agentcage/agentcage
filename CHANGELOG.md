@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-02-27
+
+### Added
+- **TLS passthrough** (`domains.passthrough`) — listed domains bypass mitmproxy TLS interception, allowing protocols that break under MITM (WhatsApp/Noise Protocol, gRPC with cert pinning) to connect directly while still enforcing DNS-level domain filtering
+  - Passthrough domains auto-added to DNS allowlist for resolution
+  - mitmproxy `--ignore-hosts` regex generated from passthrough list
+  - Hot-reload: passthrough changes picked up via config file mtime check
+- `domain add --passthrough` / `domain rm --passthrough` CLI flags for managing passthrough domains
+
+### Changed
+- **Domain config redesign** — `domains:` section now uses explicit `allow:` / `block:` / `passthrough:` keys instead of `mode:` + `list:`. The old format is still accepted for backward compatibility
+  - `allow:` → allowlist mode (replaces `mode: allowlist` + `list:`)
+  - `block:` → blocklist mode (replaces `mode: blocklist` + `list:`)
+  - Both `allow` + `block` → validation error
+  - All examples, scaffolds, and templates migrated to new format
+  - `domain list` shows `[passthrough]` markers
+  - `domain add`/`rm` auto-migrates legacy `mode`+`list` configs on write
+- Domain inspector accepts both new (`allow`/`block`) and legacy (`mode`/`list`) config keys
+
 ## [0.5.0] - 2026-02-27
 
 ### Added

@@ -100,8 +100,7 @@ def openclaw_yaml(tmp_path):
             inject_to:
               - anthropic.com
         domains:
-          mode: allowlist
-          list:
+          allow:
             - anthropic.com
             - npmjs.org
             - github.com

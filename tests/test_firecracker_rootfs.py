@@ -235,7 +235,7 @@ class TestGenerateStartupScript:
     def test_domain_allowlist(self):
         cfg = _make_config(
             dns_servers=["1.1.1.1"],
-            domains=DomainConfig(mode="allowlist", list=["example.com"]),
+            domains=DomainConfig(mode="allowlist", allow=["example.com"]),
         )
         script = _generate_startup_script(cfg, "testcage")
         assert "--address=/#/198.51.100.1" in script
