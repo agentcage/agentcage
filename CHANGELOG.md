@@ -10,9 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **TLS passthrough** (`domains.passthrough`) — listed domains bypass mitmproxy TLS interception, allowing protocols that break under MITM (WhatsApp/Noise Protocol, gRPC with cert pinning) to connect directly while still enforcing DNS-level domain filtering
   - Passthrough domains auto-added to DNS allowlist for resolution
-  - mitmproxy `--ignore-hosts` regex generated from passthrough list
+  - mitmproxy `ignore_hosts` set via `running()` hook with port-aware regex (`host:port` matching)
   - Hot-reload: passthrough changes picked up via config file mtime check
 - `domain add --passthrough` / `domain rm --passthrough` CLI flags for managing passthrough domains
+- PicoClaw setup guide
 
 ### Changed
 - **Domain config redesign** — `domains:` section now uses explicit `allow:` / `block:` / `passthrough:` keys instead of `mode:` + `list:`. The old format is still accepted for backward compatibility
