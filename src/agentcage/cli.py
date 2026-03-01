@@ -669,7 +669,7 @@ def _verify_container(name: str, _pass, _fail):
     click.echo()
     click.echo("-- Egress Filtering --")
     try:
-        # Try curl first, fall back to node's fetch if curl isn't available
+        # Try curl first, then node, then python as fallbacks
         exit_code, output = podman.container_exec(
             f"{name}-cage", ["which", "curl"]
         )
@@ -681,15 +681,34 @@ def _verify_container(name: str, _pass, _fail):
             )
             status = output.strip()
         else:
-            # Use node fetch as fallback
+            # Try node fetch
             exit_code, output = podman.container_exec(
-                f"{name}-cage",
-                ["node", "-e",
-                 "fetch('http://evil-exfil-server.io')"
-                 ".then(r=>console.log(r.status))"
-                 ".catch(()=>console.log('000'))"],
+                f"{name}-cage", ["which", "node"]
             )
-            status = output.strip()
+            if exit_code == 0:
+                exit_code, output = podman.container_exec(
+                    f"{name}-cage",
+                    ["node", "-e",
+                     "fetch('http://evil-exfil-server.io')"
+                     ".then(r=>console.log(r.status))"
+                     ".catch(()=>console.log('000'))"],
+                )
+                status = output.strip()
+            else:
+                # Fall back to python (covers python-slim and similar images)
+                exit_code, output = podman.container_exec(
+                    f"{name}-cage",
+                    ["python", "-c",
+                     "import urllib.request\n"
+                     "try:\n"
+                     "    urllib.request.urlopen('https://evil-exfil-server.io', timeout=5)\n"
+                     "    print('200')\n"
+                     "except urllib.error.HTTPError as e:\n"
+                     "    print(e.code)\n"
+                     "except Exception:\n"
+                     "    print('000')"],
+                )
+                status = output.strip()
         if status in ("403", "000"):
             _pass(f"Blocked domain (evil-exfil-server.io) is denied (HTTP {status})")
         else:
