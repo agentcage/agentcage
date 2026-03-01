@@ -592,6 +592,7 @@ def cage_verify(name: str):
 
     passed = 0
     failed = 0
+    warned = 0
 
     def _pass(msg: str):
         nonlocal passed
@@ -602,6 +603,11 @@ def cage_verify(name: str):
         nonlocal failed
         click.echo(f"  [FAIL] {msg}")
         failed += 1
+
+    def _warn(msg: str):
+        nonlocal warned
+        click.echo(f"  [WARN] {msg}")
+        warned += 1
 
     click.echo(f"=== agentcage verify: {name} ({cfg.isolation}) ===")
     click.echo()
@@ -616,19 +622,19 @@ def cage_verify(name: str):
             _fail(f"{name}-{svc} is NOT running")
 
     if cfg.isolation == "container":
-        _verify_container(name, _pass, _fail)
+        _verify_container(name, _pass, _fail, _warn)
     else:
         _verify_firecracker(name, _pass, _fail)
 
     # Summary
     click.echo()
-    click.echo(f"=== Results: {passed} passed, {failed} failed, 0 warnings ===")
+    click.echo(f"=== Results: {passed} passed, {failed} failed, {warned} warnings ===")
     if failed > 0:
         click.echo("    Review failures above.")
         sys.exit(1)
 
 
-def _verify_container(name: str, _pass, _fail):
+def _verify_container(name: str, _pass, _fail, _warn):
     """Container-specific health checks (exec into host containers)."""
     podman = Podman()
 
@@ -669,7 +675,8 @@ def _verify_container(name: str, _pass, _fail):
     click.echo()
     click.echo("-- Egress Filtering --")
     try:
-        # Try curl first, fall back to node's fetch if curl isn't available
+        # Try curl first, fall back to node, then python3 urllib
+        status = ""
         exit_code, output = podman.container_exec(
             f"{name}-cage", ["which", "curl"]
         )
@@ -689,8 +696,27 @@ def _verify_container(name: str, _pass, _fail):
                  ".then(r=>console.log(r.status))"
                  ".catch(()=>console.log('000'))"],
             )
-            status = output.strip()
-        if status in ("403", "000"):
+            if exit_code == 0 and output.strip():
+                status = output.strip()
+            else:
+                # Use python3 urllib as last resort
+                exit_code, output = podman.container_exec(
+                    f"{name}-cage",
+                    ["python3", "-c",
+                     "import urllib.request, urllib.error\n"
+                     "try:\n"
+                     "    urllib.request.urlopen('https://evil-exfil-server.io', timeout=5)\n"
+                     "    print('200')\n"
+                     "except urllib.error.HTTPError as e:\n"
+                     "    print(e.code)\n"
+                     "except Exception:\n"
+                     "    print('000')"],
+                )
+                if exit_code == 0 and output.strip():
+                    status = output.strip()
+        if not status:
+            _warn("No HTTP client (curl/node/python3) in cage — cannot verify egress filtering")
+        elif status in ("403", "000"):
             _pass(f"Blocked domain (evil-exfil-server.io) is denied (HTTP {status})")
         else:
             _fail(f"Blocked domain returned HTTP {status} — egress filtering may be broken")
