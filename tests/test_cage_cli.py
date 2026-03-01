@@ -367,6 +367,61 @@ class TestCageVerify:
         assert result.exit_code != 0
         assert "FAIL" in result.output
 
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_egress_python_fallback(self, mock_state, mock_get_backend, MockPodman):
+        """When curl and node are missing, python3 urllib fallback works."""
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.is_running.return_value = True
+        podman = MockPodman.return_value
+        podman.container_exec.side_effect = [
+            (0, ""),            # test -f /certs/...
+            (1, ""),            # which curl → not found
+            (1, ""),            # node fallback → fails
+            (0, "403\n"),       # python3 urllib → 403
+        ]
+        podman.container_inspect.return_value = {
+            "Config": {"Env": ["HTTP_PROXY=http://x", "HTTPS_PROXY=http://x"]}
+        }
+        podman.info.return_value = {
+            "host": {"security": {"rootless": True}}
+        }
+        result = _runner().invoke(main, ["cage", "verify", "test"])
+        assert result.exit_code == 0
+        assert "PASS" in result.output
+        assert "403" in result.output
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_egress_no_client_warns(self, mock_state, mock_get_backend, MockPodman):
+        """When no HTTP client is available, verify warns instead of failing."""
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        backend = mock_get_backend.return_value
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.is_running.return_value = True
+        podman = MockPodman.return_value
+        podman.container_exec.side_effect = [
+            (0, ""),            # test -f /certs/...
+            (1, ""),            # which curl → not found
+            (1, ""),            # node fallback → fails
+            (1, ""),            # python3 fallback → fails
+        ]
+        podman.container_inspect.return_value = {
+            "Config": {"Env": ["HTTP_PROXY=http://x", "HTTPS_PROXY=http://x"]}
+        }
+        podman.info.return_value = {
+            "host": {"security": {"rootless": True}}
+        }
+        result = _runner().invoke(main, ["cage", "verify", "test"])
+        assert result.exit_code == 0  # warnings don't fail verify
+        assert "WARN" in result.output
+        assert "No HTTP client" in result.output
+        assert "1 warnings" in result.output
+
 
 def _mock_config(isolation="container"):
     cfg = MagicMock()
