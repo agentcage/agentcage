@@ -399,6 +399,42 @@ class TestSecretsInspector:
         # No built-in entries for keys the user didn't specify
         assert "openai_key" not in s.allow_to_domains
 
+    def test_builtin_allow_lets_github_token_through(self):
+        """ghp_ token to api.github.com should be allowed."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        token = "ghp_" + "A" * 36
+        ctx = _ctx(
+            headers=[("authorization", f"Bearer {token}")],
+            host="api.github.com",
+        )
+        assert s.inspect_request(ctx) is None
+
+    def test_builtin_allow_lets_github_pat_through(self):
+        """github_pat_ token to api.github.com should be allowed."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        token = "github_pat_" + "A" * 22
+        ctx = _ctx(
+            headers=[("authorization", f"Bearer {token}")],
+            host="api.github.com",
+        )
+        assert s.inspect_request(ctx) is None
+
+    def test_builtin_allow_blocks_github_token_to_wrong_domain(self):
+        """ghp_ token to evil.com should be blocked."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        token = "ghp_" + "A" * 36
+        ctx = _ctx(
+            headers=[("authorization", f"Bearer {token}")],
+            host="evil.com",
+        )
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert "github_token" in r.reason
+
     def test_detects_secret_in_duplicate_header(self):
         """Multi-value headers: secret in a later value must still be caught."""
         s = SecretsInspector()
