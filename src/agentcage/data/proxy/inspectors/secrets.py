@@ -34,6 +34,8 @@ BUILTIN_ALLOW_TO_DOMAINS = {
     "openai_key": ["openai.com"],
     "anthropic_key": ["anthropic.com"],
     "aws_access_key": ["amazonaws.com"],
+    "github_token": ["github.com"],
+    "github_pat": ["github.com"],
     "google_api_key": ["googleapis.com", "google.com"],
     "slack_token": ["slack.com"],
     "stripe_key": ["stripe.com"],
