@@ -6,7 +6,7 @@
 
 *Defense-in-depth proxy sandbox for AI agents.*
 
-Because "the agent would never do that" is not a security policy.
+Don't let your agent phone home.
 
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
