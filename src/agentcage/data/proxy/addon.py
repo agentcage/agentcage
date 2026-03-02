@@ -277,13 +277,23 @@ class Agentcage:
     def request(self, flow: http.HTTPFlow) -> None:
         self._maybe_reload()
 
+        # Reverse proxy flows are inbound traffic (host → cage via proxy).
+        # Detect early so we can guard the transparent-mode host rewrite.
+        is_reverse = isinstance(
+            getattr(flow.client_conn, "proxy_mode", None), ReverseMode
+        )
+        direction = "inbound" if is_reverse else "outbound"
+
         # In transparent mode, flow.request.host is the raw destination IP
         # (from SO_ORIGINAL_DST).  Rewrite it to the actual hostname from the
         # Host header (HTTP) or TLS SNI (HTTPS) so domain filtering, logging,
         # and secret injection all see the real hostname.
-        pretty = flow.request.pretty_host
-        if pretty != flow.request.host:
-            flow.request.host = pretty
+        # Skip for reverse proxy flows — the host is the configured upstream
+        # and must not be overwritten with the client's Host header.
+        if not is_reverse:
+            pretty = flow.request.pretty_host
+            if pretty != flow.request.host:
+                flow.request.host = pretty
 
         # Rate limiting
         if not self._check_rate_limit(flow.request.host):
@@ -298,13 +308,6 @@ class Agentcage:
             flow.metadata["agentcage_blocked"] = True
             self._log(flow, "blocked", "rate limit exceeded", [])
             return
-
-        # Reverse proxy flows are inbound traffic (host → cage via proxy).
-        # Detect early so direction is available for all subsequent logging.
-        is_reverse = isinstance(
-            getattr(flow.client_conn, "proxy_mode", None), ReverseMode
-        )
-        direction = "inbound" if is_reverse else "outbound"
 
         # Check for placeholder-to-unauthorized-domain violations first
         # (this does NOT modify the flow — only checks domain restrictions)
