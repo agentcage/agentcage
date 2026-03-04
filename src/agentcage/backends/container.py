@@ -87,10 +87,11 @@ class ContainerBackend:
             systemd.restart_unit(f"{name}-certs-volume.service")
         except Exception as e:
             click.echo(f"warning: failed to restart volume service: {e}", err=True)
-        try:
-            systemd.restart_unit(f"{name}-podman-storage-volume.service")
-        except Exception:
-            pass  # volume only exists when nested_containers is enabled
+        if (self.unit_dir() / f"{name}-podman-storage.volume").exists():
+            try:
+                systemd.restart_unit(f"{name}-podman-storage-volume.service")
+            except Exception:
+                pass
         systemd.start_unit(f"{name}-cage.service")
         click.echo(f"Started {name}-cage")
 
