@@ -165,6 +165,7 @@ class Podman:
         subprocess.run(
             [*_podman_cmd(), "secret", "create", name, "-"],
             input=value, text=True, check=True,
+            stdout=subprocess.DEVNULL,
         )
 
     def secret_read(self, name: str) -> str:
