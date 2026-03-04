@@ -23,7 +23,7 @@ import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-ALL_CATEGORIES = ("python", "containers", "firecracker", "kernel", "node", "pip")
+ALL_CATEGORIES = ("python", "containers", "firecracker", "kernel", "pip")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -515,55 +515,6 @@ def check_kernel(update: bool) -> tuple[int, int]:
     return (1, 0)
 
 
-# ── Node.js (undici) ────────────────────────────────────────────────────────
-
-
-def check_node(update: bool) -> tuple[int, int]:
-    """Check undici package version. Returns (updates, up_to_date)."""
-    pkg_json = os.path.join(
-        REPO_ROOT, "src/agentcage/data/patches/package.json"
-    )
-    content = open(pkg_json).read()
-
-    m = re.search(r'"undici":\s*"([\d.]+)"', content)
-    if not m:
-        print("\n[node] undici (patches/)")
-        print("  error: could not parse undici version from package.json")
-        return (0, 0)
-
-    current = m.group(1)
-
-    try:
-        data = _json_get("https://registry.npmjs.org/undici/latest")
-        latest = data.get("version", "")
-    except Exception as e:
-        print("\n[node] undici (patches/)")
-        print(f"  error: npm registry request failed: {e}")
-        return (0, 0)
-
-    if latest == current:
-        _print_status("node", "undici (patches/)", current, f"{latest} (up to date)")
-        return (0, 1)
-
-    _print_status("node", "undici (patches/)", current, latest)
-
-    if update:
-        patches_dir = os.path.join(REPO_ROOT, "src/agentcage/data/patches")
-        subprocess.run(
-            ["npm", "update"],
-            cwd=patches_dir, check=True,
-        )
-        subprocess.run(
-            ["npm", "install"],
-            cwd=patches_dir, check=True,
-        )
-        print(f"  -> updated undici; review git diff of node_modules carefully")
-    else:
-        print(f"  -> update available")
-
-    return (1, 0)
-
-
 # ── pip (pyyaml in Containerfile.proxy) ──────────────────────────────────────
 
 
@@ -619,7 +570,6 @@ CHECKERS = {
     "containers": check_containers,
     "firecracker": check_firecracker,
     "kernel": check_kernel,
-    "node": check_node,
     "pip": check_pip,
 }
 
