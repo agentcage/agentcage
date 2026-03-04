@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-03-04
+
+### Fixed
+- `cage create` no longer emits a spurious "Failed to restart" warning for the storage volume service when `nested_containers` is not enabled (#21)
+- `secret set` no longer leaks the podman secret ID to stdout (#20)
+- `cage har` error message now shows the exact config snippet needed to enable capture instead of a vague hint (#19)
+
+### Added
+- Commented-out `capture:` config block in all scaffold templates (openclaw, picoclaw, nanoclaw) for discoverability
+- Documentation index (`docs/README.md`) with links to all docs and setup guides
+
+### Changed
+- Updated tagline to "Don't let your agent phone home."
+
 ## [0.6.2] - 2026-03-02
 
 ### Fixed
