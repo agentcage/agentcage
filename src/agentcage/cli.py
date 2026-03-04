@@ -10,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import tarfile
 import tempfile
 from pathlib import Path
@@ -465,8 +466,15 @@ def cage_update(name: str, config_path: str | None):
     backend = get_backend(cfg)
     backend.stop(name)
 
-    # Check port availability (after stop so the cage's own ports are free)
+    # Check port availability (after stop so the cage's own ports are free).
+    # Retry briefly — container port release can lag behind service stop.
     conflicts = _check_port_availability(cfg)
+    if conflicts:
+        for attempt in range(5):
+            time.sleep(1)
+            conflicts = _check_port_availability(cfg)
+            if not conflicts:
+                break
     if conflicts:
         for port_spec, host_bind, host_port in conflicts:
             click.echo(
