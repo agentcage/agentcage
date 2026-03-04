@@ -90,6 +90,14 @@ domains:
     # Add domains your agents need access to:
     #- example.com
 
+# ── Traffic capture (HAR export) ──
+# Record decrypted request/response bodies for forensic analysis.
+# Export with: agentcage cage har {{ name }}
+#capture:
+#  enable_har: true
+#  min_action: all             # "all", "flag", or "block"
+#  max_body_size: 10485760     # 10MB per body
+
 # ── Logging ──
 logging:
   level: info
