@@ -1229,7 +1229,10 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
     if not capture_path.is_file():
         click.echo(f"error: no capture file found for cage '{name}'", err=True)
         click.echo(f"  Expected: {capture_path}", err=True)
-        click.echo("  Is capture enabled in the cage config?", err=True)
+        click.echo("", err=True)
+        click.echo("  Add this to your cage.yaml and run `agentcage cage update`:", err=True)
+        click.echo("    capture:", err=True)
+        click.echo("      enable_har: true", err=True)
         sys.exit(1)
 
     # Warn about sensitive outbound data
