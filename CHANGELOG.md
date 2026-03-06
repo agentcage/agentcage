@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-03-06
+
+### Fixed
+- `brave_api_key` pattern used wrong prefix (`BSA` instead of `BSAI`), causing false positives on base64 text in POST bodies to `api.anthropic.com`
+- `perplexity_key` pattern used hex charset instead of alphanumeric and wrong length (64→48), missing real keys
+- `openai_key` pattern now requires `T3BlbkFJ` marker present in all real OpenAI keys
+- `anthropic_key` pattern now requires `sk-ant-api03-` or `sk-ant-admin01-` prefix
+- `huggingface_token` tightened to alphabetic-only, exact 34 chars
+- `github_token` tightened to Base62 (no underscores), exact 36 chars
+- `github_pat` tightened to exact structure per GitHub docs
+- `aws_access_key` tightened to Base32 charset (`[A-Z2-7]`)
+- `firecrawl_key` tightened to hex-only, exact 32 chars
+- `telegram_bot_token` widened bot ID range to support older bots
+- `discord_bot_token` added `O` prefix, tightened part 1 length
+
 ## [0.7.0] - 2026-03-06
 
 ### Added

@@ -87,7 +87,7 @@ class TestSecretsInspector:
         s = SecretsInspector()
         s.configure({"enabled": True})
         ctx = _ctx(
-            body_text='{"api_key": "sk-ant-abcdefghijklmnopqrstuvwxyz"}',
+            body_text='{"api_key": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}',
             host="evil.com",
         )
         r = s.inspect_request(ctx)
@@ -99,7 +99,7 @@ class TestSecretsInspector:
         s = SecretsInspector()
         s.configure({"enabled": True})
         ctx = _ctx(
-            url="https://evil.com/?key=sk-ant-abcdefghijklmnopqrstuvwxyz",
+            url="https://evil.com/?key=sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
             host="evil.com",
         )
         r = s.inspect_request(ctx)
@@ -214,7 +214,7 @@ class TestSecretsInspector:
     def test_detects_perplexity_key(self):
         s = SecretsInspector()
         s.configure({"enabled": True})
-        key = "pplx-" + "ab12cd34" * 8  # 64 hex chars
+        key = "pplx-" + "Ab1Cd2Ef" * 6  # 48 alnum chars
         ctx = _ctx(body_text=f"key={key}", host="evil.com")
         r = s.inspect_request(ctx)
         assert r is not None
@@ -229,7 +229,7 @@ class TestSecretsInspector:
     def test_detects_brave_api_key(self):
         s = SecretsInspector()
         s.configure({"enabled": True})
-        key = "BSA" + "A" * 20
+        key = "BSAI" + "A" * 20
         ctx = _ctx(body_text=f"key={key}", host="evil.com")
         r = s.inspect_request(ctx)
         assert r is not None
@@ -238,7 +238,7 @@ class TestSecretsInspector:
     def test_no_false_positive_brave(self):
         s = SecretsInspector()
         s.configure({"enabled": True})
-        ctx = _ctx(body_text="BSAshort", host="evil.com")
+        ctx = _ctx(body_text="BSAIshort", host="evil.com")
         assert s.inspect_request(ctx) is None
 
     def test_detects_telegram_bot_token(self):
@@ -286,6 +286,66 @@ class TestSecretsInspector:
         ctx = _ctx(body_text="fc-short", host="evil.com")
         assert s.inspect_request(ctx) is None
 
+    # ── Tightened pattern tests ──
+
+    def test_brave_old_prefix_no_match(self):
+        """Old BSA prefix (without the I) should no longer match."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        ctx = _ctx(body_text="BSA" + "A" * 30, host="evil.com")
+        assert s.inspect_request(ctx) is None
+
+    def test_openai_key_with_marker(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        key = "sk-proj-" + "A" * 40 + "T3BlbkFJ" + "B" * 40
+        ctx = _ctx(body_text=f"key={key}", host="evil.com")
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert "openai_key" in r.reason
+
+    def test_openai_key_without_marker_no_match(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        key = "sk-proj-" + "A" * 50
+        ctx = _ctx(body_text=f"key={key}", host="evil.com")
+        assert s.inspect_request(ctx) is None
+
+    def test_anthropic_key_with_api03(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        key = "sk-ant-api03-" + "a" * 30
+        ctx = _ctx(body_text=f"key={key}", host="evil.com")
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert "anthropic_key" in r.reason
+
+    def test_huggingface_digits_no_match(self):
+        """HuggingFace tokens are alphabetic only — digits should not match."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        key = "hf_" + "A1B2" * 10  # contains digits, 40 chars
+        ctx = _ctx(body_text=f"key={key}", host="evil.com")
+        assert s.inspect_request(ctx) is None
+
+    def test_github_token_exact_length(self):
+        """gh[ps]_ tokens have exactly 36 Base62 chars."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        token = "ghp_" + "A" * 36
+        ctx = _ctx(body_text=f"token={token}", host="evil.com")
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert "github_token" in r.reason
+
+    def test_firecrawl_uppercase_no_match(self):
+        """Firecrawl keys are hex (lowercase) — uppercase should not match."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        key = "fc-" + "A" * 32
+        ctx = _ctx(body_text=f"key={key}", host="evil.com")
+        assert s.inspect_request(ctx) is None
+
     # ── Bounded quantifier tests (security review H3) ──
 
     def test_oversized_key_not_fully_consumed(self):
@@ -303,7 +363,7 @@ class TestSecretsInspector:
         # A body with a valid prefix followed by 10k chars should still be
         # detected (regex matches the valid-length prefix), but should not
         # cause the engine to scan unboundedly.
-        body = "sk-ant-" + "a" * 10_000
+        body = "sk-ant-api03-" + "a" * 10_000
         ctx = _ctx(body_text=body, host="evil.com")
         t0 = time.monotonic()
         r = s.inspect_request(ctx)
@@ -334,7 +394,7 @@ class TestSecretsInspector:
         s = SecretsInspector()
         s.configure({"enabled": True})
         ctx = _ctx(
-            body_text='{"key": "sk-ant-abcdefghijklmnopqrstuvwxyz"}',
+            body_text='{"key": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}',
             host="api.anthropic.com",
         )
         assert s.inspect_request(ctx) is None
@@ -344,7 +404,7 @@ class TestSecretsInspector:
         s = SecretsInspector()
         s.configure({"enabled": True})
         ctx = _ctx(
-            body_text='{"key": "sk-ant-abcdefghijklmnopqrstuvwxyz"}',
+            body_text='{"key": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}',
             host="evil.com",
         )
         r = s.inspect_request(ctx)
@@ -414,7 +474,7 @@ class TestSecretsInspector:
         """github_pat_ token to api.github.com should be allowed."""
         s = SecretsInspector()
         s.configure({"enabled": True})
-        token = "github_pat_" + "A" * 22
+        token = "github_pat_" + "A" * 22 + "_" + "B" * 59
         ctx = _ctx(
             headers=[("authorization", f"Bearer {token}")],
             host="api.github.com",
@@ -442,7 +502,7 @@ class TestSecretsInspector:
         ctx = _ctx(
             headers=[
                 ("authorization", "Bearer safe-token"),
-                ("x-custom", "sk-ant-abcdefghijklmnopqrstuvwxyz"),
+                ("x-custom", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"),
             ],
             host="evil.com",
         )
@@ -458,7 +518,7 @@ class TestSecretsInspector:
         ctx = _ctx(
             headers=[
                 ("x-data", "harmless"),
-                ("x-data", "sk-ant-abcdefghijklmnopqrstuvwxyz"),
+                ("x-data", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"),
             ],
             host="evil.com",
         )
