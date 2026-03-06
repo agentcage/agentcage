@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-03-06
+
+### Added
+- OpenClaw scaffold now supports nested containers and headless Chrome out of the box
+- New `Containerfile` in openclaw scaffold layers podman, Chromium runtime deps, and NSS tools onto the upstream openclaw base image
+- `build_image()` accepts `build_args` for passing `--build-arg` to podman builds
+- Scaffold build system supports `containerfile` key (alternative to `git`) for local image builds
+- Domain allowlist includes container registries (Docker Hub, GHCR), Playwright/Chrome CDNs, and OS package repos
+- mitmproxy CA certificate is imported into both the system CA store and Chrome's NSS database at startup
+- Secrets inspector with Docker registry JWT auth token exemption
+
+### Changed
+- OpenClaw scaffold resources bumped to 8 GB RAM / 4 CPUs with larger tmpfs mounts
+- `render_config()` returns `(content, image_tag)` tuple to share resolved tag with build step
+
 ## [0.6.4] - 2026-03-04
 
 ### Changed
