@@ -366,17 +366,18 @@ def cage_create(config_path: str):
     try:
         _build_and_deploy(cfg, config_host_path, name, podman)
     except Exception:
-        # Clean up everything: stop services, remove quadlets, state
+        # Stop partially-started services but preserve state for debugging
         backend = get_backend(cfg)
         try:
             backend.stop(name)
         except Exception:
             pass
-        try:
-            backend.destroy_resources(name, keep_secrets=True)
-        except Exception:
-            pass
-        state.remove_deployment(name)
+        click.echo()
+        click.echo("Create failed. State preserved for debugging:", err=True)
+        click.echo(f"  Inspect logs:    agentcage cage logs {name}", err=True)
+        click.echo(f"  Inspect quadlets: ls {backend.unit_dir()}/{name}-*", err=True)
+        click.echo(f"  Retry:           agentcage cage update {name}", err=True)
+        click.echo(f"  Clean up:        agentcage cage destroy {name}", err=True)
         raise
 
     click.echo()
