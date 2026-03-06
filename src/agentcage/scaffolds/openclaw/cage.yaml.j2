@@ -14,18 +14,22 @@ name: {{ name }}
 isolation: firecracker
 
 firecracker:
-  vcpus: 2
-  mem_mb: 4096
+  vcpus: 4
+  mem_mb: 8192
   # kernel: ""            # auto-detected; set to override
   # firecracker_bin: ""   # auto-detected; set to override
 {% endif %}
 
 container:
-  image: "ghcr.io/openclaw/openclaw:{{ image_tag | default('latest', true) }}"
+  image: "localhost/openclaw-nested:latest"
+  nested_containers: true
   command:
     - "sh"
     - "-c"
-    - "chmod 700 /home/node/.openclaw; test -f /home/node/.openclaw/openclaw.json || printf '{\"gateway\": {\"trustedProxies\": [\"{{ ip_proxy }}\"], \"controlUi\": {\"allowedOrigins\": [\"http://localhost:{{ gateway_port }}\", \"http://127.0.0.1:{{ gateway_port }}\"]} } }' > /home/node/.openclaw/openclaw.json; chmod 600 /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
+    - "cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt && update-ca-certificates 2>/dev/null; mkdir -p /home/node/.pki/nssdb && certutil -d sql:/home/node/.pki/nssdb -N --empty-password 2>/dev/null; certutil -d sql:/home/node/.pki/nssdb -A -t 'C,,' -n mitmproxy -i /certs/mitmproxy-ca-cert.pem 2>/dev/null; chmod 700 /home/node/.openclaw; test -f /home/node/.openclaw/openclaw.json || printf '{\"gateway\": {\"trustedProxies\": [\"{{ ip_proxy }}\"], \"controlUi\": {\"allowedOrigins\": [\"http://localhost:{{ gateway_port }}\", \"http://127.0.0.1:{{ gateway_port }}\"]} } }' > /home/node/.openclaw/openclaw.json; chmod 600 /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
+
+  add_capabilities:
+    - NET_BIND_SERVICE
 
   # Podman named volumes for persistent state
   named_volumes:
@@ -34,9 +38,10 @@ container:
 
   # Writable directories on the read-only root filesystem
   tmpfs:
-    - "/tmp:rw,noexec,nosuid,size=512M"
-    - "/home/node/.npm:rw,size=128M"
-    - "/scratch:rw,exec,nosuid,size=2G"
+    - "/tmp:rw,noexec,nosuid,size=4G"
+    - "/home/node/.npm:rw,size=512M"
+    - "/home/node/.pki:rw,size=16M"
+    - "/scratch:rw,exec,nosuid,size=8G"
 
   # Gateway web UI — published on the host (BIND:HOST_PORT:CONTAINER_PORT)
   # To allow access from other machines on the LAN:
@@ -52,6 +57,7 @@ container:
   # Disable mDNS/Bonjour broadcasts (not useful inside a container)
   env:
     OPENCLAW_DISABLE_BONJOUR: "1"
+    HOME: "/home/node"
 
   # Cage-internal secrets (not API keys — use secret_injection for those).
   # Create first:  agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
@@ -59,8 +65,8 @@ container:
     - OPENCLAW_GATEWAY_PASSWORD
 
   # Resource limits
-  memory: "4g"
-  cpus: "2.0"
+  memory: "8g"
+  cpus: "4.0"
 
   # OpenClaw startup is slow — give it time
   timeout_start_sec: 120
@@ -133,6 +139,24 @@ domains:
     - githubusercontent.com
     #- gitlab.com
 
+    # ── Container registries (needed for nested containers) ──
+    - docker.io
+    - registry-1.docker.io
+    - auth.docker.io
+    - production.cloudflare.docker.com
+    - ghcr.io
+    - pkg-containers.githubusercontent.com
+    - r2.cloudflarestorage.com
+
+    # ── Browser automation (Playwright / Chrome) ──
+    - cdn.playwright.dev
+    - playwright.download.prss.microsoft.com
+    - storage.googleapis.com
+
+    # ── OS packages ──
+    - debian.org
+    - dl-cdn.alpinelinux.org
+
     # ── Web search ──
     #- search.brave.com        # requires BRAVE_API_KEY secret
     #- perplexity.ai
@@ -169,6 +193,14 @@ logging:
 inspectors:
   - name: entropy
   - name: content-type
+  # Allow Docker registry JWT auth tokens to reach container registries
+  - name: secrets
+    config:
+      allow_to_domains:
+        azure_jwt:
+          - docker.io
+          - registry-1.docker.io
+          - auth.docker.io
 
 # ── Exec aliases ──
 # Shorthand for 'agentcage cage exec' commands

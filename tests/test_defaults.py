@@ -102,7 +102,7 @@ class TestDefaultInspectors:
     def test_openclaw_preset_loads_inspectors(self, mock_resolve):
         """The openclaw scaffold config should load entropy + content-type."""
         from agentcage.init import render_config
-        cfg_text = render_config("test-oc", scaffold="openclaw")
+        cfg_text, _ = render_config("test-oc", scaffold="openclaw")
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
         assert "entropy" in names
@@ -114,7 +114,7 @@ class TestDefaultInspectors:
     def test_picoclaw_preset_loads_inspectors(self, mock_resolve):
         """The picoclaw scaffold config should load entropy + content-type."""
         from agentcage.init import render_config
-        cfg_text = render_config("test-pico", scaffold="picoclaw")
+        cfg_text, _ = render_config("test-pico", scaffold="picoclaw")
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
         assert "entropy" in names
@@ -125,7 +125,7 @@ class TestDefaultInspectors:
         """The picoclaw scaffold should produce valid YAML that load_config accepts."""
         from agentcage.init import render_config
         from agentcage.config import load_config
-        cfg_text = render_config("test-pico", scaffold="picoclaw")
+        cfg_text, _ = render_config("test-pico", scaffold="picoclaw")
         cfg_file = tmp_path / "picoclaw.yaml"
         cfg_file.write_text(cfg_text)
         cfg = load_config(str(cfg_file))

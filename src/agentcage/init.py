@@ -52,7 +52,7 @@ def render_config(
     isolation: str = "container",
     scaffold: str | None = None,
     port: int | None = None,
-) -> str:
+) -> tuple[str, str | None]:
     """Render a starter config.yaml from a template.
 
     When *scaffold* is ``None`` the default blank scaffold is used.
@@ -62,7 +62,7 @@ def render_config(
     env = _make_env()
     if scaffold is None:
         tmpl = env.get_template("init-config.yaml.j2")
-        return tmpl.render(name=name, image=image, isolation=isolation, port=port)
+        return tmpl.render(name=name, image=image, isolation=isolation, port=port), None
 
     # Check scaffolds/ directory first, then fall back to templates/presets/
     scaffold_file = _SCAFFOLDS_DIR / scaffold / "cage.yaml.j2"
@@ -93,7 +93,7 @@ def render_config(
     from agentcage.quadlets import cage_network_addrs
 
     addrs = cage_network_addrs(name)
-    return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag, **addrs)
+    return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag, **addrs), image_tag
 
 
 def load_scaffold_meta(scaffold: str) -> dict | None:
@@ -105,7 +105,7 @@ def load_scaffold_meta(scaffold: str) -> dict | None:
         return yaml.safe_load(f) or {}
 
 
-def run_scaffold_setup(scaffold: str, name: str, dest: str) -> None:
+def run_scaffold_setup(scaffold: str, name: str, dest: str, *, image_tag: str | None = None) -> None:
     """Execute build/provision steps from scaffold.yaml."""
     meta = load_scaffold_meta(scaffold)
     if meta is None:
@@ -122,14 +122,32 @@ def run_scaffold_setup(scaffold: str, name: str, dest: str) -> None:
         if podman.image_exists(image):
             click.echo(f"Image {image} already exists, skipping build.")
             continue
-        git_url = entry["git"]
-        depth = entry.get("depth", 1)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            click.echo(f"Cloning {git_url}...")
-            cmd = ["git", "clone", f"--depth={depth}", git_url, tmpdir]
-            subprocess.run(cmd, check=True)
+
+        # Resolve build_args — append resolved tag for scaffold images
+        build_args = dict(entry.get("build_args") or {})
+        for key, val in list(build_args.items()):
+            if val in _SCAFFOLD_IMAGES.values() and image_tag:
+                build_args[key] = f"{val}:{image_tag}"
+
+        if "containerfile" in entry:
+            containerfile = str(scaffold_dir / entry["containerfile"])
             click.echo(f"Building {image}...")
-            podman.build_image(image, None, tmpdir, cap_add=entry.get("cap_add"))
+            podman.build_image(
+                image, containerfile, str(scaffold_dir),
+                cap_add=entry.get("cap_add"), build_args=build_args,
+            )
+        elif "git" in entry:
+            git_url = entry["git"]
+            depth = entry.get("depth", 1)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                click.echo(f"Cloning {git_url}...")
+                cmd = ["git", "clone", f"--depth={depth}", git_url, tmpdir]
+                subprocess.run(cmd, check=True)
+                click.echo(f"Building {image}...")
+                podman.build_image(
+                    image, None, tmpdir,
+                    cap_add=entry.get("cap_add"), build_args=build_args,
+                )
 
     # 2. Process provision entries
     for entry in meta.get("provision", []):
