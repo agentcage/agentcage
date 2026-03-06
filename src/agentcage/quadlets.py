@@ -119,6 +119,7 @@ def generate_quadlets(
     config_host_path: str,
     patches_host_dir: str,
     deploy_name: str = "",
+    rootless: bool = True,
 ) -> dict[str, str]:
     """Return {filename: content} for all 5 quadlet files.
 
@@ -231,6 +232,7 @@ def generate_quadlets(
         capture_enabled=capture_enabled,
         capture_host_dir=capture_host_dir,
         passthrough_regex=pt_regex,
+        rootless=rootless,
     )
 
     # Nested containers support

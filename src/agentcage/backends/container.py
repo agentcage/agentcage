@@ -26,10 +26,7 @@ class ContainerBackend:
     def check_prerequisites(self, config: Config) -> list[str]:
         issues: list[str] = []
         try:
-            info = self._podman.info()
-            rootless = info.get("host", {}).get("security", {}).get("rootless", False)
-            if not rootless:
-                issues.append("Podman is not running in rootless mode")
+            self._podman.info()
         except Exception:
             issues.append("Podman is not available")
         return issues
@@ -62,7 +59,8 @@ class ContainerBackend:
         patches_host_dir: str,
         deploy_name: str,
     ) -> dict[str, str]:
-        return generate_quadlets(config, config_host_path, patches_host_dir, deploy_name)
+        rootless = self._podman.info().get("host", {}).get("security", {}).get("rootless", True)
+        return generate_quadlets(config, config_host_path, patches_host_dir, deploy_name, rootless=rootless)
 
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/containers/systemd"))

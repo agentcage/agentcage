@@ -38,7 +38,7 @@ Secret={{ secret }},type=env
 {% endfor %}
 
 [Service]
-ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && podman unshare chown 1000:1000 "$mp"'
+ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 1000:1000 "$mp"'
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "printf '{% for srv in dns_servers %}nameserver {{ srv }}\n{% endfor %}' > /etc/resolv.conf"
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80 -j REDIRECT --to-port 8443 && iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 443 -j REDIRECT --to-port 8443"
 Restart=on-failure
