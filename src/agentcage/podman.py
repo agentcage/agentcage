@@ -31,6 +31,7 @@ class Podman:
         context_dir: str,
         cap_add: list[str] | None = None,
         no_cache: bool = False,
+        build_args: dict[str, str] | None = None,
     ) -> None:
         cmd = [*_podman_cmd(), "build", "-t", tag]
         if containerfile is not None:
@@ -39,6 +40,8 @@ class Podman:
             cmd.append("--no-cache")
         for cap in cap_add or []:
             cmd.extend(["--cap-add", cap])
+        for k, v in (build_args or {}).items():
+            cmd.extend(["--build-arg", f"{k}={v}"])
         cmd.append(context_dir)
         subprocess.run(cmd, check=True)
 

@@ -131,7 +131,7 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"error: {dest} already exists (use --force to overwrite)", err=True)
         sys.exit(1)
 
-    content = render_config(name, image=image, isolation=isolation, scaffold=scaffold, port=port)
+    content, image_tag = render_config(name, image=image, isolation=isolation, scaffold=scaffold, port=port)
     dest.write_text(content)
     click.echo(f"Created {dest}")
 
@@ -139,7 +139,7 @@ def init(name: str | None, output: str, image: str, isolation: str,
 
     meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
-        run_scaffold_setup(scaffold, name, str(dest))
+        run_scaffold_setup(scaffold, name, str(dest), image_tag=image_tag)
     scaffold_dir = _SCAFFOLDS_DIR / scaffold if scaffold else None
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
