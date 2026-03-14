@@ -5,11 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] - 2026-03-14
+## [0.8.1] - 2026-03-14
 
 ### Added
-- **`container.build` config** — `cage create` and `cage update` now automatically rebuild the main container image from a local Containerfile when `container.build.containerfile` is set, with `args` for `--build-arg` pass-through and automatic latest-tag resolution for untagged remote image refs
-- Containerfile is copied to the state directory so `cage update` (without `-c`) can rebuild from the stored file
 - **`cage stop` / `cage start`** — stop and start cages without destroying them
 - **`cage show`** — inspect cage config and status (aliases: `describe`, `inspect`)
 - **`cage shell`** — open an interactive shell in a cage container (auto-detects bash/sh)
@@ -22,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `domain` group help text changed from "allowlists" to "filters" (the group handles both allow and block modes)
 - `cage audit` primary option renamed from `--lines` to `--max-entries` (consistent with `cage har`)
 - Secret and domain commands now show `NAME` instead of `CAGE_NAME` in `--help` output
+
+## [0.8.0] - 2026-03-14
+
+### Added
+- **`container.build` config** — `cage create` and `cage update` now automatically rebuild the main container image from a local Containerfile when `container.build.containerfile` is set, with `args` for `--build-arg` pass-through and automatic latest-tag resolution for untagged remote image refs
+- Containerfile is copied to the state directory so `cage update` (without `-c`) can rebuild from the stored file
+
+### Changed
 - Scaffold container images renamed from `agentcage-{name}` to `agentcage-scaffold-{name}` for clarity
 - Update Firecracker binary from v1.14.2 to v1.15.0
 
@@ -393,6 +399,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.8.1]: https://github.com/agentcage/agentcage/releases/tag/v0.8.1
 [0.8.0]: https://github.com/agentcage/agentcage/releases/tag/v0.8.0
 [0.7.1]: https://github.com/agentcage/agentcage/releases/tag/v0.7.1
 [0.7.0]: https://github.com/agentcage/agentcage/releases/tag/v0.7.0
