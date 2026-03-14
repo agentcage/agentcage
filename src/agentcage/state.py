@@ -21,6 +21,11 @@ def _deploy_dir(name: str) -> Path:
     return _DEPLOYMENTS_DIR / name
 
 
+def deployment_dir(name: str) -> Path:
+    """Return the state directory for a deployment."""
+    return _deploy_dir(name)
+
+
 def deployment_exists(name: str) -> bool:
     return (_deploy_dir(name) / "cage.yaml").is_file()
 

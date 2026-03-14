@@ -22,6 +22,10 @@ firecracker:
 
 container:
   image: "localhost/agentcage-scaffold-openclaw:latest"
+  build:
+    containerfile: "Containerfile"
+    args:
+      BASE_IMAGE: "ghcr.io/openclaw/openclaw"
   nested_containers: true
   command:
     - "sh"
