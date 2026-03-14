@@ -11,10 +11,10 @@ For the full list of configuration options, see the agentcage configuration refe
 ```
 Host podman:
   agentcage-nested        ← base image (podman + fuse-overlayfs)
-  agentcage-nanoclaw      ← NanoClaw installed + patched (extends nested)
+  agentcage-scaffold-nanoclaw      ← NanoClaw installed + patched (extends nested)
   nanoclaw-agent          ← agent image (claude-code + chromium)
 
-Cage (runs agentcage-nanoclaw):
+Cage (runs agentcage-scaffold-nanoclaw):
   NanoClaw orchestrator (node dist/index.js)
     └─ spawns inner containers (nanoclaw-agent:latest)
        └─ --network host → inherits cage proxy → API calls inspected
@@ -53,7 +53,7 @@ agentcage build nested-base
 ```
 
 - `agentcage-nested` -- base image with podman-in-podman support
-- `agentcage-nanoclaw` -- extends the base with NanoClaw cloned, built, and patched so inner containers use `--network host`, forward proxy/cert env vars, and mount `/certs` and `/agentcage` volumes
+- `agentcage-scaffold-nanoclaw` -- extends the base with NanoClaw cloned, built, and patched so inner containers use `--network host`, forward proxy/cert env vars, and mount `/certs` and `/agentcage` volumes
 - `nanoclaw-agent` -- NanoClaw's agent container (claude-code, chromium, agent-runner)
 
 ### 3. Set secrets

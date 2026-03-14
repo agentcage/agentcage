@@ -1,5 +1,5 @@
 build:
-  - image: "localhost/openclaw-nested"
+  - image: "localhost/agentcage-scaffold-openclaw"
     containerfile: "Containerfile"
     build_args:
       BASE_IMAGE: "ghcr.io/openclaw/openclaw"

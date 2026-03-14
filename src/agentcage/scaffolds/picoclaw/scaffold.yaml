@@ -1,5 +1,5 @@
 build:
-  - image: "localhost/picoclaw:latest"
+  - image: "localhost/agentcage-scaffold-picoclaw:latest"
     git: "https://github.com/sipeed/picoclaw.git"
     depth: 1
     cap_add:
