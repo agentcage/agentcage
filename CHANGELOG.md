@@ -10,8 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`container.build` config** — `cage create` and `cage update` now automatically rebuild the main container image from a local Containerfile when `container.build.containerfile` is set, with `args` for `--build-arg` pass-through and automatic latest-tag resolution for untagged remote image refs
 - Containerfile is copied to the state directory so `cage update` (without `-c`) can rebuild from the stored file
+- **`cage stop` / `cage start`** — stop and start cages without destroying them
+- **`cage show`** — inspect cage config and status (aliases: `describe`, `inspect`)
+- **`cage shell`** — open an interactive shell in a cage container (auto-detects bash/sh)
+- `delete` alias for `cage destroy` (kubectl compatibility)
+- `--json-lines` hidden alias on `cage audit`, `--json` hidden alias on `cage har` for cross-command consistency
+- `-n/--max-entries` on `cage audit` (replaces `--lines`; `--lines` kept as hidden alias)
 
 ### Changed
+- **`cage logs` no longer follows by default** — use `-f/--follow` to stream logs in real time (matches systemctl/kubectl/podman behavior). `--no-follow` is kept as a hidden no-op for backward compatibility
+- `domain` group help text changed from "allowlists" to "filters" (the group handles both allow and block modes)
+- `cage audit` primary option renamed from `--lines` to `--max-entries` (consistent with `cage har`)
+- Secret and domain commands now show `NAME` instead of `CAGE_NAME` in `--help` output
 - Scaffold container images renamed from `agentcage-{name}` to `agentcage-scaffold-{name}` for clarity
 - Update Firecracker binary from v1.14.2 to v1.15.0
 

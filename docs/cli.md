@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has a top-level **`init`** command for scaffolding configs, and five command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain allowlists), **`build`** (build base images), and **`firecracker`** (host setup for Firecracker mode).
+The CLI has a top-level **`init`** command for scaffolding configs, and five command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain filters), **`build`** (build base images), and **`firecracker`** (host setup for Firecracker mode).
 
 ```
 agentcage init [NAME] [options]
@@ -53,16 +53,20 @@ agentcage init --list-scaffolds
 | `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
 | `cage list` | List all cages with status |
 | `cage destroy NAME [-y] [--keep-secrets]` | Stop containers, remove quadlets, state, and scoped secrets |
+| `cage show NAME` | Show cage configuration and status |
 | `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
 | `cage edit NAME` | Open stored config in `$EDITOR`, validate, and reload if running |
-| `cage reload NAME` | Restart containers without rebuilding images |
-| `cage logs NAME [OPTIONS]` | Follow journalctl logs for a cage |
+| `cage stop NAME` | Stop a running cage without destroying it |
+| `cage start NAME` | Start a stopped cage |
+| `cage restart NAME` | Restart containers without rebuilding images |
+| `cage logs NAME [OPTIONS]` | Show journalctl logs for a cage |
+| `cage shell NAME` | Open an interactive shell in a cage container |
 | `cage audit NAME [OPTIONS]` | Query, filter, and summarize proxy audit logs |
 | `cage har NAME [OPTIONS]` | Export captured HTTP traffic as HAR 1.2 JSON |
 | `cage backup NAME [OPTIONS]` | Create a backup tarball of a cage |
 | `cage restore TARBALL [OPTIONS]` | Restore a cage from a backup tarball |
 
-**Aliases:** `ls` → `list`, `ps` → `list`, `status` → `list`, `rm` → `destroy`
+**Aliases:** `ls` → `list`, `ps` → `list`, `status` → `list`, `rm` → `destroy`, `delete` → `destroy`, `reload` → `restart`, `describe` → `show`, `inspect` → `show`
 
 ## `secret` -- Manage cage-scoped secrets
 
@@ -74,13 +78,13 @@ agentcage init --list-scaffolds
 
 **Aliases:** `ls` → `list`
 
-## `domain` -- Manage cage domain allowlists
+## `domain` -- Manage cage domain filters
 
 | Command | Description |
 |---|---|
 | `domain list NAME` | List domains and filtering mode for a cage |
-| `domain add NAME DOMAIN` | Add a domain to a cage's allowlist (auto-reloads if running) |
-| `domain rm NAME DOMAIN` | Remove a domain from a cage's allowlist (auto-reloads if running) |
+| `domain add NAME DOMAIN` | Add a domain to a cage's filter list (auto-reloads if running) |
+| `domain rm NAME DOMAIN` | Remove a domain from a cage's filter list (auto-reloads if running) |
 
 **Aliases:** `ls` → `list`
 
@@ -141,10 +145,10 @@ agentcage cage list
 Lists all known cages with their current status:
 
 ```
-NAME                 STATUS
-myapp                running (3/3)
-testcage             stopped (0/3)
-broken               degraded (2/3)
+NAME                 ISOLATION      VERSION      STATUS
+myapp                container      0.8.0        running (3/3)
+testcage             firecracker    0.7.1        stopped (0/3)
+broken               container      0.8.0        degraded (2/3)
 ```
 
 ## `cage destroy`
@@ -222,13 +226,41 @@ agentcage cage edit myapp
 # → validates on save, reloads if running
 ```
 
-## `cage reload`
+## `cage show`
 
 ```
-agentcage cage reload <name>
+agentcage cage show <name>
+```
+
+Show cage configuration and status. Displays name, isolation mode, image, version, service status, ports, domain mode, and secrets status.
+
+**Aliases:** `cage describe`, `cage inspect`
+
+## `cage stop`
+
+```
+agentcage cage stop <name>
+```
+
+Stop a running cage without destroying it. Services can be restarted with `cage start`. Requires root for Firecracker cages.
+
+## `cage start`
+
+```
+agentcage cage start <name>
+```
+
+Start a stopped cage. Requires root for Firecracker cages.
+
+## `cage restart`
+
+```
+agentcage cage restart <name>
 ```
 
 Restarts containers without rebuilding images. Useful after config-only changes (the config YAML is bind-mounted into the proxy container, so a restart picks it up).
+
+**Alias:** `cage reload`
 
 ## `cage logs`
 
@@ -236,7 +268,7 @@ Restarts containers without rebuilding images. Useful after config-only changes 
 agentcage cage logs <name> [options]
 ```
 
-Follow journalctl logs for a cage.
+Show journalctl logs for a cage.
 
 ### Options
 
@@ -244,8 +276,22 @@ Follow journalctl logs for a cage.
 |------|------|-------------|
 | `-s, --service` | repeatable choice: `cage`/`proxy`/`dns` | Filter by service (default: all) |
 | `-n, --lines` | int (default 50) | Number of lines to show |
-| `--no-follow` | flag | Print logs and exit |
+| `-f, --follow` | flag | Stream logs in real time |
 | `-l, --severity` | choice: `debug`/`info`/`warning`/`error`/`critical` | Minimum severity level to show |
+
+## `cage shell`
+
+```
+agentcage cage shell <name> [options]
+```
+
+Open an interactive shell in a cage container. Auto-detects bash, falling back to sh. Not supported for Firecracker cages.
+
+### Options
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `-s, --service` | choice: `cage`/`proxy`/`dns` | Container to shell into (default: `cage`) |
 
 ## `cage audit`
 
@@ -267,7 +313,7 @@ In container mode, audit entries are read from the `{name}-proxy` systemd unit. 
 | `--severity` | choice: `debug`/`info`/`warning`/`error`/`critical` | Minimum severity level |
 | `--method` | repeatable string | Filter by HTTP method |
 | `--since` | string | Time window: `1h`, `30m`, `7d`, or ISO date |
-| `-n, --lines` | int (default 100) | Max entries to show (0 = unlimited) |
+| `-n, --max-entries` | int (default 100) | Max entries to show (0 = unlimited) |
 | `-f, --follow` | flag | Stream new entries in real time |
 | `--json` | flag | Output as JSON lines (one per entry) |
 | `--summary` | flag | Show aggregated statistics (incompatible with `--follow`) |
@@ -502,7 +548,7 @@ Mode is one of:
 agentcage domain add <name> <domain>
 ```
 
-Adds a domain to a cage's allowlist. Updates both the stored config and the proxy config on disk. If the cage is currently running, all containers are automatically restarted so the change takes effect immediately.
+Adds a domain to a cage's filter list. Updates both the stored config and the proxy config on disk. If the cage is currently running, all containers are automatically restarted so the change takes effect immediately.
 
 ```bash
 agentcage domain add myapp api.openai.com
@@ -519,7 +565,7 @@ If no `domains` section exists in the stored config, one is created with mode `a
 agentcage domain rm <name> <domain>
 ```
 
-Removes a domain from a cage's allowlist. Like `domain add`, updates stored config and proxy config, and auto-reloads the cage if running.
+Removes a domain from a cage's filter list. Like `domain add`, updates stored config and proxy config, and auto-reloads the cage if running.
 
 ```bash
 agentcage domain rm myapp api.openai.com

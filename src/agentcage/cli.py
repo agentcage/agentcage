@@ -341,7 +341,7 @@ def _restart_cage(name: str, cfg=None):
 # ── cage group ────────────────────────────────────────────
 
 
-@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list", "reload": "restart"})
+@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list", "reload": "restart", "delete": "destroy", "describe": "show", "inspect": "show"})
 def cage():
     """Manage cages."""
 
@@ -934,18 +934,113 @@ def cage_restart(name: str):
     click.echo(f"Restarted cage '{name}'")
 
 
+@cage.command("stop")
+@click.argument("name")
+def cage_stop(name: str):
+    """Stop a running cage without destroying it."""
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    cfg = state.load_deployment_config(name)
+    if cfg.isolation == "firecracker":
+        _require_root("cage stop")
+
+    backend = get_backend(cfg)
+    backend.stop(name)
+    click.echo(f"Stopped cage '{name}'")
+
+
+@cage.command("start")
+@click.argument("name")
+def cage_start(name: str):
+    """Start a stopped cage."""
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    cfg = state.load_deployment_config(name)
+    if cfg.isolation == "firecracker":
+        _require_root("cage start")
+
+    _ensure_patches(Podman())
+
+    backend = get_backend(cfg)
+    backend.start(name)
+    click.echo(f"Started cage '{name}'")
+
+
+@cage.command("show")
+@click.argument("name")
+def cage_show(name: str):
+    """Show cage configuration and status."""
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    cfg = state.load_deployment_config(name)
+    meta = state.load_metadata(name)
+    backend = get_backend(cfg)
+
+    # Status
+    services = backend.service_names(name)
+    total = len(services)
+    running = sum(1 for svc in services if backend.is_running(name, svc))
+    if running == total:
+        status = f"running ({running}/{total})"
+    elif running == 0:
+        status = f"stopped (0/{total})"
+    else:
+        status = f"degraded ({running}/{total})"
+
+    click.echo(f"Name:       {cfg.name}")
+    click.echo(f"Isolation:  {cfg.isolation}")
+    click.echo(f"Image:      {cfg.container.image}")
+    click.echo(f"Version:    {meta.get('agentcage_version', '-')}")
+    click.echo(f"Status:     {status}")
+
+    if cfg.container.ports:
+        click.echo(f"Ports:      {', '.join(cfg.container.ports)}")
+
+    # Domain info
+    try:
+        raw = state.load_raw_config(name)
+        mode, domain_entries, passthrough = _read_domain_config(raw)
+        click.echo(f"Domains:    {mode} ({len(domain_entries)} domains)")
+        if passthrough:
+            click.echo(f"Passthrough: {len(passthrough)} domains")
+    except Exception:
+        pass
+
+    # Secrets
+    podman = Podman()
+    secrets = podman.secret_list(prefix=f"{name}.")
+    expected = _expected_secrets(cfg)
+    present_keys = {
+        s.get("Name", "").removeprefix(f"{name}.")
+        for s in secrets
+    }
+    missing = [k for k in expected if k not in present_keys]
+    if expected:
+        if missing:
+            click.echo(f"Secrets:    {len(present_keys)}/{len(expected)} ({len(missing)} missing)")
+        else:
+            click.echo(f"Secrets:    {len(expected)}/{len(expected)}")
+
+
 @cage.command("logs")
 @click.argument("name")
 @click.option("-s", "--service", "services", multiple=True,
               type=click.Choice(["cage", "proxy", "dns"]))
 @click.option("-n", "--lines", default=50, show_default=True,
               help="Number of lines to show.")
-@click.option("--no-follow", is_flag=True, help="Print logs and exit.")
+@click.option("-f", "--follow", is_flag=True, help="Stream logs in real time.")
+@click.option("--no-follow", is_flag=True, hidden=True, help="Backward compat no-op.")
 @click.option("-l", "--severity", "min_level", default=None,
               type=click.Choice(["debug", "info", "warning", "error", "critical"]),
               help="Minimum severity level to show.")
-def cage_logs(name, services, lines, no_follow, min_level):
-    """Follow journalctl logs for a cage."""
+def cage_logs(name, services, lines, follow, no_follow, min_level):
+    """Show journalctl logs for a cage."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
@@ -953,12 +1048,14 @@ def cage_logs(name, services, lines, no_follow, min_level):
     cfg = state.load_deployment_config(name)
     selected = services or ("cage", "proxy", "dns")
 
+    no_follow_effective = not follow
+
     if cfg.isolation == "firecracker":
         # Firecracker has a single host unit; container logs are prefixed
         # [cage:level], [proxy:level], [dns:level] on the VM console.
-        _logs_firecracker(name, selected, lines, no_follow, min_level)
+        _logs_firecracker(name, selected, lines, no_follow_effective, min_level)
     else:
-        _logs_container(name, selected, lines, no_follow, min_level)
+        _logs_container(name, selected, lines, no_follow_effective, min_level)
 
 
 def _classify_line(service: str, line: str) -> str:
@@ -1113,6 +1210,40 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
     sys.exit(result.returncode)
 
 
+@cage.command("shell")
+@click.argument("name")
+@click.option("-s", "--service", default="cage",
+              type=click.Choice(["cage", "proxy", "dns"]),
+              help="Container service to shell into.", show_default=True)
+def cage_shell(name: str, service: str):
+    """Open an interactive shell in a cage container."""
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    cfg = state.load_deployment_config(name)
+
+    if cfg.isolation == "firecracker":
+        click.echo(
+            "error: shell is not supported for Firecracker cages; "
+            "use published ports or SSH",
+            err=True,
+        )
+        sys.exit(1)
+
+    container = f"{name}-{service}"
+    # Auto-detect bash or fall back to sh
+    for shell in ("/bin/bash", "/bin/sh"):
+        result = subprocess.run(
+            ["podman", "exec", container, "test", "-x", shell],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            os.execvp("podman", ["podman", "exec", "-it", container, shell])
+    # Fallback
+    os.execvp("podman", ["podman", "exec", "-it", container, "/bin/sh"])
+
+
 # ── cage audit ─────────────────────────────────────────────
 
 
@@ -1247,19 +1378,28 @@ def _audit_summary(name, cfg, filt, since):
               help="Filter by HTTP method (repeatable).")
 @click.option("--since", default=None,
               help="Time window: 1h, 30m, 7d, or ISO date.")
-@click.option("-n", "--lines", default=100, show_default=True,
+@click.option("-n", "--max-entries", default=100, show_default=True,
               help="Max entries to show (0 = unlimited).")
+@click.option("--lines", "max_entries_compat", default=None, type=int, hidden=True,
+              help="Backward compat alias for --max-entries.")
 @click.option("-f", "--follow", is_flag=True,
               help="Stream new entries in real time.")
 @click.option("--json", "as_json", is_flag=True,
               help="Output as JSON lines.")
+@click.option("--json-lines", "as_json_lines", is_flag=True, hidden=True,
+              help="Backward compat alias for --json.")
 @click.option("--summary", is_flag=True,
               help="Show aggregated statistics.")
 @click.option("--no-color", is_flag=True,
               help="Disable colored output.")
 def cage_audit(name, decisions, directions, hosts, inspectors, severity,
-               methods, since, lines, follow, as_json, summary, no_color):
+               methods, since, max_entries, max_entries_compat, follow, as_json,
+               as_json_lines, summary, no_color):
     """Query, filter, and summarize proxy audit logs."""
+    # Resolve backward-compat aliases
+    lines = max_entries_compat if max_entries_compat is not None else max_entries
+    as_json = as_json or as_json_lines
+
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
@@ -1314,8 +1454,10 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
               help="Output file (default: stdout).")
 @click.option("--json-lines", is_flag=True,
               help="Output raw capture JSONL instead of HAR.")
+@click.option("--json", "json_compat", is_flag=True, hidden=True,
+              help="Backward compat alias for --json-lines.")
 def cage_har(name, view, decisions, hosts, methods, directions, since,
-             max_entries, output_file, json_lines):
+             max_entries, output_file, json_lines, json_compat):
     """Export captured HTTP traffic as HAR 1.2 JSON.
 
     Reads the capture JSONL file for a cage and produces standard HAR JSON
@@ -1329,6 +1471,9 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
       outbound  What went on the wire (real injected secrets, raw server
                 responses). Treat as sensitive.
     """
+    # Resolve backward-compat alias
+    json_lines = json_lines or json_compat
+
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
@@ -1749,21 +1894,21 @@ def secret():
 
 
 @secret.command("list")
-@click.argument("cage_name")
-def secret_list(cage_name: str):
+@click.argument("name")
+def secret_list(name: str):
     """List secrets for a cage."""
     podman = Podman()
-    secrets = podman.secret_list(prefix=f"{cage_name}.")
+    secrets = podman.secret_list(prefix=f"{name}.")
 
     # If cage state exists, cross-reference with expected secrets
-    if state.deployment_exists(cage_name):
-        cfg = state.load_deployment_config(cage_name)
+    if state.deployment_exists(name):
+        cfg = state.load_deployment_config(name)
         expected = _expected_secrets(cfg)
 
         # Determine which type each secret is
         injection_names = {r.env for r in cfg.secret_injection}
         present_keys = {
-            s.get("Name", "").removeprefix(f"{cage_name}.")
+            s.get("Name", "").removeprefix(f"{name}.")
             for s in secrets
         }
 
@@ -1782,22 +1927,22 @@ def secret_list(cage_name: str):
             sys.exit(1)
     else:
         if not secrets:
-            click.echo(f"No secrets found for '{cage_name}'.")
+            click.echo(f"No secrets found for '{name}'.")
             return
         click.echo(f"{'NAME':<30}")
         for s in secrets:
             sname = s.get("Name", "")
-            key = sname.removeprefix(f"{cage_name}.")
+            key = sname.removeprefix(f"{name}.")
             click.echo(f"{key:<30}")
 
 
 @secret.command("set")
-@click.argument("cage_name")
+@click.argument("name")
 @click.argument("key")
-def secret_set(cage_name: str, key: str):
+def secret_set(name: str, key: str):
     """Set a secret for a cage."""
     podman = Podman()
-    full_name = f"{cage_name}.{key}"
+    full_name = f"{name}.{key}"
 
     # Read value from TTY or stdin
     if sys.stdin.isatty():
@@ -1817,22 +1962,22 @@ def secret_set(cage_name: str, key: str):
     click.echo(f"Secret '{full_name}' set.")
 
     # Auto-reload if cage is running
-    if state.deployment_exists(cage_name):
-        cfg = state.load_deployment_config(cage_name)
-        name = cfg.name
+    if state.deployment_exists(name):
+        cfg = state.load_deployment_config(name)
+        cage_name = cfg.name
         backend = get_backend(cfg)
-        if backend.is_running(name, "cage"):
-            click.echo(f"Restarting cage '{name}'...")
-            _restart_cage(name, cfg)
+        if backend.is_running(cage_name, "cage"):
+            click.echo(f"Restarting cage '{cage_name}'...")
+            _restart_cage(cage_name, cfg)
 
 
 @secret.command("rm")
-@click.argument("cage_name")
+@click.argument("name")
 @click.argument("key")
-def secret_rm(cage_name: str, key: str):
+def secret_rm(name: str, key: str):
     """Remove a secret for a cage."""
     podman = Podman()
-    full_name = f"{cage_name}.{key}"
+    full_name = f"{name}.{key}"
 
     if not podman.secret_exists(full_name):
         click.echo(f"error: secret '{full_name}' does not exist", err=True)
@@ -1842,13 +1987,13 @@ def secret_rm(cage_name: str, key: str):
     click.echo(f"Secret '{full_name}' removed.")
 
     # Auto-reload if cage is running
-    if state.deployment_exists(cage_name):
-        cfg = state.load_deployment_config(cage_name)
-        name = cfg.name
+    if state.deployment_exists(name):
+        cfg = state.load_deployment_config(name)
+        cage_name = cfg.name
         backend = get_backend(cfg)
-        if backend.is_running(name, "cage"):
-            click.echo(f"Restarting cage '{name}'...")
-            _restart_cage(name, cfg)
+        if backend.is_running(cage_name, "cage"):
+            click.echo(f"Restarting cage '{cage_name}'...")
+            _restart_cage(cage_name, cfg)
 
 
 # ── domain group ─────────────────────────────────────────
@@ -1856,7 +2001,7 @@ def secret_rm(cage_name: str, key: str):
 
 @main.group(cls=AliasGroup, aliases={"ls": "list"})
 def domain():
-    """Manage cage domain allowlists."""
+    """Manage cage domain filters."""
 
 
 def _read_domain_config(raw: dict) -> tuple[str, list[str], list[str]]:
@@ -1894,13 +2039,13 @@ def _ensure_domain_section(raw: dict) -> None:
 
 
 @domain.command("list")
-@click.argument("cage_name")
-def domain_list(cage_name: str):
+@click.argument("name")
+def domain_list(name: str):
     """List domains for a cage."""
     try:
-        raw = state.load_raw_config(cage_name)
+        raw = state.load_raw_config(name)
     except FileNotFoundError:
-        click.echo(f"error: cage '{cage_name}' does not exist", err=True)
+        click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
 
     mode, domain_entries, passthrough = _read_domain_config(raw)
@@ -1945,16 +2090,16 @@ def _update_dns_quadlet(cfg) -> None:
 
 
 @domain.command("add")
-@click.argument("cage_name")
+@click.argument("name")
 @click.argument("domain_name")
 @click.option("--passthrough", is_flag=True,
               help="Also add to TLS passthrough list (no MITM interception).")
-def domain_add(cage_name: str, domain_name: str, passthrough: bool):
-    """Add a domain to a cage's allowlist."""
+def domain_add(name: str, domain_name: str, passthrough: bool):
+    """Add a domain to a cage's filter list."""
     try:
-        raw = state.load_raw_config(cage_name)
+        raw = state.load_raw_config(name)
     except FileNotFoundError:
-        click.echo(f"error: cage '{cage_name}' does not exist", err=True)
+        click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
 
     _ensure_domain_section(raw)
@@ -1969,7 +2114,7 @@ def domain_add(cage_name: str, domain_name: str, passthrough: bool):
     already_passthrough = domain_name in dom.get("passthrough", [])
 
     if already_in_list and (not passthrough or already_passthrough):
-        click.echo(f"'{domain_name}' is already in cage '{cage_name}'.")
+        click.echo(f"'{domain_name}' is already in cage '{name}'.")
         return
 
     if not already_in_list:
@@ -1979,30 +2124,30 @@ def domain_add(cage_name: str, domain_name: str, passthrough: bool):
             dom["passthrough"] = []
         dom["passthrough"].append(domain_name)
 
-    state.save_raw_config(cage_name, raw)
-    state.save_proxy_config(cage_name)
+    state.save_raw_config(name, raw)
+    state.save_proxy_config(name)
 
-    cfg = state.load_deployment_config(cage_name)
+    cfg = state.load_deployment_config(name)
     _update_dns_quadlet(cfg)
 
     pt_note = " (passthrough)" if passthrough else ""
-    msg = f"Added '{domain_name}'{pt_note} to cage '{cage_name}'."
+    msg = f"Added '{domain_name}'{pt_note} to cage '{name}'."
     if get_backend(cfg).is_running(cfg.name, "cage"):
         msg += " DNS and proxy updated."
     click.echo(msg)
 
 
 @domain.command("rm")
-@click.argument("cage_name")
+@click.argument("name")
 @click.argument("domain_name")
 @click.option("--passthrough", is_flag=True,
               help="Remove only from passthrough list (keep in allow/block).")
-def domain_rm(cage_name: str, domain_name: str, passthrough: bool):
-    """Remove a domain from a cage's allowlist."""
+def domain_rm(name: str, domain_name: str, passthrough: bool):
+    """Remove a domain from a cage's filter list."""
     try:
-        raw = state.load_raw_config(cage_name)
+        raw = state.load_raw_config(name)
     except FileNotFoundError:
-        click.echo(f"error: cage '{cage_name}' does not exist", err=True)
+        click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
 
     _ensure_domain_section(raw)
@@ -2016,25 +2161,25 @@ def domain_rm(cage_name: str, domain_name: str, passthrough: bool):
     if passthrough:
         # Only remove from passthrough
         if domain_name not in pt_entries:
-            click.echo(f"error: '{domain_name}' is not in passthrough for cage '{cage_name}'", err=True)
+            click.echo(f"error: '{domain_name}' is not in passthrough for cage '{name}'", err=True)
             sys.exit(1)
         dom["passthrough"].remove(domain_name)
     else:
         # Remove from both main list and passthrough
         if domain_name not in domain_entries:
-            click.echo(f"error: '{domain_name}' is not in cage '{cage_name}'", err=True)
+            click.echo(f"error: '{domain_name}' is not in cage '{name}'", err=True)
             sys.exit(1)
         dom[list_key].remove(domain_name)
         if domain_name in pt_entries:
             dom["passthrough"].remove(domain_name)
 
-    state.save_raw_config(cage_name, raw)
-    state.save_proxy_config(cage_name)
+    state.save_raw_config(name, raw)
+    state.save_proxy_config(name)
 
-    cfg = state.load_deployment_config(cage_name)
+    cfg = state.load_deployment_config(name)
     _update_dns_quadlet(cfg)
 
-    msg = f"Removed '{domain_name}' from cage '{cage_name}'."
+    msg = f"Removed '{domain_name}' from cage '{name}'."
     if get_backend(cfg).is_running(cfg.name, "cage"):
         msg += " DNS and proxy updated."
     click.echo(msg)

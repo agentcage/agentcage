@@ -39,6 +39,26 @@ class TestCageAliases:
         assert result.exit_code == 0
         assert "destroy" in result.output.lower() or "Stop" in result.output or "NAME" in result.output
 
+    def test_delete_resolves_to_destroy(self):
+        result = _runner().invoke(main, ["cage", "delete", "--help"])
+        assert result.exit_code == 0
+        assert "destroy" in result.output.lower() or "Stop" in result.output or "NAME" in result.output
+
+    def test_describe_resolves_to_show(self):
+        result = _runner().invoke(main, ["cage", "describe", "--help"])
+        assert result.exit_code == 0
+        assert "Show" in result.output or "NAME" in result.output
+
+    def test_inspect_resolves_to_show(self):
+        result = _runner().invoke(main, ["cage", "inspect", "--help"])
+        assert result.exit_code == 0
+        assert "Show" in result.output or "NAME" in result.output
+
+    def test_reload_resolves_to_restart(self):
+        result = _runner().invoke(main, ["cage", "reload", "--help"])
+        assert result.exit_code == 0
+        assert "Restart" in result.output or "NAME" in result.output
+
     def test_unknown_subcommand_fails(self):
         result = _runner().invoke(main, ["cage", "nonexistent"])
         assert result.exit_code != 0
@@ -49,6 +69,9 @@ class TestCageAliases:
         assert "Aliases:" in result.output
         assert "ls" in result.output
         assert "rm" in result.output
+        assert "delete" in result.output
+        assert "describe" in result.output
+        assert "inspect" in result.output
 
 
 class TestSecretAliases:

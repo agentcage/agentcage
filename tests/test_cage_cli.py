@@ -440,6 +440,18 @@ class TestCageLogs:
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user",
             "-u", "basic-cage", "-u", "basic-proxy", "-u", "basic-dns",
+            "-n", "50",
+        ])
+
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_follow(self, mock_state, mock_execvp):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        result = _runner().invoke(main, ["cage", "logs", "basic", "-f"])
+        mock_execvp.assert_called_once_with("journalctl", [
+            "journalctl", "--user",
+            "-u", "basic-cage", "-u", "basic-proxy", "-u", "basic-dns",
             "-n", "50", "-f",
         ])
 
@@ -448,7 +460,7 @@ class TestCageLogs:
     def test_logs_filtered(self, mock_state, mock_execvp):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("container")
-        result = _runner().invoke(main, ["cage", "logs", "basic", "-s", "proxy", "--no-follow"])
+        result = _runner().invoke(main, ["cage", "logs", "basic", "-s", "proxy"])
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user",
             "-u", "basic-proxy",
@@ -475,7 +487,7 @@ class TestCageLogs:
         result = _runner().invoke(main, ["cage", "logs", "basic"])
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user", "-u", "basic-cage",
-            "-n", "50", "-o", "cat", "-f",
+            "-n", "50", "-o", "cat",
         ])
 
     @patch("agentcage.cli.subprocess.Popen")
