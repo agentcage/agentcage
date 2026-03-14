@@ -8,7 +8,7 @@ import platform
 import stat
 import tarfile
 
-_FIRECRACKER_VERSION = "v1.14.2"
+_FIRECRACKER_VERSION = "v1.15.0"
 
 _URL_TEMPLATE = (
     "https://github.com/firecracker-microvm/firecracker/releases/download/"
@@ -17,8 +17,8 @@ _URL_TEMPLATE = (
 
 # SHA-256 checksums from official .sha256.txt files on the GitHub release
 _TARBALL_SHA256 = {
-    "x86_64": "c9f112a983783f3cf50feea9e69b8ea9eb7475e52159a9585ca9555be630f5a3",
-    "aarch64": "7418f619e7262b24431cf955d2346e5de4d950302ea1a0ff1af50a15fdea22f4",
+    "x86_64": "00cadf7f21e709e939dc0c8d16e2d2ce7b975a62bec6c50f74b421cc8ab3cab4",
+    "aarch64": "58325e6c3c539482a412ec0b60e6f539c3320adebcf8179c7629d06736aee0bd",
 }
 
 
