@@ -7,8 +7,8 @@ if ! podman image exists localhost/agentcage-nested; then
   echo "  Run: agentcage build nested-base" >&2
   exit 1
 fi
-podman build -t agentcage-nanoclaw \
+podman build -t agentcage-scaffold-nanoclaw \
   -f "$SCRIPT_DIR/Containerfile" \
   --cap-add CAP_SETFCAP,CAP_SETUID,CAP_SETGID,CAP_CHOWN,CAP_DAC_OVERRIDE,CAP_FOWNER \
   "$SCRIPT_DIR"
-echo "Built localhost/agentcage-nanoclaw"
+echo "Built localhost/agentcage-scaffold-nanoclaw"
