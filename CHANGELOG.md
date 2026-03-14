@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-03-14
+
+### Added
+- **`container.build` config** — `cage create` and `cage update` now automatically rebuild the main container image from a local Containerfile when `container.build.containerfile` is set, with `args` for `--build-arg` pass-through and automatic latest-tag resolution for untagged remote image refs
+- Containerfile is copied to the state directory so `cage update` (without `-c`) can rebuild from the stored file
+
+### Changed
+- Scaffold container images renamed from `agentcage-{name}` to `agentcage-scaffold-{name}` for clarity
+- Update Firecracker binary from v1.14.2 to v1.15.0
+
 ## [0.7.1] - 2026-03-06
 
 ### Fixed
@@ -373,6 +383,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - systemd quadlet generation with proper dependency ordering
 - OpenClaw example configuration and setup guide
 
+[0.8.0]: https://github.com/agentcage/agentcage/releases/tag/v0.8.0
+[0.7.1]: https://github.com/agentcage/agentcage/releases/tag/v0.7.1
+[0.7.0]: https://github.com/agentcage/agentcage/releases/tag/v0.7.0
+[0.6.4]: https://github.com/agentcage/agentcage/releases/tag/v0.6.4
+[0.6.3]: https://github.com/agentcage/agentcage/releases/tag/v0.6.3
+[0.6.2]: https://github.com/agentcage/agentcage/releases/tag/v0.6.2
+[0.6.1]: https://github.com/agentcage/agentcage/releases/tag/v0.6.1
+[0.6.0]: https://github.com/agentcage/agentcage/releases/tag/v0.6.0
+[0.5.0]: https://github.com/agentcage/agentcage/releases/tag/v0.5.0
+[0.4.1]: https://github.com/agentcage/agentcage/releases/tag/v0.4.1
+[0.4.0]: https://github.com/agentcage/agentcage/releases/tag/v0.4.0
+[0.3.19]: https://github.com/agentcage/agentcage/releases/tag/v0.3.19
+[0.3.18]: https://github.com/agentcage/agentcage/releases/tag/v0.3.18
+[0.3.17]: https://github.com/agentcage/agentcage/releases/tag/v0.3.17
+[0.3.16]: https://github.com/agentcage/agentcage/releases/tag/v0.3.16
+[0.3.15]: https://github.com/agentcage/agentcage/releases/tag/v0.3.15
+[0.3.14]: https://github.com/agentcage/agentcage/releases/tag/v0.3.14
 [0.3.13]: https://github.com/agentcage/agentcage/releases/tag/v0.3.13
 [0.3.12]: https://github.com/agentcage/agentcage/releases/tag/v0.3.12
 [0.3.11]: https://github.com/agentcage/agentcage/releases/tag/v0.3.11
