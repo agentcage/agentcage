@@ -19,6 +19,12 @@ class SecretInjectionRule:
 
 
 @dataclass
+class BuildConfig:
+    containerfile: str = ""
+    args: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class ContainerConfig:
     image: str = ""
     command: list[str] = field(default_factory=list)
@@ -37,6 +43,7 @@ class ContainerConfig:
     no_new_privileges: bool = True
     nested_containers: bool = False
     security_label_disable: bool = True
+    build: BuildConfig = field(default_factory=BuildConfig)
     restart: str = "on-failure"
     restart_sec: int = 10
     timeout_start_sec: int = 600
@@ -227,6 +234,13 @@ def load_config(path: str) -> Config:
     cc.restart_sec = c.get("restart_sec") if c.get("restart_sec") is not None else 10
     cc.timeout_start_sec = c.get("timeout_start_sec", 120) or 0
     cc.timeout_stop_sec = c.get("timeout_stop_sec", 30) or 0
+
+    # Build config
+    build_raw = c.get("build") or {}
+    bb = BuildConfig()
+    bb.containerfile = build_raw.get("containerfile", "")
+    bb.args = dict(build_raw.get("args") or {})
+    cc.build = bb
 
     cfg.container = cc
 

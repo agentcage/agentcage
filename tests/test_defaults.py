@@ -136,6 +136,63 @@ class TestDefaultInspectors:
         assert cfg.container.cpus == "0.5"
 
 
+# ── BuildConfig parsing ────────────────────────────────────
+
+
+class TestBuildConfig:
+    """Verify BuildConfig is correctly parsed from YAML."""
+
+    def test_build_section_parsed(self, tmp_path):
+        from agentcage.config import load_config
+        cfg_file = tmp_path / "cage.yaml"
+        cfg_file.write_text(textwrap.dedent("""\
+            name: test-build
+            container:
+              image: "localhost/myimage:latest"
+              build:
+                containerfile: "Containerfile"
+                args:
+                  BASE_IMAGE: "ghcr.io/example/image:v1"
+                  EXTRA: "value"
+            domains:
+              allow:
+                - example.com
+        """))
+        cfg = load_config(str(cfg_file))
+        assert cfg.container.build.containerfile == "Containerfile"
+        assert cfg.container.build.args == {
+            "BASE_IMAGE": "ghcr.io/example/image:v1",
+            "EXTRA": "value",
+        }
+
+    def test_build_defaults_to_empty(self, tmp_path):
+        from agentcage.config import load_config
+        cfg_file = tmp_path / "cage.yaml"
+        cfg_file.write_text(textwrap.dedent("""\
+            name: test-no-build
+            container:
+              image: "node:22-slim"
+            domains:
+              allow:
+                - example.com
+        """))
+        cfg = load_config(str(cfg_file))
+        assert cfg.container.build.containerfile == ""
+        assert cfg.container.build.args == {}
+
+    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
+    def test_openclaw_scaffold_has_build_section(self, mock_resolve, tmp_path):
+        """The rendered openclaw scaffold should include a build section."""
+        from agentcage.init import render_config
+        from agentcage.config import load_config
+        cfg_text, _ = render_config("test-oc-build", scaffold="openclaw")
+        cfg_file = tmp_path / "cage.yaml"
+        cfg_file.write_text(cfg_text)
+        cfg = load_config(str(cfg_file))
+        assert cfg.container.build.containerfile == "Containerfile"
+        assert "BASE_IMAGE" in cfg.container.build.args
+
+
 # ── CLI: verify and deploy arg parsing ────────────────────
 
 

@@ -140,6 +140,14 @@ def init(name: str | None, output: str, image: str, isolation: str,
     meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
         run_scaffold_setup(scaffold, name, str(dest), image_tag=image_tag)
+        # Copy Containerfiles referenced in scaffold build entries
+        scaffold_dir_path = _SCAFFOLDS_DIR / scaffold
+        for entry in meta.get("build", []):
+            if "containerfile" in entry:
+                src = scaffold_dir_path / entry["containerfile"]
+                dst = dest.parent / entry["containerfile"]
+                if src.is_file() and not dst.exists():
+                    shutil.copy2(str(src), str(dst))
     scaffold_dir = _SCAFFOLDS_DIR / scaffold if scaffold else None
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
@@ -250,6 +258,56 @@ def _ensure_patches(podman: Podman) -> str:
     return patches_work
 
 
+_BUILD_CAPS = [
+    "CAP_SETFCAP", "CAP_SETUID", "CAP_SETGID",
+    "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER",
+]
+
+
+def _build_container_image(cfg, config_dir: Path, podman: Podman) -> None:
+    """Build the main container image from a Containerfile.
+
+    *config_dir* is the directory containing the cage.yaml (or the state
+    directory for stored configs).  The ``containerfile`` path is resolved
+    relative to it.
+    """
+    from agentcage.registry import resolve_latest_tag
+
+    bc = cfg.container.build
+    containerfile = Path(bc.containerfile)
+    if not containerfile.is_absolute():
+        containerfile = config_dir / containerfile
+    containerfile = containerfile.resolve()
+
+    context_dir = str(containerfile.parent)
+
+    # Auto-resolve latest tags for remote image refs in build args
+    resolved_args: dict[str, str] = {}
+    for key, val in bc.args.items():
+        image_base, _, tag = val.rpartition(":")
+        if image_base and tag:
+            resolved_args[key] = val
+        elif "/" in val:
+            # Looks like a remote image without tag — resolve latest
+            new_tag = resolve_latest_tag(val)
+            if new_tag:
+                resolved_args[key] = f"{val}:{new_tag}"
+                click.echo(f"Build arg {key}: {val}:{new_tag}")
+            else:
+                resolved_args[key] = val
+        else:
+            resolved_args[key] = val
+
+    click.echo(f"Building {cfg.container.image}...")
+    podman.build_image(
+        cfg.container.image,
+        str(containerfile),
+        context_dir,
+        cap_add=_BUILD_CAPS,
+        build_args=resolved_args,
+    )
+
+
 def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podman):
     """Build images, generate quadlets, install, and start."""
     from agentcage.quadlets import cage_network_addrs
@@ -353,7 +411,18 @@ def cage_create(config_path: str):
     state.save_deployment(name, config_path)
     state.save_metadata(name, {"agentcage_version": version("agentcage")})
 
+    # Copy Containerfile into state dir so cage update can rebuild
+    if cfg.container.build.containerfile:
+        src_cf = Path(config_path).parent / cfg.container.build.containerfile
+        if src_cf.is_file():
+            dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
+            shutil.copy2(str(src_cf), str(dst_cf))
+
     config_host_path = state.save_proxy_config(name)
+
+    # Build from Containerfile if configured
+    if cfg.container.build.containerfile:
+        _build_container_image(cfg, Path(config_path).parent, podman)
 
     click.echo(f"Pulling {cfg.container.image}...")
     if not podman.pull(cfg.container.image):
@@ -414,6 +483,12 @@ def cage_update(name: str, config_path: str | None):
             )
             sys.exit(1)
         state.save_deployment(name, config_path)
+        # Copy Containerfile into state dir so future updates can rebuild
+        if cfg.container.build.containerfile:
+            src_cf = Path(config_path).parent / cfg.container.build.containerfile
+            if src_cf.is_file():
+                dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
+                shutil.copy2(str(src_cf), str(dst_cf))
     else:
         # Auto-resolve latest image tag for stored configs
         from agentcage.registry import resolve_latest_tag
@@ -433,6 +508,26 @@ def cage_update(name: str, config_path: str | None):
                     f"keeping {current_tag}",
                     err=True,
                 )
+
+        # Auto-resolve latest tags for untagged build arg image refs
+        build_raw = raw.get("container", {}).get("build", {})
+        build_args = build_raw.get("args") or {}
+        args_changed = False
+        for key, val in list(build_args.items()):
+            image_base, _, tag = val.rpartition(":")
+            if image_base and tag:
+                # Already has an explicit tag — leave it alone
+                continue
+            # Untagged image ref (contains "/" so looks like a registry path)
+            if "/" in val:
+                new_tag = resolve_latest_tag(val)
+                if new_tag:
+                    build_args[key] = f"{val}:{new_tag}"
+                    args_changed = True
+                    click.echo(f"Build arg {key}: {val} \u2192 {val}:{new_tag}")
+        if args_changed:
+            raw.setdefault("container", {}).setdefault("build", {})["args"] = build_args
+            state.save_raw_config(name, raw)
 
         cfg = state.load_deployment_config(name)
         try:
@@ -488,6 +583,11 @@ def cage_update(name: str, config_path: str | None):
                 err=True,
             )
         sys.exit(1)
+
+    # Build from Containerfile if configured
+    if cfg.container.build.containerfile:
+        config_dir = Path(config_path).parent if config_path else state.deployment_dir(name)
+        _build_container_image(cfg, config_dir, podman)
 
     click.echo(f"Pulling {cfg.container.image}...")
     if not podman.pull(cfg.container.image):

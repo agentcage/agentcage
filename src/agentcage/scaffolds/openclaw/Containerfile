@@ -28,4 +28,9 @@ RUN mkdir -p /home/node/.config/containers \
     > /home/node/.config/containers/storage.conf \
  && chown -R node:node /home/node/.config
 
+# Install matrix extension dependencies (bundled but not installed in base image)
+RUN if [ -d /app/extensions/matrix ] && [ -f /app/extensions/matrix/package.json ]; then \
+        cd /app/extensions/matrix && npm install --omit=dev; \
+    fi
+
 USER node
