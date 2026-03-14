@@ -13,7 +13,7 @@ Don't let your agent phone home.
 > **Setup guides:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md) · [PicoClaw](src/agentcage/scaffolds/picoclaw/README.md) · [NanoClaw](src/agentcage/scaffolds/nanoclaw/README.md)
 
 <p align="center">
-  <a href="https://asciinema.org/a/838806"><img src="https://asciinema.org/a/838806.svg" alt="agentcage demo" width="700"></a>
+  <a href="https://asciinema.org/a/838807"><img src="https://asciinema.org/a/838807.svg" alt="agentcage demo" width="700"></a>
 </p>
 
 ## What is it?
