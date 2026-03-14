@@ -130,7 +130,7 @@ class TestDefaultInspectors:
         cfg_file.write_text(cfg_text)
         cfg = load_config(str(cfg_file))
         assert cfg.name == "test-pico"
-        assert cfg.container.image == "localhost/picoclaw:latest"
+        assert cfg.container.image == "localhost/agentcage-scaffold-picoclaw:latest"
         assert cfg.container.command == ["gateway"]
         assert cfg.container.memory == "256m"
         assert cfg.container.cpus == "0.5"
