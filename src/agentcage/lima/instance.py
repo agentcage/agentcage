@@ -21,14 +21,26 @@ class LimaInstance:
     def start(self) -> None:
         """Start the Lima instance.
 
-        Uses start_new_session=True so the Lima hostagent process
-        survives after the parent Python process exits.
+        On macOS with the VZ driver, the hostagent process runs the VM.
+        Without protection, it receives SIGHUP when the parent process
+        exits (e.g. when invoked over SSH), causing the VM to shut down.
+        We use nohup + start_new_session to prevent this.
         """
         subprocess.run(
-            ["limactl", "start", self.name],
+            ["nohup", "limactl", "start", self.name],
             check=True,
             start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
+        # Wait for the VM to be ready (nohup may return before hostagent
+        # finishes initialization)
+        import time
+        for _ in range(60):
+            if self.is_running():
+                return
+            time.sleep(1)
+        raise RuntimeError(f"Lima instance {self.name} did not start within 60 seconds")
 
     def stop(self) -> None:
         """Stop the Lima instance."""
