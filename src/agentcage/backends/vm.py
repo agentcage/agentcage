@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import click
@@ -12,15 +11,15 @@ from agentcage.config import Config
 from agentcage.lima import prerequisites as lima_prerequisites
 from agentcage.lima.instance import LimaInstance
 from agentcage.lima.provisioning import generate_lima_config
-from agentcage.podman import Podman
 from agentcage.quadlets import generate_quadlets
 
 
 class VmBackend:
-    """Backend using Lima VMs with Podman + quadlets inside."""
+    """Backend using Lima VMs with Podman + quadlets inside.
 
-    def __init__(self) -> None:
-        self._podman = Podman()
+    No host-side Podman required — all container operations happen
+    inside the Lima VM. The host only needs limactl.
+    """
 
     def _instance(self, name: str) -> LimaInstance:
         return LimaInstance(name)
@@ -29,27 +28,39 @@ class VmBackend:
         return lima_prerequisites.check_prerequisites()
 
     def build_artifacts(self, config: Config, deploy_name: str) -> None:
-        """Build proxy and DNS images on the host."""
-        # Same as ContainerBackend — build images on the host,
-        # they'll be exported into the VM later
+        """Build proxy and DNS images inside the VM.
+
+        Lima shares the host home directory via virtiofs, so the
+        Containerfiles and build context are accessible inside the VM
+        at the same paths.
+        """
+        inst = self._instance(deploy_name)
+        if not inst.is_running():
+            click.echo("VM is not running — skipping image build (will build on start)")
+            return
+
         data_dir = Path(__file__).resolve().parent.parent / "data"
         containers_dir = str(data_dir / "containers")
         build_context = str(data_dir)
-        click.echo("Building proxy image...")
-        self._podman.build_image(
-            "agentcage-proxy",
-            os.path.join(containers_dir, "Containerfile.proxy"),
+
+        click.echo("Building proxy image inside VM...")
+        inst.exec([
+            "podman", "build", "--no-cache",
+            "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
+            "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
+            "--cap-add=CAP_DAC_OVERRIDE",
+            "-t", "agentcage-proxy",
+            "-f", os.path.join(containers_dir, "Containerfile.proxy"),
             build_context,
-            no_cache=True,
-            cap_add=["CAP_CHOWN", "CAP_FOWNER", "CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE"],
-        )
-        click.echo("Building DNS image...")
-        self._podman.build_image(
-            "agentcage-dns",
-            os.path.join(containers_dir, "Containerfile.dns"),
+        ])
+        click.echo("Building DNS image inside VM...")
+        inst.exec([
+            "podman", "build",
+            "--cap-add=CAP_SETFCAP",
+            "-t", "agentcage-dns",
+            "-f", os.path.join(containers_dir, "Containerfile.dns"),
             build_context,
-            cap_add=["CAP_SETFCAP"],
-        )
+        ])
 
     def generate_units(
         self,
@@ -112,8 +123,8 @@ class VmBackend:
                 # Write quadlet file inside VM via shell
                 inst.exec(["bash", "-c", f"cat > {vm_quadlet_dir}/{qfile.name} << 'QUADLET_EOF'\n{content}\nQUADLET_EOF"])
 
-        # Export and load container images into the VM
-        self._load_images_into_vm(name, inst)
+        # Build container images inside the VM (uses virtiofs-shared host files)
+        self.build_artifacts(None, name)  # type: ignore[arg-type]
 
         # Reload systemd and start services
         inst.exec(["systemctl", "--user", "daemon-reload"])
@@ -124,21 +135,6 @@ class VmBackend:
                 inst.exec(["systemctl", "--user", "start", f"{svc}.service"])
             except Exception as e:
                 click.echo(f"warning: failed to start {svc}: {e}", err=True)
-
-    def _load_images_into_vm(self, name: str, inst: LimaInstance) -> None:
-        """Export container images from host and load them into the VM."""
-        images = ["agentcage-proxy", "agentcage-dns"]
-        for image in images:
-            try:
-                # Export image from host podman, pipe into VM's podman
-                click.echo(f"  Loading {image} into VM...")
-                subprocess.run(
-                    f"podman save {image} | limactl shell {inst.name} -- podman load",
-                    shell=True,
-                    check=True,
-                )
-            except Exception as e:
-                click.echo(f"warning: failed to load {image}: {e}", err=True)
 
     def _lima_user(self) -> str:
         """Return the default Lima user (used for paths inside the VM)."""
@@ -175,13 +171,6 @@ class VmBackend:
             import shutil
             shutil.rmtree(unit_dir)
             removed.append(f"config-dir:{unit_dir}")
-
-        # Remove podman secrets on host
-        if not keep_secrets:
-            for s in self._podman.secret_list(prefix=f"{name}."):
-                sname = s.get("Name", "")
-                if self._podman.secret_remove(sname):
-                    removed.append(f"secret:{sname}")
 
         return removed
 

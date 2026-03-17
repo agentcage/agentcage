@@ -46,34 +46,34 @@ class TestCheckPrerequisites:
 
 
 class TestBuildArtifacts:
-    def test_builds_proxy_and_dns_images(self):
+    def test_builds_images_inside_vm(self):
         backend = VmBackend()
-        mock_podman = MagicMock()
-        backend._podman = mock_podman
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = True
         config = _make_config()
 
-        backend.build_artifacts(config, "testcage")
+        with patch.object(backend, "_instance", return_value=mock_inst):
+            backend.build_artifacts(config, "testcage")
 
-        assert mock_podman.build_image.call_count == 2
-        proxy_call = mock_podman.build_image.call_args_list[0]
-        dns_call = mock_podman.build_image.call_args_list[1]
+        # Should call podman build inside the VM twice (proxy + dns)
+        assert mock_inst.exec.call_count == 2
+        proxy_call = mock_inst.exec.call_args_list[0]
+        dns_call = mock_inst.exec.call_args_list[1]
+        assert "agentcage-proxy" in proxy_call[0][0]
+        assert "podman" in proxy_call[0][0][0]
+        assert "agentcage-dns" in dns_call[0][0]
 
-        assert proxy_call[0][0] == "agentcage-proxy"
-        assert "Containerfile.proxy" in proxy_call[0][1]
-        assert proxy_call[1]["no_cache"] is True
-        assert "CAP_CHOWN" in proxy_call[1]["cap_add"]
-
-        assert dns_call[0][0] == "agentcage-dns"
-        assert "Containerfile.dns" in dns_call[0][1]
-        assert "CAP_SETFCAP" in dns_call[1]["cap_add"]
-
-    def test_proxy_build_echoes_message(self, capsys):
+    def test_skips_build_when_vm_not_running(self, capsys):
         backend = VmBackend()
-        backend._podman = MagicMock()
-        backend.build_artifacts(_make_config(), "testcage")
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = False
+
+        with patch.object(backend, "_instance", return_value=mock_inst):
+            backend.build_artifacts(_make_config(), "testcage")
+
+        mock_inst.exec.assert_not_called()
         captured = capsys.readouterr()
-        assert "proxy" in captured.out.lower()
-        assert "dns" in captured.out.lower()
+        assert "not running" in captured.out.lower()
 
 
 class TestGenerateUnits:
@@ -338,30 +338,13 @@ class TestDestroyResources:
         backend = VmBackend()
         mock_inst = MagicMock()
         mock_inst.exists.return_value = False
-        backend._podman = MagicMock()
-        backend._podman.secret_list.return_value = [{"Name": "testcage.mysecret"}]
-        backend._podman.secret_remove.return_value = True
 
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")):
             removed = backend.destroy_resources("testcage")
 
-        backend._podman.secret_list.assert_called_once_with(prefix="testcage.")
-        backend._podman.secret_remove.assert_called_once_with("testcage.mysecret")
-        assert "secret:testcage.mysecret" in removed
-
-    def test_keep_secrets_skips_secret_removal(self):
-        backend = VmBackend()
-        mock_inst = MagicMock()
-        mock_inst.exists.return_value = False
-        backend._podman = MagicMock()
-
-        with patch.object(backend, "_instance", return_value=mock_inst), \
-             patch.object(backend, "unit_dir", return_value=Path("/nonexistent/path")):
-            backend.destroy_resources("testcage", keep_secrets=True)
-
-        backend._podman.secret_list.assert_not_called()
-        backend._podman.secret_remove.assert_not_called()
+        # No host-side secrets to remove (everything is inside the VM)
+        assert removed == []
 
 
 class TestIsRunning:
