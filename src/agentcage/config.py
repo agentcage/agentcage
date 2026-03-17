@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import platform
 import re
-import shutil
 from dataclasses import dataclass, field
 
 import yaml
@@ -105,9 +105,15 @@ class FirecrackerConfig:
 
 
 @dataclass
+class VmConfig:
+    vcpus: int = 2
+    mem_mb: int = 2048
+
+
+@dataclass
 class Config:
     name: str = ""
-    isolation: str = "container"  # "container" | "firecracker"
+    isolation: str = "container"  # "container" | "vm"
     container: ContainerConfig = field(default_factory=ContainerConfig)
     secret_injection: list[SecretInjectionRule] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
@@ -115,6 +121,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     firecracker: FirecrackerConfig = field(default_factory=FirecrackerConfig)
+    vm: VmConfig = field(default_factory=VmConfig)
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
 
@@ -186,7 +193,11 @@ def load_config(path: str) -> Config:
     cfg.name = raw.get("name", "")
     cfg.isolation = raw.get("isolation", "container")
 
-    # Firecracker section
+    # Silently migrate "firecracker" isolation to "vm"
+    if cfg.isolation == "firecracker":
+        cfg.isolation = "vm"
+
+    # Firecracker section (kept for backward compat with test_vmconfig etc.)
     fc_raw = raw.get("firecracker") or {}
     fc = FirecrackerConfig()
     fc.kernel = fc_raw.get("kernel", "")
@@ -194,6 +205,13 @@ def load_config(path: str) -> Config:
     fc.mem_mb = int(fc_raw.get("mem_mb", 2048))
     fc.firecracker_bin = fc_raw.get("firecracker_bin", "firecracker")
     cfg.firecracker = fc
+
+    # VM section — prefer explicit "vm:" key, fall back to "firecracker:" for migration
+    vm_raw = raw.get("vm") or raw.get("firecracker") or {}
+    vm = VmConfig()
+    vm.vcpus = int(vm_raw.get("vcpus", 2))
+    vm.mem_mb = int(vm_raw.get("mem_mb", 2048))
+    cfg.vm = vm
 
     # Container section
     c = raw.get("container") or {}
@@ -345,25 +363,22 @@ def validate_config(config: Config) -> list[str]:
     if not config.container.image:
         raise ValueError("container.image is required in config")
 
-    if config.isolation not in ("container", "firecracker"):
+    if config.isolation not in ("container", "vm"):
         raise ValueError(
-            f"isolation must be 'container' or 'firecracker' (got: {config.isolation!r})"
+            f"isolation must be 'container' or 'vm' (got: {config.isolation!r})"
         )
 
-    if config.isolation == "firecracker":
-        fc = config.firecracker
-        if not fc.kernel:
-            from agentcage.firecracker.kernel import default_kernel_path
-            fc.kernel = default_kernel_path()
-        if fc.firecracker_bin == "firecracker" and not shutil.which("firecracker"):
-            from agentcage.firecracker.binaries import default_firecracker_path
-            default_fc = default_firecracker_path()
-            if os.path.isfile(default_fc):
-                fc.firecracker_bin = default_fc
-        if fc.vcpus < 1:
-            raise ValueError("firecracker.vcpus must be >= 1")
-        if fc.mem_mb < 128:
-            raise ValueError("firecracker.mem_mb must be >= 128")
+    if config.isolation == "container" and platform.system() == "Darwin":
+        raise ValueError(
+            "container isolation is not available on macOS; use vm instead"
+        )
+
+    if config.isolation == "vm":
+        vm = config.vm
+        if vm.vcpus < 1:
+            raise ValueError("vm.vcpus must be >= 1")
+        if vm.mem_mb < 128:
+            raise ValueError("vm.mem_mb must be >= 128")
 
     # Validate logging levels
     if config.logging.level not in _VALID_LEVELS:
@@ -430,9 +445,9 @@ def validate_config(config: Config) -> list[str]:
 
     # Nested containers validation
     if config.container.nested_containers:
-        if config.isolation == "firecracker":
+        if config.isolation == "vm":
             raise ValueError(
-                "nested_containers is not supported with Firecracker isolation"
+                "nested_containers is not supported with vm isolation"
             )
         warnings.append(
             "nested_containers grants elevated capabilities, "
