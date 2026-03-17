@@ -1,14 +1,13 @@
-# agentcage basic example — Firecracker microVM isolation
+# agentcage basic example — Lima VM isolation
 #
-# Firecracker VMs don't support host volume mounts, so the agent code
+# VM mode doesn't support host volume mounts, so the agent code
 # must be baked into the container image.  Build it first:
 #   podman build -t basic-agent examples/basic/agent
 
 name: basic
 
-isolation: firecracker
-firecracker:
-  # kernel and firecracker binary are auto-downloaded on first use
+isolation: vm
+vm:
   vcpus: 2
   mem_mb: 2048
 

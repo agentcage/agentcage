@@ -29,9 +29,21 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `name` | `string` | *(required)* | Project name — used as the prefix for container names, network name, and quadlet filenames (e.g. `myapp` produces `myapp-cage`, `myapp-proxy`, etc.) |
+| `isolation` | `string` | `"container"` | Isolation backend: `"container"` (rootless Podman, default) or `"vm"` (Lima VM). Old `"firecracker"` configs are silently upgraded to `"vm"`. |
 | `log_allowed` | `bool` | `true` | Log allowed requests to the proxy journal |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit |
 | `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container |
+
+### VM settings (`vm:`)
+
+VM-specific settings. Only used when `isolation: vm`.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `vcpus` | int | `2` | Number of virtual CPUs to allocate to the VM. |
+| `mem_mb` | int | `2048` | VM memory in megabytes. |
+
+See [Lima VM Isolation](vm.md) for setup and details.
 
 ### `dns_servers` example
 
@@ -106,7 +118,7 @@ container:
   nested_containers: true
 ```
 
-> **Security note:** Nested containers require elevated capabilities that weaken container hardening. All network-level protections (proxy inspection, domain filtering, secret detection) remain active. Not supported with Firecracker isolation. See [Security & Threat Model](security.md) for details.
+> **Security note:** Nested containers require elevated capabilities that weaken container hardening. All network-level protections (proxy inspection, domain filtering, secret detection) remain active. Only supported with `isolation: container`. See [Security & Threat Model](security.md) for details.
 
 ---
 

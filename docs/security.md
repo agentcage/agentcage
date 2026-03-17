@@ -12,9 +12,9 @@ agentcage offers two isolation modes that affect the threat model differently:
 
 **Container mode** (default) — The agent runs in a rootless Podman container with hardened defaults (read-only rootfs, all capabilities dropped, no-new-privileges). Network isolation is enforced by Podman's internal network. This provides strong defense against HTTP-based exfiltration, but all containers share the host kernel. A container escape via a kernel or runtime CVE is out of scope for this mode.
 
-**Firecracker mode** — The same container topology runs inside a Firecracker microVM with a dedicated guest kernel, isolated by KVM hardware virtualization. This brings "kernel or container escapes" **into scope** as a defended threat: an escape from the container lands inside the VM, not on the host. The host sees only the Firecracker VMM process.
+**VM mode** — The same container topology runs inside a Lima VM with a dedicated guest kernel, isolated by KVM hardware virtualization. This brings "kernel or container escapes" **into scope** as a defended threat: an escape from the container lands inside the VM, not on the host. The host sees only the Lima VM process.
 
-| Threat | Container mode | Firecracker mode |
+| Threat | Container mode | VM mode |
 |---|---|---|
 | HTTP/HTTPS exfiltration | Defended (proxy inspection) | Defended (same) |
 | Secret leakage | Defended (injection + scanning) | Defended (same) |
@@ -26,17 +26,17 @@ agentcage offers two isolation modes that affect the threat model differently:
 
 ### Isolation modes
 
-| | Container mode (default) | Firecracker mode |
+| | Container mode (default) | VM mode |
 |---|---|---|
-| **Isolation** | Linux namespaces (rootless Podman) | Hardware virtualization (KVM) |
+| **Isolation** | Linux namespaces (rootless Podman) | Hardware virtualization (KVM via Lima) |
 | **Kernel** | Shared with host | Dedicated guest kernel per cage |
 | **Container escape risk** | Mitigated by hardening, not eliminated | Eliminated — escape lands in VM, not on host |
-| **Root required** | No | Yes (for TAP device and bridge setup) |
-| **macOS support** | Yes (via Podman machine) | No (requires `/dev/kvm`) |
-| **Boot overhead** | ~1s | ~7s |
+| **Root required** | No | No (Lima handles VM networking) |
+| **macOS support** | Yes (via Podman machine) | Yes (Lima supports macOS) |
+| **Boot overhead** | ~1s | ~15–30s |
 | **Best for** | Development, CI, low-risk workloads | Production, untrusted agents, high-security |
 
-Set `isolation: firecracker` in your config to use Firecracker mode. See [Firecracker MicroVM Isolation](firecracker.md) for setup and details.
+Set `isolation: vm` in your config to use VM mode. See [Lima VM Isolation](vm.md) for setup and details.
 
 ### What agentcage prevents
 
@@ -54,7 +54,7 @@ The primary threat is an AI agent exfiltrating sensitive data -- secrets, source
 
 - **Non-HTTP protocols** -- TCP/UDP connections other than HTTP (blocked by network isolation, but not inspected)
 - **DNS exfiltration** -- data encoded in subdomain labels of allowlisted domains (blocked for non-allowlisted domains; see Known Limitations)
-- **Kernel or container escapes (container mode)** -- exploits that break out of the Podman container via kernel or runtime vulnerabilities. In Firecracker mode, these are contained by the VM boundary (see Isolation modes above).
+- **Kernel or container escapes (container mode)** -- exploits that break out of the Podman container via kernel or runtime vulnerabilities. In VM mode, these are contained by the VM boundary (see Isolation modes above).
 - **Side-channel attacks** -- timing-based or resource-usage-based data leakage
 - **Multi-request evasion** -- splitting secrets across many small requests to avoid pattern matching
 - **Confused deputy / prompt injection** -- an agent tricked into exfiltrating data through legitimate-looking requests to allowed domains
@@ -63,7 +63,7 @@ The primary threat is an AI agent exfiltrating sensitive data -- secrets, source
 
 agentcage applies multiple overlapping defenses:
 
-1. **Network isolation** -- The agent container is on a Podman `--internal` network with no internet gateway. The only path to the internet is through the mitmproxy container. Published ports are served by the proxy container via mitmproxy reverse mode, so both inbound and outbound HTTP traffic passes through the inspector chain. This is enforced at the network level and cannot be bypassed by the agent process. In Firecracker mode, the network isolation has an additional layer: the VM's only external connectivity is a single TAP device bridged to the host, and the Firecracker VMM enforces that the VM cannot create additional network interfaces.
+1. **Network isolation** -- The agent container is on a Podman `--internal` network with no internet gateway. The only path to the internet is through the mitmproxy container. Published ports are served by the proxy container via mitmproxy reverse mode, so both inbound and outbound HTTP traffic passes through the inspector chain. This is enforced at the network level and cannot be bypassed by the agent process. In VM mode, the network isolation has an additional layer: all container traffic is confined within the Lima VM's guest network stack.
 
 2. **Domain filtering** -- An allowlist or blocklist controls which domains the agent can reach. Non-matching requests receive a 403 response with a JSON body explaining the block. Subdomains are matched automatically.
 
@@ -112,7 +112,7 @@ When nested container support is enabled, several hardening defaults are overrid
 
 These changes increase the container escape attack surface. All network-level protections (proxy inspection, domain filtering, secret detection, DNS filtering) remain fully active. Inner containers default to `--network none` with no network access.
 
-`nested_containers` is not supported with Firecracker isolation (`isolation: firecracker`). For production nested workloads, consider running the cage on a dedicated host or VM to limit blast radius.
+`nested_containers` is only supported with `isolation: container`. For production nested workloads, consider running the cage on a dedicated host or VM to limit blast radius.
 
 ## Supply Chain Hardening
 
@@ -146,7 +146,7 @@ These changes increase the container escape attack surface. All network-level pr
 
 **Proxy-unaware applications** -- In container mode, transparent proxy interception (default route + iptables REDIRECT) captures all outbound HTTP (port 80) and HTTPS (port 443) traffic regardless of whether the application uses `HTTP_PROXY` env vars. This covers Go, Rust, Node.js `fetch()`, and any other runtime. Applications using non-standard ports (not 80/443) that don't read `HTTP_PROXY` / `HTTPS_PROXY` will get connection errors — the security guarantee holds (no unfiltered internet access), but the error is a connection timeout rather than a 403 response.
 
-  In Firecracker mode, transparent interception is not yet implemented, so proxy-unaware applications get connection errors for all ports. The same security guarantee applies — requests fail rather than bypass inspection.
+  In VM mode, transparent interception is not yet implemented, so proxy-unaware applications get connection errors for all ports. The same security guarantee applies — requests fail rather than bypass inspection.
 
 **DNS-based exfiltration** -- In allowlist mode, dnsmasq returns a placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for non-allowlisted domains, blocking direct DNS exfiltration. However, an agent with code execution can encode data in subdomain labels of *allowlisted* domains (e.g. `<encoded-data>.cdn.jsdelivr.net`). These queries are forwarded to the upstream resolver, which recursively resolves them — potentially reaching an attacker's authoritative nameserver if they control a subdomain delegation. Each DNS query can carry ~253 bytes; practical exfiltration rates of 10-50 KB/s are achievable. Mitigations include monitoring dnsmasq query logs for high-entropy subdomain labels and enabling rate limiting.
 
@@ -158,7 +158,7 @@ These changes increase the container escape attack surface. All network-level pr
 
 **Shared kernel (container mode only)** — In container mode, rootless Podman containers share the host kernel. A container escape CVE in the Linux kernel, runc, or crun would bypass all container-level protections and give the agent access to the host. This is the most significant limitation of container mode.
 
-Firecracker mode eliminates this limitation. Each cage runs in a dedicated microVM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host — and the VM has no host filesystem access. Set `isolation: firecracker` to use this mode. See [Firecracker MicroVM Isolation](firecracker.md) for setup and tradeoffs.
+VM mode eliminates this limitation. Each cage runs in a dedicated Lima VM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host. Set `isolation: vm` to use this mode. See [Lima VM Isolation](vm.md) for setup and tradeoffs.
 
 ## Traffic Capture and HAR Export
 

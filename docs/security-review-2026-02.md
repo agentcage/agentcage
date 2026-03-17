@@ -9,8 +9,8 @@ The agent holds the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-
 ## Scope
 
 - Proxy addon, inspectors, and secret injector (`data/proxy/`)
-- Container and VM hardening (quadlet templates, Firecracker config, vm-init.sh)
-- Network isolation (Podman internal network, TAP/bridge, dnsmasq)
+- Container and VM hardening (quadlet templates, Lima VM provisioning)
+- Network isolation (Podman internal network, Lima networking, dnsmasq)
 - Secret lifecycle (injection, redaction, storage)
 
 ---
@@ -169,7 +169,7 @@ A proxy compromise would give the agent unmediated internet access with real sec
 
 **Mitigation:** This is inherent to the architecture (traffic must be parsed to be inspected). Reduce blast radius by:
 1. Keep mitmproxy pinned and update promptly on CVEs (currently digest-pinned — good).
-2. In Firecracker mode, the proxy runs inside the VM, so a compromise is contained by the VM boundary.
+2. In VM mode, the proxy runs inside the Lima VM, so a compromise is contained by the VM boundary.
 3. Consider running the proxy with seccomp and restricted capabilities (currently runs as `mitmproxy` user — good, but no seccomp profile).
 
 ---
@@ -188,15 +188,9 @@ Example: the agent sends `{{ANTHROPIC_API_KEY}}` to `api.anthropic.com`. The pro
 
 ---
 
-### LOW — L2: Containerfile.vmbase uses tag instead of digest
+### LOW — L2: *(resolved)* VM base image pinning
 
-**File:** `data/firecracker/Containerfile.vmbase:8`
-
-Uses `fedora-minimal:45` (tag-pinned) rather than `@sha256:...` digest. The DNS and proxy Containerfiles correctly use digest pinning. A supply-chain attack on the Fedora registry could substitute a different base image.
-
-**Impact:** If an agent can influence the build pipeline (unlikely given the threat model), or if the registry is compromised, the VM base could contain backdoors. Operator-side risk, not agent-exploitable.
-
-**Mitigation:** Pin to `@sha256:...` digest. Add to `update-deps.py` tracking.
+Previously the Firecracker `Containerfile.vmbase` used tag-pinned `fedora-minimal:45`. This file has been removed as part of the migration to Lima VM mode, which manages its own base image. The Lima VM backend does not use a custom rootfs Containerfile.
 
 ---
 
@@ -212,7 +206,7 @@ These design choices significantly raise the bar for agent exfiltration:
 - **WebSocket frame inspection.** The full inspector chain runs on every WebSocket message, not just the handshake. Frames can be dropped mid-stream.
 - **DNS filtering.** Non-allowlisted domains get a placeholder IP (198.51.100.1), preventing DNS-level reconnaissance. DNS exfiltration of allowlisted subdomains is a documented residual risk.
 - **Container hardening defaults.** Read-only rootfs, all caps dropped, no-new-privileges — all on by default.
-- **Firecracker VM boundary.** In Firecracker mode, a container escape lands inside the VM. The proxy compromise risk (M5) is contained — the proxy runs inside the VM, so even a compromised proxy only has internet access through the VM's single TAP device, which is bridged on the host.
+- **Lima VM boundary.** In VM mode, a container escape lands inside the Lima VM. The proxy compromise risk (M5) is contained — the proxy runs inside the VM, so even a compromised proxy only has internet access through the VM's network stack managed by Lima.
 
 ---
 

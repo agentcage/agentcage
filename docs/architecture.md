@@ -1,8 +1,8 @@
 # Architecture
 
-agentcage deploys a three-container topology — agent, DNS sidecar, and inspecting proxy — on an internal network with no internet gateway. In **container mode** (default), these containers run directly on the host via rootless Podman. In **Firecracker mode**, the same topology runs inside a dedicated microVM with its own kernel, adding hardware-level isolation around the containers.
+agentcage deploys a three-container topology — agent, DNS sidecar, and inspecting proxy — on an internal network with no internet gateway. In **container mode** (default), these containers run directly on the host via rootless Podman. In **VM mode**, the same topology runs inside a dedicated Lima VM with its own kernel, adding hardware-level isolation around the containers.
 
-This document covers the shared architecture used by both modes. For Firecracker-specific details (VM rootfs, TAP networking, privilege model), see [Firecracker MicroVM Isolation](firecracker.md). For configuration options, see the [Configuration Reference](configuration.md).
+This document covers the shared architecture used by both modes. For VM-specific details, see [Lima VM Isolation](vm.md). For configuration options, see the [Configuration Reference](configuration.md).
 
 ## Container Topology
 
@@ -33,18 +33,18 @@ This document covers the shared architecture used by both modes. For Firecracker
 
 In container mode, the three containers above run directly on the host using rootless Podman. Network isolation is enforced by Podman's `--internal` network flag, and container hardening (read-only rootfs, dropped capabilities, no-new-privileges) reduces the attack surface. However, all containers share the host kernel.
 
-In Firecracker mode, the entire topology runs inside a Firecracker microVM with a dedicated guest kernel. The VM itself becomes the isolation boundary — a container escape lands inside the VM, not on the host. The host sees only the Firecracker process and a TAP device; the agent's containers are invisible to the host's container runtime.
+In VM mode, the entire topology runs inside a Lima VM with a dedicated guest kernel. The VM itself becomes the isolation boundary — a container escape lands inside the VM, not on the host.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Firecracker VM (dedicated kernel, KVM isolation)           │
+│  Lima VM (dedicated kernel, KVM isolation)                  │
 │                                                             │
 │   ┌─────────────────────────────────────────────────────┐   │
 │   │  Podman internal network (same topology as above)   │   │
 │   │  Agent ──► DNS sidecar ──► Proxy ──► Internet       │   │
 │   └─────────────────────────────────────────────────────┘   │
 │                                                             │
-└───────────────── TAP device ──── Bridge ──── Host ──────────┘
+└───────────────── Lima networking ──── Host ─────────────────┘
 ```
 
 This is the **only** architectural difference between the modes. The inspector chain, secret injection, DNS filtering, and all other inspection logic are identical.
@@ -157,7 +157,7 @@ This means Go's custom `http.Transport`, Node.js `fetch()`, Rust's `reqwest`, an
 
 `HTTP_PROXY` / `HTTPS_PROXY` environment variables are still set for proxy-aware applications that use non-standard ports (which are not covered by the iptables REDIRECT rules).
 
-In Firecracker mode, transparent interception is not yet implemented — applications must use `HTTP_PROXY` env vars.
+In VM mode, transparent interception is not yet implemented — applications must use `HTTP_PROXY` env vars.
 
 ## Nested Containers (Podman-in-Podman)
 
