@@ -103,8 +103,19 @@ class LimaInstance:
             f'>{log_file} 2>&1 </dev/null &'
         )
 
-        # Poll until SSH is ready
+        # Phase 1: Wait for Lima to report Running status via limactl list
+        # (doesn't connect to the VM, so won't crash the hostagent)
         for _ in range(120):
+            if self.is_running():
+                break
+            time.sleep(2)
+        else:
+            raise RuntimeError(
+                f"Lima instance {self.name} did not reach Running state within 240 seconds"
+            )
+
+        # Phase 2: Wait for SSH to be ready (hostagent is fully initialized)
+        for _ in range(60):
             try:
                 result = subprocess.run(
                     ["limactl", "shell", self.name, "--", "true"],
@@ -117,7 +128,7 @@ class LimaInstance:
                 pass
             time.sleep(2)
         raise RuntimeError(
-            f"Lima instance {self.name} did not become SSH-ready within 240 seconds"
+            f"Lima instance {self.name} is Running but SSH not ready within 120 seconds"
         )
 
     def stop(self) -> None:
