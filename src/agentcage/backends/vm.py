@@ -170,11 +170,14 @@ class VmBackend:
             except Exception as e:
                 click.echo(f"warning: failed to start {svc}: {e}", err=True)
 
-        # Check for failed services and retry once after a short delay
+        # Check for failed services and retry after a delay
         # (handles race conditions like virtiofs mounts not being ready)
-        time.sleep(3)
+        time.sleep(5)
         inst.exec(["systemctl", "--user", "reset-failed"], check=False)
-        for svc in services:
+
+        # Retry failed infrastructure services first (not cage)
+        infra = services[:-1]  # everything except cage
+        for svc in infra:
             try:
                 result = inst.exec(
                     ["systemctl", "--user", "is-active", f"{svc}.service"],
@@ -185,6 +188,30 @@ class VmBackend:
                     inst.exec(["systemctl", "--user", "restart", f"{svc}.service"])
             except Exception as e:
                 click.echo(f"warning: retry failed for {svc}: {e}", err=True)
+
+        # Wait for proxy to be ready (CA cert generated) before starting cage
+        click.echo("Waiting for proxy to be ready...")
+        for _ in range(30):
+            result = inst.exec(
+                ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
+                check=False,
+            )
+            if result.stdout.strip() == "active":
+                break
+            time.sleep(1)
+
+        # Now start the cage
+        cage_svc = f"{name}-cage"
+        try:
+            result = inst.exec(
+                ["systemctl", "--user", "is-active", f"{cage_svc}.service"],
+                check=False,
+            )
+            if result.stdout.strip() != "active":
+                inst.exec(["systemctl", "--user", "reset-failed"], check=False)
+                inst.exec(["systemctl", "--user", "start", f"{cage_svc}.service"])
+        except Exception as e:
+            click.echo(f"warning: failed to start {cage_svc}: {e}", err=True)
 
     def stop(self, name: str) -> None:
         inst = self._instance(name)
