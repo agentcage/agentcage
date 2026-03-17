@@ -143,14 +143,14 @@ class TestExtractAuditJson:
         assert result is not None
         assert result["decision"] == "allowed"
 
-    def test_firecracker_prefix_warning(self):
+    def test_vm_prefix_warning(self):
         import json
         line = f"[proxy:warning] {json.dumps(_BLOCKED)}"
         result = extract_audit_json(line)
         assert result is not None
         assert result["decision"] == "blocked"
 
-    def test_firecracker_prefix_info(self):
+    def test_vm_prefix_info(self):
         import json
         line = f"[proxy:info] {json.dumps(_ALLOWED)}"
         result = extract_audit_json(line)
@@ -174,7 +174,7 @@ class TestExtractAuditJson:
         result = extract_audit_json("{bad json")
         assert result is None
 
-    def test_firecracker_dns_prefix_warning(self):
+    def test_vm_dns_prefix_warning(self):
         import json
         line = f"[dns:warning] {json.dumps(_DNS_BLOCKED)}"
         result = extract_audit_json(line)
@@ -182,7 +182,7 @@ class TestExtractAuditJson:
         assert result["decision"] == "blocked"
         assert result["method"] == "DNS"
 
-    def test_firecracker_dns_prefix_info(self):
+    def test_vm_dns_prefix_info(self):
         import json
         line = f"[dns:info] {json.dumps(_DNS_ALLOWED)}"
         result = extract_audit_json(line)
@@ -190,7 +190,7 @@ class TestExtractAuditJson:
         assert result["decision"] == "allowed"
         assert result["method"] == "DNS"
 
-    def test_firecracker_non_audit(self):
+    def test_vm_non_audit(self):
         result = extract_audit_json("[proxy:debug] not json at all")
         assert result is None
 

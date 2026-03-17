@@ -137,9 +137,9 @@ class TestCageList:
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_list_shows_firecracker_cage(self, mock_state, mock_get_backend):
+    def test_list_shows_vm_cage(self, mock_state, mock_get_backend):
         mock_state.list_deployments.return_value = ["myvm"]
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
         mock_state.load_metadata.return_value = {"agentcage_version": "0.9.0"}
         backend = mock_get_backend.return_value
         backend.service_names.return_value = ["cage"]
@@ -147,7 +147,7 @@ class TestCageList:
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "myvm" in result.output
-        assert "firecracker" in result.output
+        assert "vm" in result.output
         assert "0.9.0" in result.output
         assert "running (1/1)" in result.output
 
@@ -201,9 +201,9 @@ class TestCageRestart:
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_restart_restarts_firecracker(self, mock_state, mock_get_backend):
+    def test_restart_restarts_vm(self, mock_state, mock_get_backend):
         mock_state.deployment_exists.return_value = True
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
         backend = mock_get_backend.return_value
         result = _runner().invoke(main, ["cage", "restart", "test"])
         assert result.exit_code == 0
