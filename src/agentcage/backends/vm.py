@@ -115,9 +115,12 @@ class VmBackend:
         if not quadlet_dir.exists():
             return
 
-        # Install quadlets inside the VM
-        vm_quadlet_dir = f"/home/{self._lima_user()}/.config/containers/systemd"
-        inst.exec(["mkdir", "-p", vm_quadlet_dir])
+        # Install quadlets inside the VM (use ~ to get the correct home dir,
+        # Lima maps the host user into the guest)
+        inst.exec(["bash", "-c", "mkdir -p ~/.config/containers/systemd"])
+        vm_quadlet_dir = inst.exec(
+            ["bash", "-c", "echo ~/.config/containers/systemd"]
+        ).stdout.strip()
 
         for qfile in quadlet_dir.iterdir():
             if qfile.is_file():
@@ -137,10 +140,6 @@ class VmBackend:
                 inst.exec(["systemctl", "--user", "start", f"{svc}.service"])
             except Exception as e:
                 click.echo(f"warning: failed to start {svc}: {e}", err=True)
-
-    def _lima_user(self) -> str:
-        """Return the default Lima user (used for paths inside the VM)."""
-        return "lima"
 
     def stop(self, name: str) -> None:
         inst = self._instance(name)
