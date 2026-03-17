@@ -40,6 +40,7 @@ class TestStart:
             mock_run.assert_called_once_with(
                 ["limactl", "start", "agentcage-mycage"],
                 check=True,
+                start_new_session=True,
             )
 
 

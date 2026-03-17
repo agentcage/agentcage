@@ -19,10 +19,15 @@ class LimaInstance:
         )
 
     def start(self) -> None:
-        """Start the Lima instance."""
+        """Start the Lima instance.
+
+        Uses start_new_session=True so the Lima hostagent process
+        survives after the parent Python process exits.
+        """
         subprocess.run(
             ["limactl", "start", self.name],
             check=True,
+            start_new_session=True,
         )
 
     def stop(self) -> None:
