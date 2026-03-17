@@ -1,0 +1,35 @@
+# Lima VM config for agentcage cage: {{ name }}
+vmType: {{ vm_type }}
+{% if vm_type == "vz" %}
+rosetta:
+  enabled: false
+mountType: virtiofs
+{% endif %}
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: {{ vcpus }}
+memory: "{{ mem_gb }}GiB"
+disk: "20GiB"
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+{{ provision_script | indent(6, first=true) }}
+
+{% if port_forwards %}
+portForwards:
+{% for pf in port_forwards %}
+  - guestPort: {{ pf.guest_port }}
+    hostPort: {{ pf.host_port }}
+    hostIP: "{{ pf.host_bind }}"
+{% endfor %}
+{% endif %}

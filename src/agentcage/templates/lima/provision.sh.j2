@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+# Install Podman and dependencies
+apt-get update -qq
+apt-get install -y -qq podman fuse-overlayfs uidmap slirp4netns socat iptables
+
+# Configure Podman storage
+mkdir -p /etc/containers
+cat > /etc/containers/storage.conf <<'STOR'
+[storage]
+driver = "overlay"
+[storage.options.overlay]
+mount_program = "/usr/bin/fuse-overlayfs"
+STOR
+
+# Enable lingering for the lima user so systemd user services persist
+loginctl enable-linger {{ lima_user }}
+
+echo "agentcage provisioning complete"
