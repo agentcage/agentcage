@@ -151,15 +151,40 @@ class VmBackend:
         # Build container images and pull cage image inside the VM
         self.build_artifacts(config, name)
 
-        # Reload systemd and start services
+        # Reload systemd and start services in dependency order
         inst.exec(["systemctl", "--user", "daemon-reload"])
 
-        # Start services in order (network, volumes, then cage)
-        for svc in [f"{name}-net-network", f"{name}-certs-volume", f"{name}-cage"]:
+        services = [
+            f"{name}-net-network",
+            f"{name}-certs-volume",
+            f"{name}-proxy",
+            f"{name}-dns",
+            f"{name}-cage",
+        ]
+
+        # First attempt
+        import time
+        for svc in services:
             try:
                 inst.exec(["systemctl", "--user", "start", f"{svc}.service"])
             except Exception as e:
                 click.echo(f"warning: failed to start {svc}: {e}", err=True)
+
+        # Check for failed services and retry once after a short delay
+        # (handles race conditions like virtiofs mounts not being ready)
+        time.sleep(3)
+        inst.exec(["systemctl", "--user", "reset-failed"], check=False)
+        for svc in services:
+            try:
+                result = inst.exec(
+                    ["systemctl", "--user", "is-active", f"{svc}.service"],
+                    check=False,
+                )
+                if result.stdout.strip() != "active":
+                    click.echo(f"Retrying {svc}...")
+                    inst.exec(["systemctl", "--user", "restart", f"{svc}.service"])
+            except Exception as e:
+                click.echo(f"warning: retry failed for {svc}: {e}", err=True)
 
     def stop(self, name: str) -> None:
         inst = self._instance(name)
