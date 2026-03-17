@@ -16,6 +16,12 @@ cpus: {{ vcpus }}
 memory: "{{ mem_gb }}GiB"
 disk: "20GiB"
 
+mounts:
+  - location: "~"
+    writable: true
+  - location: "/tmp/lima"
+    writable: true
+
 containerd:
   system: false
   user: false

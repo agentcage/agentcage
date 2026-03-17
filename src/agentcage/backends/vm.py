@@ -30,9 +30,10 @@ class VmBackend:
     def build_artifacts(self, config: Config, deploy_name: str) -> None:
         """Build proxy and DNS images inside the VM.
 
-        Copies the build context into the VM's local filesystem first,
-        since podman build can't reliably access virtiofs-mounted host
-        paths from inside its build containers.
+        Lima mounts the host home directory via virtiofs, so the build
+        context (inside the agentcage package) is directly accessible.
+        We copy it to /tmp inside the VM first since podman build
+        needs local filesystem access for its build containers.
         """
         inst = self._instance(deploy_name)
         if not inst.is_running():
@@ -42,17 +43,10 @@ class VmBackend:
         data_dir = Path(__file__).resolve().parent.parent / "data"
         vm_build_dir = "/tmp/agentcage-build"
 
-        # Copy build context into the VM
+        # Copy build context to VM-local filesystem
         click.echo("Copying build context into VM...")
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
-        inst.exec(["mkdir", "-p", vm_build_dir])
-        # Use limactl copy to transfer files
-        import subprocess as sp
-        sp.run(
-            ["limactl", "copy", "-r",
-             f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
-            check=True,
-        )
+        inst.exec(["bash", "-c", f"cp -r {data_dir} {vm_build_dir}"])
 
         click.echo("Building proxy image inside VM...")
         inst.exec([
@@ -72,6 +66,11 @@ class VmBackend:
             "-f", f"{vm_build_dir}/containers/Containerfile.dns",
             vm_build_dir,
         ])
+
+        # Pull the cage image inside the VM
+        if config and config.container.image:
+            click.echo(f"Pulling {config.container.image} inside VM...")
+            inst.exec(["podman", "pull", config.container.image], check=False)
 
         # Cleanup
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
@@ -120,10 +119,17 @@ class VmBackend:
             click.echo("VM started and provisioned.")
 
         # Deploy cage into the VM
-        self._deploy_cage(name, inst)
+        # Load config from state to pass to build_artifacts
+        from agentcage import state
+        config = None
+        try:
+            config = state.load_deployment_config(name)
+        except Exception:
+            pass
+        self._deploy_cage(name, inst, config)
         click.echo(f"Started {name} (Lima VM)")
 
-    def _deploy_cage(self, name: str, inst: LimaInstance) -> None:
+    def _deploy_cage(self, name: str, inst: LimaInstance, config: Config | None = None) -> None:
         """Deploy quadlet files and start services inside the Lima VM."""
         quadlet_dir = self.unit_dir() / "quadlets"
         if not quadlet_dir.exists():
@@ -142,8 +148,8 @@ class VmBackend:
                 # Write quadlet file inside VM via shell
                 inst.exec(["bash", "-c", f"cat > {vm_quadlet_dir}/{qfile.name} << 'QUADLET_EOF'\n{content}\nQUADLET_EOF"])
 
-        # Build container images inside the VM (uses virtiofs-shared host files)
-        self.build_artifacts(None, name)  # type: ignore[arg-type]
+        # Build container images and pull cage image inside the VM
+        self.build_artifacts(config, name)
 
         # Reload systemd and start services
         inst.exec(["systemctl", "--user", "daemon-reload"])

@@ -58,17 +58,15 @@ class TestBuildArtifacts:
             mock_sp_run.return_value = MagicMock(returncode=0)
             backend.build_artifacts(config, "testcage")
 
-        # Should call: rm, mkdir, podman build proxy, podman build dns, rm cleanup
+        # Should call: rm, cp, podman build proxy, podman build dns, podman pull, rm
         exec_calls = mock_inst.exec.call_args_list
-        # Find the podman build calls
-        build_calls = [c for c in exec_calls if "podman" in str(c)]
+        build_calls = [c for c in exec_calls if "podman" in str(c) and "build" in str(c)]
         assert len(build_calls) == 2
         assert "agentcage-proxy" in str(build_calls[0])
         assert "agentcage-dns" in str(build_calls[1])
-        # Should have used limactl copy
-        mock_sp_run.assert_called_once()
-        assert "limactl" in mock_sp_run.call_args[0][0]
-        assert "copy" in mock_sp_run.call_args[0][0]
+        # Should have pulled the cage image
+        pull_calls = [c for c in exec_calls if "pull" in str(c)]
+        assert len(pull_calls) == 1
 
     def test_skips_build_when_vm_not_running(self, capsys):
         backend = VmBackend()
@@ -212,7 +210,8 @@ class TestStart:
         deploy_calls = []
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch.object(backend, "unit_dir", return_value=tmp_path), \
-             patch.object(backend, "_deploy_cage", side_effect=lambda n, i: deploy_calls.append((n, i))):
+             patch.object(backend, "_deploy_cage", side_effect=lambda n, i, c=None: deploy_calls.append((n, i))), \
+             patch("agentcage.state.load_deployment_config", return_value=MagicMock()):
             backend.start("testcage")
 
         assert len(deploy_calls) == 1
@@ -226,7 +225,8 @@ class TestStart:
 
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch.object(backend, "unit_dir", return_value=tmp_path), \
-             patch.object(backend, "_deploy_cage"):
+             patch.object(backend, "_deploy_cage"), \
+             patch("agentcage.state.load_deployment_config", return_value=MagicMock()):
             backend.start("testcage")
 
         captured = capsys.readouterr()
