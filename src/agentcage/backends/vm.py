@@ -98,10 +98,12 @@ class VmBackend:
         if not inst.exists():
             click.echo("Creating Lima VM instance...")
             inst.create(str(config_path))
-            # After create, VM is started and provisioned (Podman installed)
-            click.echo("VM created and provisioned.")
-        elif not inst.is_running():
+            click.echo("VM created. Starting...")
+
+        if not inst.is_running():
+            click.echo("Starting Lima VM...")
             inst.start()
+            click.echo("VM started and provisioned.")
 
         # Deploy cage into the VM
         self._deploy_cage(name, inst)
