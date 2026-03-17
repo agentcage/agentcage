@@ -97,14 +97,6 @@ class CaptureConfig:
 
 
 @dataclass
-class FirecrackerConfig:
-    kernel: str = ""  # path to vmlinux
-    vcpus: int = 2
-    mem_mb: int = 2048
-    firecracker_bin: str = "firecracker"
-
-
-@dataclass
 class VmConfig:
     vcpus: int = 2
     mem_mb: int = 2048
@@ -120,7 +112,6 @@ class Config:
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
-    firecracker: FirecrackerConfig = field(default_factory=FirecrackerConfig)
     vm: VmConfig = field(default_factory=VmConfig)
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
@@ -196,15 +187,6 @@ def load_config(path: str) -> Config:
     # Silently migrate "firecracker" isolation to "vm"
     if cfg.isolation == "firecracker":
         cfg.isolation = "vm"
-
-    # Firecracker section (kept for backward compat with test_vmconfig etc.)
-    fc_raw = raw.get("firecracker") or {}
-    fc = FirecrackerConfig()
-    fc.kernel = fc_raw.get("kernel", "")
-    fc.vcpus = int(fc_raw.get("vcpus", 2))
-    fc.mem_mb = int(fc_raw.get("mem_mb", 2048))
-    fc.firecracker_bin = fc_raw.get("firecracker_bin", "firecracker")
-    cfg.firecracker = fc
 
     # VM section — prefer explicit "vm:" key, fall back to "firecracker:" for migration
     vm_raw = raw.get("vm") or raw.get("firecracker") or {}

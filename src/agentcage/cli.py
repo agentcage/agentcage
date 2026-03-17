@@ -167,7 +167,7 @@ def _require_root(action: str) -> None:
     """Exit with an error if not running as root."""
     if os.geteuid() != 0:
         click.echo(
-            f"error: '{action}' with Firecracker isolation requires root\n"
+            f"error: '{action}' requires root\n"
             f"  Run with: sudo agentcage {action}",
             err=True,
         )
