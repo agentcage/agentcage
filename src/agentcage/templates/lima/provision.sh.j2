@@ -15,6 +15,10 @@ driver = "overlay"
 mount_program = "/usr/bin/fuse-overlayfs"
 STOR
 
+# Allow unprivileged processes to bind low ports (needed for proxy reverse mode)
+sysctl -w net.ipv4.ip_unprivileged_port_start=0
+echo "net.ipv4.ip_unprivileged_port_start=0" > /etc/sysctl.d/99-agentcage.conf
+
 # Enable lingering for the lima user so systemd user services persist
 loginctl enable-linger {{ lima_user }}
 
