@@ -21,44 +21,14 @@ class LimaInstance:
     def start(self) -> None:
         """Start the Lima instance.
 
-        On macOS with the VZ driver, the hostagent IS the VM process —
-        it cannot daemonize. ``limactl start`` (non-foreground) kills
-        the hostagent on exit, stopping the VM.
-
-        We use ``limactl start --foreground`` via Popen and keep the
-        process alive (never wait on it). The Popen object is stored
-        so the process isn't garbage-collected. We poll with
-        ``limactl shell ... -- true`` until SSH is ready.
+        Uses shell=True so Lima can properly daemonize the hostagent
+        via double-fork. Direct subprocess.run (without shell) can
+        interfere with daemon detachment on macOS with the VZ driver.
         """
-        import time
-
-        # Launch foreground hostagent — must stay alive for VM to run
-        self._hostagent = subprocess.Popen(
-            ["limactl", "start", "--foreground", self.name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-        )
-
-        # Poll until VM is SSH-ready
-        for _ in range(120):
-            if self._hostagent.poll() is not None:
-                raise RuntimeError(
-                    f"Lima hostagent exited unexpectedly with code {self._hostagent.returncode}"
-                )
-            try:
-                result = subprocess.run(
-                    ["limactl", "shell", self.name, "--", "true"],
-                    capture_output=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    return
-            except (subprocess.TimeoutExpired, Exception):
-                pass
-            time.sleep(2)
-        raise RuntimeError(
-            f"Lima instance {self.name} did not become SSH-ready within 240 seconds"
+        subprocess.run(
+            f"limactl start {self.name}",
+            shell=True,
+            check=True,
         )
 
     def stop(self) -> None:

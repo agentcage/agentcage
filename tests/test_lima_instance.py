@@ -34,15 +34,14 @@ class TestCreate:
 class TestStart:
     def test_start_calls_limactl(self):
         inst = LimaInstance("mycage")
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None  # process still alive
-        mock_shell = MagicMock(returncode=0)  # SSH ready
-        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
-             patch("subprocess.run", return_value=mock_shell):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
             inst.start()
-            mock_popen.assert_called_once()
-            args = mock_popen.call_args[0][0]
-            assert args == ["limactl", "start", "--foreground", "agentcage-mycage"]
+            mock_run.assert_called_once_with(
+                "limactl start agentcage-mycage",
+                shell=True,
+                check=True,
+            )
 
 
 class TestStop:
