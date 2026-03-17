@@ -50,18 +50,25 @@ class TestBuildArtifacts:
         backend = VmBackend()
         mock_inst = MagicMock()
         mock_inst.is_running.return_value = True
+        mock_inst.name = "agentcage-testcage"
         config = _make_config()
 
-        with patch.object(backend, "_instance", return_value=mock_inst):
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run") as mock_sp_run:
+            mock_sp_run.return_value = MagicMock(returncode=0)
             backend.build_artifacts(config, "testcage")
 
-        # Should call podman build inside the VM twice (proxy + dns)
-        assert mock_inst.exec.call_count == 2
-        proxy_call = mock_inst.exec.call_args_list[0]
-        dns_call = mock_inst.exec.call_args_list[1]
-        assert "agentcage-proxy" in proxy_call[0][0]
-        assert "podman" in proxy_call[0][0][0]
-        assert "agentcage-dns" in dns_call[0][0]
+        # Should call: rm, mkdir, podman build proxy, podman build dns, rm cleanup
+        exec_calls = mock_inst.exec.call_args_list
+        # Find the podman build calls
+        build_calls = [c for c in exec_calls if "podman" in str(c)]
+        assert len(build_calls) == 2
+        assert "agentcage-proxy" in str(build_calls[0])
+        assert "agentcage-dns" in str(build_calls[1])
+        # Should have used limactl copy
+        mock_sp_run.assert_called_once()
+        assert "limactl" in mock_sp_run.call_args[0][0]
+        assert "copy" in mock_sp_run.call_args[0][0]
 
     def test_skips_build_when_vm_not_running(self, capsys):
         backend = VmBackend()

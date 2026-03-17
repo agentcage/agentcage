@@ -30,9 +30,9 @@ class VmBackend:
     def build_artifacts(self, config: Config, deploy_name: str) -> None:
         """Build proxy and DNS images inside the VM.
 
-        Lima shares the host home directory via virtiofs, so the
-        Containerfiles and build context are accessible inside the VM
-        at the same paths.
+        Copies the build context into the VM's local filesystem first,
+        since podman build can't reliably access virtiofs-mounted host
+        paths from inside its build containers.
         """
         inst = self._instance(deploy_name)
         if not inst.is_running():
@@ -40,8 +40,19 @@ class VmBackend:
             return
 
         data_dir = Path(__file__).resolve().parent.parent / "data"
-        containers_dir = str(data_dir / "containers")
-        build_context = str(data_dir)
+        vm_build_dir = "/tmp/agentcage-build"
+
+        # Copy build context into the VM
+        click.echo("Copying build context into VM...")
+        inst.exec(["rm", "-rf", vm_build_dir], check=False)
+        inst.exec(["mkdir", "-p", vm_build_dir])
+        # Use limactl copy to transfer files
+        import subprocess as sp
+        sp.run(
+            ["limactl", "copy", "-r",
+             f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
+            check=True,
+        )
 
         click.echo("Building proxy image inside VM...")
         inst.exec([
@@ -50,17 +61,20 @@ class VmBackend:
             "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
             "--cap-add=CAP_DAC_OVERRIDE",
             "-t", "agentcage-proxy",
-            "-f", os.path.join(containers_dir, "Containerfile.proxy"),
-            build_context,
+            "-f", f"{vm_build_dir}/containers/Containerfile.proxy",
+            vm_build_dir,
         ])
         click.echo("Building DNS image inside VM...")
         inst.exec([
             "podman", "build",
             "--cap-add=CAP_SETFCAP",
             "-t", "agentcage-dns",
-            "-f", os.path.join(containers_dir, "Containerfile.dns"),
-            build_context,
+            "-f", f"{vm_build_dir}/containers/Containerfile.dns",
+            vm_build_dir,
         ])
+
+        # Cleanup
+        inst.exec(["rm", "-rf", vm_build_dir], check=False)
 
     def generate_units(
         self,
