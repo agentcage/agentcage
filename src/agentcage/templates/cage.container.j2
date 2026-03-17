@@ -24,7 +24,13 @@ Volume={{ vol }}
 Volume={{ vol_name }}:{{ mount }}
 {% endfor %}
 {% for spec in tmpfs %}
+{% if ':' in spec %}
 Tmpfs={{ spec }}
+{% elif user %}
+Tmpfs={{ spec }}:uid={{ user.split(':')[0] }},gid={{ user.split(':')[-1] }}
+{% else %}
+Tmpfs={{ spec }}
+{% endif %}
 {% endfor %}
 {% for secret in podman_secrets %}
 {% if deploy_name %}
