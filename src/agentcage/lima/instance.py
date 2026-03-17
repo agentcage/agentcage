@@ -3,58 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
-import platform
 import subprocess
-import time
-from pathlib import Path
 from subprocess import CompletedProcess
-
-# launchd label prefix for Lima hostagent services
-_LAUNCHD_PREFIX = "com.agentcage.lima."
-
-
-def _launchd_label(instance_name: str) -> str:
-    return f"{_LAUNCHD_PREFIX}{instance_name}"
-
-
-def _launchd_plist_path(instance_name: str) -> Path:
-    """Return ~/Library/LaunchAgents/<label>.plist."""
-    return Path.home() / "Library" / "LaunchAgents" / f"{_launchd_label(instance_name)}.plist"
-
-
-def _generate_plist(instance_name: str) -> str:
-    """Generate a launchd plist that runs limactl start --foreground."""
-    import shutil
-    limactl = shutil.which("limactl") or "/opt/homebrew/bin/limactl"
-    label = _launchd_label(instance_name)
-    log_dir = Path.home() / "Library" / "Logs" / "agentcage"
-    return f"""\
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{limactl}</string>
-        <string>start</string>
-        <string>--foreground</string>
-        <string>{instance_name}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <false/>
-    <key>KeepAlive</key>
-    <false/>
-    <key>StandardOutPath</key>
-    <string>{log_dir}/{instance_name}.out.log</string>
-    <key>StandardErrorPath</key>
-    <string>{log_dir}/{instance_name}.err.log</string>
-</dict>
-</plist>
-"""
 
 
 class LimaInstance:
@@ -73,55 +23,14 @@ class LimaInstance:
     def start(self) -> None:
         """Start the Lima instance.
 
-        On macOS with the VZ driver, the hostagent IS the VM process.
-        ``limactl start`` (non-foreground) kills the hostagent on exit.
-        We use ``nohup limactl start --foreground`` backgrounded via
-        the shell, which keeps the hostagent alive as a detached process.
-
-        On Linux (QEMU), plain ``limactl start`` works because QEMU
-        properly daemonizes.
+        ``limactl start`` handles daemonization internally — it forks
+        the hostagent, waits for all requirements (SSH, guest agent,
+        boot scripts) to be satisfied, then exits. The hostagent
+        daemon keeps running in the background.
         """
-        if platform.system() == "Darwin":
-            self._start_foreground_detached()
-        else:
-            subprocess.run(
-                ["limactl", "start", self.name],
-                check=True,
-            )
-
-    def _start_foreground_detached(self) -> None:
-        """Start hostagent via nohup + shell backgrounding."""
-        import shutil
-
-        limactl = shutil.which("limactl") or "limactl"
-        log_dir = Path.home() / "Library" / "Logs" / "agentcage"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / f"{self.name}.log"
-
-        os.system(
-            f'nohup {limactl} start --foreground {self.name} '
-            f'>{log_file} 2>&1 </dev/null &'
-        )
-
-        # Give the hostagent time to initialize before polling.
-        # limactl shell during early boot can crash the hostagent.
-        time.sleep(15)
-
-        # Wait for SSH to be ready
-        for _ in range(120):
-            try:
-                result = subprocess.run(
-                    ["limactl", "shell", self.name, "--", "true"],
-                    capture_output=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    return
-            except (subprocess.TimeoutExpired, Exception):
-                pass
-            time.sleep(2)
-        raise RuntimeError(
-            f"Lima instance {self.name} did not become SSH-ready within 240 seconds"
+        subprocess.run(
+            ["limactl", "start", self.name],
+            check=True,
         )
 
     def stop(self) -> None:

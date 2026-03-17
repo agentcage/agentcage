@@ -32,25 +32,15 @@ class TestCreate:
 
 
 class TestStart:
-    def test_start_calls_limactl_linux(self):
+    def test_start_calls_limactl(self):
         inst = LimaInstance("mycage")
-        with patch("platform.system", return_value="Linux"), \
-             patch("subprocess.run") as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             inst.start()
             mock_run.assert_called_once_with(
                 ["limactl", "start", "agentcage-mycage"],
                 check=True,
             )
-
-    def test_start_uses_foreground_detached_on_macos(self):
-        inst = LimaInstance("mycage")
-        mock_shell_result = MagicMock(returncode=0)
-        with patch("platform.system", return_value="Darwin"), \
-             patch("subprocess.run", return_value=mock_shell_result), \
-             patch.object(inst, "_start_foreground_detached") as mock_fg:
-            inst.start()
-            mock_fg.assert_called_once()
 
 
 class TestStop:
