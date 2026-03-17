@@ -43,14 +43,14 @@ class TestStart:
                 check=True,
             )
 
-    def test_start_uses_launchd_on_macos(self):
+    def test_start_uses_foreground_detached_on_macos(self):
         inst = LimaInstance("mycage")
         mock_shell_result = MagicMock(returncode=0)
         with patch("platform.system", return_value="Darwin"), \
-             patch("subprocess.run", return_value=mock_shell_result) as mock_run, \
-             patch.object(inst, "_start_via_launchd") as mock_launchd:
+             patch("subprocess.run", return_value=mock_shell_result), \
+             patch.object(inst, "_start_foreground_detached") as mock_fg:
             inst.start()
-            mock_launchd.assert_called_once()
+            mock_fg.assert_called_once()
 
 
 class TestStop:

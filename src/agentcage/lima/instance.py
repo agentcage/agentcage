@@ -74,47 +74,33 @@ class LimaInstance:
         """Start the Lima instance.
 
         On macOS with the VZ driver, the hostagent IS the VM process.
-        ``limactl start`` (non-foreground) kills the hostagent on exit,
-        stopping the VM. We use launchd to run ``limactl start
-        --foreground`` as a persistent user service.
+        ``limactl start`` (non-foreground) kills the hostagent on exit.
+        We use ``nohup limactl start --foreground`` backgrounded via
+        the shell, which keeps the hostagent alive as a detached process.
 
         On Linux (QEMU), plain ``limactl start`` works because QEMU
         properly daemonizes.
         """
         if platform.system() == "Darwin":
-            self._start_via_launchd()
+            self._start_foreground_detached()
         else:
             subprocess.run(
                 ["limactl", "start", self.name],
                 check=True,
             )
 
-    def _start_via_launchd(self) -> None:
-        """Start the Lima hostagent as a launchd user service."""
-        plist_path = _launchd_plist_path(self.name)
-        label = _launchd_label(self.name)
+    def _start_foreground_detached(self) -> None:
+        """Start hostagent via nohup + shell backgrounding."""
+        import shutil
 
-        # Create log directory
+        limactl = shutil.which("limactl") or "limactl"
         log_dir = Path.home() / "Library" / "Logs" / "agentcage"
         log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"{self.name}.log"
 
-        # Write plist
-        plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(_generate_plist(self.name))
-
-        # Load and start
-        # Unload first in case stale
-        subprocess.run(
-            ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
-            check=True,
-        )
-        subprocess.run(
-            ["launchctl", "kickstart", f"gui/{os.getuid()}/{label}"],
-            check=True,
+        os.system(
+            f'nohup {limactl} start --foreground {self.name} '
+            f'>{log_file} 2>&1 </dev/null &'
         )
 
         # Poll until SSH is ready
@@ -136,13 +122,6 @@ class LimaInstance:
 
     def stop(self) -> None:
         """Stop the Lima instance."""
-        if platform.system() == "Darwin":
-            # Stop via launchd first
-            label = _launchd_label(self.name)
-            subprocess.run(
-                ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
-                capture_output=True,
-            )
         subprocess.run(
             ["limactl", "stop", self.name],
             check=True,
@@ -150,15 +129,6 @@ class LimaInstance:
 
     def delete(self) -> None:
         """Delete the Lima instance forcefully."""
-        if platform.system() == "Darwin":
-            label = _launchd_label(self.name)
-            subprocess.run(
-                ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
-                capture_output=True,
-            )
-            plist = _launchd_plist_path(self.name)
-            if plist.exists():
-                plist.unlink()
         subprocess.run(
             ["limactl", "delete", "--force", self.name],
             check=True,
