@@ -98,8 +98,8 @@ class CaptureConfig:
 
 @dataclass
 class VmConfig:
-    vcpus: int = 2
-    mem_mb: int = 2048
+    vcpus: int = 4
+    mem_mb: int = 4096
 
 
 @dataclass
