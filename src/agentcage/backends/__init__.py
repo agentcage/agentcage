@@ -9,10 +9,10 @@ from agentcage.config import Config
 def get_backend(config: Config) -> Backend:
     """Return the appropriate backend for the given config."""
     isolation = getattr(config, "isolation", "container")
-    if isolation == "firecracker":
-        from agentcage.backends.firecracker import FirecrackerBackend
+    if isolation == "vm":
+        from agentcage.backends.vm import VmBackend
 
-        return FirecrackerBackend(config)
+        return VmBackend()
     from agentcage.backends.container import ContainerBackend
 
     return ContainerBackend()
