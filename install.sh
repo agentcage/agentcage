@@ -324,6 +324,11 @@ setup_podman_machine() {
 # ---------------------------------------------------------------------------
 
 install_lima() {
+    # On macOS, Lima is required (VM is the only isolation mode)
+    if [ "$OS" = "macos" ]; then
+        WANT_LIMA=true
+    fi
+
     if [ "$WANT_LIMA" = false ]; then
         return
     fi
