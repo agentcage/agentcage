@@ -34,13 +34,13 @@ class TestCreate:
 class TestStart:
     def test_start_calls_limactl(self):
         inst = LimaInstance("mycage")
-        with patch("subprocess.run") as mock_run, \
-             patch.object(inst, "is_running", return_value=True):
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             inst.start()
-            mock_run.assert_called_once()
-            args = mock_run.call_args[0][0]
-            assert args == ["nohup", "limactl", "start", "agentcage-mycage"]
+            mock_run.assert_called_once_with(
+                ["limactl", "start", "agentcage-mycage"],
+                check=True,
+            )
 
 
 class TestStop:
