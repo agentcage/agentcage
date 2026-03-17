@@ -32,16 +32,25 @@ class TestCreate:
 
 
 class TestStart:
-    def test_start_calls_limactl(self):
+    def test_start_calls_limactl_linux(self):
         inst = LimaInstance("mycage")
-        with patch("subprocess.run") as mock_run:
+        with patch("platform.system", return_value="Linux"), \
+             patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             inst.start()
             mock_run.assert_called_once_with(
-                "limactl start agentcage-mycage",
-                shell=True,
+                ["limactl", "start", "agentcage-mycage"],
                 check=True,
             )
+
+    def test_start_uses_launchd_on_macos(self):
+        inst = LimaInstance("mycage")
+        mock_shell_result = MagicMock(returncode=0)
+        with patch("platform.system", return_value="Darwin"), \
+             patch("subprocess.run", return_value=mock_shell_result) as mock_run, \
+             patch.object(inst, "_start_via_launchd") as mock_launchd:
+            inst.start()
+            mock_launchd.assert_called_once()
 
 
 class TestStop:
