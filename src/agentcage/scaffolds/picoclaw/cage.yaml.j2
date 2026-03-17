@@ -2,15 +2,13 @@
 {% set gateway_port = port | default(18790, true) %}
 
 name: {{ name }}
-{% if isolation == "firecracker" %}
+{% if isolation == "vm" %}
 
-isolation: firecracker
+isolation: vm
 
-firecracker:
+vm:
   vcpus: 1
   mem_mb: 512
-  # kernel: ""            # auto-detected; set to override
-  # firecracker_bin: ""   # auto-detected; set to override
 {% endif %}
 
 container:

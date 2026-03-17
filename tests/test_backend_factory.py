@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agentcage.config import Config, ContainerConfig, FirecrackerConfig
+from agentcage.config import Config, ContainerConfig, VmConfig
 from agentcage.backends import get_backend
 from agentcage.backends.container import ContainerBackend
 
@@ -22,13 +22,13 @@ class TestGetBackend:
         backend = get_backend(cfg)
         assert isinstance(backend, ContainerBackend)
 
-    def test_firecracker_mode_returns_firecracker_backend(self):
+    def test_vm_mode_returns_vm_backend(self):
         cfg = Config(
             name="test",
-            isolation="firecracker",
+            isolation="vm",
             container=ContainerConfig(image="test:latest"),
-            firecracker=FirecrackerConfig(kernel="/boot/vmlinux"),
+            vm=VmConfig(),
         )
         backend = get_backend(cfg)
-        from agentcage.backends.firecracker import FirecrackerBackend
-        assert isinstance(backend, FirecrackerBackend)
+        from agentcage.backends.vm import VmBackend
+        assert isinstance(backend, VmBackend)

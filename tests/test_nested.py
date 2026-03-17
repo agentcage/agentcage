@@ -56,17 +56,17 @@ class TestNestedConfigValidation:
         assert any("nested_containers" in w for w in warnings)
         assert any("elevated capabilities" in w for w in warnings)
 
-    def test_firecracker_rejected(self, tmp_path):
+    def test_vm_rejected(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
-            isolation: firecracker
+            isolation: vm
             container:
               image: test:latest
               nested_containers: true
         """))
         cfg = load_config(str(p))
-        with pytest.raises(ValueError, match="nested_containers.*not supported.*Firecracker"):
+        with pytest.raises(ValueError, match="nested_containers.*not supported.*vm"):
             validate_config(cfg)
 
     def test_no_warning_when_disabled(self, minimal_yaml):
