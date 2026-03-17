@@ -103,6 +103,10 @@ class LimaInstance:
             f'>{log_file} 2>&1 </dev/null &'
         )
 
+        # Give the hostagent time to initialize before polling.
+        # limactl shell during early boot can crash the hostagent.
+        time.sleep(15)
+
         # Wait for SSH to be ready
         for _ in range(120):
             try:
