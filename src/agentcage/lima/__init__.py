@@ -1,1 +1,1 @@
-"""Lima VM isolation backend for agentcage."""
+# Lima VM backend package
