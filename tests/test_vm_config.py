@@ -16,8 +16,8 @@ class TestVmConfigDefaults:
     def test_default_vm_config(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         vm = cfg.vm
-        assert vm.vcpus == 2
-        assert vm.mem_mb == 2048
+        assert vm.vcpus == 4
+        assert vm.mem_mb == 4096
 
 
 class TestVmConfigParsing:

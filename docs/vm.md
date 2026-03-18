@@ -44,8 +44,8 @@ VM-specific settings live under the `vm:` key in `cage.yaml`.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `vcpus` | int | `2` | Number of virtual CPUs to allocate to the VM. |
-| `mem_mb` | int | `2048` | VM memory in megabytes. |
+| `vcpus` | int | `4` | Number of virtual CPUs to allocate to the VM. |
+| `mem_mb` | int | `4096` | VM memory in megabytes. |
 
 ### Example Configuration
 
@@ -54,8 +54,8 @@ name: basic
 isolation: vm
 
 vm:
-  vcpus: 2
-  mem_mb: 2048
+  vcpus: 4
+  mem_mb: 4096
 
 container:
   image: "node:22-slim"

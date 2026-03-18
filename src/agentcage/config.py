@@ -191,8 +191,8 @@ def load_config(path: str) -> Config:
     # VM section — prefer explicit "vm:" key, fall back to "firecracker:" for migration
     vm_raw = raw.get("vm") or raw.get("firecracker") or {}
     vm = VmConfig()
-    vm.vcpus = int(vm_raw.get("vcpus", 2))
-    vm.mem_mb = int(vm_raw.get("mem_mb", 2048))
+    vm.vcpus = int(vm_raw.get("vcpus", VmConfig.vcpus))
+    vm.mem_mb = int(vm_raw.get("mem_mb", VmConfig.mem_mb))
     cfg.vm = vm
 
     # Container section
