@@ -163,16 +163,6 @@ def init(name: str | None, output: str, image: str, isolation: str,
 # ── helpers ──────────────────────────────────────────────
 
 
-def _require_root(action: str) -> None:
-    """Exit with an error if not running as root."""
-    if os.geteuid() != 0:
-        click.echo(
-            f"error: '{action}' requires root\n"
-            f"  Run with: sudo agentcage {action}",
-            err=True,
-        )
-        sys.exit(1)
-
 
 def _expected_secrets(cfg) -> list[str]:
     """Return all secret names a cage expects (injection + direct)."""
@@ -1641,9 +1631,6 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
                         err=True,
                     )
 
-        # ── VM data (not backed up — volumes are the persistence layer) ──
-        has_data_drive = False
-
         # ── Capture ──
         has_capture = False
         capture_path = state.capture_file(name)
@@ -1664,7 +1651,6 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
             "has_capture": has_capture,
             "named_volumes": vol_names,
             "secret_keys": expected,
-            "has_data_drive": has_data_drive,
             "secrets_included": include_secrets and bool(secret_keys),
         }
         (staging_path / "manifest.json").write_text(
@@ -1682,8 +1668,6 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
                f" ({'included' if include_secrets else 'not included'})")
     click.echo(f"  Volumes: {len(vol_names)}")
     click.echo(f"  Capture: {'yes' if has_capture else 'no'}")
-    if has_data_drive:
-        click.echo("  Data drive: yes")
 
 
 @cage.command("restore")
