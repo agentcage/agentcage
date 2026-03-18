@@ -55,7 +55,6 @@ SecurityLabelDisable=true
 {% if no_new_privileges %}
 NoNewPrivileges=true
 {% endif %}
-Sysctl=net.ipv4.ip_unprivileged_port_start=0
 {% for cap in drop_capabilities %}
 DropCapability={{ cap }}
 {% endfor %}
