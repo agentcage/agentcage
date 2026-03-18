@@ -154,6 +154,17 @@ has_agentcage() {
 # ---------------------------------------------------------------------------
 
 install_podman() {
+    # On macOS, Podman is optional (only needed for 'agentcage secret set').
+    # VM mode runs Podman inside the Lima VM instead.
+    if [ "$OS" = "macos" ]; then
+        if has_podman; then
+            info "Podman is already installed ($(podman --version)) — optional on macOS"
+        else
+            info "Skipping Podman on macOS (optional — only needed for 'agentcage secret set')"
+        fi
+        return
+    fi
+
     if has_podman; then
         info "Podman is already installed ($(podman --version))"
     else
@@ -164,7 +175,6 @@ install_podman() {
             fedora)   run_pkg dnf install -y -q podman ;;
             rhel)     run_pkg dnf install -y -q podman ;;
             opensuse) run_pkg zypper install -y podman ;;
-            macos)    brew install podman ;;
         esac
 
         if ! has_podman; then
@@ -184,7 +194,6 @@ install_podman() {
             fedora)   run_pkg dnf install -y -q skopeo ;;
             rhel)     run_pkg dnf install -y -q skopeo ;;
             opensuse) run_pkg zypper install -y skopeo ;;
-            macos)    brew install skopeo ;;
         esac
 
         if command -v skopeo >/dev/null 2>&1; then
@@ -298,25 +307,12 @@ install_agentcage() {
 }
 
 # ---------------------------------------------------------------------------
-# macOS: Podman machine
+# macOS: Podman machine (not needed — VM mode uses Lima instead)
 # ---------------------------------------------------------------------------
 
 setup_podman_machine() {
-    if [ "$OS" != "macos" ]; then
-        return
-    fi
-
-    # Check if any machine exists
-    if ! podman machine list --format '{{.Name}}' 2>/dev/null | grep -q .; then
-        info "Initializing Podman machine..."
-        podman machine init
-        podman machine start
-    elif ! podman machine list --format '{{.Running}}' 2>/dev/null | grep -qi true; then
-        info "Starting Podman machine..."
-        podman machine start
-    else
-        info "Podman machine is already running"
-    fi
+    # No-op: macOS uses Lima for VM isolation, not Podman machine.
+    return
 }
 
 # ---------------------------------------------------------------------------
@@ -447,7 +443,11 @@ main() {
 
     if [ "$WANT_LIMA" = true ]; then
         info ""
-        info "Lima is set up. Use 'isolation: vm' in cage.yaml for VM-level isolation."
+        if [ "$OS" = "macos" ]; then
+            info "Lima is set up. On macOS, all cages use VM isolation (Lima)."
+        else
+            info "Lima is set up. Use 'isolation: vm' in cage.yaml for VM-level isolation."
+        fi
     fi
 
     # Check if agentcage is on PATH for future shells (use original PATH,
