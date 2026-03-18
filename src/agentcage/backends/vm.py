@@ -148,6 +148,9 @@ class VmBackend:
                 # Write quadlet file inside VM via shell
                 inst.exec(["bash", "-c", f"cat > {vm_quadlet_dir}/{qfile.name} << 'QUADLET_EOF'\n{content}\nQUADLET_EOF"])
 
+        # Bridge secrets from host Podman into VM's Podman
+        self._bridge_secrets(name, inst)
+
         # Build container images and pull cage image inside the VM
         self.build_artifacts(config, name)
 
@@ -212,6 +215,48 @@ class VmBackend:
                 inst.exec(["systemctl", "--user", "start", f"{cage_svc}.service"])
         except Exception as e:
             click.echo(f"warning: failed to start {cage_svc}: {e}", err=True)
+
+    def _bridge_secrets(self, name: str, inst: LimaInstance) -> None:
+        """Copy Podman secrets from the host into the VM's Podman store."""
+        import subprocess as sp
+
+        # List host secrets scoped to this cage
+        try:
+            result = sp.run(
+                ["podman", "secret", "ls", "--format", "{{.Name}}"],
+                capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                return
+            host_secrets = [
+                s.strip() for s in result.stdout.splitlines()
+                if s.strip().startswith(f"{name}.")
+            ]
+        except FileNotFoundError:
+            # No host podman — secrets may have been set via other means
+            return
+
+        for secret_name in host_secrets:
+            try:
+                # Read secret value from host
+                value = sp.run(
+                    ["podman", "secret", "inspect", "--showsecret",
+                     "--format", "{{.SecretData}}", secret_name],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+
+                # Create in VM (replace if exists)
+                inst.exec(
+                    ["podman", "secret", "rm", secret_name],
+                    check=False,
+                )
+                inst.exec(
+                    ["bash", "-c",
+                     f"echo -n '{value}' | podman secret create {secret_name} -"],
+                )
+                click.echo(f"  Bridged secret: {secret_name}")
+            except Exception as e:
+                click.echo(f"warning: failed to bridge secret {secret_name}: {e}", err=True)
 
     def stop(self, name: str) -> None:
         inst = self._instance(name)
