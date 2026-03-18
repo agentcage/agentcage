@@ -45,7 +45,7 @@ class TestCageCreate:
         result = _runner().invoke(main, ["cage", "create", "-c", str(p)])
         assert result.exit_code != 0
         assert "missing secrets" in result.output
-        assert "agentcage secret set" in result.output
+        assert "--set-secret" in result.output or "agentcage secret set" in result.output
 
     @patch("agentcage.cli.systemd")
     @patch("agentcage.cli.Podman")

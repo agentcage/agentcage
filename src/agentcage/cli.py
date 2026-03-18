@@ -377,15 +377,19 @@ def cage_create(config_path: str, secrets: tuple):
 
     podman = Podman()
 
-    # Check secrets (requires host Podman — skip for VM mode if unavailable)
-    missing = _check_secrets(podman, name, cfg) if cfg.isolation == "container" or shutil.which("podman") else []
+    # Check secrets — skip keys provided via --set-secret
+    secret_keys_being_set = {s.split("=", 1)[0] for s in secrets} if secrets else set()
+    if cfg.isolation == "container" or shutil.which("podman"):
+        missing = [k for k in _check_secrets(podman, name, cfg) if k not in secret_keys_being_set]
+    else:
+        missing = []
     if missing:
         click.echo(f"error: missing secrets for cage '{name}':", err=True)
         for key in missing:
             click.echo(f"  {key}", err=True)
-        click.echo("Create them with:", err=True)
-        for key in missing:
-            click.echo(f"  agentcage secret set {name} {key}", err=True)
+        click.echo("Create them with --set-secret or after creation:", err=True)
+        click.echo(f"  agentcage cage create -c {config_path}" +
+                   "".join(f" -s {k}=VALUE" for k in missing), err=True)
         sys.exit(1)
 
     # Check port availability
