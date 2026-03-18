@@ -161,8 +161,14 @@ class VmBackend:
         for qfile in quadlet_dir.iterdir():
             if qfile.is_file():
                 content = qfile.read_text()
-                # Write quadlet file inside VM via shell
-                inst.exec(["bash", "-c", f"cat > {vm_quadlet_dir}/{qfile.name} << 'QUADLET_EOF'\n{content}\nQUADLET_EOF"])
+                # Write quadlet file inside VM via base64 to avoid
+                # heredoc injection (content could contain the delimiter)
+                import base64
+                encoded = base64.b64encode(content.encode()).decode()
+                inst.exec([
+                    "bash", "-c",
+                    f"echo '{encoded}' | base64 -d > {vm_quadlet_dir}/{qfile.name}",
+                ])
 
         # Bridge secrets from host Podman into VM's Podman
         self._bridge_secrets(name, inst)

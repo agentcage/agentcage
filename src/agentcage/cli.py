@@ -2050,11 +2050,11 @@ def _update_dns_quadlet(cfg) -> None:
     if cfg.isolation == "vm":
         inst = LimaInstance(name)
         # Write quadlet inside VM then restart services
+        import base64
+        encoded = base64.b64encode(dns_content.encode()).decode()
         inst.exec(["bash", "-c",
                    f"mkdir -p ~/.config/containers/systemd && "
-                   f"cat > ~/.config/containers/systemd/{name}-dns.container << 'QUADLET_EOF'\n"
-                   f"{dns_content}\n"
-                   f"QUADLET_EOF"])
+                   f"echo '{encoded}' | base64 -d > ~/.config/containers/systemd/{name}-dns.container"])
         inst.exec(["systemctl", "--user", "daemon-reload"])
         if backend.is_running(name, "dns"):
             services = backend.service_names(name)
