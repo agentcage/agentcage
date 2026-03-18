@@ -359,8 +359,8 @@ def cage_create(config_path: str):
 
     podman = Podman()
 
-    # Check secrets
-    missing = _check_secrets(podman, name, cfg)
+    # Check secrets (requires host Podman — skip for VM mode if unavailable)
+    missing = _check_secrets(podman, name, cfg) if cfg.isolation == "container" or shutil.which("podman") else []
     if missing:
         click.echo(f"error: missing secrets for cage '{name}':", err=True)
         for key in missing:
@@ -397,17 +397,19 @@ def cage_create(config_path: str):
 
     config_host_path = state.save_proxy_config(name)
 
-    # Build from Containerfile if configured
-    if cfg.container.build.containerfile:
+    # Build from Containerfile if configured (container mode only)
+    if cfg.isolation == "container" and cfg.container.build.containerfile:
         _build_container_image(cfg, Path(config_path).parent, podman)
 
-    click.echo(f"Pulling {cfg.container.image}...")
-    if not podman.pull(cfg.container.image):
-        click.echo(
-            f"warning: pull failed for {cfg.container.image} "
-            f"(local image or no network — continuing with cached image)",
-            err=True,
-        )
+    # Pull image on host (container mode) — VM mode pulls inside the VM
+    if cfg.isolation == "container":
+        click.echo(f"Pulling {cfg.container.image}...")
+        if not podman.pull(cfg.container.image):
+            click.echo(
+                f"warning: pull failed for {cfg.container.image} "
+                f"(local image or no network — continuing with cached image)",
+                err=True,
+            )
 
     try:
         _build_and_deploy(cfg, config_host_path, name, podman)
@@ -520,8 +522,8 @@ def cage_update(name: str, config_path: str | None):
 
     podman = Podman()
 
-    # Check secrets
-    missing = _check_secrets(podman, name, cfg)
+    # Check secrets (requires host Podman — skip for VM mode if unavailable)
+    missing = _check_secrets(podman, name, cfg) if cfg.isolation == "container" or shutil.which("podman") else []
     if missing:
         click.echo(f"error: missing secrets for cage '{name}':", err=True)
         for key in missing:
@@ -558,18 +560,20 @@ def cage_update(name: str, config_path: str | None):
             )
         sys.exit(1)
 
-    # Build from Containerfile if configured
-    if cfg.container.build.containerfile:
+    # Build from Containerfile if configured (container mode only)
+    if cfg.isolation == "container" and cfg.container.build.containerfile:
         config_dir = Path(config_path).parent if config_path else state.deployment_dir(name)
         _build_container_image(cfg, config_dir, podman)
 
-    click.echo(f"Pulling {cfg.container.image}...")
-    if not podman.pull(cfg.container.image):
-        click.echo(
-            f"warning: pull failed for {cfg.container.image} "
-            f"(local image or no network — continuing with cached image)",
-            err=True,
-        )
+    # Pull image on host (container mode) — VM mode pulls inside the VM
+    if cfg.isolation == "container":
+        click.echo(f"Pulling {cfg.container.image}...")
+        if not podman.pull(cfg.container.image):
+            click.echo(
+                f"warning: pull failed for {cfg.container.image} "
+                f"(local image or no network — continuing with cached image)",
+                err=True,
+            )
 
     _build_and_deploy(cfg, config_host_path, name, podman)
     click.echo(f"Updated cage '{name}'")
