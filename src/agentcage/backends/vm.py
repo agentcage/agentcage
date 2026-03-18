@@ -260,7 +260,7 @@ class VmBackend:
         for secret_name in host_secrets:
             try:
                 # Read secret value from host
-                value = sp.run(
+                value = subprocess.run(
                     ["podman", "secret", "inspect", "--showsecret",
                      "--format", "{{.SecretData}}", secret_name],
                     capture_output=True, text=True, check=True,
@@ -272,7 +272,7 @@ class VmBackend:
                     check=False,
                 )
                 # Pipe value via stdin to avoid shell injection
-                sp.run(
+                subprocess.run(
                     ["limactl", "shell", inst.name, "--",
                      "podman", "secret", "create", secret_name, "-"],
                     input=value, text=True, check=True,
