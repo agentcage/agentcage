@@ -34,11 +34,20 @@ class TestCreate:
 class TestStart:
     def test_start_calls_limactl(self):
         inst = LimaInstance("mycage")
-        with patch("os.system", return_value=0) as mock_system:
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
             inst.start()
-            mock_system.assert_called_once_with(
-                "limactl start agentcage-mycage"
+            mock_run.assert_called_once_with(
+                ["limactl", "start", "agentcage-mycage"],
+                check=True,
+                start_new_session=True,
             )
+
+    def test_start_raises_on_failure(self):
+        inst = LimaInstance("mycage")
+        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "limactl")):
+            with pytest.raises(subprocess.CalledProcessError):
+                inst.start()
 
 
 class TestStop:
