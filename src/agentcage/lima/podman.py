@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 
 from agentcage.lima.instance import LimaInstance
+from agentcage.podman import filter_secrets_by_prefix
 
 
 class VmPodman:
@@ -32,10 +33,7 @@ class VmPodman:
         )
         if r.returncode != 0 or not r.stdout.strip():
             return []
-        secrets = [{"Name": name} for name in r.stdout.strip().splitlines()]
-        if prefix:
-            secrets = [s for s in secrets if s["Name"].startswith(prefix)]
-        return secrets
+        return filter_secrets_by_prefix(r.stdout.strip().splitlines(), prefix)
 
     def secret_exists(self, name: str) -> bool:
         r = self._run(
