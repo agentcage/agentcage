@@ -77,7 +77,8 @@ secrets:
 | Requirement | Notes |
 |-------------|-------|
 | Lima | Install via `brew install lima` on macOS, or your Linux package manager. See [lima-vm.io](https://lima-vm.io) for details. |
-| Podman | Required on the host to build and push container images into the VM. |
+| QEMU (Linux only) | Required for VM acceleration. Install via your package manager. |
+| Podman (optional) | Only needed on the host for `agentcage secret set` (secret storage). All container operations happen inside the VM. |
 
 ### Install Lima
 
