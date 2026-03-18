@@ -24,11 +24,7 @@ Volume={{ vol }}
 Volume={{ vol_name }}:{{ mount }}
 {% endfor %}
 {% for spec in tmpfs %}
-{% if ':' in spec %}
 Tmpfs={{ spec }}
-{% else %}
-Tmpfs={{ spec }}:rw,size=64M,mode=1777
-{% endif %}
 {% endfor %}
 {% for secret in podman_secrets %}
 {% if deploy_name %}
