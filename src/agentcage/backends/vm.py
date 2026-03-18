@@ -266,9 +266,11 @@ class VmBackend:
                     ["podman", "secret", "rm", secret_name],
                     check=False,
                 )
-                inst.exec(
-                    ["bash", "-c",
-                     f"echo -n '{value}' | podman secret create {secret_name} -"],
+                # Pipe value via stdin to avoid shell injection
+                sp.run(
+                    ["limactl", "shell", inst.name, "--",
+                     "podman", "secret", "create", secret_name, "-"],
+                    input=value, text=True, check=True,
                 )
                 click.echo(f"  Bridged secret: {secret_name}")
             except Exception as e:
