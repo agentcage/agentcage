@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-03-18
+
+### Added
+- **Lima VM backend** — new `isolation: vm` mode using Lima to manage Linux VMs with Podman + quadlets inside. Works on both Linux (QEMU/KVM) and macOS (Apple Virtualization.framework).
+- **macOS support** — agentcage now runs on macOS via the VM backend. Only `limactl` is required on the host; Podman runs inside the VM.
+- `cage exec` and `cage shell` work for VM-mode cages via `limactl shell` + `podman exec`
+- `cage logs` and `cage audit` work for VM-mode cages via `limactl shell` + `journalctl`
+- Lima prerequisites check for QEMU and `/dev/kvm` on Linux
+- Secret bridging from host Podman store into VM's Podman store
+- End-to-end test for Lima VM backend (`tests/e2e_lima.sh`)
+
+### Changed
+- **BREAKING**: `isolation: firecracker` is removed. Existing configs are silently migrated to `isolation: vm`. The `agentcage firecracker setup` command is removed.
+- VM defaults: 4 vCPUs, 4 GiB RAM (previously 2/2 GiB for Firecracker)
+- `Sysctl=net.ipv4.ip_unprivileged_port_start=0` added to proxy container for low-port binding in reverse proxy mode
+- Host Podman is optional for VM mode — only needed for `agentcage secret set`
+
+### Removed
+- Firecracker backend and all associated code (binaries, kernel, network, rootfs, secrets, vmconfig)
+- `agentcage firecracker setup` CLI command
+- TAP/bridge networking, `agentcage-nethelper`, root/sudo requirement for VM isolation
+
+### Fixed
+- `cage shell` now checks `isatty()` before passing `-it` flags (fixes piped commands)
+
 ## [0.8.1] - 2026-03-14
 
 ### Added
