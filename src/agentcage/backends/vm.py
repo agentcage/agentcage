@@ -18,6 +18,11 @@ from agentcage.lima.provisioning import generate_lima_config
 from agentcage.quadlets import generate_quadlets
 
 
+VM_SERVICE_STARTUP_DELAY_S = 5
+PROXY_READINESS_TIMEOUT_S = 30
+PROXY_READINESS_POLL_INTERVAL_S = 1
+
+
 class VmBackend:
     """Backend using Lima VMs with Podman + quadlets inside.
 
@@ -201,7 +206,7 @@ class VmBackend:
 
         # Check for failed services and retry after a delay
         # (handles race conditions like virtiofs mounts not being ready)
-        time.sleep(5)
+        time.sleep(VM_SERVICE_STARTUP_DELAY_S)
         inst.exec(["systemctl", "--user", "reset-failed"], check=False)
 
         # Retry failed infrastructure services first (not cage)
@@ -220,14 +225,14 @@ class VmBackend:
 
         # Wait for proxy to be ready (CA cert generated) before starting cage
         click.echo("Waiting for proxy to be ready...")
-        for _ in range(30):
+        for _ in range(PROXY_READINESS_TIMEOUT_S):
             result = inst.exec(
                 ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
                 check=False,
             )
             if result.stdout.strip() == "active":
                 break
-            time.sleep(1)
+            time.sleep(PROXY_READINESS_POLL_INTERVAL_S)
 
         # Now start the cage
         cage_svc = f"{name}-cage"
