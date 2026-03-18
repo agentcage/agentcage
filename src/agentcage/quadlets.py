@@ -14,15 +14,31 @@ from jinja2.sandbox import SandboxedEnvironment
 from agentcage.config import Config
 
 
-def cage_network_addrs(name: str) -> dict[str, str]:
+def cage_network_addrs(
+    name: str,
+    used_octets: set[int] | None = None,
+) -> dict[str, str]:
     """Derive deterministic, unique network addresses for a cage.
 
     Each cage gets a ``/24`` subnet under ``10.89.x.0`` where *x* is
     derived from the cage name via a hash (range 1–254).  This avoids
     subnet collisions when multiple cages run simultaneously.
+
+    If *used_octets* is provided, the function checks for collisions and
+    increments the third octet until a free slot is found.  Raises
+    ``RuntimeError`` if all 254 slots are taken.
     """
     h = hashlib.md5(name.encode()).hexdigest()
     octet = (int(h[:8], 16) % 254) + 1
+    if used_octets is not None:
+        attempts = 0
+        while octet in used_octets and attempts < 254:
+            octet = (octet % 254) + 1
+            attempts += 1
+        if octet in used_octets:
+            raise RuntimeError(
+                "All 254 subnet slots are in use — cannot allocate a new cage network"
+            )
     prefix = f"10.89.{octet}"
     return {
         "subnet": f"{prefix}.0/24",
@@ -30,6 +46,32 @@ def cage_network_addrs(name: str) -> dict[str, str]:
         "ip_dns": f"{prefix}.10",
         "ip_proxy": f"{prefix}.11",
     }
+
+
+def collect_used_octets(exclude: str = "") -> set[int]:
+    """Return the set of third-octets already used by deployed cages.
+
+    Loads each deployment's config and extracts the subnet octet.
+    The optional *exclude* parameter omits a cage name (useful when
+    updating an existing cage that should keep its own slot).
+    """
+    from agentcage.state import list_deployments, load_deployment_config
+
+    used: set[int] = set()
+    for dep_name in list_deployments():
+        if dep_name == exclude:
+            continue
+        try:
+            cfg = load_deployment_config(dep_name)
+        except Exception:
+            continue
+        # Get the octet this cage is currently using (without collision
+        # avoidance — we just need the raw hash-based value it was
+        # assigned).
+        addrs = cage_network_addrs(cfg.name)
+        octet = int(addrs["subnet"].split(".")[2])
+        used.add(octet)
+    return used
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -95,7 +137,10 @@ def _make_env() -> SandboxedEnvironment:
     return env
 
 
-def render_dns_quadlet(config: Config) -> str:
+def render_dns_quadlet(
+    config: Config,
+    used_octets: set[int] | None = None,
+) -> str:
     """Render just the DNS container quadlet for a given config.
 
     Used by ``domain add``/``domain rm`` to update DNS forwarding rules
@@ -103,7 +148,7 @@ def render_dns_quadlet(config: Config) -> str:
     """
     env = _make_env()
     name = config.name
-    addrs = cage_network_addrs(name)
+    addrs = cage_network_addrs(name, used_octets=used_octets)
     dns_allowlist = _effective_dns_allowlist(config)
     return env.get_template("dns.container.j2").render(
         name=name,
@@ -120,6 +165,7 @@ def generate_quadlets(
     patches_host_dir: str,
     deploy_name: str = "",
     rootless: bool = True,
+    used_octets: set[int] | None = None,
 ) -> dict[str, str]:
     """Return {filename: content} for all 5 quadlet files.
 
@@ -188,7 +234,7 @@ def generate_quadlets(
             "publish_spec": f"{host_bind}:{host_port}:{container_port}",
         })
 
-    addrs = cage_network_addrs(name)
+    addrs = cage_network_addrs(name, used_octets=used_octets)
     common = {"name": name, **addrs}
 
     # Network

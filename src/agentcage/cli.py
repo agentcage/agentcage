@@ -315,7 +315,13 @@ def _build_container_image(cfg, config_dir: Path, podman: Podman) -> None:
     )
 
 
-def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podman):
+def _build_and_deploy(
+    cfg,
+    config_host_path: str,
+    deploy_name: str,
+    podman: Podman,
+    used_octets: set[int] | None = None,
+):
     """Build images, generate quadlets, install, and start."""
     from agentcage.quadlets import cage_network_addrs
 
@@ -324,14 +330,14 @@ def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podm
     patches_work_dir = _ensure_patches(podman)
 
     # Write per-cage resolv.conf pointing to this cage's dnsmasq sidecar
-    addrs = cage_network_addrs(cfg.name)
+    addrs = cage_network_addrs(cfg.name, used_octets=used_octets)
     resolv_path = os.path.join(patches_work_dir, f"resolv-{cfg.name}.conf")
     with open(resolv_path, "w") as f:
         f.write(f"nameserver {addrs['ip_dns']}\n")
 
     backend.build_artifacts(cfg, deploy_name)
 
-    units = backend.generate_units(cfg, config_host_path, patches_work_dir, deploy_name)
+    units = backend.generate_units(cfg, config_host_path, patches_work_dir, deploy_name, used_octets=used_octets)
     backend.install_units(units)
     backend.start(cfg.name)
 
@@ -466,8 +472,12 @@ def cage_create(config_path: str, secrets: tuple):
                 err=True,
             )
 
+    # Collect existing subnets to avoid collisions with other cages
+    from agentcage.quadlets import collect_used_octets
+    used_octets = collect_used_octets()
+
     try:
-        _build_and_deploy(cfg, config_host_path, name, podman)
+        _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets)
     except Exception:
         # Stop partially-started services but preserve state for debugging
         backend = get_backend(cfg)
@@ -1898,7 +1908,10 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
             proxy_config_path = str(
                 Path(config_host_path).parent / "proxy-config.yaml"
             )
-            _build_and_deploy(cfg, proxy_config_path, target_name, podman)
+            # Collect existing subnets to avoid collisions on restore
+            from agentcage.quadlets import collect_used_octets as _collect_used_octets
+            _restore_used = _collect_used_octets()
+            _build_and_deploy(cfg, proxy_config_path, target_name, podman, used_octets=_restore_used)
 
             # ── Import named volumes ──
             volumes_dir = backup_dir / "volumes"
