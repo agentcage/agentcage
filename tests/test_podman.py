@@ -43,7 +43,7 @@ class TestImageExists:
             mock_run.return_value = MagicMock(returncode=0)
             assert p.image_exists("myimg:latest") is True
         cmd = mock_run.call_args[0][0]
-        assert cmd[-2:] == ["image", "exists"] or "image" in cmd
+        assert cmd[-3:] == ["image", "exists", "myimg:latest"]
 
     def test_not_exists(self):
         p = Podman()
