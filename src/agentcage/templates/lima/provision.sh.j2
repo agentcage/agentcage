@@ -19,6 +19,10 @@ STOR
 sysctl -w net.ipv4.ip_unprivileged_port_start=0
 echo "net.ipv4.ip_unprivileged_port_start=0" > /etc/sysctl.d/99-agentcage.conf
 
+# Allow the lima user to read journald logs (needed for podman logs + agentcage cage logs)
+usermod -aG systemd-journal {{ lima_user }} || true
+usermod -aG adm {{ lima_user }} || true
+
 # Enable lingering for the lima user so systemd user services persist
 loginctl enable-linger {{ lima_user }}
 
