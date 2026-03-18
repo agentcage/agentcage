@@ -51,23 +51,28 @@ def cage_network_addrs(
 def collect_used_octets(exclude: str = "") -> set[int]:
     """Return the set of third-octets already used by deployed cages.
 
-    Loads each deployment's config and extracts the subnet octet.
+    Reads the actual assigned octet from each deployment's metadata
+    (persisted at deploy time).  Falls back to the hash-based octet
+    for legacy deployments that pre-date metadata tracking.
+
     The optional *exclude* parameter omits a cage name (useful when
     updating an existing cage that should keep its own slot).
     """
-    from agentcage.state import list_deployments, load_deployment_config
+    from agentcage.state import list_deployments, load_deployment_config, load_metadata
 
     used: set[int] = set()
     for dep_name in list_deployments():
         if dep_name == exclude:
             continue
         try:
+            meta = load_metadata(dep_name)
+            if "network_octet" in meta:
+                used.add(meta["network_octet"])
+                continue
+            # Fallback for legacy deployments without metadata
             cfg = load_deployment_config(dep_name)
         except Exception:
             continue
-        # Get the octet this cage is currently using (without collision
-        # avoidance — we just need the raw hash-based value it was
-        # assigned).
         addrs = cage_network_addrs(cfg.name)
         octet = int(addrs["subnet"].split(".")[2])
         used.add(octet)

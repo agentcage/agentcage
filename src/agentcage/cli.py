@@ -339,6 +339,15 @@ def _build_and_deploy(
 
     units = backend.generate_units(cfg, config_host_path, patches_work_dir, deploy_name, used_octets=used_octets)
     backend.install_units(units)
+
+    # Persist the actual assigned network octet so collect_used_octets()
+    # can read the real value instead of recomputing the hash (which
+    # would be wrong if collision resolution shifted the octet).
+    octet = int(addrs["subnet"].split(".")[2])
+    meta = state.load_metadata(deploy_name)
+    meta["network_octet"] = octet
+    state.save_metadata(deploy_name, meta)
+
     backend.start(cfg.name)
 
 
@@ -640,7 +649,8 @@ def cage_update(name: str, config_path: str | None):
                 err=True,
             )
 
-    _build_and_deploy(cfg, config_host_path, name, podman)
+    from agentcage.quadlets import collect_used_octets as _collect_update
+    _build_and_deploy(cfg, config_host_path, name, podman, used_octets=_collect_update(exclude=name))
     click.echo(f"Updated cage '{name}'")
 
     if cfg.help:
@@ -2127,11 +2137,11 @@ def _update_dns_quadlet(cfg) -> None:
     stopped.  We stop all three explicitly, then start in dependency
     order so everything comes back up cleanly.
     """
-    from agentcage.quadlets import render_dns_quadlet
+    from agentcage.quadlets import render_dns_quadlet, collect_used_octets as _collect_dns
 
     backend = get_backend(cfg)
     name = cfg.name
-    dns_content = render_dns_quadlet(cfg)
+    dns_content = render_dns_quadlet(cfg, used_octets=_collect_dns(exclude=name))
 
     if cfg.isolation == "vm":
         inst = LimaInstance(name)

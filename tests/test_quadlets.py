@@ -679,9 +679,20 @@ class TestCollectUsedOctets:
         monkeypatch.setattr("agentcage.state.list_deployments", lambda: [])
         assert collect_used_octets() == set()
 
-    def test_collects_from_deployments(self, monkeypatch, tmp_path):
-        """Collects octets from all deployed cages."""
-        # Create two minimal configs
+    def test_collects_from_metadata(self, monkeypatch):
+        """Reads actual octet from metadata when available."""
+        metadata = {
+            "alpha": {"network_octet": 42},
+            "beta": {"network_octet": 99},
+        }
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["alpha", "beta"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: metadata[n])
+
+        used = collect_used_octets()
+        assert used == {42, 99}
+
+    def test_fallback_to_hash_without_metadata(self, monkeypatch, tmp_path):
+        """Falls back to hash-based octet for legacy deployments without metadata."""
         configs = {}
         for cage_name in ("alpha", "beta"):
             p = tmp_path / f"{cage_name}.yaml"
@@ -690,6 +701,7 @@ class TestCollectUsedOctets:
             configs[cage_name] = load_config(str(p))
 
         monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["alpha", "beta"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {})
         monkeypatch.setattr("agentcage.state.load_deployment_config", lambda n: configs[n])
 
         used = collect_used_octets()
@@ -699,15 +711,23 @@ class TestCollectUsedOctets:
             expected.add(octet)
         assert used == expected
 
-    def test_excludes_named_cage(self, monkeypatch, tmp_path):
-        """The exclude parameter omits the specified cage."""
-        p = tmp_path / "only.yaml"
-        p.write_text("name: only\ncontainer:\n  image: test:latest\n")
-        from agentcage.config import load_config
-        cfg = load_config(str(p))
+    def test_metadata_takes_precedence_over_hash(self, monkeypatch, tmp_path):
+        """When metadata has network_octet, config is not loaded at all."""
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["cage1"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {"network_octet": 200})
 
+        def _should_not_be_called(name):
+            raise AssertionError("load_deployment_config should not be called when metadata has octet")
+
+        monkeypatch.setattr("agentcage.state.load_deployment_config", _should_not_be_called)
+
+        used = collect_used_octets()
+        assert used == {200}
+
+    def test_excludes_named_cage(self, monkeypatch):
+        """The exclude parameter omits the specified cage."""
         monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["only"])
-        monkeypatch.setattr("agentcage.state.load_deployment_config", lambda n: cfg)
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {"network_octet": 50})
 
         assert collect_used_octets(exclude="only") == set()
 
@@ -717,6 +737,7 @@ class TestCollectUsedOctets:
             raise FileNotFoundError("gone")
 
         monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["broken"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {})
         monkeypatch.setattr("agentcage.state.load_deployment_config", _fail)
 
         assert collect_used_octets() == set()
