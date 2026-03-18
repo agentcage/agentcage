@@ -761,9 +761,10 @@ class TestCageExec:
         MockLimaInstance.return_value.name = "agentcage-myvm"
 
         result = _runner().invoke(main, ["cage", "exec", "myvm", "--", "ls"])
+        # No -it in test because stdin is not a TTY
         mock_execvp.assert_called_once_with("limactl", [
             "limactl", "shell", "agentcage-myvm", "--",
-            "podman", "exec", "-it", "myvm-cage", "ls",
+            "podman", "exec", "myvm-cage", "ls",
         ])
 
     @patch("agentcage.cli.subprocess.run")

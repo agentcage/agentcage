@@ -1194,8 +1194,9 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
 
     if cfg.isolation == "vm":
         inst = LimaInstance(name)
+        exec_flags = ["-it"] if sys.stdin.isatty() else []
         os.execvp("limactl", ["limactl", "shell", inst.name, "--",
-                  "podman", "exec", "-it", f"{name}-{service}", *cmd])
+                  "podman", "exec", *exec_flags, f"{name}-{service}", *cmd])
 
     container = f"{name}-{service}"
     exec_flags = []
@@ -1231,10 +1232,12 @@ def cage_shell(name: str, service: str):
                 capture_output=True,
             )
             if result.returncode == 0:
+                exec_flags = ["-it"] if sys.stdin.isatty() else []
                 os.execvp("limactl", ["limactl", "shell", inst.name, "--",
-                          "podman", "exec", "-it", container, shell])
+                          "podman", "exec", *exec_flags, container, shell])
+        exec_flags = ["-it"] if sys.stdin.isatty() else []
         os.execvp("limactl", ["limactl", "shell", inst.name, "--",
-                  "podman", "exec", "-it", container, "/bin/sh"])
+                  "podman", "exec", *exec_flags, container, "/bin/sh"])
 
     container = f"{name}-{service}"
     # Auto-detect bash or fall back to sh
