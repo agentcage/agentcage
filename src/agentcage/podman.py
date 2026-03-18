@@ -7,6 +7,17 @@ import os
 import subprocess
 
 
+def filter_secrets_by_prefix(lines: list[str], prefix: str) -> list[dict]:
+    """Parse secret names from output lines and optionally filter by prefix.
+
+    Shared by both host Podman and VM Podman secret_list() implementations.
+    """
+    secrets = [{"Name": name} for name in lines]
+    if prefix:
+        secrets = [s for s in secrets if s["Name"].startswith(prefix)]
+    return secrets
+
+
 def _podman_cmd() -> list[str]:
     """Return the base command for running podman.
 
@@ -152,10 +163,7 @@ class Podman:
         )
         if r.returncode != 0 or not r.stdout.strip():
             return []
-        secrets = [{"Name": name} for name in r.stdout.strip().splitlines()]
-        if prefix:
-            secrets = [s for s in secrets if s["Name"].startswith(prefix)]
-        return secrets
+        return filter_secrets_by_prefix(r.stdout.strip().splitlines(), prefix)
 
     def secret_exists(self, name: str) -> bool:
         r = subprocess.run(

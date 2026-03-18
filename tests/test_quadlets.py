@@ -6,7 +6,7 @@ import textwrap
 import pytest
 
 from agentcage.config import load_config
-from agentcage.quadlets import generate_quadlets, _systemd_exec_join, cage_network_addrs, _passthrough_regex, _effective_dns_allowlist
+from agentcage.quadlets import generate_quadlets, _systemd_exec_join, cage_network_addrs, collect_used_octets, _passthrough_regex, _effective_dns_allowlist
 
 
 class TestQuadletFileNames:
@@ -614,6 +614,133 @@ class TestCageNetworkAddrs:
             addrs = cage_network_addrs(name)
             octet = int(addrs["subnet"].split(".")[2])
             assert 1 <= octet <= 254
+
+    def test_no_collision_with_empty_used(self):
+        """When used_octets is empty, result matches default behavior."""
+        assert cage_network_addrs("test", used_octets=set()) == cage_network_addrs("test")
+
+    def test_no_collision_with_unrelated_used(self):
+        """When used_octets doesn't contain the hash octet, result is unchanged."""
+        base = cage_network_addrs("test")
+        base_octet = int(base["subnet"].split(".")[2])
+        # Pick a different octet to mark as used
+        other = (base_octet % 254) + 1
+        assert cage_network_addrs("test", used_octets={other}) == base
+
+    def test_collision_resolved(self):
+        """When the hash-based octet is taken, it increments to the next free one."""
+        base = cage_network_addrs("test")
+        base_octet = int(base["subnet"].split(".")[2])
+        resolved = cage_network_addrs("test", used_octets={base_octet})
+        resolved_octet = int(resolved["subnet"].split(".")[2])
+        assert resolved_octet != base_octet
+        assert 1 <= resolved_octet <= 254
+        expected = (base_octet % 254) + 1
+        assert resolved_octet == expected
+
+    def test_multiple_collisions(self):
+        """When several consecutive octets are taken, it skips them all."""
+        base = cage_network_addrs("test")
+        base_octet = int(base["subnet"].split(".")[2])
+        # Block the base octet and the next 4
+        used = set()
+        o = base_octet
+        for _ in range(5):
+            used.add(o)
+            o = (o % 254) + 1
+        resolved = cage_network_addrs("test", used_octets=used)
+        resolved_octet = int(resolved["subnet"].split(".")[2])
+        assert resolved_octet not in used
+        assert 1 <= resolved_octet <= 254
+        assert resolved_octet == o  # first free after the blocked range
+
+    def test_all_slots_taken_raises(self):
+        """When all 254 slots are used, a RuntimeError is raised."""
+        all_octets = set(range(1, 255))
+        with pytest.raises(RuntimeError, match="All 254 subnet slots"):
+            cage_network_addrs("test", used_octets=all_octets)
+
+    def test_collision_wraps_around(self):
+        """Collision resolution wraps from 254 back to 1."""
+        # Find a name that hashes to 254
+        base = cage_network_addrs("test")
+        base_octet = int(base["subnet"].split(".")[2])
+        # Block from base_octet through 254
+        used = set(range(base_octet, 255))
+        resolved = cage_network_addrs("test", used_octets=used)
+        resolved_octet = int(resolved["subnet"].split(".")[2])
+        assert resolved_octet not in used
+        assert 1 <= resolved_octet <= 254
+
+
+class TestCollectUsedOctets:
+    def test_no_deployments(self, monkeypatch):
+        """Returns empty set when no cages are deployed."""
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: [])
+        assert collect_used_octets() == set()
+
+    def test_collects_from_metadata(self, monkeypatch):
+        """Reads actual octet from metadata when available."""
+        metadata = {
+            "alpha": {"network_octet": 42},
+            "beta": {"network_octet": 99},
+        }
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["alpha", "beta"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: metadata[n])
+
+        used = collect_used_octets()
+        assert used == {42, 99}
+
+    def test_fallback_to_hash_without_metadata(self, monkeypatch, tmp_path):
+        """Falls back to hash-based octet for legacy deployments without metadata."""
+        configs = {}
+        for cage_name in ("alpha", "beta"):
+            p = tmp_path / f"{cage_name}.yaml"
+            p.write_text(f"name: {cage_name}\ncontainer:\n  image: test:latest\n")
+            from agentcage.config import load_config
+            configs[cage_name] = load_config(str(p))
+
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["alpha", "beta"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {})
+        monkeypatch.setattr("agentcage.state.load_deployment_config", lambda n: configs[n])
+
+        used = collect_used_octets()
+        expected = set()
+        for cage_name in ("alpha", "beta"):
+            octet = int(cage_network_addrs(cage_name)["subnet"].split(".")[2])
+            expected.add(octet)
+        assert used == expected
+
+    def test_metadata_takes_precedence_over_hash(self, monkeypatch, tmp_path):
+        """When metadata has network_octet, config is not loaded at all."""
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["cage1"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {"network_octet": 200})
+
+        def _should_not_be_called(name):
+            raise AssertionError("load_deployment_config should not be called when metadata has octet")
+
+        monkeypatch.setattr("agentcage.state.load_deployment_config", _should_not_be_called)
+
+        used = collect_used_octets()
+        assert used == {200}
+
+    def test_excludes_named_cage(self, monkeypatch):
+        """The exclude parameter omits the specified cage."""
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["only"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {"network_octet": 50})
+
+        assert collect_used_octets(exclude="only") == set()
+
+    def test_skips_broken_config(self, monkeypatch):
+        """Gracefully skips cages with unloadable configs."""
+        def _fail(name):
+            raise FileNotFoundError("gone")
+
+        monkeypatch.setattr("agentcage.state.list_deployments", lambda: ["broken"])
+        monkeypatch.setattr("agentcage.state.load_metadata", lambda n: {})
+        monkeypatch.setattr("agentcage.state.load_deployment_config", _fail)
+
+        assert collect_used_octets() == set()
 
 
 class TestSystemdExecFilter:

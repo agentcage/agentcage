@@ -18,6 +18,11 @@ from agentcage.lima.provisioning import generate_lima_config
 from agentcage.quadlets import generate_quadlets
 
 
+VM_SERVICE_STARTUP_DELAY_S = 5
+PROXY_READINESS_TIMEOUT_S = 30
+PROXY_READINESS_POLL_INTERVAL_S = 1
+
+
 class VmBackend:
     """Backend using Lima VMs with Podman + quadlets inside.
 
@@ -100,11 +105,12 @@ class VmBackend:
         config_host_path: str,
         patches_host_dir: str,
         deploy_name: str,
+        used_octets: set[int] | None = None,
     ) -> dict[str, str]:
         """Generate Lima YAML as the primary 'unit', plus quadlet files for inside the VM."""
         lima_yaml = generate_lima_config(config)
         # Also generate quadlets (these will be installed inside the VM)
-        quadlets = generate_quadlets(config, config_host_path, patches_host_dir, deploy_name)
+        quadlets = generate_quadlets(config, config_host_path, patches_host_dir, deploy_name, used_octets=used_octets)
         # Return both: Lima YAML and quadlets bundled together
         result: dict[str, str] = {"lima.yaml": lima_yaml}
         for qname, qcontent in quadlets.items():
@@ -201,7 +207,7 @@ class VmBackend:
 
         # Check for failed services and retry after a delay
         # (handles race conditions like virtiofs mounts not being ready)
-        time.sleep(5)
+        time.sleep(VM_SERVICE_STARTUP_DELAY_S)
         inst.exec(["systemctl", "--user", "reset-failed"], check=False)
 
         # Retry failed infrastructure services first (not cage)
@@ -220,14 +226,14 @@ class VmBackend:
 
         # Wait for proxy to be ready (CA cert generated) before starting cage
         click.echo("Waiting for proxy to be ready...")
-        for _ in range(30):
+        for _ in range(PROXY_READINESS_TIMEOUT_S):
             result = inst.exec(
                 ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
                 check=False,
             )
             if result.stdout.strip() == "active":
                 break
-            time.sleep(1)
+            time.sleep(PROXY_READINESS_POLL_INTERVAL_S)
 
         # Now start the cage
         cage_svc = f"{name}-cage"

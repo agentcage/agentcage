@@ -196,6 +196,8 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"  2. agentcage cage create -c {dest}")
 
 
+
+
 # ── cage group ────────────────────────────────────────────
 
 
@@ -317,8 +319,12 @@ def cage_create(config_path: str, secrets: tuple):
                 err=True,
             )
 
+    # Collect existing subnets to avoid collisions with other cages
+    from agentcage.quadlets import collect_used_octets
+    used_octets = collect_used_octets()
+
     try:
-        _build_and_deploy(cfg, config_host_path, name, podman)
+        _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets)
     except Exception:
         # Stop partially-started services but preserve state for debugging
         backend = get_backend(cfg)
@@ -481,7 +487,8 @@ def cage_update(name: str, config_path: str | None):
                 err=True,
             )
 
-    _build_and_deploy(cfg, config_host_path, name, podman)
+    from agentcage.quadlets import collect_used_octets as _collect_update
+    _build_and_deploy(cfg, config_host_path, name, podman, used_octets=_collect_update(exclude=name))
     click.echo(f"Updated cage '{name}'")
 
     if cfg.help:
@@ -1749,7 +1756,10 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
             proxy_config_path = str(
                 Path(config_host_path).parent / "proxy-config.yaml"
             )
-            _build_and_deploy(cfg, proxy_config_path, target_name, podman)
+            # Collect existing subnets to avoid collisions on restore
+            from agentcage.quadlets import collect_used_octets as _collect_used_octets
+            _restore_used = _collect_used_octets()
+            _build_and_deploy(cfg, proxy_config_path, target_name, podman, used_octets=_restore_used)
 
             # ── Import named volumes ──
             volumes_dir = backup_dir / "volumes"
@@ -1965,11 +1975,11 @@ def _update_dns_quadlet(cfg) -> None:
     stopped.  We stop all three explicitly, then start in dependency
     order so everything comes back up cleanly.
     """
-    from agentcage.quadlets import render_dns_quadlet
+    from agentcage.quadlets import render_dns_quadlet, collect_used_octets as _collect_dns
 
     backend = get_backend(cfg)
     name = cfg.name
-    dns_content = render_dns_quadlet(cfg)
+    dns_content = render_dns_quadlet(cfg, used_octets=_collect_dns(exclude=name))
 
     if cfg.isolation == "vm":
         inst = LimaInstance(name)

@@ -28,17 +28,16 @@ class LimaInstance:
         boot scripts) to be satisfied, then exits. The hostagent
         daemon keeps running in the background.
 
-        We use os.system() rather than subprocess.run() because Lima's
-        hostagent daemonization works correctly when launched from a
-        real shell (/bin/sh) but fails when launched directly via
-        Python's subprocess (the daemon inherits pipe file descriptors
-        that prevent proper detachment).
+        We use ``start_new_session=True`` so the hostagent daemon runs
+        in its own process group and does not inherit pipe FDs from
+        Python's subprocess machinery, which would otherwise prevent
+        ``limactl start`` from completing.
         """
-        import os
-        import shlex
-        ret = os.system(f"limactl start {shlex.quote(self.name)}")
-        if ret != 0:
-            raise subprocess.CalledProcessError(ret >> 8, f"limactl start {self.name}")
+        subprocess.run(
+            ["limactl", "start", self.name],
+            check=True,
+            start_new_session=True,
+        )
 
     def stop(self) -> None:
         """Stop the Lima instance."""

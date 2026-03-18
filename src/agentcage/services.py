@@ -163,7 +163,13 @@ def build_container_image(
     )
 
 
-def build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podman):
+def build_and_deploy(
+    cfg,
+    config_host_path: str,
+    deploy_name: str,
+    podman: Podman,
+    used_octets: set[int] | None = None,
+):
     """Build images, generate quadlets, install, and start."""
     from agentcage.quadlets import cage_network_addrs
 
@@ -172,15 +178,24 @@ def build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podma
     patches_work = ensure_patches(podman)
 
     # Write per-cage resolv.conf pointing to this cage's dnsmasq sidecar
-    addrs = cage_network_addrs(cfg.name)
+    addrs = cage_network_addrs(cfg.name, used_octets=used_octets)
     resolv_path = os.path.join(patches_work, f"resolv-{cfg.name}.conf")
     with open(resolv_path, "w") as f:
         f.write(f"nameserver {addrs['ip_dns']}\n")
 
     backend.build_artifacts(cfg, deploy_name)
 
-    units = backend.generate_units(cfg, config_host_path, patches_work, deploy_name)
+    units = backend.generate_units(cfg, config_host_path, patches_work, deploy_name, used_octets=used_octets)
     backend.install_units(units)
+
+    # Persist the actual assigned network octet so collect_used_octets()
+    # can read the real value instead of recomputing the hash (which
+    # would be wrong if collision resolution shifted the octet).
+    octet = int(addrs["subnet"].split(".")[2])
+    meta = state.load_metadata(deploy_name)
+    meta["network_octet"] = octet
+    state.save_metadata(deploy_name, meta)
+
     backend.start(cfg.name)
 
 
