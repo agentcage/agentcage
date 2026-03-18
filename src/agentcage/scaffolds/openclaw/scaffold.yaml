@@ -6,7 +6,8 @@ build:
     cap_add: [CAP_SETFCAP, CAP_SETUID, CAP_SETGID, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER]
 
 next_steps:
-  - "agentcage secret set {name} ANTHROPIC_API_KEY"
-  - "agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD"
   - "Edit {dest} — uncomment additional providers/domains"
   - "agentcage cage create -c {dest}"
+  - "agentcage secret set {name} ANTHROPIC_API_KEY"
+  - "agentcage secret set {name} OPENCLAW_GATEWAY_PASSWORD"
+  - "agentcage cage restart {name}"

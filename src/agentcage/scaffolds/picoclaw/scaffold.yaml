@@ -13,5 +13,6 @@ provision:
   - src: config.json
     dest: ~/.picoclaw/config.json
 next_steps:
-  - "agentcage secret set {name} ANTHROPIC_API_KEY"
   - "agentcage cage create -c {dest}"
+  - "agentcage secret set {name} ANTHROPIC_API_KEY"
+  - "agentcage cage restart {name}"

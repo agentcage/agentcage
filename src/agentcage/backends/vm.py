@@ -175,6 +175,9 @@ class VmBackend:
         # Bridge secrets from host Podman into VM's Podman
         self._bridge_secrets(name, inst)
 
+        # Create any pending secrets (from cage create --set-secret)
+        self._create_pending_secrets(name, inst)
+
         # Build container images and pull cage image inside the VM
         self.build_artifacts(config, name)
 
@@ -238,6 +241,33 @@ class VmBackend:
                 inst.exec(["systemctl", "--user", "start", f"{cage_svc}.service"])
         except Exception as e:
             click.echo(f"warning: failed to start {cage_svc}: {e}", err=True)
+
+    def _create_pending_secrets(self, name: str, inst: LimaInstance) -> None:
+        """Create secrets from cage create --set-secret inside the VM."""
+        from agentcage import state as _state
+        import json as _json
+
+        secrets_file = _state.deployment_dir(name) / "pending_secrets.json"
+        if not secrets_file.exists():
+            return
+
+        try:
+            pending = _json.loads(secrets_file.read_text())
+        except Exception:
+            return
+
+        for key, value in pending:
+            full = f"{name}.{key}"
+            inst.exec(["podman", "secret", "rm", full], check=False)
+            subprocess.run(
+                ["limactl", "shell", inst.name, "--",
+                 "podman", "secret", "create", full, "-"],
+                input=value, text=True, check=True,
+            )
+            click.echo(f"  Secret '{full}' set in VM.")
+
+        # Clean up
+        secrets_file.unlink()
 
     def _bridge_secrets(self, name: str, inst: LimaInstance) -> None:
         """Copy Podman secrets from the host into the VM's Podman store."""

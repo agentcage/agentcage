@@ -572,33 +572,6 @@ agentcage domain rm myapp api.openai.com
 
 Fails if the domain is not in the list.
 
----
-
-## `build` -- Build base images
-
-| Command | Description |
-|---|---|
-| `build nested-base` | Build the nested-containers base image (`localhost/agentcage-nested`) |
-
-### `build nested-base`
-
-```
-agentcage build nested-base
-```
-
-Builds `localhost/agentcage-nested`, a `node:22-slim`-based image with podman, fuse-overlayfs, crun, uidmap, and slirp4netns pre-installed. This image is required when using `nested_containers: true` in your cage config.
-
-The build uses `podman build` with capabilities needed for the image build process (SETFCAP, SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER).
-
-```bash
-agentcage build nested-base
-# Built localhost/agentcage-nested
-#
-# Use this image in your cage config:
-#   container:
-#     image: "localhost/agentcage-nested"
-#     nested_containers: true
-```
 
 ---
 

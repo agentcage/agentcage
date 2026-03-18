@@ -2,11 +2,12 @@
 {% set gateway_port = port | default(18789, true) %}
 #
 # Quick start:
-#   1. Set secrets:
+#   1. Uncomment additional providers / domains you need
+#   2. Deploy:  agentcage cage create -c cage.yaml
+#   3. Set secrets:
 #        agentcage secret set {{ name }} ANTHROPIC_API_KEY
 #        agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
-#   2. Uncomment additional providers / domains you need
-#   3. Deploy:  agentcage cage create -c cage.yaml
+#   4. Restart:  agentcage cage restart {{ name }}
 
 name: {{ name }}
 {% if isolation == "vm" %}

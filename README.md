@@ -40,11 +40,12 @@ curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.
 # Scaffold a config (or use --scaffold openclaw)
 agentcage init myapp --image node:22-slim
 
-# Store secrets
-agentcage secret set myapp ANTHROPIC_API_KEY
-
 # Create and start the cage
 agentcage cage create -c cage.yaml
+
+# Store secrets (cage must exist first)
+agentcage secret set myapp ANTHROPIC_API_KEY
+agentcage cage restart myapp
 
 # Verify it's healthy
 agentcage cage verify myapp
@@ -128,7 +129,6 @@ agentcage cage destroy myapp
 | `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
-| `build` | `nested-base` -- build base images for nested container support |
 | `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |
 
 See [CLI Reference](docs/cli.md) for full documentation of all commands and options.

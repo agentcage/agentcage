@@ -37,6 +37,22 @@ from agentcage.lima.instance import LimaInstance
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
+def _podman_for_cage(name: str) -> Podman:
+    """Return the right Podman interface for a cage.
+
+    For VM-mode cages with a running Lima instance, returns a VmPodman
+    that routes operations through the VM. Otherwise returns a host Podman.
+    """
+    if state.deployment_exists(name):
+        cfg = state.load_deployment_config(name)
+        if cfg.isolation == "vm":
+            from agentcage.lima.podman import VmPodman
+            inst = LimaInstance(name)
+            if inst.is_running():
+                return VmPodman(name)  # type: ignore[return-value]
+    return Podman()
+
+
 class AliasGroup(click.Group):
     """Click group with command aliases."""
 
@@ -339,7 +355,9 @@ def cage():
 
 @cage.command("create")
 @click.option("-c", "--config", "config_path", required=True, type=click.Path(exists=True))
-def cage_create(config_path: str):
+@click.option("-s", "--set-secret", "secrets", multiple=True,
+              help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
+def cage_create(config_path: str, secrets: tuple):
     """Build images, generate quadlets, install, and start a new cage."""
     cfg = load_config(config_path)
     try:
@@ -394,6 +412,39 @@ def cage_create(config_path: str):
         if src_cf.is_file():
             dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
             shutil.copy2(str(src_cf), str(dst_cf))
+
+    # Set secrets passed via --set-secret (before build so they're available)
+    if secrets:
+        # For VM mode, secrets are set after the VM starts (in _deploy_cage).
+        # For container mode, set them now on the host.
+        if cfg.isolation == "container":
+            podman_secrets = Podman()
+            for spec in secrets:
+                if "=" in spec:
+                    key, val = spec.split("=", 1)
+                else:
+                    key = spec
+                    val = click.prompt(f"Value for {key}", hide_input=True)
+                full = f"{name}.{key}"
+                if podman_secrets.secret_exists(full):
+                    podman_secrets.secret_remove(full)
+                podman_secrets.secret_create(full, val)
+                click.echo(f"Secret '{full}' set.")
+        else:
+            # VM mode: store secrets for bridging after VM starts.
+            # We need host podman for this — prompt to install if missing.
+            _pending_secrets = []
+            for spec in secrets:
+                if "=" in spec:
+                    key, val = spec.split("=", 1)
+                else:
+                    key = spec
+                    val = click.prompt(f"Value for {key}", hide_input=True)
+                _pending_secrets.append((key, val))
+            # Store in a temp file for _deploy_cage to pick up
+            secrets_file = state.deployment_dir(name) / "pending_secrets.json"
+            import json as _json
+            secrets_file.write_text(_json.dumps(_pending_secrets))
 
     config_host_path = state.save_proxy_config(name)
 
@@ -1003,7 +1054,7 @@ def cage_show(name: str):
         pass
 
     # Secrets
-    podman = Podman()
+    podman = _podman_for_cage(name)
     secrets = podman.secret_list(prefix=f"{name}.")
     expected = _expected_secrets(cfg)
     present_keys = {
@@ -1578,7 +1629,7 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
-    podman = Podman()
+    podman = _podman_for_cage(name)
 
     # Determine output path
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1744,7 +1795,7 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
         if state.deployment_exists(target_name):
             state.remove_deployment(target_name)
 
-    podman = Podman()
+    podman = _podman_for_cage(target_name)
 
     # ── Extract tarball ──
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1878,7 +1929,10 @@ def secret():
 @click.argument("name")
 def secret_list(name: str):
     """List secrets for a cage."""
-    podman = Podman()
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    podman = _podman_for_cage(name)
     secrets = podman.secret_list(prefix=f"{name}.")
 
     # If cage state exists, cross-reference with expected secrets
@@ -1922,7 +1976,10 @@ def secret_list(name: str):
 @click.argument("key")
 def secret_set(name: str, key: str):
     """Set a secret for a cage."""
-    podman = Podman()
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist — create it first with 'cage create'", err=True)
+        sys.exit(1)
+    podman = _podman_for_cage(name)
     full_name = f"{name}.{key}"
 
     # Read value from TTY or stdin
@@ -1957,7 +2014,10 @@ def secret_set(name: str, key: str):
 @click.argument("key")
 def secret_rm(name: str, key: str):
     """Remove a secret for a cage."""
-    podman = Podman()
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    podman = _podman_for_cage(name)
     full_name = f"{name}.{key}"
 
     if not podman.secret_exists(full_name):
@@ -2184,27 +2244,3 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
     click.echo(msg)
 
 
-@main.group(name="build")
-def build_group():
-    """Build base images for agentcage."""
-
-
-@build_group.command("nested-base")
-def build_nested_base():
-    """Build the nested-containers base image (localhost/agentcage-nested)."""
-    podman = Podman()
-    data_dir = Path(__file__).resolve().parent / "data"
-    containerfile = str(data_dir / "containers" / "Containerfile.nested")
-    build_context = str(data_dir)
-    click.echo("Building nested-containers base image...")
-    podman.build_image(
-        "agentcage-nested", containerfile, build_context,
-        cap_add=["CAP_SETFCAP", "CAP_SETUID", "CAP_SETGID", "CAP_CHOWN",
-                 "CAP_DAC_OVERRIDE", "CAP_FOWNER"],
-    )
-    click.echo("Built localhost/agentcage-nested")
-    click.echo()
-    click.echo("Use this image in your cage config:")
-    click.echo('  container:')
-    click.echo('    image: "localhost/agentcage-nested"')
-    click.echo('    nested_containers: true')
