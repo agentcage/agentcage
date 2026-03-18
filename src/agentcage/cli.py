@@ -7,7 +7,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -33,8 +32,17 @@ from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd
 from agentcage.lima.instance import LimaInstance
-
-_DATA_DIR = Path(__file__).resolve().parent / "data"
+from agentcage.services import (
+    expected_secrets as _expected_secrets,
+    check_secrets as _check_secrets,
+    suggest_alt_port as _suggest_alt_port,
+    check_port_availability as _check_port_availability,
+    ensure_patches as _ensure_patches,
+    build_container_image as _build_container_image_svc,
+    build_and_deploy as _build_and_deploy,
+    _DATA_DIR,
+    _BUILD_CAPS,
+)
 
 
 def _podman_for_cage(name: str) -> Podman:
@@ -51,6 +59,19 @@ def _podman_for_cage(name: str) -> Podman:
             if inst.is_running():
                 return VmPodman(name)  # type: ignore[return-value]
     return Podman()
+
+
+def _build_container_image(cfg, config_dir: Path, podman: Podman) -> None:
+    """CLI wrapper that passes click.echo to the service layer."""
+    _build_container_image_svc(cfg, config_dir, podman, echo=click.echo)
+
+
+def _restart_cage(name: str, cfg=None):
+    """Restart all services for a cage using the appropriate backend."""
+    if cfg is None:
+        cfg = state.load_deployment_config(name)
+    backend = get_backend(cfg)
+    backend.restart(name)
 
 
 class AliasGroup(click.Group):
@@ -174,175 +195,6 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"\nNext steps:")
         click.echo(f"  1. Edit {dest} — set your image, domains, and secrets")
         click.echo(f"  2. agentcage cage create -c {dest}")
-
-
-# ── helpers ──────────────────────────────────────────────
-
-
-
-def _expected_secrets(cfg) -> list[str]:
-    """Return all secret names a cage expects (injection + direct)."""
-    names: list[str] = []
-    for r in cfg.secret_injection:
-        names.append(r.env)
-    for s in cfg.container.podman_secrets:
-        names.append(s)
-    return names
-
-
-def _check_secrets(podman: Podman, deploy_name: str, cfg) -> list[str]:
-    """Return list of missing secrets for a cage."""
-    missing = []
-    for key in _expected_secrets(cfg):
-        if not podman.secret_exists(f"{deploy_name}.{key}"):
-            missing.append(key)
-    return missing
-
-
-def _suggest_alt_port(port: int) -> int:
-    """Return a suggested alternative port that stays within 1-65535."""
-    alt = port + 1
-    if alt > 65535:
-        alt = port - 1
-    return alt
-
-
-def _check_port_availability(cfg) -> list[tuple[str, str, str]]:
-    """Return list of (port_spec, host_bind, host_port) that are already in use."""
-    unavailable = []
-    for port_spec in cfg.container.ports:
-        parts = port_spec.split(":")
-        if len(parts) == 3:
-            host_bind, host_port, _container_port = parts
-        elif len(parts) == 2:
-            host_bind, host_port = "0.0.0.0", parts[0]
-        else:
-            continue
-        try:
-            port_num = int(host_port)
-        except ValueError:
-            continue
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((host_bind, port_num))
-        except OSError:
-            unavailable.append((port_spec, host_bind, host_port))
-        finally:
-            sock.close()
-    return unavailable
-
-
-def _patches_work_dir() -> str:
-    """Return (and create) the patches working directory."""
-    d = os.path.join(
-        os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
-        "agentcage", "patches",
-    )
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _ensure_patches(podman: Podman) -> str:
-    """Refresh patch files from package data.
-
-    Copies nested container support files so that any tampering in the
-    work directory is overwritten.  Returns the patches work directory path.
-    """
-    patches_work = _patches_work_dir()
-
-    # Copy nested container support files
-    nested_src = str(_DATA_DIR / "nested")
-    nested_dst = os.path.join(patches_work, "nested")
-    if os.path.isdir(nested_src):
-        if os.path.isdir(nested_dst):
-            shutil.rmtree(nested_dst)
-        shutil.copytree(nested_src, nested_dst)
-        docker_shim = os.path.join(nested_dst, "docker")
-        if os.path.isfile(docker_shim):
-            os.chmod(docker_shim, 0o755)
-
-    return patches_work
-
-
-_BUILD_CAPS = [
-    "CAP_SETFCAP", "CAP_SETUID", "CAP_SETGID",
-    "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER",
-]
-
-
-def _build_container_image(cfg, config_dir: Path, podman: Podman) -> None:
-    """Build the main container image from a Containerfile.
-
-    *config_dir* is the directory containing the cage.yaml (or the state
-    directory for stored configs).  The ``containerfile`` path is resolved
-    relative to it.
-    """
-    from agentcage.registry import resolve_latest_tag
-
-    bc = cfg.container.build
-    containerfile = Path(bc.containerfile)
-    if not containerfile.is_absolute():
-        containerfile = config_dir / containerfile
-    containerfile = containerfile.resolve()
-
-    context_dir = str(containerfile.parent)
-
-    # Auto-resolve latest tags for remote image refs in build args
-    resolved_args: dict[str, str] = {}
-    for key, val in bc.args.items():
-        image_base, _, tag = val.rpartition(":")
-        if image_base and tag:
-            resolved_args[key] = val
-        elif "/" in val:
-            # Looks like a remote image without tag — resolve latest
-            new_tag = resolve_latest_tag(val)
-            if new_tag:
-                resolved_args[key] = f"{val}:{new_tag}"
-                click.echo(f"Build arg {key}: {val}:{new_tag}")
-            else:
-                resolved_args[key] = val
-        else:
-            resolved_args[key] = val
-
-    click.echo(f"Building {cfg.container.image}...")
-    podman.build_image(
-        cfg.container.image,
-        str(containerfile),
-        context_dir,
-        cap_add=_BUILD_CAPS,
-        build_args=resolved_args,
-    )
-
-
-def _build_and_deploy(cfg, config_host_path: str, deploy_name: str, podman: Podman):
-    """Build images, generate quadlets, install, and start."""
-    from agentcage.quadlets import cage_network_addrs
-
-    backend = get_backend(cfg)
-
-    patches_work_dir = _ensure_patches(podman)
-
-    # Write per-cage resolv.conf pointing to this cage's dnsmasq sidecar
-    addrs = cage_network_addrs(cfg.name)
-    resolv_path = os.path.join(patches_work_dir, f"resolv-{cfg.name}.conf")
-    with open(resolv_path, "w") as f:
-        f.write(f"nameserver {addrs['ip_dns']}\n")
-
-    backend.build_artifacts(cfg, deploy_name)
-
-    units = backend.generate_units(cfg, config_host_path, patches_work_dir, deploy_name)
-    backend.install_units(units)
-    backend.start(cfg.name)
-
-
-
-def _restart_cage(name: str, cfg=None):
-    """Restart all services for a cage using the appropriate backend."""
-    if cfg is None:
-        cfg = state.load_deployment_config(name)
-    backend = get_backend(cfg)
-    backend.restart(name)
 
 
 # ── cage group ────────────────────────────────────────────
