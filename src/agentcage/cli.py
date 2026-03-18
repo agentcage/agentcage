@@ -1247,9 +1247,11 @@ def cage_shell(name: str, service: str):
             capture_output=True,
         )
         if result.returncode == 0:
-            os.execvp("podman", ["podman", "exec", "-it", container, shell])
+            exec_flags = ["-it"] if sys.stdin.isatty() else []
+            os.execvp("podman", ["podman", "exec", *exec_flags, container, shell])
     # Fallback
-    os.execvp("podman", ["podman", "exec", "-it", container, "/bin/sh"])
+    exec_flags = ["-it"] if sys.stdin.isatty() else []
+    os.execvp("podman", ["podman", "exec", *exec_flags, container, "/bin/sh"])
 
 
 # ── cage audit ─────────────────────────────────────────────
