@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import os
+import shlex
+import subprocess
+import time
 from pathlib import Path
 
 import click
@@ -53,12 +57,11 @@ class VmBackend:
         try:
             data_dir.relative_to(home)
             # Path is under home — accessible via virtiofs mount
-            inst.exec(["bash", "-c", f"cp -r {data_dir} {vm_build_dir}"])
+            inst.exec(["bash", "-c", f"cp -r {shlex.quote(str(data_dir))} {shlex.quote(vm_build_dir)}"])
         except ValueError:
             # Path is outside home — use limactl copy
-            import subprocess as sp
             inst.exec(["mkdir", "-p", vm_build_dir])
-            sp.run(
+            subprocess.run(
                 ["limactl", "copy", "-r",
                  f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
                 check=True,
@@ -163,7 +166,6 @@ class VmBackend:
                 content = qfile.read_text()
                 # Write quadlet file inside VM via base64 to avoid
                 # heredoc injection (content could contain the delimiter)
-                import base64
                 encoded = base64.b64encode(content.encode()).decode()
                 inst.exec([
                     "bash", "-c",
@@ -188,7 +190,6 @@ class VmBackend:
         ]
 
         # First attempt
-        import time
         for svc in services:
             try:
                 inst.exec(["systemctl", "--user", "start", f"{svc}.service"])
@@ -240,11 +241,9 @@ class VmBackend:
 
     def _bridge_secrets(self, name: str, inst: LimaInstance) -> None:
         """Copy Podman secrets from the host into the VM's Podman store."""
-        import subprocess as sp
-
         # List host secrets scoped to this cage
         try:
-            result = sp.run(
+            result = subprocess.run(
                 ["podman", "secret", "ls", "--format", "{{.Name}}"],
                 capture_output=True, text=True,
             )
