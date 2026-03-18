@@ -43,10 +43,26 @@ class VmBackend:
         data_dir = Path(__file__).resolve().parent.parent / "data"
         vm_build_dir = "/tmp/agentcage-build"
 
-        # Copy build context to VM-local filesystem
+        # Copy build context to VM-local filesystem.
+        # Lima mounts ~ via virtiofs, so paths under $HOME are accessible
+        # inside the VM. Paths outside ~ (e.g. system-wide installs) need
+        # limactl copy instead.
         click.echo("Copying build context into VM...")
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
-        inst.exec(["bash", "-c", f"cp -r {data_dir} {vm_build_dir}"])
+        home = Path.home()
+        try:
+            data_dir.relative_to(home)
+            # Path is under home — accessible via virtiofs mount
+            inst.exec(["bash", "-c", f"cp -r {data_dir} {vm_build_dir}"])
+        except ValueError:
+            # Path is outside home — use limactl copy
+            import subprocess as sp
+            inst.exec(["mkdir", "-p", vm_build_dir])
+            sp.run(
+                ["limactl", "copy", "-r",
+                 f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
+                check=True,
+            )
 
         click.echo("Building proxy image inside VM...")
         inst.exec([
