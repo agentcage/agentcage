@@ -25,6 +25,7 @@ class Backend(Protocol):
         config_host_path: str,
         patches_host_dir: str,
         deploy_name: str,
+        used_octets: set[int] | None = None,
     ) -> dict[str, str]:
         """Return {filename: content} for systemd unit / quadlet files."""
         ...

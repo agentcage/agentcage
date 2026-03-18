@@ -105,11 +105,12 @@ class VmBackend:
         config_host_path: str,
         patches_host_dir: str,
         deploy_name: str,
+        used_octets: set[int] | None = None,
     ) -> dict[str, str]:
         """Generate Lima YAML as the primary 'unit', plus quadlet files for inside the VM."""
         lima_yaml = generate_lima_config(config)
         # Also generate quadlets (these will be installed inside the VM)
-        quadlets = generate_quadlets(config, config_host_path, patches_host_dir, deploy_name)
+        quadlets = generate_quadlets(config, config_host_path, patches_host_dir, deploy_name, used_octets=used_octets)
         # Return both: Lima YAML and quadlets bundled together
         result: dict[str, str] = {"lima.yaml": lima_yaml}
         for qname, qcontent in quadlets.items():
