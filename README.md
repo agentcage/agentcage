@@ -60,14 +60,25 @@ Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Refer
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-**Manual install** -- prerequisites: [Podman](https://podman.io/) (rootless), Python 3.12+, [uv](https://docs.astral.sh/uv/).
+**Manual install:**
+
+*Container mode* (Linux only) -- prerequisites: [Podman](https://podman.io/) (rootless), Python 3.12+, [uv](https://docs.astral.sh/uv/).
 
 | OS | Command |
 |---|---|
 | Arch Linux | `sudo pacman -S podman python uv` |
 | Debian / Ubuntu 24.04+ | `sudo apt install podman python3 && curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | Fedora | `sudo dnf install podman python3 uv` |
-| macOS | `brew install podman python uv && podman machine init && podman machine start` |
+
+*VM mode* (Linux and macOS) -- prerequisites: [Lima](https://lima-vm.io/), Python 3.12+, [uv](https://docs.astral.sh/uv/). QEMU also required on Linux.
+
+| OS | Command |
+|---|---|
+| macOS | `brew install lima python uv` |
+| Arch Linux | `sudo pacman -S qemu-full python uv` + [install Lima](https://lima-vm.io/docs/installation/) |
+| Debian / Ubuntu | `sudo apt install qemu-system python3 && curl -LsSf https://astral.sh/uv/install.sh \| sh` + [install Lima](https://lima-vm.io/docs/installation/) |
+
+On macOS, only VM mode is available. Podman is optional (only needed for `agentcage secret set`). See [VM Isolation](docs/vm.md) for details.
 
 Then install agentcage:
 
@@ -83,8 +94,6 @@ git clone https://github.com/agentcage/agentcage.git
 cd agentcage
 uv run agentcage --help
 ```
-
-For VM mode (`isolation: vm`), install [Lima](https://lima-vm.io): `brew install lima` on macOS, or your Linux package manager. See [Lima VM Isolation](docs/vm.md) for details.
 
 ## Usage
 
