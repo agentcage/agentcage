@@ -35,7 +35,8 @@ class LimaInstance:
         that prevent proper detachment).
         """
         import os
-        ret = os.system(f"limactl start {self.name}")
+        import shlex
+        ret = os.system(f"limactl start {shlex.quote(self.name)}")
         if ret != 0:
             raise subprocess.CalledProcessError(ret >> 8, f"limactl start {self.name}")
 
