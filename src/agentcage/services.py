@@ -15,7 +15,6 @@ from typing import Callable
 
 from agentcage import state
 from agentcage.backends import get_backend
-from agentcage.lima.instance import LimaInstance
 from agentcage.podman import Podman
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -24,22 +23,6 @@ _BUILD_CAPS = [
     "CAP_SETFCAP", "CAP_SETUID", "CAP_SETGID",
     "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER",
 ]
-
-
-def podman_for_cage(name: str) -> Podman:
-    """Return the right Podman interface for a cage.
-
-    For VM-mode cages with a running Lima instance, returns a VmPodman
-    that routes operations through the VM. Otherwise returns a host Podman.
-    """
-    if state.deployment_exists(name):
-        cfg = state.load_deployment_config(name)
-        if cfg.isolation == "vm":
-            from agentcage.lima.podman import VmPodman
-            inst = LimaInstance(name)
-            if inst.is_running():
-                return VmPodman(name)  # type: ignore[return-value]
-    return Podman()
 
 
 def expected_secrets(cfg) -> list[str]:

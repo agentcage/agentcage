@@ -188,7 +188,7 @@ class TestCageRestart:
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
-    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.services.get_backend")
     @patch("agentcage.cli.state")
     def test_restart_restarts_container(self, mock_state, mock_get_backend):
         mock_state.deployment_exists.return_value = True
@@ -199,7 +199,7 @@ class TestCageRestart:
         assert "Restarted" in result.output
         backend.restart.assert_called_once_with("test")
 
-    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.services.get_backend")
     @patch("agentcage.cli.state")
     def test_restart_restarts_vm(self, mock_state, mock_get_backend):
         mock_state.deployment_exists.return_value = True

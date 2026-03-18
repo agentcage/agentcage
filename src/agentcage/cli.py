@@ -40,8 +40,6 @@ from agentcage.services import (
     ensure_patches as _ensure_patches,
     build_container_image as _build_container_image_svc,
     build_and_deploy as _build_and_deploy,
-    _DATA_DIR,
-    _BUILD_CAPS,
 )
 
 
@@ -67,11 +65,12 @@ def _build_container_image(cfg, config_dir: Path, podman: Podman) -> None:
 
 
 def _restart_cage(name: str, cfg=None):
-    """Restart all services for a cage using the appropriate backend."""
-    if cfg is None:
-        cfg = state.load_deployment_config(name)
-    backend = get_backend(cfg)
-    backend.restart(name)
+    """Restart all services for a cage using the appropriate backend.
+
+    Delegates to :func:`agentcage.services.restart_cage`.
+    """
+    from agentcage.services import restart_cage
+    restart_cage(name, cfg)
 
 
 class AliasGroup(click.Group):
