@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-03-18
+
+### Added
+- `cage create --set-secret KEY=VALUE` — set secrets during creation, no separate restart needed
+- `VmPodman` — secret commands route through the VM's Podman for VM-mode cages
+
+### Changed
+- Secret commands (`set`, `list`, `rm`) now require the cage to exist first
+- Removed `agentcage build` CLI group
+- Install script: macOS skips Podman and Podman machine (uses Lima instead)
+- Scaffold guides updated: create cage first, then set secrets
+
+### Fixed
+- Shell injection in `_bridge_secrets` (piped via stdin)
+- Command injection in `os.system()` (`shlex.quote`)
+- Heredoc injection in quadlet transfer (base64 encoding)
+- `cage exec/shell` checks `isatty()` in all code paths
+- Host Podman calls guarded for VM mode
+- VmConfig defaults aligned between dataclass and `load_config()`
+
 ## [0.9.0] - 2026-03-18
 
 ### Added
