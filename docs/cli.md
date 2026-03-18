@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has a top-level **`init`** command for scaffolding configs, and five command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain filters), **`build`** (build base images), and **`firecracker`** (host setup for Firecracker mode).
+The CLI has a top-level **`init`** command for scaffolding configs, and four command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain filters), and **`build`** (build base images).
 
 ```
 agentcage init [NAME] [options]
@@ -21,7 +21,7 @@ Generates a starter `cage.yaml` for a new cage. With `--scaffold`, uses a curate
 |------|------|---------|-------------|
 | `-o, --output` | path | `cage.yaml` | Output file path |
 | `--image` | string | `node:22-slim` | Container image |
-| `--isolation` | choice: `container`/`firecracker` | `container` | Isolation backend |
+| `--isolation` | choice: `container`/`vm` | `container` | Isolation backend |
 | `--force` | flag | | Overwrite existing file |
 | `--scaffold` | string | | Use a scaffold template (e.g. `openclaw`, `picoclaw`) |
 | `--list-scaffolds` | flag | | List available scaffolds and exit |
@@ -147,7 +147,7 @@ Lists all known cages with their current status:
 ```
 NAME                 ISOLATION      VERSION      STATUS
 myapp                container      0.8.0        running (3/3)
-testcage             firecracker    0.7.1        stopped (0/3)
+testcage             vm             0.7.1        stopped (0/3)
 broken               container      0.8.0        degraded (2/3)
 ```
 
@@ -242,7 +242,7 @@ Show cage configuration and status. Displays name, isolation mode, image, versio
 agentcage cage stop <name>
 ```
 
-Stop a running cage without destroying it. Services can be restarted with `cage start`. Requires root for Firecracker cages.
+Stop a running cage without destroying it. Services can be restarted with `cage start`.
 
 ## `cage start`
 
@@ -250,7 +250,7 @@ Stop a running cage without destroying it. Services can be restarted with `cage 
 agentcage cage start <name>
 ```
 
-Start a stopped cage. Requires root for Firecracker cages.
+Start a stopped cage.
 
 ## `cage restart`
 
@@ -285,7 +285,7 @@ Show journalctl logs for a cage.
 agentcage cage shell <name> [options]
 ```
 
-Open an interactive shell in a cage container. Auto-detects bash, falling back to sh. Not supported for Firecracker cages.
+Open an interactive shell in a cage container. Auto-detects bash, falling back to sh.
 
 ### Options
 
@@ -301,7 +301,7 @@ agentcage cage audit <name> [options]
 
 Query, filter, and summarize proxy audit logs. The proxy writes a structured JSON audit entry for every inspected request (blocked, flagged, or allowed). This command reads those entries from journalctl, applies filters, and presents them as a table, JSON lines, or an aggregated summary.
 
-In container mode, audit entries are read from the `{name}-proxy` systemd unit. In Firecracker mode, they are read from the `{name}-cage` unit (where proxy logs appear with `[proxy:level]` prefixes).
+Audit entries are read from the `{name}-proxy` systemd unit in container mode, or from the Lima VM's journal in VM mode.
 
 ### Options
 
@@ -389,7 +389,7 @@ agentcage cage har mycage --json-lines | jq '.outbound.request.url'
 agentcage cage backup <name> [options]
 ```
 
-Create a compressed tarball containing a cage's config, named volumes, capture logs, and optionally secrets. Firecracker data drives are included when present.
+Create a compressed tarball containing a cage's config, named volumes, capture logs, and optionally secrets.
 
 ### Options
 
@@ -410,12 +410,10 @@ agentcage-backup/
   secrets/                 # only present with --include-secrets
     API_KEY
     GITHUB_TOKEN
-  volumes/                 # container mode: podman volume exports
+  volumes/                 # podman volume exports
     myapp-state.tar
   capture/
     capture.jsonl
-  firecracker/             # firecracker mode only
-    data.ext4
 ```
 
 ### Examples
@@ -600,37 +598,6 @@ agentcage build nested-base
 #   container:
 #     image: "localhost/agentcage-nested"
 #     nested_containers: true
-```
-
----
-
-## `firecracker` -- Firecracker host setup
-
-### `firecracker setup`
-
-```
-sudo agentcage firecracker setup
-```
-
-One-time host setup for Firecracker mode. Requires root. This command:
-
-1. Downloads the guest kernel (if not already present)
-2. Downloads the Firecracker binary (if not already present)
-3. Checks all prerequisites (`/dev/kvm` access, `agentcage-nethelper`, etc.)
-4. Creates the `agentcage-br0` network bridge (if not already present)
-
-Run this once before creating your first Firecracker cage. If any step fails, the output tells you exactly what to fix.
-
-```bash
-sudo agentcage firecracker setup
-# Kernel: /opt/agentcage/vmlinux
-#   ok
-# Firecracker: /opt/agentcage/firecracker
-#   ok
-#
-# All prerequisites met.
-#
-# Network bridge (agentcage-br0) already exists.
 ```
 
 ---

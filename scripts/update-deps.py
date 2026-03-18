@@ -5,9 +5,9 @@ Usage:
     ./scripts/update-deps.py              # check all, report only
     ./scripts/update-deps.py --update     # check all, apply updates
     ./scripts/update-deps.py containers   # check only container images
-    ./scripts/update-deps.py firecracker  # check only firecracker binary
+    ./scripts/update-deps.py containers   # check only container images
 
-Categories: python, containers, firecracker, kernel, node, pip
+Categories: python, containers, pip
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-ALL_CATEGORIES = ("python", "containers", "firecracker", "kernel", "pip")
+ALL_CATEGORIES = ("python", "containers", "pip")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -287,232 +287,7 @@ def check_containers(update: bool) -> tuple[int, int]:
     total_updates += u
     total_current += c
 
-    # Tag-pinned: fedora-minimal uses bare numeric (e.g. 43, 44)
-    u, c = _check_tag_pinned(
-        "src/agentcage/data/firecracker/Containerfile.vmbase",
-        re.compile(r"\d+"),
-        update,
-    )
-    total_updates += u
-    total_current += c
-
     return (total_updates, total_current)
-
-
-# ── Firecracker binary ──────────────────────────────────────────────────────
-
-
-def check_firecracker(update: bool) -> tuple[int, int]:
-    """Check Firecracker binary version. Returns (updates, up_to_date)."""
-    binaries_py = os.path.join(
-        REPO_ROOT, "src/agentcage/firecracker/binaries.py"
-    )
-    content = open(binaries_py).read()
-
-    m = re.search(r'_FIRECRACKER_VERSION\s*=\s*"(v[\d.]+)"', content)
-    if not m:
-        print("\n[firecracker] firecracker binary")
-        print("  error: could not parse _FIRECRACKER_VERSION from binaries.py")
-        return (0, 0)
-    current_version = m.group(1)
-
-    try:
-        data = _json_get(
-            "https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest"
-        )
-    except Exception as e:
-        print("\n[firecracker] firecracker binary")
-        print(f"  error: GitHub API request failed: {e}")
-        return (0, 0)
-
-    latest_version = data.get("tag_name", "")
-
-    if latest_version == current_version:
-        _print_status(
-            "firecracker", "firecracker binary",
-            current_version, f"{latest_version} (up to date)",
-        )
-        return (0, 1)
-
-    _print_status(
-        "firecracker", "firecracker binary",
-        current_version, latest_version,
-    )
-
-    if update:
-        # Find .sha256.txt asset for the release
-        sha_assets = [
-            a for a in data.get("assets", [])
-            if a["name"].endswith(".tgz.sha256.txt")
-        ]
-
-        checksums = {}
-        for asset in sha_assets:
-            try:
-                raw = _download_bytes(asset["browser_download_url"]).decode()
-            except Exception as e:
-                print(f"  error downloading {asset['name']}: {e}")
-                continue
-            # Format: "<hash>  filename"
-            sha = raw.strip().split()[0]
-            if "x86_64" in asset["name"]:
-                checksums["x86_64"] = sha
-            elif "aarch64" in asset["name"]:
-                checksums["aarch64"] = sha
-
-        if len(checksums) < 2:
-            print("  error: could not find checksums for both architectures")
-            print(f"  -> manual update required")
-            return (1, 0)
-
-        # Update version
-        new_content = re.sub(
-            r'(_FIRECRACKER_VERSION\s*=\s*")v[\d.]+"',
-            rf'\g<1>{latest_version}"',
-            content,
-        )
-        # Update checksums
-        new_content = re.sub(
-            r'("x86_64":\s*")[0-9a-f]+"',
-            rf'\g<1>{checksums["x86_64"]}"',
-            new_content,
-            count=1,
-        )
-        new_content = re.sub(
-            r'("aarch64":\s*")[0-9a-f]+"',
-            rf'\g<1>{checksums["aarch64"]}"',
-            new_content,
-            count=1,
-        )
-        with open(binaries_py, "w") as f:
-            f.write(new_content)
-        print(f"  -> updated binaries.py to {latest_version}")
-    else:
-        print(f"  -> update available")
-
-    return (1, 0)
-
-
-# ── Kernel ───────────────────────────────────────────────────────────────────
-
-
-def check_kernel(update: bool) -> tuple[int, int]:
-    """Check Firecracker kernel version. Returns (updates, up_to_date)."""
-    kernel_py = os.path.join(REPO_ROOT, "src/agentcage/firecracker/kernel.py")
-    content = open(kernel_py).read()
-
-    m_ver = re.search(r'_KERNEL_VERSION\s*=\s*"([\d.]+)"', content)
-    m_ci = re.search(r'_FIRECRACKER_CI_VERSION\s*=\s*"(v[\d.]+)"', content)
-    if not m_ver or not m_ci:
-        print("\n[kernel] vmlinux")
-        print("  error: could not parse kernel version from kernel.py")
-        return (0, 0)
-
-    current_version = m_ver.group(1)
-    ci_version = m_ci.group(1)
-
-    # Parse current version parts
-    parts = current_version.split(".")
-    if len(parts) != 3:
-        print("\n[kernel] vmlinux")
-        print(f"  error: unexpected version format: {current_version}")
-        return (0, 0)
-
-    major, minor, patch = parts[0], parts[1], int(parts[2])
-
-    # Also check if a newer CI version is available (from latest FC release)
-    try:
-        fc_data = _json_get(
-            "https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest"
-        )
-        latest_fc_tag = fc_data.get("tag_name", "")
-        # CI version is typically the major.minor of the FC release (e.g. v1.14)
-        fc_parts = latest_fc_tag.lstrip("v").split(".")
-        if len(fc_parts) >= 2:
-            candidate_ci = f"v{fc_parts[0]}.{fc_parts[1]}"
-        else:
-            candidate_ci = ci_version
-    except Exception:
-        candidate_ci = ci_version
-
-    # Probe for newer patch versions by trying incrementing patch numbers
-    # Try with both current and candidate CI versions
-    best_version = current_version
-    best_ci = ci_version
-
-    for try_ci in dict.fromkeys([candidate_ci, ci_version]):  # deduplicated, order preserved
-        for try_patch in range(patch + 1, patch + 20):
-            try_version = f"{major}.{minor}.{try_patch}"
-            url = (
-                f"https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/"
-                f"{try_ci}/x86_64/vmlinux-{try_version}"
-            )
-            if _head_ok(url):
-                best_version = try_version
-                best_ci = try_ci
-            else:
-                break  # Stop at first missing patch for this CI version
-
-    if best_version == current_version and best_ci == ci_version:
-        _print_status(
-            "kernel", "vmlinux",
-            f"{current_version} (ci {ci_version})",
-            f"{best_version} (up to date)",
-        )
-        return (0, 1)
-
-    _print_status(
-        "kernel", "vmlinux",
-        f"{current_version} (ci {ci_version})",
-        f"{best_version} (ci {best_ci})",
-    )
-
-    if update:
-        # Download kernels and compute checksums
-        checksums = {}
-        for arch in ("x86_64", "aarch64"):
-            url = (
-                f"https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/"
-                f"{best_ci}/{arch}/vmlinux-{best_version}"
-            )
-            print(f"  downloading {arch} kernel to compute checksum...")
-            try:
-                sha = _sha256_of_url(url)
-                checksums[arch] = sha
-            except Exception as e:
-                print(f"  error downloading {arch} kernel: {e}")
-                print(f"  -> manual update required")
-                return (1, 0)
-
-        new_content = re.sub(
-            r'(_KERNEL_VERSION\s*=\s*")[\d.]+"',
-            rf'\g<1>{best_version}"',
-            content,
-        )
-        new_content = re.sub(
-            r'(_FIRECRACKER_CI_VERSION\s*=\s*")v[\d.]+"',
-            rf'\g<1>{best_ci}"',
-            new_content,
-        )
-        new_content = re.sub(
-            r'("x86_64":\s*")[0-9a-f]+"',
-            rf'\g<1>{checksums["x86_64"]}"',
-            new_content,
-            count=1,
-        )
-        new_content = re.sub(
-            r'("aarch64":\s*")[0-9a-f]+"',
-            rf'\g<1>{checksums["aarch64"]}"',
-            new_content,
-            count=1,
-        )
-        with open(kernel_py, "w") as f:
-            f.write(new_content)
-        print(f"  -> updated kernel.py to {best_version} (ci {best_ci})")
-    else:
-        print(f"  -> update available")
-
-    return (1, 0)
 
 
 # ── pip (pyyaml in Containerfile.proxy) ──────────────────────────────────────
@@ -568,8 +343,6 @@ def check_pip(update: bool) -> tuple[int, int]:
 CHECKERS = {
     "python": check_python,
     "containers": check_containers,
-    "firecracker": check_firecracker,
-    "kernel": check_kernel,
     "pip": check_pip,
 }
 

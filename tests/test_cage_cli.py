@@ -137,9 +137,9 @@ class TestCageList:
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_list_shows_firecracker_cage(self, mock_state, mock_get_backend):
+    def test_list_shows_vm_cage(self, mock_state, mock_get_backend):
         mock_state.list_deployments.return_value = ["myvm"]
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
         mock_state.load_metadata.return_value = {"agentcage_version": "0.9.0"}
         backend = mock_get_backend.return_value
         backend.service_names.return_value = ["cage"]
@@ -147,7 +147,7 @@ class TestCageList:
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "myvm" in result.output
-        assert "firecracker" in result.output
+        assert "vm" in result.output
         assert "0.9.0" in result.output
         assert "running (1/1)" in result.output
 
@@ -201,9 +201,9 @@ class TestCageRestart:
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_restart_restarts_firecracker(self, mock_state, mock_get_backend):
+    def test_restart_restarts_vm(self, mock_state, mock_get_backend):
         mock_state.deployment_exists.return_value = True
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
         backend = mock_get_backend.return_value
         result = _runner().invoke(main, ["cage", "restart", "test"])
         assert result.exit_code == 0
@@ -343,26 +343,34 @@ class TestCageVerify:
         assert "container" in result.output
         assert "PASS" in result.output
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_verify_firecracker_running(self, mock_state, mock_get_backend):
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+    def test_verify_vm_running(self, mock_state, mock_get_backend, MockLimaInstance):
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
         backend = mock_get_backend.return_value
         backend.service_names.return_value = ["cage"]
         backend.is_running.return_value = True
+        # Mock Lima instance
+        mock_lima = MockLimaInstance.return_value
+        mock_lima.is_running.return_value = True
+        mock_lima.exec.return_value = MagicMock(stdout="active\n")
         result = _runner().invoke(main, ["cage", "verify", "myvm"])
         assert result.exit_code == 0
-        assert "firecracker" in result.output
+        assert "vm" in result.output
         assert "PASS" in result.output
-        assert "VM Internals" in result.output
+        assert "Lima VM" in result.output
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_verify_firecracker_stopped(self, mock_state, mock_get_backend):
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+    def test_verify_vm_stopped(self, mock_state, mock_get_backend, MockLimaInstance):
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
         backend = mock_get_backend.return_value
         backend.service_names.return_value = ["cage"]
         backend.is_running.return_value = False
+        mock_lima = MockLimaInstance.return_value
+        mock_lima.is_running.return_value = False
         result = _runner().invoke(main, ["cage", "verify", "myvm"])
         assert result.exit_code != 0
         assert "FAIL" in result.output
@@ -476,74 +484,66 @@ class TestCageLogs:
         assert "does not exist" in result.output
         mock_execvp.assert_not_called()
 
-    # -- Firecracker isolation --
+    # -- VM isolation --
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_logs_firecracker_default(self, mock_state, mock_execvp):
-        """All services requested → single unit, no grep, uses -o cat."""
+    def test_logs_vm_default(self, mock_state, mock_execvp, MockLimaInstance):
+        """All services requested → limactl shell + journalctl with all units."""
         mock_state.deployment_exists.return_value = True
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
+        MockLimaInstance.return_value.name = "agentcage-basic"
         result = _runner().invoke(main, ["cage", "logs", "basic"])
-        mock_execvp.assert_called_once_with("journalctl", [
-            "journalctl", "--user", "-u", "basic-cage",
+        mock_execvp.assert_called_once_with("limactl", [
+            "limactl", "shell", "agentcage-basic", "--",
+            "journalctl", "--user",
+            "-u", "basic-cage", "-u", "basic-proxy", "-u", "basic-dns",
             "-n", "50", "-o", "cat",
         ])
 
     @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_logs_firecracker_filtered(self, mock_state, mock_execvp, mock_popen):
-        """Single service requested → pipes through grep on [proxy] prefix."""
+    def test_logs_vm_filtered(self, mock_state, mock_execvp, MockLimaInstance, mock_popen):
+        """Single service with severity filter → Popen + Python filtering."""
         mock_state.deployment_exists.return_value = True
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
+        MockLimaInstance.return_value.name = "agentcage-basic"
 
-        mock_journal = MagicMock()
-        mock_grep = MagicMock()
-        mock_grep.wait.return_value = 0
-        mock_popen.side_effect = [mock_journal, mock_grep]
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_popen.return_value = mock_proc
 
         result = _runner().invoke(main, [
-            "cage", "logs", "basic", "-s", "proxy", "--no-follow",
+            "cage", "logs", "basic", "-s", "proxy", "--no-follow", "-l", "warning",
         ])
 
-        # journalctl Popen
-        mock_popen.assert_any_call(
-            ["journalctl", "--user", "-u", "basic-cage",
-             "-n", "50", "-o", "cat"],
-            stdout=ANY,
-        )
-        # grep Popen — pattern matches [proxy:(debug|info|warning|error|critical)]
-        grep_call = mock_popen.call_args_list[1]
-        pattern = grep_call[0][0][3]
-        assert "proxy" in pattern
-        assert "debug|info|warning|error|critical" in pattern
+        # Should call Popen with limactl shell
+        call_args = mock_popen.call_args[0][0]
+        assert call_args[0] == "limactl"
+        assert "agentcage-basic" in call_args
+        assert "basic-proxy" in call_args
         mock_execvp.assert_not_called()
 
     @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_logs_firecracker_multi_filter(self, mock_state, mock_execvp, mock_popen):
-        """Two services requested → grep alternation pattern."""
+    def test_logs_vm_multi_units(self, mock_state, mock_execvp, MockLimaInstance, mock_popen):
+        """Two services with no severity filter → execvp limactl with both units."""
         mock_state.deployment_exists.return_value = True
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
-
-        mock_journal = MagicMock()
-        mock_grep = MagicMock()
-        mock_grep.wait.return_value = 0
-        mock_popen.side_effect = [mock_journal, mock_grep]
-
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
+        MockLimaInstance.return_value.name = "agentcage-basic"
         result = _runner().invoke(main, [
-            "cage", "logs", "basic", "-s", "proxy", "-s", "dns", "--no-follow",
+            "cage", "logs", "basic", "-s", "proxy", "-s", "dns",
         ])
-
-        # grep pattern should match both [proxy:*] and [dns:*]
-        grep_call = mock_popen.call_args_list[1]
-        pattern = grep_call[0][0][3]  # 4th element of the command list
-        assert "proxy" in pattern
-        assert "dns" in pattern
-        assert "debug|info|warning|error|critical" in pattern
-        mock_execvp.assert_not_called()
+        # execvp called with limactl and both units
+        mock_execvp.assert_called_once()
+        call_args = mock_execvp.call_args[0][1]
+        assert "basic-proxy" in call_args
+        assert "basic-dns" in call_args
 
 
 # ── sample audit JSON lines ──────────────────────────────
@@ -610,25 +610,27 @@ class TestCageAudit:
         idx = cmd.index("-u")
         assert cmd[idx + 1] == "myapp-proxy"
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.subprocess.Popen")
     @patch("agentcage.cli.state")
-    def test_audit_firecracker_mode(self, mock_state, mock_popen):
-        """Uses cage unit for Firecracker mode; parses [proxy:*] prefixed lines."""
+    def test_audit_vm_mode(self, mock_state, mock_popen, MockLimaInstance):
+        """VM mode uses limactl shell + journalctl with proxy and dns units."""
         mock_state.deployment_exists.return_value = True
-        mock_state.load_deployment_config.return_value = _mock_config("firecracker")
+        mock_state.load_deployment_config.return_value = _mock_config("vm")
+        MockLimaInstance.return_value.name = "agentcage-myvm"
 
-        fc_line = f"[proxy:warning] {_AUDIT_BLOCKED}\n"
-        lines = [fc_line, _NON_AUDIT]
+        lines = [_AUDIT_BLOCKED + "\n", _NON_AUDIT]
         mock_popen.return_value = _mock_popen_output(lines)
 
         result = _runner().invoke(main, ["cage", "audit", "myvm", "--no-color"])
         assert result.exit_code == 0
         assert "evil.com" in result.output
 
-        # Verify journal command uses cage unit (Firecracker)
+        # Verify command uses limactl shell with proxy unit
         cmd = mock_popen.call_args[0][0]
-        idx = cmd.index("-u")
-        assert cmd[idx + 1] == "myvm-cage"
+        assert cmd[0] == "limactl"
+        assert "agentcage-myvm" in cmd
+        assert "myvm-proxy" in cmd
 
     @patch("agentcage.cli.subprocess.Popen")
     @patch("agentcage.cli.state")
@@ -748,16 +750,22 @@ class TestCageExec:
         ])
         mock_run.assert_called_once_with(["podman", "exec", "myapp-proxy", "ls"])
 
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_exec_firecracker_rejected(self, mock_state):
+    def test_exec_vm_uses_limactl(self, mock_state, mock_execvp, MockLimaInstance):
         mock_state.deployment_exists.return_value = True
-        cfg = _mock_config("firecracker")
+        cfg = _mock_config("vm")
         cfg.exec_aliases = {}
         mock_state.load_deployment_config.return_value = cfg
+        MockLimaInstance.return_value.name = "agentcage-myvm"
 
         result = _runner().invoke(main, ["cage", "exec", "myvm", "--", "ls"])
-        assert result.exit_code != 0
-        assert "not supported" in result.output
+        # No -it in test because stdin is not a TTY
+        mock_execvp.assert_called_once_with("limactl", [
+            "limactl", "shell", "agentcage-myvm", "--",
+            "podman", "exec", "myvm-cage", "ls",
+        ])
 
     @patch("agentcage.cli.subprocess.run")
     @patch("agentcage.cli.state")

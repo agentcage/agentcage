@@ -32,6 +32,7 @@ from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd
+from agentcage.lima.instance import LimaInstance
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -81,7 +82,7 @@ def completions(shell: str):
               help="Output file path.", show_default=True)
 @click.option("--image", default="node:22-slim",
               help="Container image.", show_default=True)
-@click.option("--isolation", type=click.Choice(["container", "firecracker"]),
+@click.option("--isolation", type=click.Choice(["container", "vm"]),
               default="container", help="Isolation backend.", show_default=True)
 @click.option("--force", is_flag=True, help="Overwrite existing file.")
 @click.option("--scaffold", default=None,
@@ -161,16 +162,6 @@ def init(name: str | None, output: str, image: str, isolation: str,
 
 # ── helpers ──────────────────────────────────────────────
 
-
-def _require_root(action: str) -> None:
-    """Exit with an error if not running as root."""
-    if os.geteuid() != 0:
-        click.echo(
-            f"error: '{action}' with Firecracker isolation requires root\n"
-            f"  Run with: sudo agentcage {action}",
-            err=True,
-        )
-        sys.exit(1)
 
 
 def _expected_secrets(cfg) -> list[str]:
@@ -359,20 +350,6 @@ def cage_create(config_path: str):
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
 
-    if cfg.isolation == "firecracker":
-        _require_root("cage create")
-        backend = get_backend(cfg)
-        issues = backend.check_prerequisites(cfg)
-        if issues:
-            click.echo("Firecracker prerequisites not met:", err=True)
-            for issue in issues:
-                click.echo(f"  - {issue}", err=True)
-            click.echo(
-                "\nRun 'agentcage firecracker setup' for one-time host setup.",
-                err=True,
-            )
-            sys.exit(1)
-
     name = cfg.name
 
     if state.deployment_exists(name):
@@ -382,8 +359,8 @@ def cage_create(config_path: str):
 
     podman = Podman()
 
-    # Check secrets
-    missing = _check_secrets(podman, name, cfg)
+    # Check secrets (requires host Podman — skip for VM mode if unavailable)
+    missing = _check_secrets(podman, name, cfg) if cfg.isolation == "container" or shutil.which("podman") else []
     if missing:
         click.echo(f"error: missing secrets for cage '{name}':", err=True)
         for key in missing:
@@ -420,17 +397,19 @@ def cage_create(config_path: str):
 
     config_host_path = state.save_proxy_config(name)
 
-    # Build from Containerfile if configured
-    if cfg.container.build.containerfile:
+    # Build from Containerfile if configured (container mode only)
+    if cfg.isolation == "container" and cfg.container.build.containerfile:
         _build_container_image(cfg, Path(config_path).parent, podman)
 
-    click.echo(f"Pulling {cfg.container.image}...")
-    if not podman.pull(cfg.container.image):
-        click.echo(
-            f"warning: pull failed for {cfg.container.image} "
-            f"(local image or no network — continuing with cached image)",
-            err=True,
-        )
+    # Pull image on host (container mode) — VM mode pulls inside the VM
+    if cfg.isolation == "container":
+        click.echo(f"Pulling {cfg.container.image}...")
+        if not podman.pull(cfg.container.image):
+            click.echo(
+                f"warning: pull failed for {cfg.container.image} "
+                f"(local image or no network — continuing with cached image)",
+                err=True,
+            )
 
     try:
         _build_and_deploy(cfg, config_host_path, name, podman)
@@ -538,16 +517,13 @@ def cage_update(name: str, config_path: str | None):
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
 
-    if cfg.isolation == "firecracker":
-        _require_root("cage update")
-
     state.save_metadata(name, {"agentcage_version": version("agentcage")})
     config_host_path = state.save_proxy_config(name)
 
     podman = Podman()
 
-    # Check secrets
-    missing = _check_secrets(podman, name, cfg)
+    # Check secrets (requires host Podman — skip for VM mode if unavailable)
+    missing = _check_secrets(podman, name, cfg) if cfg.isolation == "container" or shutil.which("podman") else []
     if missing:
         click.echo(f"error: missing secrets for cage '{name}':", err=True)
         for key in missing:
@@ -584,18 +560,20 @@ def cage_update(name: str, config_path: str | None):
             )
         sys.exit(1)
 
-    # Build from Containerfile if configured
-    if cfg.container.build.containerfile:
+    # Build from Containerfile if configured (container mode only)
+    if cfg.isolation == "container" and cfg.container.build.containerfile:
         config_dir = Path(config_path).parent if config_path else state.deployment_dir(name)
         _build_container_image(cfg, config_dir, podman)
 
-    click.echo(f"Pulling {cfg.container.image}...")
-    if not podman.pull(cfg.container.image):
-        click.echo(
-            f"warning: pull failed for {cfg.container.image} "
-            f"(local image or no network — continuing with cached image)",
-            err=True,
-        )
+    # Pull image on host (container mode) — VM mode pulls inside the VM
+    if cfg.isolation == "container":
+        click.echo(f"Pulling {cfg.container.image}...")
+        if not podman.pull(cfg.container.image):
+            click.echo(
+                f"warning: pull failed for {cfg.container.image} "
+                f"(local image or no network — continuing with cached image)",
+                err=True,
+            )
 
     _build_and_deploy(cfg, config_host_path, name, podman)
     click.echo(f"Updated cage '{name}'")
@@ -661,8 +639,6 @@ def cage_destroy(name: str, yes: bool, keep_secrets: bool):
     try:
         cfg = state.load_deployment_config(name)
         backend = get_backend(cfg)
-        if cfg.isolation == "firecracker":
-            _require_root("cage destroy")
     except Exception:
         from agentcage.backends.container import ContainerBackend
         backend = ContainerBackend()
@@ -734,7 +710,7 @@ def cage_verify(name: str):
     if cfg.isolation == "container":
         _verify_container(name, _pass, _fail, _warn)
     else:
-        _verify_firecracker(name, _pass, _fail)
+        _verify_vm(name, _pass, _fail)
 
     # Summary
     click.echo()
@@ -873,14 +849,34 @@ def _verify_container(name: str, _pass, _fail, _warn):
         _fail("Podman is NOT rootless")
 
 
-def _verify_firecracker(name: str, _pass, _fail):
-    """Firecracker-specific health checks."""
-    # In Firecracker mode, proxy/dns/cage all run inside the VM.
-    # We cannot exec into them from the host, so we check what we can.
+def _verify_vm(name: str, _pass, _fail):
+    """Verify a VM cage is running correctly."""
+    inst = LimaInstance(name)
+
+    # Check Lima VM is running
     click.echo()
-    click.echo("-- VM Internals --")
-    click.echo("  [INFO] CA cert, proxy config, and egress checks run inside the VM")
-    click.echo("  [INFO] Use 'agentcage cage logs {name}' to verify internal health")
+    click.echo("-- Lima VM --")
+    if inst.is_running():
+        _pass("Lima VM instance is running")
+    else:
+        _fail("Lima VM instance is not running")
+        return
+
+    # Check services inside VM
+    click.echo()
+    click.echo("-- VM Services --")
+    for svc in ["cage", "proxy", "dns"]:
+        try:
+            result = inst.exec(
+                ["systemctl", "--user", "is-active", f"{name}-{svc}.service"],
+                check=False,
+            )
+            if result.stdout.strip() == "active":
+                _pass(f"{svc} service is active")
+            else:
+                _fail(f"{svc} service is not active ({result.stdout.strip()})")
+        except Exception as e:
+            _fail(f"Cannot check {svc} service: {e}")
 
 
 @cage.command("edit")
@@ -943,9 +939,6 @@ def cage_stop(name: str):
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
-    if cfg.isolation == "firecracker":
-        _require_root("cage stop")
-
     backend = get_backend(cfg)
     backend.stop(name)
     click.echo(f"Stopped cage '{name}'")
@@ -960,9 +953,6 @@ def cage_start(name: str):
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
-    if cfg.isolation == "firecracker":
-        _require_root("cage start")
-
     _ensure_patches(Podman())
 
     backend = get_backend(cfg)
@@ -1050,10 +1040,8 @@ def cage_logs(name, services, lines, follow, no_follow, min_level):
 
     no_follow_effective = not follow
 
-    if cfg.isolation == "firecracker":
-        # Firecracker has a single host unit; container logs are prefixed
-        # [cage:level], [proxy:level], [dns:level] on the VM console.
-        _logs_firecracker(name, selected, lines, no_follow_effective, min_level)
+    if cfg.isolation == "vm":
+        _logs_vm(name, selected, lines, no_follow_effective, min_level)
     else:
         _logs_container(name, selected, lines, no_follow_effective, min_level)
 
@@ -1143,25 +1131,41 @@ def _level_grep_pattern(services: tuple, min_level: str | None) -> str:
     return rf"\[({svc_alt}):({lvl_alt})\]"
 
 
-def _logs_firecracker(name, services, lines, no_follow, min_level=None):
-    """Show logs from the single Firecracker host unit, filtering by service prefix."""
-    cmd = ["journalctl", "--user", "-u", f"{name}-cage",
-           "-n", str(lines), "-o", "cat"]
+def _logs_vm(name, services, lines, no_follow, min_level=None):
+    """Show logs from inside the Lima VM via limactl shell."""
+    inst = LimaInstance(name)
+    # Inside the VM, journalctl works normally with the quadlet services
+    units = [f"{name}-{svc}" for svc in services]
+    cmd = ["journalctl", "--user"]
+    for u in units:
+        cmd += ["-u", u]
+    cmd += ["-n", str(lines), "-o", "cat"]
     if not no_follow:
         cmd.append("-f")
 
-    need_filter = set(services) != {"cage", "proxy", "dns"} or min_level is not None
-    if not need_filter:
-        os.execvp("journalctl", cmd)
+    full_cmd = ["limactl", "shell", inst.name, "--"] + cmd
+    if min_level is None:
+        os.execvp("limactl", full_cmd)
     else:
-        pattern = _level_grep_pattern(services, min_level)
-        journal = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-        grep = subprocess.Popen(
-            ["grep", "--line-buffered", "-E", pattern],
-            stdin=journal.stdout,
-        )
-        journal.stdout.close()  # allow SIGPIPE if grep exits
-        sys.exit(grep.wait())
+        min_ord = _LEVEL_ORDER.get(min_level, 1)
+        proc = subprocess.Popen(full_cmd, stdout=subprocess.PIPE, text=True)
+        try:
+            for raw_line in proc.stdout:
+                line = raw_line.rstrip("\n")
+                svc = None
+                for s in services:
+                    if f"{name}-{s}" in line:
+                        svc = s
+                        break
+                if svc is None:
+                    svc = "cage"
+                lvl = _classify_line(svc, line)
+                if _LEVEL_ORDER.get(lvl, 1) >= min_ord:
+                    click.echo(line)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            proc.terminate()
 
 
 @cage.command("exec", context_settings={"ignore_unknown_options": True})
@@ -1183,14 +1187,6 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
 
     cfg = state.load_deployment_config(name)
 
-    if cfg.isolation == "firecracker":
-        click.echo(
-            "error: exec is not supported for Firecracker cages; "
-            "use published ports or SSH",
-            err=True,
-        )
-        sys.exit(1)
-
     cmd = list(command)
     if not cmd:
         click.echo("error: no command specified", err=True)
@@ -1199,6 +1195,12 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
     # Alias expansion: if the first word matches an exec_alias, expand it
     if cmd[0] in cfg.exec_aliases:
         cmd = cfg.exec_aliases[cmd[0]] + cmd[1:]
+
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        exec_flags = ["-it"] if sys.stdin.isatty() else []
+        os.execvp("limactl", ["limactl", "shell", inst.name, "--",
+                  "podman", "exec", *exec_flags, f"{name}-{service}", *cmd])
 
     container = f"{name}-{service}"
     exec_flags = []
@@ -1223,13 +1225,23 @@ def cage_shell(name: str, service: str):
 
     cfg = state.load_deployment_config(name)
 
-    if cfg.isolation == "firecracker":
-        click.echo(
-            "error: shell is not supported for Firecracker cages; "
-            "use published ports or SSH",
-            err=True,
-        )
-        sys.exit(1)
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        container = f"{name}-{service}"
+        # Auto-detect bash or fall back to sh inside the VM
+        for shell in ("/bin/bash", "/bin/sh"):
+            result = subprocess.run(
+                ["limactl", "shell", inst.name, "--",
+                 "podman", "exec", container, "test", "-x", shell],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                exec_flags = ["-it"] if sys.stdin.isatty() else []
+                os.execvp("limactl", ["limactl", "shell", inst.name, "--",
+                          "podman", "exec", *exec_flags, container, shell])
+        exec_flags = ["-it"] if sys.stdin.isatty() else []
+        os.execvp("limactl", ["limactl", "shell", inst.name, "--",
+                  "podman", "exec", *exec_flags, container, "/bin/sh"])
 
     container = f"{name}-{service}"
     # Auto-detect bash or fall back to sh
@@ -1239,9 +1251,11 @@ def cage_shell(name: str, service: str):
             capture_output=True,
         )
         if result.returncode == 0:
-            os.execvp("podman", ["podman", "exec", "-it", container, shell])
+            exec_flags = ["-it"] if sys.stdin.isatty() else []
+            os.execvp("podman", ["podman", "exec", *exec_flags, container, shell])
     # Fallback
-    os.execvp("podman", ["podman", "exec", "-it", container, "/bin/sh"])
+    exec_flags = ["-it"] if sys.stdin.isatty() else []
+    os.execvp("podman", ["podman", "exec", *exec_flags, container, "/bin/sh"])
 
 
 # ── cage audit ─────────────────────────────────────────────
@@ -1269,8 +1283,10 @@ def _build_audit_journal_cmd(
     name: str, cfg, *, since: str | None = None, follow: bool = False,
 ) -> list[str]:
     """Build the journalctl command for reading audit entries."""
-    if cfg.isolation == "firecracker":
-        cmd = ["journalctl", "--user", "-u", f"{name}-cage", "-o", "cat"]
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        cmd = ["limactl", "shell", inst.name, "--",
+               "journalctl", "--user", "-u", f"{name}-proxy", "-u", f"{name}-dns", "-o", "cat"]
     else:
         cmd = ["journalctl", "--user", "-u", f"{name}-proxy", "-u", f"{name}-dns", "-o", "cat"]
 
@@ -1624,22 +1640,6 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
                         err=True,
                     )
 
-        # ── Firecracker data drive ──
-        has_data_drive = False
-        if cfg.isolation == "firecracker":
-            from agentcage.firecracker.rootfs import data_drive_path
-            dd = data_drive_path(name)
-            if os.path.isfile(dd):
-                fc_dir = staging_path / "firecracker"
-                fc_dir.mkdir()
-                shutil.copy2(dd, str(fc_dir / "data.ext4"))
-                has_data_drive = True
-                click.echo(
-                    "Note: Data drive copied. If the cage is running, "
-                    "the copy may be inconsistent. Consider stopping first.",
-                    err=True,
-                )
-
         # ── Capture ──
         has_capture = False
         capture_path = state.capture_file(name)
@@ -1660,7 +1660,6 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
             "has_capture": has_capture,
             "named_volumes": vol_names,
             "secret_keys": expected,
-            "has_data_drive": has_data_drive,
             "secrets_included": include_secrets and bool(secret_keys),
         }
         (staging_path / "manifest.json").write_text(
@@ -1678,8 +1677,6 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
                f" ({'included' if include_secrets else 'not included'})")
     click.echo(f"  Volumes: {len(vol_names)}")
     click.echo(f"  Capture: {'yes' if has_capture else 'no'}")
-    if has_data_drive:
-        click.echo("  Data drive: yes")
 
 
 @cage.command("restore")
@@ -1723,10 +1720,6 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
             err=True,
         )
         sys.exit(1)
-
-    isolation = manifest.get("isolation", "container")
-    if isolation == "firecracker":
-        _require_root("cage restore")
 
     # ── Handle existing cage ──
     if state.deployment_exists(target_name):
@@ -1822,18 +1815,6 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
 
         # Regenerate proxy-config.yaml
         state.save_proxy_config(target_name)
-
-        # ── Pre-place Firecracker data drive ──
-        fc_dir = backup_dir / "firecracker"
-        if fc_dir.is_dir() and (fc_dir / "data.ext4").is_file():
-            from agentcage.firecracker.rootfs import data_drive_path, _state_dir
-            vm_dir = Path(_state_dir(target_name))
-            vm_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(
-                str(fc_dir / "data.ext4"),
-                data_drive_path(target_name),
-            )
-            click.echo("Data drive restored.")
 
         # ── Build and deploy ──
         if no_start:
@@ -2074,19 +2055,37 @@ def _update_dns_quadlet(cfg) -> None:
     backend = get_backend(cfg)
     name = cfg.name
     dns_content = render_dns_quadlet(cfg)
-    quadlet_dir = backend.unit_dir()
-    (quadlet_dir / f"{name}-dns.container").write_text(dns_content)
-    systemd.daemon_reload()
-    if backend.is_running(name, "dns"):
-        # Stop most-dependent first, start dependencies first.
-        services = backend.service_names(name)
-        for svc in services:
-            try:
-                systemd.stop_unit(f"{name}-{svc}.service")
-            except Exception:
-                pass
-        for svc in reversed(services):
-            systemd.start_unit(f"{name}-{svc}.service")
+
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        # Write quadlet inside VM then restart services
+        import base64
+        encoded = base64.b64encode(dns_content.encode()).decode()
+        inst.exec(["bash", "-c",
+                   f"mkdir -p ~/.config/containers/systemd && "
+                   f"echo '{encoded}' | base64 -d > ~/.config/containers/systemd/{name}-dns.container"])
+        inst.exec(["systemctl", "--user", "daemon-reload"])
+        if backend.is_running(name, "dns"):
+            services = backend.service_names(name)
+            for svc in services:
+                inst.exec(["systemctl", "--user", "stop", f"{name}-{svc}.service"],
+                          check=False)
+            for svc in reversed(services):
+                inst.exec(["systemctl", "--user", "start", f"{name}-{svc}.service"])
+    else:
+        quadlet_dir = backend.unit_dir()
+        (quadlet_dir / f"{name}-dns.container").write_text(dns_content)
+        systemd.daemon_reload()
+        if backend.is_running(name, "dns"):
+            # Stop most-dependent first, start dependencies first.
+            services = backend.service_names(name)
+            for svc in services:
+                try:
+                    systemd.stop_unit(f"{name}-{svc}.service")
+                except Exception:
+                    pass
+            for svc in reversed(services):
+                systemd.start_unit(f"{name}-{svc}.service")
 
 
 @domain.command("add")
@@ -2185,14 +2184,6 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
     click.echo(msg)
 
 
-# ── firecracker group ─────────────────────────────────────
-
-
-@main.group(name="firecracker")
-def firecracker_group():
-    """Firecracker host setup and management."""
-
-
 @main.group(name="build")
 def build_group():
     """Build base images for agentcage."""
@@ -2217,63 +2208,3 @@ def build_nested_base():
     click.echo('  container:')
     click.echo('    image: "localhost/agentcage-nested"')
     click.echo('    nested_containers: true')
-
-
-@firecracker_group.command("setup")
-def firecracker_setup():
-    """One-time host setup: download kernel, check prerequisites, create bridge."""
-    _require_root("firecracker setup")
-
-    from agentcage.firecracker.kernel import ensure_kernel, default_kernel_path
-    from agentcage.firecracker.binaries import ensure_firecracker, default_firecracker_path
-    from agentcage.firecracker import prerequisites, network
-    from agentcage.config import Config, FirecrackerConfig
-
-    # 1. Ensure kernel
-    kernel_path = default_kernel_path()
-    click.echo(f"Kernel: {kernel_path}")
-    try:
-        ensure_kernel(kernel_path)
-        click.echo("  ok")
-    except Exception as e:
-        click.echo(f"  FAILED: {e}", err=True)
-
-    # 2. Ensure Firecracker binary
-    fc_path = default_firecracker_path()
-    click.echo(f"Firecracker: {fc_path}")
-    try:
-        ensure_firecracker(fc_path)
-        click.echo("  ok")
-    except Exception as e:
-        click.echo(f"  FAILED: {e}", err=True)
-
-    # 3. Check prerequisites (use a minimal firecracker config for the check)
-    cfg = Config(
-        name="setup-check",
-        isolation="firecracker",
-        firecracker=FirecrackerConfig(kernel=kernel_path),
-    )
-    cfg.container.image = "placeholder"
-    issues = prerequisites.check_prerequisites(cfg)
-
-    if issues:
-        click.echo()
-        click.echo("Remaining issues:")
-        for issue in issues:
-            click.echo(f"  - {issue}")
-    else:
-        click.echo()
-        click.echo("All prerequisites met.")
-
-    # 4. Create bridge if missing
-    if not os.path.exists("/sys/class/net/agentcage-br0"):
-        click.echo()
-        click.echo("Creating network bridge (agentcage-br0)...")
-        try:
-            network.create_bridge()
-            click.echo("  ok")
-        except Exception as e:
-            click.echo(f"  FAILED: {e}", err=True)
-    else:
-        click.echo()
-        click.echo("Network bridge (agentcage-br0) already exists.")

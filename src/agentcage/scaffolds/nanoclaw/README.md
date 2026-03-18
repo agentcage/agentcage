@@ -247,7 +247,7 @@ All agentcage network-level protections remain fully active:
 - Inner agent containers use `--network host` and inherit the cage's proxy configuration
 - The cage only sees API key placeholders -- the proxy replaces them on the wire
 
-For production nested workloads with untrusted agents, consider using Firecracker mode (`isolation: firecracker`) for hardware-level isolation around the cage. Note that `nested_containers` is not currently supported with Firecracker isolation.
+For production nested workloads with untrusted agents, consider using VM mode (`isolation: vm`) for hardware-level isolation around the cage. Note that `nested_containers` is not currently supported with VM isolation.
 
 See [Security & Threat Model](../../docs/security.md) for the full threat model and defense layers.
 

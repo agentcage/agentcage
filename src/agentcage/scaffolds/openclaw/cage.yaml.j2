@@ -9,15 +9,13 @@
 #   3. Deploy:  agentcage cage create -c cage.yaml
 
 name: {{ name }}
-{% if isolation == "firecracker" %}
+{% if isolation == "vm" %}
 
-isolation: firecracker
+isolation: vm
 
-firecracker:
+vm:
   vcpus: 4
   mem_mb: 8192
-  # kernel: ""            # auto-detected; set to override
-  # firecracker_bin: ""   # auto-detected; set to override
 {% endif %}
 
 container:

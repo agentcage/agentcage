@@ -31,7 +31,7 @@ All dependencies are pinned (lock files, image digests, binary checksums). To ch
 ./scripts/update-deps.py containers   # check a single category
 ```
 
-Categories: `python`, `containers`, `firecracker`, `kernel`, `node`, `pip`.
+Categories: `python`, `containers`, `node`, `pip`.
 
 Requires `skopeo` for container image checks (`sudo pacman -S skopeo` on Arch).
 

@@ -29,7 +29,7 @@ Most agent deployments hand the agent a [**lethal trifecta**](https://simonwilli
 - **DNS filtering** -- allowlist-based dnsmasq sidecar, placeholder IPs for unauthorized domains
 - **Fail-closed by default** -- all hardening on out of the box; component failure stops traffic
 
-Both container mode (rootless Podman) and Firecracker mode (KVM microVM) are supported -- see [Security & Threat Model](docs/security.md#isolation-modes) for the comparison. For the full container topology and inspector chain, see [Architecture](docs/architecture.md).
+Both container mode (rootless Podman) and VM mode (Lima KVM) are supported -- see [Security & Threat Model](docs/security.md#isolation-modes) for the comparison. For the full container topology and inspector chain, see [Architecture](docs/architecture.md).
 
 ## Quick Start
 
@@ -60,12 +60,6 @@ Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Refer
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-For Firecracker mode, add `--with-firecracker`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --with-firecracker
-```
-
 **Manual install** -- prerequisites: [Podman](https://podman.io/) (rootless), Python 3.12+, [uv](https://docs.astral.sh/uv/).
 
 | OS | Command |
@@ -90,7 +84,7 @@ cd agentcage
 uv run agentcage --help
 ```
 
-Firecracker mode requires Linux with `/dev/kvm`. See [Firecracker setup](docs/firecracker.md#setup) for details. macOS is not supported for Firecracker mode.
+For VM mode (`isolation: vm`), install [Lima](https://lima-vm.io): `brew install lima` on macOS, or your Linux package manager. See [Lima VM Isolation](docs/vm.md) for details.
 
 ## Usage
 
@@ -126,7 +120,6 @@ agentcage cage destroy myapp
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `build` | `nested-base` -- build base images for nested container support |
-| `firecracker` | `setup` |
 | `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |
 
 See [CLI Reference](docs/cli.md) for full documentation of all commands and options.
@@ -137,7 +130,7 @@ See the [Configuration Reference](docs/configuration.md) for all settings, defau
 
 ## Security
 
-The agent has no internet gateway -- all traffic must pass through the proxy, which applies domain filtering, secret detection, payload inspection, and custom inspectors. For workloads requiring hardware-level isolation, Firecracker mode adds a dedicated guest kernel per cage, eliminating container escape as an attack vector. See [Security & Threat Model](docs/security.md) for the full threat model, defense layers, and known limitations.
+The agent has no internet gateway -- all traffic must pass through the proxy, which applies domain filtering, secret detection, payload inspection, and custom inspectors. For workloads requiring hardware-level isolation, VM mode adds a dedicated guest kernel per cage via Lima, eliminating container escape as an attack vector. See [Security & Threat Model](docs/security.md) for the full threat model, defense layers, and known limitations.
 
 ## License
 

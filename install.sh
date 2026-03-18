@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --with-firecracker
+#   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh -s -- --with-lima
 #
 # POSIX sh compatible. No bashisms.
 
@@ -320,37 +320,40 @@ setup_podman_machine() {
 }
 
 # ---------------------------------------------------------------------------
-# Firecracker
+# Lima (optional, for VM isolation mode)
 # ---------------------------------------------------------------------------
 
-setup_firecracker() {
-    if [ "$WANT_FIRECRACKER" = false ]; then
+install_lima() {
+    # On macOS, Lima is required (VM is the only isolation mode)
+    if [ "$OS" = "macos" ]; then
+        WANT_LIMA=true
+    fi
+
+    if [ "$WANT_LIMA" = false ]; then
         return
     fi
 
-    if [ "$OS" = "macos" ]; then
-        err "Firecracker mode requires Linux with /dev/kvm (not supported on macOS)"
+    if command -v limactl >/dev/null 2>&1; then
+        info "Lima is already installed ($(limactl --version 2>/dev/null || echo 'unknown version'))"
+        return
     fi
 
-    if [ ! -e /dev/kvm ]; then
-        msg="Firecracker requires /dev/kvm but it was not found."
-        if [ "$IS_WSL" = true ]; then
-            msg="$msg
-  WSL2 requires nestedVirtualization=true in your .wslconfig:
-    [wsl2]
-    nestedVirtualization=true
-  Then restart WSL: wsl --shutdown"
-        else
-            msg="$msg
-  Ensure KVM is enabled in BIOS and the kvm kernel module is loaded:
-    sudo modprobe kvm_intel  # or kvm_amd"
-        fi
-        err "$msg"
-    fi
+    info "Installing Lima..."
+    case "$DISTRO" in
+        arch)     run_pkg pacman -S --noconfirm --needed lima ;;
+        debian)   run_pkg apt-get install -y -qq lima ;;
+        fedora)   run_pkg dnf install -y -q lima ;;
+        rhel)     run_pkg dnf install -y -q lima ;;
+        opensuse) run_pkg zypper install -y lima ;;
+        macos)    brew install lima ;;
+    esac
 
-    info "Setting up Firecracker (via agentcage firecracker setup)..."
-    agentcage_bin="$(command -v agentcage)"
-    sudo "$agentcage_bin" firecracker setup
+    if ! command -v limactl >/dev/null 2>&1; then
+        warn "Lima installation failed. Install it manually from https://lima-vm.io"
+        warn "VM isolation mode will not be available until Lima is installed."
+    else
+        info "Lima installed"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -358,12 +361,12 @@ setup_firecracker() {
 # ---------------------------------------------------------------------------
 
 parse_args() {
-    WANT_FIRECRACKER=false
+    WANT_LIMA=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --with-firecracker)
-                WANT_FIRECRACKER=true
+            --with-lima)
+                WANT_LIMA=true
                 shift
                 ;;
             --help|-h)
@@ -374,11 +377,11 @@ Installs agentcage and all prerequisites (Podman, Python 3.12+, uv).
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
-  curl -fsSL ... | sh -s -- --with-firecracker
+  curl -fsSL ... | sh -s -- --with-lima
 
 Options:
-  --with-firecracker  Also set up Firecracker (requires Linux + /dev/kvm)
-  --help, -h          Show this help message
+  --with-lima   Also install Lima (required for isolation: vm mode)
+  --help, -h    Show this help message
 HELP
                 exit 0
                 ;;
@@ -424,7 +427,7 @@ main() {
     install_agentcage
 
     setup_podman_machine
-    setup_firecracker
+    install_lima
 
     # --- Success message ---
     info ""
@@ -442,9 +445,9 @@ main() {
         info "Note: Podman uses the WSL2 Linux kernel for containers."
     fi
 
-    if [ "$WANT_FIRECRACKER" = true ]; then
+    if [ "$WANT_LIMA" = true ]; then
         info ""
-        info "Firecracker is set up. Use 'isolation: firecracker' in cage.yaml."
+        info "Lima is set up. Use 'isolation: vm' in cage.yaml for VM-level isolation."
     fi
 
     # Check if agentcage is on PATH for future shells (use original PATH,

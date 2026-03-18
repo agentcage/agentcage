@@ -39,7 +39,7 @@ Issues = "https://github.com/agentcage/agentcage/issues"
 testpaths = ["tests"]
 pythonpath = ["src", "src/agentcage/data/proxy"]
 markers = [
-    "e2e_firecracker: end-to-end tests requiring KVM and Firecracker (slow)",
+    "e2e_vm: end-to-end tests requiring Lima VM (slow)",
 ]
 
 [tool.uv]

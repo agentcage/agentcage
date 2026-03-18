@@ -14,7 +14,7 @@
 
 ## Isolation
 
-- [Firecracker MicroVM Isolation](firecracker.md) — KVM-based hardware isolation setup and details
+- [Lima VM Isolation](vm.md) — KVM-based hardware isolation via Lima
 
 ## Setup Guides
 

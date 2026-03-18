@@ -93,22 +93,22 @@ class AuditFilter:
         return not entry.inspectors and min_ord == 0
 
 
-# Regex matching Firecracker-mode log prefix: [proxy:warning] or [dns:warning] {json...}
-_FC_PREFIX_RE = re.compile(r"^\[(?:proxy|dns):(?:debug|info|warning|error|critical)\]\s*(.*)$")
+# Regex matching VM-mode log prefix: [proxy:warning] or [dns:warning] {json...}
+_VM_PREFIX_RE = re.compile(r"^\[(?:proxy|dns):(?:debug|info|warning|error|critical)\]\s*(.*)$")
 
 
 def extract_audit_json(line: str) -> dict | None:
     """Extract an audit JSON dict from a raw journalctl line.
 
-    Handles both container mode (raw JSON) and Firecracker mode
+    Handles both container mode (raw JSON) and VM mode
     (``[proxy:level] {json}`` prefix).  Returns None for non-audit lines.
     """
     line = line.strip()
     if not line:
         return None
 
-    # Try Firecracker prefix first
-    m = _FC_PREFIX_RE.match(line)
+    # Try VM-mode prefix first
+    m = _VM_PREFIX_RE.match(line)
     if m:
         line = m.group(1).strip()
 
