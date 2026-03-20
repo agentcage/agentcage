@@ -114,6 +114,23 @@ agentcage cage logs basic
 
 No sudo required.
 
+## Lima VM Mount Policy
+
+agentcage does **not** mount the entire home directory into the Lima VM. Only specific subdirectories are forwarded via virtiofs, minimizing the attack surface if a container escape occurs inside the VM.
+
+| Mount Path | Access | Purpose |
+|------------|--------|---------|
+| `~/.config/agentcage` | read-only | Deployment state, proxy configuration |
+| `~/.config/containers` | read-write | Quadlet files installed during cage deployment |
+| `~/.local/share/agentcage` | read-write | Patches (resolv.conf, nested container configs) and HAR capture output |
+| `/tmp/lima` | read-write | VM-local temporary space |
+| User volume paths | per-spec | Each `container.volumes` entry; `:ro` suffix for read-only, writable by default |
+| Package data directory | read-only | agentcage build context for proxy/DNS images (only when installed under `~`) |
+
+This is a deliberate security boundary. If a process escapes the Podman container inside the VM, it can only access these specific paths -- not the full home directory. SSH keys, GPG keys, shell history, browser profiles, and other sensitive files are never exposed to the VM.
+
+See `src/agentcage/lima/provisioning.py` for the implementation.
+
 ## Known Limitations
 
 - **Host volume mounts are not supported.** The agent container runs inside a VM with its own filesystem. There is no mechanism to bind-mount directories from the host into the agent container. Agent code must be baked into the container image or fetched at runtime.
