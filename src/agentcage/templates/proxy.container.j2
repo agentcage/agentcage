@@ -15,7 +15,7 @@ Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 Environment="PYTHONUNBUFFERED=1"
 Volume={{ name }}-certs.volume:/home/mitmproxy/.mitmproxy:Z
 {% if capture_enabled %}
-Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z,U
+Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 {% endif %}
 AddCapability=NET_ADMIN
@@ -40,6 +40,9 @@ Secret={{ secret }},type=env
 
 [Service]
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 1000:1000 "$mp"'
+{% if capture_enabled %}
+ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 1000:1000 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 1000:1000 "{{ capture_host_dir }}"{% endif %}'
+{% endif %}
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "printf '{% for srv in dns_servers %}nameserver {{ srv }}\n{% endfor %}' > /etc/resolv.conf"
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80 -j REDIRECT --to-port 8443 && iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 443 -j REDIRECT --to-port 8443"
 Restart=on-failure
