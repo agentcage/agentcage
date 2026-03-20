@@ -24,10 +24,10 @@ echo "net.ipv4.ip_unprivileged_port_start=80" > /etc/sysctl.d/99-agentcage.conf
 usermod -aG systemd-journal {{ lima_user }} || true
 usermod -aG adm {{ lima_user }} || true
 
-# Make journal files world-readable so podman logs works without re-login
+# Ensure journal files are group-readable for systemd-journal members (least privilege)
 mkdir -p /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal
-chmod -R o+rX /var/log/journal
+chmod -R g+rX /var/log/journal
 
 # Enable lingering for the lima user so systemd user services persist
 loginctl enable-linger {{ lima_user }}
