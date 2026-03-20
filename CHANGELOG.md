@@ -15,11 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `domain add`/`domain rm` crash: DNS quadlet regenerated with wrong subnet IP when hash collision shifted the octet at deploy time
 - HAR capture `Permission denied` in rootless Podman — capture directory ownership now set via `ExecStartPre` with virtiofs fallback
 - VM mount isolation: replaced blanket `~` mount with targeted read-only/read-write mounts; `~/.ssh`, `~/.gnupg`, `~/.aws` no longer accessible inside VMs
+- `cage destroy` no longer deletes the shared config directory
+- Shell-quote filenames in VM quadlet deployment commands
+- Journal access uses group-based permissions instead of world-readable
 
 ### Security
 - Lima VM template no longer exposes host SSH keys, GPG keys, or AWS credentials
 - Config directory (`~/.config/agentcage`) mounted read-only in VMs
 - Volumes targeting sensitive directories (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`) are rejected with a clear error
+- Default port binding changed from `0.0.0.0` to `127.0.0.1`
+- Narrow `net.ipv4.ip_unprivileged_port_start` sysctl from 0 to 80
+- Validate container image references in config (reject `latest` with registry, block `docker.io/library` prefix typos)
+- Pin Ubuntu cloud image digests in Lima template
+- Restrict permissions on `pending_secrets.json`
 
 ## [0.9.1] - 2026-03-18
 
