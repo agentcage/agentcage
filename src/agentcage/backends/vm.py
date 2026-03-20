@@ -39,10 +39,9 @@ class VmBackend:
     def build_artifacts(self, config: Config, deploy_name: str) -> None:
         """Build proxy and DNS images inside the VM.
 
-        Lima mounts the host home directory via virtiofs, so the build
-        context (inside the agentcage package) is directly accessible.
-        We copy it to /tmp inside the VM first since podman build
-        needs local filesystem access for its build containers.
+        The build context (package data directory) is copied into the VM
+        via ``limactl copy`` since the home directory is not mounted
+        (only specific directories are exposed via virtiofs for security).
         """
         inst = self._instance(deploy_name)
         if not inst.is_running():
@@ -52,25 +51,18 @@ class VmBackend:
         data_dir = Path(__file__).resolve().parent.parent / "data"
         vm_build_dir = "/tmp/agentcage-build"
 
-        # Copy build context to VM-local filesystem.
-        # Lima mounts ~ via virtiofs, so paths under $HOME are accessible
-        # inside the VM. Paths outside ~ (e.g. system-wide installs) need
-        # limactl copy instead.
+        # Copy build context into the VM via limactl copy.
+        # The home directory is not mounted (only targeted subdirectories
+        # are exposed), so we always use limactl copy regardless of where
+        # the package is installed.
         click.echo("Copying build context into VM...")
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
-        home = Path.home()
-        try:
-            data_dir.relative_to(home)
-            # Path is under home — accessible via virtiofs mount
-            inst.exec(["bash", "-c", f"cp -r {shlex.quote(str(data_dir))} {shlex.quote(vm_build_dir)}"])
-        except ValueError:
-            # Path is outside home — use limactl copy
-            inst.exec(["mkdir", "-p", vm_build_dir])
-            subprocess.run(
-                ["limactl", "copy", "-r",
-                 f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
-                check=True,
-            )
+        inst.exec(["mkdir", "-p", vm_build_dir])
+        subprocess.run(
+            ["limactl", "copy", "-r",
+             f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
+            check=True,
+        )
 
         click.echo("Building proxy image inside VM...")
         inst.exec([
@@ -206,7 +198,7 @@ class VmBackend:
                 click.echo(f"warning: failed to start {svc}: {e}", err=True)
 
         # Check for failed services and retry after a delay
-        # (handles race conditions like virtiofs mounts not being ready)
+        # (handles race conditions like virtiofs targeted mounts not being ready)
         time.sleep(VM_SERVICE_STARTUP_DELAY_S)
         inst.exec(["systemctl", "--user", "reset-failed"], check=False)
 

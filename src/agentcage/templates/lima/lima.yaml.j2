@@ -17,8 +17,17 @@ memory: "{{ mem_gb }}GiB"
 disk: "20GiB"
 
 mounts:
-  - location: "~"
+  # Security: only mount the specific directories the VM needs, instead of
+  # the entire home directory.  This prevents the VM from accessing ~/.ssh,
+  # ~/.gnupg, ~/.aws, and other sensitive host files.
+  - location: "~/.config/agentcage"
+    writable: false
+  - location: "~/.local/share/agentcage"
     writable: true
+{% for extra_mount in extra_mounts %}
+  - location: "{{ extra_mount.location }}"
+    writable: {{ extra_mount.writable | lower }}
+{% endfor %}
   - location: "/tmp/lima"
     writable: true
 

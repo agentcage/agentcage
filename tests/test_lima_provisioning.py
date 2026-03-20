@@ -8,7 +8,11 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from agentcage.lima.provisioning import _parse_port_forwards, generate_lima_config
+from agentcage.lima.provisioning import (
+    _extra_mounts_for_volumes,
+    _parse_port_forwards,
+    generate_lima_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +30,7 @@ class VmConfig:
 class ContainerConfig:
     image: str = ""
     ports: list = field(default_factory=list)
+    volumes: list = field(default_factory=list)
 
 
 @dataclass
@@ -189,3 +194,101 @@ class TestGenerateLimaConfig:
         parsed = yaml.safe_load(output)
         assert parsed["containerd"]["system"] is False
         assert parsed["containerd"]["user"] is False
+
+    def test_no_home_mount(self):
+        """The blanket ~ mount must not appear — only targeted directories."""
+        cfg = MockConfig(name="test-cage")
+        with patch("agentcage.lima.provisioning.platform.system", return_value="Linux"):
+            output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        locations = [m["location"] for m in parsed["mounts"]]
+        assert "~" not in locations
+        # Ensure the targeted mounts are present
+        assert "~/.config/agentcage" in locations
+        assert "~/.local/share/agentcage" in locations
+
+    def test_config_dir_read_only(self):
+        cfg = MockConfig(name="test-cage")
+        with patch("agentcage.lima.provisioning.platform.system", return_value="Linux"):
+            output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        for m in parsed["mounts"]:
+            if m["location"] == "~/.config/agentcage":
+                assert m["writable"] is False
+                break
+        else:
+            pytest.fail("~/.config/agentcage mount not found")
+
+    def test_data_dir_writable(self):
+        cfg = MockConfig(name="test-cage")
+        with patch("agentcage.lima.provisioning.platform.system", return_value="Linux"):
+            output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        for m in parsed["mounts"]:
+            if m["location"] == "~/.local/share/agentcage":
+                assert m["writable"] is True
+                break
+        else:
+            pytest.fail("~/.local/share/agentcage mount not found")
+
+    def test_user_volume_adds_extra_mount(self, tmp_path):
+        vol_dir = tmp_path / "project"
+        vol_dir.mkdir()
+        cfg = MockConfig(
+            name="test-cage",
+            container=ContainerConfig(volumes=[f"{vol_dir}:/workspace:ro"]),
+        )
+        with patch("agentcage.lima.provisioning.platform.system", return_value="Linux"):
+            output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        locations = [m["location"] for m in parsed["mounts"]]
+        assert str(vol_dir) in locations
+
+
+# ---------------------------------------------------------------------------
+# Tests for _extra_mounts_for_volumes
+# ---------------------------------------------------------------------------
+
+
+class TestExtraMountsForVolumes:
+    def test_empty_volumes(self):
+        assert _extra_mounts_for_volumes([]) == []
+
+    def test_blocked_ssh_dir(self):
+        with pytest.raises(ValueError, match="~/.ssh"):
+            _extra_mounts_for_volumes(["~/.ssh:/keys:ro"])
+
+    def test_blocked_gnupg_dir(self):
+        with pytest.raises(ValueError, match="~/.gnupg"):
+            _extra_mounts_for_volumes(["~/.gnupg:/gpg:ro"])
+
+    def test_blocked_aws_dir(self):
+        with pytest.raises(ValueError, match="~/.aws"):
+            _extra_mounts_for_volumes(["~/.aws:/aws:ro"])
+
+    def test_rw_volume_yields_writable_mount(self, tmp_path):
+        d = tmp_path / "data"
+        d.mkdir()
+        mounts = _extra_mounts_for_volumes([f"{d}:/data:rw"])
+        assert len(mounts) == 1
+        assert mounts[0]["writable"] is True
+
+    def test_ro_volume_yields_readonly_mount(self, tmp_path):
+        d = tmp_path / "data"
+        d.mkdir()
+        mounts = _extra_mounts_for_volumes([f"{d}:/data:ro"])
+        assert len(mounts) == 1
+        assert mounts[0]["writable"] is False
+
+    def test_no_opts_defaults_readonly(self, tmp_path):
+        d = tmp_path / "data"
+        d.mkdir()
+        mounts = _extra_mounts_for_volumes([f"{d}:/data"])
+        assert len(mounts) == 1
+        assert mounts[0]["writable"] is False
+
+    def test_deduplicates_same_host_path(self, tmp_path):
+        d = tmp_path / "data"
+        d.mkdir()
+        mounts = _extra_mounts_for_volumes([f"{d}:/a:ro", f"{d}:/b:ro"])
+        assert len(mounts) == 1
