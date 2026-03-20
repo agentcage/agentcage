@@ -347,6 +347,40 @@ class TestValidateConfig:
         with pytest.raises(ValueError, match="image"):
             validate_config(cfg)
 
+    @pytest.mark.parametrize("good_image", [
+        "ubuntu:24.04",
+        "docker.io/library/ubuntu:latest",
+        "ghcr.io/org/repo:tag",
+        "registry.example.com:5000/path/image",
+        "localhost/test:latest",
+        "node:22-slim",
+        "myimage",
+        "my-repo/my-image:v1.2.3",
+        "registry.example.com:5000/path/image@sha256:" + "a" * 64,
+    ])
+    def test_accepts_valid_image(self, tmp_path, good_image):
+        p = tmp_path / "config.yaml"
+        p.write_text(f"name: test\ncontainer:\n  image: '{good_image}'\n")
+        cfg = load_config(str(p))
+        validate_config(cfg)  # should not raise
+
+    @pytest.mark.parametrize("bad_image", [
+        "ubuntu latest",          # whitespace
+        "image;rm -rf /",         # shell metacharacter
+        "image$(id)",             # command substitution
+        "image`id`",              # backtick injection
+        "../../../etc/passwd",    # path traversal (starts with .)
+        "image|cat /etc/shadow",  # pipe injection
+        "image&bg",               # background operator
+        " leading-space",         # leading whitespace
+    ])
+    def test_rejects_invalid_image(self, tmp_path, bad_image):
+        p = tmp_path / "config.yaml"
+        p.write_text(f"name: test\ncontainer:\n  image: '{bad_image}'\n")
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match="invalid container image reference"):
+            validate_config(cfg)
+
     def test_warns_unset_env_var(self, tmp_path, monkeypatch):
         monkeypatch.delenv("NONEXISTENT_VAR_12345", raising=False)
         p = tmp_path / "config.yaml"

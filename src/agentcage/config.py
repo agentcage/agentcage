@@ -347,6 +347,13 @@ def validate_config(config: Config) -> list[str]:
         )
     if not config.container.image:
         raise ValueError("container.image is required in config")
+    if not re.match(
+        r'^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(@sha256:[a-f0-9]{64})?$',
+        config.container.image,
+    ):
+        raise ValueError(
+            f"invalid container image reference: {config.container.image!r}"
+        )
 
     if config.isolation not in ("container", "vm"):
         raise ValueError(
