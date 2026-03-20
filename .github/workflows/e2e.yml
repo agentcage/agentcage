@@ -1,0 +1,63 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      phases:
+        description: 'Phases to run (e.g. "1 2 3" or "container" or "vm")'
+        default: 'container'
+
+jobs:
+  e2e-container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install agentcage
+        run: uv tool install -e .
+
+      - name: Setup rootless Podman
+        run: |
+          # Ubuntu 24.04 ships Podman — ensure the user session works
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman uidmap slirp4netns
+          sudo loginctl enable-linger $(whoami)
+
+          # Verify rootless podman works
+          podman info --format '{{.Host.Security.Rootless}}'
+
+      - name: Pull base images
+        run: podman pull docker.io/library/node:22-slim
+
+      - name: Run E2E container tests (Phases 1-6)
+        run: |
+          PHASES="${{ github.event.inputs.phases || 'container' }}"
+          bash tests/e2e/run.sh $PHASES
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== Cage list ==="
+          agentcage cage list 2>&1 || true
+          echo "=== Podman ps ==="
+          podman ps -a 2>&1 || true
+          for cage in basic e2e-har e2e-secrets e2e-second e2e-hardened; do
+            echo "=== Logs: $cage ==="
+            agentcage cage logs "$cage" -n 20 2>&1 || true
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          for cage in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened; do
+            agentcage cage destroy "$cage" -y 2>/dev/null || true
+          done
