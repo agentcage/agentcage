@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1988,7 +1989,7 @@ def _update_dns_quadlet(cfg) -> None:
         encoded = base64.b64encode(dns_content.encode()).decode()
         inst.exec(["bash", "-c",
                    f"mkdir -p ~/.config/containers/systemd && "
-                   f"echo '{encoded}' | base64 -d > ~/.config/containers/systemd/{name}-dns.container"])
+                   f"echo '{encoded}' | base64 -d > ~/.config/containers/systemd/{shlex.quote(name)}-dns.container"])
         inst.exec(["systemctl", "--user", "daemon-reload"])
         if backend.is_running(name, "dns"):
             services = backend.service_names(name)

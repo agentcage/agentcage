@@ -175,7 +175,7 @@ class VmBackend:
                 encoded = base64.b64encode(content.encode()).decode()
                 inst.exec([
                     "bash", "-c",
-                    f"echo '{encoded}' | base64 -d > {vm_quadlet_dir}/{qfile.name}",
+                    f"echo '{encoded}' | base64 -d > {shlex.quote(vm_quadlet_dir)}/{shlex.quote(qfile.name)}",
                 ])
 
         # Bridge secrets from host Podman into VM's Podman
