@@ -9,8 +9,10 @@ mountType: virtiofs
 images:
   - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
     arch: "x86_64"
+    digest: "sha256:7aa6d9f5e8a3a55c7445b138d31a73d1187871211b2b7da9da2e1a6cbf169b21"
   - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
     arch: "aarch64"
+    digest: "sha256:99e1d482b958e6bfd0183a4c48ce6dc334e09a3e29a4560f6f5ff85593d09d1d"
 
 cpus: {{ vcpus }}
 memory: "{{ mem_gb }}GiB"

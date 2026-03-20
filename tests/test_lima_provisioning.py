@@ -183,6 +183,16 @@ class TestGenerateLimaConfig:
         assert pf[1]["hostPort"] == 9000
         assert pf[1]["hostIP"] == "127.0.0.1"
 
+    def test_images_have_digest(self):
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        for img in parsed["images"]:
+            assert "digest" in img, f"Image entry missing digest: {img}"
+            assert img["digest"].startswith("sha256:"), f"Digest not sha256: {img['digest']}"
+            # SHA-256 hex digest is 64 characters
+            assert len(img["digest"]) == len("sha256:") + 64, f"Invalid digest length: {img['digest']}"
+
     def test_containerd_disabled(self):
         cfg = MockConfig(name="test-cage")
         output = generate_lima_config(cfg)
