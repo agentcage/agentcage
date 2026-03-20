@@ -40,8 +40,8 @@ VM-specific settings. Only used when `isolation: vm`.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `vcpus` | int | `2` | Number of virtual CPUs to allocate to the VM. |
-| `mem_mb` | int | `2048` | VM memory in megabytes. |
+| `vcpus` | int | `4` | Number of virtual CPUs to allocate to the VM. |
+| `mem_mb` | int | `4096` | VM memory in megabytes. |
 
 See [Lima VM Isolation](vm.md) for setup and details.
 
@@ -110,7 +110,7 @@ Enabling this option automatically:
 - Creates a persistent storage volume for inner podman state
 - Bind-mounts a Docker CLI shim and podman config files
 
-The nested-containers base image must be built first with `agentcage build nested-base`. See the [NanoClaw guide](nanoclaw.md) for a complete walkthrough.
+The nested-containers base image must be built first with `./build.sh` from the scaffold directory. See the [NanoClaw guide](nanoclaw.md) for a complete walkthrough.
 
 ```yaml
 container:

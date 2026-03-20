@@ -8,8 +8,8 @@ name: basic
 
 isolation: vm
 vm:
-  vcpus: 2
-  mem_mb: 2048
+  vcpus: 2       # defaults: 4
+  mem_mb: 2048    # defaults: 4096
 
 container:
   image: "localhost/basic-agent:latest"

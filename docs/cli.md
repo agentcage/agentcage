@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has a top-level **`init`** command for scaffolding configs, and four command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), **`domain`** (manage cage domain filters), and **`build`** (build base images).
+The CLI has a top-level **`init`** command for scaffolding configs, and three command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), and **`domain`** (manage cage domain filters).
 
 ```
 agentcage init [NAME] [options]

@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Prerequisite check
 if ! podman image exists localhost/agentcage-nested; then
   echo "error: localhost/agentcage-nested not found" >&2
-  echo "  Run: agentcage build nested-base" >&2
+  echo "  Build it from the agentcage nested containers Containerfile." >&2
   exit 1
 fi
 podman build -t agentcage-scaffold-nanoclaw \

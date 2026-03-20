@@ -43,7 +43,7 @@ Three images are required, built in order:
 
 ```bash
 # Base image: node:22-slim + podman + fuse-overlayfs
-agentcage build nested-base
+podman build -t agentcage-nested -f Containerfile.nested .
 
 # Cage image: NanoClaw installed + patched for agentcage
 ./build.sh
@@ -253,7 +253,7 @@ See [Security & Threat Model](../../docs/security.md) for the full threat model 
 
 ## Troubleshooting
 
-**`agentcage build nested-base` fails**: The build requires several capabilities (`CAP_SETFCAP`, `CAP_SETUID`, `CAP_SETGID`, `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`). These are passed automatically. If the build still fails, check that rootless podman is working: `podman run --rm alpine echo hello`.
+**`podman build -t agentcage-nested -f Containerfile.nested .` fails**: The build requires several capabilities (`CAP_SETFCAP`, `CAP_SETUID`, `CAP_SETGID`, `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`). These are passed automatically. If the build still fails, check that rootless podman is working: `podman run --rm alpine echo hello`.
 
 **`./build.sh` fails**: Requires `localhost/agentcage-nested` to be built first. The build clones the NanoClaw repository from GitHub and patches the compiled JavaScript. If the patch fails, the NanoClaw source may have changed -- check the error message for which pattern failed to match.
 
