@@ -1,0 +1,11 @@
+name: e2e-second
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${AGENT_DIR}:/app:ro"
+  ports:
+    - "127.0.0.1:${E2E_PORT_SECOND}:3000"
+domains:
+  allow:
+    - example.com

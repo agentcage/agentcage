@@ -1,0 +1,15 @@
+name: e2e-vm
+isolation: vm
+vm:
+  vcpus: 2
+  mem_mb: 2048
+container:
+  image: "localhost/basic-agent:latest"
+  command: ["node", "/app/agent.js"]
+  ports:
+    - "127.0.0.1:${E2E_PORT_VM}:3000"
+domains:
+  allow:
+    - httpbin.org
+capture:
+  enable_har: true
