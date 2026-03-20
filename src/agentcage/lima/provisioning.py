@@ -19,7 +19,7 @@ def _parse_port_forwards(ports: list[str]) -> list[dict]:
     """Parse Docker-style port specs into Lima portForwards dicts.
 
     Accepted formats:
-      "HOST:GUEST"           -> host_bind="0.0.0.0", host_port=HOST, guest_port=GUEST
+      "HOST:GUEST"           -> host_bind="127.0.0.1", host_port=HOST, guest_port=GUEST
       "BIND:HOST:GUEST"      -> host_bind=BIND, host_port=HOST, guest_port=GUEST
 
     Returns a list of dicts with keys: host_bind, host_port, guest_port.
@@ -28,7 +28,7 @@ def _parse_port_forwards(ports: list[str]) -> list[dict]:
     for spec in ports:
         parts = spec.split(":")
         if len(parts) == 2:
-            host_bind = "0.0.0.0"
+            host_bind = "127.0.0.1"
             host_port = int(parts[0])
             guest_port = int(parts[1])
         elif len(parts) == 3:

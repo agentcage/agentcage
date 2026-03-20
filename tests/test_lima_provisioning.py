@@ -56,7 +56,7 @@ def _make_config(**kwargs) -> MockConfig:
 class TestParsePortForwards:
     def test_two_part_spec(self):
         result = _parse_port_forwards(["8080:80"])
-        assert result == [{"host_bind": "0.0.0.0", "host_port": 8080, "guest_port": 80}]
+        assert result == [{"host_bind": "127.0.0.1", "host_port": 8080, "guest_port": 80}]
 
     def test_three_part_spec(self):
         result = _parse_port_forwards(["127.0.0.1:9000:9000"])
@@ -65,7 +65,7 @@ class TestParsePortForwards:
     def test_multiple_specs(self):
         result = _parse_port_forwards(["8080:80", "0.0.0.0:443:443"])
         assert len(result) == 2
-        assert result[0] == {"host_bind": "0.0.0.0", "host_port": 8080, "guest_port": 80}
+        assert result[0] == {"host_bind": "127.0.0.1", "host_port": 8080, "guest_port": 80}
         assert result[1] == {"host_bind": "0.0.0.0", "host_port": 443, "guest_port": 443}
 
     def test_empty_list(self):
@@ -174,10 +174,10 @@ class TestGenerateLimaConfig:
         parsed = yaml.safe_load(output)
         pf = parsed["portForwards"]
         assert len(pf) == 2
-        # First: 8080:80 -> host_bind=0.0.0.0
+        # First: 8080:80 -> host_bind=127.0.0.1
         assert pf[0]["guestPort"] == 80
         assert pf[0]["hostPort"] == 8080
-        assert pf[0]["hostIP"] == "0.0.0.0"
+        assert pf[0]["hostIP"] == "127.0.0.1"
         # Second: 127.0.0.1:9000:9000
         assert pf[1]["guestPort"] == 9000
         assert pf[1]["hostPort"] == 9000

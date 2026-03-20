@@ -219,7 +219,7 @@ def generate_quadlets(
         if len(parts) == 3:
             host_bind, host_port, container_port = parts
         elif len(parts) == 2:
-            host_bind, host_port, container_port = "0.0.0.0", parts[0], parts[1]
+            host_bind, host_port, container_port = "127.0.0.1", parts[0], parts[1]
         else:
             continue
         if container_port == "8080":
