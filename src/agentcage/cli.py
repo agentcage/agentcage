@@ -1981,11 +1981,18 @@ def _update_dns_quadlet(cfg) -> None:
     stopped.  We stop all three explicitly, then start in dependency
     order so everything comes back up cleanly.
     """
-    from agentcage.quadlets import render_dns_quadlet, collect_used_octets as _collect_dns
+    from agentcage.quadlets import render_dns_quadlet
 
     backend = get_backend(cfg)
     name = cfg.name
-    dns_content = render_dns_quadlet(cfg, used_octets=_collect_dns(exclude=name))
+
+    # Read the actual deployed network octet from metadata so we
+    # preserve the existing subnet.  Recomputing via the hash could
+    # yield a different octet if collision resolution shifted it at
+    # deploy time.
+    meta = state.load_metadata(name)
+    octet = meta.get("network_octet")
+    dns_content = render_dns_quadlet(cfg, network_octet=octet)
 
     if cfg.isolation == "vm":
         inst = LimaInstance(name)

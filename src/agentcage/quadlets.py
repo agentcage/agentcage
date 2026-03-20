@@ -145,15 +145,30 @@ def _make_env() -> SandboxedEnvironment:
 def render_dns_quadlet(
     config: Config,
     used_octets: set[int] | None = None,
+    network_octet: int | None = None,
 ) -> str:
     """Render just the DNS container quadlet for a given config.
 
     Used by ``domain add``/``domain rm`` to update DNS forwarding rules
     without a full rebuild.
+
+    When *network_octet* is provided the addresses are derived directly
+    from that octet, bypassing the hash-based allocation (and the
+    *used_octets* parameter is ignored).  This is the correct path for
+    updates to an already-deployed cage whose subnet must not change.
     """
     env = _make_env()
     name = config.name
-    addrs = cage_network_addrs(name, used_octets=used_octets)
+    if network_octet is not None:
+        prefix = f"10.89.{network_octet}"
+        addrs = {
+            "subnet": f"{prefix}.0/24",
+            "ip_cage": f"{prefix}.2",
+            "ip_dns": f"{prefix}.10",
+            "ip_proxy": f"{prefix}.11",
+        }
+    else:
+        addrs = cage_network_addrs(name, used_octets=used_octets)
     dns_allowlist = _effective_dns_allowlist(config)
     return env.get_template("dns.container.j2").render(
         name=name,
