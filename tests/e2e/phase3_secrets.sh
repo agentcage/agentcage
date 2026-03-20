@@ -33,15 +33,22 @@ else
   e2e_fail "3.2" "Placeholder in cage env" "got '$OUTPUT', expected '{{MY_API_KEY}}'"
 fi
 
-# 3.3: Injection on outbound
+# 3.3: Injection on outbound — send placeholder, then poll audit for injection record
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"key":"{{MY_API_KEY}}"}' "$BASE/check-secret" >/dev/null 2>&1 || true
-sleep 2
-OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 5 2>&1) || true
-if echo "$OUTPUT" | grep -q "secrets_injected"; then
+FOUND=false
+for _i in $(seq 1 10); do
+  sleep 2
+  OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 10 2>&1) || true
+  if echo "$OUTPUT" | grep -q "secrets_injected"; then
+    FOUND=true
+    break
+  fi
+done
+if [ "$FOUND" = true ]; then
   e2e_pass "3.3" "Injection on outbound"
 else
-  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit"
+  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 20s"
 fi
 
 # 3.4: Set new secret
