@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import platform
 from pathlib import Path
 
@@ -49,6 +50,7 @@ def generate_lima_config(config: object) -> str:
       - config.vm.vcpus (int)
       - config.vm.mem_mb (int)
       - config.container.ports (list[str])
+      - config.container.volumes (list[str])
 
     Returns the rendered Lima YAML as a string.
     """
@@ -71,6 +73,31 @@ def generate_lima_config(config: object) -> str:
     # Parse port forwards
     port_forwards = _parse_port_forwards(config.container.ports)
 
+    # Build minimal virtiofs mounts (no blanket ~ mount)
+    mounts = [
+        {"location": "~/.config/agentcage", "writable": False},   # deployment state, proxy config
+        {"location": "~/.config/containers", "writable": True},   # quadlet files written by _deploy_cage
+        {"location": "~/.local/share/agentcage", "writable": True},  # patches + capture output
+    ]
+
+    # Add user-defined volume host paths as individual mounts
+    for vol_spec in config.container.volumes:
+        parts = vol_spec.split(":")
+        host_path = os.path.expanduser(parts[0])
+        # Determine if writable: default is writable, ":ro" suffix makes it read-only
+        writable = True
+        if len(parts) >= 3 and parts[-1] == "ro":
+            writable = False
+        mounts.append({"location": host_path, "writable": writable})
+
+    # Add agentcage package data dir if under home (for build context)
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    try:
+        data_dir.relative_to(Path.home())
+        mounts.append({"location": str(data_dir), "writable": False})
+    except ValueError:
+        pass  # Outside home, will use limactl copy instead
+
     # Render main Lima YAML
     lima_tmpl = env.get_template("lima.yaml.j2")
     return lima_tmpl.render(
@@ -80,4 +107,5 @@ def generate_lima_config(config: object) -> str:
         mem_gb=mem_gb,
         provision_script=provision_script,
         port_forwards=port_forwards,
+        mounts=mounts,
     )

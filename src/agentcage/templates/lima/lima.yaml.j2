@@ -17,12 +17,10 @@ memory: "{{ mem_gb }}GiB"
 disk: "20GiB"
 
 mounts:
-  - location: "~"
-    writable: false
-  - location: "~/.config/containers"
-    writable: true
-  - location: "~/.local/share/agentcage"
-    writable: true
+{% for mount in mounts %}
+  - location: "{{ mount.location }}"
+    writable: {{ mount.writable | lower }}
+{% endfor %}
   - location: "/tmp/lima"
     writable: true
 

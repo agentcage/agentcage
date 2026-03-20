@@ -26,6 +26,7 @@ class VmConfig:
 class ContainerConfig:
     image: str = ""
     ports: list = field(default_factory=list)
+    volumes: list = field(default_factory=list)
 
 
 @dataclass
@@ -190,20 +191,23 @@ class TestGenerateLimaConfig:
         assert parsed["containerd"]["system"] is False
         assert parsed["containerd"]["user"] is False
 
-    def test_home_mount_is_read_only(self):
+    def test_no_blanket_home_mount(self):
+        """Verify ~ does NOT appear as a mount location."""
         cfg = MockConfig(name="test-cage")
         output = generate_lima_config(cfg)
         parsed = yaml.safe_load(output)
         mounts = parsed["mounts"]
-        home_mount = next(m for m in mounts if m["location"] == "~")
-        assert home_mount["writable"] is False
+        home_locations = [m for m in mounts if m["location"] == "~"]
+        assert home_locations == [], "Expected no blanket ~ mount"
 
-    def test_writable_mounts_for_containers_and_state(self):
+    def test_fixed_subdirectory_mounts(self):
+        """Verify the 3 fixed subdirectory mounts are present with correct writable flags."""
         cfg = MockConfig(name="test-cage")
         output = generate_lima_config(cfg)
         parsed = yaml.safe_load(output)
         mounts = parsed["mounts"]
         locations = {m["location"]: m["writable"] for m in mounts}
+        assert locations["~/.config/agentcage"] is False
         assert locations["~/.config/containers"] is True
         assert locations["~/.local/share/agentcage"] is True
 
@@ -214,3 +218,48 @@ class TestGenerateLimaConfig:
         mounts = parsed["mounts"]
         tmp_mount = next(m for m in mounts if m["location"] == "/tmp/lima")
         assert tmp_mount["writable"] is True
+
+    def test_user_volumes_appear_as_mounts(self):
+        """User-defined volumes from config should appear as additional mounts."""
+        cfg = MockConfig(
+            name="test-cage",
+            container=ContainerConfig(
+                volumes=["~/data:/app/data", "~/secrets:/run/secrets:ro"],
+            ),
+        )
+        output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        mounts = parsed["mounts"]
+        locations = {m["location"]: m["writable"] for m in mounts}
+        import os
+        expanded_data = os.path.expanduser("~/data")
+        expanded_secrets = os.path.expanduser("~/secrets")
+        assert locations[expanded_data] is True
+        assert locations[expanded_secrets] is False
+
+    def test_data_dir_mount_when_under_home(self):
+        """The agentcage data dir should appear as a read-only mount when under home."""
+        from pathlib import Path
+        cfg = MockConfig(name="test-cage")
+        data_dir = Path(__file__).resolve().parent.parent / "src" / "agentcage" / "data"
+        # The actual data_dir used in provisioning.py
+        real_data_dir = str(
+            Path(__file__).resolve().parent.parent
+            / "src" / "agentcage" / "data"
+        )
+        output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        mounts = parsed["mounts"]
+        # The data dir from provisioning.py is computed relative to provisioning.py itself
+        # Check that if it's under home, it appears as a read-only mount
+        from agentcage.lima.provisioning import _TEMPLATES_DIR
+        actual_data_dir = str(_TEMPLATES_DIR.parent.parent / "data")
+        try:
+            Path(actual_data_dir).relative_to(Path.home())
+            # It's under home, so it should be in mounts
+            data_mounts = [m for m in mounts if m["location"] == actual_data_dir]
+            assert len(data_mounts) == 1, f"Expected data dir mount at {actual_data_dir}"
+            assert data_mounts[0]["writable"] is False
+        except ValueError:
+            # Not under home, skip the assertion
+            pass
