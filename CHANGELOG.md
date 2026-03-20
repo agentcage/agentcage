@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-03-20
+
+### Added
+- Modular E2E test suite (`tests/e2e/`) with 7 phases covering container and VM modes
+- E2E CI workflow — container tests (phases 1-6) run on every PR via GitHub Actions
+
+### Fixed
+- `domain add`/`domain rm` crash: DNS quadlet regenerated with wrong subnet IP when hash collision shifted the octet at deploy time
+- HAR capture `Permission denied` in rootless Podman — capture directory ownership now set via `ExecStartPre` with virtiofs fallback
+- VM mount isolation: replaced blanket `~` mount with targeted read-only/read-write mounts; `~/.ssh`, `~/.gnupg`, `~/.aws` no longer accessible inside VMs
+
+### Security
+- Lima VM template no longer exposes host SSH keys, GPG keys, or AWS credentials
+- Config directory (`~/.config/agentcage`) mounted read-only in VMs
+- Volumes targeting sensitive directories (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`) are rejected with a clear error
+
 ## [0.9.1] - 2026-03-18
 
 ### Added
