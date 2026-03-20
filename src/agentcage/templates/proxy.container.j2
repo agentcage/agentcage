@@ -19,7 +19,7 @@ Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 {% endif %}
 AddCapability=NET_ADMIN
-Sysctl=net.ipv4.ip_unprivileged_port_start=0
+Sysctl=net.ipv4.ip_unprivileged_port_start=80
 {% if inbound_forwards %}
 Exec=mitmdump -s /app/addon.py --mode regular@{{ ip_proxy }}:8080 --mode transparent@8443{% for fwd in inbound_forwards %} --mode reverse:http://{{ ip_cage }}:{{ fwd.container_port }}@0.0.0.0:{{ fwd.container_port }}{% endfor %} --set connection_strategy=lazy --set keep_host_header=true{% if not log_proxy_connections %} --set flow_detail=0{% endif %}{% if passthrough_regex %} --ignore-hosts "{{ passthrough_regex }}"{% endif %}
 
