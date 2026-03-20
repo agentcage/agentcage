@@ -342,12 +342,16 @@ class VmBackend:
             inst.delete()
             removed.append(f"lima-instance:{inst.name}")
 
-        # Remove local config directory
-        unit_dir = self.unit_dir()
-        if unit_dir.exists():
+        # Remove cage-specific config files (not the shared directory)
+        lima_yaml = self.unit_dir() / "lima.yaml"
+        if lima_yaml.exists():
+            lima_yaml.unlink()
+            removed.append(f"config:{lima_yaml}")
+        quadlets_dir = self.unit_dir() / "quadlets"
+        if quadlets_dir.exists():
             import shutil
-            shutil.rmtree(unit_dir)
-            removed.append(f"config-dir:{unit_dir}")
+            shutil.rmtree(quadlets_dir)
+            removed.append(f"quadlets:{quadlets_dir}")
 
         return removed
 
