@@ -1,0 +1,45 @@
+name: E2E Tests
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  e2e-container:
+    name: E2E Container (Phases 1-6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install agentcage
+        run: uv tool install -e .
+
+      - name: Setup rootless Podman
+        run: |
+          # Ubuntu 24.04 ships Podman — ensure user session works
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman uidmap slirp4netns
+          sudo loginctl enable-linger $(whoami)
+
+          # Ensure XDG_RUNTIME_DIR is set (GitHub runners may not have it)
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chown $(whoami) "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+
+          # Verify rootless Podman works
+          podman info --format '{{.Host.Security.Rootless}}'
+
+      - name: Pull base images
+        run: podman pull docker.io/library/node:22-slim
+
+      - name: Run E2E container tests
+        run: bash tests/e2e/run.sh container
