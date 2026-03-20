@@ -301,7 +301,12 @@ def cage_create(config_path: str, secrets: tuple):
             # Store in a temp file for _deploy_cage to pick up
             secrets_file = state.deployment_dir(name) / "pending_secrets.json"
             import json as _json
-            secrets_file.write_text(_json.dumps(_pending_secrets))
+            # Create with restrictive permissions (0o600) to protect secrets at rest
+            fd = os.open(str(secrets_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, _json.dumps(_pending_secrets).encode())
+            finally:
+                os.close(fd)
 
     config_host_path = state.save_proxy_config(name)
 

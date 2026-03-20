@@ -260,20 +260,22 @@ class VmBackend:
         try:
             pending = _json.loads(secrets_file.read_text())
         except Exception:
+            secrets_file.unlink(missing_ok=True)
             return
 
-        for key, value in pending:
-            full = f"{name}.{key}"
-            inst.exec(["podman", "secret", "rm", full], check=False)
-            subprocess.run(
-                ["limactl", "shell", inst.name, "--",
-                 "podman", "secret", "create", full, "-"],
-                input=value, text=True, check=True,
-            )
-            click.echo(f"  Secret '{full}' set in VM.")
-
-        # Clean up
-        secrets_file.unlink()
+        try:
+            for key, value in pending:
+                full = f"{name}.{key}"
+                inst.exec(["podman", "secret", "rm", full], check=False)
+                subprocess.run(
+                    ["limactl", "shell", inst.name, "--",
+                     "podman", "secret", "create", full, "-"],
+                    input=value, text=True, check=True,
+                )
+                click.echo(f"  Secret '{full}' set in VM.")
+        finally:
+            # Always clean up secrets file, even on error
+            secrets_file.unlink(missing_ok=True)
 
     def _bridge_secrets(self, name: str, inst: LimaInstance) -> None:
         """Copy Podman secrets from the host into the VM's Podman store."""
