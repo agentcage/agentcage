@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import platform
 from pathlib import Path
 
@@ -13,6 +14,16 @@ _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "lima"
 
 # Default Lima user inside the VM
 _LIMA_USER = "lima"
+
+# Directories that must NEVER be mounted into the VM, even if a user volume
+# points inside them.  Checked as resolved real-path prefixes.
+_BLOCKED_MOUNT_DIRS = (
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".docker",
+)
 
 
 def _parse_port_forwards(ports: list[str]) -> list[dict]:
@@ -41,6 +52,57 @@ def _parse_port_forwards(ports: list[str]) -> list[dict]:
     return result
 
 
+def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
+    """Derive additional Lima mounts for user-defined container volumes.
+
+    Each volume spec ``host:container[:opts]`` needs the *host* portion
+    visible inside the VM via virtiofs.  We resolve the host path and
+    reject anything under a blocked sensitive directory.
+
+    Returns a list of ``{"location": ..., "writable": ...}`` dicts.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    seen: set[str] = set()
+    mounts: list[dict] = []
+
+    for vol in volumes:
+        host_part = vol.split(":")[0]
+        host_path = os.path.realpath(os.path.expanduser(host_part))
+
+        # Skip if already covered by the default mounts
+        config_dir = os.path.realpath(os.path.expanduser("~/.config/agentcage"))
+        data_dir = os.path.realpath(os.path.expanduser("~/.local/share/agentcage"))
+        if host_path.startswith(config_dir + os.sep) or host_path == config_dir:
+            continue
+        if host_path.startswith(data_dir + os.sep) or host_path == data_dir:
+            continue
+
+        # Block sensitive directories
+        for blocked in _BLOCKED_MOUNT_DIRS:
+            blocked_path = os.path.join(home, blocked)
+            if host_path == blocked_path or host_path.startswith(blocked_path + os.sep):
+                raise ValueError(
+                    f"volume host path {host_part!r} resolves under ~/{blocked} "
+                    f"which must not be exposed to the VM"
+                )
+
+        if host_path in seen:
+            continue
+        seen.add(host_path)
+
+        # Determine writable from volume opts (default read-only for safety)
+        parts = vol.split(":")
+        writable = False
+        if len(parts) >= 3:
+            opts = parts[2].lower().split(",")
+            if "rw" in opts:
+                writable = True
+
+        mounts.append({"location": host_path, "writable": writable})
+
+    return mounts
+
+
 def generate_lima_config(config: object) -> str:
     """Generate a Lima YAML configuration string for *config*.
 
@@ -49,6 +111,7 @@ def generate_lima_config(config: object) -> str:
       - config.vm.vcpus (int)
       - config.vm.mem_mb (int)
       - config.container.ports (list[str])
+      - config.container.volumes (list[str])
 
     Returns the rendered Lima YAML as a string.
     """
@@ -71,6 +134,10 @@ def generate_lima_config(config: object) -> str:
     # Parse port forwards
     port_forwards = _parse_port_forwards(config.container.ports)
 
+    # Compute extra mounts for user-defined volumes
+    volumes = getattr(getattr(config, "container", None), "volumes", []) or []
+    extra_mounts = _extra_mounts_for_volumes(volumes)
+
     # Render main Lima YAML
     lima_tmpl = env.get_template("lima.yaml.j2")
     return lima_tmpl.render(
@@ -80,4 +147,5 @@ def generate_lima_config(config: object) -> str:
         mem_gb=mem_gb,
         provision_script=provision_script,
         port_forwards=port_forwards,
+        extra_mounts=extra_mounts,
     )
