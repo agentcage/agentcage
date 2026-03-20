@@ -15,9 +15,10 @@ driver = "overlay"
 mount_program = "/usr/bin/fuse-overlayfs"
 STOR
 
-# Allow unprivileged processes to bind low ports (needed for proxy reverse mode)
-sysctl -w net.ipv4.ip_unprivileged_port_start=0
-echo "net.ipv4.ip_unprivileged_port_start=0" > /etc/sysctl.d/99-agentcage.conf
+# Allow unprivileged processes to bind ports >= 80 (needed for proxy reverse mode).
+# Setting to 80 instead of 0 blocks binding sensitive low ports (1-79, incl. SSH 22, DNS 53).
+sysctl -w net.ipv4.ip_unprivileged_port_start=80
+echo "net.ipv4.ip_unprivileged_port_start=80" > /etc/sysctl.d/99-agentcage.conf
 
 # Allow the lima user to read journald logs (needed for podman logs + agentcage cage logs)
 usermod -aG systemd-journal {{ lima_user }} || true
