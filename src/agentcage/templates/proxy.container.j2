@@ -15,7 +15,7 @@ Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 Environment="PYTHONUNBUFFERED=1"
 Volume={{ name }}-certs.volume:/home/mitmproxy/.mitmproxy:Z
 {% if capture_enabled %}
-Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
+Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z,U
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 {% endif %}
 AddCapability=NET_ADMIN
