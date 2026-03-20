@@ -42,8 +42,10 @@ CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=htt
 CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
 CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
 CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-if [ "$CODE_BASIC_HTTPBIN" = "200" ] && [ "$CODE_BASIC_EXAMPLE" = "403" ] && \
-   [ "$CODE_SECOND_EXAMPLE" = "200" ] && [ "$CODE_SECOND_HTTPBIN" = "403" ]; then
+# Blocked domains return 403 (proxy) or 502 (DNS sinkhole) depending on timing
+is_blocked() { [ "$1" = "403" ] || [ "$1" = "502" ]; }
+if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
+   [ "$CODE_SECOND_EXAMPLE" = "200" ] && is_blocked "$CODE_SECOND_HTTPBIN"; then
   e2e_pass "5.2" "Subnet isolation"
 else
   e2e_fail "5.2" "Subnet isolation" \
