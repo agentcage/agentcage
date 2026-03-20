@@ -18,6 +18,10 @@ disk: "20GiB"
 
 mounts:
   - location: "~"
+    writable: false
+  - location: "~/.config/containers"
+    writable: true
+  - location: "~/.local/share/agentcage"
     writable: true
   - location: "/tmp/lima"
     writable: true

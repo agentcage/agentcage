@@ -189,3 +189,28 @@ class TestGenerateLimaConfig:
         parsed = yaml.safe_load(output)
         assert parsed["containerd"]["system"] is False
         assert parsed["containerd"]["user"] is False
+
+    def test_home_mount_is_read_only(self):
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        mounts = parsed["mounts"]
+        home_mount = next(m for m in mounts if m["location"] == "~")
+        assert home_mount["writable"] is False
+
+    def test_writable_mounts_for_containers_and_state(self):
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        mounts = parsed["mounts"]
+        locations = {m["location"]: m["writable"] for m in mounts}
+        assert locations["~/.config/containers"] is True
+        assert locations["~/.local/share/agentcage"] is True
+
+    def test_tmp_lima_mount_writable(self):
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        mounts = parsed["mounts"]
+        tmp_mount = next(m for m in mounts if m["location"] == "/tmp/lima")
+        assert tmp_mount["writable"] is True
