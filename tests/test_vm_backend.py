@@ -323,7 +323,7 @@ class TestDestroyResources:
         mock_inst.delete.assert_not_called()
         assert not any("lima-instance" in r for r in removed)
 
-    def test_removes_unit_dir_if_exists(self, tmp_path):
+    def test_removes_cage_config_files_not_shared_dir(self, tmp_path):
         backend = VmBackend()
         mock_inst = MagicMock()
         mock_inst.exists.return_value = False
@@ -333,13 +333,21 @@ class TestDestroyResources:
         unit_dir = tmp_path / "lima"
         unit_dir.mkdir()
         (unit_dir / "lima.yaml").write_text("content")
+        quadlets_dir = unit_dir / "quadlets"
+        quadlets_dir.mkdir()
+        (quadlets_dir / "test.container").write_text("content")
 
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch.object(backend, "unit_dir", return_value=unit_dir):
             removed = backend.destroy_resources("testcage")
 
-        assert not unit_dir.exists()
-        assert f"config-dir:{unit_dir}" in removed
+        # Shared parent directory must be preserved
+        assert unit_dir.exists()
+        # But cage-specific files should be removed
+        assert not (unit_dir / "lima.yaml").exists()
+        assert not quadlets_dir.exists()
+        assert f"config:{unit_dir / 'lima.yaml'}" in removed
+        assert f"quadlets:{quadlets_dir}" in removed
 
     def test_removes_secrets_by_default(self):
         backend = VmBackend()
