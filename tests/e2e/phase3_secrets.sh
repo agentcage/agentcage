@@ -35,18 +35,18 @@ fi
 
 # 3.3: Injection on outbound — send placeholder, then poll audit for injection record.
 # The proxy intercepts the placeholder in the outbound request and replaces it with
-# the real secret. We don't need httpbin to actually respond — we just need the proxy
-# to see the placeholder. Try multiple target URLs in case one is unreachable.
+# the real secret. The proxy logs "secrets_injected" only after the round-trip completes,
+# so we need httpbin.org to actually respond. Wait for proxy readiness first.
+wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 90 || true
 FOUND=false
-DEADLINE=$((SECONDS + 60))
+DEADLINE=$((SECONDS + 90))
 _delay=2
 while [ "$SECONDS" -lt "$DEADLINE" ]; do
-  # Try the proxy endpoint first, then fall back to a simple GET with placeholder in query
-  curl -s --max-time 5 -X POST -H 'Content-Type: application/json' \
+  # Trigger injection: POST placeholder to check-secret (which forwards to httpbin.org/post)
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
     -d '{"key":"{{MY_API_KEY}}"}' "$BASE/check-secret" >/dev/null 2>&1 || true
-  curl -s --max-time 5 "$BASE/fetch?url=https://httpbin.org/get&token={{MY_API_KEY}}" >/dev/null 2>&1 || true
   sleep "$_delay"
-  OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 40 2>&1) || true
+  OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 50 2>&1) || true
   if echo "$OUTPUT" | grep -q "secrets_injected"; then
     FOUND=true
     break
@@ -57,7 +57,7 @@ done
 if [ "$FOUND" = true ]; then
   e2e_pass "3.3" "Injection on outbound"
 else
-  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 60s"
+  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 90s"
 fi
 
 # 3.4: Set new secret
