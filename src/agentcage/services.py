@@ -170,8 +170,15 @@ def build_and_deploy(
     podman: Podman,
     used_octets: set[int] | None = None,
     quiet: bool = False,
+    skip_build: bool = False,
+    skip_install: bool = False,
 ):
-    """Build images, generate quadlets, install, and start."""
+    """Build images, generate quadlets, install, and start.
+
+    When *skip_build* is True, the image build step is skipped (cache hit).
+    When *skip_install* is True, quadlet generation/install and daemon-reload
+    are skipped, but services are still started.
+    """
     from agentcage.quadlets import cage_network_addrs
 
     backend = get_backend(cfg)
@@ -184,10 +191,12 @@ def build_and_deploy(
     with open(resolv_path, "w") as f:
         f.write(f"nameserver {addrs['ip_dns']}\n")
 
-    backend.build_artifacts(cfg, deploy_name, quiet=quiet)
+    if not skip_build:
+        backend.build_artifacts(cfg, deploy_name, quiet=quiet)
 
-    units = backend.generate_units(cfg, config_host_path, patches_work, deploy_name, used_octets=used_octets)
-    backend.install_units(units, quiet=quiet)
+    if not skip_install:
+        units = backend.generate_units(cfg, config_host_path, patches_work, deploy_name, used_octets=used_octets)
+        backend.install_units(units, quiet=quiet)
 
     # Persist the actual assigned network octet so collect_used_octets()
     # can read the real value instead of recomputing the hash (which
@@ -236,5 +245,14 @@ def destroy_cage(
     if state.deployment_exists(name):
         state.remove_deployment(name)
         removed.append(f"state:{name}")
+
+    # Clean up cache markers for this cage
+    try:
+        from agentcage.cache import clear_cage_cache
+        n = clear_cage_cache(name)
+        if n > 0:
+            removed.append(f"cache:{n} markers")
+    except Exception:
+        pass  # Cache cleanup failure is not fatal
 
     return removed

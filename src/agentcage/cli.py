@@ -245,6 +245,65 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
     sys.exit(exit_code)
 
 
+# ── cache group ───────────────────────────────────────────
+
+
+@main.group()
+def cache():
+    """Manage the build cache."""
+
+
+@cache.command("clear")
+@click.argument("name", required=False, default=None)
+def cache_clear(name: str | None):
+    """Clear the build cache.
+
+    If NAME is given, only clear cache for that cage/scaffold.
+    Otherwise, clear the entire cache.
+    """
+    from agentcage.cache import clear_all_cache, clear_cage_cache
+
+    if name:
+        n = clear_cage_cache(name)
+        if n > 0:
+            click.echo(f"Cleared {n} cache marker(s) for '{name}'.")
+        else:
+            click.echo(f"No cache entries found for '{name}'.")
+    else:
+        n = clear_all_cache()
+        if n > 0:
+            click.echo(f"Cleared {n} cache marker(s).")
+        else:
+            click.echo("Cache is already empty.")
+
+
+@cache.command("status")
+def cache_status():
+    """Show cache status."""
+    from agentcage.cache import CACHE_DIR
+
+    images_dir = CACHE_DIR / "images"
+    quadlets_dir = CACHE_DIR / "quadlets"
+
+    image_markers = list(images_dir.iterdir()) if images_dir.is_dir() else []
+    quadlet_markers = list(quadlets_dir.iterdir()) if quadlets_dir.is_dir() else []
+
+    if not image_markers and not quadlet_markers:
+        click.echo("Cache is empty.")
+        return
+
+    if image_markers:
+        click.echo(f"Image cache: {len(image_markers)} entries")
+        for m in sorted(image_markers):
+            tag = m.read_text().strip() if m.stat().st_size > 0 else "(empty)"
+            click.echo(f"  {m.stem} → {tag}")
+
+    if quadlet_markers:
+        click.echo(f"Quadlet cache: {len(quadlet_markers)} entries")
+        for m in sorted(quadlet_markers):
+            click.echo(f"  {m.stem}")
+
+
 # ── cage group ────────────────────────────────────────────
 
 
