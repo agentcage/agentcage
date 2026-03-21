@@ -220,9 +220,12 @@ def init(name: str | None, output: str, image: str, isolation: str,
 @click.option("-s", "--set-secret", "secrets", multiple=True,
               help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
 @click.option("-v", "--verbose", is_flag=True, help="Show full build output.")
+@click.option("--isolation", type=click.Choice(["container", "vm"]), default=None,
+              help="Isolation backend (default: auto-detect from platform).")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
-        secrets: tuple[str, ...], verbose: bool, extra_args: tuple[str, ...]):
+        secrets: tuple[str, ...], verbose: bool, isolation: str | None,
+        extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
 
     \b
@@ -230,12 +233,14 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
       agentcage run claude-code
       agentcage run codex --project /path/to/repo
       agentcage run claude-code -s ANTHROPIC_API_KEY=sk-...
+      agentcage run claude-code --isolation vm
       agentcage run claude-code --name my-session -- claude --help
     """
     from agentcage.run import execute
     exit_code = execute(
         scaffold, project_dir=project_dir, name=name,
         secrets=secrets, extra_args=extra_args, verbose=verbose,
+        isolation=isolation,
     )
     sys.exit(exit_code)
 

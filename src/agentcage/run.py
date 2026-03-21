@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import random
 import shutil
 import signal
@@ -83,8 +84,11 @@ def generate_name(scaffold: str) -> str:
     raise RuntimeError("Could not generate a unique cage name after 100 attempts")
 
 
-def _monitor_proxy(proxy_container: str, stop_event: threading.Event) -> None:
+def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
     """Tail proxy logs and print blocked-request notifications to the terminal.
+
+    *log_cmd* is the full command to stream proxy logs (e.g.
+    ``["podman", "logs", "-f", "name-proxy"]`` or the limactl equivalent).
 
     Runs as a daemon thread alongside the interactive session.  Writes
     directly to ``/dev/tty`` so output appears even while podman exec
@@ -97,7 +101,7 @@ def _monitor_proxy(proxy_container: str, stop_event: threading.Event) -> None:
 
     try:
         proc = subprocess.Popen(
-            ["podman", "logs", "-f", proxy_container],
+            log_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -142,6 +146,11 @@ def _monitor_proxy(proxy_container: str, stop_event: threading.Event) -> None:
         tty.close()
 
 
+def _detect_isolation() -> str:
+    """Return 'vm' on macOS, 'container' on Linux."""
+    return "vm" if platform.system() == "Darwin" else "container"
+
+
 def execute(
     scaffold: str,
     *,
@@ -150,6 +159,7 @@ def execute(
     secrets: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
     verbose: bool = False,
+    isolation: str | None = None,
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
 
@@ -197,10 +207,13 @@ def execute(
     from importlib.metadata import version
     output.banner(version("agentcage"))
 
+    # Determine isolation mode
+    isolation = isolation or _detect_isolation()
+
     # Render config from scaffold template
     os.environ["PROJECT_DIR"] = project_dir
     config_text, image_tag = render_config(
-        cage_name, scaffold=scaffold, isolation="container",
+        cage_name, scaffold=scaffold, isolation=isolation,
     )
 
     # Write temp config file
@@ -337,17 +350,27 @@ def execute(
     proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
+    # Build exec and log commands — VM mode goes through limactl
+    if cfg.isolation == "vm":
+        from agentcage.lima.instance import LimaInstance
+        inst = LimaInstance(cfg.name)
+        run_cmd = ["limactl", "shell", inst.name, "--",
+                   "podman", "exec", *exec_flags, container_name, *exec_cmd]
+        log_cmd = ["limactl", "shell", inst.name, "--",
+                   "podman", "logs", "-f", proxy_container]
+    else:
+        run_cmd = ["podman", "exec", *exec_flags, container_name, *exec_cmd]
+        log_cmd = ["podman", "logs", "-f", proxy_container]
+
     # Monitor proxy logs for blocked requests
     monitor_stop = threading.Event()
     monitor_thread = threading.Thread(
-        target=_monitor_proxy, args=(proxy_container, monitor_stop), daemon=True,
+        target=_monitor_proxy, args=(log_cmd, monitor_stop), daemon=True,
     )
     monitor_thread.start()
 
     try:
-        result = subprocess.run(
-            ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
-        )
+        result = subprocess.run(run_cmd)
         exit_code = result.returncode
     except KeyboardInterrupt:
         click.echo("\nSession interrupted.")
