@@ -12,6 +12,7 @@ from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 from agentcage.config import Config
+from agentcage.mcp import merge_mcp_domains
 
 
 def cage_network_addrs(
@@ -129,11 +130,7 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
     for d in config.domains.passthrough:
         if d not in merged:
             merged.append(d)
-    for server in config.mcp_servers:
-        for d in server.domains:
-            if d not in merged:
-                merged.append(d)
-    return merged
+    return merge_mcp_domains(merged, config.mcp_servers)
 
 
 def _make_env() -> SandboxedEnvironment:
