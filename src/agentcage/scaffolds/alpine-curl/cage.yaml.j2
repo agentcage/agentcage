@@ -7,6 +7,14 @@
 #   curl -v https://example.com
 
 name: {{ name }}
+{% if isolation == "vm" %}
+
+isolation: vm
+
+vm:
+  vcpus: 1
+  mem_mb: 1024
+{% endif %}
 
 lifecycle: interactive
 
