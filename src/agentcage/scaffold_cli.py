@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 import click
-import yaml
 
 from agentcage.init import (
     _SCAFFOLDS_DIR,
@@ -151,17 +150,6 @@ def scaffold_show(name: str):
             elif "git" in entry:
                 click.echo(f"  - clone {entry['git']} → build {entry['image']}")
 
-    # Show domains from cage.yaml.j2
-    template_file = scaffold_dir / "cage.yaml.j2"
-    if template_file.exists():
-        try:
-            # Quick parse — render with dummy values to extract domains
-            content = template_file.read_text()
-            # Look for domains.allow section
-            if "domains:" in content:
-                click.echo(f"\nTemplate: {template_file.name}")
-        except Exception:
-            pass
 
 
 @scaffold.command("edit")
