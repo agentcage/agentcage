@@ -138,6 +138,10 @@ def generate_lima_config(config: object) -> str:
     volumes = getattr(getattr(config, "container", None), "volumes", []) or []
     extra_mounts = _extra_mounts_for_volumes(volumes)
 
+    # Detect whether SSH agent forwarding should be enabled
+    ssh_auth_sock = os.environ.get("SSH_AUTH_SOCK", "")
+    ssh_forward_agent = bool(ssh_auth_sock)
+
     # Render main Lima YAML
     lima_tmpl = env.get_template("lima.yaml.j2")
     return lima_tmpl.render(
@@ -148,4 +152,5 @@ def generate_lima_config(config: object) -> str:
         provision_script=provision_script,
         port_forwards=port_forwards,
         extra_mounts=extra_mounts,
+        ssh_forward_agent=ssh_forward_agent,
     )

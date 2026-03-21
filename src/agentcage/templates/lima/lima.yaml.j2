@@ -33,6 +33,11 @@ mounts:
   - location: "/tmp/lima"
     writable: true
 
+{% if ssh_forward_agent %}
+ssh:
+  forwardAgent: true
+{% endif %}
+
 containerd:
   system: false
   user: false

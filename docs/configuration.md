@@ -122,6 +122,26 @@ container:
 
 > **Security note:** Nested containers require elevated capabilities that weaken container hardening. All network-level protections (proxy inspection, domain filtering, secret detection) remain active. Only supported with `isolation: container`. See [Security & Threat Model](security.md) for details.
 
+### Git, SSH, and GitHub CLI integration
+
+The `claude-code` and `codex` scaffolds automatically detect and mount host git tooling when using `agentcage run`. This enables `git push`, `git pull`, and `gh` CLI operations inside the cage without manual configuration.
+
+The following integrations are auto-detected at cage creation time:
+
+| Integration | Host path | Condition | Container path |
+|------------|-----------|-----------|----------------|
+| Git config | `~/.gitconfig` | File exists | `/home/node/.gitconfig` (read-only) |
+| SSH agent | `$SSH_AUTH_SOCK` | Env var set and socket exists | `/tmp/ssh-agent.sock` (read-only) |
+| GitHub CLI auth | `~/.config/gh/` | `hosts.yml` exists in directory | `/home/node/.config/gh/` (read-only) |
+
+When SSH agent forwarding is active, `SSH_AUTH_SOCK` is set inside the container to `/tmp/ssh-agent.sock`. After the cage starts, a health check runs `ssh-add -l` inside the container -- if the agent is not accessible, a warning is printed.
+
+The `github.com` and `githubusercontent.com` domains are included in the allowlist by default for these scaffolds.
+
+For VM mode (`isolation: vm`), Lima's SSH agent forwarding is enabled automatically when `$SSH_AUTH_SOCK` is set on the host.
+
+All mounts are read-only and conditional -- if a file or socket is not present on the host, the mount is silently skipped.
+
 ---
 
 ## Container hardening

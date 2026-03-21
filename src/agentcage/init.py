@@ -45,6 +45,40 @@ def list_scaffolds() -> list[str]:
     return sorted(names)
 
 
+def detect_git_integrations() -> dict[str, bool]:
+    """Detect available git-related integrations on the host.
+
+    Returns a dict with boolean flags:
+      - ``gitconfig_exists``: ``~/.gitconfig`` is present
+      - ``ssh_agent_available``: ``$SSH_AUTH_SOCK`` is set and the socket exists
+      - ``gh_auth_exists``: ``~/.config/gh/hosts.yml`` is present
+    """
+    import os
+    import stat
+    from pathlib import Path
+
+    home = Path.home()
+
+    gitconfig_exists = (home / ".gitconfig").is_file()
+
+    ssh_auth_sock = os.environ.get("SSH_AUTH_SOCK", "")
+    ssh_agent_available = False
+    if ssh_auth_sock:
+        try:
+            s = os.stat(ssh_auth_sock)
+            ssh_agent_available = stat.S_ISSOCK(s.st_mode)
+        except (OSError, ValueError):
+            pass
+
+    gh_auth_exists = (home / ".config" / "gh" / "hosts.yml").is_file()
+
+    return {
+        "gitconfig_exists": gitconfig_exists,
+        "ssh_agent_available": ssh_agent_available,
+        "gh_auth_exists": gh_auth_exists,
+    }
+
+
 def render_config(
     name: str,
     *,
@@ -93,7 +127,14 @@ def render_config(
     from agentcage.quadlets import cage_network_addrs
 
     addrs = cage_network_addrs(name)
-    return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag, **addrs), image_tag
+
+    # Detect git integrations for template conditionals
+    git_vars = detect_git_integrations()
+
+    return tmpl.render(
+        name=name, isolation=isolation, port=port, image_tag=image_tag,
+        **addrs, **git_vars,
+    ), image_tag
 
 
 def load_scaffold_meta(scaffold: str) -> dict | None:

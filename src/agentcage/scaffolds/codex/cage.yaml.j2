@@ -37,9 +37,23 @@ container:
     # Auth & settings — mount host ~/.codex so login persists across sessions.
     # Remove this line to isolate cage state from the host.
     - "~/.codex:/home/node/.codex:rw"
-  #  # Git config (uncomment to enable)
-  #  - "~/.gitconfig:/home/node/.gitconfig:ro"
-  #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
+    {% if gitconfig_exists %}
+    # Git config (auto-detected from host)
+    - "~/.gitconfig:/home/node/.gitconfig:ro"
+    {% endif %}
+    {% if ssh_agent_available %}
+    # SSH agent forwarding (auto-detected from host)
+    - "${SSH_AUTH_SOCK}:/tmp/ssh-agent.sock:ro"
+    {% endif %}
+    {% if gh_auth_exists %}
+    # GitHub CLI auth (auto-detected from host)
+    - "~/.config/gh:/home/node/.config/gh:ro"
+    {% endif %}
+
+  {% if ssh_agent_available %}
+  env:
+    SSH_AUTH_SOCK: "/tmp/ssh-agent.sock"
+  {% endif %}
 
   # Map host UID into container so mounted files have correct ownership
   userns: "keep-id"
@@ -85,9 +99,9 @@ domains:
     - files.pythonhosted.org
     - nodejs.org
 
-    # ── Code hosting (uncomment for git push) ──
-    #- github.com
-    #- githubusercontent.com
+    # ── Code hosting ──
+    - github.com
+    - githubusercontent.com
 
     # Add domains your agent needs access to:
     #- example.com

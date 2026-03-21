@@ -332,6 +332,41 @@ def execute(
         shutil.rmtree(str(config_dir), ignore_errors=True)
         return 1
 
+    # SSH agent health check — warn early if the socket is not accessible
+    from agentcage.init import detect_git_integrations
+    git_info = detect_git_integrations()
+    if git_info["ssh_agent_available"]:
+        container_name_check = f"{cage_name}-cage"
+        try:
+            if cfg.isolation == "vm":
+                from agentcage.lima.instance import LimaInstance
+                inst_check = LimaInstance(cfg.name)
+                ssh_check_cmd = [
+                    "limactl", "shell", inst_check.name, "--",
+                    "podman", "exec", container_name_check, "ssh-add", "-l",
+                ]
+            else:
+                ssh_check_cmd = [
+                    "podman", "exec", container_name_check, "ssh-add", "-l",
+                ]
+            result_check = subprocess.run(
+                ssh_check_cmd,
+                capture_output=True,
+                timeout=5,
+            )
+            if result_check.returncode != 0:
+                click.echo(
+                    "warning: SSH agent not accessible inside cage. "
+                    "Git SSH push may not work.",
+                    err=True,
+                )
+        except (subprocess.TimeoutExpired, OSError):
+            click.echo(
+                "warning: SSH agent not accessible inside cage. "
+                "Git SSH push may not work.",
+                err=True,
+            )
+
     # Summary
     click.echo()
     click.echo(f"  {output.dim(project_dir)}")
