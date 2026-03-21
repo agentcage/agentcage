@@ -129,13 +129,17 @@ wait_ready() {
 wait_http_code() {
   local url="$1" expected="$2" timeout="${3:-30}"
   local deadline=$((SECONDS + timeout))
+  local delay=1
   while [ "$SECONDS" -lt "$deadline" ]; do
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
     if [ "$code" = "$expected" ]; then
       return 0
     fi
-    sleep 2
+    sleep "$delay"
+    # exponential backoff: 1, 2, 4, … capped at 8s
+    delay=$(( delay * 2 ))
+    [ "$delay" -gt 8 ] && delay=8
   done
   return 1
 }

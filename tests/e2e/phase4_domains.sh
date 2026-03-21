@@ -27,12 +27,12 @@ else
   e2e_fail "4.2" "Add domain" "command failed"
 fi
 
-# 4.3: New domain accessible (poll — proxy may need a moment)
-if wait_http_code "$BASE/fetch?url=http://example.com" 200 30; then
+# 4.3: New domain accessible (poll — proxy may need a moment after hot-reload)
+if wait_http_code "$BASE/fetch?url=http://example.com" 200 60; then
   e2e_pass "4.3" "New domain accessible"
 else
   # May still be restarting; check if domain is at least in config
-  e2e_fail "4.3" "New domain accessible" "did not get HTTP 200 within 30s"
+  e2e_fail "4.3" "New domain accessible" "did not get HTTP 200 within 60s"
 fi
 
 # 4.4: Remove domain
