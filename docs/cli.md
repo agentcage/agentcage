@@ -1,8 +1,9 @@
 # CLI Reference
 
-The CLI has a top-level **`init`** command for scaffolding configs, and three command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), and **`domain`** (manage cage domain filters).
+The CLI has top-level **`run`** and **`init`** commands, and three command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), and **`domain`** (manage cage domain filters).
 
 ```
+agentcage run SCAFFOLD [options]
 agentcage init [NAME] [options]
 agentcage <group> <command> [options]
 ```
@@ -23,7 +24,7 @@ Generates a starter `cage.yaml` for a new cage. With `--scaffold`, uses a curate
 | `--image` | string | `node:22-slim` | Container image |
 | `--isolation` | choice: `container`/`vm` | `container` | Isolation backend |
 | `--force` | flag | | Overwrite existing file |
-| `--scaffold` | string | | Use a scaffold template (e.g. `openclaw`, `picoclaw`) |
+| `--scaffold` | string | | Use a scaffold template (e.g. `claude-code`, `codex`, `openclaw`) |
 | `--list-scaffolds` | flag | | List available scaffolds and exit |
 | `--port` | int | | Host port to publish (scaffold-specific) |
 
@@ -39,8 +40,41 @@ agentcage init myclaw --scaffold openclaw
 # NanoClaw scaffold (nested containers)
 agentcage init myapp --scaffold nanoclaw
 
+# Claude Code scaffold
+agentcage init mycc --scaffold claude-code
+
 # List available scaffolds
 agentcage init --list-scaffolds
+```
+
+---
+
+## `run` -- Run a coding agent in a sandbox
+
+```
+agentcage run SCAFFOLD [options] [-- EXTRA_ARGS...]
+```
+
+Creates a sandboxed cage from a scaffold, opens an interactive session, and stops the cage on exit. Auto-generates a unique cage name (e.g. `claude-code-bold-fox`). The cage state is preserved after exit for auditing — use `cage prune` to clean up.
+
+### Options
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--project` | path | current directory | Project directory to mount as `/workspace` |
+| `--name` | string | auto-generated | Override the auto-generated cage name |
+
+### Examples
+
+```bash
+# Run Claude Code in the current project
+agentcage run claude-code
+
+# Run Codex with a specific project
+agentcage run codex --project /path/to/repo
+
+# Run with a custom name
+agentcage run claude-code --name my-session
 ```
 
 ---
@@ -53,6 +87,7 @@ agentcage init --list-scaffolds
 | `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
 | `cage list` | List all cages with status |
 | `cage destroy NAME [-y] [--keep-secrets]` | Stop containers, remove quadlets, state, and scoped secrets |
+| `cage prune [-y]` | Remove all exited interactive and ephemeral cages |
 | `cage show NAME` | Show cage configuration and status |
 | `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
 | `cage edit NAME` | Open stored config in `$EDITOR`, validate, and reload if running |

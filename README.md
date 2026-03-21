@@ -10,7 +10,7 @@ Don't let your agent phone home.
 
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
-> **Setup guides:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md) · [PicoClaw](src/agentcage/scaffolds/picoclaw/README.md) · [NanoClaw](src/agentcage/scaffolds/nanoclaw/README.md)
+> **Coding agents:** [Claude Code](src/agentcage/scaffolds/claude-code/README.md) · [Codex](src/agentcage/scaffolds/codex/README.md) &nbsp;|&nbsp; **Agent platforms:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md) · [PicoClaw](src/agentcage/scaffolds/picoclaw/README.md) · [NanoClaw](src/agentcage/scaffolds/nanoclaw/README.md)
 
 <p align="center">
   <a href="https://asciinema.org/a/838890"><img src="https://asciinema.org/a/838890.svg" alt="agentcage demo" width="700"></a>
@@ -37,7 +37,10 @@ Both container mode (rootless Podman) and VM mode (Lima KVM) are supported -- se
 # Install
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 
-# Scaffold a config (or use --scaffold openclaw)
+# Run Claude Code in a sandbox (one command)
+agentcage run claude-code
+
+# Or scaffold a config for a custom agent
 agentcage init myapp --image node:22-slim
 
 # Create and start the cage
@@ -125,8 +128,9 @@ agentcage cage destroy myapp
 
 | Command / Group | Commands |
 |---|---|
+| `run` | *(top-level)* -- run a coding agent in a sandbox (`agentcage run claude-code`) |
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
+| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `prune`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |

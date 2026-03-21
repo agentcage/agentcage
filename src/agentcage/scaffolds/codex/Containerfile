@@ -1,0 +1,20 @@
+FROM docker.io/library/node:22-slim
+
+USER root
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        curl \
+        openssh-client \
+        build-essential \
+        python3 \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install OpenAI Codex CLI (latest stable)
+RUN npm install -g @openai/codex
+
+# node:22-slim already has user node (1000:1000)
+USER node
+WORKDIR /workspace

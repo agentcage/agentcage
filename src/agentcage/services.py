@@ -205,3 +205,35 @@ def restart_cage(name: str, cfg=None):
         cfg = state.load_deployment_config(name)
     backend = get_backend(cfg)
     backend.restart(name)
+
+
+def destroy_cage(
+    name: str,
+    *,
+    keep_secrets: bool = False,
+    echo: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Stop and destroy a cage, removing all resources.
+
+    Returns a list of removed resource descriptions.
+    """
+    _echo = echo or (lambda _: None)
+
+    try:
+        cfg = state.load_deployment_config(name)
+        backend = get_backend(cfg)
+    except Exception:
+        from agentcage.backends.container import ContainerBackend
+        backend = ContainerBackend()
+
+    _echo("Stopping services...")
+    backend.stop(name)
+
+    _echo("Removing resources...")
+    removed = backend.destroy_resources(name, keep_secrets=keep_secrets)
+
+    if state.deployment_exists(name):
+        state.remove_deployment(name)
+        removed.append(f"state:{name}")
+
+    return removed

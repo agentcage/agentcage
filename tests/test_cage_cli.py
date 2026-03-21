@@ -6,6 +6,7 @@ import json
 import textwrap
 from unittest.mock import MagicMock, patch, call, ANY
 
+import click
 from click.testing import CliRunner
 
 from agentcage.cli import main
@@ -82,33 +83,19 @@ class TestCageUpdate:
 
 
 class TestCageDestroy:
-    @patch("agentcage.cli.systemd")
-    @patch("agentcage.cli.Podman")
-    @patch("agentcage.cli.state")
-    def test_destroy_with_yes(self, mock_state, MockPodman, mock_systemd, tmp_path):
-        podman = MockPodman.return_value
-        podman.network_remove.return_value = False
-        podman.volume_remove.return_value = False
-        podman.secret_list.return_value = [{"Name": "test.API_KEY"}]
-        podman.secret_remove.return_value = True
-        mock_state.deployment_exists.return_value = True
+    @patch("agentcage.cli._destroy_cage")
+    def test_destroy_with_yes(self, mock_destroy, tmp_path):
+        mock_destroy.return_value = ["state:test"]
 
         result = _runner().invoke(main, ["cage", "destroy", "test", "-y"])
         assert result.exit_code == 0
-        mock_state.remove_deployment.assert_called_once_with("test")
+        mock_destroy.assert_called_once_with("test", keep_secrets=False, echo=click.echo)
 
-    @patch("agentcage.cli.systemd")
-    @patch("agentcage.cli.Podman")
-    @patch("agentcage.cli.state")
-    def test_destroy_prompts_without_yes(self, mock_state, MockPodman, mock_systemd):
-        podman = MockPodman.return_value
-        podman.network_remove.return_value = False
-        podman.volume_remove.return_value = False
-        podman.secret_list.return_value = []
-        mock_state.deployment_exists.return_value = False
-
+    @patch("agentcage.cli._destroy_cage")
+    def test_destroy_prompts_without_yes(self, mock_destroy):
         result = _runner().invoke(main, ["cage", "destroy", "test"], input="n\n")
         assert result.exit_code != 0  # aborted
+        mock_destroy.assert_not_called()
 
 
 class TestCageList:
@@ -132,7 +119,7 @@ class TestCageList:
         assert result.exit_code == 0
         assert "myapp" in result.output
         assert "container" in result.output
-        assert "1.2.3" in result.output
+        assert "service" in result.output  # default lifecycle
         assert "running (3/3)" in result.output
 
     @patch("agentcage.cli.get_backend")
@@ -148,7 +135,6 @@ class TestCageList:
         assert result.exit_code == 0
         assert "myvm" in result.output
         assert "vm" in result.output
-        assert "0.9.0" in result.output
         assert "running (1/1)" in result.output
 
     @patch("agentcage.cli.get_backend")
@@ -163,11 +149,11 @@ class TestCageList:
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "old" in result.output
-        # VERSION column header present, value is "-"
-        assert "VERSION" in result.output
+        # LIFECYCLE column header present
+        assert "LIFECYCLE" in result.output
         lines = result.output.strip().split("\n")
         data_line = [l for l in lines if "old" in l][0]
-        assert "-" in data_line
+        assert "service" in data_line  # default lifecycle
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
@@ -431,9 +417,11 @@ class TestCageVerify:
         assert "1 warnings" in result.output
 
 
-def _mock_config(isolation="container"):
+def _mock_config(isolation="container", lifecycle="service", scaffold=""):
     cfg = MagicMock()
     cfg.isolation = isolation
+    cfg.lifecycle = lifecycle
+    cfg.scaffold = scaffold
     cfg.container.nested_containers = False
     return cfg
 
