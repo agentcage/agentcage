@@ -143,24 +143,28 @@ def _detect_installer() -> str | None:
             ["uv", "tool", "list"],
             capture_output=True, text=True, timeout=10,
         )
-        if r.returncode == 0 and "agentcage" in r.stdout:
+        if r.returncode == 0 and re.search(r"(?m)^agentcage[ \t]", r.stdout):
             return "uv"
     if shutil.which("pipx"):
         r = subprocess.run(
             ["pipx", "list", "--short"],
             capture_output=True, text=True, timeout=10,
         )
-        if r.returncode == 0 and "agentcage" in r.stdout:
+        if r.returncode == 0 and re.search(r"(?m)^agentcage[ \t]", r.stdout):
             return "pipx"
     return None
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse a version string like '0.10.0' into a comparable tuple."""
+    return tuple(int(x) for x in v.split("."))
+
+
 @main.command("update")
 @click.option("--check", is_flag=True, help="Only check for updates, don't install.")
-def update(check: bool):
+@click.pass_context
+def update(ctx: click.Context, check: bool):
     """Update agentcage to the latest version."""
-    from packaging.version import Version
-
     current = version("agentcage")
     click.echo(f"Current version: {current}")
 
@@ -168,9 +172,10 @@ def update(check: bool):
     latest = _fetch_latest_pypi_version()
     if latest is None:
         click.echo("Error: could not reach PyPI to check for updates.", err=True)
-        sys.exit(1)
+        ctx.exit(1)
+        return
 
-    if Version(latest) <= Version(current):
+    if _version_tuple(latest) <= _version_tuple(current):
         click.echo(f"Already up to date ({current}).")
         return
 
@@ -188,7 +193,8 @@ def update(check: bool):
             "  pipx upgrade agentcage",
             err=True,
         )
-        sys.exit(1)
+        ctx.exit(1)
+        return
 
     if installer == "uv":
         cmd = ["uv", "tool", "install", "--upgrade", "agentcage"]
@@ -199,7 +205,8 @@ def update(check: bool):
     r = subprocess.run(cmd)
     if r.returncode != 0:
         click.echo("Update failed.", err=True)
-        sys.exit(r.returncode)
+        ctx.exit(r.returncode)
+        return
 
     click.echo(f"Updated agentcage to {latest}.")
 

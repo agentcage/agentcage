@@ -52,6 +52,17 @@ class TestDetectInstaller:
     def test_returns_none_when_no_tool(self, _mock):
         assert _detect_installer() is None
 
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_no_false_positive_on_prefix_match(self, mock_run, mock_which):
+        """'agentcage-extras' should not match as agentcage."""
+        mock_which.side_effect = lambda x: "/usr/bin/uv" if x == "uv" else None
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="agentcage-extras 1.0.0\n"
+        )
+
+        assert _detect_installer() is None
+
 
 class TestUpdateCommand:
     @patch("agentcage.cli._fetch_latest_pypi_version", return_value="0.10.0")
@@ -81,6 +92,17 @@ class TestUpdateCommand:
         assert "Updated agentcage to 99.0.0" in result.output
         mock_run.assert_called_once_with(
             ["uv", "tool", "install", "--upgrade", "agentcage"]
+        )
+
+    @patch("subprocess.run", return_value=MagicMock(returncode=0))
+    @patch("agentcage.cli._detect_installer", return_value="pipx")
+    @patch("agentcage.cli._fetch_latest_pypi_version", return_value="99.0.0")
+    def test_updates_via_pipx(self, _pypi, _inst, mock_run):
+        result = _runner().invoke(main, ["update"])
+        assert result.exit_code == 0
+        assert "Updated agentcage to 99.0.0" in result.output
+        mock_run.assert_called_once_with(
+            ["pipx", "upgrade", "agentcage"]
         )
 
     @patch("agentcage.cli._detect_installer", return_value=None)
