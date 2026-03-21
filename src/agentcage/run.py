@@ -285,7 +285,6 @@ def execute(
         # ── Cache: determine what can be skipped ──
         skip_scaffold_build = False
         skip_build = False
-        skip_install = False
 
         try:
             from agentcage import cache
@@ -305,7 +304,7 @@ def execute(
             infra_key = cache.image_cache_key(
                 "__infra__",
                 "",  # infra images have no user Containerfile
-                "",  # no scaffold config
+                "",  # no scaffold config — version is included automatically
             )
             if cache.is_image_cached("__infra__", infra_key, podman):
                 skip_build = True
@@ -315,7 +314,6 @@ def execute(
             # Cache check failed — fall through to full build
             skip_scaffold_build = False
             skip_build = False
-            skip_install = False
 
         if verbose:
             # VM mode builds images inside the VM — skip host scaffold setup
@@ -332,7 +330,6 @@ def execute(
                 podman=podman,
                 used_octets=used_octets,
                 skip_build=skip_build,
-                skip_install=skip_install,
             )
         else:
             with output.Spinner("Starting cage..."):
@@ -351,7 +348,6 @@ def execute(
                     used_octets=used_octets,
                     quiet=True,
                     skip_build=skip_build,
-                    skip_install=skip_install,
                 )
 
         # ── Cache: record successful builds ──

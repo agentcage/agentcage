@@ -56,6 +56,14 @@ class TestImageCacheKey:
         k2 = cache.image_cache_key("s", "cf", "config-b")
         assert k1 != k2
 
+    def test_includes_package_version(self, monkeypatch):
+        """Cache key changes when agentcage version changes."""
+        monkeypatch.setattr(cache, "_package_version", lambda: "1.0.0")
+        k1 = cache.image_cache_key("s", "cf", "cfg")
+        monkeypatch.setattr(cache, "_package_version", lambda: "1.1.0")
+        k2 = cache.image_cache_key("s", "cf", "cfg")
+        assert k1 != k2
+
 
 # ── is_image_cached / mark_image_built ───────────────────
 
@@ -95,11 +103,34 @@ class TestImageCache:
         marker_dir = cache.CACHE_DIR / "images"
         marker_dir.mkdir(parents=True)
         (marker_dir / "s-key123.built").write_text("\x00\x01bad-data")
-        # Should return True since the podman image_exists mock returns True
-        # and the marker content is non-empty
         result = cache.is_image_cached("s", "key123", podman)
-        # The important thing is it doesn't crash
         assert isinstance(result, bool)
+
+    def test_fallthrough_on_podman_error(self):
+        """If podman.image_exists raises, is_image_cached returns False."""
+        podman = _make_podman()
+        podman.image_exists.side_effect = RuntimeError("podman died")
+        cache.mark_image_built("s", "key123", "localhost/test:latest")
+        assert not cache.is_image_cached("s", "key123", podman)
+
+    def test_stale_markers_cleaned_on_write(self):
+        """Writing a new marker for the same scaffold removes old ones."""
+        marker_dir = cache.CACHE_DIR / "images"
+        cache.mark_image_built("scaffold-a", "old-key", "img:old")
+        assert (marker_dir / "scaffold-a-old-key.built").exists()
+        cache.mark_image_built("scaffold-a", "new-key", "img:new")
+        assert not (marker_dir / "scaffold-a-old-key.built").exists()
+        assert (marker_dir / "scaffold-a-new-key.built").exists()
+
+    def test_stale_cleanup_does_not_affect_other_scaffolds(self):
+        """Stale marker cleanup only removes markers for the same scaffold."""
+        marker_dir = cache.CACHE_DIR / "images"
+        cache.mark_image_built("scaffold-a", "k1", "img:a")
+        cache.mark_image_built("scaffold-b", "k2", "img:b")
+        # Re-mark scaffold-a with new key
+        cache.mark_image_built("scaffold-a", "k3", "img:a2")
+        assert not (marker_dir / "scaffold-a-k1.built").exists()
+        assert (marker_dir / "scaffold-b-k2.built").exists()
 
 
 # ── quadlet_cache_key ────────────────────────────────────
@@ -141,6 +172,15 @@ class TestQuadletCache:
     def test_miss_on_different_key(self):
         cache.mark_quadlets_installed("cage1", "key-aaa")
         assert not cache.are_quadlets_cached("cage1", "key-bbb")
+
+    def test_stale_markers_cleaned_on_write(self):
+        """Writing a new quadlet marker removes old ones for the same cage."""
+        marker_dir = cache.CACHE_DIR / "quadlets"
+        cache.mark_quadlets_installed("cage1", "old-key")
+        assert (marker_dir / "cage1-old-key.installed").exists()
+        cache.mark_quadlets_installed("cage1", "new-key")
+        assert not (marker_dir / "cage1-old-key.installed").exists()
+        assert (marker_dir / "cage1-new-key.installed").exists()
 
 
 # ── clear_cage_cache ─────────────────────────────────────
