@@ -121,6 +121,12 @@ def doctor():
     sys.exit(1 if any(r.level == "error" for r in results) else 0)
 
 
+# ── scaffold group ──────────────────────────────────────
+
+from agentcage.scaffold_cli import scaffold  # noqa: E402
+main.add_command(scaffold)
+
+
 # ── completions ──────────────────────────────────────────
 
 
@@ -286,20 +292,21 @@ def init(name: str | None, output: str, image: str, isolation: str,
     dest.write_text(content)
     click.echo(f"Created {dest}")
 
-    from agentcage.init import load_scaffold_meta, run_scaffold_setup, _SCAFFOLDS_DIR
+    from agentcage.init import load_scaffold_meta, run_scaffold_setup, resolve_scaffold
 
     meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
         run_scaffold_setup(scaffold, name, str(dest), image_tag=image_tag)
         # Copy Containerfiles referenced in scaffold build entries
-        scaffold_dir_path = _SCAFFOLDS_DIR / scaffold
-        for entry in meta.get("build", []):
-            if "containerfile" in entry:
-                src = scaffold_dir_path / entry["containerfile"]
-                dst = dest.parent / entry["containerfile"]
-                if src.is_file() and not dst.exists():
-                    shutil.copy2(str(src), str(dst))
-    scaffold_dir = _SCAFFOLDS_DIR / scaffold if scaffold else None
+        scaffold_dir_path = resolve_scaffold(scaffold)
+        if scaffold_dir_path is not None:
+            for entry in meta.get("build", []):
+                if "containerfile" in entry:
+                    src = scaffold_dir_path / entry["containerfile"]
+                    dst = dest.parent / entry["containerfile"]
+                    if src.is_file() and not dst.exists():
+                        shutil.copy2(str(src), str(dst))
+    scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
         for i, step in enumerate(meta["next_steps"], 1):

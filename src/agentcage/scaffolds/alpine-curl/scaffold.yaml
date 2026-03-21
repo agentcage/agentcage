@@ -1,3 +1,6 @@
+description: "Minimal Alpine container with curl for testing"
+lifecycle: interactive
+
 build:
   - image: "localhost/agentcage-scaffold-alpine-curl:latest"
     containerfile: "Containerfile"

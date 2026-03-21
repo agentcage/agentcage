@@ -1,3 +1,6 @@
+description: "Full-featured AI coding agent with browser automation"
+lifecycle: service
+
 build:
   - image: "localhost/agentcage-scaffold-openclaw"
     containerfile: "Containerfile"
