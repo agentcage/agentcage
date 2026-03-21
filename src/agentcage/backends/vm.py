@@ -36,7 +36,7 @@ class VmBackend:
     def check_prerequisites(self, config: Config) -> list[str]:
         return lima_prerequisites.check_prerequisites()
 
-    def build_artifacts(self, config: Config, deploy_name: str) -> None:
+    def build_artifacts(self, config: Config, deploy_name: str, *, quiet: bool = False) -> None:
         """Build proxy and DNS images inside the VM.
 
         The build context (package data directory) is copied into the VM
@@ -112,16 +112,17 @@ class VmBackend:
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/agentcage/lima"))
 
-    def install_units(self, units: dict[str, str]) -> None:
+    def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
         for filename, content in units.items():
             fpath = dest / filename
             fpath.parent.mkdir(parents=True, exist_ok=True)
             fpath.write_text(content)
-        click.echo(f"Installed Lima config to {dest}/")
+        if not quiet:
+            click.echo(f"Installed Lima config to {dest}/")
 
-    def start(self, name: str) -> None:
+    def start(self, name: str, *, quiet: bool = False) -> None:
         inst = self._instance(name)
         config_path = self.unit_dir() / "lima.yaml"
 

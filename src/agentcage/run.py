@@ -86,21 +86,23 @@ def execute(
     name: str | None = None,
     secrets: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
+    verbose: bool = False,
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
 
     Returns the exit code from the interactive session.
     """
+    from agentcage import output
+
     # Resolve scaffold aliases
     scaffold = _SCAFFOLD_ALIASES.get(scaffold, scaffold)
 
     # Validate scaffold exists
     available = list_scaffolds()
     if scaffold not in available:
-        click.echo(
-            f"error: unknown scaffold '{scaffold}'. "
-            f"Available: {', '.join(available)}",
-            err=True,
+        output.step_fail(
+            f"Unknown scaffold '{scaffold}'. "
+            f"Available: {', '.join(available)}"
         )
         return 1
 
@@ -122,15 +124,16 @@ def execute(
     cage_name = name or generate_name(scaffold)
 
     if state.deployment_exists(cage_name):
-        click.echo(
-            f"error: cage '{cage_name}' already exists. "
-            f"Use --name to specify a different name, or destroy it first.",
-            err=True,
+        output.step_fail(
+            f"Cage '{cage_name}' already exists. "
+            f"Use --name to specify a different name, or destroy it first."
         )
         return 1
 
+    # Print header
+    output.header(scaffold)
+
     # Render config from scaffold template
-    click.echo(f"Creating cage '{cage_name}'...")
     os.environ["PROJECT_DIR"] = project_dir
     config_text, image_tag = render_config(
         cage_name, scaffold=scaffold, isolation="container",
@@ -150,7 +153,7 @@ def execute(
     unavailable = check_port_availability(cfg)
     if unavailable:
         for spec, _bind, port in unavailable:
-            click.echo(f"error: port {port} is already in use ({spec})", err=True)
+            output.step_fail(f"Port {port} is already in use ({spec})")
         return 1
 
     # Save deployment state
@@ -171,7 +174,18 @@ def execute(
 
     # Run scaffold setup (build images) and deploy
     try:
-        run_scaffold_setup(scaffold, cage_name, str(config_path), image_tag=image_tag)
+        if verbose:
+            run_scaffold_setup(
+                scaffold, cage_name, str(config_path),
+                image_tag=image_tag,
+            )
+        else:
+            with output.Spinner("Building image..."):
+                run_scaffold_setup(
+                    scaffold, cage_name, str(config_path),
+                    image_tag=image_tag, quiet=True,
+                )
+        output.step_done("Image ready")
 
         podman = Podman()
 
@@ -188,7 +202,6 @@ def execute(
                 podman.secret_remove(full)
             podman.secret_create(full, val)
             provided_keys.add(key)
-            click.echo(f"Secret '{key}' set.")
 
         # Strip secret injection rules for secrets not provided —
         # keeps only rules whose secrets were passed via --set-secret.
@@ -205,27 +218,62 @@ def execute(
         # Save proxy config and get its host path (mounted into proxy container)
         config_host_path = state.save_proxy_config(cage_name)
 
-        build_and_deploy(
-            cfg,
-            config_host_path=config_host_path,
-            deploy_name=cage_name,
-            podman=podman,
-            used_octets=used_octets,
-        )
+        if verbose:
+            build_and_deploy(
+                cfg,
+                config_host_path=config_host_path,
+                deploy_name=cage_name,
+                podman=podman,
+                used_octets=used_octets,
+            )
+        else:
+            with output.Spinner("Building proxy..."):
+                build_and_deploy(
+                    cfg,
+                    config_host_path=config_host_path,
+                    deploy_name=cage_name,
+                    podman=podman,
+                    used_octets=used_octets,
+                    quiet=True,
+                )
+        output.step_done("Proxy built")
+        output.step_done("DNS ready")
+        output.step_done(f"Cage {click.style(cage_name, bold=True)} started")
+    except subprocess.CalledProcessError as e:
+        output.step_fail("Build failed")
+        # Dump captured build output for debugging
+        if e.stderr:
+            click.echo(e.stderr, err=True)
+        if e.stdout:
+            click.echo(e.stdout, err=True)
+        if state.deployment_exists(cage_name):
+            state.remove_deployment(cage_name)
+        shutil.rmtree(str(config_dir), ignore_errors=True)
+        return 1
     except Exception as e:
-        click.echo(f"error: failed to build/deploy cage: {e}", err=True)
+        output.step_fail(f"Failed to build/deploy cage: {e}")
         # Clean up partial state
         if state.deployment_exists(cage_name):
             state.remove_deployment(cage_name)
         shutil.rmtree(str(config_dir), ignore_errors=True)
         return 1
 
-    click.echo(f"Cage '{cage_name}' started.")
+    # Summary info
+    click.echo()
+    output.info("Project", project_dir)
 
-    if cfg.help:
-        click.echo("")
-        click.echo(cfg.help.rstrip())
-        click.echo("")
+    # Detect mounted auth
+    claude_dir = Path.home() / ".claude"
+    if claude_dir.is_dir():
+        output.info("Auth", "~/.claude (mounted)")
+    else:
+        output.info("Auth", output.dim("not configured"))
+
+    click.echo()
+    output.info("Ctrl+D", "to exit")
+    output.info("Audit", f"agentcage cage audit {cage_name}")
+    click.echo()
+    output.separator()
 
     # Determine the exec command: agent binary + any extra args
     if cfg.exec_aliases:
@@ -242,7 +290,6 @@ def execute(
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
     try:
-        click.echo(f"Starting interactive session... (Ctrl+D to exit)")
         result = subprocess.run(
             ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
         )
@@ -251,16 +298,16 @@ def execute(
         click.echo("\nSession interrupted.")
         exit_code = 130
     finally:
-        click.echo(f"Stopping cage '{cage_name}'...")
-        try:
-            backend = get_backend(cfg)
-            backend.stop(cfg.name)
-        except Exception as e:
-            click.echo(f"warning: failed to stop cage: {e}", err=True)
-        click.echo(
-            f"Cage '{cage_name}' stopped. "
-            f"Audit: agentcage cage audit {cage_name}"
-        )
+        click.echo()
+        output.separator()
+        with output.Spinner("Stopping cage..."):
+            try:
+                backend = get_backend(cfg)
+                backend.stop(cfg.name)
+            except Exception as e:
+                click.echo(f"warning: failed to stop cage: {e}", err=True)
+        output.step_done(f"Cage {click.style(cage_name, bold=True)} stopped")
+        output.info("Audit", f"agentcage cage audit {cage_name}")
 
     # Clean up temp config dir
     shutil.rmtree(str(config_dir), ignore_errors=True)

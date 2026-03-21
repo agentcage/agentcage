@@ -43,6 +43,7 @@ class Podman:
         cap_add: list[str] | None = None,
         no_cache: bool = False,
         build_args: dict[str, str] | None = None,
+        quiet: bool = False,
     ) -> None:
         cmd = [*_podman_cmd(), "build", "-t", tag]
         if containerfile is not None:
@@ -54,7 +55,15 @@ class Podman:
         for k, v in (build_args or {}).items():
             cmd.extend(["--build-arg", f"{k}={v}"])
         cmd.append(context_dir)
-        subprocess.run(cmd, check=True)
+        if quiet:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    result.returncode, cmd,
+                    output=result.stdout, stderr=result.stderr,
+                )
+        else:
+            subprocess.run(cmd, check=True)
 
     def run_and_remove(
         self,

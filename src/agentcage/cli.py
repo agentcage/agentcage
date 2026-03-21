@@ -211,9 +211,10 @@ def init(name: str | None, output: str, image: str, isolation: str,
               help="Cage name (default: auto-generated).")
 @click.option("-s", "--set-secret", "secrets", multiple=True,
               help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
+@click.option("-v", "--verbose", is_flag=True, help="Show full build output.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
-        secrets: tuple[str, ...], extra_args: tuple[str, ...]):
+        secrets: tuple[str, ...], verbose: bool, extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
 
     \b
@@ -226,7 +227,7 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
     from agentcage.run import execute
     exit_code = execute(
         scaffold, project_dir=project_dir, name=name,
-        secrets=secrets, extra_args=extra_args,
+        secrets=secrets, extra_args=extra_args, verbose=verbose,
     )
     sys.exit(exit_code)
 
