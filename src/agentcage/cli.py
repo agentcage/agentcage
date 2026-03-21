@@ -592,7 +592,7 @@ def cage_list():
 
 @cage.command("destroy")
 @click.argument("name")
-@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
+@click.option("-y", "--yes", "-f", "--force", is_flag=True, help="Skip confirmation prompt")
 @click.option("--keep-secrets", is_flag=True,
               help="Keep scoped secrets (useful for recreating the cage)")
 def cage_destroy(name: str, yes: bool, keep_secrets: bool):
