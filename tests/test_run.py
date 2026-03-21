@@ -15,7 +15,9 @@ class TestGenerateName:
     def test_produces_valid_cage_name(self, _mock):
         name = generate_name("claude-code")
         assert re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', name)
-        assert name.startswith("claude-code-")
+        assert name.startswith("claude-")
+        # Should use short prefix, not full scaffold name
+        assert not name.startswith("claude-code-")
 
     @patch("agentcage.run.state.list_deployments", return_value=[])
     def test_names_are_unique(self, _mock):

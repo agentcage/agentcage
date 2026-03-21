@@ -50,6 +50,11 @@ _SCAFFOLD_ALIASES: dict[str, str] = {
     "claude": "claude-code",
 }
 
+# Short prefixes for auto-generated cage names
+_NAME_PREFIXES: dict[str, str] = {
+    "claude-code": "claude",
+}
+
 _NOUNS = [
     "ant", "bay", "bee", "cod", "cow", "dew", "doe", "elm",
     "elk", "emu", "ewe", "fig", "fox", "gem", "gnu", "hog",
@@ -62,12 +67,13 @@ _NOUNS = [
 
 
 def generate_name(scaffold: str) -> str:
-    """Generate a unique cage name like ``claude-code-bold-fox``."""
+    """Generate a unique cage name like ``claude-bold-fox``."""
+    prefix = _NAME_PREFIXES.get(scaffold, scaffold)
     existing = set(state.list_deployments())
     for _ in range(100):
         adj = random.choice(_ADJECTIVES)
         noun = random.choice(_NOUNS)
-        name = f"{scaffold}-{adj}-{noun}"
+        name = f"{prefix}-{adj}-{noun}"
         if name not in existing:
             return name
     raise RuntimeError("Could not generate a unique cage name after 100 attempts")
