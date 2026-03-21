@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-03-21
+
+### Added
+- Polished `agentcage run` CLI output: box-drawn banner, spinner during builds, ✓/✗ status lines, compact info summary
+- `agentcage run -v/--verbose` flag to show full build output
+- Version banner on `agentcage` and `agentcage --help`
+
 ## [0.9.2] - 2026-03-20
 
 ### Added

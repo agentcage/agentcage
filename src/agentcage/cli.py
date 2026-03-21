@@ -95,7 +95,15 @@ class AliasGroup(click.Group):
                     formatter.write_text(f"{alias} → {target}")
 
 
-@click.group()
+class _BannerGroup(click.Group):
+    """Show the agentcage banner before help text."""
+
+    def get_help(self, ctx: click.Context) -> str:
+        from agentcage.output import banner_text
+        return banner_text(version("agentcage")) + "\n" + super().get_help(ctx)
+
+
+@click.group(cls=_BannerGroup)
 @click.version_option(version=version("agentcage"), prog_name="agentcage")
 def main():
     """Defense-in-depth proxy sandbox for AI agents."""
@@ -246,6 +254,9 @@ def cage():
               help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
 def cage_create(config_path: str, secrets: tuple):
     """Build images, generate quadlets, install, and start a new cage."""
+    from agentcage import output as _out
+    _out.banner(version("agentcage"))
+
     cfg = load_config(config_path)
     try:
         warnings = validate_config(cfg)

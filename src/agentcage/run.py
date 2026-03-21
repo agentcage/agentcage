@@ -16,6 +16,7 @@ Architecture:
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import shutil
@@ -23,6 +24,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import click
@@ -48,11 +50,13 @@ _ADJECTIVES = [
 # Short aliases for scaffold names
 _SCAFFOLD_ALIASES: dict[str, str] = {
     "claude": "claude-code",
+    "alpine": "alpine-curl",
 }
 
 # Short prefixes for auto-generated cage names
 _NAME_PREFIXES: dict[str, str] = {
     "claude-code": "claude",
+    "alpine-curl": "alpine",
 }
 
 _NOUNS = [
@@ -77,6 +81,65 @@ def generate_name(scaffold: str) -> str:
         if name not in existing:
             return name
     raise RuntimeError("Could not generate a unique cage name after 100 attempts")
+
+
+def _monitor_proxy(proxy_container: str, stop_event: threading.Event) -> None:
+    """Tail proxy logs and print blocked-request notifications to the terminal.
+
+    Runs as a daemon thread alongside the interactive session.  Writes
+    directly to ``/dev/tty`` so output appears even while podman exec
+    owns stdout/stderr.
+    """
+    try:
+        tty = open("/dev/tty", "w")
+    except OSError:
+        return
+
+    try:
+        proc = subprocess.Popen(
+            ["podman", "logs", "-f", proxy_container],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except OSError:
+        tty.close()
+        return
+
+    dim = "\x1b[2m"
+    red = "\x1b[31m"
+    reset = "\x1b[0m"
+
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if stop_event.is_set():
+                break
+            line = line.strip()
+            if not line or '"decision"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if entry.get("decision") != "blocked":
+                continue
+            host = entry.get("host", "?")
+            reason = entry.get("reason", "blocked")
+            tty.write(
+                f"\r{dim}[agentcage]{reset} {red}blocked{reset}"
+                f" {dim}→{reset} {host} {dim}({reason}){reset}\n"
+            )
+            tty.flush()
+    except (OSError, ValueError):
+        pass
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        tty.close()
 
 
 def execute(
@@ -131,7 +194,8 @@ def execute(
         return 1
 
     # Print header
-    output.header(scaffold)
+    from importlib.metadata import version
+    output.banner(version("agentcage"))
 
     # Render config from scaffold template
     os.environ["PROJECT_DIR"] = project_dir
@@ -174,19 +238,6 @@ def execute(
 
     # Run scaffold setup (build images) and deploy
     try:
-        if verbose:
-            run_scaffold_setup(
-                scaffold, cage_name, str(config_path),
-                image_tag=image_tag,
-            )
-        else:
-            with output.Spinner("Building image..."):
-                run_scaffold_setup(
-                    scaffold, cage_name, str(config_path),
-                    image_tag=image_tag, quiet=True,
-                )
-        output.step_done("Image ready")
-
         podman = Podman()
 
         # Set secrets passed via --set-secret
@@ -219,6 +270,10 @@ def execute(
         config_host_path = state.save_proxy_config(cage_name)
 
         if verbose:
+            run_scaffold_setup(
+                scaffold, cage_name, str(config_path),
+                image_tag=image_tag,
+            )
             build_and_deploy(
                 cfg,
                 config_host_path=config_host_path,
@@ -227,7 +282,11 @@ def execute(
                 used_octets=used_octets,
             )
         else:
-            with output.Spinner("Building proxy..."):
+            with output.Spinner("Starting cage..."):
+                run_scaffold_setup(
+                    scaffold, cage_name, str(config_path),
+                    image_tag=image_tag, quiet=True,
+                )
                 build_and_deploy(
                     cfg,
                     config_host_path=config_host_path,
@@ -236,9 +295,7 @@ def execute(
                     used_octets=used_octets,
                     quiet=True,
                 )
-        output.step_done("Proxy built")
-        output.step_done("DNS ready")
-        output.step_done(f"Cage {click.style(cage_name, bold=True)} started")
+        output.step_done(output.dim(cage_name))
     except subprocess.CalledProcessError as e:
         output.step_fail("Build failed")
         # Dump captured build output for debugging
@@ -258,20 +315,10 @@ def execute(
         shutil.rmtree(str(config_dir), ignore_errors=True)
         return 1
 
-    # Summary info
+    # Summary
     click.echo()
-    output.info("Project", project_dir)
-
-    # Detect mounted auth
-    claude_dir = Path.home() / ".claude"
-    if claude_dir.is_dir():
-        output.info("Auth", "~/.claude (mounted)")
-    else:
-        output.info("Auth", output.dim("not configured"))
-
-    click.echo()
-    output.info("Ctrl+D", "to exit")
-    output.info("Audit", f"agentcage cage audit {cage_name}")
+    click.echo(f"  {output.dim(project_dir)}")
+    click.echo(f"  {output.dim('Ctrl+D to exit')} {output.dim('·')} {output.dim('agentcage cage audit ' + cage_name)}")
     click.echo()
     output.separator()
 
@@ -287,7 +334,15 @@ def execute(
     # Run interactive session
     exit_code = 0
     container_name = f"{cfg.name}-cage"
+    proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
+
+    # Monitor proxy logs for blocked requests
+    monitor_stop = threading.Event()
+    monitor_thread = threading.Thread(
+        target=_monitor_proxy, args=(proxy_container, monitor_stop), daemon=True,
+    )
+    monitor_thread.start()
 
     try:
         result = subprocess.run(
@@ -298,6 +353,8 @@ def execute(
         click.echo("\nSession interrupted.")
         exit_code = 130
     finally:
+        monitor_stop.set()
+        monitor_thread.join(timeout=3)
         click.echo()
         output.separator()
         with output.Spinner("Stopping cage..."):
@@ -306,8 +363,8 @@ def execute(
                 backend.stop(cfg.name)
             except Exception as e:
                 click.echo(f"warning: failed to stop cage: {e}", err=True)
-        output.step_done(f"Cage {click.style(cage_name, bold=True)} stopped")
-        output.info("Audit", f"agentcage cage audit {cage_name}")
+        click.echo(f"  {output.dim(cage_name + ' stopped')}")
+        click.echo(f"  {output.dim('agentcage cage audit ' + cage_name)}")
 
     # Clean up temp config dir
     shutil.rmtree(str(config_dir), ignore_errors=True)

@@ -14,15 +14,23 @@ import time
 import click
 
 
-def header(scaffold: str) -> None:
-    """Print the ╭─╮ header box."""
-    title = f" \u273b agentcage run \u00b7 {scaffold} "
+def banner_text(ver: str) -> str:
+    """Return the ╭─╮ banner with version as a string."""
+    title = f" \u273b agentcage v{ver} "
     width = max(len(title) + 2, 44)
     padding = width - len(title)
-    click.echo(dim(f"\u256d{'\u2500' * width}\u256e"))
-    click.echo(dim("\u2502") + click.style(title, bold=True) + " " * padding + dim("\u2502"))
-    click.echo(dim(f"\u2570{'\u2500' * width}\u256f"))
-    click.echo()
+    lines = [
+        dim(f"\u256d{'\u2500' * width}\u256e"),
+        dim("\u2502") + click.style(title, bold=True) + " " * padding + dim("\u2502"),
+        dim(f"\u2570{'\u2500' * width}\u256f"),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def banner(ver: str) -> None:
+    """Print the ╭─╮ banner with version."""
+    click.echo(banner_text(ver))
 
 
 def step_done(msg: str) -> None:

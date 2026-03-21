@@ -1,0 +1,3 @@
+build:
+  - image: "localhost/agentcage-scaffold-alpine-curl:latest"
+    containerfile: "Containerfile"

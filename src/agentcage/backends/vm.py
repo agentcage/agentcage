@@ -66,7 +66,7 @@ class VmBackend:
 
         click.echo("Building proxy image inside VM...")
         inst.exec([
-            "podman", "build", "--no-cache",
+            "podman", "build",
             "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
             "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
             "--cap-add=CAP_DAC_OVERRIDE",
