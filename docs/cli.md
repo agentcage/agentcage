@@ -63,6 +63,7 @@ Creates a sandboxed cage from a scaffold, opens an interactive session, and stop
 |------|------|---------|-------------|
 | `--project` | path | current directory | Project directory to mount as `/workspace` |
 | `--name` | string | auto-generated | Override the auto-generated cage name |
+| `-i, --interactive-domains` | flag | | Prompt to add blocked domains to the allowlist in real-time |
 
 ### Examples
 
@@ -75,7 +76,20 @@ agentcage run codex --project /path/to/repo
 
 # Run with a custom name
 agentcage run claude-code --name my-session
+
+# Run with interactive domain prompts
+agentcage run claude-code -i
 ```
+
+When `-i` is passed, each time the proxy blocks a request to an unlisted domain, you are prompted to add it to the allowlist:
+
+```
+[agentcage] blocked → api.stripe.com (domain)
+  Add stripe.com to allowlist? [y/N] y
+  ✓ stripe.com added
+```
+
+Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts for `stripe.com`). Each domain is prompted at most once per session.
 
 ---
 

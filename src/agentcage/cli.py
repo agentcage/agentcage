@@ -340,9 +340,12 @@ def init(name: str | None, output: str, image: str, isolation: str,
 @click.option("-v", "--verbose", is_flag=True, help="Show full build output.")
 @click.option("--isolation", type=click.Choice(["container", "vm"]), default=None,
               help="Isolation backend (default: auto-detect from platform).")
+@click.option("-i", "--interactive-domains", is_flag=True,
+              help="Prompt to add blocked domains to the allowlist in real-time.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
         secrets: tuple[str, ...], verbose: bool, isolation: str | None,
+        interactive_domains: bool,
         extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
 
@@ -353,12 +356,13 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
       agentcage run claude-code -s ANTHROPIC_API_KEY=sk-...
       agentcage run claude-code --isolation vm
       agentcage run claude-code --name my-session -- claude --help
+      agentcage run claude-code -i
     """
     from agentcage.run import execute
     exit_code = execute(
         scaffold, project_dir=project_dir, name=name,
         secrets=secrets, extra_args=extra_args, verbose=verbose,
-        isolation=isolation,
+        isolation=isolation, interactive_domains=interactive_domains,
     )
     sys.exit(exit_code)
 

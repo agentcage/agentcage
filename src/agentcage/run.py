@@ -16,10 +16,12 @@ Architecture:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import platform
 import random
+import select
 import shutil
 import signal
 import subprocess
@@ -84,35 +86,115 @@ def generate_name(scaffold: str) -> str:
     raise RuntimeError("Could not generate a unique cage name after 100 attempts")
 
 
-def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
-    """Tail proxy logs and print blocked-request notifications to the terminal.
+def _is_ip_address(host: str) -> bool:
+    """Return True if *host* is a valid IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 
-    *log_cmd* is the full command to stream proxy logs (e.g.
-    ``["podman", "logs", "-f", "name-proxy"]`` or the limactl equivalent).
+
+def _extract_parent_domain(host: str) -> str:
+    """Extract the registrable parent domain from a hostname.
+
+    api.stripe.com -> stripe.com
+    cdn.example.co.uk -> example.co.uk
+    stripe.com -> stripe.com (already a parent)
+    localhost -> localhost
+    10.0.0.1 -> 10.0.0.1 (IP addresses returned as-is)
+    """
+    # IP addresses and single-label hosts are returned unchanged
+    if _is_ip_address(host):
+        return host
+    parts = host.split(".")
+    if len(parts) <= 2:
+        return host
+    # Use last 3 parts for known compound TLDs, otherwise last 2
+    known_compound_tlds = {
+        "co.uk", "org.uk", "me.uk",
+        "com.au", "net.au", "org.au",
+        "co.jp", "or.jp", "ne.jp",
+        "com.br", "net.br", "org.br",
+        "co.nz", "net.nz", "org.nz",
+        "co.in", "net.in", "org.in",
+        "com.mx", "org.mx",
+        "com.cn", "net.cn", "org.cn",
+        "co.kr",
+        "com.sg",
+        "com.hk",
+    }
+    if ".".join(parts[-2:]) in known_compound_tlds:
+        return ".".join(parts[-3:]) if len(parts) >= 3 else host
+    return ".".join(parts[-2:])
+
+
+def _monitor_proxy(
+    proxy_container: str,
+    stop_event: threading.Event,
+    cage_name: str | None = None,
+    interactive: bool = False,
+) -> None:
+    """Tail proxy logs and print blocked-request notifications to the terminal.
 
     Runs as a daemon thread alongside the interactive session.  Writes
     directly to ``/dev/tty`` so output appears even while podman exec
     owns stdout/stderr.
+
+    When *interactive* is True and a domain-based block occurs, prompts
+    the user (via ``/dev/tty``) to add the domain to the allowlist.
     """
+    # Timeout (seconds) for waiting on user input.  Prevents the monitor
+    # thread from blocking indefinitely if the user ignores the prompt.
+    _PROMPT_TIMEOUT = 10
+
     try:
-        tty = open("/dev/tty", "w")
+        tty_w = open("/dev/tty", "w")
+        tty_r = open("/dev/tty", "r") if interactive else None
     except OSError:
         return
 
     try:
         proc = subprocess.Popen(
-            log_cmd,
+            ["podman", "logs", "-f", proxy_container],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
     except OSError:
-        tty.close()
+        tty_w.close()
+        if tty_r:
+            tty_r.close()
         return
 
     dim = "\x1b[2m"
     red = "\x1b[31m"
+    yellow = "\x1b[33m"
+    green = "\x1b[32m"
     reset = "\x1b[0m"
+
+    prompted_domains: set[str] = set()
+
+    def _read_response_with_timeout(fd: int, timeout: float) -> str | None:
+        """Read a line from *fd* with a timeout via select().
+
+        Returns the stripped response, or ``None`` on timeout / error.
+        Using select() avoids blocking the monitor thread indefinitely,
+        which is important because `podman exec -it` shares the same
+        controlling terminal.
+        """
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+        except (OSError, ValueError):
+            return None
+        if not ready:
+            return None
+        # Read one line (user presses Enter)
+        try:
+            data = os.read(fd, 256)
+            return data.decode("utf-8", errors="replace").strip().lower()
+        except OSError:
+            return None
 
     try:
         assert proc.stdout is not None
@@ -130,11 +212,54 @@ def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
                 continue
             host = entry.get("host", "?")
             reason = entry.get("reason", "blocked")
-            tty.write(
+            tty_w.write(
                 f"\r{dim}[agentcage]{reset} {red}blocked{reset}"
-                f" {dim}→{reset} {host} {dim}({reason}){reset}\n"
+                f" {dim}\u2192{reset} {host} {dim}({reason}){reset}\n"
             )
-            tty.flush()
+            tty_w.flush()
+
+            # Interactive domain prompt
+            if (
+                interactive
+                and tty_r
+                and cage_name
+                and reason == "domain"
+                and host not in prompted_domains
+            ):
+                prompted_domains.add(host)
+                domain_to_add = _extract_parent_domain(host)
+                # Also skip if the parent domain was already prompted
+                if domain_to_add in prompted_domains:
+                    continue
+                prompted_domains.add(domain_to_add)
+
+                tty_w.write(
+                    f"  Add {domain_to_add} to allowlist? "
+                    f"[y/N {dim}{_PROMPT_TIMEOUT}s{reset}] "
+                )
+                tty_w.flush()
+
+                try:
+                    response = _read_response_with_timeout(
+                        tty_r.fileno(), _PROMPT_TIMEOUT,
+                    )
+                    if response is None:
+                        # Timeout — treat as decline
+                        tty_w.write(
+                            f"\n  {yellow}(timed out, skipped){reset}\n"
+                        )
+                        tty_w.flush()
+                    elif response == "y":
+                        subprocess.run(
+                            ["agentcage", "domain", "add", cage_name, domain_to_add],
+                            capture_output=True,
+                        )
+                        tty_w.write(
+                            f"  {green}\u2713{reset} {domain_to_add} added\n"
+                        )
+                        tty_w.flush()
+                except (OSError, ValueError):
+                    pass
     except (OSError, ValueError):
         pass
     finally:
@@ -143,7 +268,9 @@ def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             proc.kill()
-        tty.close()
+        tty_w.close()
+        if tty_r:
+            tty_r.close()
 
 
 def _detect_isolation() -> str:
@@ -160,6 +287,7 @@ def execute(
     extra_args: tuple[str, ...] = (),
     verbose: bool = False,
     isolation: str | None = None,
+    interactive_domains: bool = False,
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
 
@@ -353,27 +481,20 @@ def execute(
     proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
-    # Build exec and log commands — VM mode goes through limactl
-    if cfg.isolation == "vm":
-        from agentcage.lima.instance import LimaInstance
-        inst = LimaInstance(cfg.name)
-        run_cmd = ["limactl", "shell", inst.name, "--",
-                   "podman", "exec", *exec_flags, container_name, *exec_cmd]
-        log_cmd = ["limactl", "shell", inst.name, "--",
-                   "podman", "logs", "-f", proxy_container]
-    else:
-        run_cmd = ["podman", "exec", *exec_flags, container_name, *exec_cmd]
-        log_cmd = ["podman", "logs", "-f", proxy_container]
-
     # Monitor proxy logs for blocked requests
     monitor_stop = threading.Event()
     monitor_thread = threading.Thread(
-        target=_monitor_proxy, args=(log_cmd, monitor_stop), daemon=True,
+        target=_monitor_proxy,
+        args=(proxy_container, monitor_stop),
+        kwargs={"cage_name": cage_name, "interactive": interactive_domains},
+        daemon=True,
     )
     monitor_thread.start()
 
     try:
-        result = subprocess.run(run_cmd)
+        result = subprocess.run(
+            ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
+        )
         exit_code = result.returncode
     except KeyboardInterrupt:
         click.echo("\nSession interrupted.")
