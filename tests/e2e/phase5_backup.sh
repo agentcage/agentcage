@@ -38,15 +38,19 @@ else
 fi
 
 # 5.2: Subnet isolation
-# Wait for each proxy to serve its allowed domain before checking isolation.
-# Without this, all requests may return 502 if the proxy isn't ready yet.
-wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 60 || true
-wait_http_code "$BASE2/fetch?url=http://example.com" 200 60 || true
+# Wait for each proxy to actually serve its allowed domain (not just 502).
+# The second cage proxy often takes longer to be fully ready.
+wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 90 || true
+wait_http_code "$BASE2/fetch?url=http://example.com" 200 90 || true
+# Also confirm blocked domains return 403/502 (not 000/200)
+wait_http_blocked "$BASE/fetch?url=http://example.com" 30 || true
+wait_http_blocked "$BASE2/fetch?url=http://httpbin.org/get" 30 || true
 
-CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
-CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
-CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+# Now take the final readings
+CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
+CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
+CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
 # Blocked domains return 403 (proxy) or 502 (DNS sinkhole) depending on timing
 is_blocked() { [ "$1" = "403" ] || [ "$1" = "502" ]; }
 if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
@@ -74,13 +78,27 @@ fi
 # 5.5: Restore cage
 # Note: restore may fail if the original config used env vars like ${AGENT_DIR}
 # that aren't set at restore time. This is a known limitation.
-if AGENT_DIR="$AGENT_DIR" agentcage cage restore "$BACKUP_FILE" >/dev/null 2>&1 && wait_ready "$BASE" 60; then
-  e2e_pass "5.5" "Restore cage"
-
-  # 5.6: Restored cage works
-  assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "5.6" "Restored cage works"
+_restore_ok=false
+if AGENT_DIR="$AGENT_DIR" agentcage cage restore "$BACKUP_FILE" >/dev/null 2>&1; then
+  if wait_ready "$BASE" 90; then
+    _restore_ok=true
+    e2e_pass "5.5" "Restore cage"
+  else
+    e2e_fail "5.5" "Restore cage" "restore succeeded but cage not ready within 90s"
+  fi
 else
-  e2e_fail "5.5" "Restore cage" "restore or readiness failed"
+  e2e_fail "5.5" "Restore cage" "restore command failed"
+fi
+
+if [ "$_restore_ok" = true ]; then
+  # 5.6: Restored cage works — proxy may need a moment to forward after restore
+  if wait_http_code "$BASE/fetch?url=https://httpbin.org/get" 200 60; then
+    e2e_pass "5.6" "Restored cage works"
+  else
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=https://httpbin.org/get" 2>/dev/null || echo "000")
+    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got $CODE after 60s"
+  fi
+else
   e2e_skip "5.6" "Restored cage works" "depends on 5.5"
 fi
 
