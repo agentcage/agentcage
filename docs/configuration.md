@@ -16,6 +16,7 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 - [Secret injection](#secret-injection-secret_injection)
 - [Domain filtering](#domain-filtering-domains)
 - [Secret detection](#secret-detection-secrets)
+- [MCP servers](#mcp-servers-mcp_servers)
 - [Inspectors](#inspectors)
   - [Built-in inspectors](#built-in-inspectors)
   - [Entropy inspector](#entropy-inspector)
@@ -420,6 +421,50 @@ agentcage cage har mycage --decision blocked --since 1h
 ```
 
 See [CLI Reference — cage har](cli.md#cage-har) for full options.
+
+---
+
+## MCP servers (`mcp_servers:`)
+
+MCP (Model Context Protocol) servers extend an AI agent's capabilities with external tools. MCP servers run as **processes inside the agent container** — agentcage installs the npm packages and adds their required domains to the allowlist. Claude Code manages the MCP server lifecycle itself.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `name` | `string` | `""` | Short name for the MCP server |
+| `package` | `string` | `""` | npm package name (e.g. `@anthropic/mcp-server-github`) |
+| `command` | `list[string]` | `[]` | Override the default command |
+| `env` | `dict[string, string]` | `{}` | Server-specific environment variables (set in the cage container) |
+| `domains` | `list[string]` | `[]` | Additional domains this server needs (auto-merged into the allowlist) |
+
+### YAML example
+
+```yaml
+mcp_servers:
+  - name: github
+    package: "@anthropic/mcp-server-github"
+    domains:
+      - api.github.com
+      - github.com
+  - name: filesystem
+    package: "@anthropic/mcp-server-filesystem"
+```
+
+### CLI shorthand
+
+Use `--mcp` with `agentcage run` to add well-known MCP servers by name:
+
+```bash
+agentcage run claude-code --mcp github --mcp filesystem
+```
+
+Available short names: `github`, `filesystem`, `postgres`, `memory`, `fetch`, `puppeteer`.
+
+### How it works
+
+1. **Install** -- npm packages listed in `mcp_servers[].package` are appended to the Containerfile via `npm install -g`.
+2. **Domains** -- Domains from `mcp_servers[].domains` are auto-merged into `domains.allow` when using allowlist mode.
+3. **Env vars** -- Environment variables from `mcp_servers[].env` are set in the cage container.
+4. **Lifecycle** -- Claude Code reads its MCP config from `.claude/settings.json` (mounted from the host or project). agentcage does not generate Claude Code MCP config -- configure your MCP servers in Claude Code as you normally would.
 
 ---
 

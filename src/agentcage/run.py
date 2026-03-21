@@ -160,6 +160,7 @@ def execute(
     extra_args: tuple[str, ...] = (),
     verbose: bool = False,
     isolation: str | None = None,
+    mcp_servers: tuple[str, ...] = (),
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
 
@@ -222,6 +223,23 @@ def execute(
     config_path.write_text(config_text)
 
     cfg = load_config(str(config_path))
+
+    # Resolve --mcp flags into MCP server configs
+    if mcp_servers:
+        from agentcage.mcp import resolve_mcp_server
+        for mcp_name in mcp_servers:
+            try:
+                server = resolve_mcp_server(mcp_name)
+            except ValueError as e:
+                output.step_fail(str(e))
+                return 1
+            cfg.mcp_servers.append(server)
+
+    # Merge MCP server domains into allowlist
+    if cfg.mcp_servers and cfg.domains.mode == "allowlist":
+        from agentcage.mcp import merge_mcp_domains
+        cfg.domains.allow = merge_mcp_domains(cfg.domains.allow, cfg.mcp_servers)
+
     warnings = validate_config(cfg)
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
@@ -248,6 +266,20 @@ def execute(
         if containerfile_src.exists():
             dest_cf = Path(state.stored_config_path(cage_name)).parent / "Containerfile"
             shutil.copy2(str(containerfile_src), str(dest_cf))
+
+            # Append MCP server npm installs to the Containerfile
+            if cfg.mcp_servers:
+                from agentcage.mcp import mcp_npm_packages
+                packages = mcp_npm_packages(cfg.mcp_servers)
+                if packages:
+                    pkg_str = " ".join(packages)
+                    with open(str(dest_cf), "a") as f:
+                        f.write(
+                            f"\n# MCP servers (added by agentcage --mcp)\n"
+                            f"USER root\n"
+                            f"RUN npm install -g {pkg_str}\n"
+                            f"USER node\n"
+                        )
 
     # Run scaffold setup (build images) and deploy
     try:

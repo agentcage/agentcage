@@ -117,10 +117,11 @@ def _passthrough_regex(domains: list[str]) -> str:
 
 
 def _effective_dns_allowlist(config: Config) -> list[str]:
-    """Merge passthrough domains into the DNS allowlist.
+    """Merge passthrough and MCP server domains into the DNS allowlist.
 
     Passthrough domains must resolve via upstream DNS (not the sinkhole),
     so they are auto-added to the allowlist when in allowlist mode.
+    MCP server domains are also merged so their APIs are reachable.
     """
     if config.domains.mode != "allowlist":
         return []
@@ -128,6 +129,10 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
     for d in config.domains.passthrough:
         if d not in merged:
             merged.append(d)
+    for server in config.mcp_servers:
+        for d in server.domains:
+            if d not in merged:
+                merged.append(d)
     return merged
 
 
@@ -220,6 +225,11 @@ def generate_quadlets(
             )
         expanded_volumes.append(expanded)
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
+
+    # Merge MCP server env vars into cage environment
+    for server in config.mcp_servers:
+        for k, v in server.env.items():
+            expanded_env[k] = os.path.expandvars(str(v))
 
     # Build cage placeholder list: (env_name, placeholder_value)
     cage_placeholders = [(r.env, r.placeholder) for r in config.secret_injection]

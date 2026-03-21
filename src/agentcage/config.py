@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from agentcage.mcp import McpServerConfig
+
 
 @dataclass
 class SecretInjectionRule:
@@ -121,6 +123,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     vm: VmConfig = field(default_factory=VmConfig)
+    mcp_servers: list[McpServerConfig] = field(default_factory=list)
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
     scaffold: str = ""  # scaffold name, stored in metadata for cage ls
@@ -329,6 +332,18 @@ def load_config(path: str) -> Config:
     cap.domains = list(cap_raw.get("domains") or [])
     cap.exclude_domains = list(cap_raw.get("exclude_domains") or [])
     cfg.capture = cap
+
+    # MCP servers
+    mcp_raw = raw.get("mcp_servers") or []
+    for entry in mcp_raw:
+        server = McpServerConfig(
+            name=entry.get("name", ""),
+            package=entry.get("package", ""),
+            command=list(entry.get("command") or []),
+            env=dict(entry.get("env") or {}),
+            domains=list(entry.get("domains") or []),
+        )
+        cfg.mcp_servers.append(server)
 
     # Help text
     cfg.help = str(raw.get("help", "") or "")

@@ -106,6 +106,19 @@ domains:
     # Add domains your agent needs access to:
     #- example.com
 
+# ── MCP servers ──
+# MCP servers run as processes inside the cage. agentcage installs the
+# npm packages and adds their domains to the allowlist.
+# You can also use:  agentcage run claude-code --mcp github --mcp filesystem
+#mcp_servers:
+#  - name: github
+#    package: "@anthropic/mcp-server-github"
+#    domains:
+#      - api.github.com
+#      - github.com
+#  - name: filesystem
+#    package: "@anthropic/mcp-server-filesystem"
+
 # ── Logging ──
 logging:
   level: info

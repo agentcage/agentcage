@@ -222,10 +222,12 @@ def init(name: str | None, output: str, image: str, isolation: str,
 @click.option("-v", "--verbose", is_flag=True, help="Show full build output.")
 @click.option("--isolation", type=click.Choice(["container", "vm"]), default=None,
               help="Isolation backend (default: auto-detect from platform).")
+@click.option("--mcp", "mcp_servers", multiple=True,
+              help="Add an MCP server by name (e.g. github, filesystem). Repeatable.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
         secrets: tuple[str, ...], verbose: bool, isolation: str | None,
-        extra_args: tuple[str, ...]):
+        mcp_servers: tuple[str, ...], extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
 
     \b
@@ -234,13 +236,14 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
       agentcage run codex --project /path/to/repo
       agentcage run claude-code -s ANTHROPIC_API_KEY=sk-...
       agentcage run claude-code --isolation vm
+      agentcage run claude-code --mcp github --mcp filesystem
       agentcage run claude-code --name my-session -- claude --help
     """
     from agentcage.run import execute
     exit_code = execute(
         scaffold, project_dir=project_dir, name=name,
         secrets=secrets, extra_args=extra_args, verbose=verbose,
-        isolation=isolation,
+        isolation=isolation, mcp_servers=mcp_servers,
     )
     sys.exit(exit_code)
 
@@ -319,6 +322,25 @@ def cage_create(config_path: str, secrets: tuple):
         if src_cf.is_file():
             dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
             shutil.copy2(str(src_cf), str(dst_cf))
+
+            # Append MCP server npm installs to the Containerfile
+            if cfg.mcp_servers:
+                from agentcage.mcp import mcp_npm_packages
+                packages = mcp_npm_packages(cfg.mcp_servers)
+                if packages:
+                    pkg_str = " ".join(packages)
+                    with open(str(dst_cf), "a") as f:
+                        f.write(
+                            f"\n# MCP servers (added by agentcage)\n"
+                            f"USER root\n"
+                            f"RUN npm install -g {pkg_str}\n"
+                            f"USER node\n"
+                        )
+
+    # Merge MCP server domains into allowlist
+    if cfg.mcp_servers and cfg.domains.mode == "allowlist":
+        from agentcage.mcp import merge_mcp_domains
+        cfg.domains.allow = merge_mcp_domains(cfg.domains.allow, cfg.mcp_servers)
 
     # Set secrets passed via --set-secret (before build so they're available)
     if secrets:
