@@ -431,7 +431,7 @@ MCP (Model Context Protocol) servers extend an AI agent's capabilities with exte
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `name` | `string` | `""` | Short name for the MCP server |
-| `package` | `string` | `""` | npm package name (e.g. `@anthropic/mcp-server-github`) |
+| `package` | `string` | `""` | npm package name (e.g. `@modelcontextprotocol/server-github`) |
 | `command` | `list[string]` | `[]` | Override the default command |
 | `env` | `dict[string, string]` | `{}` | Server-specific environment variables (set in the cage container) |
 | `domains` | `list[string]` | `[]` | Additional domains this server needs (auto-merged into the allowlist) |
@@ -441,12 +441,12 @@ MCP (Model Context Protocol) servers extend an AI agent's capabilities with exte
 ```yaml
 mcp_servers:
   - name: github
-    package: "@anthropic/mcp-server-github"
+    package: "@modelcontextprotocol/server-github"
     domains:
       - api.github.com
       - github.com
   - name: filesystem
-    package: "@anthropic/mcp-server-filesystem"
+    package: "@modelcontextprotocol/server-filesystem"
 ```
 
 ### CLI shorthand
@@ -457,7 +457,7 @@ Use `--mcp` with `agentcage run` to add well-known MCP servers by name:
 agentcage run claude-code --mcp github --mcp filesystem
 ```
 
-Available short names: `github`, `filesystem`, `postgres`, `memory`, `fetch`, `puppeteer`.
+Available short names: `github`, `filesystem`, `postgres`, `memory`, `puppeteer`.
 
 ### How it works
 

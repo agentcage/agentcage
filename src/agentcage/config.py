@@ -465,6 +465,20 @@ def validate_config(config: Config) -> list[str]:
                         f"and will be added automatically for DNS resolution"
                     )
 
+    # Warn when MCP servers declare domains but the cage isn't using allowlist mode
+    mcp_domains = [d for s in config.mcp_servers for d in s.domains]
+    if mcp_domains and config.domains.mode == "blocklist":
+        block_set = set(config.domains.block)
+        blocked = [d for d in mcp_domains if d in block_set]
+        if blocked:
+            warnings.append(
+                f"MCP server domains {blocked} appear in the blocklist — "
+                f"these servers may not work correctly"
+            )
+    elif mcp_domains and config.domains.mode == "":
+        # No domain filtering at all — MCP domains are reachable, no action needed
+        pass
+
     # Nested containers validation
     if config.container.nested_containers:
         if config.isolation == "vm":

@@ -235,10 +235,8 @@ def execute(
                 return 1
             cfg.mcp_servers.append(server)
 
-    # Merge MCP server domains into allowlist
-    if cfg.mcp_servers and cfg.domains.mode == "allowlist":
-        from agentcage.mcp import merge_mcp_domains
-        cfg.domains.allow = merge_mcp_domains(cfg.domains.allow, cfg.mcp_servers)
+    # MCP domain merging is handled by _effective_dns_allowlist() in
+    # quadlets.py at deploy time — no need to mutate cfg.domains here.
 
     warnings = validate_config(cfg)
     for w in warnings:
@@ -269,17 +267,8 @@ def execute(
 
             # Append MCP server npm installs to the Containerfile
             if cfg.mcp_servers:
-                from agentcage.mcp import mcp_npm_packages
-                packages = mcp_npm_packages(cfg.mcp_servers)
-                if packages:
-                    pkg_str = " ".join(packages)
-                    with open(str(dest_cf), "a") as f:
-                        f.write(
-                            f"\n# MCP servers (added by agentcage --mcp)\n"
-                            f"USER root\n"
-                            f"RUN npm install -g {pkg_str}\n"
-                            f"USER node\n"
-                        )
+                from agentcage.mcp import extend_containerfile
+                extend_containerfile(str(dest_cf), cfg.mcp_servers)
 
     # Run scaffold setup (build images) and deploy
     try:
