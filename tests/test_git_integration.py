@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import os
-import stat
-import textwrap
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 import yaml
 
 from agentcage.init import detect_git_integrations, render_config
@@ -117,7 +113,7 @@ class TestGitMountsInScaffolds:
             "claude-code", "test-cc", ssh_agent_available=True,
         )
         env = parsed["container"].get("env", {})
-        assert env.get("SSH_AUTH_SOCK") == "/tmp/ssh-agent.sock"
+        assert env.get("SSH_AUTH_SOCK") == "/run/ssh-agent.sock"
 
     def test_no_ssh_mount_when_unavailable(self):
         parsed = self._render_with_git_vars(

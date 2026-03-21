@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -53,10 +55,6 @@ def detect_git_integrations() -> dict[str, bool]:
       - ``ssh_agent_available``: ``$SSH_AUTH_SOCK`` is set and the socket exists
       - ``gh_auth_exists``: ``~/.config/gh/hosts.yml`` is present
     """
-    import os
-    import stat
-    from pathlib import Path
-
     home = Path.home()
 
     gitconfig_exists = (home / ".gitconfig").is_file()

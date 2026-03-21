@@ -49,7 +49,7 @@ container:
     {% endif %}
     {% if ssh_agent_available %}
     # SSH agent forwarding (auto-detected from host)
-    - "${SSH_AUTH_SOCK}:/tmp/ssh-agent.sock:ro"
+    - "${SSH_AUTH_SOCK}:/run/ssh-agent.sock:ro"
     {% endif %}
     {% if gh_auth_exists %}
     # GitHub CLI auth (auto-detected from host)
@@ -58,7 +58,7 @@ container:
 
   {% if ssh_agent_available %}
   env:
-    SSH_AUTH_SOCK: "/tmp/ssh-agent.sock"
+    SSH_AUTH_SOCK: "/run/ssh-agent.sock"
   {% endif %}
 
   # Map host UID into container so mounted files have correct ownership
@@ -103,7 +103,6 @@ domains:
 
     # ── Telemetry (Claude Code hangs on startup if these are blocked) ──
     - datadoghq.com
-    - githubusercontent.com
     - sentry.io
 
     # ── Package registries ──

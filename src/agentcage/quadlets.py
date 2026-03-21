@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
@@ -209,11 +210,18 @@ def generate_quadlets(
         parts = v.split(":", 1)
         parts[0] = os.path.expanduser(parts[0])
         expanded = os.path.expandvars(":".join(parts))
-        # Validate host path portion (before first ':') resolves safely
+        # Validate host path portion (before first ':') resolves safely.
+        # Unix sockets (e.g. SSH agent) are allowed outside ~ since they
+        # only expose a protocol interface, not filesystem content.
         host_path = expanded.split(":")[0]
         real = os.path.realpath(host_path)
         home = os.path.realpath(os.path.expanduser("~"))
-        if not (real.startswith(home + os.sep) or real == home):
+        is_socket = False
+        try:
+            is_socket = stat.S_ISSOCK(os.stat(real).st_mode)
+        except OSError:
+            pass
+        if not is_socket and not (real.startswith(home + os.sep) or real == home):
             raise ValueError(
                 f"volume host path {host_path!r} resolves to {real!r} "
                 f"which is outside the home directory ({home!r})"

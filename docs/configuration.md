@@ -131,10 +131,10 @@ The following integrations are auto-detected at cage creation time:
 | Integration | Host path | Condition | Container path |
 |------------|-----------|-----------|----------------|
 | Git config | `~/.gitconfig` | File exists | `/home/node/.gitconfig` (read-only) |
-| SSH agent | `$SSH_AUTH_SOCK` | Env var set and socket exists | `/tmp/ssh-agent.sock` (read-only) |
+| SSH agent | `$SSH_AUTH_SOCK` | Env var set and socket exists | `/run/ssh-agent.sock` (read-only) |
 | GitHub CLI auth | `~/.config/gh/` | `hosts.yml` exists in directory | `/home/node/.config/gh/` (read-only) |
 
-When SSH agent forwarding is active, `SSH_AUTH_SOCK` is set inside the container to `/tmp/ssh-agent.sock`. After the cage starts, a health check runs `ssh-add -l` inside the container -- if the agent is not accessible, a warning is printed.
+When SSH agent forwarding is active, `SSH_AUTH_SOCK` is set inside the container to `/run/ssh-agent.sock`. After the cage starts, a health check runs `ssh-add -l` inside the container -- if the agent is not accessible, a warning is printed.
 
 The `github.com` and `githubusercontent.com` domains are included in the allowlist by default for these scaffolds.
 
