@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
-import re
+import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import click
 from agentcage.init import (
     _SCAFFOLDS_DIR,
     _USER_SCAFFOLDS_DIR,
+    _valid_scaffold_name,
     is_builtin_scaffold,
     list_scaffolds,
     load_scaffold_meta,
@@ -42,7 +44,7 @@ def scaffold_create(name: str, from_scaffold: str | None, force: bool):
       agentcage scaffold create my-agent
       agentcage scaffold create my-claude --from claude-code
     """
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', name):
+    if not _valid_scaffold_name(name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {name!r})",
@@ -77,6 +79,8 @@ def scaffold_create(name: str, from_scaffold: str | None, force: bool):
         click.echo(f"Created scaffold {name!r} from {from_scaffold!r}")
     else:
         # Generate from starter template
+        if dest.exists():
+            shutil.rmtree(dest)
         dest.mkdir(parents=True, exist_ok=True)
         for src_file in _STARTER_DIR.iterdir():
             if src_file.is_file():
@@ -172,7 +176,7 @@ def scaffold_edit(name: str):
 
     editor = os.environ.get("EDITOR", os.environ.get("VISUAL", ""))
     if editor:
-        os.execvp(editor, [editor, str(scaffold_dir)])
+        subprocess.run(shlex.split(editor) + [str(scaffold_dir)])
     else:
         click.echo(f"Scaffold directory: {scaffold_dir}")
         click.echo("  Set $EDITOR to open it automatically.")

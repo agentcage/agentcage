@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,14 @@ def _project_scaffolds_dir() -> Path | None:
     return None
 
 
+_SCAFFOLD_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
+
+
+def _valid_scaffold_name(name: str) -> bool:
+    """Return True if name is a valid scaffold name (no path traversal)."""
+    return bool(_SCAFFOLD_NAME_RE.match(name))
+
+
 def resolve_scaffold(name: str) -> Path | None:
     """Resolve a scaffold name to its directory path.
 
@@ -53,6 +62,9 @@ def resolve_scaffold(name: str) -> Path | None:
 
     Returns the scaffold directory Path, or None if not found.
     """
+    if not _valid_scaffold_name(name):
+        return None
+
     # 1. Project-local
     project_dir = _project_scaffolds_dir()
     if project_dir is not None:
