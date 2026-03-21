@@ -1,3 +1,6 @@
+description: "Nested container agent orchestrator"
+lifecycle: service
+
 next_steps:
   - "{scaffold_dir}/build.sh"
   - "{scaffold_dir}/build-agent.sh"

@@ -1,3 +1,6 @@
+description: "Ultra-lightweight AI agent gateway"
+lifecycle: service
+
 build:
   - image: "localhost/agentcage-scaffold-picoclaw:latest"
     git: "https://github.com/sipeed/picoclaw.git"

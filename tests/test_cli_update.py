@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 from click.testing import CliRunner
 
-from agentcage.cli import main, _fetch_latest_pypi_version, _detect_installer
+from agentcage.cli import main, _fetch_latest_pypi_version, _detect_installer, _version_tuple
 
 
 def _runner():
@@ -64,9 +64,30 @@ class TestDetectInstaller:
         assert _detect_installer() is None
 
 
+class TestVersionTuple:
+    def test_simple_version(self):
+        assert _version_tuple("0.10.0") == (0, 10, 0)
+
+    def test_prerelease_alpha(self):
+        assert _version_tuple("0.10.0a1") == (0, 10, 0)
+
+    def test_prerelease_dev(self):
+        assert _version_tuple("0.10.0.dev1") == (0, 10, 0)
+
+    def test_prerelease_rc(self):
+        assert _version_tuple("0.10.0rc2") == (0, 10, 0)
+
+    def test_empty_string(self):
+        assert _version_tuple("") == (0,)
+
+    def test_single_number(self):
+        assert _version_tuple("3") == (3,)
+
+
 class TestUpdateCommand:
+    @patch("agentcage.cli.version", return_value="0.10.0")
     @patch("agentcage.cli._fetch_latest_pypi_version", return_value="0.10.0")
-    def test_already_up_to_date(self, _mock):
+    def test_already_up_to_date(self, _mock_pypi, _mock_ver):
         result = _runner().invoke(main, ["update"])
         assert result.exit_code == 0
         assert "Already up to date" in result.output

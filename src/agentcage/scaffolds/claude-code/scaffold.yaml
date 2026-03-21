@@ -1,3 +1,6 @@
+description: "Anthropic Claude Code CLI agent"
+lifecycle: interactive
+
 build:
   - image: "localhost/agentcage-scaffold-claude-code:latest"
     containerfile: "Containerfile"

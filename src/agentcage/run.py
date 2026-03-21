@@ -33,7 +33,7 @@ import click
 from agentcage import state
 from agentcage.backends import get_backend
 from agentcage.config import load_config, validate_config
-from agentcage.init import list_scaffolds, load_scaffold_meta, render_config, run_scaffold_setup
+from agentcage.init import list_scaffolds, load_scaffold_meta, render_config, resolve_scaffold, run_scaffold_setup
 from agentcage.podman import Podman
 from agentcage.services import build_and_deploy, check_port_availability, destroy_cage
 
@@ -242,10 +242,9 @@ def execute(
 
     # Copy scaffold Containerfile to state dir if build is configured
     if cfg.container.build.containerfile:
-        from agentcage.init import _SCAFFOLDS_DIR
-        scaffold_dir = _SCAFFOLDS_DIR / scaffold
-        containerfile_src = scaffold_dir / cfg.container.build.containerfile
-        if containerfile_src.exists():
+        scaffold_dir = resolve_scaffold(scaffold)
+        containerfile_src = scaffold_dir / cfg.container.build.containerfile if scaffold_dir else None
+        if containerfile_src is not None and containerfile_src.exists():
             dest_cf = Path(state.stored_config_path(cage_name)).parent / "Containerfile"
             shutil.copy2(str(containerfile_src), str(dest_cf))
 

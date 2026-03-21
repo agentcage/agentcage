@@ -1,0 +1,6 @@
+description: "Custom scaffold"
+lifecycle: interactive
+
+build:
+  - image: "localhost/agentcage-scaffold-{{SCAFFOLD_NAME}}:latest"
+    containerfile: "Containerfile"

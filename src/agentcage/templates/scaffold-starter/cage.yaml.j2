@@ -1,0 +1,61 @@
+# agentcage configuration for {{ name }}
+#
+# Quick start:
+#   agentcage run {{SCAFFOLD_NAME}}
+#   agentcage init my-cage --scaffold {{SCAFFOLD_NAME}}
+
+name: {{ name }}
+{% if isolation == "vm" %}
+
+isolation: vm
+
+vm:
+  vcpus: 1
+  mem_mb: 1024
+{% endif %}
+
+lifecycle: interactive
+
+scaffold: {{SCAFFOLD_NAME}}
+
+container:
+  image: "localhost/agentcage-scaffold-{{SCAFFOLD_NAME}}:latest"
+  build:
+    containerfile: "Containerfile"
+  command: ["sleep", "infinity"]
+
+  read_only: false
+
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=64M"
+
+  memory: "256m"
+  cpus: "1.0"
+
+  timeout_start_sec: 30
+
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "example.com" also allows
+# "api.example.com").
+domains:
+  allow:
+    - example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: info
+
+# ── Inspectors ──
+inspectors:
+  - name: entropy
+  - name: content-type
+
+# ── Exec aliases ──
+exec_aliases:
+  sh: ["sh"]
+
+# ── Help ──
+help: |
+  Interactive shell:
+    agentcage cage exec {{ name }} -- sh

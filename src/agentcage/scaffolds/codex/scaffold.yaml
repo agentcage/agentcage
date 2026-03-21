@@ -1,3 +1,6 @@
+description: "OpenAI Codex CLI agent"
+lifecycle: interactive
+
 build:
   - image: "localhost/agentcage-scaffold-codex:latest"
     containerfile: "Containerfile"
