@@ -174,8 +174,15 @@ def _detect_installer() -> str | None:
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
-    """Parse a version string like '0.10.0' into a comparable tuple."""
-    return tuple(int(x) for x in v.split("."))
+    """Parse a version string like '0.10.0' into a comparable tuple.
+
+    Pre-release suffixes (e.g. '0.10.0a1', '0.10.0.dev1') are stripped
+    so that only the leading numeric parts are compared.
+    """
+    m = re.match(r"(\d+(?:\.\d+)*)", v)
+    if not m:
+        return (0,)
+    return tuple(int(x) for x in m.group(1).split("."))
 
 
 @main.command("update")

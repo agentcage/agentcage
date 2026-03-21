@@ -176,7 +176,14 @@ def scaffold_edit(name: str):
 
     editor = os.environ.get("EDITOR", os.environ.get("VISUAL", ""))
     if editor:
-        subprocess.run(shlex.split(editor) + [str(scaffold_dir)])
+        # Open a specific file rather than a directory — most editors
+        # (vim, nano) expect a file path, not a directory.
+        target = scaffold_dir / "cage.yaml.j2"
+        if not target.exists():
+            target = scaffold_dir / "scaffold.yaml"
+        if not target.exists():
+            target = scaffold_dir
+        subprocess.run(shlex.split(editor) + [str(target)])
     else:
         click.echo(f"Scaffold directory: {scaffold_dir}")
         click.echo("  Set $EDITOR to open it automatically.")
