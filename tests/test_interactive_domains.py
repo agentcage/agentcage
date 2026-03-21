@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentcage.run import _extract_parent_domain, _monitor_proxy
+from agentcage.run import _extract_parent_domain, _is_ip_address, _monitor_proxy
 
 
 class _NoCloseStringIO(StringIO):
@@ -15,6 +15,42 @@ class _NoCloseStringIO(StringIO):
 
     def close(self):
         pass  # keep the buffer accessible for assertions
+
+
+class _FakeTTYReader:
+    """Fake file object for /dev/tty reads with a controllable fileno()."""
+
+    def __init__(self, fd: int = 99):
+        self._fd = fd
+        self._closed = False
+
+    def fileno(self):
+        return self._fd
+
+    def close(self):
+        self._closed = True
+
+
+class TestIsIpAddress:
+    """Verify IP address detection."""
+
+    def test_ipv4(self):
+        assert _is_ip_address("192.168.1.1") is True
+
+    def test_ipv4_loopback(self):
+        assert _is_ip_address("127.0.0.1") is True
+
+    def test_ipv6(self):
+        assert _is_ip_address("::1") is True
+
+    def test_ipv6_full(self):
+        assert _is_ip_address("2001:db8::1") is True
+
+    def test_hostname(self):
+        assert _is_ip_address("example.com") is False
+
+    def test_single_label(self):
+        assert _is_ip_address("localhost") is False
 
 
 class TestExtractParentDomain:
@@ -47,12 +83,23 @@ class TestExtractParentDomain:
     def test_compound_tld_co_nz(self):
         assert _extract_parent_domain("mail.example.co.nz") == "example.co.nz"
 
+    def test_compound_tld_co_in(self):
+        assert _extract_parent_domain("api.example.co.in") == "example.co.in"
+
+    def test_compound_tld_org_uk(self):
+        assert _extract_parent_domain("www.example.org.uk") == "example.org.uk"
+
     def test_bare_compound_tld(self):
         assert _extract_parent_domain("example.co.uk") == "example.co.uk"
 
-    def test_ip_address_passthrough(self):
-        # IP-like strings should just return the last 2 parts
-        assert _extract_parent_domain("192.168.1.1") == "1.1"
+    def test_ipv4_passthrough(self):
+        assert _extract_parent_domain("192.168.1.1") == "192.168.1.1"
+
+    def test_ipv4_ten_network(self):
+        assert _extract_parent_domain("10.0.0.1") == "10.0.0.1"
+
+    def test_ipv6_passthrough(self):
+        assert _extract_parent_domain("::1") == "::1"
 
 
 class TestMonitorProxyInteractive:
@@ -62,9 +109,12 @@ class TestMonitorProxyInteractive:
         """Create newline-delimited JSON lines from dicts."""
         return "\n".join(json.dumps(e) for e in entries) + "\n"
 
+    @patch("agentcage.run.os.read")
+    @patch("agentcage.run.select.select")
     @patch("agentcage.run.subprocess.run")
     @patch("agentcage.run.subprocess.Popen")
-    def test_prompts_for_blocked_domain(self, mock_popen, mock_run):
+    def test_prompts_for_blocked_domain(self, mock_popen, mock_run,
+                                         mock_select, mock_os_read):
         """Interactive mode prompts on domain blocks and calls domain add."""
         log_line = json.dumps({
             "decision": "blocked", "host": "api.stripe.com", "reason": "domain",
@@ -76,7 +126,11 @@ class TestMonitorProxyInteractive:
         mock_popen.return_value = mock_proc
 
         tty_output = _NoCloseStringIO()
-        tty_input = _NoCloseStringIO("y\n")
+        tty_input = _FakeTTYReader(fd=99)
+
+        # select says ready, os.read returns "y\n"
+        mock_select.return_value = ([99], [], [])
+        mock_os_read.return_value = b"y\n"
 
         stop = threading.Event()
 
@@ -139,9 +193,12 @@ class TestMonitorProxyInteractive:
         assert "blocked" in output
         assert "Add" not in output
 
+    @patch("agentcage.run.os.read")
+    @patch("agentcage.run.select.select")
     @patch("agentcage.run.subprocess.run")
     @patch("agentcage.run.subprocess.Popen")
-    def test_no_prompt_for_non_domain_reason(self, mock_popen, mock_run):
+    def test_no_prompt_for_non_domain_reason(self, mock_popen, mock_run,
+                                              mock_select, mock_os_read):
         """Blocks with reason != 'domain' are not prompted."""
         log_line = json.dumps({
             "decision": "blocked", "host": "evil.com", "reason": "entropy",
@@ -153,7 +210,7 @@ class TestMonitorProxyInteractive:
         mock_popen.return_value = mock_proc
 
         tty_output = _NoCloseStringIO()
-        tty_input = _NoCloseStringIO("")
+        tty_input = _FakeTTYReader(fd=99)
         stop = threading.Event()
 
         with patch("builtins.open") as mock_open:
@@ -171,10 +228,14 @@ class TestMonitorProxyInteractive:
             )
 
         mock_run.assert_not_called()
+        mock_select.assert_not_called()
 
+    @patch("agentcage.run.os.read")
+    @patch("agentcage.run.select.select")
     @patch("agentcage.run.subprocess.run")
     @patch("agentcage.run.subprocess.Popen")
-    def test_dedup_same_domain(self, mock_popen, mock_run):
+    def test_dedup_same_domain(self, mock_popen, mock_run,
+                                mock_select, mock_os_read):
         """Same domain is not prompted twice."""
         lines = [
             json.dumps({"decision": "blocked", "host": "api.stripe.com", "reason": "domain"}) + "\n",
@@ -187,7 +248,11 @@ class TestMonitorProxyInteractive:
         mock_popen.return_value = mock_proc
 
         tty_output = _NoCloseStringIO()
-        tty_input = _NoCloseStringIO("n\n")
+        tty_input = _FakeTTYReader(fd=99)
+
+        mock_select.return_value = ([99], [], [])
+        mock_os_read.return_value = b"n\n"
+
         stop = threading.Event()
 
         with patch("builtins.open") as mock_open:
@@ -207,9 +272,12 @@ class TestMonitorProxyInteractive:
         # Only one prompt despite two blocked entries
         assert tty_output.getvalue().count("Add stripe.com to allowlist?") == 1
 
+    @patch("agentcage.run.os.read")
+    @patch("agentcage.run.select.select")
     @patch("agentcage.run.subprocess.run")
     @patch("agentcage.run.subprocess.Popen")
-    def test_dedup_subdomain_after_parent(self, mock_popen, mock_run):
+    def test_dedup_subdomain_after_parent(self, mock_popen, mock_run,
+                                           mock_select, mock_os_read):
         """If parent domain was prompted, subdomains are not re-prompted."""
         lines = [
             json.dumps({"decision": "blocked", "host": "api.stripe.com", "reason": "domain"}) + "\n",
@@ -222,7 +290,11 @@ class TestMonitorProxyInteractive:
         mock_popen.return_value = mock_proc
 
         tty_output = _NoCloseStringIO()
-        tty_input = _NoCloseStringIO("n\n")
+        tty_input = _FakeTTYReader(fd=99)
+
+        mock_select.return_value = ([99], [], [])
+        mock_os_read.return_value = b"n\n"
+
         stop = threading.Event()
 
         with patch("builtins.open") as mock_open:
@@ -254,9 +326,12 @@ class TestMonitorProxyInteractive:
                 cage_name="test-cage", interactive=True,
             )
 
+    @patch("agentcage.run.os.read")
+    @patch("agentcage.run.select.select")
     @patch("agentcage.run.subprocess.run")
     @patch("agentcage.run.subprocess.Popen")
-    def test_decline_does_not_add(self, mock_popen, mock_run):
+    def test_decline_does_not_add(self, mock_popen, mock_run,
+                                   mock_select, mock_os_read):
         """Answering 'n' or empty does not call domain add."""
         log_line = json.dumps({
             "decision": "blocked", "host": "api.stripe.com", "reason": "domain",
@@ -268,7 +343,11 @@ class TestMonitorProxyInteractive:
         mock_popen.return_value = mock_proc
 
         tty_output = _NoCloseStringIO()
-        tty_input = _NoCloseStringIO("n\n")
+        tty_input = _FakeTTYReader(fd=99)
+
+        mock_select.return_value = ([99], [], [])
+        mock_os_read.return_value = b"n\n"
+
         stop = threading.Event()
 
         with patch("builtins.open") as mock_open:
@@ -286,6 +365,46 @@ class TestMonitorProxyInteractive:
             )
 
         mock_run.assert_not_called()
+
+    @patch("agentcage.run.select.select")
+    @patch("agentcage.run.subprocess.run")
+    @patch("agentcage.run.subprocess.Popen")
+    def test_timeout_skips_domain(self, mock_popen, mock_run, mock_select):
+        """When select() times out, the prompt is skipped (treated as decline)."""
+        log_line = json.dumps({
+            "decision": "blocked", "host": "api.stripe.com", "reason": "domain",
+        }) + "\n"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([log_line])
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        tty_output = _NoCloseStringIO()
+        tty_input = _FakeTTYReader(fd=99)
+
+        # select returns empty — timeout
+        mock_select.return_value = ([], [], [])
+
+        stop = threading.Event()
+
+        with patch("builtins.open") as mock_open:
+            def open_side_effect(path, mode="r"):
+                if path == "/dev/tty" and mode == "w":
+                    return tty_output
+                if path == "/dev/tty" and mode == "r":
+                    return tty_input
+                raise OSError("unexpected open")
+            mock_open.side_effect = open_side_effect
+
+            _monitor_proxy(
+                ["fake", "log", "cmd"], stop,
+                cage_name="test-cage", interactive=True,
+            )
+
+        mock_run.assert_not_called()
+        output = tty_output.getvalue()
+        assert "timed out" in output
 
 
 class TestInteractiveDomainsCliFlag:

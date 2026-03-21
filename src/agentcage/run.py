@@ -20,6 +20,7 @@ import json
 import os
 import platform
 import random
+import select
 import shutil
 import signal
 import subprocess
@@ -84,18 +85,45 @@ def generate_name(scaffold: str) -> str:
     raise RuntimeError("Could not generate a unique cage name after 100 attempts")
 
 
+def _is_ip_address(host: str) -> bool:
+    """Return True if *host* looks like an IPv4 or IPv6 address."""
+    # IPv6 (bracketed or bare)
+    if ":" in host:
+        return True
+    # IPv4: all parts are digits
+    parts = host.split(".")
+    return all(p.isdigit() for p in parts)
+
+
 def _extract_parent_domain(host: str) -> str:
     """Extract the registrable parent domain from a hostname.
 
     api.stripe.com -> stripe.com
     cdn.example.co.uk -> example.co.uk
     stripe.com -> stripe.com (already a parent)
+    localhost -> localhost
+    10.0.0.1 -> 10.0.0.1 (IP addresses returned as-is)
     """
+    # IP addresses and single-label hosts are returned unchanged
+    if _is_ip_address(host):
+        return host
     parts = host.split(".")
     if len(parts) <= 2:
         return host
     # Use last 3 parts for known compound TLDs, otherwise last 2
-    known_compound_tlds = {"co.uk", "com.au", "co.jp", "com.br", "co.nz"}
+    known_compound_tlds = {
+        "co.uk", "org.uk", "me.uk",
+        "com.au", "net.au", "org.au",
+        "co.jp", "or.jp", "ne.jp",
+        "com.br", "net.br", "org.br",
+        "co.nz", "net.nz", "org.nz",
+        "co.in", "net.in", "org.in",
+        "com.mx", "org.mx",
+        "com.cn", "net.cn", "org.cn",
+        "co.kr",
+        "com.sg",
+        "com.hk",
+    }
     if ".".join(parts[-2:]) in known_compound_tlds:
         return ".".join(parts[-3:]) if len(parts) >= 3 else host
     return ".".join(parts[-2:])
@@ -119,6 +147,10 @@ def _monitor_proxy(
     When *interactive* is True and a domain-based block occurs, prompts
     the user (via ``/dev/tty``) to add the domain to the allowlist.
     """
+    # Timeout (seconds) for waiting on user input.  Prevents the monitor
+    # thread from blocking indefinitely if the user ignores the prompt.
+    _PROMPT_TIMEOUT = 10
+
     try:
         tty_w = open("/dev/tty", "w")
         tty_r = open("/dev/tty", "r") if interactive else None
@@ -140,10 +172,32 @@ def _monitor_proxy(
 
     dim = "\x1b[2m"
     red = "\x1b[31m"
+    yellow = "\x1b[33m"
     green = "\x1b[32m"
     reset = "\x1b[0m"
 
     prompted_domains: set[str] = set()
+
+    def _read_response_with_timeout(fd: int, timeout: float) -> str | None:
+        """Read a line from *fd* with a timeout via select().
+
+        Returns the stripped response, or ``None`` on timeout / error.
+        Using select() avoids blocking the monitor thread indefinitely,
+        which is important because `podman exec -it` shares the same
+        controlling terminal.
+        """
+        try:
+            ready, _, _ = select.select([fd], [], [], timeout)
+        except (OSError, ValueError):
+            return None
+        if not ready:
+            return None
+        # Read one line (user presses Enter)
+        try:
+            data = os.read(fd, 256)
+            return data.decode("utf-8", errors="replace").strip().lower()
+        except OSError:
+            return None
 
     try:
         assert proc.stdout is not None
@@ -163,7 +217,7 @@ def _monitor_proxy(
             reason = entry.get("reason", "blocked")
             tty_w.write(
                 f"\r{dim}[agentcage]{reset} {red}blocked{reset}"
-                f" {dim}→{reset} {host} {dim}({reason}){reset}\n"
+                f" {dim}\u2192{reset} {host} {dim}({reason}){reset}\n"
             )
             tty_w.flush()
 
@@ -182,12 +236,23 @@ def _monitor_proxy(
                     continue
                 prompted_domains.add(domain_to_add)
 
-                tty_w.write(f"  Add {domain_to_add} to allowlist? [y/N] ")
+                tty_w.write(
+                    f"  Add {domain_to_add} to allowlist? "
+                    f"[y/N {dim}{_PROMPT_TIMEOUT}s{reset}] "
+                )
                 tty_w.flush()
 
                 try:
-                    response = tty_r.readline().strip().lower()
-                    if response == "y":
+                    response = _read_response_with_timeout(
+                        tty_r.fileno(), _PROMPT_TIMEOUT,
+                    )
+                    if response is None:
+                        # Timeout — treat as decline
+                        tty_w.write(
+                            f"\n  {yellow}(timed out, skipped){reset}\n"
+                        )
+                        tty_w.flush()
+                    elif response == "y":
                         subprocess.run(
                             ["agentcage", "domain", "add", cage_name, domain_to_add],
                             capture_output=True,
