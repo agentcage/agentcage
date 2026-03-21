@@ -41,6 +41,7 @@ from agentcage.services import (
     ensure_patches as _ensure_patches,
     build_container_image as _build_container_image_svc,
     build_and_deploy as _build_and_deploy,
+    destroy_cage as _destroy_cage,
 )
 
 
@@ -94,7 +95,15 @@ class AliasGroup(click.Group):
                     formatter.write_text(f"{alias} → {target}")
 
 
-@click.group()
+class _BannerGroup(click.Group):
+    """Show the agentcage banner before help text."""
+
+    def get_help(self, ctx: click.Context) -> str:
+        from agentcage.output import banner_text
+        return banner_text(version("agentcage")) + "\n" + super().get_help(ctx)
+
+
+@click.group(cls=_BannerGroup)
 @click.version_option(version=version("agentcage"), prog_name="agentcage")
 def main():
     """Defense-in-depth proxy sandbox for AI agents."""
@@ -199,6 +208,38 @@ def init(name: str | None, output: str, image: str, isolation: str,
 
 
 
+# ── run ──────────────────────────────────────────────────
+
+
+@main.command(context_settings={"ignore_unknown_options": True})
+@click.argument("scaffold")
+@click.option("--project", "project_dir", default=None, type=click.Path(exists=True),
+              help="Project directory to mount (default: current directory).")
+@click.option("--name", default=None,
+              help="Cage name (default: auto-generated).")
+@click.option("-s", "--set-secret", "secrets", multiple=True,
+              help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
+@click.option("-v", "--verbose", is_flag=True, help="Show full build output.")
+@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
+def run(scaffold: str, project_dir: str | None, name: str | None,
+        secrets: tuple[str, ...], verbose: bool, extra_args: tuple[str, ...]):
+    """Run a coding agent in a sandboxed cage.
+
+    \b
+    Examples:
+      agentcage run claude-code
+      agentcage run codex --project /path/to/repo
+      agentcage run claude-code -s ANTHROPIC_API_KEY=sk-...
+      agentcage run claude-code --name my-session -- claude --help
+    """
+    from agentcage.run import execute
+    exit_code = execute(
+        scaffold, project_dir=project_dir, name=name,
+        secrets=secrets, extra_args=extra_args, verbose=verbose,
+    )
+    sys.exit(exit_code)
+
+
 # ── cage group ────────────────────────────────────────────
 
 
@@ -213,6 +254,9 @@ def cage():
               help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
 def cage_create(config_path: str, secrets: tuple):
     """Build images, generate quadlets, install, and start a new cage."""
+    from agentcage import output as _out
+    _out.banner(version("agentcage"))
+
     cfg = load_config(config_path)
     try:
         warnings = validate_config(cfg)
@@ -510,17 +554,19 @@ def cage_list():
         click.echo("No cages found.")
         return
 
-    click.echo(f"{'NAME':<20} {'ISOLATION':<14} {'VERSION':<12} STATUS")
+    click.echo(f"{'NAME':<25} {'LIFECYCLE':<14} {'ISOLATION':<12} {'SCAFFOLD':<15} STATUS")
     for name in names:
         try:
             cfg = state.load_deployment_config(name)
             backend = get_backend(cfg)
         except Exception:
-            click.echo(f"{name:<20} {'?':<14} {'-':<12} unknown (config error)")
+            click.echo(f"{name:<25} {'?':<14} {'?':<12} {'-':<15} unknown (config error)")
             continue
 
         isolation = cfg.isolation
-        ver = state.load_metadata(name).get("agentcage_version", "-")
+        meta = state.load_metadata(name)
+        lifecycle = meta.get("lifecycle", cfg.lifecycle)
+        scaffold_name = meta.get("scaffold", cfg.scaffold) or "-"
         services = backend.service_names(name)
         total = len(services)
         running = sum(
@@ -530,10 +576,13 @@ def cage_list():
         if running == total:
             status = f"running ({running}/{total})"
         elif running == 0:
-            status = f"stopped (0/{total})"
+            if lifecycle in ("interactive", "ephemeral"):
+                status = "exited"
+            else:
+                status = f"stopped (0/{total})"
         else:
             status = f"degraded ({running}/{total})"
-        click.echo(f"{name:<20} {isolation:<14} {ver:<12} {status}")
+        click.echo(f"{name:<25} {lifecycle:<14} {isolation:<12} {scaffold_name:<15} {status}")
 
 
 @cage.command("destroy")
@@ -554,26 +603,7 @@ def cage_destroy(name: str, yes: bool, keep_secrets: bool):
             abort=True,
         )
 
-    # Load config to determine backend, fall back to container backend
-    try:
-        cfg = state.load_deployment_config(name)
-        backend = get_backend(cfg)
-    except Exception:
-        from agentcage.backends.container import ContainerBackend
-        backend = ContainerBackend()
-
-    click.echo("Stopping services...")
-    backend.stop(name)
-
-    click.echo("Removing quadlet files...")
-    removed = backend.destroy_resources(name, keep_secrets=keep_secrets)
-
-    click.echo("Removing Podman resources...")
-
-    # Remove state
-    if state.deployment_exists(name):
-        state.remove_deployment(name)
-        removed.append("state")
+    removed = _destroy_cage(name, keep_secrets=keep_secrets, echo=click.echo)
 
     click.echo()
     if removed:
@@ -582,6 +612,48 @@ def cage_destroy(name: str, yes: bool, keep_secrets: bool):
             click.echo(f"  {item}")
     else:
         click.echo(f'Nothing to remove (cage "{name}" not found).')
+
+
+@cage.command("prune")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
+def cage_prune(yes: bool):
+    """Remove all exited interactive and ephemeral cages."""
+    names = state.list_deployments()
+    candidates = []
+    for name in names:
+        try:
+            cfg = state.load_deployment_config(name)
+            backend = get_backend(cfg)
+        except Exception:
+            continue
+        meta = state.load_metadata(name)
+        lifecycle = meta.get("lifecycle", cfg.lifecycle)
+        if lifecycle not in ("interactive", "ephemeral"):
+            continue
+        services = backend.service_names(name)
+        running = sum(1 for svc in services if backend.is_running(name, svc))
+        if running == 0:
+            candidates.append(name)
+
+    if not candidates:
+        click.echo("Nothing to prune.")
+        return
+
+    click.echo(f"The following exited cages will be removed:")
+    for name in candidates:
+        click.echo(f"  {name}")
+
+    if not yes:
+        click.confirm(f"\nRemove {len(candidates)} cage(s)?", abort=True)
+
+    for name in candidates:
+        click.echo(f"Removing {name}...")
+        try:
+            _destroy_cage(name, keep_secrets=False)
+        except Exception as e:
+            click.echo(f"  warning: failed to remove {name}: {e}", err=True)
+            continue
+    click.echo(f"Pruned {len(candidates)} cage(s).")
 
 
 @cage.command("verify")

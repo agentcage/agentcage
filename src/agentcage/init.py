@@ -105,7 +105,9 @@ def load_scaffold_meta(scaffold: str) -> dict | None:
         return yaml.safe_load(f) or {}
 
 
-def run_scaffold_setup(scaffold: str, name: str, dest: str, *, image_tag: str | None = None) -> None:
+def run_scaffold_setup(
+    scaffold: str, name: str, dest: str, *, image_tag: str | None = None, quiet: bool = False,
+) -> None:
     """Execute build/provision steps from scaffold.yaml."""
     meta = load_scaffold_meta(scaffold)
     if meta is None:
@@ -116,11 +118,15 @@ def run_scaffold_setup(scaffold: str, name: str, dest: str, *, image_tag: str | 
     podman = Podman()
     scaffold_dir = _SCAFFOLDS_DIR / scaffold
 
+    def _echo(msg: str) -> None:
+        if not quiet:
+            click.echo(msg)
+
     # 1. Process build entries
     for entry in meta.get("build", []):
         image = entry["image"]
         if podman.image_exists(image):
-            click.echo(f"Image {image} already exists, skipping build.")
+            _echo(f"Image {image} already exists, skipping build.")
             continue
 
         # Resolve build_args — append resolved tag for scaffold images
@@ -131,22 +137,27 @@ def run_scaffold_setup(scaffold: str, name: str, dest: str, *, image_tag: str | 
 
         if "containerfile" in entry:
             containerfile = str(scaffold_dir / entry["containerfile"])
-            click.echo(f"Building {image}...")
+            _echo(f"Building {image}...")
             podman.build_image(
                 image, containerfile, str(scaffold_dir),
                 cap_add=entry.get("cap_add"), build_args=build_args,
+                quiet=quiet,
             )
         elif "git" in entry:
             git_url = entry["git"]
             depth = entry.get("depth", 1)
             with tempfile.TemporaryDirectory() as tmpdir:
-                click.echo(f"Cloning {git_url}...")
+                _echo(f"Cloning {git_url}...")
                 cmd = ["git", "clone", f"--depth={depth}", git_url, tmpdir]
-                subprocess.run(cmd, check=True)
-                click.echo(f"Building {image}...")
+                if quiet:
+                    subprocess.run(cmd, check=True, capture_output=True)
+                else:
+                    subprocess.run(cmd, check=True)
+                _echo(f"Building {image}...")
                 podman.build_image(
                     image, None, tmpdir,
                     cap_add=entry.get("cap_add"), build_args=build_args,
+                    quiet=quiet,
                 )
 
     # 2. Process provision entries
@@ -154,8 +165,8 @@ def run_scaffold_setup(scaffold: str, name: str, dest: str, *, image_tag: str | 
         src = scaffold_dir / entry["src"]
         dest_path = Path(entry["dest"]).expanduser()
         if dest_path.exists():
-            click.echo(f"{dest_path} already exists, skipping.")
+            _echo(f"{dest_path} already exists, skipping.")
             continue
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(src), str(dest_path))
-        click.echo(f"Created {dest_path}")
+        _echo(f"Created {dest_path}")

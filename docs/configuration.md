@@ -30,6 +30,8 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 |---------|------|---------|-------------|
 | `name` | `string` | *(required)* | Project name — used as the prefix for container names, network name, and quadlet filenames (e.g. `myapp` produces `myapp-cage`, `myapp-proxy`, etc.) |
 | `isolation` | `string` | `"container"` | Isolation backend: `"container"` (rootless Podman, default) or `"vm"` (Lima VM). Old `"firecracker"` configs are silently upgraded to `"vm"`. |
+| `lifecycle` | `string` | `"service"` | Cage lifecycle mode: `"service"` (always running, auto-restart), `"interactive"` (on-demand, stops on exit, state preserved), or `"ephemeral"` (stops on exit, destroyed by `cage prune`). |
+| `scaffold` | `string` | `""` | Scaffold name used to generate this config (shown in `cage list` output). |
 | `log_allowed` | `bool` | `true` | Log allowed requests to the proxy journal |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit |
 | `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container |

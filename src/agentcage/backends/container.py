@@ -31,25 +31,28 @@ class ContainerBackend:
             issues.append("Podman is not available")
         return issues
 
-    def build_artifacts(self, config: Config, deploy_name: str) -> None:
+    def build_artifacts(self, config: Config, deploy_name: str, *, quiet: bool = False) -> None:
         data_dir = Path(__file__).resolve().parent.parent / "data"
         containers_dir = str(data_dir / "containers")
         build_context = str(data_dir)
 
-        click.echo("Building proxy image...")
+        if not quiet:
+            click.echo("Building proxy image...")
         self._podman.build_image(
             "agentcage-proxy",
             os.path.join(containers_dir, "Containerfile.proxy"),
             build_context,
-            no_cache=True,
             cap_add=["CAP_CHOWN", "CAP_FOWNER", "CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE"],
+            quiet=quiet,
         )
-        click.echo("Building DNS image...")
+        if not quiet:
+            click.echo("Building DNS image...")
         self._podman.build_image(
             "agentcage-dns",
             os.path.join(containers_dir, "Containerfile.dns"),
             build_context,
             cap_add=["CAP_SETFCAP"],
+            quiet=quiet,
         )
 
     def generate_units(
@@ -66,33 +69,37 @@ class ContainerBackend:
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/containers/systemd"))
 
-    def install_units(self, units: dict[str, str]) -> None:
+    def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
         for filename, content in units.items():
             (dest / filename).write_text(content)
-        click.echo(f"Installed quadlet files to {dest}/")
+        if not quiet:
+            click.echo(f"Installed quadlet files to {dest}/")
         systemd.daemon_reload()
 
-    def start(self, name: str) -> None:
+    def start(self, name: str, *, quiet: bool = False) -> None:
         # Restart network/volume first so they're recreated
         # (systemd may think they're still active from a previous run even if
         # podman resources were removed by 'cage destroy')
         try:
             systemd.restart_unit(f"{name}-net-network.service")
         except Exception as e:
-            click.echo(f"warning: failed to restart network service: {e}", err=True)
+            if not quiet:
+                click.echo(f"warning: failed to restart network service: {e}", err=True)
         try:
             systemd.restart_unit(f"{name}-certs-volume.service")
         except Exception as e:
-            click.echo(f"warning: failed to restart volume service: {e}", err=True)
+            if not quiet:
+                click.echo(f"warning: failed to restart volume service: {e}", err=True)
         if (self.unit_dir() / f"{name}-podman-storage.volume").exists():
             try:
                 systemd.restart_unit(f"{name}-podman-storage-volume.service")
             except Exception:
                 pass
         systemd.start_unit(f"{name}-cage.service")
-        click.echo(f"Started {name}-cage")
+        if not quiet:
+            click.echo(f"Started {name}-cage")
 
     def stop(self, name: str) -> None:
         for svc in self.service_names(name):

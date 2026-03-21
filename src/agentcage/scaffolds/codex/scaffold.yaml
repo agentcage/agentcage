@@ -1,0 +1,9 @@
+build:
+  - image: "localhost/agentcage-scaffold-codex:latest"
+    containerfile: "Containerfile"
+    cap_add: [CAP_SETFCAP, CAP_SETUID, CAP_SETGID, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER]
+
+next_steps:
+  - "agentcage cage create -c {dest}"
+  - "agentcage cage exec {name} -- codex"
+  - "Or use: agentcage run codex"

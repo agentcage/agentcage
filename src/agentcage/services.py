@@ -169,6 +169,7 @@ def build_and_deploy(
     deploy_name: str,
     podman: Podman,
     used_octets: set[int] | None = None,
+    quiet: bool = False,
 ):
     """Build images, generate quadlets, install, and start."""
     from agentcage.quadlets import cage_network_addrs
@@ -183,10 +184,10 @@ def build_and_deploy(
     with open(resolv_path, "w") as f:
         f.write(f"nameserver {addrs['ip_dns']}\n")
 
-    backend.build_artifacts(cfg, deploy_name)
+    backend.build_artifacts(cfg, deploy_name, quiet=quiet)
 
     units = backend.generate_units(cfg, config_host_path, patches_work, deploy_name, used_octets=used_octets)
-    backend.install_units(units)
+    backend.install_units(units, quiet=quiet)
 
     # Persist the actual assigned network octet so collect_used_octets()
     # can read the real value instead of recomputing the hash (which
@@ -196,7 +197,7 @@ def build_and_deploy(
     meta["network_octet"] = octet
     state.save_metadata(deploy_name, meta)
 
-    backend.start(cfg.name)
+    backend.start(cfg.name, quiet=quiet)
 
 
 def restart_cage(name: str, cfg=None):
@@ -205,3 +206,35 @@ def restart_cage(name: str, cfg=None):
         cfg = state.load_deployment_config(name)
     backend = get_backend(cfg)
     backend.restart(name)
+
+
+def destroy_cage(
+    name: str,
+    *,
+    keep_secrets: bool = False,
+    echo: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Stop and destroy a cage, removing all resources.
+
+    Returns a list of removed resource descriptions.
+    """
+    _echo = echo or (lambda _: None)
+
+    try:
+        cfg = state.load_deployment_config(name)
+        backend = get_backend(cfg)
+    except Exception:
+        from agentcage.backends.container import ContainerBackend
+        backend = ContainerBackend()
+
+    _echo("Stopping services...")
+    backend.stop(name)
+
+    _echo("Removing resources...")
+    removed = backend.destroy_resources(name, keep_secrets=keep_secrets)
+
+    if state.deployment_exists(name):
+        state.remove_deployment(name)
+        removed.append(f"state:{name}")
+
+    return removed

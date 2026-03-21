@@ -43,6 +43,7 @@ class ContainerConfig:
     no_new_privileges: bool = True
     nested_containers: bool = False
     security_label_disable: bool = True
+    userns: str = ""  # e.g. "keep-id" to map host UID into container
     build: BuildConfig = field(default_factory=BuildConfig)
     restart: str = "on-failure"
     restart_sec: int = 10
@@ -105,10 +106,14 @@ class VmConfig:
     mem_mb: int = 4096
 
 
+_VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
+
+
 @dataclass
 class Config:
     name: str = ""
     isolation: str = "container"  # "container" | "vm"
+    lifecycle: str = "service"  # "service" | "interactive" | "ephemeral"
     container: ContainerConfig = field(default_factory=ContainerConfig)
     secret_injection: list[SecretInjectionRule] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
@@ -118,6 +123,7 @@ class Config:
     vm: VmConfig = field(default_factory=VmConfig)
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
+    scaffold: str = ""  # scaffold name, stored in metadata for cage ls
 
 
 def _is_loopback(addr: str) -> bool:
@@ -186,6 +192,8 @@ def load_config(path: str) -> Config:
     cfg = Config()
     cfg.name = raw.get("name", "")
     cfg.isolation = raw.get("isolation", "container")
+    cfg.lifecycle = raw.get("lifecycle", "service")
+    cfg.scaffold = raw.get("scaffold", "")
 
     # Silently migrate "firecracker" isolation to "vm"
     if cfg.isolation == "firecracker":
@@ -223,6 +231,7 @@ def load_config(path: str) -> Config:
     cc.no_new_privileges = c.get("no_new_privileges", True)
     cc.nested_containers = bool(c.get("nested_containers", False))
     cc.security_label_disable = c.get("security_label_disable", True)
+    cc.userns = str(c.get("userns", "") or "")
 
     # drop_capabilities: default "ALL" (string or list)
     drop = c.get("drop_capabilities", "ALL")
@@ -358,6 +367,12 @@ def validate_config(config: Config) -> list[str]:
     if config.isolation not in ("container", "vm"):
         raise ValueError(
             f"isolation must be 'container' or 'vm' (got: {config.isolation!r})"
+        )
+
+    if config.lifecycle not in _VALID_LIFECYCLES:
+        raise ValueError(
+            f"lifecycle must be one of {_VALID_LIFECYCLES} "
+            f"(got: {config.lifecycle!r})"
         )
 
     if config.isolation == "container" and platform.system() == "Darwin":

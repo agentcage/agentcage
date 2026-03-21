@@ -330,6 +330,12 @@ def generate_quadlets(
             volume_name=f"agentcage-podman-{name}",
         )
 
+    # Map lifecycle to systemd restart policy
+    lifecycle = config.lifecycle
+    restart = cc.restart
+    if lifecycle in ("interactive", "ephemeral"):
+        restart = "no"
+
     # Cage container — no published ports (traffic arrives via proxy reverse mode)
     files[f"{name}-cage.container"] = env.get_template("cage.container.j2").render(
         **common,
@@ -342,6 +348,7 @@ def generate_quadlets(
         podman_secrets=cc.podman_secrets,
         cage_placeholders=cage_placeholders,
         env=expanded_env,
+        userns=cc.userns,
         user=cage_user,
         read_only=cc.read_only,
         security_label_disable=cc.security_label_disable,
@@ -351,12 +358,13 @@ def generate_quadlets(
         memory=cc.memory,
         cpus=cc.cpus,
         command=cc.command,
-        restart=cc.restart,
+        restart=restart,
         restart_sec=cc.restart_sec,
         timeout_start_sec=cc.timeout_start_sec,
         timeout_stop_sec=cc.timeout_stop_sec,
         deploy_name=deploy_name,
         nested_containers=nested_containers,
+        lifecycle=lifecycle,
     )
 
     return files

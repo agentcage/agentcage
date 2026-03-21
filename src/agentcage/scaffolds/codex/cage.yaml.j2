@@ -1,0 +1,118 @@
+# agentcage configuration for {{ name }} (Codex scaffold)
+#
+# Quick start:
+#   1. Deploy:  agentcage cage create -c cage.yaml
+#   2. Start a session:
+#        agentcage cage exec {{ name }} -- codex
+#   3. Or use the run command:
+#        agentcage run codex
+#
+# Authentication:
+#   agentcage secret set {{ name }} OPENAI_API_KEY
+#   agentcage cage restart {{ name }}
+
+name: {{ name }}
+{% if isolation == "vm" %}
+
+isolation: vm
+
+vm:
+  vcpus: 2
+  mem_mb: 4096
+{% endif %}
+
+lifecycle: interactive
+
+scaffold: codex
+
+container:
+  image: "localhost/agentcage-scaffold-codex:latest"
+  build:
+    containerfile: "Containerfile"
+  command: ["sleep", "infinity"]
+
+  # Project directory — mount your repo here
+  volumes:
+    - "${PROJECT_DIR}:/workspace:rw"
+    # Auth & settings — mount host ~/.codex so login persists across sessions.
+    # Remove this line to isolate cage state from the host.
+    - "~/.codex:/home/node/.codex:rw"
+  #  # Git config (uncomment to enable)
+  #  - "~/.gitconfig:/home/node/.gitconfig:ro"
+  #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
+
+  # Map host UID into container so mounted files have correct ownership
+  userns: "keep-id"
+  user: ""
+
+  # Coding agents need to write to various paths in the home directory
+  read_only: false
+
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=256M"
+
+  # Resource limits
+  memory: "2g"
+  cpus: "2.0"
+
+  timeout_start_sec: 60
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Create each secret:  agentcage secret set {{ name }} OPENAI_API_KEY
+secret_injection:
+  - env: OPENAI_API_KEY
+    placeholder: "{%raw%}{{OPENAI_API_KEY}}{%endraw%}"
+    inject_to:
+      - openai.com
+
+  # Uncomment for GitHub push via HTTPS:
+  #- env: GITHUB_TOKEN
+  #  placeholder: "{%raw%}{{GITHUB_TOKEN}}{%endraw%}"
+  #  inject_to:
+  #    - github.com
+
+# ── Domain allowlist ──
+domains:
+  allow:
+    # ── AI provider ──
+    - openai.com
+
+    # ── Package registries ──
+    - npmjs.org
+    - npmjs.com
+    - pypi.org
+    - files.pythonhosted.org
+    - nodejs.org
+
+    # ── Code hosting (uncomment for git push) ──
+    #- github.com
+    #- githubusercontent.com
+
+    # Add domains your agent needs access to:
+    #- example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: entropy
+  - name: content-type
+
+# ── Exec aliases ──
+exec_aliases:
+  codex: ["codex"]
+
+# ── Help ──
+help: |
+  Start a Codex session:
+    agentcage cage exec {{ name }} -- codex
+
+  Or use the run command (creates ephemeral cage):
+    agentcage run codex
+
+  Set your API key:
+    agentcage secret set {{ name }} OPENAI_API_KEY

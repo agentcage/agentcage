@@ -33,13 +33,15 @@ else
   e2e_fail "3.2" "Placeholder in cage env" "got '$OUTPUT', expected '{{MY_API_KEY}}'"
 fi
 
-# 3.3: Injection on outbound — send placeholder, then poll audit for injection record
-curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"key":"{{MY_API_KEY}}"}' "$BASE/check-secret" >/dev/null 2>&1 || true
+# 3.3: Injection on outbound — send placeholder, then poll audit for injection record.
+# Retry the triggering curl on each iteration since the outbound proxy or
+# httpbin.org may not be ready on the first attempt.
 FOUND=false
-for _i in $(seq 1 10); do
+for _i in $(seq 1 15); do
+  curl -s -X POST -H 'Content-Type: application/json' \
+    -d '{"key":"{{MY_API_KEY}}"}' "$BASE/check-secret" >/dev/null 2>&1 || true
   sleep 2
-  OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 10 2>&1) || true
+  OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 20 2>&1) || true
   if echo "$OUTPUT" | grep -q "secrets_injected"; then
     FOUND=true
     break
@@ -48,7 +50,7 @@ done
 if [ "$FOUND" = true ]; then
   e2e_pass "3.3" "Injection on outbound"
 else
-  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 20s"
+  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 30s"
 fi
 
 # 3.4: Set new secret
