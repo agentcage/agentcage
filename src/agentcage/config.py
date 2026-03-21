@@ -43,6 +43,7 @@ class ContainerConfig:
     no_new_privileges: bool = True
     nested_containers: bool = False
     security_label_disable: bool = True
+    userns: str = ""  # e.g. "keep-id" to map host UID into container
     build: BuildConfig = field(default_factory=BuildConfig)
     restart: str = "on-failure"
     restart_sec: int = 10
@@ -230,6 +231,7 @@ def load_config(path: str) -> Config:
     cc.no_new_privileges = c.get("no_new_privileges", True)
     cc.nested_containers = bool(c.get("nested_containers", False))
     cc.security_label_disable = c.get("security_label_disable", True)
+    cc.userns = str(c.get("userns", "") or "")
 
     # drop_capabilities: default "ALL" (string or list)
     drop = c.get("drop_capabilities", "ALL")

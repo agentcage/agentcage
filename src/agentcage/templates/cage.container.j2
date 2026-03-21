@@ -39,6 +39,9 @@ Environment="{{ key }}={{ val }}"
 {% for key, val in cage_placeholders %}
 Environment="{{ key }}={{ val }}"
 {% endfor %}
+{% if userns %}
+UserNS={{ userns }}
+{% endif %}
 {% if user %}
 User={{ user }}
 {% endif %}

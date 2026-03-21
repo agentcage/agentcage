@@ -47,6 +47,10 @@ container:
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"
   #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
 
+  # Map host UID into container so mounted files have correct ownership
+  userns: "keep-id"
+  user: ""
+
   # Coding agents need to write to various paths in the home directory
   read_only: false
 

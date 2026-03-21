@@ -348,6 +348,7 @@ def generate_quadlets(
         podman_secrets=cc.podman_secrets,
         cage_placeholders=cage_placeholders,
         env=expanded_env,
+        userns=cc.userns,
         user=cage_user,
         read_only=cc.read_only,
         security_label_disable=cc.security_label_disable,
