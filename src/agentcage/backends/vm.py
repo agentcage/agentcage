@@ -83,10 +83,14 @@ class VmBackend:
             vm_build_dir,
         ])
 
-        # Pull the cage image inside the VM
+        # Build or pull the cage image inside the VM
         if config and config.container.image:
-            click.echo(f"Pulling {config.container.image} inside VM...")
-            inst.exec(["podman", "pull", config.container.image], check=False)
+            if config.container.build.containerfile:
+                # Scaffold image — copy Containerfile and build inside the VM
+                self._build_cage_image_in_vm(config, deploy_name, inst, vm_build_dir)
+            else:
+                click.echo(f"Pulling {config.container.image} inside VM...")
+                inst.exec(["podman", "pull", config.container.image], check=False)
 
         # Cleanup
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
@@ -146,6 +150,47 @@ class VmBackend:
             pass
         self._deploy_cage(name, inst, config)
         click.echo(f"Started {name} (Lima VM)")
+
+    def _build_cage_image_in_vm(
+        self, config: Config, deploy_name: str, inst: LimaInstance, vm_build_dir: str,
+    ) -> None:
+        """Build a scaffold's cage image inside the VM."""
+        from agentcage import state as _state
+
+        # Resolve the Containerfile from the state dir (copied there during run/create)
+        state_dir = _state.deployment_dir(deploy_name)
+        containerfile = state_dir / Path(config.container.build.containerfile).name
+        if not containerfile.exists():
+            # Fall back to scaffold source
+            from agentcage.init import _SCAFFOLDS_DIR
+            meta = _state.load_metadata(deploy_name)
+            scaffold = meta.get("scaffold", "")
+            if scaffold:
+                containerfile = _SCAFFOLDS_DIR / scaffold / config.container.build.containerfile
+        if not containerfile.exists():
+            click.echo(f"warning: Containerfile not found for {config.container.image}", err=True)
+            return
+
+        scaffold_dir = containerfile.parent
+        vm_scaffold_dir = f"{vm_build_dir}/scaffold"
+        inst.exec(["mkdir", "-p", vm_scaffold_dir])
+        subprocess.run(
+            ["limactl", "copy", "-r",
+             f"{scaffold_dir}/.", f"{inst.name}:{vm_scaffold_dir}/"],
+            check=True,
+        )
+
+        click.echo(f"Building {config.container.image} inside VM...")
+        build_cmd = [
+            "podman", "build",
+            "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
+            "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
+            "--cap-add=CAP_DAC_OVERRIDE", "--cap-add=CAP_SETFCAP",
+            "-t", config.container.image,
+            "-f", f"{vm_scaffold_dir}/{containerfile.name}",
+            vm_scaffold_dir,
+        ]
+        inst.exec(build_cmd)
 
     def _deploy_cage(self, name: str, inst: LimaInstance, config: Config | None = None) -> None:
         """Deploy quadlet files and start services inside the Lima VM."""

@@ -283,10 +283,12 @@ def execute(
         config_host_path = state.save_proxy_config(cage_name)
 
         if verbose:
-            run_scaffold_setup(
-                scaffold, cage_name, str(config_path),
-                image_tag=image_tag,
-            )
+            # VM mode builds images inside the VM — skip host scaffold setup
+            if cfg.isolation != "vm":
+                run_scaffold_setup(
+                    scaffold, cage_name, str(config_path),
+                    image_tag=image_tag,
+                )
             build_and_deploy(
                 cfg,
                 config_host_path=config_host_path,
@@ -296,10 +298,12 @@ def execute(
             )
         else:
             with output.Spinner("Starting cage..."):
-                run_scaffold_setup(
-                    scaffold, cage_name, str(config_path),
-                    image_tag=image_tag, quiet=True,
-                )
+                # VM mode builds images inside the VM — skip host scaffold setup
+                if cfg.isolation != "vm":
+                    run_scaffold_setup(
+                        scaffold, cage_name, str(config_path),
+                        image_tag=image_tag, quiet=True,
+                    )
                 build_and_deploy(
                     cfg,
                     config_host_path=config_host_path,
