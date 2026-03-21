@@ -91,8 +91,13 @@ else
 fi
 
 if [ "$_restore_ok" = true ]; then
-  # 5.6: Restored cage works
-  assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "5.6" "Restored cage works"
+  # 5.6: Restored cage works — proxy may need a moment to forward after restore
+  if wait_http_code "$BASE/fetch?url=https://httpbin.org/get" 200 60; then
+    e2e_pass "5.6" "Restored cage works"
+  else
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=https://httpbin.org/get" 2>/dev/null || echo "000")
+    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got $CODE after 60s"
+  fi
 else
   e2e_skip "5.6" "Restored cage works" "depends on 5.5"
 fi

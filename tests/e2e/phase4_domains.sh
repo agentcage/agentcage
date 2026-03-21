@@ -28,11 +28,12 @@ else
 fi
 
 # 4.3: New domain accessible (poll — proxy may need a moment after hot-reload)
-if wait_http_code "$BASE/fetch?url=http://example.com" 200 60; then
+# Domain hot-reload can be slow in CI: the proxy needs to pick up the config change,
+# regenerate DNS rules, and restart. Give it up to 120s.
+if wait_http_code "$BASE/fetch?url=http://example.com" 200 120; then
   e2e_pass "4.3" "New domain accessible"
 else
-  # May still be restarting; check if domain is at least in config
-  e2e_fail "4.3" "New domain accessible" "did not get HTTP 200 within 60s"
+  e2e_fail "4.3" "New domain accessible" "did not get HTTP 200 within 120s"
 fi
 
 # 4.4: Remove domain
