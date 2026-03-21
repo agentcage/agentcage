@@ -94,7 +94,7 @@ class TestImageCache:
         podman = _make_podman(image_exists=True)
         marker_dir = cache.CACHE_DIR / "images"
         marker_dir.mkdir(parents=True)
-        (marker_dir / "s-key123.built").write_text("")
+        (marker_dir / "s--key123.built").write_text("")
         assert not cache.is_image_cached("s", "key123", podman)
 
     def test_fallthrough_on_corrupted_cache(self):
@@ -102,7 +102,7 @@ class TestImageCache:
         podman = _make_podman(image_exists=True)
         marker_dir = cache.CACHE_DIR / "images"
         marker_dir.mkdir(parents=True)
-        (marker_dir / "s-key123.built").write_text("\x00\x01bad-data")
+        (marker_dir / "s--key123.built").write_text("\x00\x01bad-data")
         result = cache.is_image_cached("s", "key123", podman)
         assert isinstance(result, bool)
 
@@ -117,10 +117,10 @@ class TestImageCache:
         """Writing a new marker for the same scaffold removes old ones."""
         marker_dir = cache.CACHE_DIR / "images"
         cache.mark_image_built("scaffold-a", "old-key", "img:old")
-        assert (marker_dir / "scaffold-a-old-key.built").exists()
+        assert (marker_dir / "scaffold-a--old-key.built").exists()
         cache.mark_image_built("scaffold-a", "new-key", "img:new")
-        assert not (marker_dir / "scaffold-a-old-key.built").exists()
-        assert (marker_dir / "scaffold-a-new-key.built").exists()
+        assert not (marker_dir / "scaffold-a--old-key.built").exists()
+        assert (marker_dir / "scaffold-a--new-key.built").exists()
 
     def test_stale_cleanup_does_not_affect_other_scaffolds(self):
         """Stale marker cleanup only removes markers for the same scaffold."""
@@ -129,8 +129,17 @@ class TestImageCache:
         cache.mark_image_built("scaffold-b", "k2", "img:b")
         # Re-mark scaffold-a with new key
         cache.mark_image_built("scaffold-a", "k3", "img:a2")
-        assert not (marker_dir / "scaffold-a-k1.built").exists()
-        assert (marker_dir / "scaffold-b-k2.built").exists()
+        assert not (marker_dir / "scaffold-a--k1.built").exists()
+        assert (marker_dir / "scaffold-b--k2.built").exists()
+
+    def test_no_prefix_collision(self):
+        """Scaffold 'foo' must not delete markers for 'foo-bar'."""
+        podman = _make_podman(image_exists=True)
+        cache.mark_image_built("foo", "k1", "img:foo")
+        cache.mark_image_built("foo-bar", "k2", "img:foobar")
+        # Re-mark 'foo' — 'foo-bar' must survive
+        cache.mark_image_built("foo", "k3", "img:foo2")
+        assert cache.is_image_cached("foo-bar", "k2", podman)
 
 
 # ── quadlet_cache_key ────────────────────────────────────
@@ -177,10 +186,10 @@ class TestQuadletCache:
         """Writing a new quadlet marker removes old ones for the same cage."""
         marker_dir = cache.CACHE_DIR / "quadlets"
         cache.mark_quadlets_installed("cage1", "old-key")
-        assert (marker_dir / "cage1-old-key.installed").exists()
+        assert (marker_dir / "cage1--old-key.installed").exists()
         cache.mark_quadlets_installed("cage1", "new-key")
-        assert not (marker_dir / "cage1-old-key.installed").exists()
-        assert (marker_dir / "cage1-new-key.installed").exists()
+        assert not (marker_dir / "cage1--old-key.installed").exists()
+        assert (marker_dir / "cage1--new-key.installed").exists()
 
 
 # ── clear_cage_cache ─────────────────────────────────────

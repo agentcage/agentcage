@@ -35,7 +35,7 @@ from agentcage.backends import get_backend
 from agentcage.config import load_config, validate_config
 from agentcage.init import list_scaffolds, load_scaffold_meta, render_config, run_scaffold_setup, _SCAFFOLDS_DIR
 from agentcage.podman import Podman
-from agentcage.services import build_and_deploy, check_port_availability, destroy_cage
+from agentcage.services import build_and_deploy, check_port_availability, destroy_cage, ensure_patches
 
 # Word lists for auto-generated cage names (Docker-style)
 _ADJECTIVES = [
@@ -282,18 +282,21 @@ def execute(
         # Save proxy config and get its host path (mounted into proxy container)
         config_host_path = state.save_proxy_config(cage_name)
 
+        # ── Scaffold Containerfile content (computed once) ──
+        scaffold_dir = _SCAFFOLDS_DIR / scaffold
+        containerfile_path = scaffold_dir / "Containerfile"
+        cf_content = containerfile_path.read_text() if containerfile_path.exists() else ""
+
         # ── Cache: determine what can be skipped ──
         skip_scaffold_build = False
         skip_build = False
+        skip_install = False
 
         try:
             from agentcage import cache
 
             # Check scaffold image cache
             if cfg.isolation != "vm":
-                scaffold_dir = _SCAFFOLDS_DIR / scaffold
-                containerfile_path = scaffold_dir / "Containerfile"
-                cf_content = containerfile_path.read_text() if containerfile_path.exists() else ""
                 img_key = cache.image_cache_key(scaffold, cf_content, config_text)
                 if cache.is_image_cached(scaffold, img_key, podman):
                     skip_scaffold_build = True
@@ -310,10 +313,25 @@ def execute(
                 skip_build = True
                 if verbose:
                     output.step_done(output.dim("Infra image cache hit, skipping build"))
+
+            # Check quadlet cache
+            if cfg.isolation != "vm":
+                backend = get_backend(cfg)
+                patches_work = ensure_patches(podman)
+                units = backend.generate_units(
+                    cfg, config_host_path, patches_work,
+                    cage_name, used_octets=used_octets,
+                )
+                qkey = cache.quadlet_cache_key(units)
+                if cache.are_quadlets_cached(cage_name, qkey):
+                    skip_install = True
+                    if verbose:
+                        output.step_done(output.dim("Quadlet cache hit, skipping install"))
         except Exception:
             # Cache check failed — fall through to full build
             skip_scaffold_build = False
             skip_build = False
+            skip_install = False
 
         if verbose:
             # VM mode builds images inside the VM — skip host scaffold setup
@@ -330,6 +348,7 @@ def execute(
                 podman=podman,
                 used_octets=used_octets,
                 skip_build=skip_build,
+                skip_install=skip_install,
             )
         else:
             with output.Spinner("Starting cage..."):
@@ -348,6 +367,7 @@ def execute(
                     used_octets=used_octets,
                     quiet=True,
                     skip_build=skip_build,
+                    skip_install=skip_install,
                 )
 
         # ── Cache: record successful builds ──
@@ -355,17 +375,21 @@ def execute(
             from agentcage import cache
 
             if cfg.isolation != "vm" and not skip_scaffold_build:
-                scaffold_dir = _SCAFFOLDS_DIR / scaffold
-                containerfile_path = scaffold_dir / "Containerfile"
-                cf_content = containerfile_path.read_text() if containerfile_path.exists() else ""
                 img_key = cache.image_cache_key(scaffold, cf_content, config_text)
-                # Record the scaffold image tag
-                scaffold_image = cfg.container.image
-                cache.mark_image_built(scaffold, img_key, scaffold_image)
+                cache.mark_image_built(scaffold, img_key, cfg.container.image)
 
             if not skip_build:
                 infra_key = cache.image_cache_key("__infra__", "", "")
                 cache.mark_image_built("__infra__", infra_key, "agentcage-proxy")
+
+            if not skip_install:
+                backend = get_backend(cfg)
+                units = backend.generate_units(
+                    cfg, config_host_path, ensure_patches(podman),
+                    cage_name, used_octets=used_octets,
+                )
+                qkey = cache.quadlet_cache_key(units)
+                cache.mark_quadlets_installed(cage_name, qkey)
         except Exception:
             pass  # Cache write failure is not fatal
 

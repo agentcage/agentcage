@@ -85,7 +85,7 @@ def is_image_cached(scaffold: str, cache_key: str, podman: Podman) -> bool:
     Returns ``False`` (never raises) on any I/O or Podman error.
     """
     try:
-        marker = CACHE_DIR / "images" / f"{scaffold}-{cache_key}.built"
+        marker = CACHE_DIR / "images" / f"{scaffold}--{cache_key}.built"
         if not marker.exists():
             return False
         image_tag = marker.read_text().strip()
@@ -106,8 +106,8 @@ def mark_image_built(scaffold: str, cache_key: str, image_tag: str) -> None:
     marker_dir.mkdir(parents=True, exist_ok=True)
 
     # Remove stale markers for this scaffold before writing the new one
-    prefix = f"{scaffold}-"
-    new_name = f"{scaffold}-{cache_key}.built"
+    prefix = f"{scaffold}--"
+    new_name = f"{scaffold}--{cache_key}.built"
     try:
         for old in marker_dir.iterdir():
             if old.name.startswith(prefix) and old.name != new_name:
@@ -137,7 +137,7 @@ def are_quadlets_cached(cage_name: str, cache_key: str) -> bool:
     Returns ``False`` (never raises) on any I/O error.
     """
     try:
-        marker = CACHE_DIR / "quadlets" / f"{cage_name}-{cache_key}.installed"
+        marker = CACHE_DIR / "quadlets" / f"{cage_name}--{cache_key}.installed"
         return marker.exists()
     except Exception:
         return False
@@ -152,8 +152,8 @@ def mark_quadlets_installed(cage_name: str, cache_key: str) -> None:
     marker_dir.mkdir(parents=True, exist_ok=True)
 
     # Remove stale markers for this cage
-    prefix = f"{cage_name}-"
-    new_name = f"{cage_name}-{cache_key}.installed"
+    prefix = f"{cage_name}--"
+    new_name = f"{cage_name}--{cache_key}.installed"
     try:
         for old in marker_dir.iterdir():
             if old.name.startswith(prefix) and old.name != new_name:
@@ -181,7 +181,7 @@ def clear_cage_cache(cage_name: str) -> int:
         if not cache_subdir.is_dir():
             continue
         for marker in cache_subdir.iterdir():
-            if marker.name.startswith(f"{cage_name}-"):
+            if marker.name.startswith(f"{cage_name}--"):
                 marker.unlink(missing_ok=True)
                 removed += 1
     return removed
