@@ -116,11 +116,15 @@ assert_output_contains() {
 wait_ready() {
   local url="$1" timeout="${2:-120}"
   local deadline=$((SECONDS + timeout))
+  local delay=1
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if curl -sf "$url" >/dev/null 2>&1; then
+    if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
       return 0
     fi
-    sleep 2
+    sleep "$delay"
+    # exponential backoff: 1, 2, 4, capped at 5s
+    delay=$(( delay * 2 ))
+    [ "$delay" -gt 5 ] && delay=5
   done
   return 1
 }
@@ -132,7 +136,7 @@ wait_http_code() {
   local delay=1
   while [ "$SECONDS" -lt "$deadline" ]; do
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
     if [ "$code" = "$expected" ]; then
       return 0
     fi
@@ -140,6 +144,25 @@ wait_http_code() {
     # exponential backoff: 1, 2, 4, … capped at 8s
     delay=$(( delay * 2 ))
     [ "$delay" -gt 8 ] && delay=8
+  done
+  return 1
+}
+
+# wait_http_blocked URL [TIMEOUT_S] — poll until HTTP 403 or 502, return 0/1
+wait_http_blocked() {
+  local url="$1" timeout="${2:-30}"
+  local deadline=$((SECONDS + timeout))
+  local delay=1
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
+    if [ "$code" = "403" ] || [ "$code" = "502" ]; then
+      return 0
+    fi
+    sleep "$delay"
+    # exponential backoff: 1, 2, 4, capped at 5s
+    delay=$(( delay * 2 ))
+    [ "$delay" -gt 5 ] && delay=5
   done
   return 1
 }

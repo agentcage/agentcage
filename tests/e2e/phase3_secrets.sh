@@ -37,20 +37,24 @@ fi
 # Retry the triggering curl on each iteration since the outbound proxy or
 # httpbin.org may not be ready on the first attempt.
 FOUND=false
+_delay=2
 for _i in $(seq 1 15); do
-  curl -s -X POST -H 'Content-Type: application/json' \
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
     -d '{"key":"{{MY_API_KEY}}"}' "$BASE/check-secret" >/dev/null 2>&1 || true
-  sleep 2
+  sleep "$_delay"
   OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 20 2>&1) || true
   if echo "$OUTPUT" | grep -q "secrets_injected"; then
     FOUND=true
     break
   fi
+  # increasing delay: 2, 3, 4, capped at 4s
+  _delay=$(( _delay + 1 ))
+  [ "$_delay" -gt 4 ] && _delay=4
 done
 if [ "$FOUND" = true ]; then
   e2e_pass "3.3" "Injection on outbound"
 else
-  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 30s"
+  e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 45s"
 fi
 
 # 3.4: Set new secret

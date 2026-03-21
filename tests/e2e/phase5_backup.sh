@@ -43,10 +43,21 @@ fi
 wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 60 || true
 wait_http_code "$BASE2/fetch?url=http://example.com" 200 60 || true
 
-CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
-CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
-CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+# Retry each isolation check up to 3 times with 2s sleep
+_retry_curl_code() {
+  local url="$1"
+  local code="000"
+  for _attempt in 1 2 3; do
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
+    [ "$code" != "000" ] && break
+    sleep 2
+  done
+  echo "$code"
+}
+CODE_BASIC_HTTPBIN=$(_retry_curl_code "$BASE/fetch?url=http://httpbin.org/get")
+CODE_BASIC_EXAMPLE=$(_retry_curl_code "$BASE/fetch?url=http://example.com")
+CODE_SECOND_EXAMPLE=$(_retry_curl_code "$BASE2/fetch?url=http://example.com")
+CODE_SECOND_HTTPBIN=$(_retry_curl_code "$BASE2/fetch?url=http://httpbin.org/get")
 # Blocked domains return 403 (proxy) or 502 (DNS sinkhole) depending on timing
 is_blocked() { [ "$1" = "403" ] || [ "$1" = "502" ]; }
 if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
@@ -74,13 +85,22 @@ fi
 # 5.5: Restore cage
 # Note: restore may fail if the original config used env vars like ${AGENT_DIR}
 # that aren't set at restore time. This is a known limitation.
-if AGENT_DIR="$AGENT_DIR" agentcage cage restore "$BACKUP_FILE" >/dev/null 2>&1 && wait_ready "$BASE" 60; then
-  e2e_pass "5.5" "Restore cage"
+_restore_ok=false
+if AGENT_DIR="$AGENT_DIR" agentcage cage restore "$BACKUP_FILE" >/dev/null 2>&1; then
+  if wait_ready "$BASE" 90; then
+    _restore_ok=true
+    e2e_pass "5.5" "Restore cage"
+  else
+    e2e_fail "5.5" "Restore cage" "restore succeeded but cage not ready within 90s"
+  fi
+else
+  e2e_fail "5.5" "Restore cage" "restore command failed"
+fi
 
+if [ "$_restore_ok" = true ]; then
   # 5.6: Restored cage works
   assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "5.6" "Restored cage works"
 else
-  e2e_fail "5.5" "Restore cage" "restore or readiness failed"
   e2e_skip "5.6" "Restored cage works" "depends on 5.5"
 fi
 

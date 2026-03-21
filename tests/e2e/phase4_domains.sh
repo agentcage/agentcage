@@ -43,13 +43,10 @@ else
 fi
 
 # 4.5: Removed domain blocked (poll — proxy may need a moment)
-wait_ready "$BASE" 30 || true
-sleep 2
-CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://example.com" 2>/dev/null)
-[ -z "$CODE" ] && CODE="000"
-if [ "$CODE" = "403" ] || [ "$CODE" = "502" ]; then
+if wait_http_blocked "$BASE/fetch?url=http://example.com" 45; then
   e2e_pass "4.5" "Removed domain blocked"
 else
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
   e2e_fail "4.5" "Removed domain blocked" "expected 403/502, got $CODE"
 fi
 

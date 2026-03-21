@@ -36,9 +36,9 @@ fi
 limactl shell "$VM_NAME" -- systemctl --user reset-failed 2>/dev/null || true
 limactl shell "$VM_NAME" -- systemctl --user start "${CAGE}-cage.service" 2>/dev/null || true
 
-echo "Waiting for VM cage readiness (up to 180s)..."
-if ! wait_ready "$BASE" 180; then
-  e2e_fail "7.0" "VM cage readiness" "not ready within 180s"
+echo "Waiting for VM cage readiness (up to 240s)..."
+if ! wait_ready "$BASE" 240; then
+  e2e_fail "7.0" "VM cage readiness" "not ready within 240s"
   agentcage cage logs "$CAGE" -s proxy -n 20 2>/dev/null || true
   print_results; exit 1
 fi
@@ -52,7 +52,7 @@ else
   e2e_fail "7.1" "VM created and running" "status: $VM_STATUS"
 fi
 
-assert_http 200 "$BASE/" "7.2" "Health check"
+assert_http 200 "$BASE/" "7.2" "Health check" --max-time 10
 
 assert_output_contains "7.3" "Verify command" "passed" \
   agentcage cage verify "$CAGE"
@@ -64,15 +64,15 @@ assert_output_contains "7.5" "List command" "$CAGE" \
   agentcage cage list
 
 # ── VM Core Security ────────────────────────────────────────────────
-assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "7.6" "Allowed domain"
-assert_http_any "403|502" "$BASE/fetch?url=https://evil.com/exfil" "7.7" "Blocked domain"
+assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "7.6" "Allowed domain" --max-time 10
+assert_http_any "403|502" "$BASE/fetch?url=https://evil.com/exfil" "7.7" "Blocked domain" --max-time 10
 
 assert_http_any "403|502" "$BASE/check-secret" "7.8" "Secret detection" \
-  -X POST -H "Content-Type: application/json" \
+  --max-time 10 -X POST -H "Content-Type: application/json" \
   -d '{"key":"sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 
 assert_http 200 "$BASE/check-secret" "7.9" "Clean POST allowed" \
-  -X POST -H "Content-Type: application/json" \
+  --max-time 10 -X POST -H "Content-Type: application/json" \
   -d '{"data":"harmless"}'
 
 # ── VM Observability ────────────────────────────────────────────────
@@ -151,7 +151,7 @@ fi
 
 echo "Starting VM cage..."
 agentcage cage start "$CAGE" >/dev/null 2>&1
-if wait_ready "$BASE" 180; then
+if wait_ready "$BASE" 240; then
   e2e_pass "7.34" "Start VM cage"
 else
   e2e_fail "7.34" "Start VM cage" "not ready after start"
@@ -159,7 +159,7 @@ fi
 
 echo "Restarting VM cage..."
 agentcage cage restart "$CAGE" >/dev/null 2>&1
-if wait_ready "$BASE" 180; then
+if wait_ready "$BASE" 240; then
   e2e_pass "7.36" "Restart VM cage"
 else
   e2e_fail "7.36" "Restart VM cage" "not ready after restart"
