@@ -16,6 +16,7 @@ Architecture:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import platform
@@ -86,13 +87,12 @@ def generate_name(scaffold: str) -> str:
 
 
 def _is_ip_address(host: str) -> bool:
-    """Return True if *host* looks like an IPv4 or IPv6 address."""
-    # IPv6 (bracketed or bare)
-    if ":" in host:
+    """Return True if *host* is a valid IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(host)
         return True
-    # IPv4: all parts are digits
-    parts = host.split(".")
-    return all(p.isdigit() for p in parts)
+    except ValueError:
+        return False
 
 
 def _extract_parent_domain(host: str) -> str:
@@ -130,15 +130,12 @@ def _extract_parent_domain(host: str) -> str:
 
 
 def _monitor_proxy(
-    log_cmd: list[str],
+    proxy_container: str,
     stop_event: threading.Event,
     cage_name: str | None = None,
     interactive: bool = False,
 ) -> None:
     """Tail proxy logs and print blocked-request notifications to the terminal.
-
-    *log_cmd* is the full command to stream proxy logs (e.g.
-    ``["podman", "logs", "-f", "name-proxy"]`` or the limactl equivalent).
 
     Runs as a daemon thread alongside the interactive session.  Writes
     directly to ``/dev/tty`` so output appears even while podman exec
@@ -159,7 +156,7 @@ def _monitor_proxy(
 
     try:
         proc = subprocess.Popen(
-            log_cmd,
+            ["podman", "logs", "-f", proxy_container],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -485,30 +482,20 @@ def execute(
     proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
-    # Build exec and log commands — VM mode goes through limactl
-    if cfg.isolation == "vm":
-        from agentcage.lima.instance import LimaInstance
-        inst = LimaInstance(cfg.name)
-        run_cmd = ["limactl", "shell", inst.name, "--",
-                   "podman", "exec", *exec_flags, container_name, *exec_cmd]
-        log_cmd = ["limactl", "shell", inst.name, "--",
-                   "podman", "logs", "-f", proxy_container]
-    else:
-        run_cmd = ["podman", "exec", *exec_flags, container_name, *exec_cmd]
-        log_cmd = ["podman", "logs", "-f", proxy_container]
-
     # Monitor proxy logs for blocked requests
     monitor_stop = threading.Event()
     monitor_thread = threading.Thread(
         target=_monitor_proxy,
-        args=(log_cmd, monitor_stop),
+        args=(proxy_container, monitor_stop),
         kwargs={"cage_name": cage_name, "interactive": interactive_domains},
         daemon=True,
     )
     monitor_thread.start()
 
     try:
-        result = subprocess.run(run_cmd)
+        result = subprocess.run(
+            ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
+        )
         exit_code = result.returncode
     except KeyboardInterrupt:
         click.echo("\nSession interrupted.")

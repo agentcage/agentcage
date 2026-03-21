@@ -144,7 +144,7 @@ class TestMonitorProxyInteractive:
             mock_open.side_effect = open_side_effect
 
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=True,
             )
 
@@ -183,7 +183,7 @@ class TestMonitorProxyInteractive:
             mock_open.side_effect = open_side_effect
 
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=False,
             )
 
@@ -223,7 +223,7 @@ class TestMonitorProxyInteractive:
             mock_open.side_effect = open_side_effect
 
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=True,
             )
 
@@ -265,7 +265,7 @@ class TestMonitorProxyInteractive:
             mock_open.side_effect = open_side_effect
 
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=True,
             )
 
@@ -307,7 +307,7 @@ class TestMonitorProxyInteractive:
             mock_open.side_effect = open_side_effect
 
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=True,
             )
 
@@ -322,7 +322,7 @@ class TestMonitorProxyInteractive:
         with patch("builtins.open", side_effect=OSError("no tty")):
             # Should not raise
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=True,
             )
 
@@ -360,7 +360,7 @@ class TestMonitorProxyInteractive:
             mock_open.side_effect = open_side_effect
 
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=True,
             )
 
@@ -398,7 +398,7 @@ class TestMonitorProxyInteractive:
             mock_open.side_effect = open_side_effect
 
             _monitor_proxy(
-                ["fake", "log", "cmd"], stop,
+                "test-proxy", stop,
                 cage_name="test-cage", interactive=True,
             )
 
