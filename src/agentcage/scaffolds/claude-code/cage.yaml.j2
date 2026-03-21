@@ -40,8 +40,9 @@ container:
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
     # Auth & settings — mount host ~/.claude so login persists across sessions.
-    # Remove this line to isolate cage state from the host.
+    # Remove these lines to isolate cage state from the host.
     - "~/.claude:/home/node/.claude:rw"
+    - "~/.claude.json:/home/node/.claude.json:rw"
   #  # Git config (uncomment to enable)
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"
   #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
