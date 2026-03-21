@@ -38,26 +38,19 @@ else
 fi
 
 # 5.2: Subnet isolation
-# Wait for each proxy to serve its allowed domain before checking isolation.
-# Without this, all requests may return 502 if the proxy isn't ready yet.
-wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 60 || true
-wait_http_code "$BASE2/fetch?url=http://example.com" 200 60 || true
+# Wait for each proxy to actually serve its allowed domain (not just 502).
+# The second cage proxy often takes longer to be fully ready.
+wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 90 || true
+wait_http_code "$BASE2/fetch?url=http://example.com" 200 90 || true
+# Also confirm blocked domains return 403/502 (not 000/200)
+wait_http_blocked "$BASE/fetch?url=http://example.com" 30 || true
+wait_http_blocked "$BASE2/fetch?url=http://httpbin.org/get" 30 || true
 
-# Retry each isolation check up to 3 times with 2s sleep
-_retry_curl_code() {
-  local url="$1"
-  local code="000"
-  for _attempt in 1 2 3; do
-    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
-    [ "$code" != "000" ] && break
-    sleep 2
-  done
-  echo "$code"
-}
-CODE_BASIC_HTTPBIN=$(_retry_curl_code "$BASE/fetch?url=http://httpbin.org/get")
-CODE_BASIC_EXAMPLE=$(_retry_curl_code "$BASE/fetch?url=http://example.com")
-CODE_SECOND_EXAMPLE=$(_retry_curl_code "$BASE2/fetch?url=http://example.com")
-CODE_SECOND_HTTPBIN=$(_retry_curl_code "$BASE2/fetch?url=http://httpbin.org/get")
+# Now take the final readings
+CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
+CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
+CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
 # Blocked domains return 403 (proxy) or 502 (DNS sinkhole) depending on timing
 is_blocked() { [ "$1" = "403" ] || [ "$1" = "502" ]; }
 if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
