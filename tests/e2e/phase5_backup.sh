@@ -38,6 +38,11 @@ else
 fi
 
 # 5.2: Subnet isolation
+# Wait for each proxy to serve its allowed domain before checking isolation.
+# Without this, all requests may return 502 if the proxy isn't ready yet.
+wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 60 || true
+wait_http_code "$BASE2/fetch?url=http://example.com" 200 60 || true
+
 CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
 CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
 CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
