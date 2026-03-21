@@ -84,7 +84,29 @@ def generate_name(scaffold: str) -> str:
     raise RuntimeError("Could not generate a unique cage name after 100 attempts")
 
 
-def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
+def _extract_parent_domain(host: str) -> str:
+    """Extract the registrable parent domain from a hostname.
+
+    api.stripe.com -> stripe.com
+    cdn.example.co.uk -> example.co.uk
+    stripe.com -> stripe.com (already a parent)
+    """
+    parts = host.split(".")
+    if len(parts) <= 2:
+        return host
+    # Use last 3 parts for known compound TLDs, otherwise last 2
+    known_compound_tlds = {"co.uk", "com.au", "co.jp", "com.br", "co.nz"}
+    if ".".join(parts[-2:]) in known_compound_tlds:
+        return ".".join(parts[-3:]) if len(parts) >= 3 else host
+    return ".".join(parts[-2:])
+
+
+def _monitor_proxy(
+    log_cmd: list[str],
+    stop_event: threading.Event,
+    cage_name: str | None = None,
+    interactive: bool = False,
+) -> None:
     """Tail proxy logs and print blocked-request notifications to the terminal.
 
     *log_cmd* is the full command to stream proxy logs (e.g.
@@ -93,9 +115,13 @@ def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
     Runs as a daemon thread alongside the interactive session.  Writes
     directly to ``/dev/tty`` so output appears even while podman exec
     owns stdout/stderr.
+
+    When *interactive* is True and a domain-based block occurs, prompts
+    the user (via ``/dev/tty``) to add the domain to the allowlist.
     """
     try:
-        tty = open("/dev/tty", "w")
+        tty_w = open("/dev/tty", "w")
+        tty_r = open("/dev/tty", "r") if interactive else None
     except OSError:
         return
 
@@ -107,12 +133,17 @@ def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
             text=True,
         )
     except OSError:
-        tty.close()
+        tty_w.close()
+        if tty_r:
+            tty_r.close()
         return
 
     dim = "\x1b[2m"
     red = "\x1b[31m"
+    green = "\x1b[32m"
     reset = "\x1b[0m"
+
+    prompted_domains: set[str] = set()
 
     try:
         assert proc.stdout is not None
@@ -130,11 +161,43 @@ def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
                 continue
             host = entry.get("host", "?")
             reason = entry.get("reason", "blocked")
-            tty.write(
+            tty_w.write(
                 f"\r{dim}[agentcage]{reset} {red}blocked{reset}"
                 f" {dim}→{reset} {host} {dim}({reason}){reset}\n"
             )
-            tty.flush()
+            tty_w.flush()
+
+            # Interactive domain prompt
+            if (
+                interactive
+                and tty_r
+                and cage_name
+                and reason == "domain"
+                and host not in prompted_domains
+            ):
+                prompted_domains.add(host)
+                domain_to_add = _extract_parent_domain(host)
+                # Also skip if the parent domain was already prompted
+                if domain_to_add in prompted_domains:
+                    continue
+                prompted_domains.add(domain_to_add)
+
+                tty_w.write(f"  Add {domain_to_add} to allowlist? [y/N] ")
+                tty_w.flush()
+
+                try:
+                    response = tty_r.readline().strip().lower()
+                    if response == "y":
+                        subprocess.run(
+                            ["agentcage", "domain", "add", cage_name, domain_to_add],
+                            capture_output=True,
+                        )
+                        tty_w.write(
+                            f"  {green}\u2713{reset} {domain_to_add} added\n"
+                        )
+                        tty_w.flush()
+                except (OSError, ValueError):
+                    pass
     except (OSError, ValueError):
         pass
     finally:
@@ -143,7 +206,9 @@ def _monitor_proxy(log_cmd: list[str], stop_event: threading.Event) -> None:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             proc.kill()
-        tty.close()
+        tty_w.close()
+        if tty_r:
+            tty_r.close()
 
 
 def _detect_isolation() -> str:
@@ -160,6 +225,7 @@ def execute(
     extra_args: tuple[str, ...] = (),
     verbose: bool = False,
     isolation: str | None = None,
+    interactive_domains: bool = False,
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
 
@@ -369,7 +435,10 @@ def execute(
     # Monitor proxy logs for blocked requests
     monitor_stop = threading.Event()
     monitor_thread = threading.Thread(
-        target=_monitor_proxy, args=(log_cmd, monitor_stop), daemon=True,
+        target=_monitor_proxy,
+        args=(log_cmd, monitor_stop),
+        kwargs={"cage_name": cage_name, "interactive": interactive_domains},
+        daemon=True,
     )
     monitor_thread.start()
 
