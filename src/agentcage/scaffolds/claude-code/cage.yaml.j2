@@ -39,13 +39,12 @@ container:
   # Project directory — mount your repo here
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
+    # Auth & settings — mount host ~/.claude so login persists across sessions.
+    # Remove this line to isolate cage state from the host.
+    - "~/.claude:/home/node/.claude:rw"
   #  # Git config (uncomment to enable)
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"
   #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
-
-  # Persistent agent state (survives cage destroy/create)
-  named_volumes:
-    {{ name }}-claude-home: "/home/node/.claude:rw"
 
   # Coding agents need to write to various paths in the home directory
   read_only: false
