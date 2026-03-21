@@ -8,9 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.10.0] - 2026-03-21
 
 ### Added
+- Coding agent scaffolds: pre-built templates for common agent frameworks
+- `agentcage run` command: one-shot cage creation, build, and execution
 - Polished `agentcage run` CLI output: box-drawn banner, spinner during builds, ✓/✗ status lines, compact info summary
 - `agentcage run -v/--verbose` flag to show full build output
+- `agentcage run` VM isolation support (`--isolation vm`)
 - Version banner on `agentcage` and `agentcage --help`
+
+### Fixed
+- Build scaffold images inside VM instead of host Podman when using VM isolation
 
 ## [0.9.2] - 2026-03-20
 
