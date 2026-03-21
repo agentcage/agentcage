@@ -12,6 +12,8 @@ from agentcage.doctor import (
     CheckResult,
     _detect_distro,
     _python_version_info,
+    _safe_check,
+    _safe_check_multi,
     check_cgroup_v2,
     check_disk_space,
     check_dns,
@@ -433,7 +435,7 @@ class TestRemediationHints:
         assert expected in r.hint
 
     @pytest.mark.parametrize("distro,expected", [
-        ("arch", "pacman"),
+        ("arch", "AUR"),
         ("debian", "apt-get"),
         ("fedora", "dnf"),
     ])
@@ -441,3 +443,80 @@ class TestRemediationHints:
         with patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
             r = check_lima(distro)
         assert expected in r.hint
+
+
+# ---------------------------------------------------------------------------
+# Resilience: _safe_check wrappers
+# ---------------------------------------------------------------------------
+
+class TestSafeCheck:
+    def test_passes_through_normal_result(self):
+        def ok():
+            return CheckResult("pass", "all good")
+        r = _safe_check(ok, label="test")
+        assert r.level == "pass"
+
+    def test_catches_unexpected_exception(self):
+        def boom():
+            raise RuntimeError("unexpected")
+        r = _safe_check(boom, label="test check")
+        assert r.level == "warn"
+        assert "crashed" in r.message
+        assert "unexpected" in r.message
+
+    def test_passes_args(self):
+        def needs_arg(x):
+            return CheckResult("pass", f"got {x}")
+        r = _safe_check(needs_arg, "hello", label="test")
+        assert "hello" in r.message
+
+
+class TestSafeCheckMulti:
+    def test_passes_through_normal_list(self):
+        def ok():
+            return [CheckResult("pass", "a"), CheckResult("warn", "b")]
+        results = _safe_check_multi(ok, label="test")
+        assert len(results) == 2
+
+    def test_catches_unexpected_exception(self):
+        def boom():
+            raise RuntimeError("kaboom")
+        results = _safe_check_multi(boom, label="cages")
+        assert len(results) == 1
+        assert results[0].level == "warn"
+        assert "crashed" in results[0].message
+
+
+# ---------------------------------------------------------------------------
+# Resilience: individual check error handling
+# ---------------------------------------------------------------------------
+
+class TestCheckResilience:
+    def test_dns_timeout(self):
+        import socket as _socket
+        with patch("agentcage.doctor.socket.getaddrinfo",
+                   side_effect=_socket.timeout("timed out")):
+            r = check_dns()
+        assert r.level == "error"
+        assert "timed out" in r.message.lower()
+
+    def test_disk_space_oserror(self):
+        with patch("agentcage.doctor.shutil.disk_usage",
+                   side_effect=OSError("Permission denied")):
+            r = check_disk_space()
+        assert r.level == "warn"
+        assert "Permission denied" in r.message
+
+    def test_cgroup_oserror(self):
+        with patch("agentcage.doctor.Path.exists",
+                   side_effect=OSError("permission denied")):
+            r = check_cgroup_v2()
+        assert r.level == "warn"
+
+    def test_cages_list_deployments_failure(self):
+        with patch("agentcage.state.list_deployments",
+                   side_effect=RuntimeError("state dir corrupt")):
+            results = check_cages()
+        assert len(results) == 1
+        assert results[0].level == "warn"
+        assert "corrupt" in results[0].message

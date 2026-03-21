@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -83,7 +85,7 @@ _INSTALL_PODMAN = {
 }
 
 _INSTALL_LIMA = {
-    "arch":     "sudo pacman -S lima",
+    "arch":     "install lima from AUR or via 'brew install lima'",
     "debian":   "sudo apt-get install -y lima",
     "fedora":   "sudo dnf install -y lima",
     "rhel":     "sudo dnf install -y lima",
@@ -207,7 +209,10 @@ def check_systemd_linger() -> CheckResult:
 
 def check_disk_space() -> CheckResult:
     """Check available disk space > 2 GB."""
-    usage = shutil.disk_usage(os.path.expanduser("~"))
+    try:
+        usage = shutil.disk_usage(os.path.expanduser("~"))
+    except OSError as exc:
+        return CheckResult("warn", f"Could not check disk space: {exc}")
     free_gb = usage.free / (1024 ** 3)
     if free_gb >= 2:
         return CheckResult("pass", f"{free_gb:.0f}GB disk available")
@@ -217,8 +222,11 @@ def check_disk_space() -> CheckResult:
 
 def check_cgroup_v2() -> CheckResult:
     """Check cgroup v2 is enabled."""
-    if Path("/sys/fs/cgroup/cgroup.controllers").exists():
-        return CheckResult("pass", "cgroup v2 enabled")
+    try:
+        if Path("/sys/fs/cgroup/cgroup.controllers").exists():
+            return CheckResult("pass", "cgroup v2 enabled")
+    except OSError as exc:
+        return CheckResult("warn", f"Could not check cgroup version: {exc}")
     return CheckResult("warn", "cgroup v2 not detected",
                        hint="cgroup v2 is required for rootless containers; "
                             "check your kernel boot parameters")
@@ -230,12 +238,22 @@ def check_cgroup_v2() -> CheckResult:
 
 def check_dns() -> CheckResult:
     """Check DNS resolution works."""
+    old_timeout = socket.getdefaulttimeout()
     try:
+        socket.setdefaulttimeout(5)
         socket.getaddrinfo("example.com", 80)
         return CheckResult("pass", "DNS resolution working")
     except socket.gaierror:
         return CheckResult("error", "DNS resolution failed",
                            hint="check /etc/resolv.conf and network connectivity")
+    except socket.timeout:
+        return CheckResult("error", "DNS resolution timed out",
+                           hint="check /etc/resolv.conf and network connectivity")
+    except OSError as exc:
+        return CheckResult("error", f"DNS check failed: {exc}",
+                           hint="check /etc/resolv.conf and network connectivity")
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 def check_subnet_conflicts() -> CheckResult:
@@ -248,7 +266,6 @@ def check_subnet_conflicts() -> CheckResult:
         if r.returncode != 0:
             return CheckResult("pass", "No subnet conflicts (could not query networks)")
 
-        import json
         networks = json.loads(r.stdout) if r.stdout.strip() else []
         conflicts = []
         for net in networks:
@@ -288,8 +305,6 @@ def check_port(port: int) -> CheckResult:
             if r.returncode == 0:
                 for line in r.stdout.splitlines()[1:]:
                     if f":{port}" in line:
-                        # Extract PID from the line
-                        import re
                         m = re.search(r"pid=(\d+)", line)
                         if m:
                             pid_info = f" (PID {m.group(1)})"
@@ -305,11 +320,17 @@ def check_port(port: int) -> CheckResult:
 
 def check_cages() -> list[CheckResult]:
     """Check health of existing cage deployments."""
-    from agentcage import state  # noqa: F811 — deferred import to avoid circular deps
-    from agentcage.backends.container import ContainerBackend  # noqa: F811
+    try:
+        from agentcage import state  # noqa: F811 — deferred import to avoid circular deps
+        from agentcage.backends.container import ContainerBackend  # noqa: F811
+    except Exception as exc:
+        return [CheckResult("warn", f"Could not load cage modules: {exc}")]
 
     results: list[CheckResult] = []
-    deployments = state.list_deployments()
+    try:
+        deployments = state.list_deployments()
+    except Exception as exc:
+        return [CheckResult("warn", f"Could not list deployments: {exc}")]
     if not deployments:
         results.append(CheckResult("pass", "No cages configured"))
         return results
@@ -383,6 +404,22 @@ def _print_section(section: Section) -> None:
 _COMMON_PORTS = [8080, 3000, 18789]
 
 
+def _safe_check(fn, *args, label: str = "check") -> CheckResult:
+    """Run a check function, catching any unexpected exception."""
+    try:
+        return fn(*args)
+    except Exception as exc:
+        return CheckResult("warn", f"{label} crashed: {exc}")
+
+
+def _safe_check_multi(fn, *args, label: str = "check") -> list[CheckResult]:
+    """Run a check function that returns a list, catching any unexpected exception."""
+    try:
+        return fn(*args)
+    except Exception as exc:
+        return [CheckResult("warn", f"{label} crashed: {exc}")]
+
+
 def run_doctor() -> list[CheckResult]:
     """Run all diagnostic checks, print results, and return all issues."""
     click.echo()
@@ -393,36 +430,36 @@ def run_doctor() -> list[CheckResult]:
 
     # --- Prerequisites ---
     prereqs = Section("Prerequisites")
-    prereqs.results.append(check_python_version())
-    prereqs.results.append(check_podman(distro))
+    prereqs.results.append(_safe_check(check_python_version, label="Python version"))
+    prereqs.results.append(_safe_check(check_podman, distro, label="Podman"))
     # Only check rootless if podman was found
     if prereqs.results[-1].level == "pass":
-        prereqs.results.append(check_podman_rootless(distro))
-    prereqs.results.append(check_lima(distro))
-    prereqs.results.append(check_qemu(distro))
-    prereqs.results.append(check_systemd_linger())
+        prereqs.results.append(_safe_check(check_podman_rootless, distro, label="Podman rootless"))
+    prereqs.results.append(_safe_check(check_lima, distro, label="Lima"))
+    prereqs.results.append(_safe_check(check_qemu, distro, label="QEMU"))
+    prereqs.results.append(_safe_check(check_systemd_linger, label="systemd linger"))
     _print_section(prereqs)
     all_results.extend(prereqs.results)
 
     # --- System ---
     system = Section("System")
-    system.results.append(check_cgroup_v2())
-    system.results.append(check_disk_space())
+    system.results.append(_safe_check(check_cgroup_v2, label="cgroup v2"))
+    system.results.append(_safe_check(check_disk_space, label="disk space"))
     _print_section(system)
     all_results.extend(system.results)
 
     # --- Network ---
     network = Section("Network")
-    network.results.append(check_dns())
-    network.results.append(check_subnet_conflicts())
+    network.results.append(_safe_check(check_dns, label="DNS"))
+    network.results.append(_safe_check(check_subnet_conflicts, label="subnet conflicts"))
     for port in _COMMON_PORTS:
-        network.results.append(check_port(port))
+        network.results.append(_safe_check(check_port, port, label=f"port {port}"))
     _print_section(network)
     all_results.extend(network.results)
 
     # --- Cages ---
     cages = Section("Cages")
-    cages.results.extend(check_cages())
+    cages.results.extend(_safe_check_multi(check_cages, label="cage health"))
     _print_section(cages)
     all_results.extend(cages.results)
 
