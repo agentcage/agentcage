@@ -109,6 +109,18 @@ def main():
     """Defense-in-depth proxy sandbox for AI agents."""
 
 
+# ── doctor ───────────────────────────────────────────────
+
+
+@main.command()
+def doctor():
+    """Check system health and diagnose common issues."""
+    from agentcage.doctor import run_doctor
+
+    results = run_doctor()
+    sys.exit(1 if any(r.level == "error" for r in results) else 0)
+
+
 # ── completions ──────────────────────────────────────────
 
 
