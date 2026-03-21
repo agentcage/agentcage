@@ -119,6 +119,91 @@ def completions(shell: str):
     click.echo(f'eval "$(_AGENTCAGE_COMPLETE={shell}_source agentcage)"')
 
 
+# ── update ──────────────────────────────────────────────
+
+
+def _fetch_latest_pypi_version() -> str | None:
+    """Fetch the latest agentcage version from PyPI."""
+    import urllib.request
+    import urllib.error
+    url = "https://pypi.org/pypi/agentcage/json"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        return data["info"]["version"]
+    except (urllib.error.URLError, KeyError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _detect_installer() -> str | None:
+    """Detect which tool was used to install agentcage (uv or pipx)."""
+    if shutil.which("uv"):
+        r = subprocess.run(
+            ["uv", "tool", "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0 and "agentcage" in r.stdout:
+            return "uv"
+    if shutil.which("pipx"):
+        r = subprocess.run(
+            ["pipx", "list", "--short"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0 and "agentcage" in r.stdout:
+            return "pipx"
+    return None
+
+
+@main.command("update")
+@click.option("--check", is_flag=True, help="Only check for updates, don't install.")
+def update(check: bool):
+    """Update agentcage to the latest version."""
+    from packaging.version import Version
+
+    current = version("agentcage")
+    click.echo(f"Current version: {current}")
+
+    click.echo("Checking for updates...")
+    latest = _fetch_latest_pypi_version()
+    if latest is None:
+        click.echo("Error: could not reach PyPI to check for updates.", err=True)
+        sys.exit(1)
+
+    if Version(latest) <= Version(current):
+        click.echo(f"Already up to date ({current}).")
+        return
+
+    click.echo(f"New version available: {latest}")
+    if check:
+        return
+
+    installer = _detect_installer()
+    if installer is None:
+        click.echo(
+            "Could not detect installer (uv or pipx). "
+            "Update manually:\n\n"
+            "  uv tool install --upgrade agentcage\n"
+            "  # or\n"
+            "  pipx upgrade agentcage",
+            err=True,
+        )
+        sys.exit(1)
+
+    if installer == "uv":
+        cmd = ["uv", "tool", "install", "--upgrade", "agentcage"]
+    else:
+        cmd = ["pipx", "upgrade", "agentcage"]
+
+    click.echo(f"Updating via {installer}...")
+    r = subprocess.run(cmd)
+    if r.returncode != 0:
+        click.echo("Update failed.", err=True)
+        sys.exit(r.returncode)
+
+    click.echo(f"Updated agentcage to {latest}.")
+
+
 # ── init ─────────────────────────────────────────────────
 
 
