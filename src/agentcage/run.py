@@ -227,16 +227,12 @@ def execute(
         click.echo(cfg.help.rstrip())
         click.echo("")
 
-    # Determine the exec command
-    meta_loaded = load_scaffold_meta(scaffold) or {}
-    # Use exec alias if defined, otherwise shell
-    exec_cmd: list[str] = []
-    if extra_args:
-        exec_cmd = list(extra_args)
-    elif cfg.exec_aliases:
-        # Use the first defined alias
+    # Determine the exec command: agent binary + any extra args
+    if cfg.exec_aliases:
         first_alias = next(iter(cfg.exec_aliases.values()))
-        exec_cmd = list(first_alias)
+        exec_cmd = list(first_alias) + list(extra_args)
+    elif extra_args:
+        exec_cmd = list(extra_args)
     else:
         exec_cmd = ["/bin/bash"]
 
