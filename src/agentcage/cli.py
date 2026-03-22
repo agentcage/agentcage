@@ -304,15 +304,18 @@ def init(name: str | None, output: str, image: str, isolation: str,
     meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
         run_scaffold_setup(scaffold, name, str(dest), image_tag=image_tag)
-        # Copy Containerfiles referenced in scaffold build entries
+        # Copy Containerfile and sibling build context files from scaffold
         scaffold_dir_path = resolve_scaffold(scaffold)
         if scaffold_dir_path is not None:
             for entry in meta.get("build", []):
                 if "containerfile" in entry:
-                    src = scaffold_dir_path / entry["containerfile"]
-                    dst = dest.parent / entry["containerfile"]
-                    if src.is_file() and not dst.exists():
-                        shutil.copy2(str(src), str(dst))
+                    src_cf = scaffold_dir_path / entry["containerfile"]
+                    if src_cf.is_file():
+                        for f in src_cf.parent.iterdir():
+                            if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                                dst = dest.parent / f.name
+                                if not dst.exists():
+                                    shutil.copy2(str(f), str(dst))
     scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
