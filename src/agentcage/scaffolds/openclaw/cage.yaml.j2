@@ -26,10 +26,7 @@ container:
     args:
       BASE_IMAGE: "ghcr.io/openclaw/openclaw"
   nested_containers: true
-  command:
-    - "sh"
-    - "-c"
-    - "cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt && update-ca-certificates 2>/dev/null; mkdir -p /home/node/.pki/nssdb && certutil -d sql:/home/node/.pki/nssdb -N --empty-password 2>/dev/null; certutil -d sql:/home/node/.pki/nssdb -A -t 'C,,' -n mitmproxy -i /certs/mitmproxy-ca-cert.pem 2>/dev/null; chmod 700 /home/node/.openclaw; test -f /home/node/.openclaw/openclaw.json || printf '{\"browser\": {\"defaultProfile\": \"openclaw\"}, \"gateway\": {\"trustedProxies\": [\"{{ ip_proxy }}\"], \"controlUi\": {\"allowedOrigins\": [\"http://localhost:{{ gateway_port }}\", \"http://127.0.0.1:{{ gateway_port }}\"]} } }' > /home/node/.openclaw/openclaw.json; chmod 600 /home/node/.openclaw/openclaw.json; while true; do node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password; echo 'cage: openclaw exited, restarting in 2s...'; sleep 2; done"
+  command: ["/usr/local/bin/entrypoint.sh"]
 
   add_capabilities:
     - NET_BIND_SERVICE
@@ -51,7 +48,7 @@ container:
   #   1. Change 127.0.0.1 to 0.0.0.0 below
   #   2. Delete the state volume so openclaw.json is regenerated:
   #        podman volume rm {{ name }}-state
-  #   3. Replace the "controlUi" block in the command above with:
+  #   3. Replace the "controlUi" block in entrypoint.sh with:
   #        \"controlUi\": {\"dangerouslyAllowHostHeaderOriginFallback\": true}
   #   4. Recreate the cage:  agentcage cage create -c cage.yaml
   ports:
@@ -61,6 +58,8 @@ container:
   env:
     OPENCLAW_DISABLE_BONJOUR: "1"
     HOME: "/home/node"
+    CAGE_PROXY_IP: "{{ ip_proxy }}"
+    CAGE_GATEWAY_PORT: "{{ gateway_port }}"
 
   # Cage-internal secrets (not API keys — use secret_injection for those).
   # Create first:  agentcage secret set {{ name }} OPENCLAW_GATEWAY_PASSWORD
