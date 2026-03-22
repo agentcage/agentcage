@@ -4,6 +4,7 @@ FROM $BASE_IMAGE
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        tini \
         podman \
         fuse-overlayfs \
         crun \
@@ -32,5 +33,10 @@ RUN mkdir -p /home/node/.config/containers \
 RUN if [ -d /app/extensions/matrix ] && [ -f /app/extensions/matrix/package.json ]; then \
         cd /app/extensions/matrix && npm install --omit=dev; \
     fi
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["tini", "--"]
 
 USER node

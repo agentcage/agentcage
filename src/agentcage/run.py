@@ -368,13 +368,16 @@ def execute(
     meta["lifecycle"] = cfg.lifecycle
     state.save_metadata(cage_name, meta)
 
-    # Copy scaffold Containerfile to state dir if build is configured
+    # Copy scaffold Containerfile and sibling files to state dir so cage
+    # update can rebuild (Containerfiles may COPY from build context)
     if cfg.container.build.containerfile:
         scaffold_dir = resolve_scaffold(scaffold)
         containerfile_src = scaffold_dir / cfg.container.build.containerfile if scaffold_dir else None
         if containerfile_src is not None and containerfile_src.exists():
-            dest_cf = Path(state.stored_config_path(cage_name)).parent / "Containerfile"
-            shutil.copy2(str(containerfile_src), str(dest_cf))
+            dest_dir = Path(state.stored_config_path(cage_name)).parent
+            for f in containerfile_src.parent.iterdir():
+                if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                    shutil.copy2(str(f), str(dest_dir / f.name))
 
     # Run scaffold setup (build images) and deploy
     try:

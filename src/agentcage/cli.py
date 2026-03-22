@@ -304,15 +304,18 @@ def init(name: str | None, output: str, image: str, isolation: str,
     meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
         run_scaffold_setup(scaffold, name, str(dest), image_tag=image_tag)
-        # Copy Containerfiles referenced in scaffold build entries
+        # Copy Containerfile and sibling build context files from scaffold
         scaffold_dir_path = resolve_scaffold(scaffold)
         if scaffold_dir_path is not None:
             for entry in meta.get("build", []):
                 if "containerfile" in entry:
-                    src = scaffold_dir_path / entry["containerfile"]
-                    dst = dest.parent / entry["containerfile"]
-                    if src.is_file() and not dst.exists():
-                        shutil.copy2(str(src), str(dst))
+                    src_cf = scaffold_dir_path / entry["containerfile"]
+                    if src_cf.is_file():
+                        for f in src_cf.parent.iterdir():
+                            if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                                dst = dest.parent / f.name
+                                if not dst.exists():
+                                    shutil.copy2(str(f), str(dst))
     scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
@@ -435,12 +438,15 @@ def cage_create(config_path: str, secrets: tuple):
     state.save_deployment(name, config_path)
     state.save_metadata(name, {"agentcage_version": version("agentcage")})
 
-    # Copy Containerfile into state dir so cage update can rebuild
+    # Copy Containerfile and sibling files into state dir so cage update
+    # can rebuild (Containerfiles may COPY other files from the build context)
     if cfg.container.build.containerfile:
         src_cf = Path(config_path).parent / cfg.container.build.containerfile
         if src_cf.is_file():
-            dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
-            shutil.copy2(str(src_cf), str(dst_cf))
+            dest_dir = state.deployment_dir(name)
+            for f in src_cf.parent.iterdir():
+                if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                    shutil.copy2(str(f), str(dest_dir / f.name))
 
     # Set secrets passed via --set-secret (before build so they're available)
     if secrets:
@@ -551,12 +557,15 @@ def cage_update(name: str, config_path: str | None):
             )
             sys.exit(1)
         state.save_deployment(name, config_path)
-        # Copy Containerfile into state dir so future updates can rebuild
+        # Copy Containerfile and sibling files into state dir so future
+        # updates can rebuild (Containerfiles may COPY from build context)
         if cfg.container.build.containerfile:
             src_cf = Path(config_path).parent / cfg.container.build.containerfile
             if src_cf.is_file():
-                dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
-                shutil.copy2(str(src_cf), str(dst_cf))
+                dest_dir = state.deployment_dir(name)
+                for f in src_cf.parent.iterdir():
+                    if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                        shutil.copy2(str(f), str(dest_dir / f.name))
     else:
         # Auto-resolve latest image tag for stored configs
         from agentcage.registry import resolve_latest_tag
@@ -596,6 +605,50 @@ def cage_update(name: str, config_path: str | None):
         if args_changed:
             raw.setdefault("container", {}).setdefault("build", {})["args"] = build_args
             state.save_raw_config(name, raw)
+
+        # Refresh scaffold build artifacts and command if scaffold is known
+        scaffold_name = raw.get("scaffold", "")
+        if scaffold_name:
+            from agentcage.init import resolve_scaffold, render_config
+
+            scaffold_dir = resolve_scaffold(scaffold_name)
+            if scaffold_dir is not None:
+                # Copy fresh Containerfile + sibling files from scaffold
+                dest_dir = state.deployment_dir(name)
+                for f in scaffold_dir.iterdir():
+                    if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                        shutil.copy2(str(f), str(dest_dir / f.name))
+
+                # Re-render scaffold template and patch command + new env vars
+                try:
+                    import yaml
+                    rendered, _ = render_config(name, scaffold=scaffold_name)
+                    scaffold_cfg = yaml.safe_load(rendered) or {}
+                    scaffold_container = scaffold_cfg.get("container", {})
+
+                    # Update command
+                    new_cmd = scaffold_container.get("command")
+                    old_cmd = raw.get("container", {}).get("command")
+                    if new_cmd and new_cmd != old_cmd:
+                        raw.setdefault("container", {})["command"] = new_cmd
+                        click.echo(f"Command updated from scaffold")
+
+                    # Merge new env vars (additive — never remove user's vars)
+                    scaffold_env = scaffold_container.get("env", {})
+                    stored_env = raw.get("container", {}).get("env", {})
+                    for key, val in scaffold_env.items():
+                        if key not in stored_env:
+                            stored_env[key] = val
+                            click.echo(f"Added env: {key}")
+                    if stored_env:
+                        raw.setdefault("container", {})["env"] = stored_env
+
+                    state.save_raw_config(name, raw)
+                except Exception as e:
+                    click.echo(
+                        f"warning: could not refresh scaffold: {e}",
+                        err=True,
+                    )
 
         cfg = state.load_deployment_config(name)
         try:

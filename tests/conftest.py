@@ -74,9 +74,7 @@ def openclaw_yaml(tmp_path):
         container:
           image: "ghcr.io/openclaw/openclaw:latest"
           command:
-            - "sh"
-            - "-c"
-            - "test -f /home/node/.openclaw/openclaw.json || printf '{} ' > /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
+            - "/usr/local/bin/entrypoint.sh"
           volumes:
             - "${HOME}/openclaw-workspace:/workspace:rw"
           named_volumes:
