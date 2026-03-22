@@ -76,7 +76,7 @@ def openclaw_yaml(tmp_path):
           command:
             - "sh"
             - "-c"
-            - "test -f /home/node/.openclaw/openclaw.json || printf '{} ' > /home/node/.openclaw/openclaw.json; exec node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password"
+            - "test -f /home/node/.openclaw/openclaw.json || printf '{} ' > /home/node/.openclaw/openclaw.json; while true; do node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password; echo 'cage: openclaw exited, restarting in 2s...'; sleep 2; done"
           volumes:
             - "${HOME}/openclaw-workspace:/workspace:rw"
           named_volumes:

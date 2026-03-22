@@ -433,7 +433,7 @@ class TestCageQuadlet:
         assert "Image=ghcr.io/openclaw/openclaw:latest" in content
         # Shell wrapper command — sh -c arg is quoted by systemd_exec filter
         assert 'Exec=sh -c "' in content
-        assert "exec node openclaw.mjs gateway" in content
+        assert "while true; do node openclaw.mjs gateway" in content
         assert "Secret=OPENCLAW_GATEWAY_PASSWORD,type=env" in content
         assert 'Environment="ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}"' in content
         assert 'Environment="OPENCLAW_DISABLE_BONJOUR=1"' in content
