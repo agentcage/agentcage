@@ -78,6 +78,8 @@ cleanup_all() {
 trap cleanup_all EXIT
 
 # ── run phases ───────────────────────────────────────────────────────
+SUITE_START=$(date +%s)
+
 PHASE_SCRIPTS=(
   [1]="phase1_lifecycle.sh"
   [2]="phase2_audit_logs.sh"
@@ -116,10 +118,13 @@ for phase in "${PHASES[@]}"; do
   fi
 
   # Run the phase in a subshell to isolate exit codes
+  PHASE_START=$(date +%s)
   set +e
   OUTPUT=$(bash "$SCRIPT_DIR/$script" 2>&1)
   RC=$?
   set -e
+  PHASE_END=$(date +%s)
+  PHASE_ELAPSED=$((PHASE_END - PHASE_START))
 
   echo "$OUTPUT"
 
@@ -134,9 +139,9 @@ for phase in "${PHASES[@]}"; do
   TOTAL_SKIP=$((TOTAL_SKIP + S))
 
   if [ "$RC" -eq 0 ] && [ "$F" -eq 0 ]; then
-    PHASE_RESULTS+=("Phase $phase: PASS ($P passed)")
+    PHASE_RESULTS+=("Phase $phase: PASS ($P passed, ${PHASE_ELAPSED}s)")
   else
-    PHASE_RESULTS+=("Phase $phase: FAIL ($P passed, $F failed)")
+    PHASE_RESULTS+=("Phase $phase: FAIL ($P/$F, ${PHASE_ELAPSED}s)")
   fi
 done
 
@@ -156,6 +161,11 @@ SUMMARY="Total: ${TOTAL_PASS} passed"
 [ "$TOTAL_FAIL" -gt 0 ] && SUMMARY="$SUMMARY, $TOTAL_FAIL failed"
 [ "$TOTAL_SKIP" -gt 0 ] && SUMMARY="$SUMMARY, $TOTAL_SKIP skipped"
 printf "║  %-36s║\n" "$SUMMARY"
+SUITE_END=$(date +%s)
+SUITE_ELAPSED=$((SUITE_END - SUITE_START))
+SUITE_MIN=$((SUITE_ELAPSED / 60))
+SUITE_SEC=$((SUITE_ELAPSED % 60))
+printf "║  %-36s║\n" "Wall time: ${SUITE_MIN}m${SUITE_SEC}s"
 echo "╚══════════════════════════════════════╝"
 echo ""
 

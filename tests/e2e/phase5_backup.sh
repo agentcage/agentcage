@@ -30,6 +30,7 @@ create_cage "$CONFIGS/second.yaml" >/dev/null
 wait_ready "$BASE2" 120 || { e2e_fail "5.0" "Setup" "second cage not ready"; print_results; exit 1; }
 
 # 5.1: Both cages running
+e2e_timer_start
 OUTPUT=$(agentcage cage list 2>&1)
 if echo "$OUTPUT" | grep -q "$CAGE" && echo "$OUTPUT" | grep -q "$CAGE2"; then
   e2e_pass "5.1" "Both cages running"
@@ -38,6 +39,7 @@ else
 fi
 
 # 5.2: Subnet isolation
+e2e_timer_start
 # Wait for each proxy to actually serve its allowed domain (not just 502).
 # The second cage proxy often takes longer to be fully ready.
 wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 90 || true
@@ -62,6 +64,7 @@ else
 fi
 
 # 5.3: Backup cage
+e2e_timer_start
 if agentcage cage backup "$CAGE" -o "$BACKUP_FILE" >/dev/null 2>&1 && [ -f "$BACKUP_FILE" ]; then
   e2e_pass "5.3" "Backup cage"
 else
@@ -69,6 +72,7 @@ else
 fi
 
 # 5.4: Destroy original
+e2e_timer_start
 if agentcage cage destroy "$CAGE" -y >/dev/null 2>&1; then
   e2e_pass "5.4" "Destroy original"
 else
@@ -76,6 +80,7 @@ else
 fi
 
 # 5.5: Restore cage
+e2e_timer_start
 # Note: restore may fail if the original config used env vars like ${AGENT_DIR}
 # that aren't set at restore time. This is a known limitation.
 _restore_ok=false
@@ -92,6 +97,7 @@ fi
 
 if [ "$_restore_ok" = true ]; then
   # 5.6: Restored cage works — proxy may need a moment to forward after restore
+  e2e_timer_start
   if wait_http_code "$BASE/fetch?url=https://httpbin.org/get" 200 60; then
     e2e_pass "5.6" "Restored cage works"
   else

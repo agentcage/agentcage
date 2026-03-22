@@ -63,6 +63,7 @@ assert_cmd_ok "2.7" "Logs: dns service" \
   agentcage cage logs "$CAGE" -s dns -n 5
 
 # HAR capture tests
+e2e_timer_start
 HAR_CAGE="e2e-har"
 destroy_cage "$HAR_CAGE"
 register_cage "$HAR_CAGE"
@@ -98,6 +99,7 @@ if wait_ready "$HAR_BASE" 120; then
   fi
   rm -f "$HAR_FILE"
 
+  e2e_timer_start
   OUTPUT=$(agentcage cage har "$HAR_CAGE" --json-lines -n 5 2>&1) || true
   if echo "$OUTPUT" | grep -q '"flow_id"'; then
     e2e_pass "2.9" "HAR export (JSONL)"

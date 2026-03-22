@@ -25,6 +25,7 @@ assert_cmd_fail "6.1" "Read-only filesystem" \
   podman exec "${CAGE}-cage" touch /usr/testfile
 
 # 6.2: Dropped capabilities
+e2e_timer_start
 OUTPUT=$(podman exec "${CAGE}-cage" cat /proc/1/status 2>&1) || true
 if echo "$OUTPUT" | grep -q "CapEff:.*0000000000000000"; then
   e2e_pass "6.2" "Dropped capabilities"
@@ -33,6 +34,7 @@ else
 fi
 
 # 6.3: Non-root user
+e2e_timer_start
 OUTPUT=$(podman exec "${CAGE}-cage" id 2>&1) || true
 if echo "$OUTPUT" | grep -q "uid=1000"; then
   e2e_pass "6.3" "Non-root user"
@@ -41,6 +43,7 @@ else
 fi
 
 # 6.4: Memory limit
+e2e_timer_start
 OUTPUT=$(podman exec "${CAGE}-cage" cat /sys/fs/cgroup/memory.max 2>&1) || true
 if [ "$OUTPUT" = "268435456" ]; then
   e2e_pass "6.4" "Memory limit (256m)"
@@ -95,6 +98,7 @@ assert_cmd_fail "6.9" "Port conflict detected" \
 rm -f "$CONFLICT_CONFIG"
 
 # 6.10: Subnet allocation (different /24 for each cage)
+e2e_timer_start
 SUBNET=$(podman network inspect "${CAGE}-net" 2>/dev/null \
   | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['subnets'][0]['subnet'])" 2>/dev/null || echo "")
 if echo "$SUBNET" | grep -qE "^10\.89\.[0-9]+\.0/24$"; then
