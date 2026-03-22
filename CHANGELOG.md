@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-03-22
+
+### Fixed
+- OpenClaw container no longer crashes on SIGUSR1-based self-restart: tini is now PID 1 with a restart loop in `entrypoint.sh`, so config changes via the web UI don't kill the container
+- `cage update` automatically refreshes scaffold build files (Containerfile, entrypoint.sh) and updates the container command — existing cages pick up fixes with just `agentcage cage update <name>`
+- `cage create`, `cage update -c`, and `agentcage init` now copy all build context files alongside the Containerfile, not just the Containerfile itself
+
 ## [0.10.1] - 2026-03-21
 
 ### Added
