@@ -21,6 +21,7 @@ assert_output_contains "4.1" "List domains" "httpbin.org" \
   agentcage domain list "$CAGE"
 
 # 4.2: Add domain
+e2e_timer_start
 if agentcage domain add "$CAGE" example.com >/dev/null 2>&1; then
   e2e_pass "4.2" "Add domain"
 else
@@ -28,6 +29,7 @@ else
 fi
 
 # 4.3: New domain accessible (poll — proxy may need a moment after hot-reload)
+e2e_timer_start
 # Domain hot-reload can be slow in CI: the proxy needs to pick up the config change,
 # regenerate DNS rules, and restart. Give it up to 120s.
 if wait_http_code "$BASE/fetch?url=http://example.com" 200 120; then
@@ -37,6 +39,7 @@ else
 fi
 
 # 4.4: Remove domain
+e2e_timer_start
 if agentcage domain rm "$CAGE" example.com >/dev/null 2>&1; then
   e2e_pass "4.4" "Remove domain"
 else
@@ -44,6 +47,7 @@ else
 fi
 
 # 4.5: Removed domain blocked (poll — proxy may need a moment)
+e2e_timer_start
 if wait_http_blocked "$BASE/fetch?url=http://example.com" 45; then
   e2e_pass "4.5" "Removed domain blocked"
 else
@@ -52,6 +56,7 @@ else
 fi
 
 # 4.6: Stop cage
+e2e_timer_start
 if agentcage cage stop "$CAGE" >/dev/null 2>&1; then
   e2e_pass "4.6" "Stop cage"
 else
@@ -59,6 +64,7 @@ else
 fi
 
 # 4.7: Start cage
+e2e_timer_start
 agentcage cage start "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
   e2e_pass "4.7" "Start cage"
@@ -67,6 +73,7 @@ else
 fi
 
 # 4.8: Restart cage
+e2e_timer_start
 agentcage cage restart "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
   e2e_pass "4.8" "Restart cage"

@@ -44,6 +44,7 @@ if ! wait_ready "$BASE" 240; then
 fi
 
 # ── VM Lifecycle ────────────────────────────────────────────────────
+e2e_timer_start
 VM_STATUS=$(limactl list --json "$VM_NAME" 2>/dev/null \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unknown")
 if [ "$VM_STATUS" = "Running" ]; then
@@ -87,6 +88,7 @@ assert_output_contains "7.14" "Audit filter (blocked)" '"blocked"' \
   agentcage cage audit "$CAGE" -d blocked --json-lines
 
 # HAR
+e2e_timer_start
 HAR_FILE=$(mktemp /tmp/e2e-vm-har-XXXXXX.har)
 if agentcage cage har "$CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
   e2e_pass "7.15" "HAR export (VM)"
@@ -121,12 +123,14 @@ assert_cmd_ok "7.22" "State dir mounted (rw)" \
 assert_output_contains "7.27" "List domains" "httpbin.org" \
   agentcage domain list "$CAGE"
 
+e2e_timer_start
 if agentcage domain add "$CAGE" example.com >/dev/null 2>&1; then
   e2e_pass "7.28" "Add domain"
 else
   e2e_fail "7.28" "Add domain" "command failed"
 fi
 
+e2e_timer_start
 if agentcage domain rm "$CAGE" example.com >/dev/null 2>&1; then
   e2e_pass "7.30" "Remove domain"
 else
@@ -134,6 +138,7 @@ else
 fi
 
 # ── VM Lifecycle Management ─────────────────────────────────────────
+e2e_timer_start
 echo "Stopping VM cage..."
 if agentcage cage stop "$CAGE" >/dev/null 2>&1; then
   e2e_pass "7.32" "Stop VM cage"
@@ -141,6 +146,7 @@ else
   e2e_fail "7.32" "Stop VM cage"
 fi
 
+e2e_timer_start
 VM_STATUS=$(limactl list --json "$VM_NAME" 2>/dev/null \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unknown")
 if [ "$VM_STATUS" = "Stopped" ]; then
@@ -149,6 +155,7 @@ else
   e2e_fail "7.33" "VM stopped" "status: $VM_STATUS"
 fi
 
+e2e_timer_start
 echo "Starting VM cage..."
 agentcage cage start "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 240; then
@@ -157,6 +164,7 @@ else
   e2e_fail "7.34" "Start VM cage" "not ready after start"
 fi
 
+e2e_timer_start
 echo "Restarting VM cage..."
 agentcage cage restart "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 240; then
@@ -173,6 +181,7 @@ assert_output_contains "7.39" "Exec in VM proxy" "hello" \
   agentcage cage exec "$CAGE" -s proxy -- echo hello
 
 # ── VM Destroy ──────────────────────────────────────────────────────
+e2e_timer_start
 echo "Destroying VM cage..."
 if agentcage cage destroy "$CAGE" -y >/dev/null 2>&1; then
   e2e_pass "7.40" "Destroy VM cage"
@@ -181,12 +190,14 @@ else
   e2e_fail "7.40" "Destroy VM cage"
 fi
 
+e2e_timer_start
 if ! limactl list --json "$VM_NAME" >/dev/null 2>&1; then
   e2e_pass "7.41" "VM gone"
 else
   e2e_fail "7.41" "VM gone" "Lima instance still exists"
 fi
 
+e2e_timer_start
 if [ ! -f ~/.config/agentcage/lima/lima.yaml ]; then
   e2e_pass "7.42" "No leftover config"
 else

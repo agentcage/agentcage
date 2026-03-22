@@ -10,6 +10,8 @@ E2E_FAIL=0
 E2E_SKIP=0
 E2E_TEST_NUM=0
 E2E_PHASE="${E2E_PHASE:-0}"
+E2E_PHASE_START=0
+E2E_TEST_START=0
 E2E_CAGES_TO_CLEANUP=()
 
 # Port base — override to avoid conflicts with local services.
@@ -22,28 +24,58 @@ export AGENT_DIR="$REPO_ROOT/examples/basic/agent"
 
 _test_id() { printf "%d.%d" "$E2E_PHASE" "$1"; }
 
+_fmt_duration() {
+  local ms="$1"
+  if [ "$ms" -lt 1000 ]; then
+    printf "%dms" "$ms"
+  elif [ "$ms" -lt 60000 ]; then
+    local secs=$((ms / 1000))
+    local tenths=$(( (ms % 1000) / 100 ))
+    printf "%d.%ds" "$secs" "$tenths"
+  else
+    local secs=$((ms / 1000))
+    printf "%dm%02ds" $((secs / 60)) $((secs % 60))
+  fi
+}
+
+_test_elapsed_ms() {
+  local now
+  now=$(date +%s%N)
+  echo $(( (now - E2E_TEST_START) / 1000000 ))
+}
+
+# Call before each test to start the timer
+e2e_timer_start() {
+  E2E_TEST_START=$(date +%s%N)
+}
+
 e2e_pass() {
   local id="$1" desc="$2"
+  local dur
+  dur=$(_fmt_duration "$(_test_elapsed_ms)")
   E2E_PASS=$((E2E_PASS + 1))
-  printf "  \033[32mPASS\033[0m  %s  %s\n" "$id" "$desc"
+  printf "  \033[32mPASS\033[0m  %-5s %-40s \033[2m%s\033[0m\n" "$id" "$desc" "$dur"
 }
 
 e2e_fail() {
   local id="$1" desc="$2" detail="${3:-}"
+  local dur
+  dur=$(_fmt_duration "$(_test_elapsed_ms)")
   E2E_FAIL=$((E2E_FAIL + 1))
-  printf "  \033[31mFAIL\033[0m  %s  %s\n" "$id" "$desc"
+  printf "  \033[31mFAIL\033[0m  %-5s %-40s \033[2m%s\033[0m\n" "$id" "$desc" "$dur"
   [ -n "$detail" ] && printf "        %s\n" "$detail"
 }
 
 e2e_skip() {
   local id="$1" desc="$2" reason="${3:-}"
   E2E_SKIP=$((E2E_SKIP + 1))
-  printf "  \033[33mSKIP\033[0m  %s  %s  (%s)\n" "$id" "$desc" "$reason"
+  printf "  \033[33mSKIP\033[0m  %-5s %s  (%s)\n" "$id" "$desc" "$reason"
 }
 
 phase_header() {
   local num="$1" title="$2"
   E2E_PHASE="$num"
+  E2E_PHASE_START=$(date +%s%N)
   printf "\n\033[1m═══ Phase %s: %s ═══\033[0m\n\n" "$num" "$title"
 }
 
@@ -51,6 +83,7 @@ phase_header() {
 
 # assert_http CODE URL [CURL_ARGS...] — check HTTP status code
 assert_http() {
+  e2e_timer_start
   local expected="$1" url="$2" id="$3" desc="$4"
   shift 4
   local code
@@ -64,6 +97,7 @@ assert_http() {
 
 # assert_http_any "200|201" URL ID DESC [CURL_ARGS...] — accept multiple codes
 assert_http_any() {
+  e2e_timer_start
   local expected="$1" url="$2" id="$3" desc="$4"
   shift 4
   local code
@@ -77,6 +111,7 @@ assert_http_any() {
 
 # assert_cmd_ok ID DESC CMD... — check command exits 0
 assert_cmd_ok() {
+  e2e_timer_start
   local id="$1" desc="$2"
   shift 2
   if "$@" >/dev/null 2>&1; then
@@ -88,6 +123,7 @@ assert_cmd_ok() {
 
 # assert_cmd_fail ID DESC CMD... — check command exits non-zero
 assert_cmd_fail() {
+  e2e_timer_start
   local id="$1" desc="$2"
   shift 2
   if "$@" >/dev/null 2>&1; then
@@ -99,6 +135,7 @@ assert_cmd_fail() {
 
 # assert_output_contains ID DESC PATTERN CMD... — check output contains pattern
 assert_output_contains() {
+  e2e_timer_start
   local id="$1" desc="$2" pattern="$3"
   shift 3
   local output
@@ -221,8 +258,16 @@ preflight_check() {
 # ── results ──────────────────────────────────────────────────────────
 
 print_results() {
+  local phase_ms=0
+  if [ "$E2E_PHASE_START" -gt 0 ]; then
+    local now
+    now=$(date +%s%N)
+    phase_ms=$(( (now - E2E_PHASE_START) / 1000000 ))
+  fi
+  local phase_dur
+  phase_dur=$(_fmt_duration "$phase_ms")
   echo
-  printf "\033[1m─── Results ───\033[0m\n"
+  printf "\033[1m─── Results (%s) ───\033[0m\n" "$phase_dur"
   printf "  Passed: \033[32m%d\033[0m\n" "$E2E_PASS"
   printf "  Failed: \033[31m%d\033[0m\n" "$E2E_FAIL"
   [ "$E2E_SKIP" -gt 0 ] && printf "  Skipped: \033[33m%d\033[0m\n" "$E2E_SKIP"

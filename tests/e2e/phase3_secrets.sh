@@ -26,6 +26,7 @@ assert_output_contains "3.1" "Secret listed" "MY_API_KEY" \
   agentcage secret list "$CAGE"
 
 # 3.2: Placeholder in cage env
+e2e_timer_start
 OUTPUT=$(podman exec "${CAGE}-cage" printenv MY_API_KEY 2>&1) || true
 if [ "$OUTPUT" = "{{MY_API_KEY}}" ]; then
   e2e_pass "3.2" "Placeholder in cage env"
@@ -34,6 +35,7 @@ else
 fi
 
 # 3.3: Injection on outbound — send placeholder, then poll audit for injection record.
+e2e_timer_start
 # The proxy intercepts the placeholder in the outbound request and replaces it with
 # the real secret. The proxy logs "secrets_injected" only after the round-trip completes,
 # so we need httpbin.org to actually respond. Wait for proxy readiness first.
@@ -61,6 +63,7 @@ else
 fi
 
 # 3.4: Set new secret
+e2e_timer_start
 echo "new-value" | agentcage secret set "$CAGE" MY_API_KEY >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
   e2e_pass "3.4" "Set new secret (cage restarted)"
@@ -69,10 +72,12 @@ else
 fi
 
 # 3.5: Remove secret
+e2e_timer_start
 agentcage secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
 e2e_pass "3.5" "Remove secret"
 
 # 3.6: Missing secret warning
+e2e_timer_start
 OUTPUT=$(agentcage secret list "$CAGE" 2>&1) || true
 if echo "$OUTPUT" | grep -q "MISSING"; then
   e2e_pass "3.6" "Missing secret warning"
