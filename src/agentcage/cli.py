@@ -435,12 +435,15 @@ def cage_create(config_path: str, secrets: tuple):
     state.save_deployment(name, config_path)
     state.save_metadata(name, {"agentcage_version": version("agentcage")})
 
-    # Copy Containerfile into state dir so cage update can rebuild
+    # Copy Containerfile and sibling files into state dir so cage update
+    # can rebuild (Containerfiles may COPY other files from the build context)
     if cfg.container.build.containerfile:
         src_cf = Path(config_path).parent / cfg.container.build.containerfile
         if src_cf.is_file():
-            dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
-            shutil.copy2(str(src_cf), str(dst_cf))
+            dest_dir = state.deployment_dir(name)
+            for f in src_cf.parent.iterdir():
+                if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                    shutil.copy2(str(f), str(dest_dir / f.name))
 
     # Set secrets passed via --set-secret (before build so they're available)
     if secrets:
@@ -551,12 +554,15 @@ def cage_update(name: str, config_path: str | None):
             )
             sys.exit(1)
         state.save_deployment(name, config_path)
-        # Copy Containerfile into state dir so future updates can rebuild
+        # Copy Containerfile and sibling files into state dir so future
+        # updates can rebuild (Containerfiles may COPY from build context)
         if cfg.container.build.containerfile:
             src_cf = Path(config_path).parent / cfg.container.build.containerfile
             if src_cf.is_file():
-                dst_cf = state.deployment_dir(name) / Path(cfg.container.build.containerfile).name
-                shutil.copy2(str(src_cf), str(dst_cf))
+                dest_dir = state.deployment_dir(name)
+                for f in src_cf.parent.iterdir():
+                    if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                        shutil.copy2(str(f), str(dest_dir / f.name))
     else:
         # Auto-resolve latest image tag for stored configs
         from agentcage.registry import resolve_latest_tag
