@@ -603,6 +603,50 @@ def cage_update(name: str, config_path: str | None):
             raw.setdefault("container", {}).setdefault("build", {})["args"] = build_args
             state.save_raw_config(name, raw)
 
+        # Refresh scaffold build artifacts and command if scaffold is known
+        scaffold_name = raw.get("scaffold", "")
+        if scaffold_name:
+            from agentcage.init import resolve_scaffold, render_config
+
+            scaffold_dir = resolve_scaffold(scaffold_name)
+            if scaffold_dir is not None:
+                # Copy fresh Containerfile + sibling files from scaffold
+                dest_dir = state.deployment_dir(name)
+                for f in scaffold_dir.iterdir():
+                    if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+                        shutil.copy2(str(f), str(dest_dir / f.name))
+
+                # Re-render scaffold template and patch command + new env vars
+                try:
+                    import yaml
+                    rendered, _ = render_config(name, scaffold=scaffold_name)
+                    scaffold_cfg = yaml.safe_load(rendered) or {}
+                    scaffold_container = scaffold_cfg.get("container", {})
+
+                    # Update command
+                    new_cmd = scaffold_container.get("command")
+                    old_cmd = raw.get("container", {}).get("command")
+                    if new_cmd and new_cmd != old_cmd:
+                        raw.setdefault("container", {})["command"] = new_cmd
+                        click.echo(f"Command updated from scaffold")
+
+                    # Merge new env vars (additive — never remove user's vars)
+                    scaffold_env = scaffold_container.get("env", {})
+                    stored_env = raw.get("container", {}).get("env", {})
+                    for key, val in scaffold_env.items():
+                        if key not in stored_env:
+                            stored_env[key] = val
+                            click.echo(f"Added env: {key}")
+                    if stored_env:
+                        raw.setdefault("container", {})["env"] = stored_env
+
+                    state.save_raw_config(name, raw)
+                except Exception as e:
+                    click.echo(
+                        f"warning: could not refresh scaffold: {e}",
+                        err=True,
+                    )
+
         cfg = state.load_deployment_config(name)
         try:
             warnings = validate_config(cfg)
