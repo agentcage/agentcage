@@ -16,10 +16,12 @@ echo "Creating secrets cage..."
 export E2E_PORT_SECRETS="$SECRET_PORT"
 create_cage "$CONFIGS/secrets.yaml" \
   --set-secret MY_API_KEY=test-secret-value-12345 >/dev/null
+start_mock "$CAGE" httpbin.org
 if ! wait_ready "$BASE" 120; then
   e2e_fail "3.0" "Setup" "secrets cage not ready"
   print_results; exit 1
 fi
+repatch_mock "$CAGE" httpbin.org
 
 # 3.1: Secret listed
 assert_output_contains "3.1" "Secret listed" "MY_API_KEY" \

@@ -6,7 +6,7 @@ phase_header 6 "Container Mode — Edge Cases & Security Hardening"
 
 CAGE="e2e-hardened"
 CONFIGS="$(dirname "$0")/configs"
-PORT="${E2E_PORT_HARDENED:-19080}"
+PORT="${E2E_PORT_HARDENED:-19084}"
 BASE="http://localhost:$PORT"
 
 destroy_cage "$CAGE"

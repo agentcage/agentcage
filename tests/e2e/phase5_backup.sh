@@ -8,7 +8,7 @@ CAGE="basic"
 CAGE2="e2e-second"
 BASE="http://localhost:3000"
 CONFIGS="$(dirname "$0")/configs"
-SECOND_PORT="${E2E_PORT_SECOND:-19080}"
+SECOND_PORT="${E2E_PORT_SECOND:-19083}"
 BASE2="http://localhost:$SECOND_PORT"
 BACKUP_FILE=$(mktemp /tmp/e2e-backup-XXXXXX.tar.gz)
 
@@ -18,7 +18,12 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   destroy_cage "$CAGE"
   register_cage "$CAGE"
   create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+  start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "5.0" "Setup" "cage not ready"; print_results; exit 1; }
+  repatch_mock "$CAGE" httpbin.org
+else
+  # Basic cage already running (from sequential chain) — ensure mock is up
+  start_mock "$CAGE" httpbin.org 2>/dev/null || true
 fi
 
 # Create second cage
@@ -27,7 +32,9 @@ register_cage "$CAGE2"
 echo "Creating second cage..."
 export E2E_PORT_SECOND="$SECOND_PORT"
 create_cage "$CONFIGS/second.yaml" >/dev/null
+start_mock "$CAGE2" example.com
 wait_ready "$BASE2" 120 || { e2e_fail "5.0" "Setup" "second cage not ready"; print_results; exit 1; }
+repatch_mock "$CAGE2" example.com
 
 # 5.1: Both cages running
 e2e_timer_start
@@ -40,23 +47,27 @@ fi
 
 # 5.2: Subnet isolation
 e2e_timer_start
-# Wait for each proxy to actually serve its allowed domain (not just 502).
-# The second cage proxy often takes longer to be fully ready.
-wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 90 || true
-wait_http_code "$BASE2/fetch?url=http://example.com" 200 90 || true
-# Also confirm blocked domains return 403/502 (not 000/200)
-wait_http_blocked "$BASE/fetch?url=http://example.com" 30 || true
-wait_http_blocked "$BASE2/fetch?url=http://httpbin.org/get" 30 || true
-
-# Now take the final readings
-CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
-CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
-CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-# Blocked domains return 403 (proxy) or 502 (DNS sinkhole) depending on timing
+# Poll all four conditions in a single loop instead of 4 sequential waits.
+# This avoids 90+90+30+30=240s worst case when one external domain is slow.
 is_blocked() { [ "$1" = "403" ] || [ "$1" = "502" ]; }
-if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
-   [ "$CODE_SECOND_EXAMPLE" = "200" ] && is_blocked "$CODE_SECOND_HTTPBIN"; then
+_isolation_ok=false
+_iso_deadline=$((SECONDS + 120))
+_iso_delay=1
+while [ "$SECONDS" -lt "$_iso_deadline" ]; do
+  CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+  CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
+  CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
+  CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+  if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
+     [ "$CODE_SECOND_EXAMPLE" = "200" ] && is_blocked "$CODE_SECOND_HTTPBIN"; then
+    _isolation_ok=true
+    break
+  fi
+  sleep "$_iso_delay"
+  _iso_delay=$(( _iso_delay + 1 ))
+  [ "$_iso_delay" -gt 4 ] && _iso_delay=4
+done
+if [ "$_isolation_ok" = true ]; then
   e2e_pass "5.2" "Subnet isolation"
 else
   e2e_fail "5.2" "Subnet isolation" \
@@ -73,6 +84,7 @@ fi
 
 # 5.4: Destroy original
 e2e_timer_start
+stop_mock "$CAGE"
 if agentcage cage destroy "$CAGE" -y >/dev/null 2>&1; then
   e2e_pass "5.4" "Destroy original"
 else
@@ -86,6 +98,7 @@ e2e_timer_start
 _restore_ok=false
 if AGENT_DIR="$AGENT_DIR" agentcage cage restore "$BACKUP_FILE" >/dev/null 2>&1; then
   if wait_ready "$BASE" 90; then
+    start_mock "$CAGE" httpbin.org 2>/dev/null || true
     _restore_ok=true
     e2e_pass "5.5" "Restore cage"
   else
@@ -98,10 +111,10 @@ fi
 if [ "$_restore_ok" = true ]; then
   # 5.6: Restored cage works — proxy may need a moment to forward after restore
   e2e_timer_start
-  if wait_http_code "$BASE/fetch?url=https://httpbin.org/get" 200 60; then
+  if wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 60; then
     e2e_pass "5.6" "Restored cage works"
   else
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=https://httpbin.org/get" 2>/dev/null || echo "000")
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
     e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got $CODE after 60s"
   fi
 else

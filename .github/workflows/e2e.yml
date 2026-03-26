@@ -11,7 +11,7 @@ jobs:
   e2e-container:
     name: E2E Container (Phases 1-6)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -38,8 +38,14 @@ jobs:
           # Verify rootless Podman works
           podman info --format '{{.Host.Security.Rootless}}'
 
-      - name: Pull base images
-        run: podman pull docker.io/library/node:22-slim
+      - name: Cache Podman images
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/containers/storage
+          key: podman-node22slim-${{ runner.os }}
+
+      - name: Pull base images (if not cached)
+        run: podman image exists docker.io/library/node:22-slim 2>/dev/null || podman pull docker.io/library/node:22-slim
 
       - name: Run E2E container tests
         run: bash tests/e2e/run.sh container

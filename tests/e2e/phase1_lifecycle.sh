@@ -14,16 +14,22 @@ register_cage "$CAGE"
 # Setup
 echo "Creating cage..."
 create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+echo "Starting mock server..."
+start_mock "$CAGE" httpbin.org example.com
+
 echo "Waiting for readiness..."
 if ! wait_ready "$BASE" 120; then
   e2e_fail "1.0" "Agent readiness" "did not become ready within 120s"
   print_results; exit 1
 fi
 
+# Re-patch after proxy is fully up (ExecStartPost may have restarted it)
+repatch_mock "$CAGE" httpbin.org example.com
+
 # Tests
 assert_http 200 "$BASE/" "1.1" "Health check"
-assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "1.2" "Allowed domain (httpbin.org)"
-assert_http_any "403|502" "$BASE/fetch?url=https://evil.com/exfil" "1.3" "Blocked domain (evil.com)"
+assert_http 200 "$BASE/fetch?url=http://httpbin.org/get" "1.2" "Allowed domain (httpbin.org)"
+assert_http_any "403|502" "$BASE/fetch?url=http://evil.com/exfil" "1.3" "Blocked domain (evil.com)"
 
 # Secret detection — use a pattern that matches the anthropic_key regex
 assert_http_any "403|502" "$BASE/check-secret" "1.4" "Secret leak blocked" \
