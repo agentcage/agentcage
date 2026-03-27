@@ -33,25 +33,52 @@ Both container mode (rootless Podman) and VM mode (Lima KVM) are supported -- se
 
 ## Quick Start
 
+### Ephemeral session
+
+The fastest way to sandbox a coding agent. One command builds the image, creates a temporary cage, and drops you into an interactive session. The cage is torn down when you exit; audit logs are preserved.
+
 ```bash
 # Install
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 
-# Run Claude Code in a sandbox (one command)
+# Run Claude Code in a sandbox
 agentcage run claude-code
 
-# Or scaffold a config for a custom agent
-agentcage init myapp --image node:22-slim
+# Run OpenAI Codex in a sandbox
+agentcage run codex
 
-# Create and start the cage
+# Pass secrets and a project directory
+agentcage run claude-code -s ANTHROPIC_API_KEY --project ~/myrepo
+```
+
+### Persistent interactive cage
+
+Use this when you want the cage to survive across sessions -- for example, to keep auth tokens, run multiple `cage exec` sessions, or inspect traffic after the fact.
+
+```bash
+agentcage init myagent --scaffold claude-code
+agentcage secret set myagent ANTHROPIC_API_KEY
 agentcage cage create -c cage.yaml
+agentcage cage exec myagent -- claude
+```
 
-# Store secrets (cage must exist first)
+### Always-on service cage
+
+For agents that run continuously (API gateways, coding platforms, webhook receivers). systemd auto-restarts the container on failure and starts it on boot.
+
+```bash
+agentcage init myapp --scaffold openclaw
 agentcage secret set myapp ANTHROPIC_API_KEY
-agentcage cage restart myapp
-
-# Verify it's healthy
+agentcage cage create -c cage.yaml
 agentcage cage verify myapp
+```
+
+### Custom image
+
+```bash
+agentcage init myapp --image node:22-slim
+# Edit cage.yaml to configure domains, secrets, inspectors...
+agentcage cage create -c cage.yaml
 ```
 
 Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Reference](docs/cli.md) for the full command set.
