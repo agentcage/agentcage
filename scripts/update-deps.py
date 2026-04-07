@@ -13,7 +13,6 @@ Categories: python, containers, pip
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -35,29 +34,6 @@ def _json_get(url: str) -> dict:
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
         return json.loads(resp.read())
 
-
-def _head_ok(url: str) -> bool:
-    """Return True if a HEAD request to *url* succeeds (HTTP 200)."""
-    req = urllib.request.Request(url, method="HEAD")
-    req.add_header("User-Agent", "agentcage-update-deps/1.0")
-    try:
-        with urllib.request.urlopen(req, timeout=15):  # noqa: S310
-            return True
-    except Exception:
-        return False
-
-
-def _download_bytes(url: str) -> bytes:
-    """Download *url* and return raw bytes."""
-    req = urllib.request.Request(url)
-    req.add_header("User-Agent", "agentcage-update-deps/1.0")
-    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
-        return resp.read()
-
-
-def _sha256_of_url(url: str) -> str:
-    """Download *url* and return its SHA-256 hex digest."""
-    return hashlib.sha256(_download_bytes(url)).hexdigest()
 
 
 def _print_status(
@@ -137,18 +113,6 @@ def _skopeo_inspect_digest(image_ref: str) -> str | None:
     return data.get("Digest", "")
 
 
-def _skopeo_list_tags(image: str) -> list[str]:
-    """Run skopeo list-tags and return the tag list."""
-    r = subprocess.run(
-        ["skopeo", "list-tags", f"docker://{image}"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        print(f"  error: skopeo list-tags failed for {image}: {r.stderr.strip()}")
-        return []
-    data = json.loads(r.stdout)
-    return data.get("Tags", [])
-
 
 def _check_digest_pinned(
     containerfile: str, update: bool
@@ -203,89 +167,21 @@ def _check_digest_pinned(
         return (1, 0)
 
 
-def _check_tag_pinned(
-    containerfile: str, tag_pattern: re.Pattern, update: bool
-) -> tuple[int, int]:
-    """Check a Containerfile with a tag-pinned FROM line."""
-    path = os.path.join(REPO_ROOT, containerfile)
-    content = open(path).read()
-    name = os.path.basename(containerfile)
-
-    m = re.search(r"^FROM\s+(\S+):(\S+)\s*$", content, re.MULTILINE)
-    if not m:
-        print(f"\n[containers] {name}")
-        print(f"  skipped: no tag-pinned FROM found")
-        return (0, 0)
-
-    image = m.group(1)
-    current_tag = m.group(2)
-
-    # List all tags and filter to matching pattern
-    tags = _skopeo_list_tags(image)
-    matching = [t for t in tags if tag_pattern.fullmatch(t)]
-
-    if not matching:
-        print(f"\n[containers] {name}")
-        print(f"  current: {current_tag}")
-        print(f"  latest:  no matching tags found")
-        return (0, 0)
-
-    # Sort numerically — handle dotted versions and bare numbers
-    def _version_key(tag: str):
-        parts = tag.split(".")
-        result = []
-        for p in parts:
-            try:
-                result.append(int(p))
-            except ValueError:
-                result.append(p)
-        return result
-
-    matching.sort(key=_version_key)
-    latest_tag = matching[-1]
-
-    if latest_tag == current_tag:
-        _print_status("containers", f"{image.split('/')[-1]} ({name})",
-                       current_tag, f"{latest_tag} (up to date)")
-        return (0, 1)
-    else:
-        _print_status("containers", f"{image.split('/')[-1]} ({name})",
-                       current_tag, latest_tag)
-        if update:
-            new_content = content.replace(
-                f"{image}:{current_tag}",
-                f"{image}:{latest_tag}",
-            )
-            with open(path, "w") as f:
-                f.write(new_content)
-            print(f"  -> updated tag in {name}")
-        else:
-            print(f"  -> update available")
-        return (1, 0)
-
 
 def check_containers(update: bool) -> tuple[int, int]:
     """Check all container image pins. Returns (updates, up_to_date)."""
     total_updates = 0
     total_current = 0
 
-    # Digest-pinned
     for cf in (
         "src/agentcage/data/containers/Containerfile.proxy",
         "src/agentcage/data/containers/Containerfile.dns",
+        "src/agentcage/data/containers/Containerfile.helper",
+        "src/agentcage/data/containers/Containerfile.nested",
     ):
         u, c = _check_digest_pinned(cf, update)
         total_updates += u
         total_current += c
-
-    # Tag-pinned: alpine uses 3.x pattern
-    u, c = _check_tag_pinned(
-        "src/agentcage/data/containers/Containerfile.helper",
-        re.compile(r"\d+\.\d+"),
-        update,
-    )
-    total_updates += u
-    total_current += c
 
     return (total_updates, total_current)
 
