@@ -32,7 +32,7 @@ agentcage offers two isolation modes that affect the threat model differently:
 | **Kernel** | Shared with host | Dedicated guest kernel per cage |
 | **Container escape risk** | Mitigated by hardening, not eliminated | Eliminated — escape lands in VM, not on host |
 | **Root required** | No | No (Lima handles VM networking) |
-| **macOS support** | Yes (via Podman machine) | Yes (Lima supports macOS) |
+| **macOS support** | No (use VM mode) | Yes (Lima supports macOS) |
 | **Boot overhead** | ~1s | ~15–30s |
 | **Best for** | Development, CI, low-risk workloads | Production, untrusted agents, high-security |
 
@@ -81,11 +81,11 @@ agentcage applies multiple overlapping defenses:
 
 7. **WebSocket inspection** -- After the initial HTTP upgrade handshake is approved, all subsequent WebSocket frames are inspected by the full inspector chain (secrets, entropy, content-type). Frames that trigger a block are dropped.
 
-8. **Rate limiting** -- Optional per-host token-bucket rate limiter prevents request flooding and timing-based evasion. Configure via `rate_limit.requests_per_second` and `rate_limit.burst`.
+8. **Rate limiting** -- Per-host token-bucket rate limiter (enabled by default: 10 req/s, burst 50) prevents request flooding and timing-based evasion. Configure via `rate_limit.requests_per_second` and `rate_limit.burst`.
 
 9. **Custom inspectors** -- User-defined Python inspectors can implement arbitrary detection logic, extending the chain with domain-specific rules. Custom inspector paths are validated against an allowed directory list to prevent arbitrary code loading.
 
-10. **Audit logging** -- All inspection decisions (blocked, flagged, and allowed requests) are written as structured JSON lines to a persistent audit log file (`/var/log/agentcage/audit.jsonl` by default). Allowed request logging is enabled by default for forensic completeness.
+10. **Audit logging** -- All inspection decisions (blocked, flagged, and allowed requests) are written as structured JSON lines to a persistent audit log file (`/var/log/agentcage/audit.jsonl` by default). Allowed request logging is disabled by default.
 
 ## Fail-Closed Design
 
@@ -194,4 +194,4 @@ The capture volume is accessible to the host user running podman. This is the sa
 
 ## Reporting Security Issues
 
-Please report security issues via [GitHub Issues](https://github.com/agentcage/agentcage/issues).
+Please report security vulnerabilities via email to **security@agentcage.ai**. Do not open a public GitHub issue for security vulnerabilities. See [SECURITY.md](../SECURITY.md) for details.

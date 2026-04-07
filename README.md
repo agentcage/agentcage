@@ -29,7 +29,7 @@ Most agent deployments hand the agent a [**lethal trifecta**](https://simonwilli
 - **DNS filtering** -- allowlist-based dnsmasq sidecar, placeholder IPs for unauthorized domains
 - **Fail-closed by default** -- all hardening on out of the box; component failure stops traffic
 
-Both container mode (rootless Podman) and VM mode (Lima KVM) are supported -- see [Security & Threat Model](docs/security.md#isolation-modes) for the comparison. For the full container topology and inspector chain, see [Architecture](docs/architecture.md).
+Both container mode (rootless Podman) and VM mode (Lima KVM) are supported -- see [Security & Threat Model](docs/security.md#isolation-modes-and-the-threat-surface) for the comparison. For the full container topology and inspector chain, see [Architecture](docs/architecture.md).
 
 ## Quick Start
 

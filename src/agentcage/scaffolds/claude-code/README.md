@@ -94,22 +94,7 @@ With `lifecycle: service`, systemd auto-restarts the container on failure and st
 
 ## Managing your cage
 
-```bash
-# Edit the config in $EDITOR, validate, and reload if running
-agentcage cage edit myagent
-
-# Rebuild and restart (after config or image changes)
-agentcage cage update myagent
-
-# Restart without rebuilding
-agentcage cage reload myagent
-
-# View proxy audit logs
-agentcage cage audit myagent
-
-# Destroy the cage (stops containers, removes quadlets and state)
-agentcage cage destroy myagent
-```
+See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
 
 ## Configuration
 
@@ -153,10 +138,3 @@ Subdomains are matched automatically -- adding `anthropic.com` also allows `api.
 
 **Claude Code hangs on startup**: The telemetry domains (`datadoghq.com`, `sentry.io`) must be in the allowlist. Claude Code blocks on telemetry init if these are unreachable.
 
-**403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `agentcage cage logs myagent -s proxy` -- the JSON log entries include a `reason` field explaining the block.
-
-**Certificate errors**: The mitmproxy CA certificate is shared via a named volume. If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. Restart the cage: `agentcage cage reload myagent`.
-
-**DNS resolution failures**: Verify the DNS sidecar is running: `agentcage cage list`. If you are using custom `dns_servers`, make sure those servers are reachable from the host.
-
-**File permission errors in /workspace**: The scaffold uses `userns: "keep-id"` to map your host UID into the container. If you still see permission issues, check that the mounted directories are owned by your user on the host.

@@ -3,7 +3,7 @@
 Full reference for all agentcage configuration settings — types, defaults, and examples.
 
 For architecture details, see [Architecture](architecture.md).
-Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`](../examples/openclaw/)
+Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`](../src/agentcage/scaffolds/openclaw/)
 
 ## Table of Contents
 
@@ -32,7 +32,7 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 | `isolation` | `string` | `"container"` | Isolation backend: `"container"` (rootless Podman, default) or `"vm"` (Lima VM). Old `"firecracker"` configs are silently upgraded to `"vm"`. |
 | `lifecycle` | `string` | `"service"` | Cage lifecycle mode: `"service"` (always running, auto-restart), `"interactive"` (on-demand, stops on exit, state preserved), or `"ephemeral"` (stops on exit, destroyed by `cage prune`). |
 | `scaffold` | `string` | `""` | Scaffold name used to generate this config (shown in `cage list` output). |
-| `log_allowed` | `bool` | `true` | Log allowed requests to the proxy journal |
+| `log_allowed` | `bool` | `false` | Log allowed requests to the proxy journal |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit |
 | `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container |
 
@@ -71,6 +71,7 @@ dns_servers:
 | `ports` | `list[string]` | `[]` | Published port specs — see [Ports](#ports) below |
 | `podman_secrets` | `list[string]` | `[]` | [Podman secret](https://docs.podman.io/en/latest/markdown/podman-secret.1.html) names (injected as env vars) |
 | `user` | `string` | `"1000:1000"` | UID:GID to run as. Set to `""` to use the image default. See [Podman `--user`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
+| `userns` | `string` | `""` | User namespace mode (e.g. `"keep-id"`). See [Podman `--userns`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `memory` | `string` | *(none)* | Memory limit (e.g. `"4g"`). See [Podman `--memory`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `cpus` | `string` | *(none)* | CPU limit (e.g. `"2.0"`). See [Podman `--cpus`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `nested_containers` | `bool` | `false` | Enable podman-in-podman support. See [Nested containers](#nested-containers) below |
@@ -82,7 +83,7 @@ Publish container ports to the host. Each entry is a string in one of two format
 | Format | Example | Description |
 |--------|---------|-------------|
 | `"BIND:HOST_PORT:CONTAINER_PORT"` | `"127.0.0.1:8080:80"` | Bind to a specific interface |
-| `"HOST_PORT:CONTAINER_PORT"` | `"8080:80"` | Bind to all interfaces (`0.0.0.0`) |
+| `"HOST_PORT:CONTAINER_PORT"` | `"8080:80"` | Bind to localhost (`127.0.0.1`) |
 
 Ports must be integers between 1 and 65535. The three-part form with an explicit bind address is recommended — binding to `127.0.0.1` ensures the port is only accessible from the host, not from the network.
 
@@ -95,7 +96,7 @@ container:
     # Bind to all interfaces (accessible from LAN)
     - "0.0.0.0:3000:3000"
 
-    # Short form (binds to all interfaces)
+    # Short form (binds to 127.0.0.1)
     - "9090:9090"
 ```
 
@@ -112,7 +113,7 @@ Enabling this option automatically:
 - Creates a persistent storage volume for inner podman state
 - Bind-mounts a Docker CLI shim and podman config files
 
-The nested-containers base image must be built first with `./build.sh` from the scaffold directory. See the [NanoClaw guide](nanoclaw.md) for a complete walkthrough.
+The nested-containers base image must be built first with `./build.sh` from the scaffold directory. See the [NanoClaw guide](../src/agentcage/scaffolds/nanoclaw/README.md) for a complete walkthrough.
 
 ```yaml
 container:
@@ -146,7 +147,7 @@ These settings are nested under `container:` in the config file.
 |---------|------|---------|-------------|
 | `restart` | `string` | `"on-failure"` | Systemd restart policy: `"no"`, `"on-failure"`, `"always"` |
 | `restart_sec` | `int` | `10` | Seconds to wait before restart |
-| `timeout_start_sec` | `int` | *(none)* | Systemd `TimeoutStartSec` |
+| `timeout_start_sec` | `int` | `120` | Systemd `TimeoutStartSec` |
 | `timeout_stop_sec` | `int` | `30` | Systemd `TimeoutStopSec` |
 
 ---
@@ -288,20 +289,20 @@ Detected secrets always result in a **block** action (403 response). Use `allow_
 |---------|-------|---------------|
 | `openai_key` | `sk-proj-[a-zA-Z0-9]{20,}` | `sk-proj-abc123...` |
 | `anthropic_key` | `sk-ant-[a-zA-Z0-9\-]{20,}` | `sk-ant-abc123...` |
-| `aws_access_key` | `AKIA[0-9A-Z]{16}` | `AKIAIOSFODNN7EXAMPLE` |
-| `github_token` | `gh[ps]_[A-Za-z0-9_]{36,}` | `ghp_abc123...` |
-| `github_pat` | `github_pat_[A-Za-z0-9_]{22,}` | `github_pat_abc123...` |
+| `aws_access_key` | `AKIA[A-Z2-7]{16}` | `AKIAIOSFODNN7EXAMPLE` |
+| `github_token` | `gh[ps]_[A-Za-z0-9]{36}` | `ghp_abc123...` |
+| `github_pat` | `github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}` | `github_pat_abc123...` |
 | `google_api_key` | `AIza[0-9A-Za-z\-_]{35}` | `AIzaSyA...` |
 | `slack_token` | `xox[bpors]-[0-9]{10,}-[a-zA-Z0-9-]+` | `xoxb-123456...` |
 | `stripe_key` | `[sr]k_(live\|test)_[0-9a-zA-Z]{24,}` | `sk_live_abc123...` |
 | `private_key` | `-----BEGIN[ A-Z]*PRIVATE KEY-----` | PEM private key headers |
 | `gitlab_token` | `glpat-[A-Za-z0-9\-_]{20,}` | `glpat-abc123...` |
-| `huggingface_token` | `hf_[A-Za-z0-9]{20,}` | `hf_abc123...` |
+| `huggingface_token` | `hf_[a-zA-Z]{34}` | `hf_abc123...` |
 | `databricks_token` | `dapi[0-9a-f]{32}` | `dapi0123456789abcdef...` |
 | `azure_jwt` | `eyJ[A-Za-z0-9_-]{50,}\.eyJ[A-Za-z0-9_-]{50,}` | `eyJhbG...eyJpc...` |
 | `openrouter_key` | `sk-or-v1-[a-f0-9]{64}` | `sk-or-v1-abc123...` |
-| `perplexity_key` | `pplx-[a-f0-9]{64}` | `pplx-abc123...` |
-| `brave_api_key` | `BSA[a-zA-Z0-9]{20,}` | `BSAabc123...` |
+| `perplexity_key` | `pplx-[a-zA-Z0-9]{48}` | `pplx-abc123...` |
+| `brave_api_key` | `BSAI[a-zA-Z0-9_-]{20,255}` | `BSAabc123...` |
 | `telegram_bot_token` | `[0-9]{8,10}:[A-Za-z0-9_-]{35}` | `123456789:AAAA...` |
 | `discord_bot_token` | `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}` | `MAAA...BBBB.CCCC...` |
 | `firecrawl_key` | `fc-[a-zA-Z0-9]{32,}` | `fc-abc123...` |
@@ -552,6 +553,6 @@ Every inspector receives an `InspectionContext` with pre-computed data:
 | `inspector` | `str` | *(required)* | Inspector name |
 | `action` | `str` | `"block"` | `"block"` or `"flag"` |
 | `reason` | `str` | `""` | Human-readable explanation |
-| `severity` | `str` | `"medium"` | `"info"`, `"low"`, `"medium"`, `"high"`, `"critical"` |
+| `severity` | `str` | `"warning"` | `"debug"`, `"info"`, `"warning"`, `"error"`, `"critical"` |
 | `score` | `float` | `0.0` | Numeric score (for anomaly-scoring use cases) |
 | `metadata` | `dict` | `{}` | Arbitrary inspector-specific data |

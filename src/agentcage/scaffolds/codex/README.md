@@ -39,21 +39,21 @@ agentcage init myagent --scaffold codex
 
 This creates `cage.yaml` with sensible defaults and auto-builds the `agentcage-scaffold-codex:latest` image. Review the config and adjust as needed.
 
-#### 2. Set secrets
-
-```bash
-agentcage secret set myagent OPENAI_API_KEY
-```
-
-The scaffold uses `secret_injection` for the API key. Codex sends the placeholder `{{OPENAI_API_KEY}}` in API calls, and the proxy swaps it for the real value when forwarding to `openai.com`. No real secret enters the cage.
-
-#### 3. Create the cage
+#### 2. Create the cage
 
 ```bash
 agentcage cage create -c cage.yaml
 ```
 
 This builds the proxy and DNS images, generates systemd quadlet files, and starts all three services (cage, proxy, dns).
+
+#### 3. Set secrets
+
+```bash
+agentcage secret set myagent OPENAI_API_KEY
+```
+
+The scaffold uses `secret_injection` for the API key. Codex sends the placeholder `{{OPENAI_API_KEY}}` in API calls, and the proxy swaps it for the real value when forwarding to `openai.com`. No real secret enters the cage.
 
 #### 4. Start a session
 
@@ -90,22 +90,7 @@ With `lifecycle: service`, systemd auto-restarts the container on failure and st
 
 ## Managing your cage
 
-```bash
-# Edit the config in $EDITOR, validate, and reload if running
-agentcage cage edit myagent
-
-# Rebuild and restart (after config or image changes)
-agentcage cage update myagent
-
-# Restart without rebuilding
-agentcage cage reload myagent
-
-# View proxy audit logs
-agentcage cage audit myagent
-
-# Destroy the cage (stops containers, removes quadlets and state)
-agentcage cage destroy myagent
-```
+See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
 
 ## Configuration
 
@@ -141,12 +126,3 @@ The scaffold organizes domains into tiers:
 
 Subdomains are matched automatically -- adding `openai.com` also allows `api.openai.com`. Sibling domains are not matched.
 
-## Troubleshooting
-
-**403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `agentcage cage logs myagent -s proxy` -- the JSON log entries include a `reason` field explaining the block.
-
-**Certificate errors**: The mitmproxy CA certificate is shared via a named volume. If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. Restart the cage: `agentcage cage reload myagent`.
-
-**DNS resolution failures**: Verify the DNS sidecar is running: `agentcage cage list`. If you are using custom `dns_servers`, make sure those servers are reachable from the host.
-
-**File permission errors in /workspace**: The scaffold uses `userns: "keep-id"` to map your host UID into the container. If you still see permission issues, check that the mounted directories are owned by your user on the host.

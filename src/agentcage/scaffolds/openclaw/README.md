@@ -6,7 +6,7 @@ For the full list of configuration options, see the [Configuration Reference](..
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../../README.md#prerequisites) for your platform
+- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../../README.md#install) for your platform
 - An OpenClaw container image (`ghcr.io/openclaw/openclaw:latest` or custom-built)
 - An Anthropic API key (`ANTHROPIC_API_KEY`)
 
@@ -20,7 +20,15 @@ agentcage init myapp --scaffold openclaw
 
 This creates `cage.yaml` with sensible defaults: domain allowlist, secret injection, resource limits, and inline help. Review it and adjust as needed -- the comments explain each option.
 
-### 2. Set secrets
+### 2. Create the cage
+
+```bash
+agentcage cage create -c cage.yaml
+```
+
+This builds the proxy and DNS images, generates systemd quadlet files, and starts all three services (cage, proxy, dns). After startup, inline help is printed showing next steps.
+
+### 3. Set secrets
 
 ```bash
 # Anthropic API key (required)
@@ -36,14 +44,6 @@ agentcage secret set myapp OPENCLAW_GATEWAY_PASSWORD
 If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `cage.yaml`.
 
 > **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](../../docs/configuration.md#secret-injection-secret_injection) for details.
-
-### 3. Create the cage
-
-```bash
-agentcage cage create -c cage.yaml
-```
-
-This builds the proxy and DNS images, generates systemd quadlet files, and starts all three services (cage, proxy, dns). After startup, inline help is printed showing next steps.
 
 ### 4. Connect and pair your browser
 
@@ -80,22 +80,7 @@ agentcage cage logs myapp -s dns    # DNS sidecar
 
 ## Managing your cage
 
-```bash
-# Edit the config in $EDITOR, validate, and reload if running
-agentcage cage edit myapp
-
-# Rebuild and restart (after config or image changes)
-agentcage cage update myapp
-
-# Restart without rebuilding
-agentcage cage reload myapp
-
-# View proxy audit logs
-agentcage cage audit myapp
-
-# Destroy the cage (stops containers, removes quadlets and state)
-agentcage cage destroy myapp
-```
+See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
 
 ## Reverse proxy & device pairing
 
@@ -196,8 +181,3 @@ agentcage cage update myapp
 
 **Container fails to start / times out**: OpenClaw's Node.js gateway can take over 60 seconds to initialize. The scaffold config sets `timeout_start_sec: 120` to accommodate this. Check logs with `agentcage cage logs myapp`.
 
-**403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `agentcage cage logs myapp -s proxy` -- the JSON log entries include a `reason` field explaining the block.
-
-**Certificate errors**: The mitmproxy CA certificate is shared via a named volume (see [Certificate Sharing](../../docs/architecture.md#certificate-sharing)). If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. The generated quadlet files include a start-up check that waits up to 30 seconds for the certificate. If it still fails, restart the cage: `agentcage cage reload myapp`.
-
-**DNS resolution failures**: Verify the DNS sidecar is running: `agentcage cage list`. If you are using custom `dns_servers` (e.g., Tailscale MagicDNS), make sure those servers are reachable from the host.

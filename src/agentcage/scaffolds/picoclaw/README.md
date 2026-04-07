@@ -19,21 +19,21 @@ agentcage init myapp --scaffold picoclaw
 
 This creates `cage.yaml` with sensible defaults and provisions `~/.picoclaw/config.json` with the Anthropic API key placeholder. The scaffold also auto-builds the `picoclaw:latest` image from source. Review the config and adjust as needed.
 
-### 2. Set secrets
-
-```bash
-agentcage secret set myapp ANTHROPIC_API_KEY
-```
-
-The config uses `secret_injection` for the API key. The `config.json` contains the placeholder `{{ANTHROPIC_API_KEY}}`. PicoClaw sends this placeholder in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
-
-### 3. Create the cage
+### 2. Create the cage
 
 ```bash
 agentcage cage create -c cage.yaml
 ```
 
 This builds the proxy and DNS images, generates systemd quadlet files, and starts all three services (cage, proxy, dns).
+
+### 3. Set secrets
+
+```bash
+agentcage secret set myapp ANTHROPIC_API_KEY
+```
+
+The config uses `secret_injection` for the API key. The `config.json` contains the placeholder `{{ANTHROPIC_API_KEY}}`. PicoClaw sends this placeholder in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
 
 ### 4. Verify
 
@@ -53,22 +53,7 @@ Open `http://localhost:18790` in your browser to access the PicoClaw web UI.
 
 ## Managing your cage
 
-```bash
-# Edit the config in $EDITOR, validate, and reload if running
-agentcage cage edit myapp
-
-# Rebuild and restart (after config or image changes)
-agentcage cage update myapp
-
-# Restart without rebuilding
-agentcage cage reload myapp
-
-# View proxy audit logs
-agentcage cage audit myapp
-
-# Destroy the cage (stops containers, removes quadlets and state)
-agentcage cage destroy myapp
-```
+See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
 
 ## Configuration
 
@@ -112,15 +97,9 @@ The provisioned `~/.picoclaw/config.json` is a starting point. Edit it to add mo
 
 ```bash
 $EDITOR ~/.picoclaw/config.json
-agentcage cage reload myapp    # pick up changes (bind-mounted read-only)
+agentcage cage restart myapp    # pick up changes (bind-mounted read-only)
 ```
 
 ## Troubleshooting
-
-**403 errors from the proxy**: A domain is not in your allowlist, or a secret pattern was detected in the request. Check proxy logs with `agentcage cage logs myapp -s proxy` -- the JSON log entries include a `reason` field explaining the block.
-
-**Certificate errors**: The mitmproxy CA certificate is shared via a named volume. If the proxy container hasn't finished generating it before the cage starts, you may see TLS errors. Restart the cage: `agentcage cage reload myapp`.
-
-**DNS resolution failures**: Verify the DNS sidecar is running: `agentcage cage list`. If you are using custom `dns_servers`, make sure those servers are reachable from the host.
 
 **PicoClaw web tools return errors**: PicoClaw's web tools (`web_fetch`, `web_search`) use `PICOCLAW_TOOLS_WEB_PROXY` to route through the proxy. This is pre-configured in the scaffold. If web tools fail, check that the target domains are in the allowlist.
