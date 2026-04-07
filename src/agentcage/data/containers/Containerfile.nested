@@ -1,4 +1,5 @@
-FROM docker.io/node:22-slim
+# update-from: docker.io/node:22-slim
+FROM docker.io/node@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         podman \
