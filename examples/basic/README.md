@@ -37,7 +37,7 @@ agentcage cage destroy basic
 ## E2E test
 
 ```bash
-bash tests/e2e_basic.sh
+bash tests/e2e/run.sh
 ```
 
 See [Configuration Reference](../../docs/configuration.md) for all settings.

@@ -184,11 +184,11 @@ Inner containers default to `--network none` (configured via `containers.conf`),
 
 A persistent named volume (`agentcage-podman-<name>`) stores inner podman's image cache and container state at `/var/lib/containers`, so pulled images survive cage restarts.
 
-For the base image, security trade-offs, and setup, see the [NanoClaw guide](nanoclaw.md).
+For the base image, security trade-offs, and setup, see the [NanoClaw guide](../src/agentcage/scaffolds/nanoclaw/README.md).
 
 ## Generated Files
 
-The `generate` command produces 5 quadlet files in `<name>-quadlets/` (6 when `nested_containers` is enabled):
+The `cage create` command produces 5 quadlet files in `<name>-quadlets/` (6 when `nested_containers` is enabled):
 
 | File | Role |
 |------|------|

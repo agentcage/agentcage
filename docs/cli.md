@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has top-level **`run`** and **`init`** commands, and three command groups: **`cage`** (manage cages), **`secret`** (manage cage-scoped secrets), and **`domain`** (manage cage domain filters).
+The CLI has top-level **`run`**, **`init`**, **`doctor`**, and **`update`** commands, and four command groups: **`cage`**, **`secret`**, **`domain`**, and **`scaffold`**.
 
 ```
 agentcage run SCAFFOLD [options]
@@ -64,6 +64,9 @@ Creates a sandboxed cage from a scaffold, opens an interactive session, and stop
 | `--project` | path | current directory | Project directory to mount as `/workspace` |
 | `--name` | string | auto-generated | Override the auto-generated cage name |
 | `-i, --interactive-domains` | flag | | Prompt to add blocked domains to the allowlist in real-time |
+| `-s, --set-secret` | repeatable string | | Set a secret (`KEY=VALUE` or `KEY` to prompt). Passed to the cage at creation |
+| `-v, --verbose` | flag | | Enable verbose output |
+| `--isolation` | choice: `container`/`vm` | `container` | Isolation backend |
 
 ### Examples
 
@@ -145,11 +148,11 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 agentcage cage create -c <config>
 ```
 
-Creates a new cage from a config file. This single command:
+Creates a new cage from a config file. Use `-s KEY=VALUE` (repeatable) to set secrets inline during creation. This single command:
 
 1. Validates the config
 2. Checks that all required secrets exist in Podman
-3. Saves deployment state to `~/.config/agentcage/deployments/<name>/cage.yaml`
+3. Saves deployment state to `~/.config/agentcage/cages/<name>/cage.yaml`
 4. Builds the proxy and DNS container images
 5. Generates and installs 5 quadlet files into `~/.config/containers/systemd/`
 6. Reloads systemd and starts the cage
@@ -366,6 +369,7 @@ Audit entries are read from the `{name}-proxy` systemd unit in container mode, o
 | `-f, --follow` | flag | Stream new entries in real time |
 | `--json` | flag | Output as JSON lines (one per entry) |
 | `--summary` | flag | Show aggregated statistics (incompatible with `--follow`) |
+| `--direction` | repeatable choice: `inbound`/`outbound` | Filter by traffic direction |
 | `--no-color` | flag | Disable colored output |
 
 ### Examples
@@ -595,11 +599,11 @@ Mode is one of:
 agentcage domain add <name> <domain>
 ```
 
-Adds a domain to a cage's filter list. Updates both the stored config and the proxy config on disk. If the cage is currently running, all containers are automatically restarted so the change takes effect immediately.
+Adds a domain to a cage's filter list. Updates both the stored config and the proxy config on disk. If the cage is currently running, the proxy detects the config change and hot-reloads.
 
 ```bash
 agentcage domain add myapp api.openai.com
-# Added 'api.openai.com' to cage 'myapp'. Cage reloaded.
+# Added 'api.openai.com' to cage 'myapp'. Proxy updated.
 ```
 
 Subdomain matching is built in -- adding `anthropic.com` also allows `api.anthropic.com`. Duplicates are detected and skipped.
@@ -612,11 +616,11 @@ If no `domains` section exists in the stored config, one is created with mode `a
 agentcage domain rm <name> <domain>
 ```
 
-Removes a domain from a cage's filter list. Like `domain add`, updates stored config and proxy config, and auto-reloads the cage if running.
+Removes a domain from a cage's filter list. Like `domain add`, updates stored config and proxy config, and hot-reloads the proxy if running.
 
 ```bash
 agentcage domain rm myapp api.openai.com
-# Removed 'api.openai.com' from cage 'myapp'. Cage reloaded.
+# Removed 'api.openai.com' from cage 'myapp'. Proxy updated.
 ```
 
 Fails if the domain is not in the list.
@@ -644,3 +648,40 @@ eval "$(_AGENTCAGE_COMPLETE=zsh_source agentcage)"
 # Fish (~/.config/fish/config.fish)
 eval "$(_AGENTCAGE_COMPLETE=fish_source agentcage)"
 ```
+
+---
+
+## `doctor` -- Check system prerequisites
+
+```
+agentcage doctor
+```
+
+Checks that all required tools are installed and properly configured (Podman, systemd, Lima, etc.). Reports pass/fail for each prerequisite.
+
+---
+
+## `update` -- Self-update
+
+```
+agentcage update
+```
+
+Updates agentcage to the latest version.
+
+---
+
+## `scaffold` -- Manage scaffold templates
+
+| Command | Description |
+|---|---|
+| `scaffold list` | List available scaffolds (built-in, user, and project-local) |
+| `scaffold show NAME` | Show scaffold details and config template |
+| `scaffold create NAME` | Create a new user scaffold |
+| `scaffold edit NAME` | Edit a user scaffold |
+| `scaffold delete NAME` | Delete a user scaffold |
+| `scaffold export NAME` | Export a scaffold as a directory |
+
+Scaffolds are resolved in order: project-local (`.agentcage/scaffolds/`) → user (`~/.config/agentcage/scaffolds/`) → built-in.
+
+**Aliases:** `ls` → `list`, `rm` → `delete`

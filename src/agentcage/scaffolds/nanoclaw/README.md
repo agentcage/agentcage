@@ -4,7 +4,7 @@
 
 All HTTP traffic from the cage (and from inner agent containers) passes through agentcage's inspecting proxy for domain filtering, secret leak detection, and payload analysis. Inner agent containers are patched to use `--network host` so they inherit the cage's proxy, and proxy/cert environment variables are forwarded automatically.
 
-For the full list of configuration options, see the agentcage configuration reference.
+For the full list of configuration options, see the [Configuration Reference](../../docs/configuration.md).
 
 ## Architecture
 
@@ -56,21 +56,21 @@ podman build -t agentcage-nested -f Containerfile.nested .
 - `agentcage-scaffold-nanoclaw` -- extends the base with NanoClaw cloned, built, and patched so inner containers use `--network host`, forward proxy/cert env vars, and mount `/certs` and `/agentcage` volumes
 - `nanoclaw-agent` -- NanoClaw's agent container (claude-code, chromium, agent-runner)
 
-### 3. Set secrets
-
-```bash
-agentcage secret set myapp ANTHROPIC_API_KEY
-```
-
-The config uses `secret_injection` for the API key. The cage image has a `.env` file containing the placeholder `{{ANTHROPIC_API_KEY}}`. NanoClaw reads this and passes it to agent containers via stdin. The proxy swaps the placeholder for the real value when forwarding to `anthropic.com`. No real secret ever enters the cage.
-
-### 4. Create the cage
+### 3. Create the cage
 
 ```bash
 agentcage cage create -c cage.yaml
 ```
 
 This builds the proxy and DNS images, generates systemd quadlet files, and starts all services.
+
+### 4. Set secrets
+
+```bash
+agentcage secret set myapp ANTHROPIC_API_KEY
+```
+
+The config uses `secret_injection` for the API key. The cage image has a `.env` file containing the placeholder `{{ANTHROPIC_API_KEY}}`. NanoClaw reads this and passes it to agent containers via stdin. The proxy swaps the placeholder for the real value when forwarding to `anthropic.com`. No real secret ever enters the cage.
 
 ### 5. Preload the agent image
 
@@ -170,26 +170,7 @@ See [Security trade-offs](#security-trade-offs) for what this means for your thr
 
 ## Managing your cage
 
-```bash
-# Edit the config in $EDITOR, validate, and reload if running
-agentcage cage edit myapp
-
-# Rebuild and restart (after config or image changes)
-agentcage cage update myapp
-
-# Restart without rebuilding
-agentcage cage reload myapp
-
-# View proxy audit logs
-agentcage cage audit myapp
-
-# View logs
-agentcage cage logs myapp           # cage container
-agentcage cage logs myapp -s proxy  # mitmproxy (traffic inspection)
-
-# Destroy the cage (stops containers, removes quadlets and state)
-agentcage cage destroy myapp
-```
+See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
 
 ## Domain allowlist
 
@@ -271,4 +252,3 @@ See [Security & Threat Model](../../docs/security.md) for the full threat model 
 
 **Certificate errors in inner containers**: The patched container-runner forwards `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE` and mounts `/certs` into inner containers. If you still see certificate errors, check that the proxy's CA cert exists at `/certs/mitmproxy-ca-cert.pem` inside the cage.
 
-**DNS resolution failures**: Verify the DNS sidecar is running: `agentcage cage list`. Inner containers with `--network host` use the cage's DNS configuration.

@@ -38,6 +38,8 @@ The entropy inspector's `_check_url_params()` explicitly parses `parse_qs(parsed
 
 **Mitigation:** Add `_check_url_path()` to the entropy inspector that computes entropy on each `/`-delimited path segment longer than `url_min_value_bytes`.
 
+> **Status: Resolved** (v0.3.0) — Entropy inspector now checks URL path segments.
+
 ---
 
 ### HIGH — H2: Rate limiting disabled by default
@@ -55,6 +57,8 @@ The multi-request evasion limitation documented in `security.md` ("An agent coul
 **Impact:** Unbounded exfiltration throughput through any allowed domain via splitting, URL-path encoding, or header stuffing.
 
 **Mitigation:** Enable a default rate limit (e.g., 10 req/s, burst 50). The operator can raise it for high-throughput workloads. Document that disabling rate limiting significantly weakens multi-request evasion defenses.
+
+> **Status: Resolved** (v0.3.0) — Rate limiting now defaults to 10 req/s, burst 50.
 
 ---
 
@@ -74,6 +78,8 @@ Fail-closed design means a hung proxy = no connectivity (not unfiltered access),
 This is speculative and low-probability, but the unbounded quantifiers have no upside.
 
 **Mitigation:** Add upper bounds to all regex quantifiers (e.g., `{20,200}`). The body-size inspector already limits total body size, but runs independently — consider checking body size before regex scanning within the secrets inspector itself.
+
+> **Status: Resolved** (v0.3.0) — All secret detection regex patterns now have upper-bounded quantifiers.
 
 ---
 
@@ -214,25 +220,25 @@ These design choices significantly raise the bar for agent exfiltration:
 
 ### P0 — Closes concrete exfiltration channels
 
-| ID | Finding | Fix | Files |
-|----|---------|-----|-------|
-| H1 | URL path entropy bypass | Add `_check_url_path()` — entropy-check each path segment above a length threshold | `inspectors/entropy.py` |
-| H2 | Rate limiting off by default | Default to 10 req/s burst 50; document opt-out | `addon.py`, `docs/configuration.md` |
+| ID | Finding | Fix | Files | Status |
+|----|---------|-----|-------|--------|
+| H1 | URL path entropy bypass | Add `_check_url_path()` — entropy-check each path segment above a length threshold | `inspectors/entropy.py` | Resolved (v0.3.0) |
+| H2 | Rate limiting off by default | Default to 10 req/s burst 50; document opt-out | `addon.py`, `docs/configuration.md` | Resolved (v0.3.0) |
 
 ### P1 — Hardens existing inspection
 
-| ID | Finding | Fix | Files |
-|----|---------|-----|-------|
-| H3 | Regex DoS / unbounded quantifiers | Add upper bounds (`{20,200}`) to all secret patterns | `inspectors/secrets.py` |
-| M1 | URL-safe base64 evasion | Extend `_BASE64_RE` to include `-_` | `inspectors/content_type.py` |
-| M3 | Entropy gap with non-text CT | Run base64 blob regex on all content types, not just text-like | `inspectors/content_type.py` |
-| M4 | Header scanning via `str()` | Iterate and scan individual header values | `inspectors/secrets.py` |
+| ID | Finding | Fix | Files | Status |
+|----|---------|-----|-------|--------|
+| H3 | Regex DoS / unbounded quantifiers | Add upper bounds (`{20,200}`) to all secret patterns | `inspectors/secrets.py` | Resolved (v0.3.0) |
+| M1 | URL-safe base64 evasion | Extend `_BASE64_RE` to include `-_` | `inspectors/content_type.py` | Open |
+| M3 | Entropy gap with non-text CT | Run base64 blob regex on all content types, not just text-like | `inspectors/content_type.py` | Open |
+| M4 | Header scanning via `str()` | Iterate and scan individual header values | `inspectors/secrets.py` | Open |
 
 ### P2 — Defense in depth
 
-| ID | Finding | Fix | Files |
-|----|---------|-----|-------|
-| M2 | Binary WS text evasion | Block or flag binary frames above entropy threshold regardless of text pattern match | `addon.py` |
-| M5 | mitmproxy as attack surface | Add seccomp profile to proxy container; document update cadence | `templates/proxy.container.j2`, docs |
-| L1 | Response redaction encoding gap | Scan for URL-encoded and base64 variants during redaction | `secret_injector.py` |
-| L2 | vmbase tag pinning | Pin to `@sha256:...` digest | `Containerfile.vmbase` |
+| ID | Finding | Fix | Files | Status |
+|----|---------|-----|-------|--------|
+| M2 | Binary WS text evasion | Block or flag binary frames above entropy threshold regardless of text pattern match | `addon.py` | Open |
+| M5 | mitmproxy as attack surface | Add seccomp profile to proxy container; document update cadence | `templates/proxy.container.j2`, docs | Open |
+| L1 | Response redaction encoding gap | Scan for URL-encoded and base64 variants during redaction | `secret_injector.py` | Open |
+| L2 | vmbase tag pinning | Pin to `@sha256:...` digest | `Containerfile.vmbase` | Open |
