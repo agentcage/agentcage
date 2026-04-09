@@ -32,6 +32,9 @@ repatch_mock "$CAGE" httpbin.org example.com
 # on the cage; it can pass while the upstream chain is still broken.
 if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org example.com; then
   e2e_fail "1.0" "Data path readiness" "proxy → mock chain not ready within 120s"
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+  echo "        proxy chain probe: $BASE/fetch → ${CODE:-000}" >&2
+  dump_cage_diagnostics "$CAGE" "1.0 readiness failure"
   print_results; exit 1
 fi
 

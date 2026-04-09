@@ -207,6 +207,12 @@ dump_cage_diagnostics() {
   podman logs --tail 25 "${cage}-proxy" 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [proxy systemd journal (last 25 lines)]" >&2
   journalctl --user -u "${cage}-proxy.service" -n 25 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy /etc/hosts]" >&2
+  podman exec "${cage}-proxy" cat /etc/hosts 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy resolved httpbin.org]" >&2
+  podman exec "${cage}-proxy" getent hosts httpbin.org 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [mock container]" >&2
+  podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" 2>&1 >&2 || true
   echo "        ── end $tag ──" >&2
 }
 
