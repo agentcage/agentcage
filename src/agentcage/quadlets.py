@@ -224,8 +224,16 @@ def generate_quadlets(
     # Build cage placeholder list: (env_name, placeholder_value)
     cage_placeholders = [(r.env, r.placeholder) for r in config.secret_injection]
 
-    # Proxy secrets: env names from secret_injection rules
-    proxy_secrets = [r.env for r in config.secret_injection]
+    # Proxy secrets: split by backend for quadlet generation
+    proxy_secrets = []      # Secret= directives (podman store)
+    creds_secrets = []      # systemd-creds encrypted blobs (ExecStartPre decrypt)
+    for r in config.secret_injection:
+        scheme = (r.source or "").partition(":")[0]
+        if scheme == "systemd-creds":
+            creds_secrets.append(r.env)
+            proxy_secrets.append(r.env)  # still delivered via Secret= after decrypt
+        else:
+            proxy_secrets.append(r.env)
 
     # Parse ports into structured forwards for proxy reverse mode
     inbound_forwards = []
@@ -287,11 +295,17 @@ def generate_quadlets(
         _passthrough_regex(config.domains.passthrough)
         if config.domains.passthrough else ""
     )
+    # Compute creds dir for systemd-creds ExecStartPre decrypt
+    from agentcage import state as _state_mod
+    creds_dir = str(_state_mod.deployment_dir(deploy_name or name) / "creds")
+
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
         config_host_path=config_host_path,
         proxy_secrets=proxy_secrets,
         deploy_name=deploy_name,
+        creds_secrets=creds_secrets,
+        creds_dir=creds_dir,
         log_proxy_connections=config.logging.proxy_connections,
         dns_servers=config.dns_servers,
         inbound_forwards=inbound_forwards,

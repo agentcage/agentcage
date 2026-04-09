@@ -36,9 +36,28 @@ def expected_secrets(cfg) -> list[str]:
 
 
 def check_secrets(podman: Podman, deploy_name: str, cfg) -> list[str]:
-    """Return list of missing secrets for a cage."""
+    """Return list of missing secrets for a cage.
+
+    Secrets with a configured ``source`` are checked differently:
+      env:/cmd:       — resolved at start time, not stored
+      systemd-creds:  — .cred file must exist in state dir
+      podman:/empty   — must exist in Podman store
+    """
+    from agentcage import state as _state
+
     missing = []
     for key in expected_secrets(cfg):
+        rule = next((r for r in cfg.secret_injection if r.env == key), None)
+        if rule and rule.source:
+            scheme = rule.source.partition(":")[0]
+            if scheme in ("env", "cmd"):
+                continue  # resolved at start time
+            if scheme == "systemd-creds":
+                cred_file = _state.deployment_dir(deploy_name) / "creds" / f"{key}.cred"
+                if not cred_file.exists():
+                    missing.append(key)
+                continue
+        # Legacy: check podman store
         if not podman.secret_exists(f"{deploy_name}.{key}"):
             missing.append(key)
     return missing

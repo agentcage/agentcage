@@ -16,6 +16,7 @@ class SecretInjectionRule:
     env: str
     placeholder: str
     inject_to: list[str] = field(default_factory=list)
+    source: str = ""
 
 
 @dataclass
@@ -260,15 +261,20 @@ def load_config(path: str) -> Config:
     si_cfg = raw.get("secret_injection") or []
     si_rules = si_cfg.get("rules", []) if isinstance(si_cfg, dict) else si_cfg
     injected_names = set()
+    from agentcage.secret_resolver import validate_source
+
     for entry in si_rules:
         env_name = entry.get("env", "")
         placeholder = entry.get("placeholder", "")
         if env_name and placeholder:
+            source = entry.get("source", "")
+            validate_source(source)
             injected_names.add(env_name)
             cfg.secret_injection.append(SecretInjectionRule(
                 env=env_name,
                 placeholder=placeholder,
                 inject_to=list(entry.get("inject_to") or []),
+                source=source,
             ))
 
     # Remove injected secrets from podman_secrets and env — they are handled
