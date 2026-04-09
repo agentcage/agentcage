@@ -2166,6 +2166,11 @@ def secret_set(name: str, key: str):
     if use_creds:
         try:
             encrypt_secret(key, value, state.deployment_dir(name))
+            # Remove any stale podman secret with the same name — the
+            # ExecStartPre in the quadlet will repopulate it from the
+            # encrypted blob at service start.
+            if podman.secret_exists(full_name):
+                podman.secret_remove(full_name)
             click.echo(f"Secret '{key}' encrypted with systemd-creds.")
         except ValueError as e:
             click.echo(f"error: {e}", err=True)

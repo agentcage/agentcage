@@ -403,6 +403,7 @@ def execute(
             podman, cfg, cage_name,
             state.deployment_dir(cage_name),
             skip_keys=provided_keys,
+            strict=False,  # agentcage run has its own cleanup on failure
         )
 
         # Strip secret injection rules for secrets not provided —

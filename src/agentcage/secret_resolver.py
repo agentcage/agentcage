@@ -141,14 +141,18 @@ def resolve(source: str, env_name: str, state_dir: Path) -> ResolveResult:
 
 
 def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
-                         skip_keys: set[str] | None = None) -> set[str]:
+                         skip_keys: set[str] | None = None,
+                         strict: bool = True) -> set[str]:
     """Resolve env:/cmd:/systemd-creds: sources into Podman secrets.
 
     Returns the set of env names that were resolved (caller should add
     these to provided_keys so they survive the rule-strip filter).
 
-    Errors during resolution are printed as warnings but don't abort
-    the caller — failed secrets just don't get created.
+    ``strict=True`` (default): raise ValueError on resolution failure so
+    callers like ``cage create`` / ``cage start`` abort before the
+    systemd unit is launched with a missing secret. ``strict=False``:
+    print warnings and continue — useful for ``agentcage run`` which
+    has its own error handling and may want a best-effort attempt.
     """
     import click
 
@@ -161,6 +165,10 @@ def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
         try:
             result = resolve(source, rule.env, state_dir)
         except ValueError as e:
+            if strict:
+                raise ValueError(
+                    f"failed to resolve secret '{rule.env}': {e}"
+                ) from e
             click.echo(f"warning: failed to resolve {rule.env}: {e}", err=True)
             continue
         if result.action == ResolveAction.RESOLVED:
@@ -175,15 +183,25 @@ def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
 
 
 def encrypt_secret(name: str, value: str, state_dir: Path) -> Path:
-    """Encrypt a secret with systemd-creds and store the encrypted blob."""
+    """Encrypt a secret with systemd-creds and store the encrypted blob.
+
+    Uses a 30s timeout because TPM2 operations can occasionally block
+    on hardware (slow TPM chip, contention with another process).
+    """
     creds_dir = state_dir / "creds"
     creds_dir.mkdir(parents=True, exist_ok=True)
     out_path = creds_dir / f"{name}.cred"
 
-    r = subprocess.run(
-        ["systemd-creds", "encrypt", "--name", name, "-", str(out_path)],
-        input=value, text=True, capture_output=True,
-    )
+    try:
+        r = subprocess.run(
+            ["systemd-creds", "encrypt", "--name", name, "-", str(out_path)],
+            input=value, text=True, capture_output=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise ValueError(
+            "systemd-creds encrypt timed out after 30s "
+            "(TPM2 may be unavailable or contended)"
+        )
     if r.returncode != 0:
         raise ValueError(
             f"systemd-creds encrypt failed: {r.stderr.strip()}"

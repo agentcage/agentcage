@@ -224,16 +224,24 @@ def generate_quadlets(
     # Build cage placeholder list: (env_name, placeholder_value)
     cage_placeholders = [(r.env, r.placeholder) for r in config.secret_injection]
 
-    # Proxy secrets: split by backend for quadlet generation
-    proxy_secrets = []      # Secret= directives (podman store)
-    creds_secrets = []      # systemd-creds encrypted blobs (ExecStartPre decrypt)
+    # Proxy secrets: split by backend for quadlet generation.
+    # A rule gets a decrypt ExecStartPre if:
+    #   (a) its source scheme is "systemd-creds:" (explicit opt-in), OR
+    #   (b) a .cred file exists in the state dir (auto-encrypted via
+    #       `agentcage secret set` on a systemd-creds default host).
+    # Either way the rule still needs the podman Secret= directive — the
+    # ExecStartPre decrypts the blob and populates the podman store before
+    # the proxy container starts.
+    from agentcage import state as _state_mod
+    _state_creds_dir = _state_mod.deployment_dir(deploy_name or name) / "creds"
+    proxy_secrets = []
+    creds_secrets = []
     for r in config.secret_injection:
         scheme = (r.source or "").partition(":")[0]
-        if scheme == "systemd-creds":
+        has_cred_file = (_state_creds_dir / f"{r.env}.cred").exists()
+        if scheme == "systemd-creds" or has_cred_file:
             creds_secrets.append(r.env)
-            proxy_secrets.append(r.env)  # still delivered via Secret= after decrypt
-        else:
-            proxy_secrets.append(r.env)
+        proxy_secrets.append(r.env)
 
     # Parse ports into structured forwards for proxy reverse mode
     inbound_forwards = []
@@ -295,9 +303,7 @@ def generate_quadlets(
         _passthrough_regex(config.domains.passthrough)
         if config.domains.passthrough else ""
     )
-    # Compute creds dir for systemd-creds ExecStartPre decrypt
-    from agentcage import state as _state_mod
-    creds_dir = str(_state_mod.deployment_dir(deploy_name or name) / "creds")
+    creds_dir = str(_state_creds_dir)
 
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,

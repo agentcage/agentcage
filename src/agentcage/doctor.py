@@ -223,7 +223,7 @@ def check_disk_space() -> CheckResult:
 def _check_secret_backend() -> CheckResult:
     """Report the detected secret storage backend."""
     from agentcage.secret_resolver import (
-        detect_default_backend, _systemd_version, _systemd_creds_usable,
+        detect_default_backend, _systemd_version,
     )
 
     backend = detect_default_backend()

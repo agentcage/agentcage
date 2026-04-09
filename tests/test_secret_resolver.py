@@ -15,6 +15,7 @@ from agentcage.secret_resolver import (
     detect_default_backend,
     encrypt_secret,
     resolve,
+    resolve_and_populate,
     validate_env_name,
     validate_source,
 )
@@ -179,6 +180,67 @@ class TestDetectDefaultBackend:
             with mock.patch("agentcage.secret_resolver._systemd_version", return_value=249):
                 assert detect_default_backend() == "podman"
         detect_default_backend.cache_clear()
+
+
+class _FakeRule:
+    def __init__(self, env, source=""):
+        self.env = env
+        self.source = source
+
+
+class _FakeCfg:
+    def __init__(self, rules):
+        self.secret_injection = rules
+
+
+class _FakePodman:
+    def __init__(self):
+        self.secrets: dict[str, str] = {}
+
+    def secret_exists(self, name):
+        return name in self.secrets
+
+    def secret_remove(self, name):
+        self.secrets.pop(name, None)
+
+    def secret_create(self, name, value):
+        self.secrets[name] = value
+
+
+class TestResolveAndPopulate:
+    def test_strict_raises_on_missing_env_var(self, tmp_path):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            cfg = _FakeCfg([_FakeRule("MY_KEY", "env:NOT_SET")])
+            with pytest.raises(ValueError, match="failed to resolve secret 'MY_KEY'"):
+                resolve_and_populate(_FakePodman(), cfg, "cage", tmp_path)
+
+    def test_lenient_warns_on_missing(self, tmp_path, capsys):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            cfg = _FakeCfg([_FakeRule("MY_KEY", "env:NOT_SET")])
+            resolved = resolve_and_populate(
+                _FakePodman(), cfg, "cage", tmp_path, strict=False,
+            )
+            assert resolved == set()
+            err = capsys.readouterr().err
+            assert "warning: failed to resolve MY_KEY" in err
+
+    def test_strict_populates_podman_on_success(self, tmp_path):
+        with mock.patch.dict(os.environ, {"FOO": "bar"}):
+            cfg = _FakeCfg([_FakeRule("MY_KEY", "env:FOO")])
+            pm = _FakePodman()
+            resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
+            assert resolved == {"MY_KEY"}
+            assert pm.secrets == {"cage.MY_KEY": "bar"}
+
+    def test_skip_keys_respected(self, tmp_path):
+        with mock.patch.dict(os.environ, {"FOO": "bar"}):
+            cfg = _FakeCfg([_FakeRule("MY_KEY", "env:FOO")])
+            pm = _FakePodman()
+            resolved = resolve_and_populate(
+                pm, cfg, "cage", tmp_path, skip_keys={"MY_KEY"},
+            )
+            assert resolved == set()
+            assert pm.secrets == {}
 
 
 class TestEncryptSecret:

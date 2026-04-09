@@ -40,7 +40,7 @@ Secret={{ secret }},type=env
 
 [Service]
 {% for cred in creds_secrets %}
-ExecStartPre=/bin/bash -c 'podman secret rm "{{ deploy_name }}.{{ cred }}" 2>/dev/null; systemd-creds decrypt "{{ creds_dir }}/{{ cred }}.cred" - | podman secret create "{{ deploy_name }}.{{ cred }}" -'
+ExecStartPre=/bin/bash -o pipefail -c 'podman secret rm "{{ deploy_name }}.{{ cred }}" 2>/dev/null || true; systemd-creds decrypt "{{ creds_dir }}/{{ cred }}.cred" - | podman secret create "{{ deploy_name }}.{{ cred }}" -'
 {% endfor %}
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 1000:1000 "$mp"'
 {% if capture_enabled %}

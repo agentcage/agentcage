@@ -189,11 +189,10 @@ secret_injection:
       - httpbin.org
     source: "systemd-creds:"
 YAML
-  agentcage cage create -c "$TMPYAML" "$CAGE_CREDS" >/dev/null 2>&1 || true
+  agentcage cage create -c "$TMPYAML" -s CREDS_KEY=creds-test-value >/dev/null 2>&1 || true
   register_cage "$CAGE_CREDS"
-  # Set secret (should encrypt with systemd-creds)
-  echo "creds-test-value" | agentcage secret set "$CAGE_CREDS" CREDS_KEY >/dev/null 2>&1
-  DEPLOY_DIR="$HOME/.local/share/agentcage/state/$CAGE_CREDS"
+  # State dir follows XDG_CONFIG_HOME (default: ~/.config/agentcage/cages/NAME)
+  DEPLOY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agentcage/cages/$CAGE_CREDS"
   if [ -f "$DEPLOY_DIR/creds/CREDS_KEY.cred" ]; then
     e2e_pass "3.12" "systemd-creds: secret encrypted to .cred file"
   else
