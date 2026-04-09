@@ -26,6 +26,14 @@ fi
 # Re-patch after proxy is fully up (ExecStartPost may have restarted it)
 repatch_mock "$CAGE" httpbin.org example.com
 
+# Verify the full data path (DNS → iptables → mitmproxy → /etc/hosts → mock)
+# is actually working before running assertions. wait_ready only checks GET /
+# on the cage; it can pass while the upstream chain is still broken.
+if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org example.com; then
+  e2e_fail "1.0" "Data path readiness" "proxy → mock chain not ready within 60s"
+  print_results; exit 1
+fi
+
 # Tests
 assert_http 200 "$BASE/" "1.1" "Health check"
 assert_http 200 "$BASE/fetch?url=http://httpbin.org/get" "1.2" "Allowed domain (httpbin.org)"

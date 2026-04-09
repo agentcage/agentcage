@@ -109,13 +109,15 @@ else
 fi
 
 if [ "$_restore_ok" = true ]; then
-  # 5.6: Restored cage works — proxy may need a moment to forward after restore
+  # 5.6: Restored cage works — restore creates a fresh network with new IPs,
+  # so re-patch /etc/hosts during the readiness probe to recover from any
+  # proxy restart or stale mock IP.
   e2e_timer_start
-  if wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 60; then
+  if wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org; then
     e2e_pass "5.6" "Restored cage works"
   else
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got $CODE after 60s"
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got ${CODE:-000} after 60s"
   fi
 else
   e2e_skip "5.6" "Restored cage works" "depends on 5.5"

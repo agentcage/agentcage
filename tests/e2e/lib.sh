@@ -185,6 +185,34 @@ wait_http_code() {
   return 1
 }
 
+# wait_data_path BASE_URL TEST_PATH CAGE DOMAIN [DOMAIN...]
+#   Wait for the full proxy → mock chain to be ready by polling TEST_PATH on
+#   the cage. On every retry, re-applies /etc/hosts to recover from a proxy
+#   container restart that wiped a previous patch. 60s timeout.
+#
+#   This is the readiness probe to call between start_mock/repatch_mock and
+#   any test that depends on the mock being reachable through the proxy.
+#   wait_ready alone isn't enough — it only checks GET / on the cage and
+#   doesn't exercise the DNS → iptables → mitmproxy → /etc/hosts → mock path.
+wait_data_path() {
+  local base="$1" test_path="$2" cage="$3"; shift 3
+  local timeout=60
+  local deadline=$((SECONDS + timeout))
+  local delay=1
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$base$test_path" 2>/dev/null || true)
+    if [ "$code" = "200" ]; then
+      return 0
+    fi
+    repatch_mock "$cage" "$@" >/dev/null 2>&1 || true
+    sleep "$delay"
+    delay=$(( delay + 1 ))
+    [ "$delay" -gt 3 ] && delay=3
+  done
+  return 1
+}
+
 # wait_http_blocked URL [TIMEOUT_S] — poll until HTTP 403 or 502, return 0/1
 wait_http_blocked() {
   local url="$1" timeout="${2:-30}"
@@ -350,20 +378,23 @@ import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',80)); 
 # repatch_mock CAGE DOMAIN [DOMAIN...]
 #   Re-applies /etc/hosts after a proxy container restart (domain add/rm,
 #   cage restart, etc. recreate the container, losing the patch).
-#   Retries a few times since the new proxy container may still be starting.
+#   Verifies the patch landed before returning, since the proxy container
+#   can be restarted by Restart=on-failure between patch and verification.
 repatch_mock() {
   local cage="$1"; shift
   local mock_ip
   mock_ip=$(podman inspect "${cage}-mock" \
-    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null) || return 0
-  [ -z "$mock_ip" ] && return 0
+    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null) || return 1
+  [ -z "$mock_ip" ] && return 1
   local i
-  for i in 1 2 3 4 5; do
-    if _patch_proxy_hosts "$cage" "$mock_ip" "$@"; then
+  for i in $(seq 1 15); do
+    if _patch_proxy_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
+       podman exec "${cage}-proxy" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
+  return 1
 }
 
 # stop_mock CAGE — remove mock container
