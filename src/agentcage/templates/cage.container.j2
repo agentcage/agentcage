@@ -84,7 +84,14 @@ Exec={{ command | systemd_exec }}
 
 [Service]
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-proxy test -f /home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
-ExecStartPost=-/bin/sh -c 'nsenter -t $(podman inspect --format "{{"{{"}}.State.Pid{{"}}"}}" {{ name }}-cage) -U -n -- ip route add default via {{ ip_proxy }}'
+# Add the cage's default route via the proxy. Retries because the
+# container PID is briefly invalid (0/empty) right after `podman start`
+# returns and before the container's init has fully populated state.
+# Without the retry, the route is silently skipped on a restart, the
+# cage has no outbound network, and every fetch from inside the cage
+# fails fast with ECONNREFUSED — surfacing as 502s in tests that
+# exercise the data path after a domain add or secret set restart.
+ExecStartPost=-/bin/sh -c 'for i in $(seq 1 30); do PID=$(podman inspect --format "{{"{{"}}.State.Pid{{"}}"}}" {{ name }}-cage 2>/dev/null); if [ -n "$PID" ] && [ "$PID" != "0" ]; then nsenter -t "$PID" -U -n -- ip route replace default via {{ ip_proxy }} 2>/dev/null && exit 0; fi; sleep 0.5; done; echo "WARNING: failed to add cage default route via {{ ip_proxy }}" >&2; exit 1'
 Restart={{ restart }}
 RestartSec={{ restart_sec }}
 {% if timeout_start_sec %}
