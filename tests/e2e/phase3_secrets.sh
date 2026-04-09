@@ -40,8 +40,9 @@ fi
 e2e_timer_start
 # The proxy intercepts the placeholder in the outbound request and replaces it with
 # the real secret. The proxy logs "secrets_injected" only after the round-trip completes,
-# so we need httpbin.org to actually respond. Wait for proxy readiness first.
-wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 90 || true
+# so we need httpbin.org to actually respond. wait_data_path repatches /etc/hosts on
+# every retry to survive a proxy restart, which wait_http_code can't.
+wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org || true
 FOUND=false
 DEADLINE=$((SECONDS + 90))
 _delay=2

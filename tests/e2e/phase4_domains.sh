@@ -33,11 +33,13 @@ fi
 # 4.3: New domain accessible (poll — proxy may need a moment after hot-reload)
 e2e_timer_start
 # Domain hot-reload can be slow in CI: the proxy needs to pick up the config change,
-# regenerate DNS rules, and restart. Give it up to 120s.
-if wait_http_code "$BASE/fetch?url=http://example.com" 200 120; then
+# regenerate DNS rules, and restart. wait_data_path repatches /etc/hosts on every
+# retry to recover from a proxy container restart that wiped the patch.
+if wait_data_path "$BASE" "/fetch?url=http://example.com" "$CAGE" httpbin.org example.com; then
   e2e_pass "4.3" "New domain accessible"
 else
   e2e_fail "4.3" "New domain accessible" "did not get HTTP 200 within 120s"
+  dump_cage_diagnostics "$CAGE" "4.3 failure"
 fi
 
 # 4.4: Remove domain
