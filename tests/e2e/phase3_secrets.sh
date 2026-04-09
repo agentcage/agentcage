@@ -23,6 +23,20 @@ if ! wait_ready "$BASE" 120; then
 fi
 repatch_mock "$CAGE" httpbin.org
 
+# Verify the cage's OUTBOUND data path is actually working before any
+# test runs. wait_ready only confirms the cage's HTTP server responds
+# to GET / on the published port; it does not exercise the cage's
+# default route or DNS chain. There is a known race where the cage
+# container's ExecStartPost may fail to add the default route via the
+# proxy (the `-` prefix in cage.container.j2 swallows the failure),
+# leaving the cage with no outbound network. wait_data_path probes
+# the actual upstream chain and re-patches /etc/hosts on retry.
+if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org; then
+  e2e_fail "3.0" "Setup" "outbound data path not ready within 120s"
+  dump_cage_diagnostics "$CAGE" "3.0 setup failure"
+  print_results; exit 1
+fi
+
 # 3.1: Secret listed
 assert_output_contains "3.1" "Secret listed" "MY_API_KEY" \
   agentcage secret list "$CAGE"
@@ -37,12 +51,9 @@ else
 fi
 
 # 3.3: Injection on outbound — send placeholder, then poll audit for injection record.
+# Setup already verified the data path is working via wait_data_path, so we
+# can proceed straight into the injection loop.
 e2e_timer_start
-# The proxy intercepts the placeholder in the outbound request and replaces it with
-# the real secret. The proxy logs "secrets_injected" only after the round-trip completes,
-# so we need httpbin.org to actually respond. wait_data_path repatches /etc/hosts on
-# every retry to survive a proxy restart, which wait_http_code can't.
-wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org || true
 FOUND=false
 DEADLINE=$((SECONDS + 90))
 _delay=2

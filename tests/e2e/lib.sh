@@ -213,6 +213,10 @@ dump_cage_diagnostics() {
   podman exec "${cage}-proxy" getent hosts httpbin.org 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [mock container]" >&2
   podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" 2>&1 >&2 || true
+  echo "        [cage container logs (last 25 lines)]" >&2
+  podman logs --tail 25 "${cage}-cage" 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [cage systemd journal (last 15 lines)]" >&2
+  journalctl --user -u "${cage}-cage.service" -n 15 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
   echo "        ── end $tag ──" >&2
 }
 
