@@ -36,6 +36,22 @@ start_mock "$CAGE2" example.com
 wait_ready "$BASE2" 120 || { e2e_fail "5.0" "Setup" "second cage not ready"; print_results; exit 1; }
 repatch_mock "$CAGE2" example.com
 
+# Verify the OUTBOUND data path is working for BOTH cages before any
+# test runs. wait_ready only checks GET / on the published port and
+# can return success while the cage's default route or proxy iptables
+# aren't fully set up. wait_data_path probes the actual proxy → mock
+# chain and re-patches /etc/hosts on retry.
+if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org; then
+  e2e_fail "5.0" "Setup" "basic cage data path not ready within 120s"
+  dump_cage_diagnostics "$CAGE" "5.0 setup failure (basic)"
+  print_results; exit 1
+fi
+if ! wait_data_path "$BASE2" "/fetch?url=http://example.com" "$CAGE2" example.com; then
+  e2e_fail "5.0" "Setup" "second cage data path not ready within 120s"
+  dump_cage_diagnostics "$CAGE2" "5.0 setup failure (second)"
+  print_results; exit 1
+fi
+
 # 5.1: Both cages running
 e2e_timer_start
 OUTPUT=$(agentcage cage list 2>&1)
@@ -72,6 +88,8 @@ if [ "$_isolation_ok" = true ]; then
 else
   e2e_fail "5.2" "Subnet isolation" \
     "basic→httpbin=$CODE_BASIC_HTTPBIN basic→example=$CODE_BASIC_EXAMPLE second→example=$CODE_SECOND_EXAMPLE second→httpbin=$CODE_SECOND_HTTPBIN"
+  dump_cage_diagnostics "$CAGE" "5.2 failure (basic)"
+  dump_cage_diagnostics "$CAGE2" "5.2 failure (second)"
 fi
 
 # 5.3: Backup cage
