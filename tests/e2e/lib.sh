@@ -316,9 +316,14 @@ start_mock() {
 
   # Start mock container (reuses the already-built agentcage-proxy image which has Python)
   # --user root: the image defaults to uid 1000, which can't bind to port 80
+  # --sysctl ip_unprivileged_port_start=80: required on hosts where the
+  #   default unprivileged port range starts at 1024 (e.g. Arch). Without
+  #   this, even root in the container's user namespace can't bind :80.
+  #   The proxy quadlet sets the same sysctl (proxy.container.j2).
   if ! podman run -d --name "${cage}-mock" \
     --user root \
     --network "${cage}-net" \
+    --sysctl net.ipv4.ip_unprivileged_port_start=80 \
     -v "${MOCK_SCRIPT}:/mock.py:ro" \
     localhost/agentcage-proxy python3 /mock.py >/dev/null 2>&1; then
     echo "WARNING: failed to start mock container for $cage" >&2
