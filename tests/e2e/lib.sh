@@ -211,6 +211,12 @@ dump_cage_diagnostics() {
   podman exec "${cage}-proxy" cat /etc/hosts 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [proxy resolved httpbin.org]" >&2
   podman exec "${cage}-proxy" getent hosts httpbin.org 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy network interfaces]" >&2
+  podman exec "${cage}-proxy" ip -4 -o addr show 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy iptables nat (PREROUTING)]" >&2
+  podman exec --user root "${cage}-proxy" iptables -t nat -L PREROUTING -n -v 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy listening sockets]" >&2
+  podman exec "${cage}-proxy" ss -tlnp 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [mock container]" >&2
   podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" 2>&1 >&2 || true
   echo "        [cage container logs (last 25 lines)]" >&2
@@ -222,8 +228,18 @@ dump_cage_diagnostics() {
   _cage_pid=$(podman inspect --format '{{.State.Pid}}' "${cage}-cage" 2>/dev/null || echo "")
   if [ -n "$_cage_pid" ] && [ "$_cage_pid" != "0" ]; then
     nsenter -t "$_cage_pid" -U -n -- ip route 2>&1 | sed 's/^/          /' >&2 || echo "          (nsenter failed)" >&2
-    echo "        [cage → proxy IP ping (3 probes, 2s timeout)]" >&2
-    nsenter -t "$_cage_pid" -U -n -- ping -c 3 -W 2 -q "$(podman inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cage}-proxy" 2>/dev/null | head -1)" 2>&1 | sed 's/^/          /' >&2 || true
+    # Pick the proxy IP that lives on the same /24 as the cage (the cage-net interface).
+    local _cage_subnet _proxy_cage_ip
+    _cage_subnet=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-cage" 2>/dev/null | cut -d. -f1-3)
+    _proxy_cage_ip=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-proxy" 2>/dev/null)
+    echo "        [cage → proxy IP ping (target=$_proxy_cage_ip, 3 probes)]" >&2
+    if [ -n "$_proxy_cage_ip" ]; then
+      nsenter -t "$_cage_pid" -U -n -- ping -c 3 -W 2 -q "$_proxy_cage_ip" 2>&1 | sed 's/^/          /' >&2 || true
+      echo "        [cage → proxy:80 TCP connect]" >&2
+      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_proxy_cage_ip/80" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
+      echo "        [cage → proxy:8443 TCP connect]" >&2
+      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_proxy_cage_ip/8443" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
+    fi
   else
     echo "          (cage container has no valid PID)" >&2
   fi
