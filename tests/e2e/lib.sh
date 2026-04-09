@@ -215,8 +215,18 @@ dump_cage_diagnostics() {
   podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" 2>&1 >&2 || true
   echo "        [cage container logs (last 25 lines)]" >&2
   podman logs --tail 25 "${cage}-cage" 2>&1 | sed 's/^/          /' >&2 || true
-  echo "        [cage systemd journal (last 15 lines)]" >&2
-  journalctl --user -u "${cage}-cage.service" -n 15 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [cage systemd journal (last 30 lines)]" >&2
+  journalctl --user -u "${cage}-cage.service" -n 30 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [cage netns routing table]" >&2
+  local _cage_pid
+  _cage_pid=$(podman inspect --format '{{.State.Pid}}' "${cage}-cage" 2>/dev/null || echo "")
+  if [ -n "$_cage_pid" ] && [ "$_cage_pid" != "0" ]; then
+    nsenter -t "$_cage_pid" -U -n -- ip route 2>&1 | sed 's/^/          /' >&2 || echo "          (nsenter failed)" >&2
+    echo "        [cage → proxy IP ping (3 probes, 2s timeout)]" >&2
+    nsenter -t "$_cage_pid" -U -n -- ping -c 3 -W 2 -q "$(podman inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cage}-proxy" 2>/dev/null | head -1)" 2>&1 | sed 's/^/          /' >&2 || true
+  else
+    echo "          (cage container has no valid PID)" >&2
+  fi
   echo "        ── end $tag ──" >&2
 }
 

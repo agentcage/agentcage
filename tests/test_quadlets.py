@@ -341,7 +341,7 @@ class TestCageQuadlet:
         assert "Volume=test-certs.volume:/certs:ro,Z" in content
         assert "Volume=/home/patches:/agentcage:ro,Z" in content
         assert "nsenter" in content
-        assert f"ip route add default via {addrs['ip_proxy']}" in content
+        assert f"ip route replace default via {addrs['ip_proxy']}" in content
 
     def test_cage_defaults_hardening(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
