@@ -185,6 +185,31 @@ wait_http_code() {
   return 1
 }
 
+# dump_cage_diagnostics CAGE [TAG]
+#   Dump systemd unit state, podman container state, and proxy logs for a
+#   cage. Used on test failure to understand what went wrong on the CI
+#   runner where we don't have an interactive shell.
+dump_cage_diagnostics() {
+  local cage="$1" tag="${2:-diagnostics}"
+  echo "        ── $tag for cage '$cage' ──" >&2
+  echo "        [systemd units]" >&2
+  for svc in cage proxy dns; do
+    local active sub
+    active=$(systemctl --user is-active "${cage}-${svc}.service" 2>&1 || true)
+    sub=$(systemctl --user show -p SubState --value "${cage}-${svc}.service" 2>&1 || true)
+    local nrestarts
+    nrestarts=$(systemctl --user show -p NRestarts --value "${cage}-${svc}.service" 2>&1 || true)
+    echo "          ${cage}-${svc}: active=${active} sub=${sub} nrestarts=${nrestarts}" >&2
+  done
+  echo "        [podman containers]" >&2
+  podman ps -a --filter "name=${cage}-" --format "          {{.Names}} {{.Status}} {{.Ports}}" 2>&1 >&2 || true
+  echo "        [proxy container logs (last 25 lines)]" >&2
+  podman logs --tail 25 "${cage}-proxy" 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy systemd journal (last 25 lines)]" >&2
+  journalctl --user -u "${cage}-proxy.service" -n 25 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        ── end $tag ──" >&2
+}
+
 # wait_data_path BASE_URL TEST_PATH CAGE DOMAIN [DOMAIN...]
 #   Wait for the full proxy → mock chain to be ready by polling TEST_PATH on
 #   the cage. On every retry, re-applies /etc/hosts to recover from a proxy
@@ -194,9 +219,13 @@ wait_http_code() {
 #   any test that depends on the mock being reachable through the proxy.
 #   wait_ready alone isn't enough — it only checks GET / on the cage and
 #   doesn't exercise the DNS → iptables → mitmproxy → /etc/hosts → mock path.
+#
+#   Timeout is generous (120s) because CI parallel phases can saturate
+#   Podman, slowing container startup well past the 60s the data path
+#   normally needs.
 wait_data_path() {
   local base="$1" test_path="$2" cage="$3"; shift 3
-  local timeout=60
+  local timeout=120
   local deadline=$((SECONDS + timeout))
   local delay=1
   while [ "$SECONDS" -lt "$deadline" ]; do

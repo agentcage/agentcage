@@ -117,7 +117,8 @@ if [ "$_restore_ok" = true ]; then
     e2e_pass "5.6" "Restored cage works"
   else
     CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
-    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got ${CODE:-000} after 60s"
+    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got ${CODE:-000} after 120s"
+    dump_cage_diagnostics "$CAGE" "5.6 failure"
   fi
 else
   e2e_skip "5.6" "Restored cage works" "depends on 5.5"

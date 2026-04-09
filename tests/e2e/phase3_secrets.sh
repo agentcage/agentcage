@@ -62,6 +62,10 @@ if [ "$FOUND" = true ]; then
   e2e_pass "3.3" "Injection on outbound"
 else
   e2e_fail "3.3" "Injection on outbound" "no secrets_injected in audit after 90s"
+  # Probe whether the proxy chain even worked, then dump diagnostics.
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+  echo "        proxy chain probe: $BASE/fetch → ${CODE:-000}" >&2
+  dump_cage_diagnostics "$CAGE" "3.3 failure"
 fi
 
 # 3.4: Set new secret
