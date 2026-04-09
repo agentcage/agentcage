@@ -6,6 +6,7 @@ phase_header 1 "Container Mode — Lifecycle & Core Security"
 
 CAGE="basic"
 BASE="http://localhost:3000"
+CONFIGS="$(dirname "$0")/configs"
 
 # Clean any stale cage
 destroy_cage "$CAGE"
@@ -13,7 +14,7 @@ register_cage "$CAGE"
 
 # Setup
 echo "Creating cage..."
-create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+create_cage "$CONFIGS/basic.yaml" >/dev/null
 echo "Starting mock server..."
 start_mock "$CAGE" httpbin.org example.com
 
@@ -30,7 +31,7 @@ repatch_mock "$CAGE" httpbin.org example.com
 # is actually working before running assertions. wait_ready only checks GET /
 # on the cage; it can pass while the upstream chain is still broken.
 if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org example.com; then
-  e2e_fail "1.0" "Data path readiness" "proxy → mock chain not ready within 60s"
+  e2e_fail "1.0" "Data path readiness" "proxy → mock chain not ready within 120s"
   print_results; exit 1
 fi
 

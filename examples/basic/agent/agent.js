@@ -2,6 +2,11 @@
 // Exposes an HTTP server on port 3000 with endpoints to exercise
 // domain filtering and secret leak detection interactively.
 // No real API key needed — uses httpbin.org as the upstream.
+//
+// AGENT_DEMO=false disables the startup demo cycle (used by E2E tests
+// to avoid resolving httpbin.org before /etc/hosts on the proxy is
+// patched to the local mock IP — that race poisons mitmproxy's
+// connection pool with the real upstream IP).
 
 const http = require("http");
 
@@ -159,7 +164,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`agentcage basic example listening on 0.0.0.0:${PORT}`);
-  // Run demo cycle on startup, then every 60s
-  demoCycle();
-  setInterval(demoCycle, 60_000);
+  // Run demo cycle on startup, then every 60s.
+  // Set AGENT_DEMO=false to disable (used by E2E tests so the agent
+  // never resolves the upstream domain before /etc/hosts is patched).
+  if (process.env.AGENT_DEMO !== "false") {
+    demoCycle();
+    setInterval(demoCycle, 60_000);
+  }
 });

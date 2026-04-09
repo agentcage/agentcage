@@ -317,6 +317,11 @@ preflight_check() {
 # Replaces external httpbin.org/example.com with a local container on
 # the cage network. The proxy's /etc/hosts is patched so outbound
 # requests resolve to the mock instead of the real internet.
+#
+# IMPORTANT: test cage configs must set AGENT_DEMO=false on the agent
+# container so the example agent's startup demoCycle does not race
+# against the /etc/hosts patch — if the agent resolves the upstream
+# domain first, mitmproxy caches the real IP and never honors the patch.
 
 MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
 

@@ -6,14 +6,17 @@ phase_header 4 "Container Mode — Domain Management & Hot-Reload"
 
 CAGE="basic"
 BASE="http://localhost:3000"
+CONFIGS="$(dirname "$0")/configs"
 
 # Ensure the basic cage is running
 if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   echo "Basic cage not running — creating..."
   destroy_cage "$CAGE"
   register_cage "$CAGE"
-  create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+  create_cage "$CONFIGS/basic.yaml" >/dev/null
+  start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "4.0" "Setup" "cage not ready"; print_results; exit 1; }
+  repatch_mock "$CAGE" httpbin.org
 fi
 
 # 4.1: List domains

@@ -17,7 +17,7 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   echo "Basic cage not running — creating..."
   destroy_cage "$CAGE"
   register_cage "$CAGE"
-  create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+  create_cage "$CONFIGS/basic.yaml" >/dev/null
   start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "5.0" "Setup" "cage not ready"; print_results; exit 1; }
   repatch_mock "$CAGE" httpbin.org
@@ -54,10 +54,10 @@ _isolation_ok=false
 _iso_deadline=$((SECONDS + 120))
 _iso_delay=1
 while [ "$SECONDS" -lt "$_iso_deadline" ]; do
-  CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-  CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
-  CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
-  CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+  CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+  CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://example.com" 2>/dev/null || true)
+  CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://example.com" 2>/dev/null || true)
+  CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
   if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
      [ "$CODE_SECOND_EXAMPLE" = "200" ] && is_blocked "$CODE_SECOND_HTTPBIN"; then
     _isolation_ok=true

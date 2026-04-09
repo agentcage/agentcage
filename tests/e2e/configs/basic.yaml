@@ -1,0 +1,33 @@
+# Test cage config for E2E phases that use the "basic" cage.
+#
+# Mirrors examples/basic/cage.yaml but disables the agent's startup
+# demo cycle (AGENT_DEMO=false). The example agent's demoCycle resolves
+# httpbin.org on startup, which races against the test harness patching
+# /etc/hosts on the proxy container — if the agent wins the race,
+# mitmproxy caches the real upstream IP and ignores the patch forever,
+# producing intermittent 502s and timeouts.
+#
+# By disabling the demo, the first DNS resolution mitmproxy does is
+# the test's own /fetch request, which happens after start_mock has
+# patched /etc/hosts to the local mock IP.
+
+name: basic
+
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${AGENT_DIR}:/app:ro"
+  ports:
+    - "127.0.0.1:3000:3000"
+  env:
+    AGENT_DEMO: "false"
+
+domains:
+  allow:
+    - httpbin.org
+
+secrets:
+  enabled: true
+
+log_allowed: true

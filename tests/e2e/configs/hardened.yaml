@@ -13,6 +13,8 @@ container:
   user: "1000:1000"
   memory: "256m"
   cpus: "1"
+  env:
+    AGENT_DEMO: "false"
 domains:
   allow:
     - httpbin.org
