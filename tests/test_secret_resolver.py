@@ -15,8 +15,41 @@ from agentcage.secret_resolver import (
     detect_default_backend,
     encrypt_secret,
     resolve,
+    validate_env_name,
     validate_source,
 )
+
+
+class TestValidateEnvName:
+    def test_valid_env_names(self):
+        validate_env_name("FOO")
+        validate_env_name("FOO_BAR")
+        validate_env_name("_UNDERSCORE")
+        validate_env_name("lowercase")
+        validate_env_name("Mixed123")
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="non-empty env name"):
+            validate_env_name("")
+
+    def test_starts_with_digit_raises(self):
+        with pytest.raises(ValueError, match="invalid env name"):
+            validate_env_name("1FOO")
+
+    def test_shell_injection_attempts_rejected(self):
+        bad = [
+            'FOO"; rm -rf /; #',
+            "FOO$(whoami)",
+            "FOO`id`",
+            "FOO;bar",
+            "FOO bar",
+            "FOO\n",
+            "FOO-BAR",  # hyphen not allowed
+            "FOO.BAR",  # dot not allowed
+        ]
+        for name in bad:
+            with pytest.raises(ValueError, match="invalid env name"):
+                validate_env_name(name)
 
 
 class TestValidateSource:

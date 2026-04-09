@@ -467,8 +467,11 @@ def cage_create(config_path: str, secrets: tuple):
                 source_scheme = ""
                 if rule and rule.source:
                     source_scheme = rule.source.partition(":")[0]
-                use_creds = (source_scheme == "systemd-creds"
-                             or (not source_scheme and default_backend == "systemd-creds"))
+                if source_scheme == "podman":
+                    use_creds = False  # operator explicitly asked for Podman store
+                else:
+                    use_creds = (source_scheme == "systemd-creds"
+                                 or (not source_scheme and default_backend == "systemd-creds"))
                 if use_creds:
                     try:
                         encrypt_secret(key, val, state.deployment_dir(name))
@@ -505,25 +508,10 @@ def cage_create(config_path: str, secrets: tuple):
 
     # Resolve env: and cmd: source secrets (container mode only)
     if cfg.isolation == "container":
-        from agentcage.secret_resolver import resolve, ResolveAction
-        _resolve_podman = Podman()
-        for rule in cfg.secret_injection:
-            source = rule.source or ""
-            if not source:
-                continue
-            scheme = source.partition(":")[0]
-            if scheme not in ("env", "cmd"):
-                continue
-            try:
-                result = resolve(source, rule.env, state.deployment_dir(name))
-                if result.action == ResolveAction.RESOLVED:
-                    full = f"{name}.{rule.env}"
-                    if _resolve_podman.secret_exists(full):
-                        _resolve_podman.secret_remove(full)
-                    _resolve_podman.secret_create(full, result.value)
-                    click.echo(f"Secret '{rule.env}' resolved from {scheme}: source.")
-            except ValueError as e:
-                click.echo(f"warning: failed to resolve {rule.env}: {e}", err=True)
+        from agentcage.secret_resolver import resolve_and_populate
+        resolve_and_populate(
+            Podman(), cfg, name, state.deployment_dir(name),
+        )
 
     config_host_path = state.save_proxy_config(name)
 
@@ -1166,24 +1154,9 @@ def cage_start(name: str):
     podman = Podman()
     _ensure_patches(podman)
 
-    # Resolve env: and cmd: secrets before starting
-    from agentcage.secret_resolver import resolve, ResolveAction
-    for rule in cfg.secret_injection:
-        source = rule.source or ""
-        if not source:
-            continue
-        scheme = source.partition(":")[0]
-        if scheme not in ("env", "cmd"):
-            continue
-        try:
-            result = resolve(source, rule.env, state.deployment_dir(name))
-            if result.action == ResolveAction.RESOLVED:
-                full = f"{name}.{rule.env}"
-                if podman.secret_exists(full):
-                    podman.secret_remove(full)
-                podman.secret_create(full, result.value)
-        except ValueError as e:
-            click.echo(f"warning: failed to resolve {rule.env}: {e}", err=True)
+    # Refresh env:/cmd: secrets before starting (they may have changed)
+    from agentcage.secret_resolver import resolve_and_populate
+    resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
 
     backend = get_backend(cfg)
     backend.start(name)
@@ -2184,8 +2157,11 @@ def secret_set(name: str, key: str):
         source_scheme = rule.source.partition(":")[0]
 
     backend = detect_default_backend()
-    use_creds = (source_scheme == "systemd-creds"
-                 or (not source_scheme and backend == "systemd-creds"))
+    if source_scheme == "podman":
+        use_creds = False  # operator explicitly asked for Podman store
+    else:
+        use_creds = (source_scheme == "systemd-creds"
+                     or (not source_scheme and backend == "systemd-creds"))
 
     if use_creds:
         try:

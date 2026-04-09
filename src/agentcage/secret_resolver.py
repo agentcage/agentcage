@@ -13,6 +13,7 @@ from __future__ import annotations
 import enum
 import functools
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -32,6 +33,26 @@ class ResolveResult:
 
 
 KNOWN_SCHEMES = frozenset({"env", "cmd", "systemd-creds", "podman", ""})
+
+# Standard POSIX env-var identifier. Also shell-safe: no metacharacters
+# can appear, so the value can be interpolated into quadlet ExecStartPre
+# bash commands without injection risk.
+_ENV_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def validate_env_name(env_name: str) -> None:
+    """Validate that an env name is a safe identifier.
+
+    Raises ValueError if the name contains anything outside the standard
+    POSIX env-var character set. This prevents shell injection when the
+    name is interpolated into generated quadlet ExecStartPre commands.
+    """
+    if not env_name:
+        raise ValueError("secret_injection rule requires a non-empty env name")
+    if not _ENV_NAME_RE.match(env_name):
+        raise ValueError(
+            f"invalid env name: {env_name!r}. Must match [A-Za-z_][A-Za-z0-9_]*"
+        )
 
 
 def validate_source(source: str) -> None:
@@ -117,6 +138,40 @@ def resolve(source: str, env_name: str, state_dir: Path) -> ResolveResult:
 
     else:
         raise ValueError(f"unknown secret source scheme: '{scheme}'")
+
+
+def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
+                         skip_keys: set[str] | None = None) -> set[str]:
+    """Resolve env:/cmd:/systemd-creds: sources into Podman secrets.
+
+    Returns the set of env names that were resolved (caller should add
+    these to provided_keys so they survive the rule-strip filter).
+
+    Errors during resolution are printed as warnings but don't abort
+    the caller — failed secrets just don't get created.
+    """
+    import click
+
+    skip = skip_keys or set()
+    resolved: set[str] = set()
+    for rule in cfg.secret_injection:
+        source = rule.source or ""
+        if not source or rule.env in skip:
+            continue
+        try:
+            result = resolve(source, rule.env, state_dir)
+        except ValueError as e:
+            click.echo(f"warning: failed to resolve {rule.env}: {e}", err=True)
+            continue
+        if result.action == ResolveAction.RESOLVED:
+            full = f"{deploy_name}.{rule.env}"
+            if podman.secret_exists(full):
+                podman.secret_remove(full)
+            podman.secret_create(full, result.value)
+            resolved.add(rule.env)
+        elif result.action == ResolveAction.QUADLET_HANDLED:
+            resolved.add(rule.env)
+    return resolved
 
 
 def encrypt_secret(name: str, value: str, state_dir: Path) -> Path:

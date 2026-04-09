@@ -398,20 +398,12 @@ def execute(
             provided_keys.add(key)
 
         # Resolve secrets from configured backends (env:, cmd:, systemd-creds:)
-        from agentcage.secret_resolver import resolve, ResolveAction
-        for rule in cfg.secret_injection:
-            source = rule.source or ""
-            if not source or rule.env in provided_keys:
-                continue
-            result = resolve(source, rule.env, state.deployment_dir(cage_name))
-            if result.action == ResolveAction.RESOLVED:
-                full = f"{cage_name}.{rule.env}"
-                if podman.secret_exists(full):
-                    podman.secret_remove(full)
-                podman.secret_create(full, result.value)
-                provided_keys.add(rule.env)
-            elif result.action == ResolveAction.QUADLET_HANDLED:
-                provided_keys.add(rule.env)
+        from agentcage.secret_resolver import resolve_and_populate
+        provided_keys |= resolve_and_populate(
+            podman, cfg, cage_name,
+            state.deployment_dir(cage_name),
+            skip_keys=provided_keys,
+        )
 
         # Strip secret injection rules for secrets not provided —
         # keeps only rules whose secrets were passed via --set-secret

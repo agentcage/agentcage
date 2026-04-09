@@ -261,12 +261,13 @@ def load_config(path: str) -> Config:
     si_cfg = raw.get("secret_injection") or []
     si_rules = si_cfg.get("rules", []) if isinstance(si_cfg, dict) else si_cfg
     injected_names = set()
-    from agentcage.secret_resolver import validate_source
+    from agentcage.secret_resolver import validate_env_name, validate_source
 
     for entry in si_rules:
         env_name = entry.get("env", "")
         placeholder = entry.get("placeholder", "")
         if env_name and placeholder:
+            validate_env_name(env_name)
             source = entry.get("source", "")
             validate_source(source)
             injected_names.add(env_name)
