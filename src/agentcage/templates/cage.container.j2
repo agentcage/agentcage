@@ -91,7 +91,7 @@ ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-proxy
 # cage has no outbound network, and every fetch from inside the cage
 # fails fast with ECONNREFUSED — surfacing as 502s in tests that
 # exercise the data path after a domain add or secret set restart.
-ExecStartPost=-/bin/sh -c 'LAST_ERR=""; for i in $(seq 1 30); do PID=$(podman inspect --format "{{"{{"}}.State.Pid{{"}}"}}" {{ name }}-cage 2>/dev/null); if [ -n "$PID" ] && [ "$PID" != "0" ]; then LAST_ERR=$(nsenter -t "$PID" -U -n -- ip route replace default via {{ ip_proxy }} 2>&1) && { echo "added default route via {{ ip_proxy }} (attempt $i)"; exit 0; }; fi; sleep 0.5; done; echo "WARNING: failed to add cage default route via {{ ip_proxy }} after 30 attempts: $LAST_ERR" >&2; exit 1'
+ExecStartPost=/bin/sh -c 'LAST_ERR=""; for i in $(seq 1 30); do PID=$(podman inspect --format "{{"{{"}}.State.Pid{{"}}"}}" {{ name }}-cage 2>/dev/null); if [ -n "$PID" ] && [ "$PID" != "0" ]; then LAST_ERR=$(nsenter -t "$PID" -U -n -- ip route replace default via {{ ip_proxy }} 2>&1) && { echo "added default route via {{ ip_proxy }} (attempt $i)"; exit 0; }; fi; sleep 0.5; done; echo "WARNING: failed to add cage default route via {{ ip_proxy }} after 30 attempts: $LAST_ERR" >&2; exit 1'
 Restart={{ restart }}
 RestartSec={{ restart_sec }}
 {% if timeout_start_sec %}

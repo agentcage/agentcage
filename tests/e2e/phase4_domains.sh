@@ -16,7 +16,11 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   create_cage "$CONFIGS/basic.yaml" >/dev/null
   start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "4.0" "Setup" "cage not ready"; print_results; exit 1; }
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
+else
+  # Cage is running but mock may not be — ensure it's started
+  start_mock "$CAGE" httpbin.org || true
+  repatch_mock "$CAGE" httpbin.org || true
 fi
 
 # 4.1: List domains
@@ -27,7 +31,7 @@ assert_output_contains "4.1" "List domains" "httpbin.org" \
 e2e_timer_start
 if agentcage domain add "$CAGE" example.com >/dev/null 2>&1; then
   wait_ready "$BASE" 60 || true
-  repatch_mock "$CAGE" httpbin.org example.com
+  repatch_mock "$CAGE" httpbin.org example.com || true
   e2e_pass "4.2" "Add domain"
 else
   e2e_fail "4.2" "Add domain" "command failed"
@@ -49,7 +53,7 @@ fi
 e2e_timer_start
 if agentcage domain rm "$CAGE" example.com >/dev/null 2>&1; then
   wait_ready "$BASE" 60 || true
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.4" "Remove domain"
 else
   e2e_fail "4.4" "Remove domain" "command failed"
@@ -77,7 +81,7 @@ fi
 e2e_timer_start
 agentcage cage start "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.7" "Start cage"
 else
   e2e_fail "4.7" "Start cage" "not ready after start"
@@ -87,7 +91,7 @@ fi
 e2e_timer_start
 agentcage cage restart "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.8" "Restart cage"
 else
   e2e_fail "4.8" "Restart cage" "not ready after restart"

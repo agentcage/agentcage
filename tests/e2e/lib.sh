@@ -173,7 +173,8 @@ wait_http_code() {
   local delay=1
   while [ "$SECONDS" -lt "$deadline" ]; do
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || true)
+    [ -z "$code" ] && code="000"
     if [ "$code" = "$expected" ]; then
       return 0
     fi
@@ -202,7 +203,7 @@ dump_cage_diagnostics() {
     echo "          ${cage}-${svc}: active=${active} sub=${sub} nrestarts=${nrestarts}" >&2
   done
   echo "        [podman containers]" >&2
-  podman ps -a --filter "name=${cage}-" --format "          {{.Names}} {{.Status}} {{.Ports}}" 2>&1 >&2 || true
+  podman ps -a --filter "name=${cage}-" --format "          {{.Names}} {{.Status}} {{.Ports}}" >&2 || true
   echo "        [proxy container logs (last 25 lines)]" >&2
   podman logs --tail 25 "${cage}-proxy" 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [proxy systemd journal (last 25 lines)]" >&2
@@ -218,7 +219,7 @@ dump_cage_diagnostics() {
   echo "        [proxy listening sockets]" >&2
   podman exec "${cage}-proxy" ss -tlnp 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [mock container]" >&2
-  podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" 2>&1 >&2 || true
+  podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" >&2 || true
   echo "        [cage container logs (last 25 lines)]" >&2
   podman logs --tail 25 "${cage}-cage" 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [cage systemd journal (last 30 lines)]" >&2
@@ -229,8 +230,7 @@ dump_cage_diagnostics() {
   if [ -n "$_cage_pid" ] && [ "$_cage_pid" != "0" ]; then
     nsenter -t "$_cage_pid" -U -n -- ip route 2>&1 | sed 's/^/          /' >&2 || echo "          (nsenter failed)" >&2
     # Pick the proxy IP that lives on the same /24 as the cage (the cage-net interface).
-    local _cage_subnet _proxy_cage_ip
-    _cage_subnet=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-cage" 2>/dev/null | cut -d. -f1-3)
+    local _proxy_cage_ip
     _proxy_cage_ip=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-proxy" 2>/dev/null)
     echo "        [cage → proxy IP ping (target=$_proxy_cage_ip, 3 probes)]" >&2
     if [ -n "$_proxy_cage_ip" ]; then
@@ -257,7 +257,7 @@ dump_cage_diagnostics() {
 #   doesn't exercise the DNS → iptables → mitmproxy → /etc/hosts → mock path.
 #
 #   Timeout is generous (120s) because CI parallel phases can saturate
-#   Podman, slowing container startup well past the 60s the data path
+#   Podman, slowing container startup well past the 120s the data path
 #   normally needs.
 wait_data_path() {
   local base="$1" test_path="$2" cage="$3"; shift 3

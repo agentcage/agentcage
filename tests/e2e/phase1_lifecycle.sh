@@ -25,7 +25,7 @@ if ! wait_ready "$BASE" 120; then
 fi
 
 # Re-patch after proxy is fully up (ExecStartPost may have restarted it)
-repatch_mock "$CAGE" httpbin.org example.com
+repatch_mock "$CAGE" httpbin.org example.com || true
 
 # Verify the full data path (DNS → iptables → mitmproxy → /etc/hosts → mock)
 # is actually working before running assertions. wait_ready only checks GET /

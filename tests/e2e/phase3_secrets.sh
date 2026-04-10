@@ -21,7 +21,7 @@ if ! wait_ready "$BASE" 120; then
   e2e_fail "3.0" "Setup" "secrets cage not ready"
   print_results; exit 1
 fi
-repatch_mock "$CAGE" httpbin.org
+repatch_mock "$CAGE" httpbin.org || true
 
 # Verify the cage's OUTBOUND data path is actually working before any
 # test runs. wait_ready only confirms the cage's HTTP server responds

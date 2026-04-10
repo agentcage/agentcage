@@ -20,7 +20,7 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   create_cage "$CONFIGS/basic.yaml" >/dev/null
   start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "5.0" "Setup" "cage not ready"; print_results; exit 1; }
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
 else
   # Basic cage already running (from sequential chain) — ensure mock is up
   start_mock "$CAGE" httpbin.org 2>/dev/null || true
@@ -34,7 +34,7 @@ export E2E_PORT_SECOND="$SECOND_PORT"
 create_cage "$CONFIGS/second.yaml" >/dev/null
 start_mock "$CAGE2" example.com
 wait_ready "$BASE2" 120 || { e2e_fail "5.0" "Setup" "second cage not ready"; print_results; exit 1; }
-repatch_mock "$CAGE2" example.com
+repatch_mock "$CAGE2" example.com || true
 
 # Verify the OUTBOUND data path is working for BOTH cages before any
 # test runs. wait_ready only checks GET / on the published port and
