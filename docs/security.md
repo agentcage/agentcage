@@ -192,6 +192,16 @@ The capture file is plain JSON lines on disk. An attacker with host access could
 
 The capture volume is accessible to the host user running podman. This is the same trust boundary as podman secrets — if an attacker has access to the host user's files, they already have access to the secrets.
 
+## Secret Backend Trust Boundaries
+
+The `source` field in `secret_injection` rules supports a `cmd:` scheme that executes shell commands to retrieve secrets. This runs with the privileges of the user invoking agentcage, the same trust boundary as Containerfile execution or volume mounts.
+
+If a `cage.yaml` is sourced from an untrusted location (e.g. a public git repository), review all `source: "cmd:..."` entries before running `cage create`. A malicious config could execute arbitrary commands on the host.
+
+The `env:` backend reads from the host's environment variables. No shell execution is involved.
+
+The `systemd-creds:` backend encrypts secrets at rest with AES256-GCM, keyed by a combination of a TPM2 chip and a host-specific key. Encrypted blobs are bound to the machine's hardware. A motherboard swap, TPM reset, or BIOS update may render encrypted secrets unrecoverable. Use `agentcage cage backup --include-secrets` to create portable backups.
+
 ## Reporting Security Issues
 
 Please report security vulnerabilities via email to **security@agentcage.ai**. Do not open a public GitHub issue for security vulnerabilities. See [SECURITY.md](../SECURITY.md) for details.

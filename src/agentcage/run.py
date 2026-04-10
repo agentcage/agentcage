@@ -397,8 +397,18 @@ def execute(
             podman.secret_create(full, val)
             provided_keys.add(key)
 
+        # Resolve secrets from configured backends (env:, cmd:, systemd-creds:)
+        from agentcage.secret_resolver import resolve_and_populate
+        provided_keys |= resolve_and_populate(
+            podman, cfg, cage_name,
+            state.deployment_dir(cage_name),
+            skip_keys=provided_keys,
+            strict=False,  # agentcage run has its own cleanup on failure
+        )
+
         # Strip secret injection rules for secrets not provided —
-        # keeps only rules whose secrets were passed via --set-secret.
+        # keeps only rules whose secrets were passed via --set-secret
+        # or resolved from a configured source.
         cfg.secret_injection = [
             r for r in cfg.secret_injection if r.env in provided_keys
         ]

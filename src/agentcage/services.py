@@ -36,9 +36,54 @@ def expected_secrets(cfg) -> list[str]:
 
 
 def check_secrets(podman: Podman, deploy_name: str, cfg) -> list[str]:
-    """Return list of missing secrets for a cage."""
+    """Return list of missing secrets for a cage.
+
+    Secrets with a configured ``source`` are checked differently:
+      env:VAR         — host env var must be set (or ``env`` field name
+                        used as fallback)
+      cmd:COMMAND     — command must exist on PATH (lightweight check —
+                        full execution happens at resolve time)
+      systemd-creds:  — .cred file must exist in state dir (or auto-
+                        encrypted .cred file must exist)
+      podman:/empty   — must exist in Podman store
+    """
+    import os
+    import shutil
+    from agentcage import state as _state
+
+    creds_dir = _state.deployment_dir(deploy_name) / "creds"
+
     missing = []
     for key in expected_secrets(cfg):
+        rule = next((r for r in cfg.secret_injection if r.env == key), None)
+        if rule and rule.source:
+            scheme, _, arg = rule.source.partition(":")
+            if scheme == "env":
+                var = arg or key
+                if os.environ.get(var) is None:
+                    missing.append(key)
+                continue
+            if scheme == "cmd":
+                if not arg.strip():
+                    missing.append(key)
+                    continue
+                # Verify first token resolves on PATH — full execution
+                # happens at resolve time. Skip the check for shell
+                # builtins or chained commands (too complex to validate).
+                first = arg.split()[0] if arg.split() else ""
+                if first and "/" not in first and "=" not in first:
+                    if shutil.which(first) is None:
+                        missing.append(key)
+                continue
+            if scheme == "systemd-creds":
+                if not (creds_dir / f"{key}.cred").exists():
+                    missing.append(key)
+                continue
+        # Legacy: check podman store, but also accept a present .cred
+        # file (covers the auto-default case where `secret set` encrypted
+        # without an explicit source field).
+        if (creds_dir / f"{key}.cred").exists():
+            continue
         if not podman.secret_exists(f"{deploy_name}.{key}"):
             missing.append(key)
     return missing

@@ -103,4 +103,105 @@ else
   e2e_fail "3.6" "Missing secret warning" "no MISSING status in output"
 fi
 
+# ── Source backend tests ──────────────────────────────────────────
+
+CAGE_SRC="e2e-secrets-src"
+SECRET_PORT_SRC="${E2E_PORT_SECRETS_SRC:-19082}"
+BASE_SRC="http://localhost:$SECRET_PORT_SRC"
+
+destroy_cage "$CAGE_SRC"
+register_cage "$CAGE_SRC"
+
+# 3.7: env: source resolves from host environment
+e2e_timer_start
+export E2E_SRC_ENV_SECRET="env-secret-value-99"
+export E2E_PORT_SECRETS_SRC="$SECRET_PORT_SRC"
+if create_cage "$CONFIGS/secrets-source.yaml" >/dev/null 2>&1; then
+  e2e_pass "3.7" "env: source cage created"
+else
+  e2e_fail "3.7" "env: source cage created" "cage create failed"
+fi
+
+# 3.8: cmd: source resolves from shell command
+e2e_timer_start
+OUTPUT=$(agentcage secret list "$CAGE_SRC" 2>&1) || true
+if echo "$OUTPUT" | grep -q "SRC_ENV_KEY" && echo "$OUTPUT" | grep -q "SRC_CMD_KEY"; then
+  e2e_pass "3.8" "Source secrets listed"
+else
+  e2e_fail "3.8" "Source secrets listed" "expected SRC_ENV_KEY and SRC_CMD_KEY in output"
+fi
+
+# 3.9: Verify env: secret value was resolved correctly
+e2e_timer_start
+VALUE=$(podman secret inspect --showsecret --format '{{.SecretData}}' "${CAGE_SRC}.SRC_ENV_KEY" 2>&1) || true
+if [ "$VALUE" = "env-secret-value-99" ]; then
+  e2e_pass "3.9" "env: value resolved correctly"
+else
+  e2e_fail "3.9" "env: value resolved correctly" "got '$VALUE', expected 'env-secret-value-99'"
+fi
+
+# 3.10: Verify cmd: secret value was resolved correctly
+e2e_timer_start
+VALUE=$(podman secret inspect --showsecret --format '{{.SecretData}}' "${CAGE_SRC}.SRC_CMD_KEY" 2>&1) || true
+if [ "$VALUE" = "cmd-secret-value-42" ]; then
+  e2e_pass "3.10" "cmd: value resolved correctly"
+else
+  e2e_fail "3.10" "cmd: value resolved correctly" "got '$VALUE', expected 'cmd-secret-value-42'"
+fi
+
+# 3.11: Source validation catches typos at parse time
+e2e_timer_start
+TMPYAML=$(mktemp /tmp/e2e-bad-source-XXXXXX.yaml)
+cat > "$TMPYAML" <<'YAML'
+name: e2e-bad-source
+container:
+  image: "node:22-slim"
+  command: ["echo", "hello"]
+secret_injection:
+  - env: BAD_KEY
+    placeholder: "{{BAD_KEY}}"
+    source: "typo-backend:foo"
+YAML
+OUTPUT=$(agentcage cage create -c "$TMPYAML" 2>&1) || true
+rm -f "$TMPYAML"
+destroy_cage e2e-bad-source 2>/dev/null || true
+if echo "$OUTPUT" | grep -qi "unknown secret source scheme"; then
+  e2e_pass "3.11" "Invalid source scheme caught at parse time"
+else
+  e2e_fail "3.11" "Invalid source scheme caught at parse time" "expected validation error, got: $OUTPUT"
+fi
+
+# 3.12: systemd-creds backend (only if available)
+e2e_timer_start
+if command -v systemd-creds >/dev/null 2>&1 && echo probe | systemd-creds encrypt --name _probe - - >/dev/null 2>&1; then
+  CAGE_CREDS="e2e-secrets-creds"
+  destroy_cage "$CAGE_CREDS" 2>/dev/null || true
+  TMPYAML=$(mktemp /tmp/e2e-creds-XXXXXX.yaml)
+  cat > "$TMPYAML" <<YAML
+name: $CAGE_CREDS
+container:
+  image: "node:22-slim"
+  command: ["echo", "hello"]
+secret_injection:
+  - env: CREDS_KEY
+    placeholder: "{{CREDS_KEY}}"
+    inject_to:
+      - httpbin.org
+    source: "systemd-creds:"
+YAML
+  agentcage cage create -c "$TMPYAML" -s CREDS_KEY=creds-test-value >/dev/null 2>&1 || true
+  register_cage "$CAGE_CREDS"
+  # State dir follows XDG_CONFIG_HOME (default: ~/.config/agentcage/cages/NAME)
+  DEPLOY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agentcage/cages/$CAGE_CREDS"
+  if [ -f "$DEPLOY_DIR/creds/CREDS_KEY.cred" ]; then
+    e2e_pass "3.12" "systemd-creds: secret encrypted to .cred file"
+  else
+    e2e_fail "3.12" "systemd-creds: secret encrypted to .cred file" ".cred file not found in $DEPLOY_DIR/creds/"
+  fi
+  rm -f "$TMPYAML"
+  destroy_cage "$CAGE_CREDS" 2>/dev/null || true
+else
+  e2e_pass "3.12" "systemd-creds: skipped (not available)"
+fi
+
 print_results

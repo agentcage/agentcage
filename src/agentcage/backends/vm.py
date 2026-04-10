@@ -316,8 +316,46 @@ class VmBackend:
             secrets_file.unlink(missing_ok=True)
 
     def _bridge_secrets(self, name: str, inst: LimaInstance) -> None:
-        """Copy Podman secrets from the host into the VM's Podman store."""
-        # List host secrets scoped to this cage
+        """Copy secrets from the host into the VM's Podman store.
+
+        Handles both Podman-stored secrets and systemd-creds encrypted blobs.
+        For encrypted blobs, decrypts on the host and pipes plaintext into the VM.
+        """
+        from agentcage import state as _state
+
+        # --- Bridge systemd-creds encrypted secrets ---
+        creds_dir = _state.deployment_dir(name) / "creds"
+        if creds_dir.is_dir():
+            for cred_file in creds_dir.iterdir():
+                if not cred_file.suffix == ".cred":
+                    continue
+                key = cred_file.stem
+                secret_name = f"{name}.{key}"
+                try:
+                    # Decrypt on host
+                    r = subprocess.run(
+                        ["systemd-creds", "decrypt", str(cred_file), "-"],
+                        capture_output=True, text=True, check=True,
+                    )
+                    value = r.stdout
+                    # Create in VM (replace if exists)
+                    inst.exec(
+                        ["podman", "secret", "rm", secret_name],
+                        check=False,
+                    )
+                    subprocess.run(
+                        ["limactl", "shell", inst.name, "--",
+                         "podman", "secret", "create", secret_name, "-"],
+                        input=value, text=True, check=True,
+                    )
+                    click.echo(f"  Bridged secret (decrypted): {secret_name}")
+                except Exception as e:
+                    click.echo(
+                        f"warning: failed to bridge encrypted secret {secret_name}: {e}",
+                        err=True,
+                    )
+
+        # --- Bridge Podman-stored secrets ---
         try:
             result = subprocess.run(
                 ["podman", "secret", "ls", "--format", "{{.Name}}"],

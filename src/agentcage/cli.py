@@ -453,13 +453,33 @@ def cage_create(config_path: str, secrets: tuple):
         # For VM mode, secrets are set after the VM starts (in _deploy_cage).
         # For container mode, set them now on the host.
         if cfg.isolation == "container":
+            from agentcage.secret_resolver import detect_default_backend, encrypt_secret
             podman_secrets = Podman()
+            default_backend = detect_default_backend()
             for spec in secrets:
                 if "=" in spec:
                     key, val = spec.split("=", 1)
                 else:
                     key = spec
                     val = click.prompt(f"Value for {key}", hide_input=True)
+                # Route to systemd-creds if rule or default calls for it
+                rule = next((r for r in cfg.secret_injection if r.env == key), None)
+                source_scheme = ""
+                if rule and rule.source:
+                    source_scheme = rule.source.partition(":")[0]
+                if source_scheme == "podman":
+                    use_creds = False  # operator explicitly asked for Podman store
+                else:
+                    use_creds = (source_scheme == "systemd-creds"
+                                 or (not source_scheme and default_backend == "systemd-creds"))
+                if use_creds:
+                    try:
+                        encrypt_secret(key, val, state.deployment_dir(name))
+                        click.echo(f"Secret '{key}' encrypted with systemd-creds.")
+                        continue
+                    except ValueError as e:
+                        click.echo(f"warning: systemd-creds encrypt failed: {e}", err=True)
+                        click.echo("Falling back to Podman store.", err=True)
                 full = f"{name}.{key}"
                 if podman_secrets.secret_exists(full):
                     podman_secrets.secret_remove(full)
@@ -485,6 +505,13 @@ def cage_create(config_path: str, secrets: tuple):
                 os.write(fd, _json.dumps(_pending_secrets).encode())
             finally:
                 os.close(fd)
+
+    # Resolve env: and cmd: source secrets (container mode only)
+    if cfg.isolation == "container":
+        from agentcage.secret_resolver import resolve_and_populate
+        resolve_and_populate(
+            Podman(), cfg, name, state.deployment_dir(name),
+        )
 
     config_host_path = state.save_proxy_config(name)
 
@@ -1124,7 +1151,12 @@ def cage_start(name: str):
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
-    _ensure_patches(Podman())
+    podman = Podman()
+    _ensure_patches(podman)
+
+    # Refresh env:/cmd: secrets before starting (they may have changed)
+    from agentcage.secret_resolver import resolve_and_populate
+    resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
 
     backend = get_backend(cfg)
     backend.start(name)
@@ -2115,12 +2147,43 @@ def secret_set(name: str, key: str):
         click.echo("error: empty secret value", err=True)
         sys.exit(1)
 
-    # Remove existing if present
-    if podman.secret_exists(full_name):
-        podman.secret_remove(full_name)
+    # Determine storage backend
+    from agentcage.secret_resolver import detect_default_backend, encrypt_secret
 
-    podman.secret_create(full_name, value)
-    click.echo(f"Secret '{full_name}' set.")
+    cfg = state.load_deployment_config(name)
+    rule = next((r for r in cfg.secret_injection if r.env == key), None)
+    source_scheme = ""
+    if rule and rule.source:
+        source_scheme = rule.source.partition(":")[0]
+
+    backend = detect_default_backend()
+    if source_scheme == "podman":
+        use_creds = False  # operator explicitly asked for Podman store
+    else:
+        use_creds = (source_scheme == "systemd-creds"
+                     or (not source_scheme and backend == "systemd-creds"))
+
+    if use_creds:
+        try:
+            encrypt_secret(key, value, state.deployment_dir(name))
+            # Remove any stale podman secret with the same name — the
+            # ExecStartPre in the quadlet will repopulate it from the
+            # encrypted blob at service start.
+            if podman.secret_exists(full_name):
+                podman.secret_remove(full_name)
+            click.echo(f"Secret '{key}' encrypted with systemd-creds.")
+        except ValueError as e:
+            click.echo(f"error: {e}", err=True)
+            click.echo("Falling back to Podman secret store.", err=True)
+            if podman.secret_exists(full_name):
+                podman.secret_remove(full_name)
+            podman.secret_create(full_name, value)
+            click.echo(f"Secret '{full_name}' set (unencrypted).")
+    else:
+        if podman.secret_exists(full_name):
+            podman.secret_remove(full_name)
+        podman.secret_create(full_name, value)
+        click.echo(f"Secret '{full_name}' set.")
 
     # Auto-reload if cage is running
     if state.deployment_exists(name):
@@ -2158,6 +2221,64 @@ def secret_rm(name: str, key: str):
         if backend.is_running(cage_name, "cage"):
             click.echo(f"Restarting cage '{cage_name}'...")
             _restart_cage(cage_name, cfg)
+
+
+@secret.command("migrate")
+@click.argument("name")
+@click.option("--backend", default="systemd-creds",
+              type=click.Choice(["systemd-creds"]),
+              help="Target backend for secret storage.")
+@click.option("--remove-old/--keep-old", default=False,
+              help="Remove old plaintext secrets from Podman store after migration.")
+def secret_migrate(name: str, backend: str, remove_old: bool):
+    """Migrate cage secrets to a different storage backend."""
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    from agentcage.secret_resolver import encrypt_secret, detect_default_backend
+
+    if backend == "systemd-creds" and detect_default_backend() != "systemd-creds":
+        click.echo("error: systemd-creds not available (requires systemd 250+)", err=True)
+        sys.exit(1)
+
+    podman = _podman_for_cage(name)
+    cfg = state.load_deployment_config(name)
+    secrets = podman.secret_list(prefix=f"{name}.")
+    if not secrets:
+        click.echo(f"No secrets found for '{name}'.")
+        return
+
+    migrated = 0
+    for s in secrets:
+        sname = s.get("Name", "")
+        key = sname.removeprefix(f"{name}.")
+        if not key:
+            continue
+
+        # Read from Podman store
+        try:
+            value = podman.secret_read(sname)
+        except Exception as e:
+            click.echo(f"warning: could not read '{sname}': {e}", err=True)
+            continue
+
+        # Encrypt with systemd-creds (per-secret atomic: encrypt, then optionally remove)
+        try:
+            encrypt_secret(key, value, state.deployment_dir(name))
+            click.echo(f"  Encrypted: {key}")
+            migrated += 1
+        except ValueError as e:
+            click.echo(f"  error: {key}: {e}", err=True)
+            continue
+
+        if remove_old:
+            podman.secret_remove(sname)
+            click.echo(f"  Removed old: {sname}")
+
+    click.echo(f"\nMigrated {migrated} secret(s) to {backend}.")
+    if migrated > 0:
+        click.echo(f"Run 'agentcage cage update {name}' to regenerate quadlets.")
 
 
 # ── domain group ─────────────────────────────────────────

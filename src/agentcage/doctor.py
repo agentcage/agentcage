@@ -220,6 +220,37 @@ def check_disk_space() -> CheckResult:
                        hint="free up disk space in your home directory")
 
 
+def _check_secret_backend() -> CheckResult:
+    """Report the detected secret storage backend."""
+    from agentcage.secret_resolver import (
+        detect_default_backend, _systemd_version,
+    )
+
+    backend = detect_default_backend()
+    if backend == "systemd-creds":
+        ver = _systemd_version()
+        return CheckResult(
+            "pass",
+            f"systemd-creds (systemd {ver}, secrets encrypted at rest)",
+            hint="Secrets encrypted with TPM2 or host key. "
+                 "Note: encrypted blobs are bound to this machine's hardware.",
+        )
+    ver = _systemd_version()
+    if ver >= 250 and shutil.which("systemd-creds"):
+        return CheckResult(
+            "warn",
+            f"podman (systemd-creds installed but not usable, systemd {ver})",
+            hint="Run 'sudo systemd-creds setup' to initialize the host key, "
+                 "or use 'source: cmd:...' in cage.yaml for external secret managers.",
+        )
+    return CheckResult(
+        "warn",
+        "podman (secrets stored unencrypted)",
+        hint="Install systemd 250+ for encrypted secret storage, "
+             "or use 'source: cmd:...' in cage.yaml for external secret managers.",
+    )
+
+
 def check_cgroup_v2() -> CheckResult:
     """Check cgroup v2 is enabled."""
     try:
@@ -447,6 +478,12 @@ def run_doctor() -> list[CheckResult]:
     system.results.append(_safe_check(check_disk_space, label="disk space"))
     _print_section(system)
     all_results.extend(system.results)
+
+    # --- Secrets ---
+    secrets_sec = Section("Secrets")
+    secrets_sec.results.append(_safe_check(_check_secret_backend, label="secret backend"))
+    _print_section(secrets_sec)
+    all_results.extend(secrets_sec.results)
 
     # --- Network ---
     network = Section("Network")
