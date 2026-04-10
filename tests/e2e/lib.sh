@@ -173,7 +173,8 @@ wait_http_code() {
   local delay=1
   while [ "$SECONDS" -lt "$deadline" ]; do
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || echo "000")
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$url" 2>/dev/null || true)
+    [ -z "$code" ] && code="000"
     if [ "$code" = "$expected" ]; then
       return 0
     fi
@@ -181,6 +182,98 @@ wait_http_code() {
     # linear backoff: 1, 2, 3, 4, capped at 4s
     delay=$(( delay + 1 ))
     [ "$delay" -gt 4 ] && delay=4
+  done
+  return 1
+}
+
+# dump_cage_diagnostics CAGE [TAG]
+#   Dump systemd unit state, podman container state, and proxy logs for a
+#   cage. Used on test failure to understand what went wrong on the CI
+#   runner where we don't have an interactive shell.
+dump_cage_diagnostics() {
+  local cage="$1" tag="${2:-diagnostics}"
+  echo "        ── $tag for cage '$cage' ──" >&2
+  echo "        [systemd units]" >&2
+  for svc in cage proxy dns; do
+    local active sub
+    active=$(systemctl --user is-active "${cage}-${svc}.service" 2>&1 || true)
+    sub=$(systemctl --user show -p SubState --value "${cage}-${svc}.service" 2>&1 || true)
+    local nrestarts
+    nrestarts=$(systemctl --user show -p NRestarts --value "${cage}-${svc}.service" 2>&1 || true)
+    echo "          ${cage}-${svc}: active=${active} sub=${sub} nrestarts=${nrestarts}" >&2
+  done
+  echo "        [podman containers]" >&2
+  podman ps -a --filter "name=${cage}-" --format "          {{.Names}} {{.Status}} {{.Ports}}" >&2 || true
+  echo "        [proxy container logs (last 25 lines)]" >&2
+  podman logs --tail 25 "${cage}-proxy" 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy systemd journal (last 25 lines)]" >&2
+  journalctl --user -u "${cage}-proxy.service" -n 25 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy /etc/hosts]" >&2
+  podman exec "${cage}-proxy" cat /etc/hosts 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy resolved httpbin.org]" >&2
+  podman exec "${cage}-proxy" getent hosts httpbin.org 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy network interfaces]" >&2
+  podman exec "${cage}-proxy" ip -4 -o addr show 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy iptables nat (PREROUTING)]" >&2
+  podman exec --user root "${cage}-proxy" iptables -t nat -L PREROUTING -n -v 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [proxy listening sockets]" >&2
+  podman exec "${cage}-proxy" ss -tlnp 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [mock container]" >&2
+  podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" >&2 || true
+  echo "        [cage container logs (last 25 lines)]" >&2
+  podman logs --tail 25 "${cage}-cage" 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [cage systemd journal (last 30 lines)]" >&2
+  journalctl --user -u "${cage}-cage.service" -n 30 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [cage netns routing table]" >&2
+  local _cage_pid
+  _cage_pid=$(podman inspect --format '{{.State.Pid}}' "${cage}-cage" 2>/dev/null || echo "")
+  if [ -n "$_cage_pid" ] && [ "$_cage_pid" != "0" ]; then
+    nsenter -t "$_cage_pid" -U -n -- ip route 2>&1 | sed 's/^/          /' >&2 || echo "          (nsenter failed)" >&2
+    # Pick the proxy IP that lives on the same /24 as the cage (the cage-net interface).
+    local _proxy_cage_ip
+    _proxy_cage_ip=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-proxy" 2>/dev/null)
+    echo "        [cage → proxy IP ping (target=$_proxy_cage_ip, 3 probes)]" >&2
+    if [ -n "$_proxy_cage_ip" ]; then
+      nsenter -t "$_cage_pid" -U -n -- ping -c 3 -W 2 -q "$_proxy_cage_ip" 2>&1 | sed 's/^/          /' >&2 || true
+      echo "        [cage → proxy:80 TCP connect]" >&2
+      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_proxy_cage_ip/80" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
+      echo "        [cage → proxy:8443 TCP connect]" >&2
+      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_proxy_cage_ip/8443" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
+    fi
+  else
+    echo "          (cage container has no valid PID)" >&2
+  fi
+  echo "        ── end $tag ──" >&2
+}
+
+# wait_data_path BASE_URL TEST_PATH CAGE DOMAIN [DOMAIN...]
+#   Wait for the full proxy → mock chain to be ready by polling TEST_PATH on
+#   the cage. On every retry, re-applies /etc/hosts to recover from a proxy
+#   container restart that wiped a previous patch. 60s timeout.
+#
+#   This is the readiness probe to call between start_mock/repatch_mock and
+#   any test that depends on the mock being reachable through the proxy.
+#   wait_ready alone isn't enough — it only checks GET / on the cage and
+#   doesn't exercise the DNS → iptables → mitmproxy → /etc/hosts → mock path.
+#
+#   Timeout is generous (120s) because CI parallel phases can saturate
+#   Podman, slowing container startup well past the 120s the data path
+#   normally needs.
+wait_data_path() {
+  local base="$1" test_path="$2" cage="$3"; shift 3
+  local timeout=120
+  local deadline=$((SECONDS + timeout))
+  local delay=1
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$base$test_path" 2>/dev/null || true)
+    if [ "$code" = "200" ]; then
+      return 0
+    fi
+    repatch_mock "$cage" "$@" >/dev/null 2>&1 || true
+    sleep "$delay"
+    delay=$(( delay + 1 ))
+    [ "$delay" -gt 3 ] && delay=3
   done
   return 1
 }
@@ -260,6 +353,11 @@ preflight_check() {
 # Replaces external httpbin.org/example.com with a local container on
 # the cage network. The proxy's /etc/hosts is patched so outbound
 # requests resolve to the mock instead of the real internet.
+#
+# IMPORTANT: test cage configs must set AGENT_DEMO=false on the agent
+# container so the example agent's startup demoCycle does not race
+# against the /etc/hosts patch — if the agent resolves the upstream
+# domain first, mitmproxy caches the real IP and never honors the patch.
 
 MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
 
@@ -288,9 +386,14 @@ start_mock() {
 
   # Start mock container (reuses the already-built agentcage-proxy image which has Python)
   # --user root: the image defaults to uid 1000, which can't bind to port 80
+  # --sysctl ip_unprivileged_port_start=80: required on hosts where the
+  #   default unprivileged port range starts at 1024 (e.g. Arch). Without
+  #   this, even root in the container's user namespace can't bind :80.
+  #   The proxy quadlet sets the same sysctl (proxy.container.j2).
   if ! podman run -d --name "${cage}-mock" \
     --user root \
     --network "${cage}-net" \
+    --sysctl net.ipv4.ip_unprivileged_port_start=80 \
     -v "${MOCK_SCRIPT}:/mock.py:ro" \
     localhost/agentcage-proxy python3 /mock.py >/dev/null 2>&1; then
     echo "WARNING: failed to start mock container for $cage" >&2
@@ -350,20 +453,23 @@ import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',80)); 
 # repatch_mock CAGE DOMAIN [DOMAIN...]
 #   Re-applies /etc/hosts after a proxy container restart (domain add/rm,
 #   cage restart, etc. recreate the container, losing the patch).
-#   Retries a few times since the new proxy container may still be starting.
+#   Verifies the patch landed before returning, since the proxy container
+#   can be restarted by Restart=on-failure between patch and verification.
 repatch_mock() {
   local cage="$1"; shift
   local mock_ip
   mock_ip=$(podman inspect "${cage}-mock" \
-    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null) || return 0
-  [ -z "$mock_ip" ] && return 0
+    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null) || return 1
+  [ -z "$mock_ip" ] && return 1
   local i
-  for i in 1 2 3 4 5; do
-    if _patch_proxy_hosts "$cage" "$mock_ip" "$@"; then
+  for i in $(seq 1 15); do
+    if _patch_proxy_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
+       podman exec "${cage}-proxy" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
+  return 1
 }
 
 # stop_mock CAGE — remove mock container

@@ -6,6 +6,7 @@ phase_header 1 "Container Mode — Lifecycle & Core Security"
 
 CAGE="basic"
 BASE="http://localhost:3000"
+CONFIGS="$(dirname "$0")/configs"
 
 # Clean any stale cage
 destroy_cage "$CAGE"
@@ -13,7 +14,7 @@ register_cage "$CAGE"
 
 # Setup
 echo "Creating cage..."
-create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+create_cage "$CONFIGS/basic.yaml" >/dev/null
 echo "Starting mock server..."
 start_mock "$CAGE" httpbin.org example.com
 
@@ -24,7 +25,18 @@ if ! wait_ready "$BASE" 120; then
 fi
 
 # Re-patch after proxy is fully up (ExecStartPost may have restarted it)
-repatch_mock "$CAGE" httpbin.org example.com
+repatch_mock "$CAGE" httpbin.org example.com || true
+
+# Verify the full data path (DNS → iptables → mitmproxy → /etc/hosts → mock)
+# is actually working before running assertions. wait_ready only checks GET /
+# on the cage; it can pass while the upstream chain is still broken.
+if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org example.com; then
+  e2e_fail "1.0" "Data path readiness" "proxy → mock chain not ready within 120s"
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+  echo "        proxy chain probe: $BASE/fetch → ${CODE:-000}" >&2
+  dump_cage_diagnostics "$CAGE" "1.0 readiness failure"
+  print_results; exit 1
+fi
 
 # Tests
 assert_http 200 "$BASE/" "1.1" "Health check"

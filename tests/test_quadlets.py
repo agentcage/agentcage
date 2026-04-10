@@ -233,8 +233,8 @@ class TestProxyQuadlet:
         assert "Volume=test-certs.volume:/home/mitmproxy/.mitmproxy:Z" in content
         assert "AddCapability=NET_ADMIN" in content
         assert "--mode transparent@8443" in content
-        assert "iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 80 -j REDIRECT --to-port 8443" in content
-        assert "iptables -t nat -A PREROUTING -i eth0 -p tcp --dport 443 -j REDIRECT --to-port 8443" in content
+        assert "iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8443" in content
+        assert "iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8443" in content
 
     def test_proxy_secrets(self, tmp_path):
         p = tmp_path / "config.yaml"
@@ -341,7 +341,7 @@ class TestCageQuadlet:
         assert "Volume=test-certs.volume:/certs:ro,Z" in content
         assert "Volume=/home/patches:/agentcage:ro,Z" in content
         assert "nsenter" in content
-        assert f"ip route add default via {addrs['ip_proxy']}" in content
+        assert f"ip route replace default via {addrs['ip_proxy']}" in content
 
     def test_cage_defaults_hardening(self, minimal_yaml):
         cfg = load_config(minimal_yaml)

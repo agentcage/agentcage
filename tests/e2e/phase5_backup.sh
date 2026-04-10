@@ -17,10 +17,10 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   echo "Basic cage not running — creating..."
   destroy_cage "$CAGE"
   register_cage "$CAGE"
-  create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+  create_cage "$CONFIGS/basic.yaml" >/dev/null
   start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "5.0" "Setup" "cage not ready"; print_results; exit 1; }
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
 else
   # Basic cage already running (from sequential chain) — ensure mock is up
   start_mock "$CAGE" httpbin.org 2>/dev/null || true
@@ -34,7 +34,23 @@ export E2E_PORT_SECOND="$SECOND_PORT"
 create_cage "$CONFIGS/second.yaml" >/dev/null
 start_mock "$CAGE2" example.com
 wait_ready "$BASE2" 120 || { e2e_fail "5.0" "Setup" "second cage not ready"; print_results; exit 1; }
-repatch_mock "$CAGE2" example.com
+repatch_mock "$CAGE2" example.com || true
+
+# Verify the OUTBOUND data path is working for BOTH cages before any
+# test runs. wait_ready only checks GET / on the published port and
+# can return success while the cage's default route or proxy iptables
+# aren't fully set up. wait_data_path probes the actual proxy → mock
+# chain and re-patches /etc/hosts on retry.
+if ! wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org; then
+  e2e_fail "5.0" "Setup" "basic cage data path not ready within 120s"
+  dump_cage_diagnostics "$CAGE" "5.0 setup failure (basic)"
+  print_results; exit 1
+fi
+if ! wait_data_path "$BASE2" "/fetch?url=http://example.com" "$CAGE2" example.com; then
+  e2e_fail "5.0" "Setup" "second cage data path not ready within 120s"
+  dump_cage_diagnostics "$CAGE2" "5.0 setup failure (second)"
+  print_results; exit 1
+fi
 
 # 5.1: Both cages running
 e2e_timer_start
@@ -54,10 +70,10 @@ _isolation_ok=false
 _iso_deadline=$((SECONDS + 120))
 _iso_delay=1
 while [ "$SECONDS" -lt "$_iso_deadline" ]; do
-  CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-  CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
-  CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://example.com" 2>/dev/null || echo "000")
-  CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
+  CODE_BASIC_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+  CODE_BASIC_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://example.com" 2>/dev/null || true)
+  CODE_SECOND_EXAMPLE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://example.com" 2>/dev/null || true)
+  CODE_SECOND_HTTPBIN=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE2/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
   if [ "$CODE_BASIC_HTTPBIN" = "200" ] && is_blocked "$CODE_BASIC_EXAMPLE" && \
      [ "$CODE_SECOND_EXAMPLE" = "200" ] && is_blocked "$CODE_SECOND_HTTPBIN"; then
     _isolation_ok=true
@@ -72,6 +88,8 @@ if [ "$_isolation_ok" = true ]; then
 else
   e2e_fail "5.2" "Subnet isolation" \
     "basic→httpbin=$CODE_BASIC_HTTPBIN basic→example=$CODE_BASIC_EXAMPLE second→example=$CODE_SECOND_EXAMPLE second→httpbin=$CODE_SECOND_HTTPBIN"
+  dump_cage_diagnostics "$CAGE" "5.2 failure (basic)"
+  dump_cage_diagnostics "$CAGE2" "5.2 failure (second)"
 fi
 
 # 5.3: Backup cage
@@ -109,13 +127,16 @@ else
 fi
 
 if [ "$_restore_ok" = true ]; then
-  # 5.6: Restored cage works — proxy may need a moment to forward after restore
+  # 5.6: Restored cage works — restore creates a fresh network with new IPs,
+  # so re-patch /etc/hosts during the readiness probe to recover from any
+  # proxy restart or stale mock IP.
   e2e_timer_start
-  if wait_http_code "$BASE/fetch?url=http://httpbin.org/get" 200 60; then
+  if wait_data_path "$BASE" "/fetch?url=http://httpbin.org/get" "$CAGE" httpbin.org; then
     e2e_pass "5.6" "Restored cage works"
   else
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || echo "000")
-    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got $CODE after 60s"
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
+    e2e_fail "5.6" "Restored cage works" "expected HTTP 200, got ${CODE:-000} after 120s"
+    dump_cage_diagnostics "$CAGE" "5.6 failure"
   fi
 else
   e2e_skip "5.6" "Restored cage works" "depends on 5.5"

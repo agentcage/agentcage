@@ -6,14 +6,21 @@ phase_header 4 "Container Mode — Domain Management & Hot-Reload"
 
 CAGE="basic"
 BASE="http://localhost:3000"
+CONFIGS="$(dirname "$0")/configs"
 
 # Ensure the basic cage is running
 if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   echo "Basic cage not running — creating..."
   destroy_cage "$CAGE"
   register_cage "$CAGE"
-  create_cage "$REPO_ROOT/examples/basic/cage.yaml" >/dev/null
+  create_cage "$CONFIGS/basic.yaml" >/dev/null
+  start_mock "$CAGE" httpbin.org
   wait_ready "$BASE" 120 || { e2e_fail "4.0" "Setup" "cage not ready"; print_results; exit 1; }
+  repatch_mock "$CAGE" httpbin.org || true
+else
+  # Cage is running but mock may not be — ensure it's started
+  start_mock "$CAGE" httpbin.org || true
+  repatch_mock "$CAGE" httpbin.org || true
 fi
 
 # 4.1: List domains
@@ -24,7 +31,7 @@ assert_output_contains "4.1" "List domains" "httpbin.org" \
 e2e_timer_start
 if agentcage domain add "$CAGE" example.com >/dev/null 2>&1; then
   wait_ready "$BASE" 60 || true
-  repatch_mock "$CAGE" httpbin.org example.com
+  repatch_mock "$CAGE" httpbin.org example.com || true
   e2e_pass "4.2" "Add domain"
 else
   e2e_fail "4.2" "Add domain" "command failed"
@@ -33,18 +40,20 @@ fi
 # 4.3: New domain accessible (poll — proxy may need a moment after hot-reload)
 e2e_timer_start
 # Domain hot-reload can be slow in CI: the proxy needs to pick up the config change,
-# regenerate DNS rules, and restart. Give it up to 120s.
-if wait_http_code "$BASE/fetch?url=http://example.com" 200 120; then
+# regenerate DNS rules, and restart. wait_data_path repatches /etc/hosts on every
+# retry to recover from a proxy container restart that wiped the patch.
+if wait_data_path "$BASE" "/fetch?url=http://example.com" "$CAGE" httpbin.org example.com; then
   e2e_pass "4.3" "New domain accessible"
 else
   e2e_fail "4.3" "New domain accessible" "did not get HTTP 200 within 120s"
+  dump_cage_diagnostics "$CAGE" "4.3 failure"
 fi
 
 # 4.4: Remove domain
 e2e_timer_start
 if agentcage domain rm "$CAGE" example.com >/dev/null 2>&1; then
   wait_ready "$BASE" 60 || true
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.4" "Remove domain"
 else
   e2e_fail "4.4" "Remove domain" "command failed"
@@ -72,7 +81,7 @@ fi
 e2e_timer_start
 agentcage cage start "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.7" "Start cage"
 else
   e2e_fail "4.7" "Start cage" "not ready after start"
@@ -82,7 +91,7 @@ fi
 e2e_timer_start
 agentcage cage restart "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
-  repatch_mock "$CAGE" httpbin.org
+  repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.8" "Restart cage"
 else
   e2e_fail "4.8" "Restart cage" "not ready after restart"
