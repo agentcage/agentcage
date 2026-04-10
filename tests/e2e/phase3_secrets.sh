@@ -173,7 +173,7 @@ fi
 
 # 3.12: systemd-creds backend (only if available)
 e2e_timer_start
-if command -v systemd-creds >/dev/null 2>&1; then
+if command -v systemd-creds >/dev/null 2>&1 && echo probe | systemd-creds encrypt --name _probe - - >/dev/null 2>&1; then
   CAGE_CREDS="e2e-secrets-creds"
   destroy_cage "$CAGE_CREDS" 2>/dev/null || true
   TMPYAML=$(mktemp /tmp/e2e-creds-XXXXXX.yaml)
