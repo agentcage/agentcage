@@ -25,7 +25,7 @@ _USER_SCAFFOLDS_DIR = Path(
 # (build[].build_args). resolve_build_args() in registry.py resolves tags
 # against those declarations.
 
-_SCAFFOLD_IMAGE_RE = re.compile(r"^localhost/agentcage-scaffold-([a-z0-9-]+):")
+_SCAFFOLD_IMAGE_RE = re.compile(r"^localhost/agentcage-scaffold-([a-z0-9-]+?)(?::|$)")
 
 
 def infer_scaffold_from_image(image: str) -> str | None:

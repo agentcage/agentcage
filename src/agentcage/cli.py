@@ -437,11 +437,11 @@ def cage_create(config_path: str, secrets: tuple):
     # Save state
     state.save_deployment(name, config_path)
     from agentcage.init import infer_scaffold_from_image
-    _metadata = {"agentcage_version": version("agentcage")}
-    _scaffold = infer_scaffold_from_image(cfg.container.image)
-    if _scaffold:
-        _metadata["scaffold"] = _scaffold
-    state.save_metadata(name, _metadata)
+    metadata = {"agentcage_version": version("agentcage")}
+    scaffold_name = infer_scaffold_from_image(cfg.container.image)
+    if scaffold_name:
+        metadata["scaffold"] = scaffold_name
+    state.save_metadata(name, metadata)
 
     # Copy Containerfile and sibling files into state dir so cage update
     # can rebuild (Containerfiles may COPY other files from the build context)
@@ -721,9 +721,9 @@ def cage_update(name: str, config_path: str | None):
             click.echo(f"warning: {w}", err=True)
 
     # Merge into existing metadata so scaffold/network_octet/etc. survive updates
-    _meta = state.load_metadata(name) or {}
-    _meta["agentcage_version"] = version("agentcage")
-    state.save_metadata(name, _meta)
+    meta = state.load_metadata(name) or {}
+    meta["agentcage_version"] = version("agentcage")
+    state.save_metadata(name, meta)
     config_host_path = state.save_proxy_config(name)
 
     podman = Podman()

@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agentcage.init import list_scaffolds, render_config, load_scaffold_meta
+from agentcage.init import (
+    infer_scaffold_from_image,
+    list_scaffolds,
+    load_scaffold_meta,
+    render_config,
+)
 
 
 class TestListScaffolds:
@@ -225,3 +230,47 @@ class TestScaffoldConfigIntegration:
         # validate_config returns warnings for nested_containers; should not raise
         warnings = validate_config(cfg)
         assert isinstance(warnings, list)
+
+
+class TestInferScaffoldFromImage:
+    """Verify infer_scaffold_from_image() correctly maps image refs to scaffold names."""
+
+    def test_tagged_openclaw_matches(self):
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-openclaw:latest"
+        ) == "openclaw"
+
+    def test_untagged_openclaw_matches(self):
+        """scaffold.yaml build entries use untagged refs — must match too."""
+        assert infer_scaffold_from_image("localhost/agentcage-scaffold-openclaw") == "openclaw"
+
+    def test_tagged_nanoclaw_matches(self):
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-nanoclaw:latest"
+        ) == "nanoclaw"
+
+    def test_untagged_nanoclaw_matches(self):
+        """nanoclaw's cage.yaml.j2 declares its image without a tag."""
+        assert infer_scaffold_from_image("localhost/agentcage-scaffold-nanoclaw") == "nanoclaw"
+
+    def test_hyphenated_scaffold_name(self):
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-claude-code:latest"
+        ) == "claude-code"
+
+    def test_non_matching_prefix_returns_none(self):
+        assert infer_scaffold_from_image("docker.io/library/node:22") is None
+        assert infer_scaffold_from_image("ghcr.io/foo/bar:v1") is None
+
+    def test_unknown_scaffold_name_returns_none(self):
+        """Prefix matches the convention but the scaffold doesn't exist."""
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-definitely-not-a-real-scaffold:latest"
+        ) is None
+
+    def test_empty_string_returns_none(self):
+        assert infer_scaffold_from_image("") is None
+
+    def test_similar_but_wrong_prefix_returns_none(self):
+        """'scaffold' without the 'agentcage-' prefix should not match."""
+        assert infer_scaffold_from_image("localhost/scaffold-openclaw:latest") is None
