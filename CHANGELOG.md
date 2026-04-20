@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4] - 2026-04-20
+
+### Added
+- `cage update` auto-bumps scaffold-declared untagged base image tags on every run, tracking upstream instead of freezing on the tag current at `cage create`. Scaffold.yaml's `build_args` is authoritative: untagged = auto-bump, explicit tag = respect the author's pin. Offline updates preserve the existing pin (regression-critical).
+- `infer_scaffold_from_image()` discovers the scaffold name for pre-existing cages from the `localhost/agentcage-scaffold-<NAME>:...` image naming convention, so legacy cages benefit without manual migration. New cages get the scaffold persisted to `metadata.json` on create.
+- `resolve_build_args()` in `agentcage.registry` centralizes tag resolution previously duplicated across `cli.py` update, `services.py` build, and `init.py` scaffold setup.
+
+### Changed
+- `cage update` preserves existing metadata instead of overwriting — `scaffold` and `network_octet` survive updates.
+- openclaw scaffold compatibility with `ghcr.io/openclaw/openclaw:2026.4.15+` base images: skip the `npm install --omit=dev` step when runtime deps are already hoisted (new upstream layout); add `/app/node_modules/openclaw -> /app` symlink so the bundled matrix extension's `openclaw/plugin-sdk/...` self-references resolve.
+- openclaw scaffold `entrypoint.sh` degrades gracefully when `/home/node/.pki` isn't writable: the mitmproxy CA install is best-effort and a stderr warning is emitted so operators can see TLS inspection for browser traffic is degraded.
+- `_SCAFFOLD_IMAGES` hardcoded dict removed; scaffold.yaml is now the single source of truth for scaffold → upstream-image mapping.
+- `render_config()` and `run_scaffold_setup()` no longer thread an `image_tag` through call sites — tag resolution happens inside `run_scaffold_setup` via the shared helper.
+
+### Fixed
+- Suppress the noisy `warning: could not resolve latest tag for localhost/...` that fired on every `cage update` for scaffold-built local image refs that never exist in a real registry.
+
 ## [0.10.3] - 2026-03-27
 
 ### Improved
