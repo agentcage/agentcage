@@ -340,7 +340,7 @@ def execute(
 
     # Render config from scaffold template
     os.environ["PROJECT_DIR"] = project_dir
-    config_text, image_tag = render_config(
+    config_text = render_config(
         cage_name, scaffold=scaffold, isolation=isolation,
     )
 
@@ -427,7 +427,6 @@ def execute(
             if cfg.isolation != "vm":
                 run_scaffold_setup(
                     scaffold, cage_name, str(config_path),
-                    image_tag=image_tag,
                 )
             build_and_deploy(
                 cfg,
@@ -442,7 +441,7 @@ def execute(
                 if cfg.isolation != "vm":
                     run_scaffold_setup(
                         scaffold, cage_name, str(config_path),
-                        image_tag=image_tag, quiet=True,
+                        quiet=True,
                     )
                 build_and_deploy(
                     cfg,

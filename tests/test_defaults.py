@@ -4,7 +4,7 @@ import sys
 import textwrap
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import yaml
 import pytest
@@ -98,11 +98,10 @@ class TestDefaultInspectors:
         names = sorted(i.name for i in addon.inspectors)
         assert names == ["body-size", "content-type", "domain", "entropy", "secrets"]
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
-    def test_openclaw_preset_loads_inspectors(self, mock_resolve):
+    def test_openclaw_preset_loads_inspectors(self):
         """The openclaw scaffold config should load entropy + content-type."""
         from agentcage.init import render_config
-        cfg_text, _ = render_config("test-oc", scaffold="openclaw")
+        cfg_text = render_config("test-oc", scaffold="openclaw")
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
         assert "entropy" in names
@@ -110,11 +109,10 @@ class TestDefaultInspectors:
         assert "domain" in names
         assert "secrets" in names
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="v0.1.2")
-    def test_picoclaw_preset_loads_inspectors(self, mock_resolve):
+    def test_picoclaw_preset_loads_inspectors(self):
         """The picoclaw scaffold config should load entropy + content-type."""
         from agentcage.init import render_config
-        cfg_text, _ = render_config("test-pico", scaffold="picoclaw")
+        cfg_text = render_config("test-pico", scaffold="picoclaw")
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
         assert "entropy" in names
@@ -125,7 +123,7 @@ class TestDefaultInspectors:
         """The picoclaw scaffold should produce valid YAML that load_config accepts."""
         from agentcage.init import render_config
         from agentcage.config import load_config
-        cfg_text, _ = render_config("test-pico", scaffold="picoclaw")
+        cfg_text = render_config("test-pico", scaffold="picoclaw")
         cfg_file = tmp_path / "picoclaw.yaml"
         cfg_file.write_text(cfg_text)
         cfg = load_config(str(cfg_file))
@@ -180,12 +178,11 @@ class TestBuildConfig:
         assert cfg.container.build.containerfile == ""
         assert cfg.container.build.args == {}
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
-    def test_openclaw_scaffold_has_build_section(self, mock_resolve, tmp_path):
+    def test_openclaw_scaffold_has_build_section(self, tmp_path):
         """The rendered openclaw scaffold should include a build section."""
         from agentcage.init import render_config
         from agentcage.config import load_config
-        cfg_text, _ = render_config("test-oc-build", scaffold="openclaw")
+        cfg_text = render_config("test-oc-build", scaffold="openclaw")
         cfg_file = tmp_path / "cage.yaml"
         cfg_file.write_text(cfg_text)
         cfg = load_config(str(cfg_file))

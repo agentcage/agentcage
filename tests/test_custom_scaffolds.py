@@ -369,7 +369,7 @@ class TestShadowWarning:
             old_stderr = sys.stderr
             try:
                 # render_config prints shadow warning to stderr via click
-                result, _ = render_config("test", scaffold="alpine-curl")
+                result = render_config("test", scaffold="alpine-curl")
                 # The warning goes through click.echo(err=True)
             finally:
                 sys.stderr = old_stderr

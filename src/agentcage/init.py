@@ -21,12 +21,26 @@ _USER_SCAFFOLDS_DIR = Path(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
 ) / "agentcage" / "scaffolds"
 
-# Scaffold name → base image (without tag) for version pinning.
-# picoclaw uses a local build (see scaffold comments) until a release
-# with HTTP proxy support ships upstream.
-_SCAFFOLD_IMAGES: dict[str, str] = {
-    "openclaw": "ghcr.io/openclaw/openclaw",
-}
+# Scaffold upstream image mapping lives in each scaffold's scaffold.yaml
+# (build[].build_args). resolve_build_args() in registry.py resolves tags
+# against those declarations.
+
+_SCAFFOLD_IMAGE_RE = re.compile(r"^localhost/agentcage-scaffold-([a-z0-9-]+?)(?::|$)")
+
+
+def infer_scaffold_from_image(image: str) -> str | None:
+    """Infer scaffold name from the ``localhost/agentcage-scaffold-<NAME>:...``
+    image naming convention used by scaffold-built images.
+
+    Returns the scaffold name if it maps to a known scaffold, else ``None``.
+    Used by update to auto-discover the scaffold for cages created before
+    scaffold-name persistence landed in metadata.
+    """
+    m = _SCAFFOLD_IMAGE_RE.match(image or "")
+    if not m:
+        return None
+    name = m.group(1)
+    return name if name in list_scaffolds() else None
 
 
 def _project_scaffolds_dir() -> Path | None:
@@ -147,16 +161,21 @@ def render_config(
     isolation: str = "container",
     scaffold: str | None = None,
     port: int | None = None,
-) -> tuple[str, str | None]:
+) -> str:
     """Render a starter config.yaml from a template.
 
     When *scaffold* is ``None`` the default blank scaffold is used.
     Otherwise *scaffold* selects a file from the scaffold search path.
+
+    Upstream image tag resolution happens later, in :func:`run_scaffold_setup`
+    (via :func:`agentcage.registry.resolve_build_args`), so the rendered
+    config holds the scaffold's untagged reference verbatim and each cage
+    tracks its own pinned tag via state.
     """
     env = _make_env()
     if scaffold is None:
         tmpl = env.get_template("init-config.yaml.j2")
-        return tmpl.render(name=name, image=image, isolation=isolation, port=port), None
+        return tmpl.render(name=name, image=image, isolation=isolation, port=port)
 
     scaffold_dir = resolve_scaffold(scaffold)
     if scaffold_dir is None:
@@ -183,23 +202,10 @@ def render_config(
             err=True,
         )
 
-    image_tag: str | None = None
-    image_base = _SCAFFOLD_IMAGES.get(scaffold)
-    if image_base:
-        from agentcage.registry import resolve_latest_tag
-
-        image_tag = resolve_latest_tag(image_base)
-        if image_tag is None:
-            print(
-                f"warning: could not resolve latest tag for {image_base}, "
-                f"falling back to 'latest'",
-                file=sys.stderr,
-            )
-
     from agentcage.quadlets import cage_network_addrs
 
     addrs = cage_network_addrs(name)
-    return tmpl.render(name=name, isolation=isolation, port=port, image_tag=image_tag, **addrs), image_tag
+    return tmpl.render(name=name, isolation=isolation, port=port, **addrs)
 
 
 def load_scaffold_meta(scaffold: str) -> dict | None:
@@ -215,7 +221,7 @@ def load_scaffold_meta(scaffold: str) -> dict | None:
 
 
 def run_scaffold_setup(
-    scaffold: str, name: str, dest: str, *, image_tag: str | None = None, quiet: bool = False,
+    scaffold: str, name: str, dest: str, *, quiet: bool = False,
 ) -> None:
     """Execute build/provision steps from scaffold.yaml."""
     meta = load_scaffold_meta(scaffold)
@@ -223,6 +229,7 @@ def run_scaffold_setup(
         return
 
     from agentcage.podman import Podman
+    from agentcage.registry import resolve_build_args
 
     podman = Podman()
     scaffold_dir = resolve_scaffold(scaffold)
@@ -240,11 +247,11 @@ def run_scaffold_setup(
             _echo(f"Image {image} already exists, skipping build.")
             continue
 
-        # Resolve build_args — append resolved tag for scaffold images
-        build_args = dict(entry.get("build_args") or {})
-        for key, val in list(build_args.items()):
-            if val in _SCAFFOLD_IMAGES.values() and image_tag:
-                build_args[key] = f"{val}:{image_tag}"
+        # Resolve tags for scaffold-declared build args.
+        declared = entry.get("build_args") or {}
+        build_args, changes = resolve_build_args(declared, declared)
+        for key, _old, new in changes:
+            _echo(f"Build arg {key}: {new}")
 
         if "containerfile" in entry:
             containerfile = str(scaffold_dir / entry["containerfile"])

@@ -2,12 +2,16 @@
 
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import yaml
 
-from agentcage.init import list_scaffolds, render_config, load_scaffold_meta
+from agentcage.init import (
+    infer_scaffold_from_image,
+    list_scaffolds,
+    load_scaffold_meta,
+    render_config,
+)
 
 
 class TestListScaffolds:
@@ -59,18 +63,16 @@ class TestScaffoldMeta:
 class TestScaffoldRendering:
     """Verify scaffold templates render to valid YAML."""
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
-    def test_openclaw_renders_valid_yaml(self, mock_resolve):
-        cfg_text, tag = render_config("my-oc", scaffold="openclaw")
+    def test_openclaw_renders_valid_yaml(self):
+        cfg_text = render_config("my-oc", scaffold="openclaw")
         parsed = yaml.safe_load(cfg_text)
         assert parsed["name"] == "my-oc"
         assert "container" in parsed
         assert "image" in parsed["container"]
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
-    def test_openclaw_renders_parseable_config(self, mock_resolve, tmp_path):
+    def test_openclaw_renders_parseable_config(self, tmp_path):
         from agentcage.config import load_config
-        cfg_text, _ = render_config("test-oc", scaffold="openclaw")
+        cfg_text = render_config("test-oc", scaffold="openclaw")
         p = tmp_path / "cage.yaml"
         p.write_text(cfg_text)
         cfg = load_config(str(p))
@@ -78,7 +80,7 @@ class TestScaffoldRendering:
         assert cfg.container.image != ""
 
     def test_nanoclaw_renders_valid_yaml(self):
-        cfg_text, _ = render_config("my-nano", scaffold="nanoclaw")
+        cfg_text = render_config("my-nano", scaffold="nanoclaw")
         parsed = yaml.safe_load(cfg_text)
         assert parsed["name"] == "my-nano"
         assert "container" in parsed
@@ -86,7 +88,7 @@ class TestScaffoldRendering:
 
     def test_nanoclaw_renders_parseable_config(self, tmp_path):
         from agentcage.config import load_config
-        cfg_text, _ = render_config("test-nano", scaffold="nanoclaw")
+        cfg_text = render_config("test-nano", scaffold="nanoclaw")
         p = tmp_path / "cage.yaml"
         p.write_text(cfg_text)
         cfg = load_config(str(p))
@@ -94,26 +96,23 @@ class TestScaffoldRendering:
         assert cfg.container.nested_containers is True
 
     def test_default_scaffold_renders_valid_yaml(self):
-        cfg_text, tag = render_config("my-test")
+        cfg_text = render_config("my-test")
         parsed = yaml.safe_load(cfg_text)
         assert parsed["name"] == "my-test"
-        assert tag is None
 
     def test_invalid_scaffold_raises(self):
         """Attempting to render a non-existent scaffold should raise."""
         with pytest.raises(Exception):
             render_config("test", scaffold="nonexistent-scaffold-xyz")
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
-    def test_openclaw_with_vm_isolation(self, mock_resolve):
-        cfg_text, _ = render_config("vm-oc", scaffold="openclaw", isolation="vm")
+    def test_openclaw_with_vm_isolation(self):
+        cfg_text = render_config("vm-oc", scaffold="openclaw", isolation="vm")
         parsed = yaml.safe_load(cfg_text)
         assert parsed.get("isolation") == "vm"
         assert "vm" in parsed
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
-    def test_openclaw_with_custom_port(self, mock_resolve):
-        cfg_text, _ = render_config("port-oc", scaffold="openclaw", port=9999)
+    def test_openclaw_with_custom_port(self):
+        cfg_text = render_config("port-oc", scaffold="openclaw", port=9999)
         parsed = yaml.safe_load(cfg_text)
         # The port should appear in the ports config
         ports = parsed.get("container", {}).get("ports", [])
@@ -124,7 +123,7 @@ class TestCodingAgentScaffolds:
     """Verify claude-code and codex scaffolds render and validate correctly."""
 
     def test_claude_code_renders_valid_yaml(self):
-        cfg_text, _ = render_config("my-cc", scaffold="claude-code")
+        cfg_text = render_config("my-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)
         assert parsed["name"] == "my-cc"
         assert parsed["lifecycle"] == "interactive"
@@ -133,7 +132,7 @@ class TestCodingAgentScaffolds:
         assert parsed["container"]["command"] == ["sleep", "infinity"]
 
     def test_codex_renders_valid_yaml(self):
-        cfg_text, _ = render_config("my-cx", scaffold="codex")
+        cfg_text = render_config("my-cx", scaffold="codex")
         parsed = yaml.safe_load(cfg_text)
         assert parsed["name"] == "my-cx"
         assert parsed["lifecycle"] == "interactive"
@@ -141,32 +140,32 @@ class TestCodingAgentScaffolds:
         assert "container" in parsed
 
     def test_claude_code_has_anthropic_domain(self):
-        cfg_text, _ = render_config("test-cc", scaffold="claude-code")
+        cfg_text = render_config("test-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)
         domains = parsed.get("domains", {}).get("allow", [])
         assert "anthropic.com" in domains
 
     def test_codex_has_openai_domain(self):
-        cfg_text, _ = render_config("test-cx", scaffold="codex")
+        cfg_text = render_config("test-cx", scaffold="codex")
         parsed = yaml.safe_load(cfg_text)
         domains = parsed.get("domains", {}).get("allow", [])
         assert "openai.com" in domains
 
     def test_claude_code_has_exec_alias(self):
-        cfg_text, _ = render_config("test-cc", scaffold="claude-code")
+        cfg_text = render_config("test-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)
         assert "exec_aliases" in parsed
         assert "claude" in parsed["exec_aliases"]
 
     def test_codex_has_exec_alias(self):
-        cfg_text, _ = render_config("test-cx", scaffold="codex")
+        cfg_text = render_config("test-cx", scaffold="codex")
         parsed = yaml.safe_load(cfg_text)
         assert "exec_aliases" in parsed
         assert "codex" in parsed["exec_aliases"]
 
     def test_claude_code_passes_validation(self, tmp_path):
         from agentcage.config import load_config, validate_config
-        cfg_text, _ = render_config("test-cc", scaffold="claude-code")
+        cfg_text = render_config("test-cc", scaffold="claude-code")
         p = tmp_path / "cage.yaml"
         p.write_text(cfg_text)
         cfg = load_config(str(p))
@@ -174,26 +173,26 @@ class TestCodingAgentScaffolds:
 
     def test_codex_passes_validation(self, tmp_path):
         from agentcage.config import load_config, validate_config
-        cfg_text, _ = render_config("test-cx", scaffold="codex")
+        cfg_text = render_config("test-cx", scaffold="codex")
         p = tmp_path / "cage.yaml"
         p.write_text(cfg_text)
         cfg = load_config(str(p))
         validate_config(cfg)
 
     def test_claude_code_mounts_host_claude_dir(self):
-        cfg_text, _ = render_config("test-cc", scaffold="claude-code")
+        cfg_text = render_config("test-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)
         volumes = parsed.get("container", {}).get("volumes", [])
         assert any(".claude:" in v for v in volumes)
 
     def test_claude_code_has_secret_injection(self):
-        cfg_text, _ = render_config("test-cc", scaffold="claude-code")
+        cfg_text = render_config("test-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)
         secrets = parsed.get("secret_injection", [])
         assert any(s["env"] == "ANTHROPIC_API_KEY" for s in secrets)
 
     def test_claude_code_has_help_text(self):
-        cfg_text, _ = render_config("test-cc", scaffold="claude-code")
+        cfg_text = render_config("test-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)
         assert parsed.get("help", "") != ""
 
@@ -213,10 +212,9 @@ class TestCodingAgentScaffolds:
 class TestScaffoldConfigIntegration:
     """Verify scaffolds produce configs that pass validate_config."""
 
-    @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
-    def test_openclaw_passes_validation(self, mock_resolve, tmp_path):
+    def test_openclaw_passes_validation(self, tmp_path):
         from agentcage.config import load_config, validate_config
-        cfg_text, _ = render_config("test-oc", scaffold="openclaw")
+        cfg_text = render_config("test-oc", scaffold="openclaw")
         p = tmp_path / "cage.yaml"
         p.write_text(cfg_text)
         cfg = load_config(str(p))
@@ -225,10 +223,54 @@ class TestScaffoldConfigIntegration:
 
     def test_nanoclaw_passes_validation(self, tmp_path):
         from agentcage.config import load_config, validate_config
-        cfg_text, _ = render_config("test-nano", scaffold="nanoclaw")
+        cfg_text = render_config("test-nano", scaffold="nanoclaw")
         p = tmp_path / "cage.yaml"
         p.write_text(cfg_text)
         cfg = load_config(str(p))
         # validate_config returns warnings for nested_containers; should not raise
         warnings = validate_config(cfg)
         assert isinstance(warnings, list)
+
+
+class TestInferScaffoldFromImage:
+    """Verify infer_scaffold_from_image() correctly maps image refs to scaffold names."""
+
+    def test_tagged_openclaw_matches(self):
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-openclaw:latest"
+        ) == "openclaw"
+
+    def test_untagged_openclaw_matches(self):
+        """scaffold.yaml build entries use untagged refs — must match too."""
+        assert infer_scaffold_from_image("localhost/agentcage-scaffold-openclaw") == "openclaw"
+
+    def test_tagged_nanoclaw_matches(self):
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-nanoclaw:latest"
+        ) == "nanoclaw"
+
+    def test_untagged_nanoclaw_matches(self):
+        """nanoclaw's cage.yaml.j2 declares its image without a tag."""
+        assert infer_scaffold_from_image("localhost/agentcage-scaffold-nanoclaw") == "nanoclaw"
+
+    def test_hyphenated_scaffold_name(self):
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-claude-code:latest"
+        ) == "claude-code"
+
+    def test_non_matching_prefix_returns_none(self):
+        assert infer_scaffold_from_image("docker.io/library/node:22") is None
+        assert infer_scaffold_from_image("ghcr.io/foo/bar:v1") is None
+
+    def test_unknown_scaffold_name_returns_none(self):
+        """Prefix matches the convention but the scaffold doesn't exist."""
+        assert infer_scaffold_from_image(
+            "localhost/agentcage-scaffold-definitely-not-a-real-scaffold:latest"
+        ) is None
+
+    def test_empty_string_returns_none(self):
+        assert infer_scaffold_from_image("") is None
+
+    def test_similar_but_wrong_prefix_returns_none(self):
+        """'scaffold' without the 'agentcage-' prefix should not match."""
+        assert infer_scaffold_from_image("localhost/scaffold-openclaw:latest") is None
