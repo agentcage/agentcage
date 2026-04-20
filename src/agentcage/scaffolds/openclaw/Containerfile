@@ -29,10 +29,26 @@ RUN mkdir -p /home/node/.config/containers \
     > /home/node/.config/containers/storage.conf \
  && chown -R node:node /home/node/.config
 
-# Install matrix extension dependencies (bundled but not installed in base image)
-RUN if [ -d /app/extensions/matrix ] && [ -f /app/extensions/matrix/package.json ]; then \
+# Install matrix extension dependencies for older base images that didn't
+# hoist them. openclaw 2026.4+ stages runtime deps into /app/node_modules
+# AND uses workspace:* devDependency refs that break plain `npm install`;
+# the canary (matrix-js-sdk presence in /app/node_modules) distinguishes
+# the two layouts.
+RUN if [ -d /app/extensions/matrix ] && [ -f /app/extensions/matrix/package.json ] \
+        && [ ! -d /app/node_modules/matrix-js-sdk ]; then \
         cd /app/extensions/matrix && npm install --omit=dev; \
     fi
+
+# openclaw 2026.4+ bundles extensions with self-references like
+#   import { X } from "openclaw/plugin-sdk/..."
+# but the bundled extension dir has its own package.json (name
+# "@openclaw/matrix"), so Node's self-reference doesn't resolve to the
+# openclaw root. Link /app (name "openclaw") under node_modules so the
+# import walks up and resolves via /app/package.json's exports map.
+# Safe on older bases: they don't have the bundled extension tree, the
+# symlink just goes unused.
+RUN mkdir -p /app/node_modules \
+ && ln -sfn /app /app/node_modules/openclaw
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

@@ -6,11 +6,14 @@ set -e
 cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt \
   && update-ca-certificates 2>/dev/null || true
 
-# Add to NSS database for Chromium/Electron.
-mkdir -p /home/node/.pki/nssdb
-certutil -d sql:/home/node/.pki/nssdb -N --empty-password 2>/dev/null || true
-certutil -d sql:/home/node/.pki/nssdb -A -t 'C,,' -n mitmproxy \
-  -i /certs/mitmproxy-ca-cert.pem 2>/dev/null || true
+# Add to NSS database for Chromium/Electron. Best-effort: skip if the
+# enclosing path isn't writable (cages with a read-only root FS and no
+# /home/node/.pki tmpfs would otherwise fail hard under `set -e`).
+if mkdir -p /home/node/.pki/nssdb 2>/dev/null; then
+  certutil -d sql:/home/node/.pki/nssdb -N --empty-password 2>/dev/null || true
+  certutil -d sql:/home/node/.pki/nssdb -A -t 'C,,' -n mitmproxy \
+    -i /certs/mitmproxy-ca-cert.pem 2>/dev/null || true
+fi
 
 # ── OpenClaw config ──
 # Write default config if none exists.  CAGE_PROXY_IP and CAGE_GATEWAY_PORT
