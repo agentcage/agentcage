@@ -295,7 +295,7 @@ def init(name: str | None, output: str, image: str, isolation: str,
         click.echo(f"error: {dest} already exists (use --force to overwrite)", err=True)
         sys.exit(1)
 
-    content, image_tag = render_config(name, image=image, isolation=isolation, scaffold=scaffold, port=port)
+    content = render_config(name, image=image, isolation=isolation, scaffold=scaffold, port=port)
     dest.write_text(content)
     click.echo(f"Created {dest}")
 
@@ -303,7 +303,7 @@ def init(name: str | None, output: str, image: str, isolation: str,
 
     meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
-        run_scaffold_setup(scaffold, name, str(dest), image_tag=image_tag)
+        run_scaffold_setup(scaffold, name, str(dest))
         # Copy Containerfile and sibling build context files from scaffold
         scaffold_dir_path = resolve_scaffold(scaffold)
         if scaffold_dir_path is not None:
@@ -436,7 +436,12 @@ def cage_create(config_path: str, secrets: tuple):
 
     # Save state
     state.save_deployment(name, config_path)
-    state.save_metadata(name, {"agentcage_version": version("agentcage")})
+    from agentcage.init import infer_scaffold_from_image
+    _metadata = {"agentcage_version": version("agentcage")}
+    _scaffold = infer_scaffold_from_image(cfg.container.image)
+    if _scaffold:
+        _metadata["scaffold"] = _scaffold
+    state.save_metadata(name, _metadata)
 
     # Copy Containerfile and sibling files into state dir so cage update
     # can rebuild (Containerfiles may COPY other files from the build context)
@@ -594,13 +599,33 @@ def cage_update(name: str, config_path: str | None):
                     if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
                         shutil.copy2(str(f), str(dest_dir / f.name))
     else:
-        # Auto-resolve latest image tag for stored configs
-        from agentcage.registry import resolve_latest_tag
+        # Auto-resolve latest image tags for stored configs
+        from agentcage.init import (
+            infer_scaffold_from_image,
+            load_scaffold_meta,
+        )
+        from agentcage.registry import resolve_build_args, resolve_latest_tag
 
         raw = state.load_raw_config(name)
+
+        # Resolve the scaffold name for this cage. Precedence:
+        #   1. metadata.json "scaffold" (populated by cage create / run)
+        #   2. raw.get("scaffold") (legacy inline field)
+        #   3. infer from container.image naming convention
+        stored_meta = state.load_metadata(name) or {}
+        scaffold_name = (
+            stored_meta.get("scaffold")
+            or raw.get("scaffold", "")
+            or infer_scaffold_from_image(raw.get("container", {}).get("image", ""))
+            or ""
+        )
+
+        # Top-level container.image — skip scaffold-built local images
+        # (e.g. "localhost/agentcage-scaffold-openclaw:latest") since those
+        # are never in a real registry.
         current_image = raw.get("container", {}).get("image", "")
         image_base, _, current_tag = current_image.rpartition(":")
-        if image_base and current_tag:
+        if image_base and current_tag and not image_base.startswith("localhost/"):
             new_tag = resolve_latest_tag(image_base)
             if new_tag and new_tag != current_tag:
                 raw["container"]["image"] = f"{image_base}:{new_tag}"
@@ -613,28 +638,37 @@ def cage_update(name: str, config_path: str | None):
                     err=True,
                 )
 
-        # Auto-resolve latest tags for untagged build arg image refs
+        # Build args — scaffold.yaml declaration is authoritative.
+        # Untagged-in-scaffold ⇒ auto-bump on every update (tracks upstream).
+        # Tagged-in-scaffold   ⇒ respected (author pinned on purpose).
+        # User-added args      ⇒ resolved once if untagged, then respected.
+        scaffold_declared_args: dict[str, str] = {}
+        if scaffold_name:
+            scaffold_meta = load_scaffold_meta(scaffold_name) or {}
+            for entry in scaffold_meta.get("build", []):
+                scaffold_declared_args.update(entry.get("build_args") or {})
+
         build_raw = raw.get("container", {}).get("build", {})
-        build_args = build_raw.get("args") or {}
-        args_changed = False
-        for key, val in list(build_args.items()):
-            image_base, _, tag = val.rpartition(":")
-            if image_base and tag:
-                # Already has an explicit tag — leave it alone
-                continue
-            # Untagged image ref (contains "/" so looks like a registry path)
-            if "/" in val:
-                new_tag = resolve_latest_tag(val)
-                if new_tag:
-                    build_args[key] = f"{val}:{new_tag}"
-                    args_changed = True
-                    click.echo(f"Build arg {key}: {val} \u2192 {val}:{new_tag}")
-        if args_changed:
-            raw.setdefault("container", {}).setdefault("build", {})["args"] = build_args
+        stored_args = build_raw.get("args") or {}
+        resolved_args, changes = resolve_build_args(
+            stored_args, scaffold_declared_args,
+        )
+        for key, old, new in changes:
+            click.echo(f"Build arg {key}: {old} \u2192 {new}")
+            old_base = old.rsplit(":", 1)[0]
+            new_base = new.rsplit(":", 1)[0]
+            if old_base != new_base:
+                click.echo(
+                    f"warning: base image for {key} changed "
+                    f"({old_base} \u2192 {new_base}) \u2014 scaffold updated "
+                    f"upstream reference",
+                    err=True,
+                )
+        if changes:
+            raw.setdefault("container", {}).setdefault("build", {})["args"] = resolved_args
             state.save_raw_config(name, raw)
 
         # Refresh scaffold build artifacts and command if scaffold is known
-        scaffold_name = raw.get("scaffold", "")
         if scaffold_name:
             from agentcage.init import resolve_scaffold, render_config
 
@@ -649,7 +683,7 @@ def cage_update(name: str, config_path: str | None):
                 # Re-render scaffold template and patch command + new env vars
                 try:
                     import yaml
-                    rendered, _ = render_config(name, scaffold=scaffold_name)
+                    rendered = render_config(name, scaffold=scaffold_name)
                     scaffold_cfg = yaml.safe_load(rendered) or {}
                     scaffold_container = scaffold_cfg.get("container", {})
 
@@ -686,7 +720,10 @@ def cage_update(name: str, config_path: str | None):
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
 
-    state.save_metadata(name, {"agentcage_version": version("agentcage")})
+    # Merge into existing metadata so scaffold/network_octet/etc. survive updates
+    _meta = state.load_metadata(name) or {}
+    _meta["agentcage_version"] = version("agentcage")
+    state.save_metadata(name, _meta)
     config_host_path = state.save_proxy_config(name)
 
     podman = Podman()

@@ -169,7 +169,7 @@ def build_container_image(
 
     *echo* is an optional callback for progress messages (e.g. click.echo).
     """
-    from agentcage.registry import resolve_latest_tag
+    from agentcage.registry import resolve_build_args
 
     bc = cfg.container.build
     containerfile = Path(bc.containerfile)
@@ -179,23 +179,13 @@ def build_container_image(
 
     context_dir = str(containerfile.parent)
 
-    # Auto-resolve latest tags for remote image refs in build args
-    resolved_args: dict[str, str] = {}
-    for key, val in bc.args.items():
-        image_base, _, tag = val.rpartition(":")
-        if image_base and tag:
-            resolved_args[key] = val
-        elif "/" in val:
-            # Looks like a remote image without tag — resolve latest
-            new_tag = resolve_latest_tag(val)
-            if new_tag:
-                resolved_args[key] = f"{val}:{new_tag}"
-                if echo:
-                    echo(f"Build arg {key}: {val}:{new_tag}")
-            else:
-                resolved_args[key] = val
-        else:
-            resolved_args[key] = val
+    # Point-in-time tag resolution for build args. Scaffold-aware bumping
+    # happens earlier in the update path — here we only fill in tags for
+    # untagged registry refs (user-provided configs).
+    resolved_args, changes = resolve_build_args(bc.args)
+    if echo:
+        for key, _old, new in changes:
+            echo(f"Build arg {key}: {new}")
 
     if echo:
         echo(f"Building {cfg.container.image}...")
