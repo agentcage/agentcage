@@ -310,6 +310,20 @@ destroy_cage() {
   agentcage cage destroy "$1" -y >/dev/null 2>&1 || true
 }
 
+# destroy_cage_with_volumes CAGE VOL...
+#   Destroy a cage and remove caller-named podman volumes.
+#   agentcage cage destroy only removes agentcage-prefixed volumes
+#   (agentcage-certs-$NAME, agentcage-podman-$NAME); user-named
+#   volumes from the cage.yaml named_volumes block survive by design.
+#   Test cages want to clean these too so re-runs don't inherit state.
+destroy_cage_with_volumes() {
+  local cage="$1"; shift
+  destroy_cage "$cage"
+  for vol in "$@"; do
+    podman volume rm -f "$vol" >/dev/null 2>&1 || true
+  done
+}
+
 # Create a cage from a config template (expands env vars) and register for cleanup.
 # Streams output to stderr so callers can redirect with >/dev/null.
 create_cage() {
