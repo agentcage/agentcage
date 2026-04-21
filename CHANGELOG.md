@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- openclaw scaffold: default `openclaw.json` now sets `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork: true`. openclaw's browser plugin refuses every navigation when `HTTP_PROXY`/`HTTPS_PROXY` is set (error: `Navigation blocked: strict browser SSRF policy cannot be enforced while env proxy variables are set`). In agentcage, egress is already policed by the mitm proxy + domain allowlist + inspectors, so this guard is redundant and purely blocks the browser tool. Opting out restores browser-tool functionality; the cage's own egress controls remain authoritative.
+
 ## [0.10.4] - 2026-04-20
 
 ### Added

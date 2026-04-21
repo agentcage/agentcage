@@ -25,7 +25,14 @@ fi
 # are set by the cage.yaml template.
 chmod 700 /home/node/.openclaw
 if [ ! -f /home/node/.openclaw/openclaw.json ]; then
-  printf '{"browser": {"defaultProfile": "openclaw"}, "gateway": {"trustedProxies": ["%s"], "controlUi": {"allowedOrigins": ["http://localhost:%s", "http://127.0.0.1:%s"]} } }' \
+  # browser.ssrfPolicy.dangerouslyAllowPrivateNetwork: openclaw's browser
+  # plugin refuses to navigate whenever HTTP_PROXY/HTTPS_PROXY env vars
+  # are set ("strict browser SSRF policy cannot be enforced while env
+  # proxy variables are set"). In agentcage, egress is already policed
+  # by the mitm proxy + domain allowlist + inspectors, so this redundant
+  # guard just blocks the browser tool. Opt out — cage egress controls
+  # remain authoritative.
+  printf '{"browser": {"defaultProfile": "openclaw", "ssrfPolicy": {"dangerouslyAllowPrivateNetwork": true}}, "gateway": {"trustedProxies": ["%s"], "controlUi": {"allowedOrigins": ["http://localhost:%s", "http://127.0.0.1:%s"]} } }' \
     "${CAGE_PROXY_IP}" "${CAGE_GATEWAY_PORT}" "${CAGE_GATEWAY_PORT}" \
     > /home/node/.openclaw/openclaw.json
 fi
