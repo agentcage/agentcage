@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has top-level **`run`**, **`init`**, **`doctor`**, and **`update`** commands, and four command groups: **`cage`**, **`secret`**, **`domain`**, and **`scaffold`**.
+The CLI has top-level **`run`**, **`init`**, **`doctor`**, and **`update`** commands, and three command groups: **`cage`**, **`secret`**, and **`domain`**.
 
 ```
 agentcage run SCAFFOLD [options]
@@ -668,20 +668,3 @@ agentcage update
 ```
 
 Updates agentcage to the latest version.
-
----
-
-## `scaffold` -- Manage scaffold templates
-
-| Command | Description |
-|---|---|
-| `scaffold list` | List available scaffolds (built-in, user, and project-local) |
-| `scaffold show NAME` | Show scaffold details and config template |
-| `scaffold create NAME` | Create a new user scaffold |
-| `scaffold edit NAME` | Edit a user scaffold |
-| `scaffold delete NAME` | Delete a user scaffold |
-| `scaffold export NAME` | Export a scaffold as a directory |
-
-Scaffolds are resolved in order: project-local (`.agentcage/scaffolds/`) → user (`~/.config/agentcage/scaffolds/`) → built-in.
-
-**Aliases:** `ls` → `list`, `rm` → `delete`

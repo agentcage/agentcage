@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -17,9 +15,6 @@ from jinja2.sandbox import SandboxedEnvironment
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _SCAFFOLDS_DIR = Path(__file__).parent / "scaffolds"
-_USER_SCAFFOLDS_DIR = Path(
-    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
-) / "agentcage" / "scaffolds"
 
 # Scaffold upstream image mapping lives in each scaffold's scaffold.yaml
 # (build[].build_args). resolve_build_args() in registry.py resolves tags
@@ -43,20 +38,6 @@ def infer_scaffold_from_image(image: str) -> str | None:
     return name if name in list_scaffolds() else None
 
 
-def _project_scaffolds_dir() -> Path | None:
-    """Return the project-local scaffolds dir, or None if not in a git repo."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return Path(result.stdout.strip()) / ".agentcage" / "scaffolds"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
-
-
 _SCAFFOLD_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
 
 
@@ -66,58 +47,18 @@ def _valid_scaffold_name(name: str) -> bool:
 
 
 def resolve_scaffold(name: str) -> Path | None:
-    """Resolve a scaffold name to its directory path.
-
-    Search order:
-      1. Project-local: <git-root>/.agentcage/scaffolds/<name>/
-      2. User: ~/.config/agentcage/scaffolds/<name>/
-      3. Built-in: package scaffolds/<name>/
-      4. Legacy: package templates/presets/<name>.yaml.j2
+    """Resolve a scaffold name to its built-in directory path.
 
     Returns the scaffold directory Path, or None if not found.
     """
     if not _valid_scaffold_name(name):
         return None
 
-    # 1. Project-local
-    project_dir = _project_scaffolds_dir()
-    if project_dir is not None:
-        candidate = project_dir / name
-        if (candidate / "cage.yaml.j2").exists():
-            return candidate
-
-    # 2. User scaffolds
-    candidate = _USER_SCAFFOLDS_DIR / name
-    if (candidate / "cage.yaml.j2").exists():
-        return candidate
-
-    # 3. Built-in scaffolds
     candidate = _SCAFFOLDS_DIR / name
     if (candidate / "cage.yaml.j2").exists():
         return candidate
-
-    # 4. Legacy presets (templates/presets/*.yaml.j2)
-    preset = _TEMPLATES_DIR / "presets" / f"{name}.yaml.j2"
-    if preset.exists():
-        return preset.parent  # return the presets dir (special case)
 
     return None
-
-
-def is_builtin_scaffold(name: str) -> bool:
-    """Return True if the scaffold is a built-in (shipped with the package)."""
-    candidate = _SCAFFOLDS_DIR / name
-    return (candidate / "cage.yaml.j2").exists()
-
-
-def scaffold_source(name: str) -> str:
-    """Return the source label for a scaffold: 'local', 'user', or 'built-in'."""
-    project_dir = _project_scaffolds_dir()
-    if project_dir is not None and (project_dir / name / "cage.yaml.j2").exists():
-        return "local"
-    if (_USER_SCAFFOLDS_DIR / name / "cage.yaml.j2").exists():
-        return "user"
-    return "built-in"
 
 
 def _make_env() -> SandboxedEnvironment:
@@ -129,29 +70,14 @@ def _make_env() -> SandboxedEnvironment:
     )
 
 
-def _scaffold_search_dirs() -> list[Path]:
-    """Return all scaffold directories in resolution order."""
-    dirs: list[Path] = []
-    project_dir = _project_scaffolds_dir()
-    if project_dir is not None and project_dir.is_dir():
-        dirs.append(project_dir)
-    if _USER_SCAFFOLDS_DIR.is_dir():
-        dirs.append(_USER_SCAFFOLDS_DIR)
-    if _SCAFFOLDS_DIR.is_dir():
-        dirs.append(_SCAFFOLDS_DIR)
-    return dirs
-
-
 def list_scaffolds() -> list[str]:
-    """Return sorted names of available scaffold templates."""
-    preset_dir = _TEMPLATES_DIR / "presets"
-    names: set[str] = set()
-    if preset_dir.is_dir():
-        names.update(p.stem.removesuffix(".yaml") for p in preset_dir.glob("*.yaml.j2"))
-    for search_dir in _scaffold_search_dirs():
-        names.update(d.name for d in search_dir.iterdir()
-                     if d.is_dir() and (d / "cage.yaml.j2").exists())
-    return sorted(names)
+    """Return sorted names of available built-in scaffold templates."""
+    if not _SCAFFOLDS_DIR.is_dir():
+        return []
+    return sorted(
+        d.name for d in _SCAFFOLDS_DIR.iterdir()
+        if d.is_dir() and (d / "cage.yaml.j2").exists()
+    )
 
 
 def render_config(
@@ -181,26 +107,13 @@ def render_config(
     if scaffold_dir is None:
         raise click.ClickException(f"scaffold {scaffold!r} not found")
 
-    scaffold_file = scaffold_dir / "cage.yaml.j2"
-    if scaffold_file.exists():
-        env = SandboxedEnvironment(
-            loader=FileSystemLoader(str(scaffold_dir)),
-            keep_trailing_newline=True,
-            trim_blocks=True,
-            lstrip_blocks=True,
-        )
-        tmpl = env.get_template("cage.yaml.j2")
-    else:
-        tmpl = env.get_template(f"presets/{scaffold}.yaml.j2")
-
-    # Warn if user/local scaffold shadows a built-in
-    source = scaffold_source(scaffold)
-    if source != "built-in" and is_builtin_scaffold(scaffold):
-        click.echo(
-            f"note: using {source} scaffold {scaffold!r} "
-            f"(shadows built-in)",
-            err=True,
-        )
+    env = SandboxedEnvironment(
+        loader=FileSystemLoader(str(scaffold_dir)),
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    tmpl = env.get_template("cage.yaml.j2")
 
     from agentcage.quadlets import cage_network_addrs
 

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- `agentcage scaffold` command group (`create`, `list`, `show`, `edit`, `delete`, `export`) and the three-tier scaffold resolver. Scaffolds now resolve to built-ins only; the project-local (`.agentcage/scaffolds/`) and user (`~/.config/agentcage/scaffolds/`) lookup tiers, the legacy `templates/presets/` fallback, and the shadow warning are gone. The custom-scaffold subsystem shipped as speculative extensibility in 0.10.1 and never paid rent — the resolver was running on every `cage create` to no effect when no overrides existed. `src/agentcage/scaffold_cli.py` is deleted; `src/agentcage/init.py` loses `_USER_SCAFFOLDS_DIR`, `_project_scaffolds_dir`, `scaffold_source`, `is_builtin_scaffold`, and `_scaffold_search_dirs`.
+
 ## [0.10.6] - 2026-04-26
 
 ### Changed

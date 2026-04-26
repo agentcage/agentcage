@@ -121,12 +121,6 @@ def doctor():
     sys.exit(1 if any(r.level == "error" for r in results) else 0)
 
 
-# ── scaffold group ──────────────────────────────────────
-
-from agentcage.scaffold_cli import scaffold  # noqa: E402
-main.add_command(scaffold)
-
-
 # ── completions ──────────────────────────────────────────
 
 
