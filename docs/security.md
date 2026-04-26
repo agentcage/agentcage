@@ -200,7 +200,25 @@ If a `cage.yaml` is sourced from an untrusted location (e.g. a public git reposi
 
 The `env:` backend reads from the host's environment variables. No shell execution is involved.
 
-The `systemd-creds:` backend encrypts secrets at rest with AES256-GCM, keyed by a combination of a TPM2 chip and a host-specific key. Encrypted blobs are bound to the machine's hardware. A motherboard swap, TPM reset, or BIOS update may render encrypted secrets unrecoverable. Use `agentcage cage backup --include-secrets` to create portable backups.
+The `systemd-creds:` backend encrypts secrets at rest with AES256-GCM, keyed by a combination of a TPM2 chip and a host-specific key. Encrypted blobs are bound to the machine's hardware. A motherboard swap, TPM reset, or BIOS update may render encrypted secrets unrecoverable.
+
+## Backing up cage state
+
+agentcage does not ship a built-in backup command. To snapshot a cage, archive the config directory and any named volumes:
+
+```
+tar -czf cage-<name>-$(date +%F).tar.gz -C ~/.local/share/agentcage <name>
+podman volume export <vol-name> -o vol-<name>-$(date +%F).tar
+```
+
+To restore on another host:
+
+```
+tar -xzf cage-<name>-<date>.tar.gz -C ~/.local/share/agentcage
+podman volume import <vol-name> vol-<name>-<date>.tar
+```
+
+Secrets stored via `systemd-creds:` are TPM-bound and not portable across hosts; re-run `agentcage secret set` on the new host. Secrets in the Podman secret store can be re-set the same way. This recipe gives you full control over compression, encryption (e.g. pipe through `gpg`), and remote upload.
 
 ## Reporting Security Issues
 

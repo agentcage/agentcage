@@ -145,10 +145,6 @@ agentcage cage update myapp -c cage.yaml
 # Restart without rebuild
 agentcage cage restart myapp
 
-# Backup and restore
-agentcage cage backup myapp --include-secrets -o backup.tar.gz
-agentcage cage restore backup.tar.gz --name myapp-clone
-
 # Tear it all down
 agentcage cage destroy myapp
 ```
@@ -157,7 +153,7 @@ agentcage cage destroy myapp
 |---|---|
 | `run` | *(top-level)* -- run a coding agent in a sandbox (`agentcage run claude-code`) |
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `prune`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
+| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `prune`, `verify`, `restart`, `logs`, `exec`, `audit`, `har` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |

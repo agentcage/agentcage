@@ -115,8 +115,6 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 | `cage shell NAME` | Open an interactive shell in a cage container |
 | `cage audit NAME [OPTIONS]` | Query, filter, and summarize proxy audit logs |
 | `cage har NAME [OPTIONS]` | Export captured HTTP traffic as HAR 1.2 JSON |
-| `cage backup NAME [OPTIONS]` | Create a backup tarball of a cage |
-| `cage restore TARBALL [OPTIONS]` | Restore a cage from a backup tarball |
 
 **Aliases:** `ls` → `list`, `ps` → `list`, `status` → `list`, `rm` → `destroy`, `delete` → `destroy`, `reload` → `restart`, `describe` → `show`, `inspect` → `show`
 
@@ -435,91 +433,6 @@ agentcage cage har mycage --host api.anthropic.com --since 1h -o anthropic.har
 # Pipe raw capture data for custom processing
 agentcage cage har mycage --json-lines | jq '.outbound.request.url'
 ```
-
-## `cage backup`
-
-```
-agentcage cage backup <name> [options]
-```
-
-Create a compressed tarball containing a cage's config, named volumes, capture logs, and optionally secrets.
-
-### Options
-
-| Flag | Type | Description |
-|------|------|-------------|
-| `-o, --output` | path | Output path (default: `./{name}-backup-{timestamp}.tar.gz`) |
-| `--include-secrets` | flag | Include secret values in the backup (handle with care) |
-
-### Tarball layout
-
-```
-agentcage-backup/
-  manifest.json            # format version, cage metadata, content flags
-  config/
-    cage.yaml
-    metadata.json
-    proxy-config.yaml
-  secrets/                 # only present with --include-secrets
-    API_KEY
-    GITHUB_TOKEN
-  volumes/                 # podman volume exports
-    myapp-state.tar
-  capture/
-    capture.jsonl
-```
-
-### Examples
-
-```bash
-# Backup without secrets (default)
-agentcage cage backup myapp
-
-# Backup with secrets to a specific path
-agentcage cage backup myapp --include-secrets -o /backups/myapp.tar.gz
-
-# Inspect the tarball
-tar tzf myapp-backup-20260223-143000.tar.gz
-```
-
-## `cage restore`
-
-```
-agentcage cage restore <tarball> [options]
-```
-
-Restore a cage from a backup tarball. Recreates config, secrets (if included), named volumes, and capture logs. Can restore to a different name for cloning.
-
-### Options
-
-| Flag | Type | Description |
-|------|------|-------------|
-| `--name` | string | Restore with a different name (for cloning) |
-| `--force` | flag | Overwrite existing cage |
-| `--no-start` | flag | Restore state without building or starting |
-
-### Examples
-
-```bash
-# Restore to the original name
-agentcage cage restore myapp-backup-20260223-143000.tar.gz
-
-# Clone to a new name
-agentcage cage restore myapp-backup.tar.gz --name myapp-clone
-
-# Overwrite an existing cage
-agentcage cage restore backup.tar.gz --force
-
-# Restore config and secrets only, start later
-agentcage cage restore backup.tar.gz --no-start
-agentcage cage update myapp   # build and start when ready
-```
-
-### Notes
-
-- If the backup does not include secrets (`--include-secrets` was not used during backup), you must set them manually before starting the cage.
-- With `--no-start`, named volumes are not imported (they don't exist until the cage starts). They will be imported on the first start via `cage update`.
-- When cloning with `--name`, the `name` field in `cage.yaml` is updated and secrets are scoped to the new name. Named volume names are not changed.
 
 ---
 

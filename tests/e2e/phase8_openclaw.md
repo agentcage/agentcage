@@ -159,7 +159,7 @@ adding new test cases:
 
 ## Related tests
 
-- Phase 1-6: cage lifecycle, secrets, domains, backup/restore, hardening
+- Phase 1-6: cage lifecycle, secrets, domains, hardening
   — all use the basic `node:22-slim` agent, so none exercise openclaw.
 - Phase 7: VM mode — openclaw isn't tested in VM mode anywhere.
 - `tests/conftest.py::openclaw_yaml`: pytest fixture for config-

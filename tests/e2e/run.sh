@@ -16,15 +16,15 @@ export REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # ── parse args ───────────────────────────────────────────────────────
 PHASES=()
 if [ $# -eq 0 ]; then
-  PHASES=(1 2 3 4 5 6 7 8)
+  PHASES=(1 2 3 4 6 7 8)
 else
   for arg in "$@"; do
     case "$arg" in
-      container) PHASES+=(1 2 3 4 5 6) ;;
+      container) PHASES+=(1 2 3 4 6) ;;
       vm)        PHASES+=(7) ;;
       openclaw)  PHASES+=(8) ;;
-      all)       PHASES=(1 2 3 4 5 6 7 8) ;;
-      [1-8])     PHASES+=("$arg") ;;
+      all)       PHASES=(1 2 3 4 6 7 8) ;;
+      [1-46-8])  PHASES+=("$arg") ;;
       -h|--help)
         echo "Usage: $0 [PHASE...] [container|vm|openclaw|all]"
         echo ""
@@ -33,16 +33,15 @@ else
         echo "  2  Audit, logs & HAR capture"
         echo "  3  Secret injection & management"
         echo "  4  Domain management & hot-reload"
-        echo "  5  Backup/restore & multi-cage isolation"
         echo "  6  Security hardening & edge cases"
         echo "  7  VM mode (requires Lima + KVM)"
         echo "  8  OpenClaw scaffold regression canary (pulls openclaw:latest)"
         echo ""
         echo "Shortcuts:"
-        echo "  container   Phases 1-6"
+        echo "  container   Phases 1-4, 6"
         echo "  vm          Phase 7 only"
         echo "  openclaw    Phase 8 only"
-        echo "  all         Phases 1-8 (default)"
+        echo "  all         Phases 1-4, 6-8 (default)"
         echo ""
         echo "Environment:"
         echo "  E2E_PORT_BASE    Port base for test cages (default: 19080)"
@@ -91,7 +90,6 @@ PHASE_SCRIPTS=(
   [2]="phase2_audit_logs.sh"
   [3]="phase3_secrets.sh"
   [4]="phase4_domains.sh"
-  [5]="phase5_backup.sh"
   [6]="phase6_hardening.sh"
   [7]="phase7_vm.sh"
   [8]="phase8_openclaw.sh"
@@ -189,7 +187,7 @@ tally_bg_phase() {
 HAS_PHASE() { for p in "${PHASES[@]}"; do [ "$p" = "$1" ] && return 0; done; return 1; }
 
 # Phases 1, 2, 4 share the "basic" cage — must run sequentially.
-# Phases 3, 5, 6 create their own cages — can run in parallel.
+# Phases 3, 6 create their own cages — can run in parallel.
 # Phase 7 (VM) runs last, after container phases complete.
 
 # ── sequential chain: 1 → 2 → 4 (shared "basic" cage) ────────────
@@ -225,7 +223,7 @@ if [ "$SUITE_FAILED" = true ]; then
   echo "Sequential chain failed — skipping remaining phases."
 fi
 
-# ── launch independent phases (3, 5, 6) in parallel ─────────────
+# ── launch independent phases (3, 6) in parallel ─────────────
 # These create their own cages on unique ports, so no contention.
 # Run after the sequential chain to avoid Podman resource contention
 # with the basic cage operations (domain add/rm, stop/start).
@@ -234,7 +232,7 @@ BG_PIDS=()
 BG_PHASES=()
 
 if [ "$SUITE_FAILED" = false ]; then
-  for phase in 3 5 6; do
+  for phase in 3 6; do
     if HAS_PHASE "$phase"; then
       run_phase "$phase" &
       BG_PIDS+=($!)

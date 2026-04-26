@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- `agentcage cage backup` and `agentcage cage restore` commands. Tarball state I/O was a 305-LOC CLI subsystem plus a full e2e phase. The replacement is two commands you can keep in a script: `tar -czf ... -C ~/.local/share/agentcage <name>` for cage state and `podman volume export <vol> -o ...` for named volumes. See `docs/security.md` for the recipe. This gives you control over compression, encryption, and remote upload that the built-in command did not provide.
+
 ## [0.10.6] - 2026-04-26
 
 ### Changed
