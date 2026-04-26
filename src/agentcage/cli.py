@@ -2438,11 +2438,14 @@ def _update_dns_quadlet(cfg) -> None:
 
 @domain.command("add")
 @click.argument("name")
-@click.argument("domain_name")
+@click.argument("domain_names", nargs=-1, required=True)
 @click.option("--passthrough", is_flag=True,
               help="Also add to TLS passthrough list (no MITM interception).")
-def domain_add(name: str, domain_name: str, passthrough: bool):
-    """Add a domain to a cage's filter list."""
+def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
+    """Add one or more domains to a cage's filter list.
+
+    Multiple domains may be passed; the cage is reloaded at most once.
+    """
     try:
         raw = state.load_raw_config(name)
     except FileNotFoundError:
@@ -2452,36 +2455,44 @@ def domain_add(name: str, domain_name: str, passthrough: bool):
     _ensure_domain_section(raw)
     dom = raw["domains"]
 
-    # Determine the active list key
     list_key = "allow" if "allow" in dom else "block" if "block" in dom else "allow"
     if list_key not in dom:
         dom[list_key] = []
 
-    already_in_list = domain_name in dom[list_key]
-    already_passthrough = domain_name in dom.get("passthrough", [])
-
-    if already_in_list and (not passthrough or already_passthrough):
-        click.echo(f"'{domain_name}' is already in cage '{name}'.")
-        return
-
-    if not already_in_list:
-        dom[list_key].append(domain_name)
-    if passthrough and not already_passthrough:
-        if "passthrough" not in dom:
-            dom["passthrough"] = []
-        dom["passthrough"].append(domain_name)
-
-    state.save_raw_config(name, raw)
-    state.save_proxy_config(name)
-
-    cfg = state.load_deployment_config(name)
-    _update_dns_quadlet(cfg)
-
     pt_note = " (passthrough)" if passthrough else ""
-    msg = f"Added '{domain_name}'{pt_note} to cage '{name}'."
-    if get_backend(cfg).is_running(cfg.name, "cage"):
-        msg += " DNS and proxy updated."
-    click.echo(msg)
+    changed = False
+    messages: list[str] = []
+
+    for domain_name in domain_names:
+        already_in_list = domain_name in dom[list_key]
+        already_passthrough = domain_name in dom.get("passthrough", [])
+
+        if already_in_list and (not passthrough or already_passthrough):
+            messages.append(f"'{domain_name}' is already in cage '{name}'.")
+            continue
+
+        if not already_in_list:
+            dom[list_key].append(domain_name)
+        if passthrough and not already_passthrough:
+            if "passthrough" not in dom:
+                dom["passthrough"] = []
+            dom["passthrough"].append(domain_name)
+
+        changed = True
+        messages.append(f"Added '{domain_name}'{pt_note} to cage '{name}'.")
+
+    if changed:
+        state.save_raw_config(name, raw)
+        state.save_proxy_config(name)
+
+        cfg = state.load_deployment_config(name)
+        _update_dns_quadlet(cfg)
+
+        if get_backend(cfg).is_running(cfg.name, "cage"):
+            messages.append("DNS and proxy updated.")
+
+    for line in messages:
+        click.echo(line)
 
 
 @domain.command("rm")
