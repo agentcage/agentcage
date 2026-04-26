@@ -127,16 +127,6 @@ from agentcage.scaffold_cli import scaffold  # noqa: E402
 main.add_command(scaffold)
 
 
-# ── completions ──────────────────────────────────────────
-
-
-@main.command("completions")
-@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
-def completions(shell: str):
-    """Print shell completion script."""
-    click.echo(f'eval "$(_AGENTCAGE_COMPLETE={shell}_source agentcage)"')
-
-
 # ── update ──────────────────────────────────────────────
 
 

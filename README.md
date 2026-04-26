@@ -160,7 +160,6 @@ agentcage cage destroy myapp
 | `cage` | `create`, `update`, `edit`, `list`, `destroy`, `prune`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
-| `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |
 
 See [CLI Reference](docs/cli.md) for full documentation of all commands and options.
 

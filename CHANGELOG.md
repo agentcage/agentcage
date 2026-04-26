@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- `agentcage completions <shell>` wrapper command. Click ships native shell completion via the `_AGENTCAGE_COMPLETE=<shell>_source agentcage` env-var protocol; the wrapper added zero capability over upstream and created a maintenance surface that could drift from Click. See [Shell completion](docs/cli.md#shell-completion) in the CLI reference for the env-var pattern.
+
 ## [0.10.6] - 2026-04-26
 
 ### Changed

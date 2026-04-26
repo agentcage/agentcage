@@ -1,4 +1,4 @@
-"""Tests for CLI command aliases and completions."""
+"""Tests for CLI command aliases."""
 
 from __future__ import annotations
 
@@ -100,26 +100,3 @@ class TestDomainAliases:
         assert result.exit_code == 0
         assert "Aliases:" in result.output
         assert "ls" in result.output
-
-
-class TestCompletions:
-    """completions command prints eval snippet."""
-
-    def test_bash(self):
-        result = _runner().invoke(main, ["completions", "bash"])
-        assert result.exit_code == 0
-        assert "_AGENTCAGE_COMPLETE=bash_source" in result.output
-
-    def test_zsh(self):
-        result = _runner().invoke(main, ["completions", "zsh"])
-        assert result.exit_code == 0
-        assert "_AGENTCAGE_COMPLETE=zsh_source" in result.output
-
-    def test_fish(self):
-        result = _runner().invoke(main, ["completions", "fish"])
-        assert result.exit_code == 0
-        assert "_AGENTCAGE_COMPLETE=fish_source" in result.output
-
-    def test_invalid_shell(self):
-        result = _runner().invoke(main, ["completions", "powershell"])
-        assert result.exit_code != 0
