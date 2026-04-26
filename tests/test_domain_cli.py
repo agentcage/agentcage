@@ -156,6 +156,73 @@ class TestDomainAdd:
     @patch("agentcage.cli._update_dns_quadlet")
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
+    def test_domain_add_multiple(self, mock_state, mock_get_backend, mock_update_dns):
+        """Adding multiple domains in one call: save and reload happen exactly once."""
+        raw = {
+            "name": "basic",
+            "domains": {"allow": ["httpbin.org"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
+
+        result = _runner().invoke(main, ["domain", "add", "basic", "github.com", "example.com"])
+        assert result.exit_code == 0
+        assert "Added 'github.com' to cage 'basic'" in result.output
+        assert "Added 'example.com' to cage 'basic'" in result.output
+        assert "DNS and proxy updated." in result.output
+
+        mock_state.save_raw_config.assert_called_once()
+        saved = mock_state.save_raw_config.call_args[0][1]
+        assert "github.com" in saved["domains"]["allow"]
+        assert "example.com" in saved["domains"]["allow"]
+        # Critical: only one reload for the batch.
+        mock_update_dns.assert_called_once_with(cfg)
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_domain_add_multiple_mixed_with_duplicate(self, mock_state, mock_get_backend, mock_update_dns):
+        """Batch with one new and one already-present domain: still saves and reloads once."""
+        raw = {
+            "name": "basic",
+            "domains": {"allow": ["httpbin.org"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
+
+        result = _runner().invoke(main, ["domain", "add", "basic", "httpbin.org", "github.com"])
+        assert result.exit_code == 0
+        assert "'httpbin.org' is already in cage 'basic'" in result.output
+        assert "Added 'github.com' to cage 'basic'" in result.output
+        mock_state.save_raw_config.assert_called_once()
+        mock_update_dns.assert_called_once_with(cfg)
+
+    @patch("agentcage.cli.state")
+    def test_domain_add_multiple_all_duplicates(self, mock_state):
+        """Batch of all-duplicates: no save, no reload."""
+        raw = {
+            "name": "basic",
+            "domains": {"allow": ["httpbin.org", "github.com"]},
+        }
+        mock_state.load_raw_config.return_value = raw
+
+        result = _runner().invoke(main, ["domain", "add", "basic", "httpbin.org", "github.com"])
+        assert result.exit_code == 0
+        assert "'httpbin.org' is already in cage 'basic'" in result.output
+        assert "'github.com' is already in cage 'basic'" in result.output
+        mock_state.save_raw_config.assert_not_called()
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
     def test_domain_add_legacy_format_migrates(self, mock_state, mock_get_backend, mock_update_dns):
         """Adding to a legacy mode+list config migrates it to allow format."""
         raw = {
