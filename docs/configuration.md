@@ -105,7 +105,7 @@ Port conflicts are detected at `cage create` / `cage update` time — if a host 
 
 ### Nested containers
 
-When `nested_containers: true` is set, the cage container can run podman (and docker via a shim) to spawn inner containers. This is required for AI agent frameworks like NanoClaw that create Docker containers as part of their workflow.
+When `nested_containers: true` is set, the cage container can run podman (and docker via a shim) to spawn inner containers. This is required for AI agent frameworks that create Docker containers as part of their workflow.
 
 Enabling this option automatically:
 - Adds 16 Linux capabilities (SYS_ADMIN, SYS_CHROOT, MKNOD, etc.) instead of the default `DropCapability=ALL`
@@ -114,7 +114,7 @@ Enabling this option automatically:
 - Creates a persistent storage volume for inner podman state
 - Bind-mounts a Docker CLI shim and podman config files
 
-The nested-containers base image must be built first with `./build.sh` from the scaffold directory. See the [NanoClaw guide](../src/agentcage/scaffolds/nanoclaw/README.md) for a complete walkthrough.
+The nested-containers base image must be built first with a custom scaffold's `build.sh` (or equivalent) before `cage create`.
 
 ```yaml
 container:

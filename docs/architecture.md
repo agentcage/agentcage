@@ -163,7 +163,7 @@ In VM mode, transparent interception is not yet implemented — applications mus
 
 ## Nested Containers (Podman-in-Podman)
 
-When `nested_containers: true` is set, the cage container is configured to run podman internally, enabling AI agent frameworks that spawn Docker containers (e.g. NanoClaw). A Docker CLI shim at `/usr/local/bin/docker` translates `docker` commands to `podman`.
+When `nested_containers: true` is set, the cage container is configured to run podman internally, enabling AI agent frameworks that spawn containers. A Docker CLI shim at `/usr/local/bin/docker` translates `docker` commands to `podman`.
 
 The nested container topology adds a layer inside the cage:
 
@@ -185,8 +185,6 @@ The nested container topology adds a layer inside the cage:
 Inner containers default to `--network none` (configured via `containers.conf`), giving them no network access. Inner containers that explicitly use `--network host` inherit the cage's proxy environment variables, so their traffic passes through the full inspector chain.
 
 A persistent named volume (`agentcage-podman-<name>`) stores inner podman's image cache and container state at `/var/lib/containers`, so pulled images survive cage restarts.
-
-For the base image, security trade-offs, and setup, see the [NanoClaw guide](../src/agentcage/scaffolds/nanoclaw/README.md).
 
 ## Generated Files
 

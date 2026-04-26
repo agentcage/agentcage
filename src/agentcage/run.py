@@ -53,13 +53,11 @@ _ADJECTIVES = [
 # Short aliases for scaffold names
 _SCAFFOLD_ALIASES: dict[str, str] = {
     "claude": "claude-code",
-    "alpine": "alpine-curl",
 }
 
 # Short prefixes for auto-generated cage names
 _NAME_PREFIXES: dict[str, str] = {
     "claude-code": "claude",
-    "alpine-curl": "alpine",
 }
 
 _NOUNS = [

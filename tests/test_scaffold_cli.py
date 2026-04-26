@@ -21,8 +21,8 @@ class TestInitListScaffolds:
         result = _runner().invoke(main, ["init", "--list-scaffolds"])
         assert result.exit_code == 0
         assert "openclaw" in result.output
-        assert "nanoclaw" in result.output
-        assert "picoclaw" in result.output
+        assert "claude-code" in result.output
+        assert "codex" in result.output
 
     def test_list_scaffolds_header(self):
         result = _runner().invoke(main, ["init", "--list-scaffolds"])
@@ -47,16 +47,6 @@ class TestInitWithScaffold:
         assert dest.exists()
         content = dest.read_text()
         assert "my-oc" in content
-
-    def test_nanoclaw_scaffold_creates_file(self, tmp_path):
-        dest = tmp_path / "cage.yaml"
-        result = _runner().invoke(main, [
-            "init", "my-nano", "--scaffold", "nanoclaw", "-o", str(dest),
-        ])
-        assert result.exit_code == 0
-        assert dest.exists()
-        content = dest.read_text()
-        assert "my-nano" in content
 
     def test_init_invalid_name_rejected(self):
         result = _runner().invoke(main, ["init", "INVALID_NAME"])
