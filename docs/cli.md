@@ -55,7 +55,7 @@ agentcage init --list-scaffolds
 agentcage run SCAFFOLD [options] [-- EXTRA_ARGS...]
 ```
 
-Creates a sandboxed cage from a scaffold, opens an interactive session, and stops the cage on exit. Auto-generates a unique cage name (e.g. `claude-code-bold-fox`). The cage state is preserved after exit for auditing — use `cage prune` to clean up.
+Creates a sandboxed cage from a scaffold, opens an interactive session, and stops the cage on exit. Auto-generates a unique cage name (e.g. `claude-code-bold-fox`). The cage state is preserved after exit for auditing — use `cage destroy` to clean up.
 
 ### Options
 
@@ -104,7 +104,6 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 | `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
 | `cage list` | List all cages with status |
 | `cage destroy NAME [-y] [--keep-secrets]` | Stop containers, remove quadlets, state, and scoped secrets |
-| `cage prune [-y]` | Remove all exited interactive and ephemeral cages |
 | `cage show NAME` | Show cage configuration and status |
 | `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
 | `cage edit NAME` | Open stored config in `$EDITOR`, validate, and reload if running |

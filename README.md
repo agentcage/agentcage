@@ -157,7 +157,7 @@ agentcage cage destroy myapp
 |---|---|
 | `run` | *(top-level)* -- run a coding agent in a sandbox (`agentcage run claude-code`) |
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `prune`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
+| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
 | `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `completions` | *(top-level)* -- print shell completion script (`bash`/`zsh`/`fish`) |

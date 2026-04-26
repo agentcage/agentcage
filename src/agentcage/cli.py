@@ -858,48 +858,6 @@ def cage_destroy(name: str, yes: bool, keep_secrets: bool):
         click.echo(f'Nothing to remove (cage "{name}" not found).')
 
 
-@cage.command("prune")
-@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt")
-def cage_prune(yes: bool):
-    """Remove all exited interactive and ephemeral cages."""
-    names = state.list_deployments()
-    candidates = []
-    for name in names:
-        try:
-            cfg = state.load_deployment_config(name)
-            backend = get_backend(cfg)
-        except Exception:
-            continue
-        meta = state.load_metadata(name)
-        lifecycle = meta.get("lifecycle", cfg.lifecycle)
-        if lifecycle not in ("interactive", "ephemeral"):
-            continue
-        services = backend.service_names(name)
-        running = sum(1 for svc in services if backend.is_running(name, svc))
-        if running == 0:
-            candidates.append(name)
-
-    if not candidates:
-        click.echo("Nothing to prune.")
-        return
-
-    click.echo(f"The following exited cages will be removed:")
-    for name in candidates:
-        click.echo(f"  {name}")
-
-    if not yes:
-        click.confirm(f"\nRemove {len(candidates)} cage(s)?", abort=True)
-
-    for name in candidates:
-        click.echo(f"Removing {name}...")
-        try:
-            _destroy_cage(name, keep_secrets=False)
-        except Exception as e:
-            click.echo(f"  warning: failed to remove {name}: {e}", err=True)
-            continue
-    click.echo(f"Pruned {len(candidates)} cage(s).")
-
-
 @cage.command("verify")
 @click.argument("name")
 def cage_verify(name: str):

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- `agentcage cage prune` command. It sat between `cage destroy` (which cleanly tears down a tracked cage) and `podman container prune` (which sweeps container-level stragglers), serving no use case neither covers. Removing it shrinks the `cage` subgroup and drops a state-walking helper that had to stay in sync with `cage list`/`cage destroy` semantics. Use `cage destroy <name>` to remove a specific cage, or `podman container prune` for orphaned containers.
+
 ## [0.10.6] - 2026-04-26
 
 ### Changed

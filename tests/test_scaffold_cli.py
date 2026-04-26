@@ -1,4 +1,4 @@
-"""Tests for scaffold-related CLI commands and cage list/prune/destroy integration."""
+"""Tests for scaffold-related CLI commands and cage list/destroy integration."""
 
 from __future__ import annotations
 
@@ -159,70 +159,6 @@ class TestCageDestroyCommand:
         assert "Nothing to remove" in result.output
 
 
-class TestCagePrune:
-    """Test cage prune CLI command."""
-
-    @patch("agentcage.cli.get_backend")
-    @patch("agentcage.cli.state")
-    def test_prune_nothing(self, mock_state, mock_get_backend):
-        mock_state.list_deployments.return_value = []
-        result = _runner().invoke(main, ["cage", "prune"])
-        assert result.exit_code == 0
-        assert "Nothing to prune" in result.output
-
-    @patch("agentcage.cli._destroy_cage")
-    @patch("agentcage.cli.get_backend")
-    @patch("agentcage.cli.state")
-    def test_prune_removes_exited_interactive(self, mock_state, mock_get_backend, mock_destroy):
-        mock_state.list_deployments.return_value = ["cc-bold-fox", "my-openclaw"]
-
-        # cc-bold-fox: interactive, stopped
-        cc_cfg = MagicMock()
-        cc_cfg.lifecycle = "interactive"
-        cc_cfg.scaffold = "claude-code"
-
-        # my-openclaw: service, running
-        oc_cfg = MagicMock()
-        oc_cfg.lifecycle = "service"
-        oc_cfg.scaffold = "openclaw"
-
-        mock_state.load_deployment_config.side_effect = lambda n: {
-            "cc-bold-fox": cc_cfg, "my-openclaw": oc_cfg
-        }[n]
-        mock_state.load_metadata.side_effect = lambda n: {
-            "cc-bold-fox": {"lifecycle": "interactive"},
-            "my-openclaw": {"lifecycle": "service"},
-        }[n]
-
-        backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
-        # cc-bold-fox stopped, my-openclaw running
-        def is_running(name, svc):
-            return name == "my-openclaw"
-        backend.is_running.side_effect = is_running
-
-        mock_destroy.return_value = []
-        result = _runner().invoke(main, ["cage", "prune", "-y"])
-        assert result.exit_code == 0
-        # Only cc-bold-fox should be pruned
-        mock_destroy.assert_called_once()
-        assert "cc-bold-fox" in mock_destroy.call_args[0]
-
-    @patch("agentcage.cli.get_backend")
-    @patch("agentcage.cli.state")
-    def test_prune_skips_running_interactive(self, mock_state, mock_get_backend):
-        mock_state.list_deployments.return_value = ["cc-running"]
-        cfg = MagicMock()
-        cfg.lifecycle = "interactive"
-        mock_state.load_deployment_config.return_value = cfg
-        mock_state.load_metadata.return_value = {"lifecycle": "interactive"}
-        backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
-        backend.is_running.return_value = True  # all running
-        result = _runner().invoke(main, ["cage", "prune"])
-        assert "Nothing to prune" in result.output
-
-
 class TestRunCommand:
     """Test agentcage run CLI command basics."""
 
@@ -230,10 +166,6 @@ class TestRunCommand:
         result = _runner().invoke(main, ["run", "--help"])
         assert result.exit_code == 0
         assert "scaffold" in result.output.lower() or "SCAFFOLD" in result.output
-
-    def test_cage_help_shows_prune(self):
-        result = _runner().invoke(main, ["cage", "--help"])
-        assert "prune" in result.output
 
 
 class TestCageHelp:
