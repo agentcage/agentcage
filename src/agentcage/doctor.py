@@ -37,71 +37,10 @@ class Section:
 
 
 # ---------------------------------------------------------------------------
-# Distro detection
-# ---------------------------------------------------------------------------
-
-def _detect_distro() -> str:
-    """Detect the Linux distribution family from /etc/os-release."""
-    try:
-        text = Path("/etc/os-release").read_text()
-    except OSError:
-        return "unknown"
-
-    kv: dict[str, str] = {}
-    for line in text.splitlines():
-        if "=" in line:
-            key, _, val = line.partition("=")
-            kv[key.strip()] = val.strip().strip('"')
-
-    distro_id = kv.get("ID", "")
-    id_like = kv.get("ID_LIKE", "")
-
-    if distro_id in ("arch", "archarm") or "arch" in id_like:
-        return "arch"
-    if distro_id in ("debian", "ubuntu", "pop", "mint", "elementary", "zorin",
-                      "kali", "raspbian") or "debian" in id_like or "ubuntu" in id_like:
-        return "debian"
-    if distro_id == "fedora" or "fedora" in id_like:
-        return "fedora"
-    if distro_id in ("rhel", "centos", "rocky", "alma", "ol") or "rhel" in id_like:
-        return "rhel"
-    if distro_id.startswith("opensuse") or distro_id == "sles" or "suse" in id_like:
-        return "opensuse"
-
-    return "unknown"
-
-
-# ---------------------------------------------------------------------------
 # Remediation hints
 # ---------------------------------------------------------------------------
 
-_INSTALL_PODMAN = {
-    "arch":     "sudo pacman -S podman",
-    "debian":   "sudo apt-get install -y podman",
-    "fedora":   "sudo dnf install -y podman",
-    "rhel":     "sudo dnf install -y podman",
-    "opensuse": "sudo zypper install -y podman",
-    "unknown":  "install podman for your distribution",
-}
-
-_INSTALL_LIMA = {
-    "arch":     "install lima from AUR or via 'brew install lima'",
-    "debian":   "sudo apt-get install -y lima",
-    "fedora":   "sudo dnf install -y lima",
-    "rhel":     "sudo dnf install -y lima",
-    "opensuse": "sudo zypper install -y lima",
-    "unknown":  "install lima from https://lima-vm.io",
-}
-
-_INSTALL_QEMU = {
-    "arch":     "sudo pacman -S qemu-full",
-    "debian":   "sudo apt-get install -y qemu-system-x86",
-    "fedora":   "sudo dnf install -y qemu-system-x86-core",
-    "rhel":     "sudo dnf install -y qemu-kvm",
-    "opensuse": "sudo zypper install -y qemu-x86",
-    "unknown":  "install qemu for your distribution",
-}
-
+_DOCS_HINT = "see docs/installation.md for install instructions"
 _ENABLE_LINGER = "sudo loginctl enable-linger $USER"
 
 
@@ -124,7 +63,7 @@ def check_python_version() -> CheckResult:
                        hint="install Python 3.12+ for your distribution")
 
 
-def check_podman(distro: str) -> CheckResult:
+def check_podman() -> CheckResult:
     """Check podman is installed and report version."""
     try:
         r = subprocess.run(["podman", "--version"], capture_output=True, text=True, timeout=5)
@@ -133,11 +72,10 @@ def check_podman(distro: str) -> CheckResult:
             return CheckResult("pass", f"Podman {ver}")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    return CheckResult("error", "Podman not found",
-                       hint=_INSTALL_PODMAN.get(distro, _INSTALL_PODMAN["unknown"]))
+    return CheckResult("error", "Podman not found", hint=_DOCS_HINT)
 
 
-def check_podman_rootless(distro: str) -> CheckResult:
+def check_podman_rootless() -> CheckResult:
     """Check podman is running in rootless mode."""
     try:
         r = subprocess.run(
@@ -155,7 +93,7 @@ def check_podman_rootless(distro: str) -> CheckResult:
     return CheckResult("warn", "Could not verify Podman rootless mode")
 
 
-def check_lima(distro: str) -> CheckResult:
+def check_lima() -> CheckResult:
     """Check lima is installed (optional)."""
     try:
         r = subprocess.run(["limactl", "--version"], capture_output=True, text=True, timeout=5)
@@ -166,11 +104,10 @@ def check_lima(distro: str) -> CheckResult:
             return CheckResult("pass", f"Lima {ver}")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    return CheckResult("warn", "Lima not found (needed for VM mode)",
-                       hint=_INSTALL_LIMA.get(distro, _INSTALL_LIMA["unknown"]))
+    return CheckResult("warn", "Lima not found (needed for VM mode)", hint=_DOCS_HINT)
 
 
-def check_qemu(distro: str) -> CheckResult:
+def check_qemu() -> CheckResult:
     """Check QEMU is installed (optional, Linux VM mode only)."""
     try:
         r = subprocess.run(["qemu-system-x86_64", "--version"],
@@ -182,7 +119,7 @@ def check_qemu(distro: str) -> CheckResult:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return CheckResult("warn", "QEMU not found (needed for VM mode on Linux)",
-                       hint=_INSTALL_QEMU.get(distro, _INSTALL_QEMU["unknown"]))
+                       hint=_DOCS_HINT)
 
 
 def check_systemd_linger() -> CheckResult:
@@ -346,65 +283,6 @@ def check_port(port: int) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
-# Cage health checks
-# ---------------------------------------------------------------------------
-
-def check_cages() -> list[CheckResult]:
-    """Check health of existing cage deployments."""
-    try:
-        from agentcage import state  # noqa: F811 — deferred import to avoid circular deps
-        from agentcage.backends.container import ContainerBackend  # noqa: F811
-    except Exception as exc:
-        return [CheckResult("warn", f"Could not load cage modules: {exc}")]
-
-    results: list[CheckResult] = []
-    try:
-        deployments = state.list_deployments()
-    except Exception as exc:
-        return [CheckResult("warn", f"Could not list deployments: {exc}")]
-    if not deployments:
-        results.append(CheckResult("pass", "No cages configured"))
-        return results
-
-    for name in deployments:
-        try:
-            cfg = state.load_deployment_config(name)
-        except Exception:
-            results.append(CheckResult("warn", f"{name}: could not load config"))
-            continue
-
-        if cfg.isolation == "vm":
-            # Check Lima VM status
-            try:
-                from agentcage.lima.instance import LimaInstance
-                inst = LimaInstance(name)
-                if inst.is_running():
-                    results.append(CheckResult("pass", f"{name}: running (VM)"))
-                elif inst.exists():
-                    results.append(CheckResult("warn", f"{name}: VM exists but stopped"))
-                else:
-                    results.append(CheckResult("warn",
-                                               f"{name}: state exists, no VM (orphaned)",
-                                               hint=f"agentcage cage destroy {name}"))
-            except Exception:
-                results.append(CheckResult("warn", f"{name}: could not check VM status"))
-        else:
-            # Container mode: check if the main cage container is running
-            try:
-                backend = ContainerBackend()
-                if backend.is_running(name, "cage"):
-                    results.append(CheckResult("pass", f"{name}: running"))
-                else:
-                    results.append(CheckResult("warn",
-                                               f"{name}: stopped (state exists, no container)",
-                                               hint=f"agentcage cage start {name}"))
-            except Exception:
-                results.append(CheckResult("warn", f"{name}: could not check container status"))
-
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
 
@@ -418,14 +296,14 @@ def _print_section(section: Section) -> None:
     click.echo(f"  {click.style(section.title, bold=True)}")
     for r in section.results:
         if r.level == "pass":
-            mark = green("\u2713")
+            mark = green("✓")
         elif r.level == "warn":
-            mark = _warn("\u26a0")
+            mark = _warn("⚠")
         else:
-            mark = red("\u2717")
+            mark = red("✗")
         click.echo(f"    {mark} {r.message}")
         if r.hint:
-            click.echo(f"      {dim('\u2192')} {dim(r.hint)}")
+            click.echo(f"      {dim('→')} {dim(r.hint)}")
 
 
 # ---------------------------------------------------------------------------
@@ -443,31 +321,22 @@ def _safe_check(fn, *args, label: str = "check") -> CheckResult:
         return CheckResult("warn", f"{label} crashed: {exc}")
 
 
-def _safe_check_multi(fn, *args, label: str = "check") -> list[CheckResult]:
-    """Run a check function that returns a list, catching any unexpected exception."""
-    try:
-        return fn(*args)
-    except Exception as exc:
-        return [CheckResult("warn", f"{label} crashed: {exc}")]
-
-
 def run_doctor() -> list[CheckResult]:
     """Run all diagnostic checks, print results, and return all issues."""
     click.echo()
     click.echo(click.style("agentcage doctor", bold=True))
 
-    distro = _detect_distro()
     all_results: list[CheckResult] = []
 
     # --- Prerequisites ---
     prereqs = Section("Prerequisites")
     prereqs.results.append(_safe_check(check_python_version, label="Python version"))
-    prereqs.results.append(_safe_check(check_podman, distro, label="Podman"))
+    prereqs.results.append(_safe_check(check_podman, label="Podman"))
     # Only check rootless if podman was found
     if prereqs.results[-1].level == "pass":
-        prereqs.results.append(_safe_check(check_podman_rootless, distro, label="Podman rootless"))
-    prereqs.results.append(_safe_check(check_lima, distro, label="Lima"))
-    prereqs.results.append(_safe_check(check_qemu, distro, label="QEMU"))
+        prereqs.results.append(_safe_check(check_podman_rootless, label="Podman rootless"))
+    prereqs.results.append(_safe_check(check_lima, label="Lima"))
+    prereqs.results.append(_safe_check(check_qemu, label="QEMU"))
     prereqs.results.append(_safe_check(check_systemd_linger, label="systemd linger"))
     _print_section(prereqs)
     all_results.extend(prereqs.results)
@@ -493,12 +362,6 @@ def run_doctor() -> list[CheckResult]:
         network.results.append(_safe_check(check_port, port, label=f"port {port}"))
     _print_section(network)
     all_results.extend(network.results)
-
-    # --- Cages ---
-    cages = Section("Cages")
-    cages.results.extend(_safe_check_multi(check_cages, label="cage health"))
-    _print_section(cages)
-    all_results.extend(cages.results)
 
     # --- Summary ---
     errors = sum(1 for r in all_results if r.level == "error")
