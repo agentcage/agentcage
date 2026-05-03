@@ -26,7 +26,7 @@ test shape *cannot* catch.
 | **8.1** Gateway serves OpenClaw Control UI | GET `/` contains the literal string `OpenClaw Control` in the response body — rules out reverse-proxy error pages and other servers on the port | Doesn't load the JS bundle, doesn't follow any API route, doesn't test authenticated paths. If openclaw ships a redesign that renames the app title, 8.1 false-fails. If openclaw ships a UI that loads but the backend is broken, 8.1 false-passes. |
 | **8.2** `openclaw health` via exec_alias | Exec_aliases config wires `openclaw` → `node openclaw.mjs`; the CLI runs inside the cage; at least one agent is configured (`Agents:` appears in output) | "Agents:" is a loose match — the health command could fail its internal checks and still print the agent list. Doesn't verify heartbeat, session store, or any downstream dependency. |
 | **8.3** tini is PID 1 | Scaffold's `ENTRYPOINT ["tini", "--"]` was applied and the container started under tini (`/proc/1/comm == tini`) | Doesn't prove tini is correctly forwarding signals — only that it's present. If tini were compiled with bad defaults (e.g., ignoring SIGUSR1), this passes. That's what 8.4 is for. |
-| **8.4** Self-restart survives SIGUSR1 | SIGUSR1 sent to `openclaw-gateway` causes: (a) the gateway to exit, (b) the supervisor's `node openclaw.mjs gateway` command to end, (c) the `while true; do ... done` loop in `entrypoint.sh` to respawn with a new PID, (d) the container stays alive through the cycle, (e) the gateway responds 200 again within 60s | Only tests ONE restart cycle. Won't catch file-descriptor leaks, growing memory, or zombie-process accumulation across many restarts. The 30s poll after the signal is optimistic — on a saturated CI runner a slow restart could time out and false-fail. Doesn't verify state preservation across the restart (e.g. devices still paired). |
+| **8.4** Self-restart on SIGUSR1 | SIGUSR1 sent to the lone `openclaw` process (2026.5+ collapses the older supervisor + `openclaw-gateway` worker pair into one) causes: (a) openclaw logs `received SIGUSR1; restarting` (proves the signal landed AND `isRestartEnabled` returned true), (b) openclaw performs an in-process restart — server tears down, reinitializes, listens again — without exiting (in containers, openclaw deliberately keeps PID 1 alive), (c) the gateway responds 200 again within 60s | Only tests ONE restart cycle. Won't catch file-descriptor leaks, growing memory, or zombie-process accumulation across many restarts. PID stays the same by design, so this no longer doubles as a "tini stayed alive" canary — 8.3 is the only PID-1 witness. The log-line witness depends on openclaw's exact wording; if upstream renames it, 8.4 will false-fail loudly (which is the correct behavior). Doesn't verify state preservation across the restart (e.g. devices still paired). |
 | **8.5** `openclaw.json` has SSRF opt-out | Entrypoint wrote the config file with `.browser.ssrfPolicy.dangerouslyAllowPrivateNetwork == true` (jq-parsed, so key renames fail loudly) | Only verifies the config FILE, not the RUNTIME. If openclaw ≥ a future version renames `ssrfPolicy` → `ssrf` or ignores the key, 8.5 passes while the browser tool is still broken. Doesn't launch an actual browser. |
 | **8.6** `controlUi.allowedOrigins` includes gateway URL | Entrypoint templated the port correctly into both `http://localhost:$PORT` and `http://127.0.0.1:$PORT` | Doesn't prove device pairing actually succeeds with those origins. If the allowedOrigins key is renamed upstream, 8.6 fails loudly — which is the correct behaviour. |
 | **8.7** Matrix extension workspace workaround | `/app/node_modules/openclaw` is a symlink AND its target `package.json` is resolvable — proves the Containerfile layer that creates the symlink ran | Doesn't verify matrix-js-sdk actually loads at runtime, or that `import`s from the matrix extension resolve. A regression that breaks extension loading for a different reason (e.g. peer-dep mismatch) wouldn't be caught here. |
@@ -114,11 +114,22 @@ Things phase 8's logic *assumes* about the environment — if any of
 these stop holding, assertions could pass for the wrong reason.
 
 - **setproctitle renames survive.** 8.4 relies on `pgrep -f '^openclaw$'`
-  matching exactly the supervisor's cmdline. If openclaw stops renaming
-  argv[0] and instead runs as `node openclaw.mjs gateway`, the pgrep
-  returns empty and 8.4 bails with "could not find openclaw supervisor"
-  — which is a *correct* failure, but the test's error message will
-  mislead.
+  matching exactly the openclaw process's cmdline. If openclaw stops
+  renaming argv[0] and instead runs as `node openclaw.mjs gateway`, the
+  pgrep returns empty and 8.4 bails with "could not find openclaw
+  process" — a *correct* failure, but the message will mislead.
+- **commands.restart defaults to true.** 8.4 sends an external SIGUSR1
+  via `pkill`. openclaw's handler (see `isRestartEnabled` in
+  `dist/commands.flags-*.js`) authorizes the restart unless config sets
+  `commands.restart: false`. If a future scaffold change writes that
+  flag (or upstream flips the default), the signal is logged as
+  `received SIGUSR1` but `received SIGUSR1; restarting` never appears,
+  and 8.4 fails with "signal lost or commands.restart=false".
+- **Single-process layout.** 8.4 assumes one `openclaw` process owns
+  the SIGUSR1 handler (true since 2026.5). If upstream re-introduces a
+  worker split, the signal may need to target the worker instead — the
+  regex `^openclaw$` would then miss the handler and the restart log
+  never appears.
 - **httpbin.org and postman-echo.com are reachable.** External echo
   services are transient dependencies. Outages cause false-fails on
   8.8b/c (the `--retry 3` on curl mitigates briefly). The audit-log

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- e2e Phase 8: `8.4 self-restart SIGUSR1` rewritten for openclaw 2026.5+. The upstream change collapses the supervisor + `openclaw-gateway` worker into a single `openclaw` process and switches to in-process restart in containers (deliberate — `restart mode: in-process restart (container: use in-process restart to keep PID 1 alive)`), so the previous PID-delta witness can no longer fire. The new test sends SIGUSR1 to `^openclaw$`, asserts openclaw logs `received SIGUSR1; restarting` (proves the signal was authorized via `commands.restart`, which defaults to true), and probes the gateway readiness endpoint to confirm recovery.
+
 ### Removed
 - `agentcage completions <shell>` wrapper command. Click ships native shell completion via the `_AGENTCAGE_COMPLETE=<shell>_source agentcage` env-var protocol; the wrapper added zero capability over upstream and created a maintenance surface that could drift from Click. See [Shell completion](docs/cli.md#shell-completion) in the CLI reference for the env-var pattern.
 - `agentcage cage edit` — trivial `click.edit()` wrapper. Use `$EDITOR <path>` (path visible via `cage show`) followed by `agentcage cage update <name>` instead.
