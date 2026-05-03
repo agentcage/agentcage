@@ -609,15 +609,9 @@ Fails if the domain is not in the list.
 
 ---
 
-## `completions` -- Shell completion
+## Shell completion
 
-```
-agentcage completions <shell>
-```
-
-Prints an `eval` snippet that activates tab completion for agentcage. Supported shells: `bash`, `zsh`, `fish`.
-
-Add the output to your shell profile to enable completions permanently:
+agentcage uses Click's native completion. Add one of these to your shell profile to enable tab completion permanently:
 
 ```bash
 # Bash (~/.bashrc)
