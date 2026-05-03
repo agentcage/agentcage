@@ -154,39 +154,44 @@ else
   e2e_fail "8.3" "tini is PID 1" "expected 'tini', got '$pid1_comm'"
 fi
 
-# 8.4: self-restart survives SIGUSR1 (PID-delta witness).
-# openclaw forks a supervisor ("openclaw", PID N) and a gateway worker
-# ("openclaw-gateway", child of supervisor). The SIGUSR1 handler lives
-# in the gateway; signalling the supervisor alone is a no-op. Signalling
-# the gateway makes it exit, which also ends the `node openclaw.mjs
-# gateway` command, which drops out of the entrypoint.sh while-true loop
-# and gets respawned — both PIDs change. Watching the supervisor PID is
-# the stronger witness because it proves the container (and tini) stayed
-# alive across the restart.
+# 8.4: self-restart on SIGUSR1 (log-line witness + readiness probe).
+# Openclaw 2026.5+ runs as a single "openclaw" process and handles SIGUSR1
+# with an in-process restart in containers (deliberate — keeps PID 1
+# alive). The PID never changes; the gateway tears down its server,
+# reinitializes, and starts listening again. We witness this via two
+# things that must both hold: openclaw logs "received SIGUSR1; restarting"
+# (proves the signal landed AND the restart was authorized — see
+# isRestartEnabled in commands.flags), and the gateway becomes ready
+# again on the same port. commands.restart defaults to true unless the
+# config explicitly sets it false, so no scaffold change is needed.
 e2e_timer_start
 # `pgrep` exits 1 on no-match — wrap in `|| true` so `set -e` doesn't
 # kill the phase before we can report 8.4 as a failure.
-OLD_SUP=$(podman exec "${CAGE}-cage" pgrep -f '^openclaw$' 2>/dev/null | head -1 || true)
-if [ -z "$OLD_SUP" ]; then
-  e2e_fail "8.4" "self-restart SIGUSR1" "could not find openclaw supervisor before signal"
+OPENCLAW_PID=$(podman exec "${CAGE}-cage" pgrep -f '^openclaw$' 2>/dev/null | head -1 || true)
+if [ -z "$OPENCLAW_PID" ]; then
+  e2e_fail "8.4" "self-restart SIGUSR1" "could not find openclaw process before signal"
 else
-  podman exec "${CAGE}-cage" pkill -USR1 -f openclaw-gateway 2>/dev/null || true
-  NEW_SUP=""
+  # Capture the current log size so we only inspect lines emitted after
+  # the signal. Avoids matching a "received SIGUSR1" from an earlier
+  # restart in the same container.
+  LOG_BEFORE=$(podman logs "${CAGE}-cage" 2>&1 | wc -l | tr -d ' ')
+  podman exec "${CAGE}-cage" pkill -USR1 -f '^openclaw$' 2>/dev/null || true
+  RESTART_LOGGED=""
   for _ in $(seq 1 30); do
     sleep 1
-    NEW_SUP=$(podman exec "${CAGE}-cage" pgrep -f '^openclaw$' 2>/dev/null | head -1 || true)
-    if [ -n "$NEW_SUP" ] && [ "$NEW_SUP" != "$OLD_SUP" ]; then
+    if podman logs "${CAGE}-cage" 2>&1 | tail -n "+$((LOG_BEFORE + 1))" \
+         | grep -q 'received SIGUSR1; restarting'; then
+      RESTART_LOGGED=yes
       break
     fi
   done
-  if [ -z "$NEW_SUP" ]; then
-    e2e_fail "8.4" "self-restart SIGUSR1" "no openclaw supervisor after signal (container died?)"
-  elif [ "$NEW_SUP" = "$OLD_SUP" ]; then
-    e2e_fail "8.4" "self-restart SIGUSR1" "supervisor PID unchanged after SIGUSR1 to gateway (restart did not happen)"
+  if [ -z "$RESTART_LOGGED" ]; then
+    e2e_fail "8.4" "self-restart SIGUSR1" \
+      "openclaw did not log 'received SIGUSR1; restarting' within 30s (signal lost or commands.restart=false)"
   elif ! wait_ready "$BASE/" 60; then
-    e2e_fail "8.4" "self-restart SIGUSR1" "gateway did not recover after restart"
+    e2e_fail "8.4" "self-restart SIGUSR1" "gateway did not recover after in-process restart"
   else
-    e2e_pass "8.4" "self-restart SIGUSR1 (supervisor PID $OLD_SUP → $NEW_SUP)"
+    e2e_pass "8.4" "self-restart SIGUSR1 (in-process; PID $OPENCLAW_PID held)"
   fi
 fi
 
