@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - doctor: trim distro install hints (point to docs) and drop cage health duplication (use `cage list`).
 
+### Removed
+- `agentcage completions <shell>` wrapper command. Click ships native shell completion via the `_AGENTCAGE_COMPLETE=<shell>_source agentcage` env-var protocol; the wrapper added zero capability over upstream and created a maintenance surface that could drift from Click. See [Shell completion](docs/cli.md#shell-completion) in the CLI reference for the env-var pattern.
+- `agentcage cage edit` — trivial `click.edit()` wrapper. Use `$EDITOR <path>` (path visible via `cage show`) followed by `agentcage cage update <name>` instead.
+
 ## [0.10.6] - 2026-04-26
 
 ### Changed

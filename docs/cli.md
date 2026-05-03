@@ -107,7 +107,6 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 | `cage prune [-y]` | Remove all exited interactive and ephemeral cages |
 | `cage show NAME` | Show cage configuration and status |
 | `cage verify NAME` | Health checks (containers, certs, proxy, egress, rootless) |
-| `cage edit NAME` | Open stored config in `$EDITOR`, validate, and reload if running |
 | `cage stop NAME` | Stop a running cage without destroying it |
 | `cage start NAME` | Start a stopped cage |
 | `cage restart NAME` | Restart containers without rebuilding images |
@@ -258,24 +257,6 @@ Example output:
   [PASS] Podman is running rootless
 
 === Results: 8 passed, 0 failed, 0 warnings ===
-```
-
-## `cage edit`
-
-```
-agentcage cage edit <name>
-```
-
-Opens the stored cage config (`~/.config/agentcage/cages/<name>/cage.yaml`) in `$EDITOR`. After saving, the config is validated and the proxy config is synced. If the cage is running, it is automatically reloaded.
-
-For changes that require an image rebuild (e.g. `container.image`), use `cage update` instead.
-
-**Example:**
-
-```
-agentcage cage edit myapp
-# → opens $EDITOR with the cage config
-# → validates on save, reloads if running
 ```
 
 ## `cage show`
@@ -628,15 +609,9 @@ Fails if the domain is not in the list.
 
 ---
 
-## `completions` -- Shell completion
+## Shell completion
 
-```
-agentcage completions <shell>
-```
-
-Prints an `eval` snippet that activates tab completion for agentcage. Supported shells: `bash`, `zsh`, `fish`.
-
-Add the output to your shell profile to enable completions permanently:
+agentcage uses Click's native completion. Add one of these to your shell profile to enable tab completion permanently:
 
 ```bash
 # Bash (~/.bashrc)
