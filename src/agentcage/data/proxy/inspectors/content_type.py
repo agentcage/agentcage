@@ -76,8 +76,8 @@ class ContentTypeInspector(Inspector):
             return None
 
         # Per-host content-type exemptions — same shape as
-        # EntropyInspector.host_exempt_content_types so jacque.yaml can
-        # configure both knobs symmetrically.
+        # EntropyInspector.host_exempt_content_types so a cage config
+        # can configure both knobs symmetrically.
         host = ctx.host.lower()
         for h, prefixes in self.host_exempt_content_types.items():
             if host == h or host.endswith("." + h):
