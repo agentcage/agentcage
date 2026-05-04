@@ -273,6 +273,47 @@ class TestProxyQuadlet:
         assert "Secret=myapp.OTHER_KEY,type=env,target=OTHER_KEY" in content
         assert "Secret=API_KEY,type=env\n" not in content
 
+    def test_proxy_gets_relay_secrets(self, tmp_path):
+        """protocol_relays credentials must reach the proxy container's
+        env so the relay can resolve them at startup. They are stripped
+        from the cage's podman_secrets/env (cage must not see them) but
+        still need a Secret= directive on the proxy."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              podman_secrets:
+                - MIGADU_USER
+                - MIGADU_PASSWORD
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "127.0.0.1:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "podman:MIGADU_USER"
+                  password_source: "podman:MIGADU_PASSWORD"
+        """))
+        cfg = load_config(str(p))
+        # Stripped from cage.
+        assert "MIGADU_USER" not in cfg.container.podman_secrets
+        assert "MIGADU_PASSWORD" not in cfg.container.podman_secrets
+        # But surfaced for proxy.
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp"
+        )
+        content = files["test-proxy.container"]
+        assert "Secret=myapp.MIGADU_USER,type=env,target=MIGADU_USER" in content
+        assert "Secret=myapp.MIGADU_PASSWORD,type=env,target=MIGADU_PASSWORD" in content
+        # Cage container must NOT receive them.
+        cage_content = files["test-cage.container"]
+        assert "MIGADU_USER" not in cage_content
+        assert "MIGADU_PASSWORD" not in cage_content
+
     def test_proxy_default_flags(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
