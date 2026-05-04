@@ -6,6 +6,7 @@ FROM docker.io/mitmproxy/mitmproxy@sha256:743b6cdc817211d64bc269f5defacca8d14e76
 RUN pip install --no-cache-dir pyyaml==6.0.3 'cryptography>=41'
 COPY proxy/inspectors/ /app/inspectors/
 COPY proxy/transforms/ /app/transforms/
+COPY proxy/relays/ /app/relays/
 COPY proxy/addon.py /app/addon.py
 COPY proxy/capture.py /app/capture.py
 COPY proxy/secret_injector.py /app/secret_injector.py

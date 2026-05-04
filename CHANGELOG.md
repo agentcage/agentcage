@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-05-04
+
+### Fixed
+- `Containerfile.proxy` now COPYs the new `proxy/relays/` directory into the proxy image. Without this the proxy container ships without the relay implementations, so the addon's `_start_protocol_relays()` raises `ModuleNotFoundError: No module named 'relays'` at startup and crashes the proxy. Mirrors the existing COPY for `transforms/`.
+
 ## [0.13.1] - 2026-05-04
 
 ### Fixed
