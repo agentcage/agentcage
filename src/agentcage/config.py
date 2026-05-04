@@ -144,10 +144,35 @@ class RelayAuth:
 
 
 @dataclass
+class RelayRecipientAllowlist:
+    """SMTP recipient gate. Empty = allow any recipient (insecure;
+    explicit acknowledgement only). When non-empty, a RCPT TO is
+    accepted iff its address matches an entry in ``addresses`` or its
+    domain matches an entry in ``domains`` (suffix-aware so
+    ``foo.example.com`` matches an ``example.com`` domain entry).
+    """
+
+    addresses: list[str] = field(default_factory=list)
+    domains: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RelayPolicy:
+    # Common
+    conn_rate_limit: str = "30/min"
+
+    # IMAP
     readonly: bool = False
     folder_allowlist: list[str] = field(default_factory=list)
-    conn_rate_limit: str = "30/min"
+
+    # SMTP
+    sender_allowlist: list[str] = field(default_factory=list)
+    recipient_allowlist: RelayRecipientAllowlist = field(
+        default_factory=RelayRecipientAllowlist
+    )
+    max_message_bytes: int = 5_242_880  # 5 MiB
+    max_recipients: int = 10
+    send_rate_limit: str = "20/hour"
 
 
 @dataclass
@@ -372,11 +397,28 @@ def load_config(path: str) -> Config:
             if scheme and arg:
                 relay_secret_names.add(arg)
         pol_raw = entry.get("policy") or {}
+        rcpt_raw = pol_raw.get("recipient_allowlist") or {}
+        if isinstance(rcpt_raw, list):
+            # Convenience shorthand: a flat list is treated as `addresses`.
+            rcpt_raw = {"addresses": rcpt_raw}
+        recipient_allowlist = RelayRecipientAllowlist(
+            addresses=list(rcpt_raw.get("addresses") or []),
+            domains=list(rcpt_raw.get("domains") or []),
+        )
         policy = RelayPolicy(
-            readonly=bool(pol_raw.get("readonly", False)),
-            folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
             conn_rate_limit=str(
                 pol_raw.get("conn_rate_limit") or "30/min"
+            ),
+            readonly=bool(pol_raw.get("readonly", False)),
+            folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
+            sender_allowlist=list(pol_raw.get("sender_allowlist") or []),
+            recipient_allowlist=recipient_allowlist,
+            max_message_bytes=int(
+                pol_raw.get("max_message_bytes", 5_242_880)
+            ),
+            max_recipients=int(pol_raw.get("max_recipients", 10)),
+            send_rate_limit=str(
+                pol_raw.get("send_rate_limit") or "20/hour"
             ),
         )
         cfg.protocol_relays.append(ProtocolRelay(

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-KNOWN_RELAY_TYPES = frozenset({"imap"})
+KNOWN_RELAY_TYPES = frozenset({"imap", "smtp"})
 
 
 def validate_relay_type(name: str) -> None:

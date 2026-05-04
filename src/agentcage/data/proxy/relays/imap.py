@@ -151,7 +151,11 @@ class ImapRelay:
         *,
         audit_log: Optional[Callable[[dict], None]] = None,
         log_allowed: bool = False,
+        inspectors: Optional[list] = None,
     ) -> None:
+        # ``inspectors`` is accepted for call-site symmetry with the
+        # SMTP relay but is not used here — IMAP traffic is bridged
+        # at the byte level and policy is per-command, not body-shape.
         self._cfg = _RelayConfig(entry)
         self._user = _resolve_credential(self._cfg.user_source)
         self._password = _resolve_credential(self._cfg.password_source)

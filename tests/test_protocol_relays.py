@@ -891,8 +891,8 @@ class TestSharedValidation:
         from relays._validate import validate_relay_entry
         with pytest.raises(ValueError, match="unknown protocol_relays type"):
             validate_relay_entry({
-                "name": "r", "type": "smtp", "listen": "127.0.0.1:1143",
-                "upstream": {"host": "example.com", "port": 25},
+                "name": "r", "type": "xmpp", "listen": "127.0.0.1:5222",
+                "upstream": {"host": "example.com", "port": 5222},
             })
 
     def test_validate_rejects_missing_required(self):

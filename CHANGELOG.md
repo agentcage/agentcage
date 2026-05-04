@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `protocol_relays` now supports `type: smtp`. The SMTP relay holds the upstream submission credential, opens an authenticated TLS connection to the upstream (port 465 / implicit TLS / `AUTH PLAIN`), and proxies cage-side SMTP transactions while applying policy at command granularity. Without this relay an SMTP-able cage is a wide-open exfiltration channel; the relay closes that channel by gating `MAIL FROM` against `sender_allowlist`, gating each `RCPT TO` against `recipient_allowlist` (`addresses` + `domains` with subdomain suffix matching, per-recipient decisions per RFC 5321), capping `max_recipients` per transaction, capping `max_message_bytes` on `DATA`, capping `send_rate_limit` on accepted deliveries, and — most importantly — running every `DATA` payload through the proxy's existing inspector chain (`secrets`, `entropy`, `content-type`, `body-size`) before forwarding upstream. A leaked Anthropic key in an outbound email body is blocked the same way it would be in an HTTP request body. The `domain` inspector is intentionally skipped (its host-allowlist is HTTP-shaped; the SMTP equivalent is `recipient_allowlist`). The relay does not advertise `STARTTLS` or `AUTH` to the cage (the connection is loopback inside the proxy and the relay handled real auth upstream); cage-side `AUTH PLAIN`/`AUTH LOGIN` attempts are intercepted and forged `235` without forwarding any credential bytes. Decisions land in the existing `audit.jsonl` pipeline as structured JSON (`kind: smtp_command` / `kind: smtp_data` / `kind: smtp_data_flag`). See `docs/configuration.md` ("SMTP-specific policy" + "SMTP relay behavior").
+- `relays/__init__.py` exposes the `smtp` type via the registry's lazy-load path, mirroring `imap`. Built-in relay types are now `{imap, smtp}`.
+
+### Changed
+- `ImapRelay.__init__` and `SmtpRelay.__init__` both accept an `inspectors=` kwarg from the addon. IMAP ignores it (its policy is byte-level / per-command, not body-shape). SMTP runs the chain on `DATA` payloads.
+- `Agentcage._start_protocol_relays` filters `DomainInspector` out of the chain it passes to relays — host-allowlist semantics don't translate to non-HTTP traffic, and the SMTP equivalent is `recipient_allowlist`.
+
 ## [0.13.3] - 2026-05-04
 
 ### Fixed
