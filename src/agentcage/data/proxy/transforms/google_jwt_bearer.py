@@ -29,6 +29,15 @@ _DEFAULT_REFRESH_MARGIN = 300  # refresh 5 min before Google says it expires
 _DEFAULT_MINT_RATE_PER_HOUR = 60  # cap on actual mints per hour
 _HTTP_TIMEOUT = 10  # seconds — applied to oauth2.googleapis.com round-trip
 
+# Allowlist for the JWT audience / token POST target. The JWT `aud` claim
+# and the actual POST URL are *the same value* — Google rejects the
+# assertion otherwise — so a single config knob drives both, and we
+# refuse anything outside this set. Without this, a hostile or malformed
+# SA JSON could redirect the signed assertion to an attacker-controlled
+# host (the JWT itself isn't a Google credential, but the redirection
+# is a confirmation-of-life signal we shouldn't grant for free).
+_ALLOWED_AUDIENCE_HOSTS = ("oauth2.googleapis.com", "accounts.google.com")
+
 
 class TransformError(RuntimeError):
     """Raised when a transform cannot produce a value (config or mint failure).
@@ -86,6 +95,7 @@ class GoogleJwtBearer:
         self._audience: str = str(
             config.get("audience") or _DEFAULT_AUDIENCE
         )
+        self._validate_audience(self._audience)
         self._refresh_margin: int = int(
             config.get("refresh_margin", _DEFAULT_REFRESH_MARGIN)
         )
@@ -104,16 +114,36 @@ class GoogleJwtBearer:
         try:
             self._client_email = sa["client_email"]
             self._private_key_pem = sa["private_key"]
-            self._token_uri = sa.get("token_uri", _DEFAULT_AUDIENCE)
         except KeyError as e:
             raise TransformError(
                 f"google-jwt-bearer: SA key missing required field: {e}"
             ) from e
+        # The JWT `aud` claim and the POST target must match — Google
+        # rejects the assertion otherwise — so we drive both from one
+        # config knob and never trust `token_uri` from the SA JSON.
+        self._token_uri = self._audience
 
         self._signing_key = self._load_private_key(self._private_key_pem)
         self._lock = threading.Lock()
         self._cached_token: str | None = None
         self._cached_expiry: float = 0.0
+
+    @staticmethod
+    def _validate_audience(url: str) -> None:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https":
+            raise TransformError(
+                f"google-jwt-bearer: audience must be https://, got '{url}'"
+            )
+        host = (parsed.hostname or "").lower()
+        if not any(
+            host == h or host.endswith("." + h) for h in _ALLOWED_AUDIENCE_HOSTS
+        ):
+            allowed = ", ".join(_ALLOWED_AUDIENCE_HOSTS)
+            raise TransformError(
+                f"google-jwt-bearer: audience host '{host}' not in "
+                f"allowlist ({allowed})"
+            )
 
     @staticmethod
     def _load_private_key(pem: str):

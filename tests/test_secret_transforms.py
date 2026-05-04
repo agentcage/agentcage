@@ -144,9 +144,51 @@ class TestConstruction:
         with pytest.raises(TransformError, match="missing required field"):
             GoogleJwtBearer(bad, {"scopes": ["a"]})
 
-    def test_uses_token_uri_from_sa(self, sa_key_json):
+    def test_token_uri_defaults_to_oauth2_googleapis(self, sa_key_json):
         t = GoogleJwtBearer(sa_key_json, {"scopes": ["a"]})
         assert t._token_uri == "https://oauth2.googleapis.com/token"
+        assert t._audience == "https://oauth2.googleapis.com/token"
+
+    def test_token_uri_in_sa_json_is_ignored(self):
+        """The SA JSON's token_uri must NOT redirect the POST. The audience
+        is the single source of truth — without this guard, a hostile or
+        malformed SA JSON could redirect the signed assertion to an
+        attacker-controlled host."""
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        sa = json.dumps({
+            "type": "service_account",
+            "client_email": "agent@test.iam.gserviceaccount.com",
+            "private_key": pem,
+            "token_uri": "https://attacker.example/steal",  # ignored
+        })
+        t = GoogleJwtBearer(sa, {"scopes": ["a"]})
+        assert t._token_uri == "https://oauth2.googleapis.com/token"
+
+    def test_audience_must_be_https(self, sa_key_json):
+        with pytest.raises(TransformError, match="must be https"):
+            GoogleJwtBearer(
+                sa_key_json,
+                {"scopes": ["a"], "audience": "http://oauth2.googleapis.com/token"},
+            )
+
+    def test_audience_must_be_in_allowlist(self, sa_key_json):
+        with pytest.raises(TransformError, match="not in allowlist"):
+            GoogleJwtBearer(
+                sa_key_json,
+                {"scopes": ["a"], "audience": "https://attacker.example/token"},
+            )
+
+    def test_audience_accounts_google_allowed(self, sa_key_json):
+        t = GoogleJwtBearer(
+            sa_key_json,
+            {"scopes": ["a"], "audience": "https://accounts.google.com/o/oauth2/token"},
+        )
+        assert t._token_uri == "https://accounts.google.com/o/oauth2/token"
 
 
 # ── Token minting and caching ────────────────────────────
@@ -270,32 +312,37 @@ class TestGetValue:
         assert body.count(".") >= 2
 
     def test_concurrent_get_value_one_mint(self, sa_key_json):
-        """Two threads racing both should result in exactly one mint."""
+        """Five threads racing on a cold cache must trigger exactly one mint:
+        the lock around get_value serializes them and the second-through-fifth
+        threads see the cache populated by the first."""
         t = GoogleJwtBearer(sa_key_json, {"scopes": ["a"]})
         mint_count = [0]
+        lock = threading.Lock()
 
         def _slow_mint(req, timeout):
-            mint_count[0] += 1
+            with lock:
+                mint_count[0] += 1
             time.sleep(0.05)
             return _fake_oauth_response("ya29.shared", 3600)
 
         results = []
+        results_lock = threading.Lock()
 
-        def _worker():
-            with patch(
-                "transforms.google_jwt_bearer.urllib.request.urlopen",
-                side_effect=_slow_mint,
-            ):
-                results.append(t.get_value())
+        # Patch once at module scope so all threads share the same mock.
+        with patch(
+            "transforms.google_jwt_bearer.urllib.request.urlopen",
+            side_effect=_slow_mint,
+        ):
+            def _worker():
+                v = t.get_value()
+                with results_lock:
+                    results.append(v)
 
-        threads = [threading.Thread(target=_worker) for _ in range(5)]
-        for th in threads:
-            th.start()
-        for th in threads:
-            th.join()
+            threads = [threading.Thread(target=_worker) for _ in range(5)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
 
-        # All threads see the same token; mint may race up to N times
-        # because the lock is held during _mint, but only the first will
-        # win the cache check on entry. We don't assert mint_count == 1
-        # because the test mocks urlopen per-thread (separate patches).
         assert all(r == "ya29.shared" for r in results)
+        assert mint_count[0] == 1
