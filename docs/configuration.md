@@ -515,7 +515,7 @@ agentcage uses a **pluggable inspector chain**. Each HTTP request passes through
 |-----------|---------|-------------|
 | `domain` | on | Domain allowlist/blocklist enforcement |
 | `secrets` | on | Regex-based secret leak detection (always blocks) |
-| `body-size` | on | Request body size limits (loaded when `max_request_body` > 0; default is 10 MB) |
+| `body-size` | on | Request body size limits (loaded when `max_request_body` > 0; default is 10 MB). Per-host overrides via `host_max_bytes` — see below |
 | `entropy` | off | Shannon entropy analysis — detects encrypted/compressed payloads |
 | `content-type` | off | Content-type mismatch detection and base64 blob scanning |
 
@@ -537,6 +537,26 @@ You can also enable them with no config to use all defaults:
 inspectors:
   - name: entropy
   - name: content-type
+```
+
+### Body-size inspector
+
+Caps inbound and outbound request bodies. The global limit is set via the top-level `max_request_body` key (default 10 MB; `0` disables). Per-host overrides — for example, to allow larger document uploads to a paperless-ngx instance without raising the global ceiling — are configured by re-declaring the `body-size` inspector in the `inspectors:` section:
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `max_bytes` | `int` | `0` (when re-declared) / `max_request_body` (when not) | Global cap in bytes. |
+| `host_max_bytes` | `dict[string, int]` | `{}` | Per-host overrides (subdomain suffix matching, most-specific match wins). Set a host to `0` to disable the cap for that host. |
+
+```yaml
+max_request_body: 10485760           # 10 MB global default
+
+inspectors:
+  - name: body-size
+    config:
+      max_bytes: 10485760            # keep the global default
+      host_max_bytes:
+        paperless.example.com: 104857600   # 100 MB for document uploads
 ```
 
 ### Entropy inspector

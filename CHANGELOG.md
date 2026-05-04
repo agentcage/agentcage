@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `content-type` inspector now supports a `host_exempt_content_types` config key, mirroring the same knob on the `entropy` inspector. Lets a cage permit legitimate high-entropy bodies declared as a "text-like" content-type — e.g. `multipart/form-data` PDF uploads to a paperless-ngx host — without weakening the inspector for any other host. Suffix-matched, off by default. See `docs/configuration.md` ("Content-type inspector").
+- `body-size` inspector now supports a `host_max_bytes` config key. Per-host byte limits (subdomain suffix matching; most-specific match wins) override the global `max_request_body` for the matching host. Set a host to `0` to disable the cap for that host entirely. Lets cages allow legitimate large uploads to specific destinations — e.g. document uploads to a paperless-ngx host — while keeping the global cap conservative for everything else. See `docs/configuration.md` ("Body-size inspector").
 
 ## [0.12.0] - 2026-05-04
 

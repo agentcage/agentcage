@@ -598,6 +598,73 @@ class TestBodySizeInspector:
         ctx = _ctx(body_bytes=None)
         assert b.inspect_request(ctx) is None
 
+    def test_host_max_bytes_raises_limit_for_matching_host(self):
+        b = BodySizeInspector()
+        b.configure({
+            "max_bytes": 100,
+            "host_max_bytes": {"fcos-vm-home-01": 1000},
+        })
+        ctx = _ctx(body_bytes=b"x" * 500, host="fcos-vm-home-01")
+        assert b.inspect_request(ctx) is None
+
+    def test_host_max_bytes_lowers_limit_for_matching_host(self):
+        """Override can also tighten the limit, not only loosen it."""
+        b = BodySizeInspector()
+        b.configure({
+            "max_bytes": 1000,
+            "host_max_bytes": {"strict.example.com": 100},
+        })
+        ctx = _ctx(body_bytes=b"x" * 500, host="strict.example.com")
+        r = b.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert r.metadata["max_bytes"] == 100
+
+    def test_host_max_bytes_falls_back_to_global_for_unmatched_host(self):
+        b = BodySizeInspector()
+        b.configure({
+            "max_bytes": 100,
+            "host_max_bytes": {"fcos-vm-home-01": 1000},
+        })
+        ctx = _ctx(body_bytes=b"x" * 500, host="api.anthropic.com")
+        r = b.inspect_request(ctx)
+        assert r is not None
+        assert r.metadata["max_bytes"] == 100
+
+    def test_host_max_bytes_suffix_matches_subdomain(self):
+        b = BodySizeInspector()
+        b.configure({
+            "max_bytes": 100,
+            "host_max_bytes": {"ts.net": 1000},
+        })
+        ctx = _ctx(body_bytes=b"x" * 500, host="paperless.taile1b309.ts.net")
+        assert b.inspect_request(ctx) is None
+
+    def test_host_max_bytes_most_specific_match_wins(self):
+        """Subdomain limit must override apex limit, not the other way around."""
+        b = BodySizeInspector()
+        b.configure({
+            "max_bytes": 100,
+            "host_max_bytes": {
+                "ts.net": 10_000,
+                "paperless.taile1b309.ts.net": 500,
+            },
+        })
+        ctx = _ctx(body_bytes=b"x" * 1000, host="paperless.taile1b309.ts.net")
+        r = b.inspect_request(ctx)
+        assert r is not None
+        assert r.metadata["max_bytes"] == 500
+
+    def test_host_max_bytes_zero_disables_for_host(self):
+        """Setting a host's limit to 0 follows the global semantics: no cap."""
+        b = BodySizeInspector()
+        b.configure({
+            "max_bytes": 100,
+            "host_max_bytes": {"unlimited.example.com": 0},
+        })
+        ctx = _ctx(body_bytes=b"x" * 10_000_000, host="unlimited.example.com")
+        assert b.inspect_request(ctx) is None
+
 
 # ── EntropyInspector ─────────────────────────────────────
 
