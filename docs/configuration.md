@@ -570,8 +570,23 @@ Detects content-type mismatches (text type with high entropy) and hidden base64 
 | `detect_base64` | `bool` | `true` | Enable base64 blob detection |
 | `base64_min_len` | `int` | `256` | Minimum base64 match length to trigger |
 | `action` | `string` | `"flag"` | `"block"` or `"flag"` |
+| `host_exempt_content_types` | `dict[string, list[string]]` | `{}` | Per-host content-type exemptions (subdomain suffix matching). Mirrors the entropy inspector's knob — use it for legitimate high-entropy bodies declared as a "text-like" content-type, e.g. `multipart/form-data` PDF uploads to a paperless-ngx host. |
 
 Text content-type prefixes checked: `application/json`, `application/xml`, `text/`, `application/x-www-form-urlencoded`, `multipart/form-data`.
+
+Example — let multipart PDF uploads through to a paperless-ngx instance without weakening the inspector for any other host:
+
+```yaml
+inspectors:
+  - name: entropy
+    config:
+      host_exempt_content_types:
+        paperless.example.com: ["multipart/form-data"]
+  - name: content-type
+    config:
+      host_exempt_content_types:
+        paperless.example.com: ["multipart/form-data"]
+```
 
 ### Writing custom inspectors
 

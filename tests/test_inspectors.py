@@ -1099,6 +1099,82 @@ class TestContentTypeInspector:
         ctx = _ctx(content_type="application/json", body_text=None)
         assert ct.inspect_request(ctx) is None
 
+    def test_host_exempt_content_type_skips_entropy_check(self):
+        """Per-host exemption skips a body that would otherwise block."""
+        ct = ContentTypeInspector()
+        ct.configure({
+            "entropy_ceiling": 6.5,
+            "action": "block",
+            "host_exempt_content_types": {
+                "fcos-vm-home-01": ["multipart/form-data"],
+            },
+        })
+        ctx = _ctx(
+            content_type="multipart/form-data; boundary=abc",
+            body_text="binary-ish multipart",
+            body_entropy=7.82,  # PDF-shaped — would normally block
+            host="fcos-vm-home-01",
+        )
+        assert ct.inspect_request(ctx) is None
+
+    def test_host_exempt_blocks_different_host(self):
+        """Exemption keyed to one host does not bleed to others."""
+        ct = ContentTypeInspector()
+        ct.configure({
+            "entropy_ceiling": 6.5,
+            "action": "block",
+            "host_exempt_content_types": {
+                "fcos-vm-home-01": ["multipart/form-data"],
+            },
+        })
+        ctx = _ctx(
+            content_type="multipart/form-data; boundary=abc",
+            body_text="binary-ish multipart",
+            body_entropy=7.82,
+            host="evil.com",
+        )
+        r = ct.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+
+    def test_host_exempt_matches_subdomain(self):
+        """Suffix matching mirrors EntropyInspector behavior."""
+        ct = ContentTypeInspector()
+        ct.configure({
+            "entropy_ceiling": 6.5,
+            "action": "block",
+            "host_exempt_content_types": {
+                "ts.net": ["multipart/form-data"],
+            },
+        })
+        ctx = _ctx(
+            content_type="multipart/form-data; boundary=abc",
+            body_text="binary-ish multipart",
+            body_entropy=7.82,
+            host="paperless.taile1b309.ts.net",
+        )
+        assert ct.inspect_request(ctx) is None
+
+    def test_host_exempt_doesnt_skip_non_matching_content_type(self):
+        """Exemption is keyed to (host, content-type) — JSON still checked."""
+        ct = ContentTypeInspector()
+        ct.configure({
+            "entropy_ceiling": 6.5,
+            "action": "block",
+            "host_exempt_content_types": {
+                "fcos-vm-home-01": ["multipart/form-data"],
+            },
+        })
+        ctx = _ctx(
+            content_type="application/json",
+            body_text="some data",
+            body_entropy=7.5,
+            host="fcos-vm-home-01",
+        )
+        r = ct.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+
 
 # ── Inspector base class ─────────────────────────────────
 

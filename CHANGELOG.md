@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `content-type` inspector now supports a `host_exempt_content_types` config key, mirroring the same knob on the `entropy` inspector. Lets a cage permit legitimate high-entropy bodies declared as a "text-like" content-type — e.g. `multipart/form-data` PDF uploads to a paperless-ngx host — without weakening the inspector for any other host. Suffix-matched, off by default. See `docs/configuration.md` ("Content-type inspector").
+
 ## [0.12.0] - 2026-05-04
 
 ### Added
