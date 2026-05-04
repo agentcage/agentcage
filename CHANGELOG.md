@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-05-04
+
+### Fixed
+- `save_proxy_config` now passes the `protocol_relays` block through to the proxy container's filtered config. Without this the `_PROXY_KEYS` allowlist dropped it silently, so the addon's `_start_protocol_relays()` saw an empty list and the IMAP relay never bound its listener — the cage would hit "connection refused" on `proxy.cage.local:1143`. Caught while deploying the first real cage on top of 0.13.0.
+
 ## [0.13.0] - 2026-05-04
 
 ### Added

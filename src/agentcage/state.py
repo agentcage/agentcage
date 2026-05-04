@@ -88,6 +88,7 @@ def save_raw_config(name: str, raw: dict) -> None:
 _PROXY_KEYS = frozenset({
     "domains", "secrets", "max_request_body", "entropy", "content_type",
     "inspectors", "rate_limit", "logging", "secret_injection", "capture",
+    "protocol_relays",
 })
 
 

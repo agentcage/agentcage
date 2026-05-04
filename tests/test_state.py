@@ -120,6 +120,37 @@ class TestSaveProxyConfig:
         assert "dns_servers" not in proxy_cfg
         assert "name" not in proxy_cfg
 
+    def test_protocol_relays_passes_through(self, tmp_path, _patch_state_dirs):
+        """The proxy needs `protocol_relays` to start its IMAP/SMTP/etc.
+        listeners — without this key in the filter, the relay never boots."""
+        state = _patch_state_dirs
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(textwrap.dedent("""\
+            name: myapp
+            container:
+              image: node:22-slim
+            domains:
+              allow:
+                - example.com
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "127.0.0.1:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "podman:MIGADU_USER"
+                  password_source: "podman:MIGADU_PASSWORD"
+        """))
+        state.save_deployment("myapp", str(cfg))
+        proxy_path = state.save_proxy_config("myapp")
+        with open(proxy_path) as f:
+            proxy_cfg = yaml.safe_load(f)
+        assert "protocol_relays" in proxy_cfg
+        assert proxy_cfg["protocol_relays"][0]["name"] == "migadu-imap"
+
 
 class TestSaveAndLoadMetadata:
     """save_metadata / load_metadata round-trip."""
