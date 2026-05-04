@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `secret_injection` rules now support a `transform` discriminator that converts the underlying secret into a derived value at request time, instead of substituting the literal stored value. The first transform shipped is `google-jwt-bearer`, which holds a Google service-account private key in proxy memory and mints short-lived OAuth2 access tokens via the JWT-bearer flow on demand. The cage agent only ever sends `{{PLACEHOLDER}}`; it never holds the SA key. Tokens are cached in-process, refreshed before expiry, and the mint rate is capped per rule. For transform rules, the literal-value block treats the underlying secret as never-on-the-wire — including to `inject_to` domains — because the cage is not supposed to know it. See `docs/configuration.md` ("Transforms").
+- Built-in secrets-inspector pattern `google_oauth_access_token` (`ya29.<...>`) with `googleapis.com` / `google.com` as the allowed exfil domains. Catches minted access tokens leaking to non-Google hosts the same way `anthropic_key` is caught for Anthropic.
+
+### Changed
+- `tests/conftest.py` now stubs `mitmproxy` at collection time so tests for proxy modules can run on the host without the proxy container's runtime deps regardless of collection order. Previously this stub lived in `tests/test_defaults.py` and only worked when that file was collected first.
+
 ## [0.11.0] - 2026-05-03
 
 ### Fixed

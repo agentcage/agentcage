@@ -11,12 +11,28 @@ from dataclasses import dataclass, field
 import yaml
 
 
+KNOWN_TRANSFORMS = frozenset({"google-jwt-bearer"})
+
+
 @dataclass
 class SecretInjectionRule:
     env: str
     placeholder: str
     inject_to: list[str] = field(default_factory=list)
     source: str = ""
+    transform: str = ""
+    transform_config: dict = field(default_factory=dict)
+
+
+def validate_transform(name: str) -> None:
+    """Reject unknown transform names at config parse time."""
+    if not name:
+        return
+    if name not in KNOWN_TRANSFORMS:
+        valid = ", ".join(sorted(KNOWN_TRANSFORMS))
+        raise ValueError(
+            f"unknown secret_injection transform: '{name}'. Valid: {valid}"
+        )
 
 
 @dataclass
@@ -270,12 +286,17 @@ def load_config(path: str) -> Config:
             validate_env_name(env_name)
             source = entry.get("source", "")
             validate_source(source)
+            transform = entry.get("transform", "") or ""
+            validate_transform(transform)
+            transform_config = dict(entry.get("transform_config") or {})
             injected_names.add(env_name)
             cfg.secret_injection.append(SecretInjectionRule(
                 env=env_name,
                 placeholder=placeholder,
                 inject_to=list(entry.get("inject_to") or []),
                 source=source,
+                transform=transform,
+                transform_config=transform_config,
             ))
 
     # Remove injected secrets from podman_secrets and env — they are handled

@@ -286,6 +286,46 @@ class TestSecretsInspector:
         ctx = _ctx(body_text="fc-short", host="evil.com")
         assert s.inspect_request(ctx) is None
 
+    def test_detects_google_oauth_access_token(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        token = "ya29." + "A" * 80
+        ctx = _ctx(body_text=f"token={token}", host="evil.com")
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert "google_oauth_access_token" in r.reason
+
+    def test_no_false_positive_google_oauth_short(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        ctx = _ctx(body_text="ya29.tooshort", host="evil.com")
+        assert s.inspect_request(ctx) is None
+
+    def test_google_oauth_token_allowed_to_googleapis(self):
+        """Minted ya29. tokens are expected on the wire to googleapis.com."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        token = "ya29." + "A" * 80
+        ctx = _ctx(
+            headers=[("authorization", f"Bearer {token}")],
+            host="gmail.googleapis.com",
+        )
+        assert s.inspect_request(ctx) is None
+
+    def test_google_oauth_token_blocked_to_wrong_domain(self):
+        """ya29. token leaking to a non-Google host is blocked."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        token = "ya29." + "A" * 80
+        ctx = _ctx(
+            headers=[("authorization", f"Bearer {token}")],
+            host="attacker.example",
+        )
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert "google_oauth_access_token" in r.reason
+
     # ── Tightened pattern tests ──
 
     def test_brave_old_prefix_no_match(self):
