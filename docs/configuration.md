@@ -243,6 +243,62 @@ Secrets that don't need injection (e.g. gateway passwords used only within the c
 
 ---
 
+## Protocol relays (`protocol_relays:`)
+
+`secret_injection` only handles credentials that travel over HTTP(S). For non-HTTP protocols (IMAP, etc.), use a **protocol relay**: a stateful in-proxy listener that performs the upstream authentication on behalf of the cage and bridges the post-auth byte stream while applying a per-protocol policy.
+
+Like `secret_injection`, the goal is the same: the cage container holds no upstream credentials. It connects to a localhost address inside the proxy container; the relay handles auth and forwards traffic.
+
+| Setting | Type | Required | Description |
+|---------|------|----------|-------------|
+| `name` | `string` | yes | Human-readable identifier (used in audit logs). |
+| `type` | `string` | yes | Protocol type. Currently: `imap`. |
+| `listen` | `string` | yes | `host:port` the relay binds inside the proxy container. The cage points its IMAP client here. |
+| `upstream.host` | `string` | yes | Real IMAP server hostname. |
+| `upstream.port` | `int` | yes | Real IMAP server port (993 for IMAPS). |
+| `upstream.tls` | `bool` | no | Whether to use TLS upstream. Default `true`. |
+| `auth.type` | `string` | yes | Auth scheme. Currently: `imap-login`. |
+| `auth.user_source` | `string` | yes | Source for the username. Same scheme grammar as `secret_injection.source` (`env:`, `cmd:`, `systemd-creds:`, `podman:`). |
+| `auth.password_source` | `string` | yes | Source for the password, same grammar as above. |
+| `policy.readonly` | `bool` | no | If `true`, block APPEND/DELETE/STORE/EXPUNGE/CREATE/RENAME/MOVE/COPY/UID. Default `false`. |
+| `policy.folder_allowlist` | `list[string]` | no | If non-empty, restrict SELECT/EXAMINE/STATUS to these mailbox names. LIST/LSUB always pass through (metadata only). Default `[]` (no filter). |
+| `policy.conn_rate_limit` | `string` | no | Connection rate cap, e.g. `"30/min"`, `"5/sec"`, `"1000/hour"`. Default `"30/min"`. |
+
+### IMAP relay behavior
+
+On client connect, the relay opens an authenticated TLS connection upstream and replies to the client with `* PREAUTH ...` — the canonical IMAP signal that the connection is already authenticated. Compliant clients (himalaya, mutt, etc.) skip LOGIN and proceed.
+
+If the cage tries LOGIN or AUTHENTICATE anyway, the relay intercepts and forges an `OK already authenticated` response — the spurious credentials never reach the upstream server.
+
+Each policy decision (allowed, blocked, login attempt) emits a structured log line that the proxy container forwards to the existing audit pipeline.
+
+### Example (Migadu IMAP, read-only INBOX)
+
+```yaml
+protocol_relays:
+  - name: migadu-imap
+    type: imap
+    listen: "10.89.0.11:1143"
+    upstream:
+      host: imap.migadu.com
+      port: 993
+      tls: true
+    auth:
+      type: imap-login
+      user_source: "systemd-creds:MIGADU_USER"
+      password_source: "systemd-creds:MIGADU_PASSWORD"
+    policy:
+      readonly: true
+      folder_allowlist: [INBOX, Sent]
+      conn_rate_limit: 30/min
+```
+
+Inside the cage, point the IMAP client (himalaya, etc.) at `proxy.cage.local:1143` with no password — the relay supplies it. Tighten `domains.allow` to drop `imap.migadu.com`: only the relay should reach the real IMAP host.
+
+> **Note:** Secrets named in `auth.user_source` / `auth.password_source` are automatically stripped from the cage's `podman_secrets` and `env` blocks the same way `secret_injection.env` is — they exist only in the proxy.
+
+---
+
 ## Domain filtering (`domains:`)
 
 | Setting | Type | Default | Description |

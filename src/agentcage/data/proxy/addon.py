@@ -1,5 +1,6 @@
 """agentcage — mitmproxy traffic inspection with pluggable inspectors."""
 
+import asyncio
 import json
 import os
 import sys
@@ -109,8 +110,51 @@ class Agentcage:
         )
 
     def running(self) -> None:
-        """Called after the proxy is fully started — apply TLS passthrough."""
+        """Called after the proxy is fully started — apply TLS passthrough
+        and start any non-HTTP protocol relay listeners."""
         self._apply_passthrough()
+        self._start_protocol_relays()
+
+    def _start_protocol_relays(self) -> None:
+        """Boot ``protocol_relays`` listeners (IMAP, etc.) on the same
+        asyncio loop mitmproxy is using. Relays are housed in this
+        process — same systemd-creds mount, same audit pipeline — to
+        avoid expanding the trust boundary across more containers.
+        """
+        relay_cfg = self.cfg.get("protocol_relays") or []
+        if not relay_cfg:
+            return
+
+        from relays import get as _get_relay
+
+        self._relays: list = []
+        loop = asyncio.get_event_loop()
+        for entry in relay_cfg:
+            rtype = entry.get("type", "")
+            try:
+                cls = _get_relay(rtype)
+            except KeyError as e:
+                ctx.log.warn(f"agentcage: unknown protocol_relays type: {e}")
+                continue
+            try:
+                relay = cls(entry)
+            except Exception as e:
+                ctx.log.warn(
+                    f"agentcage: relay {entry.get('name', '?')} init failed: {e}"
+                )
+                continue
+            try:
+                loop.create_task(relay.start())
+            except Exception as e:
+                ctx.log.warn(
+                    f"agentcage: relay {entry.get('name', '?')} start failed: {e}"
+                )
+                continue
+            self._relays.append(relay)
+            ctx.log.info(
+                f"agentcage: scheduled relay {entry.get('name')} "
+                f"({rtype})"
+            )
 
     # ── Inspector loading ────────────────────────────────
 

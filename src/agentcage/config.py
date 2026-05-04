@@ -107,6 +107,48 @@ class VmConfig:
     mem_mb: int = 4096
 
 
+KNOWN_RELAY_TYPES = frozenset({"imap"})
+
+
+@dataclass
+class RelayUpstream:
+    host: str
+    port: int
+    tls: bool = True
+
+
+@dataclass
+class RelayAuth:
+    type: str = ""  # e.g. "imap-login"
+    user_source: str = ""  # source scheme (env:/cmd:/systemd-creds:)
+    password_source: str = ""
+
+
+@dataclass
+class RelayPolicy:
+    readonly: bool = False
+    folder_allowlist: list[str] = field(default_factory=list)
+    conn_rate_limit: str = "30/min"
+
+
+@dataclass
+class ProtocolRelay:
+    name: str
+    type: str  # "imap"
+    listen: str  # "host:port"
+    upstream: RelayUpstream = field(default_factory=lambda: RelayUpstream("", 0))
+    auth: RelayAuth = field(default_factory=RelayAuth)
+    policy: RelayPolicy = field(default_factory=RelayPolicy)
+
+
+def validate_relay_type(name: str) -> None:
+    if name not in KNOWN_RELAY_TYPES:
+        valid = ", ".join(sorted(KNOWN_RELAY_TYPES))
+        raise ValueError(
+            f"unknown protocol_relays type: '{name}'. Valid: {valid}"
+        )
+
+
 _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
 
 
@@ -117,6 +159,7 @@ class Config:
     lifecycle: str = "service"  # "service" | "interactive" | "ephemeral"
     container: ContainerConfig = field(default_factory=ContainerConfig)
     secret_injection: list[SecretInjectionRule] = field(default_factory=list)
+    protocol_relays: list[ProtocolRelay] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -284,6 +327,72 @@ def load_config(path: str) -> Config:
     # expands ${VAR} references during quadlet generation).
     cc.podman_secrets = [s for s in cc.podman_secrets if s not in injected_names]
     cc.env = {k: v for k, v in cc.env.items() if k not in injected_names}
+
+    # Protocol relays — non-HTTP secret injection (IMAP, etc.)
+    pr_cfg = raw.get("protocol_relays") or []
+    relay_secret_names: set[str] = set()
+    for entry in pr_cfg:
+        rname = entry.get("name", "")
+        rtype = entry.get("type", "")
+        listen = entry.get("listen", "")
+        if not (rname and rtype and listen):
+            raise ValueError(
+                f"protocol_relays entry requires name/type/listen "
+                f"(got name={rname!r}, type={rtype!r}, listen={listen!r})"
+            )
+        validate_relay_type(rtype)
+        up_raw = entry.get("upstream") or {}
+        upstream = RelayUpstream(
+            host=str(up_raw.get("host", "")),
+            port=int(up_raw.get("port", 0) or 0),
+            tls=bool(up_raw.get("tls", True)),
+        )
+        if not upstream.host or not (1 <= upstream.port <= 65535):
+            raise ValueError(
+                f"protocol_relays[{rname}].upstream requires host and "
+                f"port in [1, 65535]"
+            )
+        auth_raw = entry.get("auth") or {}
+        auth = RelayAuth(
+            type=str(auth_raw.get("type", "") or ""),
+            user_source=str(auth_raw.get("user_source", "") or ""),
+            password_source=str(auth_raw.get("password_source", "") or ""),
+        )
+        if auth.user_source:
+            validate_source(auth.user_source)
+        if auth.password_source:
+            validate_source(auth.password_source)
+        # Collect env names (the part after "scheme:") so we strip them
+        # from the cage's env/podman_secrets the same way secret_injection
+        # does — these credentials must only land in the proxy.
+        for src in (auth.user_source, auth.password_source):
+            scheme, _, arg = (src or "").partition(":")
+            if scheme and arg:
+                relay_secret_names.add(arg)
+        pol_raw = entry.get("policy") or {}
+        policy = RelayPolicy(
+            readonly=bool(pol_raw.get("readonly", False)),
+            folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
+            conn_rate_limit=str(
+                pol_raw.get("conn_rate_limit") or "30/min"
+            ),
+        )
+        cfg.protocol_relays.append(ProtocolRelay(
+            name=rname,
+            type=rtype,
+            listen=listen,
+            upstream=upstream,
+            auth=auth,
+            policy=policy,
+        ))
+
+    if relay_secret_names:
+        cc.podman_secrets = [
+            s for s in cc.podman_secrets if s not in relay_secret_names
+        ]
+        cc.env = {
+            k: v for k, v in cc.env.items() if k not in relay_secret_names
+        }
 
     # DNS servers (default to host resolvers if not specified)
     cfg.dns_servers = list(raw.get("dns_servers") or _host_dns_servers())

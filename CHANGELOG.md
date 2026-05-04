@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `protocol_relays:` — stateful in-proxy listeners for non-HTTP credentials. The first relay shipped is `imap`: the cage connects to a localhost address inside the proxy container, the relay opens an authenticated TLS connection upstream and bridges the post-auth byte stream while applying policy. Greets the cage with `* PREAUTH ...` so compliant clients skip LOGIN; intercepts any spurious LOGIN/AUTHENTICATE the cage sends and forges `OK` so credentials never reach upstream. Policy: `readonly: true` blocks state-mutating commands (APPEND/DELETE/STORE/EXPUNGE/CREATE/RENAME/MOVE/COPY/UID), `folder_allowlist: [...]` restricts SELECT/EXAMINE/STATUS targets, `conn_rate_limit: "30/min"` caps connections per window. Credentials named in `auth.user_source`/`auth.password_source` are auto-stripped from the cage's `podman_secrets`/`env` the same way `secret_injection.env` is. See `docs/configuration.md` ("Protocol relays").
+
 ## [0.11.0] - 2026-05-03
 
 ### Fixed

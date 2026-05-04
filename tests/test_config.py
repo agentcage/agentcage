@@ -131,6 +131,128 @@ class TestLoadConfigSecretInjectionFormats:
         assert cfg.secret_injection[1].inject_to == ["example.com"]
 
 
+class TestProtocolRelaysParser:
+    def _yaml(self, tmp_path, body):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent(f"""\
+            name: test
+            container:
+              image: test:latest
+              podman_secrets:
+                - MIGADU_USER
+                - MIGADU_PASSWORD
+              env:
+                MIGADU_PASSWORD: "${{MIGADU_PASSWORD}}"
+            {body}
+        """))
+        return p
+
+    def test_parses_minimal_imap_relay(self, tmp_path):
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "10.89.0.11:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                  tls: true
+                auth:
+                  type: imap-login
+                  user_source: "systemd-creds:MIGADU_USER"
+                  password_source: "systemd-creds:MIGADU_PASSWORD"
+                policy:
+                  readonly: true
+                  folder_allowlist: [INBOX, Sent]
+        """).replace("\n", "\n            "))
+        cfg = load_config(str(p))
+        assert len(cfg.protocol_relays) == 1
+        relay = cfg.protocol_relays[0]
+        assert relay.name == "migadu-imap"
+        assert relay.type == "imap"
+        assert relay.listen == "10.89.0.11:1143"
+        assert relay.upstream.host == "imap.migadu.com"
+        assert relay.upstream.port == 993
+        assert relay.upstream.tls is True
+        assert relay.auth.user_source == "systemd-creds:MIGADU_USER"
+        assert relay.auth.password_source == "systemd-creds:MIGADU_PASSWORD"
+        assert relay.policy.readonly is True
+        assert relay.policy.folder_allowlist == ["INBOX", "Sent"]
+        assert relay.policy.conn_rate_limit == "30/min"
+
+    def test_strips_relay_secrets_from_podman_and_env(self, tmp_path):
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "127.0.0.1:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "systemd-creds:MIGADU_USER"
+                  password_source: "systemd-creds:MIGADU_PASSWORD"
+        """).replace("\n", "\n            "))
+        cfg = load_config(str(p))
+        # Both names must be removed from podman_secrets and env so the
+        # cage container never gets the credentials.
+        assert "MIGADU_USER" not in cfg.container.podman_secrets
+        assert "MIGADU_PASSWORD" not in cfg.container.podman_secrets
+        assert "MIGADU_PASSWORD" not in cfg.container.env
+
+    def test_unknown_type_raises(self, tmp_path):
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: bogus
+                type: not-a-protocol
+                listen: "127.0.0.1:1234"
+                upstream:
+                  host: example.com
+                  port: 1234
+        """).replace("\n", "\n            "))
+        with pytest.raises(ValueError, match="unknown protocol_relays type"):
+            load_config(str(p))
+
+    def test_missing_required_fields_raises(self, tmp_path):
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - type: imap
+                listen: "127.0.0.1:1234"
+        """).replace("\n", "\n            "))
+        with pytest.raises(ValueError, match="requires name/type/listen"):
+            load_config(str(p))
+
+    def test_invalid_upstream_port_raises(self, tmp_path):
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: r
+                type: imap
+                listen: "127.0.0.1:1234"
+                upstream:
+                  host: example.com
+                  port: 0
+        """).replace("\n", "\n            "))
+        with pytest.raises(ValueError, match="upstream requires"):
+            load_config(str(p))
+
+    def test_default_policy(self, tmp_path):
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: r
+                type: imap
+                listen: "127.0.0.1:1234"
+                upstream:
+                  host: example.com
+                  port: 993
+        """).replace("\n", "\n            "))
+        cfg = load_config(str(p))
+        relay = cfg.protocol_relays[0]
+        assert relay.policy.readonly is False
+        assert relay.policy.folder_allowlist == []
+        assert relay.policy.conn_rate_limit == "30/min"
+
+
 class TestLoadConfigOpenclaw:
     def test_openclaw_config(self, openclaw_yaml):
         cfg = load_config(openclaw_yaml)
