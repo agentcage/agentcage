@@ -788,3 +788,197 @@ class TestCheckWsLiteralSecrets:
         ])
         result = inj.check_ws_injection_policy(b"clean content", "evil.com")
         assert result is None
+
+
+# ── Transform-driven rules ──────────────────────────────
+
+
+class TestTransformRules:
+    """Rules with transform_fn substitute a derived value at request time
+    instead of the static real_value, and treat the underlying real_value
+    as 'never legitimately on the wire' (block everywhere)."""
+
+    def test_inject_calls_transform_fn(self):
+        called = []
+
+        def _mint():
+            called.append(True)
+            return "ya29.fresh-token"
+
+        rule = InjectionRule(
+            "GOOGLE_SA_KEY", "{{GOOGLE_BEARER}}", "PLAINTEXT_SA_KEY_BYTES",
+            inject_to=["googleapis.com"],
+            transform="google-jwt-bearer",
+            transform_fn=_mint,
+        )
+        inj = _injector_with_rules([rule])
+        flow = _make_flow(
+            url="https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            host="gmail.googleapis.com",
+            headers={"Authorization": "Bearer {{GOOGLE_BEARER}}"},
+        )
+        names = inj.inject_request(flow)
+        assert flow.request.headers["Authorization"] == "Bearer ya29.fresh-token"
+        assert names == ["GOOGLE_SA_KEY"]
+        assert called == [True]
+
+    def test_transform_fn_failure_leaves_placeholder(self):
+        def _broken():
+            raise RuntimeError("oauth endpoint down")
+
+        rule = InjectionRule(
+            "GOOGLE_SA_KEY", "{{GOOGLE_BEARER}}", "PLAINTEXT_SA_KEY_BYTES",
+            inject_to=["googleapis.com"],
+            transform="google-jwt-bearer",
+            transform_fn=_broken,
+        )
+        inj = _injector_with_rules([rule])
+        flow = _make_flow(
+            url="https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            host="gmail.googleapis.com",
+            headers={"Authorization": "Bearer {{GOOGLE_BEARER}}"},
+        )
+        names = inj.inject_request(flow)
+        # Placeholder is left in place; cage's request will fail at Google
+        # with an unauthenticated response, which is the safe outcome.
+        assert flow.request.headers["Authorization"] == "Bearer {{GOOGLE_BEARER}}"
+        assert names == []
+
+    def test_raw_secret_blocked_even_to_authorized_domain(self):
+        """For transform rules, the underlying real_value (e.g. SA key
+        bytes) must never appear on the wire — not even to inject_to
+        domains. This catches any accident where the cage gets hold of
+        the raw key and tries to use it directly."""
+        rule = InjectionRule(
+            "GOOGLE_SA_KEY", "{{GOOGLE_BEARER}}", "PLAINTEXT_SA_KEY_BYTES",
+            inject_to=["googleapis.com"],
+            transform="google-jwt-bearer",
+            transform_fn=lambda: "ya29.x",
+        )
+        inj = _injector_with_rules([rule])
+        flow = _make_flow(
+            url="https://gmail.googleapis.com/gmail/v1/users/me/profile",
+            host="gmail.googleapis.com",
+            content="here is the key: PLAINTEXT_SA_KEY_BYTES",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "block"
+        assert result.severity == "critical"
+        assert "GOOGLE_SA_KEY" in result.reason
+
+    def test_static_rule_still_allows_real_value_to_inject_to(self):
+        """Sanity: the inject_to-allow shortcut still applies for non-
+        transform rules. Otherwise we'd have broken existing behavior."""
+        rule = InjectionRule(
+            "ANTHROPIC", "{{ANTHROPIC}}", "real-secret",
+            inject_to=["anthropic.com"],
+        )
+        inj = _injector_with_rules([rule])
+        flow = _make_flow(
+            url="https://api.anthropic.com/v1/messages",
+            host="api.anthropic.com",
+            content="body with real-secret",
+        )
+        result = inj.check_injection_policy(flow)
+        assert result is None
+
+    def test_ws_inject_calls_transform_fn(self):
+        rule = InjectionRule(
+            "GOOGLE_SA_KEY", "{{GOOGLE_BEARER}}", "PLAINTEXT_SA_KEY_BYTES",
+            inject_to=["googleapis.com"],
+            transform="google-jwt-bearer",
+            transform_fn=lambda: "ya29.ws-token",
+        )
+        inj = _injector_with_rules([rule])
+        content, names = inj.inject_ws_content(
+            b"token={{GOOGLE_BEARER}}", "googleapis.com"
+        )
+        assert content == b"token=ya29.ws-token"
+        assert names == ["GOOGLE_SA_KEY"]
+
+    def test_ws_raw_secret_blocked_to_inject_to(self):
+        rule = InjectionRule(
+            "GOOGLE_SA_KEY", "{{GOOGLE_BEARER}}", "PLAINTEXT_SA_KEY_BYTES",
+            inject_to=["googleapis.com"],
+            transform="google-jwt-bearer",
+            transform_fn=lambda: "ya29.x",
+        )
+        inj = _injector_with_rules([rule])
+        result = inj.check_ws_injection_policy(
+            b"raw key: PLAINTEXT_SA_KEY_BYTES", "googleapis.com"
+        )
+        assert result is not None
+        assert result.action == "block"
+
+
+# ── Configure with transform from rule list ─────────────
+
+
+class TestConfigureWithTransform:
+    def test_configure_loads_transform(self, monkeypatch):
+        """Walk the configure() path end-to-end with a fake transform so
+        we don't need cryptography or a real SA key."""
+        # Register a deterministic stub transform.
+        from transforms import register, _REGISTRY
+
+        class _StubTransform:
+            instances = []
+
+            def __init__(self, secret, config):
+                self.secret = secret
+                self.config = config
+                _StubTransform.instances.append(self)
+
+            def get_value(self):
+                return f"derived-from-{self.secret}"
+
+        register("test-stub", _StubTransform)
+        try:
+            monkeypatch.setenv("FAKE_KEY", "raw-key-bytes")
+            inj = SecretInjector()
+            inj.configure([
+                {
+                    "env": "FAKE_KEY",
+                    "placeholder": "{{FAKE}}",
+                    "inject_to": ["example.com"],
+                    "transform": "test-stub",
+                    "transform_config": {"option": "v"},
+                },
+            ])
+            assert len(inj.rules) == 1
+            r = inj.rules[0]
+            assert r.transform == "test-stub"
+            assert r.transform_fn is not None
+            assert r.transform_fn() == "derived-from-raw-key-bytes"
+            assert _StubTransform.instances[0].config == {"option": "v"}
+        finally:
+            _REGISTRY.pop("test-stub", None)
+
+    def test_configure_skips_rule_when_transform_init_fails(
+        self, monkeypatch, caplog
+    ):
+        from transforms import register, _REGISTRY
+
+        class _Broken:
+            def __init__(self, secret, config):
+                raise RuntimeError("bad config")
+
+            def get_value(self):
+                return ""
+
+        register("test-broken", _Broken)
+        try:
+            monkeypatch.setenv("FAKE_KEY", "raw-key-bytes")
+            inj = SecretInjector()
+            inj.configure([
+                {
+                    "env": "FAKE_KEY",
+                    "placeholder": "{{FAKE}}",
+                    "inject_to": ["example.com"],
+                    "transform": "test-broken",
+                },
+            ])
+            assert len(inj.rules) == 0
+        finally:
+            _REGISTRY.pop("test-broken", None)

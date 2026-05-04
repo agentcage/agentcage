@@ -164,6 +164,8 @@ Secrets listed in `secret_injection` are **automatically excluded** from the cag
 | `placeholder` | `string` | yes | Token the cage sees and uses in requests (e.g. `"{{ANTHROPIC_API_KEY}}"`) |
 | `inject_to` | `list[string]` | no | Domains where placeholders are replaced with real values. If omitted, injection applies to all domains |
 | `source` | `string` | no | Where to load the secret from. See [Secret backends](#secret-backends) below. If omitted, the secret must be set via `agentcage secret set` |
+| `transform` | `string` | no | Convert the underlying secret into a derived value at request time (e.g. mint a short-lived OAuth access token from a service-account private key). See [Transforms](#transforms) below. |
+| `transform_config` | `mapping` | no | Per-transform options. Required keys depend on the transform. |
 
 ### Secret backends
 
@@ -219,6 +221,43 @@ If a real secret value appears in any outbound request or WebSocket frame (in th
 ### Response redaction
 
 Inbound responses are always redacted regardless of domain -- any occurrence of a real secret value in response headers or body is replaced with the corresponding placeholder before the cage receives it.
+
+### Transforms
+
+A static `secret_injection` rule replaces a placeholder with a stored real value verbatim. That works when the credential travels on the wire as-is (an API key in an `Authorization` header). It does **not** work when the underlying credential is a high-privilege long-lived secret that is supposed to be exchanged in-process for a short-lived derived value before any HTTPS request — the canonical example being a Google service-account private key, which the agent must use to sign JWTs that are then traded for OAuth2 access tokens.
+
+A `transform` lifts that exchange into the proxy. The cage agent only ever sends the placeholder; the proxy holds the underlying credential, mints the derived value at request time, and substitutes it on the wire. The cage never sees the long-lived secret.
+
+When `transform` is set on a rule:
+- The underlying secret loaded from `env` is held only in proxy process memory.
+- A literal-value match against the underlying secret is treated as **block-everywhere**, including `inject_to` domains, because the cage should never legitimately produce the raw bytes (the proxy mints derived values for it).
+- If the transform fails (rate-limit hit, mint endpoint error, etc.), the placeholder is left in place. The cage's request will fail with an unauthenticated upstream response — never silent leakage.
+
+#### `google-jwt-bearer`
+
+Mints short-lived Google OAuth2 access tokens from a service-account JSON key via the JWT-bearer flow.
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `scopes` | `list[string]` | yes | OAuth2 scopes to request. The minted token covers the union; out-of-scope API calls are rejected by Google. |
+| `audience` | `string` | no | Token endpoint. Defaults to `https://oauth2.googleapis.com/token`. |
+| `mint_rate_per_hour` | `int` | no | Cap on actual mints per hour to bound damage if a malicious skill spams the broker. Cache hits do not count. Default `60`. |
+| `refresh_margin` | `int` | no | Seconds before Google's `expires_in` to refresh proactively. Default `300`. |
+
+```yaml
+secret_injection:
+  - env: GOOGLE_SA_KEY_JSON
+    placeholder: "{{GOOGLE_BEARER}}"
+    transform: google-jwt-bearer
+    transform_config:
+      scopes:
+        - https://www.googleapis.com/auth/gmail.readonly
+        - https://www.googleapis.com/auth/calendar.readonly
+    inject_to: [googleapis.com]
+    source: "systemd-creds:"
+```
+
+The cage agent calls Google APIs with `Authorization: Bearer {{GOOGLE_BEARER}}`. The proxy mints a real `ya29.<...>` token at request time, caches it for ~50 minutes, and rewrites the header. Pair this with the built-in `google_oauth_access_token` secrets-inspector pattern (active by default) so a leak of the minted token to a non-Google host is blocked.
 
 ### Example
 

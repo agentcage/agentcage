@@ -53,4 +53,7 @@ build-backend = "hatchling.build"
 packages = ["src/agentcage"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "cryptography>=41",
+]
