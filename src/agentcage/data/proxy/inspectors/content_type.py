@@ -38,6 +38,17 @@ class ContentTypeInspector(Inspector):
         base64_min_len   (int)   Minimum Base64 match length to trigger.
                                  Default 256.
         action           (str)   "block" or "flag". Default "block".
+        host_exempt_content_types (dict[str, list[str]])
+                                 Per-host content-type exemptions. Keys
+                                 are hostnames (subdomain matching
+                                 supported), values are lists of
+                                 content-type prefixes that skip the
+                                 entropy-ceiling check on that host.
+                                 Mirrors the EntropyInspector knob — use
+                                 it for legitimate high-entropy bodies
+                                 declared as a "text-like" content-type,
+                                 e.g. `multipart/form-data` PDF uploads
+                                 to a paperless-ngx instance.
     """
 
     name = "content-type"
@@ -47,6 +58,10 @@ class ContentTypeInspector(Inspector):
         self.detect_base64: bool = config.get("detect_base64", True)
         self.base64_min_len: int = config.get("base64_min_len", 256)
         self.action: str = config.get("action", "block")
+        self.host_exempt_content_types: dict[str, list[str]] = {
+            h.lower(): prefixes
+            for h, prefixes in config.get("host_exempt_content_types", {}).items()
+        }
 
     def inspect_request(
         self, ctx: InspectionContext
@@ -59,6 +74,16 @@ class ContentTypeInspector(Inspector):
         )
         if not is_text_ct:
             return None
+
+        # Per-host content-type exemptions — same shape as
+        # EntropyInspector.host_exempt_content_types so jacque.yaml can
+        # configure both knobs symmetrically.
+        host = ctx.host.lower()
+        for h, prefixes in self.host_exempt_content_types.items():
+            if host == h or host.endswith("." + h):
+                for prefix in prefixes:
+                    if ctx.content_type.startswith(prefix):
+                        return None
 
         # Check 1: entropy too high for a text content-type
         if ctx.body_entropy is not None and ctx.body_entropy > self.entropy_ceiling:
