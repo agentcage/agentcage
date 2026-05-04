@@ -107,7 +107,11 @@ class VmConfig:
     mem_mb: int = 4096
 
 
-KNOWN_RELAY_TYPES = frozenset({"imap"})
+from agentcage.data.proxy.relays._validate import (
+    KNOWN_RELAY_TYPES,
+    validate_relay_entry,
+    validate_relay_type,
+)
 
 
 @dataclass
@@ -139,14 +143,6 @@ class ProtocolRelay:
     upstream: RelayUpstream = field(default_factory=lambda: RelayUpstream("", 0))
     auth: RelayAuth = field(default_factory=RelayAuth)
     policy: RelayPolicy = field(default_factory=RelayPolicy)
-
-
-def validate_relay_type(name: str) -> None:
-    if name not in KNOWN_RELAY_TYPES:
-        valid = ", ".join(sorted(KNOWN_RELAY_TYPES))
-        raise ValueError(
-            f"unknown protocol_relays type: '{name}'. Valid: {valid}"
-        )
 
 
 _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
@@ -332,36 +328,22 @@ def load_config(path: str) -> Config:
     pr_cfg = raw.get("protocol_relays") or []
     relay_secret_names: set[str] = set()
     for entry in pr_cfg:
-        rname = entry.get("name", "")
-        rtype = entry.get("type", "")
-        listen = entry.get("listen", "")
-        if not (rname and rtype and listen):
-            raise ValueError(
-                f"protocol_relays entry requires name/type/listen "
-                f"(got name={rname!r}, type={rtype!r}, listen={listen!r})"
-            )
-        validate_relay_type(rtype)
+        validate_relay_entry(entry, source_validator=validate_source)
+        rname = entry["name"]
+        rtype = entry["type"]
+        listen = entry["listen"]
         up_raw = entry.get("upstream") or {}
         upstream = RelayUpstream(
             host=str(up_raw.get("host", "")),
             port=int(up_raw.get("port", 0) or 0),
             tls=bool(up_raw.get("tls", True)),
         )
-        if not upstream.host or not (1 <= upstream.port <= 65535):
-            raise ValueError(
-                f"protocol_relays[{rname}].upstream requires host and "
-                f"port in [1, 65535]"
-            )
         auth_raw = entry.get("auth") or {}
         auth = RelayAuth(
             type=str(auth_raw.get("type", "") or ""),
             user_source=str(auth_raw.get("user_source", "") or ""),
             password_source=str(auth_raw.get("password_source", "") or ""),
         )
-        if auth.user_source:
-            validate_source(auth.user_source)
-        if auth.password_source:
-            validate_source(auth.password_source)
         # Collect env names (the part after "scheme:") so we strip them
         # from the cage's env/podman_secrets the same way secret_injection
         # does — these credentials must only land in the proxy.
