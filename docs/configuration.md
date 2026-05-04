@@ -316,7 +316,7 @@ Like `secret_injection`, the goal is the same: the cage container holds no upstr
 |---------|------|----------|-------------|
 | `policy.sender_allowlist` | `list[string]` | no | If non-empty, only these `MAIL FROM` addresses are accepted. Empty = any. |
 | `policy.recipient_allowlist.addresses` | `list[string]` | no | Exact addresses allowed in `RCPT TO`. |
-| `policy.recipient_allowlist.domains` | `list[string]` | no | Domain suffixes allowed in `RCPT TO` (e.g. `m8i.io` matches `bob@x.m8i.io`). |
+| `policy.recipient_allowlist.domains` | `list[string]` | no | Domain suffixes allowed in `RCPT TO` (e.g. `example.com` matches `bob@x.example.com`). |
 | `policy.max_message_bytes` | `int` | no | Upper bound on `DATA` payload. Default 5 MiB. |
 | `policy.max_recipients` | `int` | no | Upper bound on `RCPT TO` per transaction. Default 10. |
 | `policy.send_rate_limit` | `string` | no | Cap on accepted DATA transactions, e.g. `"20/hour"`. Default `"20/hour"`. |
@@ -386,10 +386,10 @@ protocol_relays:
       user_source: "podman:MIGADU_USER"
       password_source: "podman:MIGADU_PASSWORD"
     policy:
-      sender_allowlist: ["jacque@m8i.io"]
+      sender_allowlist: ["agent@example.com"]
       recipient_allowlist:
-        addresses: ["luca@luca.io"]
-        domains:   ["m8i.io"]
+        addresses: ["friend@example.com"]
+        domains:   ["example.com"]
       max_message_bytes: 5242880
       max_recipients: 5
       send_rate_limit: "20/hour"
