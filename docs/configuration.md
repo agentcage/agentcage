@@ -321,10 +321,13 @@ Like `secret_injection`, the goal is the same: the cage container holds no upstr
 | `policy.max_recipients` | `int` | no | Upper bound on `RCPT TO` per transaction. Default 10. |
 | `policy.send_rate_limit` | `string` | no | Cap on accepted DATA transactions, e.g. `"20/hour"`. Default `"20/hour"`. |
 | `policy.conn_rate_limit` | `string` | no | Cap on inbound connections from the cage. Default `"30/min"`. |
+| `policy.bypass_inspectors_for_allowlisted` | `list[string]` | no | Inspector names to skip on `DATA` when every recipient matched `recipient_allowlist`. Default `["secrets", "entropy"]` — the two inspectors most prone to false-positive on legitimate human content (forwarded recovery codes, base64 attachments). Set to `[]` to keep strict body filtering even for trusted recipients. |
 
 If both `addresses` and `domains` are empty, the recipient gate is open — every `RCPT TO` is accepted. Setting either turns it on; an address is admitted iff it matches `addresses` or its domain matches `domains`. As a shorthand you can pass a flat list for `recipient_allowlist`, treated as `addresses`.
 
 In addition to the per-protocol policy above, the SMTP relay runs every `DATA` payload through the proxy's existing inspector chain (`secrets`, `entropy`, `content-type`, `body-size`). A blocking inspector result rejects the message with `550` before it reaches upstream — so a leaked Anthropic key in an outbound email body is blocked the same way it would be on an HTTP request. The `domain` inspector is intentionally skipped (its host-allowlist is HTTP-shaped; the equivalent SMTP gate is `recipient_allowlist`).
+
+**Trust the recipient gate for body content.** When `recipient_allowlist` is non-empty AND every recipient in the transaction matched it (blocked recipients got `550` at `RCPT TO` time and never made it to `DATA`), the inspectors named in `bypass_inspectors_for_allowlisted` are skipped. The default skip set is `secrets` + `entropy`, on the theory that an operator who explicitly named trusted recipients is willing to accept "agent emailed Luca a recovery code" or "agent forwarded a base64-encoded attachment to Luca" instead of having those messages blocked. `body-size` and `content-type` always run as structural caps. With no allowlist (open recipient gate) the bypass cannot trigger — inspectors run strictly. A `smtp_data_bypass` audit entry records every bypass for visibility.
 
 ### IMAP relay behavior
 

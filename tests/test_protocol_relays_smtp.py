@@ -150,6 +150,9 @@ async def _start_fake_upstream(
     return server, server.sockets[0].getsockname()[1]
 
 
+_UNSET = object()
+
+
 def _relay_entry(
     upstream_port: int,
     *,
@@ -162,7 +165,23 @@ def _relay_entry(
     max_recipients: int = 10,
     send_rate_limit: str = "100/min",
     conn_rate_limit: str = "100/min",
+    bypass_inspectors_for_allowlisted=_UNSET,
 ) -> dict:
+    policy: dict = {
+        "sender_allowlist": sender_allowlist or [],
+        "recipient_allowlist": {
+            "addresses": recipient_addresses or [],
+            "domains": recipient_domains or [],
+        },
+        "max_message_bytes": max_message_bytes,
+        "max_recipients": max_recipients,
+        "send_rate_limit": send_rate_limit,
+        "conn_rate_limit": conn_rate_limit,
+    }
+    if bypass_inspectors_for_allowlisted is not _UNSET:
+        policy["bypass_inspectors_for_allowlisted"] = (
+            bypass_inspectors_for_allowlisted
+        )
     return {
         "name": name,
         "type": "smtp",
@@ -177,17 +196,7 @@ def _relay_entry(
             "user_source": "env:TEST_SMTP_USER",
             "password_source": "env:TEST_SMTP_PASS",
         },
-        "policy": {
-            "sender_allowlist": sender_allowlist or [],
-            "recipient_allowlist": {
-                "addresses": recipient_addresses or [],
-                "domains": recipient_domains or [],
-            },
-            "max_message_bytes": max_message_bytes,
-            "max_recipients": max_recipients,
-            "send_rate_limit": send_rate_limit,
-            "conn_rate_limit": conn_rate_limit,
-        },
+        "policy": policy,
     }
 
 
@@ -239,7 +248,7 @@ async def _cmd(writer, reader, line: bytes) -> tuple[int, list[str]]:
 
 @pytest.fixture(autouse=True)
 def _smtp_creds(monkeypatch):
-    monkeypatch.setenv("TEST_SMTP_USER", "jacque@m8i.io")
+    monkeypatch.setenv("TEST_SMTP_USER", "agent@example.com")
     monkeypatch.setenv("TEST_SMTP_PASS", "real-app-password")
 
 
@@ -269,13 +278,13 @@ class TestRateLimiter:
 
 class TestExtractAddress:
     def test_brackets(self):
-        assert _extract_address("<luca@luca.io>") == "luca@luca.io"
+        assert _extract_address("<friend@example.com>") == "friend@example.com"
 
     def test_brackets_with_other_text(self):
-        assert _extract_address("<luca@luca.io> SIZE=42") == "luca@luca.io"
+        assert _extract_address("<friend@example.com> SIZE=42") == "friend@example.com"
 
     def test_bare(self):
-        assert _extract_address("luca@luca.io") == "luca@luca.io"
+        assert _extract_address("friend@example.com") == "friend@example.com"
 
     def test_empty(self):
         assert _extract_address("") is None
@@ -314,7 +323,7 @@ class TestHappyPath:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             try:
                 async with _running_relay(_relay_entry(up_port)) as (_, port):
@@ -324,18 +333,18 @@ class TestHappyPath:
                         code, _ = await _cmd(w, r, b"EHLO cage.local")
                         assert code == 250
                         code, _ = await _cmd(
-                            w, r, b"MAIL FROM:<jacque@m8i.io>",
+                            w, r, b"MAIL FROM:<agent@example.com>",
                         )
                         assert code == 250
                         code, _ = await _cmd(
-                            w, r, b"RCPT TO:<luca@luca.io>",
+                            w, r, b"RCPT TO:<friend@example.com>",
                         )
                         assert code == 250
                         code, _ = await _cmd(w, r, b"DATA")
                         assert code == 354
                         w.write(
-                            b"From: jacque@m8i.io\r\n"
-                            b"To: luca@luca.io\r\n"
+                            b"From: agent@example.com\r\n"
+                            b"To: friend@example.com\r\n"
                             b"Subject: hi\r\n"
                             b"\r\n"
                             b"Hello there.\r\n"
@@ -347,12 +356,12 @@ class TestHappyPath:
                         await _cmd(w, r, b"QUIT")
                 # Upstream should have seen the AUTH and one txn.
                 assert recorder.auth_seen == (
-                    "jacque@m8i.io", "real-app-password",
+                    "agent@example.com", "real-app-password",
                 )
                 assert len(recorder.transactions) == 1
                 txn = recorder.transactions[0]
-                assert txn["sender"] == "jacque@m8i.io"
-                assert txn["recipients"] == ["luca@luca.io"]
+                assert txn["sender"] == "agent@example.com"
+                assert txn["recipients"] == ["friend@example.com"]
                 assert b"Subject: hi" in txn["data"]
             finally:
                 upstream.close()
@@ -369,12 +378,12 @@ class TestRecipientAllowlist:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entries: list[dict] = []
             entry = _relay_entry(
                 up_port,
-                recipient_addresses=["luca@luca.io"],
+                recipient_addresses=["friend@example.com"],
             )
             try:
                 async with _running_relay(
@@ -383,9 +392,9 @@ class TestRecipientAllowlist:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                         code_ok, _ = await _cmd(
-                            w, r, b"RCPT TO:<luca@luca.io>",
+                            w, r, b"RCPT TO:<friend@example.com>",
                         )
                         assert code_ok == 250
                         code_no, lines = await _cmd(
@@ -402,7 +411,7 @@ class TestRecipientAllowlist:
                 # Upstream saw exactly one RCPT (the allowed one).
                 assert len(recorder.transactions) == 1
                 assert recorder.transactions[0]["recipients"] == [
-                    "luca@luca.io"
+                    "friend@example.com"
                 ]
                 blocked_audit = [
                     e for e in entries
@@ -421,17 +430,17 @@ class TestRecipientAllowlist:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
-            entry = _relay_entry(up_port, recipient_domains=["m8i.io"])
+            entry = _relay_entry(up_port, recipient_domains=["example.com"])
             try:
                 async with _running_relay(entry) as (_, port):
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                         code, _ = await _cmd(
-                            w, r, b"RCPT TO:<bob@accounts.m8i.io>",
+                            w, r, b"RCPT TO:<bob@accounts.example.com>",
                         )
                         assert code == 250
                         code, _ = await _cmd(
@@ -450,7 +459,7 @@ class TestRecipientAllowlist:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entry = _relay_entry(up_port)  # no allowlist
             try:
@@ -458,7 +467,7 @@ class TestRecipientAllowlist:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                         code, _ = await _cmd(
                             w, r, b"RCPT TO:<anyone@example.com>",
                         )
@@ -478,10 +487,10 @@ class TestSenderAllowlist:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entry = _relay_entry(
-                up_port, sender_allowlist=["jacque@m8i.io"],
+                up_port, sender_allowlist=["agent@example.com"],
             )
             try:
                 async with _running_relay(entry) as (_, port):
@@ -495,7 +504,7 @@ class TestSenderAllowlist:
                         assert any("not permitted" in l for l in lines)
                         # Allowed sender works.
                         code, _ = await _cmd(
-                            w, r, b"MAIL FROM:<jacque@m8i.io>",
+                            w, r, b"MAIL FROM:<agent@example.com>",
                         )
                         assert code == 250
             finally:
@@ -513,7 +522,7 @@ class TestCaps:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entry = _relay_entry(up_port, max_recipients=2)
             try:
@@ -521,7 +530,7 @@ class TestCaps:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                         for i in range(2):
                             code, _ = await _cmd(
                                 w, r,
@@ -542,7 +551,7 @@ class TestCaps:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entry = _relay_entry(up_port, max_message_bytes=128)
             try:
@@ -550,7 +559,7 @@ class TestCaps:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                         await _cmd(w, r, b"RCPT TO:<u@x.com>")
                         await _cmd(w, r, b"DATA")
                         # Send a body larger than 128 bytes.
@@ -571,7 +580,7 @@ class TestCaps:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entry = _relay_entry(up_port, send_rate_limit="2/min")
             try:
@@ -580,7 +589,7 @@ class TestCaps:
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
                         for i in range(2):
-                            await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                            await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                             await _cmd(w, r, b"RCPT TO:<u@x.com>")
                             await _cmd(w, r, b"DATA")
                             w.write(b"hi\r\n.\r\n")
@@ -588,7 +597,7 @@ class TestCaps:
                             code, _ = await _read_response(r)
                             assert code == 250
                         # Third should be rate-limited.
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                         await _cmd(w, r, b"RCPT TO:<u@x.com>")
                         code, _ = await _cmd(w, r, b"DATA")
                         assert code == 451
@@ -609,7 +618,7 @@ class TestAuthIntercept:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             try:
                 async with _running_relay(_relay_entry(up_port)) as (_, port):
@@ -625,7 +634,7 @@ class TestAuthIntercept:
                         )
                         assert code == 235
                         # Upstream auth was already done with REAL creds.
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
                         await _cmd(w, r, b"RCPT TO:<u@x.com>")
                         code, _ = await _cmd(w, r, b"DATA")
                         assert code == 354
@@ -634,7 +643,7 @@ class TestAuthIntercept:
                         await _read_response(r)
                 # Upstream saw the REAL credentials, never the cage's.
                 assert recorder.auth_seen == (
-                    "jacque@m8i.io", "real-app-password",
+                    "agent@example.com", "real-app-password",
                 )
             finally:
                 upstream.close()
@@ -673,7 +682,7 @@ class TestInspectorIntegration:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entries: list[dict] = []
             try:
@@ -685,8 +694,8 @@ class TestInspectorIntegration:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
-                        await _cmd(w, r, b"RCPT TO:<luca@luca.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
                         await _cmd(w, r, b"DATA")
                         w.write(
                             b"Subject: leak\r\n\r\n"
@@ -719,7 +728,7 @@ class TestInspectorIntegration:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             try:
                 async with _running_relay(
@@ -729,8 +738,8 @@ class TestInspectorIntegration:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
-                        await _cmd(w, r, b"RCPT TO:<luca@luca.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
                         await _cmd(w, r, b"DATA")
                         w.write(
                             b"Subject: clean\r\n\r\n"
@@ -757,7 +766,7 @@ class TestInspectorIntegration:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             insp = SecretsInspector()
             insp.configure({"enabled": True})
@@ -768,8 +777,8 @@ class TestInspectorIntegration:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
-                        await _cmd(w, r, b"RCPT TO:<luca@luca.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
                         await _cmd(w, r, b"DATA")
                         # Realistic-looking key; matches the regex.
                         w.write(
@@ -790,6 +799,179 @@ class TestInspectorIntegration:
         _run(_go())
 
 
+# ── Allowlist-trust bypass ───────────────────────────────
+
+
+class TestAllowlistInspectorBypass:
+    """When all recipients are in recipient_allowlist, configured
+    inspectors are skipped on DATA. Default skip set is {secrets,
+    entropy} so legitimate human content (forwarded recovery codes,
+    base64 attachments) reaches the trusted recipient. body-size and
+    content-type still apply as structural caps."""
+
+    def test_default_bypass_lets_secret_through_to_allowlisted(self):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            from inspectors.secrets import SecretsInspector
+            insp = SecretsInspector()
+            insp.configure({"enabled": True})
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(
+                        up_port, recipient_addresses=["friend@example.com"],
+                    ),
+                    audit_log=entries.append,
+                    inspectors=[insp],
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(
+                            b"Subject: forwarded recovery info\r\n\r\n"
+                            b"Here is your key: "
+                            b"sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\r\n"
+                            b".\r\n"
+                        )
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 250
+                # Upstream actually delivered the message.
+                assert len(recorder.transactions) == 1
+                # Audit entry recorded that secrets was bypassed.
+                bypasses = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_data_bypass"
+                ]
+                assert bypasses, entries
+                assert "secrets" in bypasses[0]["bypassed"]
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_explicit_empty_bypass_keeps_strict_mode(self):
+        """Operator opts out: secrets in body block even for
+        allowlisted recipients."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            from inspectors.secrets import SecretsInspector
+            insp = SecretsInspector()
+            insp.configure({"enabled": True})
+            try:
+                async with _running_relay(
+                    _relay_entry(
+                        up_port,
+                        recipient_addresses=["friend@example.com"],
+                        bypass_inspectors_for_allowlisted=[],
+                    ),
+                    inspectors=[insp],
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(
+                            b"Subject: leak\r\n\r\n"
+                            b"sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\r\n"
+                            b".\r\n"
+                        )
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 550
+                assert recorder.transactions == []
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_no_allowlist_means_no_bypass(self):
+        """Empty allowlist = no recipient policy = no body trust.
+        Inspectors run strictly even with the default bypass list,
+        because there's no allowlist match to bypass against."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            from inspectors.secrets import SecretsInspector
+            insp = SecretsInspector()
+            insp.configure({"enabled": True})
+            try:
+                # No recipient_allowlist => bypass cannot trigger.
+                async with _running_relay(
+                    _relay_entry(up_port),
+                    inspectors=[insp],
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(
+                            b"Subject: leak\r\n\r\n"
+                            b"sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\r\n"
+                            b".\r\n"
+                        )
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 550
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_bypass_does_not_skip_body_size(self):
+        """body-size is structural, never bypassed by default. Even
+        a trusted recipient cannot receive a 100MB DATA payload."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            from inspectors.body_size import BodySizeInspector
+            insp = BodySizeInspector()
+            insp.configure({"max_bytes": 256})
+            try:
+                async with _running_relay(
+                    _relay_entry(
+                        up_port, recipient_addresses=["friend@example.com"],
+                    ),
+                    inspectors=[insp],
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"X" * 1024 + b"\r\n.\r\n")
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        # body-size inspector blocks regardless of allowlist.
+                        assert code == 550
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+
 # ── Dot-stuffing round-trip ──────────────────────────────
 
 
@@ -803,15 +985,15 @@ class TestDotStuffing:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             try:
                 async with _running_relay(_relay_entry(up_port)) as (_, port):
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
-                        await _cmd(w, r, b"RCPT TO:<luca@luca.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
                         await _cmd(w, r, b"DATA")
                         # Client wire form: ".." prefix on the dotted line.
                         w.write(
@@ -844,7 +1026,7 @@ class TestAuditEntries:
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
-                recorder, "jacque@m8i.io", "real-app-password",
+                recorder, "agent@example.com", "real-app-password",
             )
             entries: list[dict] = []
             try:
@@ -854,8 +1036,8 @@ class TestAuditEntries:
                     async with _smtp_client(port) as (r, w):
                         await _read_response(r)
                         await _cmd(w, r, b"EHLO cage.local")
-                        await _cmd(w, r, b"MAIL FROM:<jacque@m8i.io>")
-                        await _cmd(w, r, b"RCPT TO:<luca@luca.io>")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
                         await _cmd(w, r, b"DATA")
                         w.write(b"Subject: hi\r\n\r\nbody\r\n.\r\n")
                         await w.drain()
@@ -868,8 +1050,8 @@ class TestAuditEntries:
                 ]
                 assert allowed
                 e = allowed[0]
-                assert e["sender"] == "jacque@m8i.io"
-                assert e["recipients"] == ["luca@luca.io"]
+                assert e["sender"] == "agent@example.com"
+                assert e["recipients"] == ["friend@example.com"]
                 assert e["size"] > 0
             finally:
                 upstream.close()

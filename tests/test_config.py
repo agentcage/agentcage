@@ -267,10 +267,10 @@ class TestProtocolRelaysParser:
                   user_source: "podman:MIGADU_USER"
                   password_source: "podman:MIGADU_PASSWORD"
                 policy:
-                  sender_allowlist: ["jacque@m8i.io"]
+                  sender_allowlist: ["agent@example.com"]
                   recipient_allowlist:
-                    addresses: ["luca@luca.io"]
-                    domains: ["m8i.io"]
+                    addresses: ["friend@example.com"]
+                    domains: ["example.com"]
                   max_message_bytes: 1048576
                   max_recipients: 5
                   send_rate_limit: "10/hour"
@@ -280,9 +280,9 @@ class TestProtocolRelaysParser:
         assert relay.name == "migadu-smtp"
         assert relay.type == "smtp"
         assert relay.upstream.port == 465
-        assert relay.policy.sender_allowlist == ["jacque@m8i.io"]
-        assert relay.policy.recipient_allowlist.addresses == ["luca@luca.io"]
-        assert relay.policy.recipient_allowlist.domains == ["m8i.io"]
+        assert relay.policy.sender_allowlist == ["agent@example.com"]
+        assert relay.policy.recipient_allowlist.addresses == ["friend@example.com"]
+        assert relay.policy.recipient_allowlist.domains == ["example.com"]
         assert relay.policy.max_message_bytes == 1048576
         assert relay.policy.max_recipients == 5
         assert relay.policy.send_rate_limit == "10/hour"
@@ -310,6 +310,51 @@ class TestProtocolRelaysParser:
         assert relay.policy.recipient_allowlist.addresses == [
             "bob@example.com", "alice@example.com"
         ]
+
+    def test_smtp_default_bypass_inspectors(self, tmp_path):
+        """Default bypass list when the field is omitted is
+        ['secrets', 'entropy'] — the two inspectors most likely to
+        false-positive on legitimate human content."""
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: r
+                type: smtp
+                listen: "127.0.0.1:1025"
+                upstream:
+                  host: smtp.example.com
+                  port: 465
+                auth:
+                  type: smtp-plain
+                  user_source: "podman:U"
+                  password_source: "podman:P"
+        """).replace("\n", "\n            "))
+        cfg = load_config(str(p))
+        relay = cfg.protocol_relays[0]
+        assert relay.policy.bypass_inspectors_for_allowlisted == [
+            "secrets", "entropy"
+        ]
+
+    def test_smtp_explicit_empty_bypass(self, tmp_path):
+        """`bypass_inspectors_for_allowlisted: []` means strict mode:
+        inspectors run even for allowlisted recipients."""
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: r
+                type: smtp
+                listen: "127.0.0.1:1025"
+                upstream:
+                  host: smtp.example.com
+                  port: 465
+                auth:
+                  type: smtp-plain
+                  user_source: "podman:U"
+                  password_source: "podman:P"
+                policy:
+                  bypass_inspectors_for_allowlisted: []
+        """).replace("\n", "\n            "))
+        cfg = load_config(str(p))
+        relay = cfg.protocol_relays[0]
+        assert relay.policy.bypass_inspectors_for_allowlisted == []
 
     def test_smtp_strips_relay_secrets_from_cage(self, tmp_path):
         """Same name-stripping behavior we proved for IMAP — secrets

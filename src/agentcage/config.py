@@ -173,6 +173,17 @@ class RelayPolicy:
     max_message_bytes: int = 5_242_880  # 5 MiB
     max_recipients: int = 10
     send_rate_limit: str = "20/hour"
+    # Inspectors to skip when the recipient_allowlist is non-empty
+    # and every recipient matched it. The threat model assumes the
+    # allowlist names trusted destinations, so legitimate user
+    # content that trips `secrets` or `entropy` (forwarded calendar
+    # invites, recovery codes, base64 attachments) is allowed
+    # through. body-size and content-type still apply as structural
+    # caps. Set to ``[]`` to keep strict behavior even for trusted
+    # recipients.
+    bypass_inspectors_for_allowlisted: list[str] = field(
+        default_factory=lambda: ["secrets", "entropy"]
+    )
 
 
 @dataclass
@@ -405,6 +416,10 @@ def load_config(path: str) -> Config:
             addresses=list(rcpt_raw.get("addresses") or []),
             domains=list(rcpt_raw.get("domains") or []),
         )
+        if "bypass_inspectors_for_allowlisted" in pol_raw:
+            bypass = list(pol_raw.get("bypass_inspectors_for_allowlisted") or [])
+        else:
+            bypass = ["secrets", "entropy"]
         policy = RelayPolicy(
             conn_rate_limit=str(
                 pol_raw.get("conn_rate_limit") or "30/min"
@@ -420,6 +435,7 @@ def load_config(path: str) -> Config:
             send_rate_limit=str(
                 pol_raw.get("send_rate_limit") or "20/hour"
             ),
+            bypass_inspectors_for_allowlisted=bypass,
         )
         cfg.protocol_relays.append(ProtocolRelay(
             name=rname,

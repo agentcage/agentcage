@@ -139,6 +139,13 @@ class _SmtpConfig:
         self.send_rate_limit: str = str(
             policy.get("send_rate_limit") or "20/hour"
         )
+        if "bypass_inspectors_for_allowlisted" in policy:
+            bypass = policy.get("bypass_inspectors_for_allowlisted") or []
+        else:
+            bypass = ["secrets", "entropy"]
+        self.bypass_inspectors_for_allowlisted: set[str] = {
+            str(name) for name in bypass
+        }
 
 
 _ADDR_RE = re.compile(r"<([^>]+)>")
@@ -694,9 +701,27 @@ class SmtpRelay:
         """Run the proxy's inspector chain on the assembled RFC822
         message. Returns the first ``block`` result, or None if all
         inspectors abstained (or returned only ``flag``).
+
+        When the recipient allowlist is non-empty (so every recipient
+        in the txn matched it — blocked recipients got 550 at RCPT
+        time and never made it into ``txn.recipients``), inspectors
+        named in ``bypass_inspectors_for_allowlisted`` are skipped.
+        That lets legitimate user content (forwarded mail with API
+        keys, base64 attachments, calendar invites) reach the trusted
+        recipient instead of being blocked by a strict body filter.
         """
         if not self._inspectors:
             return None
+        # "Allowlist matched" = there IS a recipient policy and every
+        # surviving recipient passed it. With an empty allowlist
+        # (no policy) we always run inspectors strictly.
+        allowlisted = bool(
+            self._cfg.recipient_addresses or self._cfg.recipient_domains
+        )
+        bypass = (
+            self._cfg.bypass_inspectors_for_allowlisted
+            if allowlisted else set()
+        )
         try:
             msg = message_from_bytes(body, policy=_email_policy)
         except Exception:
@@ -721,7 +746,11 @@ class SmtpRelay:
             body_entropy=shannon_entropy(body) if body else None,
         )
         flagged: list[InspectionResult] = []
+        bypassed: list[str] = []
         for inspector in self._inspectors:
+            if inspector.name in bypass:
+                bypassed.append(inspector.name)
+                continue
             result = inspector.inspect_request(ctx)
             if result is None:
                 continue
@@ -739,6 +768,15 @@ class SmtpRelay:
                 "severity": r.severity,
                 "sender": txn.sender,
                 "recipients": list(txn.recipients),
+            })
+        if bypassed:
+            self._audit_log({
+                "kind": "smtp_data_bypass",
+                "relay": self._cfg.name,
+                "bypassed": sorted(bypassed),
+                "sender": txn.sender,
+                "recipients": list(txn.recipients),
+                "reason": "all recipients in allowlist",
             })
         return None
 
