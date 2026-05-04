@@ -1,5 +1,6 @@
 """agentcage — mitmproxy traffic inspection with pluggable inspectors."""
 
+import asyncio
 import json
 import os
 import sys
@@ -109,8 +110,128 @@ class Agentcage:
         )
 
     def running(self) -> None:
-        """Called after the proxy is fully started — apply TLS passthrough."""
+        """Called after the proxy is fully started — apply TLS passthrough
+        and start any non-HTTP protocol relay listeners."""
         self._apply_passthrough()
+        self._start_protocol_relays()
+
+    async def done(self) -> None:
+        """Drain protocol relays cleanly on shutdown.
+
+        ``ImapRelay.stop()`` cancels in-flight client sessions so long-
+        lived IDLE connections receive a ``* BYE`` close instead of a
+        TCP reset. Without this hook the careful shutdown logic in the
+        relay is never invoked; mitmproxy just tears down the loop.
+        """
+        relays = list(getattr(self, "_relays", []) or [])
+        if not relays:
+            return
+        await asyncio.gather(
+            *[r.stop() for r in relays], return_exceptions=True
+        )
+
+    def _audit_write(self, entry: dict) -> None:
+        """Write a structured JSON line to the audit pipeline.
+
+        Same sink as ``_log()``: stderr (always) and ``audit.jsonl``
+        (when configured). Used by protocol relays so per-decision
+        records land in the same place HTTP decisions do.
+        """
+        if "ts" not in entry:
+            entry["ts"] = datetime.now(timezone.utc).isoformat()
+        line = json.dumps(entry)
+        print(line, file=sys.stderr, flush=True)
+        if self._audit_file:
+            try:
+                self._audit_file.write(line + "\n")
+                self._audit_file.flush()
+            except OSError:
+                pass
+
+    def _start_protocol_relays(self) -> None:
+        """Boot ``protocol_relays`` listeners (IMAP, etc.) on the same
+        asyncio loop mitmproxy is using. Relays are housed in this
+        process — same systemd-creds mount, same audit pipeline — to
+        avoid expanding the trust boundary across more containers.
+        """
+        relay_cfg = self.cfg.get("protocol_relays") or []
+        if not relay_cfg:
+            return
+
+        from relays import get as _get_relay
+        from relays._validate import validate_relay_entry
+
+        self._relays: list = []
+        loop = asyncio.get_event_loop()
+        for entry in relay_cfg:
+            rname = entry.get("name", "?") if isinstance(entry, dict) else "?"
+            try:
+                validate_relay_entry(entry)
+            except ValueError as e:
+                ctx.log.warn(f"agentcage: relay {rname} invalid config: {e}")
+                self._audit_write({
+                    "kind": "relay_config_invalid",
+                    "relay": rname,
+                    "error": str(e),
+                })
+                continue
+            rtype = entry["type"]
+            try:
+                cls = _get_relay(rtype)
+            except KeyError as e:
+                ctx.log.warn(f"agentcage: unknown protocol_relays type: {e}")
+                continue
+            try:
+                relay = cls(
+                    entry,
+                    audit_log=self._audit_write,
+                    log_allowed=self.log_allowed,
+                )
+            except Exception as e:
+                ctx.log.warn(
+                    f"agentcage: relay {rname} init failed: {e}"
+                )
+                self._audit_write({
+                    "kind": "relay_init_failed",
+                    "relay": rname,
+                    "error": str(e),
+                })
+                continue
+            try:
+                task = loop.create_task(relay.start())
+            except Exception as e:
+                ctx.log.warn(
+                    f"agentcage: relay {rname} start scheduling failed: {e}"
+                )
+                self._audit_write({
+                    "kind": "relay_start_failed",
+                    "relay": rname,
+                    "error": str(e),
+                })
+                continue
+            task.add_done_callback(
+                lambda t, name=rname: self._on_relay_start_done(t, name)
+            )
+            self._relays.append(relay)
+            ctx.log.info(
+                f"agentcage: scheduled relay {entry.get('name')} "
+                f"({rtype})"
+            )
+
+    def _on_relay_start_done(self, task: "asyncio.Task", name: str) -> None:
+        """Surface ``relay.start()`` exceptions instead of letting Python
+        raise ``Task exception was never retrieved`` at GC time."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        ctx.log.error(f"agentcage: relay {name} start failed: {exc}")
+        self._audit_write({
+            "kind": "relay_start_failed",
+            "relay": name,
+            "error": str(exc),
+        })
 
     # ── Inspector loading ────────────────────────────────
 

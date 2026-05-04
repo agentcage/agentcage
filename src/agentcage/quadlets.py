@@ -243,6 +243,22 @@ def generate_quadlets(
             creds_secrets.append(r.env)
         proxy_secrets.append(r.env)
 
+    # Protocol-relay credentials live in the same podman secret store and
+    # need a Secret= directive on the proxy container so the relay can
+    # resolve them via env at startup. The CLI parser strips them from the
+    # cage's podman_secrets/env so the cage container never sees them; they
+    # only land in the proxy. Auto-decrypt the .cred file if systemd-creds
+    # is the default backend, mirroring secret_injection above.
+    for relay in getattr(config, "protocol_relays", []):
+        for src in (relay.auth.user_source, relay.auth.password_source):
+            scheme, _, arg = (src or "").partition(":")
+            if not arg or arg in proxy_secrets:
+                continue
+            has_cred_file = (_state_creds_dir / f"{arg}.cred").exists()
+            if scheme == "systemd-creds" or has_cred_file:
+                creds_secrets.append(arg)
+            proxy_secrets.append(arg)
+
     # Parse ports into structured forwards for proxy reverse mode
     inbound_forwards = []
     for port_spec in cc.ports:

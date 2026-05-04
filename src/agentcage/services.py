@@ -26,12 +26,21 @@ _BUILD_CAPS = [
 
 
 def expected_secrets(cfg) -> list[str]:
-    """Return all secret names a cage expects (injection + direct)."""
+    """Return all secret names a cage expects (injection + direct +
+    protocol-relay credentials)."""
     names: list[str] = []
     for r in cfg.secret_injection:
         names.append(r.env)
     for s in cfg.container.podman_secrets:
         names.append(s)
+    # Protocol-relay credentials are stripped from cage's podman_secrets/env
+    # (the cage must not see them) but the proxy container still needs them
+    # mounted via the same podman secret store.
+    for relay in getattr(cfg, "protocol_relays", []):
+        for src in (relay.auth.user_source, relay.auth.password_source):
+            _, _, arg = (src or "").partition(":")
+            if arg and arg not in names:
+                names.append(arg)
     return names
 
 
