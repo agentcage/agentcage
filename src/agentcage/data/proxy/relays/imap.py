@@ -140,6 +140,12 @@ class _RelayConfig:
         self.conn_rate_limit: str = str(
             policy.get("conn_rate_limit") or "30/min"
         )
+        # Per-readline idle timeout. Default 1800s = 30 min so RFC 2177
+        # IDLE heartbeats (every ~29 min) don't trip a closure. 0
+        # disables the timeout entirely (legacy behavior).
+        self.idle_timeout_seconds: int = int(
+            policy.get("idle_timeout_seconds", 1800)
+        )
 
 
 class ImapRelay:
@@ -151,7 +157,11 @@ class ImapRelay:
         *,
         audit_log: Optional[Callable[[dict], None]] = None,
         log_allowed: bool = False,
+        inspectors: Optional[list] = None,
     ) -> None:
+        # ``inspectors`` is accepted for call-site symmetry with the
+        # SMTP relay but is not used here — IMAP traffic is bridged
+        # at the byte level and policy is per-command, not body-shape.
         self._cfg = _RelayConfig(entry)
         self._user = _resolve_credential(self._cfg.user_source)
         self._password = _resolve_credential(self._cfg.password_source)
@@ -321,6 +331,22 @@ class ImapRelay:
             except Exception:
                 pass
 
+    async def _read_with_timeout(
+        self, reader: asyncio.StreamReader,
+    ) -> bytes:
+        """`readline` with the configured idle timeout. Used during
+        the auth phase only — once the bridge starts, IDLE sessions
+        legitimately go quiet for ~29 minutes between heartbeats and
+        we want to keep them open. Pre-auth timeouts catch the case
+        where a cage connects but never speaks.
+        """
+        if self._cfg.idle_timeout_seconds <= 0:
+            return await reader.readline()
+        return await asyncio.wait_for(
+            reader.readline(),
+            timeout=self._cfg.idle_timeout_seconds,
+        )
+
     async def _authenticate_upstream(
         self,
         upstream_reader: asyncio.StreamReader,
@@ -330,7 +356,16 @@ class ImapRelay:
         # Consume upstream greeting. Many servers embed the CAPABILITY
         # list inline as `* OK [CAPABILITY ...] ready` — capture it so
         # we can forward equivalent capabilities to the client below.
-        greeting = await upstream_reader.readline()
+        try:
+            greeting = await self._read_with_timeout(upstream_reader)
+        except asyncio.TimeoutError:
+            log.warning(
+                "imap relay %s: upstream silent for %ds, giving up",
+                self._cfg.name, self._cfg.idle_timeout_seconds,
+            )
+            client_writer.write(b"* BYE upstream silent\r\n")
+            await client_writer.drain()
+            return False
         if not greeting.startswith(b"* OK"):
             log.error(
                 "imap relay %s: unexpected greeting: %r",
@@ -353,7 +388,7 @@ class ImapRelay:
         await upstream_writer.drain()
 
         while True:
-            line = await upstream_reader.readline()
+            line = await self._read_with_timeout(upstream_reader)
             if not line:
                 client_writer.write(b"* BYE upstream closed\r\n")
                 await client_writer.drain()
@@ -397,7 +432,7 @@ class ImapRelay:
         upstream_writer.write(cap_tag + b" CAPABILITY\r\n")
         await upstream_writer.drain()
         while True:
-            line = await upstream_reader.readline()
+            line = await self._read_with_timeout(upstream_reader)
             if not line:
                 return
             self._capture_capabilities(line)

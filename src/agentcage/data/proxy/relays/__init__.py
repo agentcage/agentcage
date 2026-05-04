@@ -31,6 +31,9 @@ def register(name: str, cls: Type) -> None:
     _REGISTRY[name] = cls
 
 
+_BUILTINS = frozenset({"imap", "smtp"})
+
+
 def _lazy_load(name: str) -> Type:
     """Resolve a built-in relay class on first ``get()`` call.
 
@@ -40,6 +43,9 @@ def _lazy_load(name: str) -> Type:
     if name == "imap":
         from relays.imap import ImapRelay
         return ImapRelay
+    if name == "smtp":
+        from relays.smtp import SmtpRelay
+        return SmtpRelay
     raise KeyError(name)
 
 
@@ -50,7 +56,7 @@ def get(name: str) -> Type:
     try:
         cls = _lazy_load(name)
     except KeyError:
-        valid = ", ".join(sorted(set(_REGISTRY) | {"imap"}))
+        valid = ", ".join(sorted(set(_REGISTRY) | _BUILTINS))
         raise KeyError(
             f"unknown relay type '{name}'. Registered: {valid or '(none)'}"
         )
@@ -61,4 +67,4 @@ def get(name: str) -> Type:
 def known() -> list[str]:
     """Return the union of explicitly-registered and built-in relay
     types. The built-ins are listed without forcing their import."""
-    return sorted(set(_REGISTRY) | {"imap"})
+    return sorted(set(_REGISTRY) | _BUILTINS)

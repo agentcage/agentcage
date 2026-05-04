@@ -161,6 +161,17 @@ class Agentcage:
         from relays import get as _get_relay
         from relays._validate import validate_relay_entry
 
+        # Inspector chain for relays. The DomainInspector is HTTP-host
+        # shaped (matches against URL host) and doesn't translate to
+        # protocol-relay traffic; the equivalent gate for SMTP is the
+        # recipient_allowlist policy. Strip it so SMTP DATA inspection
+        # doesn't try to enforce HTTP-style domain rules on email
+        # recipients.
+        relay_inspectors = [
+            i for i in getattr(self, "inspectors", []) or []
+            if not isinstance(i, DomainInspector)
+        ]
+
         self._relays: list = []
         loop = asyncio.get_event_loop()
         for entry in relay_cfg:
@@ -186,6 +197,7 @@ class Agentcage:
                     entry,
                     audit_log=self._audit_write,
                     log_allowed=self.log_allowed,
+                    inspectors=relay_inspectors,
                 )
             except Exception as e:
                 ctx.log.warn(

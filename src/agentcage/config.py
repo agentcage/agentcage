@@ -144,10 +144,51 @@ class RelayAuth:
 
 
 @dataclass
+class RelayRecipientAllowlist:
+    """SMTP recipient gate. Empty = allow any recipient (insecure;
+    explicit acknowledgement only). When non-empty, a RCPT TO is
+    accepted iff its address matches an entry in ``addresses`` or its
+    domain matches an entry in ``domains`` (suffix-aware so
+    ``foo.example.com`` matches an ``example.com`` domain entry).
+    """
+
+    addresses: list[str] = field(default_factory=list)
+    domains: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RelayPolicy:
+    # Common
+    conn_rate_limit: str = "30/min"
+    # Maximum time the relay waits between commands before disconnecting
+    # an idle session. 0 disables. Defaults differ per relay type:
+    # SMTP=300 (5 min, RFC 5321 §4.5.3.2), IMAP=1800 (30 min, to permit
+    # IDLE heartbeats RFC 2177).
+    idle_timeout_seconds: int = 0
+
+    # IMAP
     readonly: bool = False
     folder_allowlist: list[str] = field(default_factory=list)
-    conn_rate_limit: str = "30/min"
+
+    # SMTP
+    sender_allowlist: list[str] = field(default_factory=list)
+    recipient_allowlist: RelayRecipientAllowlist = field(
+        default_factory=RelayRecipientAllowlist
+    )
+    max_message_bytes: int = 5_242_880  # 5 MiB
+    max_recipients: int = 10
+    send_rate_limit: str = "20/hour"
+    # Inspectors to skip when the recipient_allowlist is non-empty
+    # and every recipient matched it. The threat model assumes the
+    # allowlist names trusted destinations, so legitimate user
+    # content that trips `secrets` or `entropy` (forwarded calendar
+    # invites, recovery codes, base64 attachments) is allowed
+    # through. body-size and content-type still apply as structural
+    # caps. Set to ``[]`` to keep strict behavior even for trusted
+    # recipients.
+    bypass_inspectors_for_allowlisted: list[str] = field(
+        default_factory=lambda: ["secrets", "entropy"]
+    )
 
 
 @dataclass
@@ -372,12 +413,35 @@ def load_config(path: str) -> Config:
             if scheme and arg:
                 relay_secret_names.add(arg)
         pol_raw = entry.get("policy") or {}
+        rcpt_raw = pol_raw.get("recipient_allowlist") or {}
+        if isinstance(rcpt_raw, list):
+            # Convenience shorthand: a flat list is treated as `addresses`.
+            rcpt_raw = {"addresses": rcpt_raw}
+        recipient_allowlist = RelayRecipientAllowlist(
+            addresses=list(rcpt_raw.get("addresses") or []),
+            domains=list(rcpt_raw.get("domains") or []),
+        )
+        if "bypass_inspectors_for_allowlisted" in pol_raw:
+            bypass = list(pol_raw.get("bypass_inspectors_for_allowlisted") or [])
+        else:
+            bypass = ["secrets", "entropy"]
         policy = RelayPolicy(
-            readonly=bool(pol_raw.get("readonly", False)),
-            folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
             conn_rate_limit=str(
                 pol_raw.get("conn_rate_limit") or "30/min"
             ),
+            idle_timeout_seconds=int(pol_raw.get("idle_timeout_seconds", 0)),
+            readonly=bool(pol_raw.get("readonly", False)),
+            folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
+            sender_allowlist=list(pol_raw.get("sender_allowlist") or []),
+            recipient_allowlist=recipient_allowlist,
+            max_message_bytes=int(
+                pol_raw.get("max_message_bytes", 5_242_880)
+            ),
+            max_recipients=int(pol_raw.get("max_recipients", 10)),
+            send_rate_limit=str(
+                pol_raw.get("send_rate_limit") or "20/hour"
+            ),
+            bypass_inspectors_for_allowlisted=bypass,
         )
         cfg.protocol_relays.append(ProtocolRelay(
             name=rname,
