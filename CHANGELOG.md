@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-05-04
+
+### Changed
+- SMTP relay default for `policy.bypass_inspectors_for_allowlisted` is now `["secrets", "entropy", "content-type"]` (was `["secrets", "entropy"]`). The `content-type` inspector flags base64 chunks in `text/plain` bodies as an exfil signal — a strong heuristic for HTTP, a false-positive for email where PGP signatures, quoted forwards, copied tokens, and long URLs routinely produce 600+ char base64-looking content in plaintext. With the new default, an allowlisted recipient can receive that legitimate human content; with no allowlist the inspector still runs strictly. `body-size` always applies as a structural cap. To restore the prior stricter default for a relay, set `policy.bypass_inspectors_for_allowlisted: ["secrets", "entropy"]` explicitly.
+
 ## [0.14.2] - 2026-05-04
 
 ### Fixed

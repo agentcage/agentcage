@@ -168,7 +168,7 @@ class _SmtpConfig:
         if "bypass_inspectors_for_allowlisted" in policy:
             bypass = policy.get("bypass_inspectors_for_allowlisted") or []
         else:
-            bypass = ["secrets", "entropy"]
+            bypass = ["secrets", "entropy", "content-type"]
         self.bypass_inspectors_for_allowlisted: set[str] = {
             str(name) for name in bypass
         }

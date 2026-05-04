@@ -313,8 +313,10 @@ class TestProtocolRelaysParser:
 
     def test_smtp_default_bypass_inspectors(self, tmp_path):
         """Default bypass list when the field is omitted is
-        ['secrets', 'entropy'] — the two inspectors most likely to
-        false-positive on legitimate human content."""
+        ['secrets', 'entropy', 'content-type'] — the three inspectors
+        most likely to false-positive on legitimate human email
+        content (forwarded keys, base64 attachments, PGP signatures
+        in text/plain, long URLs)."""
         p = self._yaml(tmp_path, textwrap.dedent("""\
             protocol_relays:
               - name: r
@@ -331,7 +333,7 @@ class TestProtocolRelaysParser:
         cfg = load_config(str(p))
         relay = cfg.protocol_relays[0]
         assert relay.policy.bypass_inspectors_for_allowlisted == [
-            "secrets", "entropy"
+            "secrets", "entropy", "content-type"
         ]
 
     def test_smtp_explicit_empty_bypass(self, tmp_path):

@@ -181,13 +181,16 @@ class RelayPolicy:
     # Inspectors to skip when the recipient_allowlist is non-empty
     # and every recipient matched it. The threat model assumes the
     # allowlist names trusted destinations, so legitimate user
-    # content that trips `secrets` or `entropy` (forwarded calendar
-    # invites, recovery codes, base64 attachments) is allowed
-    # through. body-size and content-type still apply as structural
-    # caps. Set to ``[]`` to keep strict behavior even for trusted
-    # recipients.
+    # content that trips `secrets`, `entropy`, or `content-type`
+    # (forwarded calendar invites, recovery codes, base64 attachments,
+    # PGP-signed plaintext, long URLs) is allowed through. body-size
+    # still applies as a structural cap. Set to ``[]`` to keep strict
+    # behavior even for trusted recipients. content-type is a more
+    # aggressive bypass than secrets/entropy because it catches
+    # legitimate base64-in-text/plain content email clients routinely
+    # produce; for HTTP that's an exfil signal, for email it's noise.
     bypass_inspectors_for_allowlisted: list[str] = field(
-        default_factory=lambda: ["secrets", "entropy"]
+        default_factory=lambda: ["secrets", "entropy", "content-type"]
     )
 
 
@@ -424,7 +427,7 @@ def load_config(path: str) -> Config:
         if "bypass_inspectors_for_allowlisted" in pol_raw:
             bypass = list(pol_raw.get("bypass_inspectors_for_allowlisted") or [])
         else:
-            bypass = ["secrets", "entropy"]
+            bypass = ["secrets", "entropy", "content-type"]
         policy = RelayPolicy(
             conn_rate_limit=str(
                 pol_raw.get("conn_rate_limit") or "30/min"

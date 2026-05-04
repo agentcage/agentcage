@@ -1013,9 +1013,10 @@ class TestInspectorIntegration:
 class TestAllowlistInspectorBypass:
     """When all recipients are in recipient_allowlist, configured
     inspectors are skipped on DATA. Default skip set is {secrets,
-    entropy} so legitimate human content (forwarded recovery codes,
-    base64 attachments) reaches the trusted recipient. body-size and
-    content-type still apply as structural caps."""
+    entropy, content-type} so legitimate human email content (forwarded
+    recovery codes, base64 attachments, PGP-signed text/plain, long
+    URLs) reaches the trusted recipient. body-size still applies as a
+    structural cap."""
 
     def test_default_bypass_lets_secret_through_to_allowlisted(self):
         async def _go():
@@ -1138,6 +1139,60 @@ class TestAllowlistInspectorBypass:
                         await w.drain()
                         code, _ = await _read_response(r)
                         assert code == 550
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_default_bypass_lets_base64_through_to_allowlisted(self):
+        """Real-world jacque scenario: a forwarded mail in text/plain
+        contains a 600+ char base64 chunk (PGP signature, quoted token,
+        long URL). Pre-fix the content-type inspector blocked these
+        even for allowlisted recipients, triggering himalaya retry
+        loops. Default bypass now includes content-type."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            from inspectors.content_type import ContentTypeInspector
+            insp = ContentTypeInspector()
+            insp.configure({})  # defaults
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(
+                        up_port, recipient_addresses=["friend@example.com"],
+                    ),
+                    audit_log=entries.append,
+                    inspectors=[insp],
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        big_b64 = b"A" * 700  # >256, looks base64-ish
+                        w.write(
+                            b"Subject: forwarded\r\n"
+                            b"Content-Type: text/plain\r\n"
+                            b"\r\n"
+                            b"forwarded chunk: " + big_b64 + b"\r\n.\r\n"
+                        )
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 250, code
+                # Upstream actually delivered.
+                assert len(recorder.transactions) == 1
+                # Audit recorded the bypass including content-type.
+                bypasses = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_data_bypass"
+                ]
+                assert bypasses
+                assert "content-type" in bypasses[0]["bypassed"]
             finally:
                 upstream.close()
                 await upstream.wait_closed()
