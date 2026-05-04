@@ -127,6 +127,47 @@ class TestDnsQuadlet:
         assert "--server=/api.anthropic.com/100.100.100.100" in content
         assert "--server=/github.com/100.100.100.100" in content
 
+    def test_proxy_cage_local_resolves_to_proxy_ip(self, tmp_path):
+        """proxy.cage.local is the canonical hostname for cage-internal
+        traffic that should land on the proxy container directly (e.g.
+        the protocol_relays IMAP listener). dnsmasq must hand back the
+        proxy's network IP for it instead of falling through to the
+        198.51.100.1 placeholder."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+            dns_servers:
+              - 100.100.100.100
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        # Default cage prefix is 10.89.0; proxy is .11
+        import re
+        assert re.search(r"--address=/proxy\.cage\.local/10\.89\.\d+\.11", content), content
+
+    def test_proxy_cage_local_works_without_allowlist(self, tmp_path):
+        """Even with no domains.allow set (open-DNS mode), proxy.cage.local
+        must still resolve to the proxy IP."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            dns_servers:
+              - 100.100.100.100
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        import re
+        assert re.search(r"--address=/proxy\.cage\.local/10\.89\.\d+\.11", content), content
+
     def test_dns_allowlist_forwards_to_all_servers(self, tmp_path):
         """Each allowlisted domain should be forwarded to every DNS server."""
         p = tmp_path / "config.yaml"

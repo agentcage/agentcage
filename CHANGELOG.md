@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-05-04
+
+### Fixed
+- dnsmasq now resolves `proxy.cage.local` to the proxy container's network IP. The 0.13.0 docs and `protocol_relays` examples all point cage clients at `proxy.cage.local:1143`, but the hostname was never wired into the DNS sidecar — under allowlist mode it fell through to the `198.51.100.1` placeholder, so the cage's IMAP client got connection timeouts. Now hard-coded as `--address=/proxy.cage.local/{ip_proxy}` in the dns.container template, applied in both allowlist and open-DNS modes.
+
 ## [0.13.2] - 2026-05-04
 
 ### Fixed
