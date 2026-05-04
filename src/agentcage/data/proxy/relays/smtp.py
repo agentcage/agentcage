@@ -70,7 +70,18 @@ def _parse_rate_limit(spec: str) -> tuple[int, int]:
 
 
 class _RateLimiter:
-    """Sliding-window rate limiter. Single asyncio loop, no locking."""
+    """Sliding-window rate limiter. Single asyncio loop, no locking.
+
+    ``take()`` reserves a slot up-front (so a flood of concurrent
+    attempts can't all sneak through under the cap before any
+    completes). On failed delivery the caller must call ``release()``
+    to give the slot back — otherwise rate-limited callers would burn
+    their hourly quota on inspector-blocked messages, oversize
+    rejections, or upstream errors and lock themselves out for an
+    hour with zero actual deliveries. The semantic for the SMTP relay
+    is: ``send_rate_limit`` counts UPSTREAM-ACCEPTED deliveries, not
+    attempted DATA transactions.
+    """
 
     def __init__(self, spec: str) -> None:
         self._max, self._window = _parse_rate_limit(spec)
@@ -84,6 +95,14 @@ class _RateLimiter:
             return False
         self._timestamps.append(now)
         return True
+
+    def release(self) -> None:
+        """Pop the most recently reserved slot. Use after a take() that
+        didn't actually result in a successful delivery (oversize,
+        inspector-blocked, upstream error). LIFO ordering is fine —
+        what matters is the running count, not which exact slot."""
+        if self._timestamps:
+            self._timestamps.pop()
 
 
 def _resolve_credential(source: str) -> str:
@@ -526,6 +545,9 @@ class SmtpRelay:
                             client_reader, self._cfg.max_message_bytes
                         )
                     except asyncio.TimeoutError:
+                        # Reception timed out — the message never made
+                        # it through us. Don't burn the rate-limit slot.
+                        self._send_limiter.release()
                         self._audit_log({
                             "kind": "smtp_command",
                             "relay": self._cfg.name,
@@ -541,6 +563,8 @@ class SmtpRelay:
                         txn = _Transaction()
                         continue
                     if oversize:
+                        # Size cap rejection — release the slot.
+                        self._send_limiter.release()
                         self._audit_log({
                             "kind": "smtp_command",
                             "relay": self._cfg.name,
@@ -561,6 +585,12 @@ class SmtpRelay:
                         continue
                     inspector_block = self._run_inspectors(body, txn)
                     if inspector_block is not None:
+                        # Inspector rejected the body — release the slot
+                        # so a misconfigured client (e.g. one that sends
+                        # base64 in text/plain repeatedly) doesn't burn
+                        # its hourly send quota on never-delivered
+                        # attempts.
+                        self._send_limiter.release()
                         self._audit_log({
                             "kind": "smtp_data",
                             "relay": self._cfg.name,
@@ -598,6 +628,9 @@ class SmtpRelay:
                             "smtp relay %s: upstream delivery failed: %s",
                             self._cfg.name, e,
                         )
+                        # Upstream rejected the transaction — nothing
+                        # was delivered, so release the rate-limit slot.
+                        self._send_limiter.release()
                         self._audit_log({
                             "kind": "smtp_data",
                             "relay": self._cfg.name,

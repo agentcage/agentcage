@@ -517,6 +517,184 @@ class TestSenderAllowlist:
 # ── Caps: max_recipients, max_message_bytes, send_rate_limit ─
 
 
+class TestSendRateLimitAccounting:
+    """Regression: rate limiter must count UPSTREAM-ACCEPTED deliveries,
+    not raw DATA attempts. Pre-fix, an inspector-blocked or oversize
+    rejection consumed a rate-limit slot — so a client that triggered a
+    flood of inspector-blocked retries (e.g. a himalaya retry loop on a
+    base64-in-text/plain message) burned its hourly quota and locked
+    itself out for an hour with zero successful sends.
+    """
+
+    def test_inspector_blocked_send_does_not_consume_slot(self):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entry = _relay_entry(up_port, send_rate_limit="2/min")
+            try:
+                async with _running_relay(
+                    entry, inspectors=[_MarkerInspector()],
+                ) as (_, port):
+                    # Three blocked attempts: each trips the inspector
+                    # but must NOT consume a rate-limit slot.
+                    for _ in range(3):
+                        async with _smtp_client(port) as (r, w):
+                            await _read_response(r)
+                            await _cmd(w, r, b"EHLO cage.local")
+                            await _cmd(
+                                w, r,
+                                b"MAIL FROM:<agent@example.com>",
+                            )
+                            await _cmd(
+                                w, r,
+                                b"RCPT TO:<friend@example.com>",
+                            )
+                            await _cmd(w, r, b"DATA")
+                            w.write(
+                                b"Subject: bad\r\n\r\n"
+                                b"contains EXFIL_MARKER_99\r\n.\r\n"
+                            )
+                            await w.drain()
+                            code, _ = await _read_response(r)
+                            assert code == 550
+                    # Two clean sends should now both succeed under the
+                    # 2/min cap. Pre-fix, the cap would already be
+                    # exhausted by the 3 blocked attempts above.
+                    for i in range(2):
+                        async with _smtp_client(port) as (r, w):
+                            await _read_response(r)
+                            await _cmd(w, r, b"EHLO cage.local")
+                            await _cmd(
+                                w, r,
+                                b"MAIL FROM:<agent@example.com>",
+                            )
+                            await _cmd(
+                                w, r,
+                                b"RCPT TO:<friend@example.com>",
+                            )
+                            await _cmd(w, r, b"DATA")
+                            w.write(b"Subject: ok\r\n\r\nhi\r\n.\r\n")
+                            await w.drain()
+                            code, _ = await _read_response(r)
+                            assert code == 250, (
+                                f"send #{i+1} should succeed, got {code}"
+                            )
+                # Upstream got exactly 2 transactions (the clean ones).
+                assert len(recorder.transactions) == 2
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_oversize_does_not_consume_slot(self):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entry = _relay_entry(
+                up_port, max_message_bytes=64, send_rate_limit="2/min",
+            )
+            try:
+                async with _running_relay(entry) as (_, port):
+                    # Three oversize attempts — none should count.
+                    for _ in range(3):
+                        async with _smtp_client(port) as (r, w):
+                            await _read_response(r)
+                            await _cmd(w, r, b"EHLO cage.local")
+                            await _cmd(
+                                w, r, b"MAIL FROM:<agent@example.com>",
+                            )
+                            await _cmd(
+                                w, r, b"RCPT TO:<friend@example.com>",
+                            )
+                            await _cmd(w, r, b"DATA")
+                            w.write(b"X" * 200 + b"\r\n.\r\n")
+                            await w.drain()
+                            code, _ = await _read_response(r)
+                            assert code == 552
+                    # Two clean small sends should still fit under cap.
+                    for i in range(2):
+                        async with _smtp_client(port) as (r, w):
+                            await _read_response(r)
+                            await _cmd(w, r, b"EHLO cage.local")
+                            await _cmd(
+                                w, r, b"MAIL FROM:<agent@example.com>",
+                            )
+                            await _cmd(
+                                w, r, b"RCPT TO:<friend@example.com>",
+                            )
+                            await _cmd(w, r, b"DATA")
+                            w.write(b"hi\r\n.\r\n")
+                            await w.drain()
+                            code, _ = await _read_response(r)
+                            assert code == 250, (
+                                f"send #{i+1} should succeed, got {code}"
+                            )
+                assert len(recorder.transactions) == 2
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_upstream_error_does_not_consume_slot(self):
+        async def _go():
+            # Upstream that closes on every RCPT.
+            recorder = FakeSmtpRecorder()
+            recorder.reject_rcpts = {"friend@example.com"}
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            try:
+                # Open a SECOND fake upstream that DOES accept, and we'll
+                # swap to it after the upstream-error retries. Simpler:
+                # use the same fake upstream but only check that after
+                # 3 upstream errors, the rate limit isn't exhausted.
+                entry = _relay_entry(up_port, send_rate_limit="2/min")
+                async with _running_relay(entry) as (_, port):
+                    for _ in range(3):
+                        async with _smtp_client(port) as (r, w):
+                            await _read_response(r)
+                            await _cmd(w, r, b"EHLO cage.local")
+                            await _cmd(
+                                w, r, b"MAIL FROM:<agent@example.com>",
+                            )
+                            await _cmd(
+                                w, r, b"RCPT TO:<friend@example.com>",
+                            )
+                            await _cmd(w, r, b"DATA")
+                            w.write(b"hi\r\n.\r\n")
+                            await w.drain()
+                            code, _ = await _read_response(r)
+                            assert code == 451  # upstream_error
+                    # Now stop rejecting — the cap should not be hit.
+                    recorder.reject_rcpts.clear()
+                    for i in range(2):
+                        async with _smtp_client(port) as (r, w):
+                            await _read_response(r)
+                            await _cmd(w, r, b"EHLO cage.local")
+                            await _cmd(
+                                w, r, b"MAIL FROM:<agent@example.com>",
+                            )
+                            await _cmd(
+                                w, r, b"RCPT TO:<friend@example.com>",
+                            )
+                            await _cmd(w, r, b"DATA")
+                            w.write(b"hi\r\n.\r\n")
+                            await w.drain()
+                            code, _ = await _read_response(r)
+                            assert code == 250
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+
 class TestCaps:
     def test_max_recipients_enforced(self):
         async def _go():

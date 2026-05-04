@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-05-04
+
+### Fixed
+- SMTP relay: `send_rate_limit` now counts upstream-accepted deliveries, not raw DATA attempts. Pre-fix, the rate limiter reserved a slot before the inspector chain and upstream delivery, so an inspector-blocked or oversize-rejected message still consumed an hourly quota slot. A client that hit a content rule (e.g. himalaya tight-loop retrying a `text/plain` mail with a 600+ char base64 chunk that the `content-type` inspector flagged) could exhaust its hourly cap in seconds with zero successful sends, then be locked out for an hour. Now the rate limiter's `take()` is paired with a `release()` that's called on every failure path (oversize, inspector block, upstream error, DATA reception timeout) so only actual deliveries count against the quota. Caught in production on jacque after the SMTP relay deploy.
+
 ## [0.14.1] - 2026-05-04
 
 ### Fixed
