@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from mitmproxy import http
 
@@ -26,6 +26,13 @@ class InjectionRule:
     placeholder: str  # e.g. "{{ANTHROPIC_API_KEY}}"
     real_value: str  # loaded from os.environ at startup
     inject_to: list[str] = field(default_factory=list)  # domain restrictions
+    # When set, ``transform_fn`` is called at substitution time to
+    # produce a derived value (e.g. a freshly minted access token) in
+    # place of ``real_value``. ``real_value`` still holds the underlying
+    # high-privilege credential so the literal-match defense-in-depth
+    # block can detect raw key bytes leaking into outbound traffic.
+    transform: str = ""
+    transform_fn: Optional[Callable[[], str]] = None
 
 
 class SecretInjector:
@@ -64,14 +71,45 @@ class SecretInjector:
                 )
                 continue
 
+            transform_name = entry.get("transform", "") or ""
+            transform_fn: Optional[Callable[[], str]] = None
+            if transform_name:
+                transform_config = entry.get("transform_config") or {}
+                try:
+                    transform_fn = self._build_transform(
+                        transform_name, real_value, transform_config
+                    )
+                except Exception as e:
+                    log.error(
+                        "secret_injection: transform %s for %s failed to "
+                        "initialize: %s — skipping rule",
+                        transform_name, env_name, e,
+                    )
+                    continue
+
             self.rules.append(
                 InjectionRule(
                     name=env_name,
                     placeholder=placeholder,
                     real_value=real_value,
                     inject_to=inject_to,
+                    transform=transform_name,
+                    transform_fn=transform_fn,
                 )
             )
+
+    @staticmethod
+    def _build_transform(
+        name: str, secret: str, config: dict[str, Any]
+    ) -> Callable[[], str]:
+        """Look up a transform class and return its bound ``get_value``."""
+        # Lazy import — keeps mitmproxy's addon load fast and avoids
+        # pulling cryptography unless a transform actually uses it.
+        from transforms import get as _get
+
+        cls = _get(name)
+        instance = cls(secret, config)
+        return instance.get_value
 
     def _find_real_value(self, flow: http.HTTPFlow, rule: InjectionRule) -> bool:
         """Check if a rule's real secret value is present in the flow."""
@@ -115,10 +153,18 @@ class SecretInjector:
 
         # Block literal real values heading to unauthorized domains.
         # If the host is in the rule's inject_to list the value will
-        # legitimately appear after injection, so we allow it.
+        # legitimately appear after injection, so we allow it — UNLESS
+        # the rule has a transform, in which case the cage agent should
+        # never have produced the raw secret bytes in the first place
+        # (the proxy mints derived values; the raw credential never
+        # legitimately appears on the wire to anywhere).
         for rule in self.rules:
             if self._find_real_value(flow, rule):
-                if rule.inject_to and self._domain_matches(host, rule.inject_to):
+                if (
+                    not rule.transform_fn
+                    and rule.inject_to
+                    and self._domain_matches(host, rule.inject_to)
+                ):
                     continue
                 return InspectionResult(
                     inspector="secret-injector",
@@ -176,23 +222,35 @@ class SecretInjector:
             if not rule.inject_to or not self._domain_matches(host, rule.inject_to):
                 continue
 
-            # Replace placeholder → real value
+            # Resolve substitution value: transform produces a derived
+            # value at request time; otherwise use the static real_value.
+            if rule.transform_fn is not None:
+                try:
+                    value = rule.transform_fn()
+                except Exception as e:
+                    log.error(
+                        "secret_injection: transform %s (%s) failed: %s "
+                        "— leaving placeholder in place",
+                        rule.transform, rule.name, e,
+                    )
+                    continue
+            else:
+                value = rule.real_value
+
             ph = rule.placeholder
-            real = rule.real_value
             ph_bytes = ph.encode()
-            real_bytes = real.encode()
+            value_bytes = value.encode()
 
-            flow.request.url = flow.request.url.replace(ph, real)
+            flow.request.url = flow.request.url.replace(ph, value)
 
-            # Headers — rebuild to handle replacement
             for k in list(flow.request.headers.keys()):
                 v = flow.request.headers[k]
                 if ph in v:
-                    flow.request.headers[k] = v.replace(ph, real)
+                    flow.request.headers[k] = v.replace(ph, value)
 
             if flow.request.content and ph_bytes in flow.request.content:
                 flow.request.content = flow.request.content.replace(
-                    ph_bytes, real_bytes
+                    ph_bytes, value_bytes
                 )
 
             names.append(rule.name)
@@ -304,10 +362,16 @@ class SecretInjector:
         if self.redact_to and self._domain_matches(host, self.redact_to):
             return None
 
-        # Block literal real values heading to unauthorized domains
+        # Block literal real values heading to unauthorized domains.
+        # Transform rules block raw secret bytes everywhere — see the
+        # equivalent comment in check_injection_policy.
         for rule in self.rules:
             if rule.real_value.encode() in content:
-                if rule.inject_to and self._domain_matches(host, rule.inject_to):
+                if (
+                    not rule.transform_fn
+                    and rule.inject_to
+                    and self._domain_matches(host, rule.inject_to)
+                ):
                     continue
                 return InspectionResult(
                     inspector="secret-injector",
@@ -360,7 +424,19 @@ class SecretInjector:
                 continue
             if not rule.inject_to or not self._domain_matches(host, rule.inject_to):
                 continue
-            content = content.replace(ph_bytes, rule.real_value.encode())
+            if rule.transform_fn is not None:
+                try:
+                    value = rule.transform_fn()
+                except Exception as e:
+                    log.error(
+                        "secret_injection: transform %s (%s) failed on "
+                        "WebSocket content: %s — leaving placeholder",
+                        rule.transform, rule.name, e,
+                    )
+                    continue
+                content = content.replace(ph_bytes, value.encode())
+            else:
+                content = content.replace(ph_bytes, rule.real_value.encode())
             names.append(rule.name)
 
         return content, names

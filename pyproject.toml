@@ -1,6 +1,6 @@
 [project]
 name = "agentcage"
-version = "0.11.0"
+version = "0.12.0"
 requires-python = ">=3.12"
 description = "Defense-in-depth proxy sandbox for AI agents"
 authors = [{name = "Luca Martinetti"}]
@@ -53,4 +53,7 @@ build-backend = "hatchling.build"
 packages = ["src/agentcage"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "cryptography>=41",
+]
