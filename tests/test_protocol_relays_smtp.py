@@ -611,6 +611,36 @@ class TestCaps:
 # ── AUTH interception ────────────────────────────────────
 
 
+class TestEhloAdvertisement:
+    """Regression: real-world clients (himalaya, msmtp) refuse to send
+    mail when the server doesn't advertise any AUTH method, even on a
+    plaintext connection where they don't strictly need to authenticate.
+    The relay must advertise AUTH PLAIN LOGIN; the AUTH itself is forged
+    by the relay, not forwarded upstream."""
+
+    def test_ehlo_advertises_auth(self):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_relay_entry(up_port)) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        code, lines = await _cmd(w, r, b"EHLO test.local")
+                        assert code == 250
+                        joined = " ".join(lines)
+                        assert "AUTH PLAIN LOGIN" in joined, joined
+                        # And no STARTTLS — already plaintext on loopback.
+                        assert "STARTTLS" not in joined
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+
 class TestAuthIntercept:
     def test_client_auth_plain_intercepted(self):
         """Cage tries AUTH PLAIN on the relay-authed connection. The

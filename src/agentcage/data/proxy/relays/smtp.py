@@ -656,12 +656,18 @@ class SmtpRelay:
     def _send_ehlo_response(
         self, w: asyncio.StreamWriter, is_ehlo: bool
     ) -> None:
-        # Don't advertise STARTTLS (we're plaintext on loopback) or
-        # AUTH (relay handled it). Do advertise SIZE so clients can
-        # bail early on oversized messages and 8BITMIME for utf-8 mail.
+        # We don't advertise STARTTLS (already plaintext on loopback).
+        # We DO advertise AUTH PLAIN/LOGIN even though the relay handled
+        # the real upstream auth: many clients (himalaya, msmtp, etc.)
+        # refuse to send mail when the server doesn't expose any auth
+        # method, even when they don't strictly need to authenticate.
+        # The relay intercepts whatever AUTH the client sends and forges
+        # 235 without forwarding credential bytes upstream — see the
+        # AUTH branch in _smtp_session.
         if is_ehlo:
             lines = [
                 b"agentcage-smtp-relay",
+                b"AUTH PLAIN LOGIN",
                 b"8BITMIME",
                 f"SIZE {self._cfg.max_message_bytes}".encode(),
                 b"PIPELINING",

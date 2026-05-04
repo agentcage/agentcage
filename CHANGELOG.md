@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-05-04
+
+### Fixed
+- SMTP relay: EHLO response now advertises `AUTH PLAIN LOGIN`. Real-world clients (himalaya, msmtp) refuse to send mail when the server doesn't expose any auth method, even on a plaintext loopback where they don't strictly need to authenticate. The advertised AUTH is still intercepted and forged 235 by the relay — no credential bytes reach upstream — but the client now knows the channel is "authenticated" enough to proceed. Caught while running the first real himalaya-from-cage send through the relay.
+
 ## [0.14.0] - 2026-05-04
 
 ### Added
