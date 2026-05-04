@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `ImapRelay.__init__` and `SmtpRelay.__init__` both accept an `inspectors=` kwarg from the addon. IMAP ignores it (its policy is byte-level / per-command, not body-shape). SMTP runs the chain on `DATA` payloads.
 - `Agentcage._start_protocol_relays` filters `DomainInspector` out of the chain it passes to relays — host-allowlist semantics don't translate to non-HTTP traffic, and the SMTP equivalent is `recipient_allowlist`.
+- Both relays support `policy.idle_timeout_seconds` to bound how long a session can sit silent. Defaults: SMTP=300 (RFC 5321 §4.5.3.2 floor), IMAP=1800 (lets RFC 2177 IDLE heartbeats through). The IMAP relay only enforces the timeout pre-bridge — once auth completes and bytes start flowing, IDLE legitimately sits quiet for ~29 minutes between heartbeats. SMTP enforces it on every readline (cage and upstream sides). On timeout the cage gets `421 4.4.2 idle timeout` (SMTP) or `* BYE upstream silent` (IMAP), and an audit entry is recorded.
+
+### Fixed
+- SMTP relay: `_connect_upstream()` failures (TLS handshake, AUTH rejection) are now caught at the same level as `deliver()` failures. Pre-fix the cage's TCP connection just dropped with no SMTP response and no audit entry; post-fix the cage gets `451 4.4.0 upstream temporarily unavailable` and `audit.jsonl` records `kind: smtp_data, decision: upstream_error, error: <str>`. Mirrors the equivalent IMAP fix from the 0.13 series.
+- SMTP relay: `_connect_upstream()` no longer leaks the upstream socket when `handshake()` raises. Pre-fix, an AUTH-rejected handshake left the upstream's handler reading from a half-open connection until kernel TCP keepalive (~60s) detected it. Post-fix, the relay closes the writer in a `try/except/raise` block before propagating the error.
 
 ## [0.13.3] - 2026-05-04
 

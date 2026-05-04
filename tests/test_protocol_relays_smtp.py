@@ -1058,3 +1058,248 @@ class TestAuditEntries:
                 await upstream.wait_closed()
 
         _run(_go())
+
+
+# ── A1: upstream connection failures surface as 451 + audit entry ──
+
+
+class TestUpstreamConnectionFailure:
+    """REGRESSION: pre-fix, an upstream that wouldn't accept the TCP
+    connection caused the cage's session to drop with no SMTP response
+    and no audit entry. Mirrors the IMAP-side test from PR #85's review.
+    """
+
+    def test_connect_refused_sends_451(self):
+        async def _go():
+            # Find a port that will refuse TCP connect.
+            tmp = await asyncio.start_server(
+                lambda r, w: None, "127.0.0.1", 0,
+            )
+            dead_port = tmp.sockets[0].getsockname()[1]
+            tmp.close()
+            await tmp.wait_closed()
+
+            entries: list[dict] = []
+            entry = _relay_entry(dead_port)
+            async with _running_relay(
+                entry, audit_log=entries.append,
+            ) as (_, port):
+                async with _smtp_client(port) as (r, w):
+                    await _read_response(r)
+                    await _cmd(w, r, b"EHLO cage.local")
+                    await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                    await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                    await _cmd(w, r, b"DATA")
+                    w.write(b"hi\r\n.\r\n")
+                    await w.drain()
+                    code, lines = await _read_response(r)
+                    assert code == 451, code
+                    assert any("upstream" in l.lower() for l in lines)
+
+            errors = [
+                e for e in entries
+                if e.get("kind") == "smtp_data"
+                and e.get("decision") == "upstream_error"
+            ]
+            assert errors, entries
+            assert "error" in errors[0]
+
+        _run(_go())
+
+    def test_upstream_auth_rejected_sends_451(self):
+        """Upstream accepts the TCP/TLS connection and EHLO but rejects
+        AUTH PLAIN. Same code path as connect-refused: relay surfaces
+        451 + audit upstream_error."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            recorder.fail_auth = True
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port),
+                    audit_log=entries.append,
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"hi\r\n.\r\n")
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 451, code
+                errors = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_data"
+                    and e.get("decision") == "upstream_error"
+                ]
+                assert errors
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_all_recipients_upstream_rejected(self):
+        """Cage's recipient passes our policy; upstream rejects every
+        RCPT TO. ``_UpstreamSmtp.deliver`` raises; relay returns 451."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            recorder.reject_rcpts = {"friend@example.com"}
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port),
+                    audit_log=entries.append,
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"hi\r\n.\r\n")
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 451, code
+                # Audit captures the upstream rejection.
+                errors = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_data"
+                    and e.get("decision") == "upstream_error"
+                ]
+                assert errors
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+
+# ── A2: idle timeouts close the session cleanly ─────────
+
+
+class TestIdleTimeouts:
+    def test_cage_idle_disconnect(self):
+        """Cage opens TCP, sends nothing. Relay closes after the
+        configured idle window and emits a smtp_session audit entry.
+        """
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entry = _relay_entry(up_port)
+            entry["policy"]["idle_timeout_seconds"] = 1
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    entry, audit_log=entries.append,
+                ) as (_, port):
+                    reader, writer = await asyncio.open_connection(
+                        "127.0.0.1", port,
+                    )
+                    try:
+                        # Drain the 220 greeting then sit silent.
+                        await _read_response(reader)
+                        # Wait for the relay to close us out.
+                        line = await asyncio.wait_for(
+                            reader.readline(), timeout=5,
+                        )
+                        # Should be the relay's 421 idle-timeout farewell.
+                        assert line.startswith(b"421"), line
+                        assert b"idle" in line.lower()
+                    finally:
+                        writer.close()
+                        try:
+                            await writer.wait_closed()
+                        except Exception:
+                            pass
+                # Audit should record the closure.
+                closes = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_session"
+                    and e.get("decision") == "closed"
+                ]
+                assert closes
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+
+# ── Inspector flag-action recorded but not blocking ─────
+
+
+class _MarkerFlagInspector(Inspector):
+    """Test inspector that flags (not blocks) on a marker word."""
+
+    name = "marker-flag"
+    marker = "FLAG_MARKER_42"
+
+    def configure(self, config: dict) -> None:
+        pass
+
+    def inspect_request(self, ctx):
+        if ctx.body_text and self.marker in ctx.body_text:
+            return InspectionResult(
+                inspector=self.name,
+                action="flag",
+                reason=f"flagged {self.marker}",
+                severity="warning",
+            )
+        return None
+
+
+class TestInspectorFlagAction:
+    def test_flag_does_not_block_but_audits(self):
+        """An inspector that returns ``action: flag`` should not stop
+        the message from being delivered, but the relay must record a
+        ``smtp_data_flag`` audit entry."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port),
+                    audit_log=entries.append,
+                    inspectors=[_MarkerFlagInspector()],
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(
+                            b"Subject: hi\r\n\r\n"
+                            b"contains FLAG_MARKER_42 in body\r\n.\r\n"
+                        )
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 250, code
+                # Upstream got the message.
+                assert len(recorder.transactions) == 1
+                # Audit recorded the flag.
+                flags = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_data_flag"
+                ]
+                assert flags
+                assert flags[0]["inspector"] == "marker-flag"
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())

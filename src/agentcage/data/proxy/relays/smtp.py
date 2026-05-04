@@ -139,6 +139,13 @@ class _SmtpConfig:
         self.send_rate_limit: str = str(
             policy.get("send_rate_limit") or "20/hour"
         )
+        # Per-readline idle timeout. RFC 5321 §4.5.3.2 minimums are 5 min
+        # for command-class lines, 10 min for DATA reception. We use a
+        # single 300s default and apply it to every readline so a silent
+        # cage cannot pin a connection slot indefinitely. 0 disables.
+        self.idle_timeout_seconds: int = int(
+            policy.get("idle_timeout_seconds", 300)
+        )
         if "bypass_inspectors_for_allowlisted" in policy:
             bypass = policy.get("bypass_inspectors_for_allowlisted") or []
         else:
@@ -256,7 +263,6 @@ class SmtpRelay:
             client_writer.close()
             return
 
-        upstream: Optional[_UpstreamSmtp] = None
         try:
             await self._smtp_session(client_reader, client_writer, peer)
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
@@ -267,13 +273,24 @@ class SmtpRelay:
                 self._cfg.name, peer[0], peer[1], e,
             )
         finally:
-            if upstream is not None:
-                await upstream.close()
             try:
                 client_writer.close()
                 await client_writer.wait_closed()
             except Exception:
                 pass
+
+    async def _readline_with_timeout(
+        self, reader: asyncio.StreamReader,
+    ) -> bytes:
+        """`readline` with the configured idle timeout. Raises
+        asyncio.TimeoutError on idle disconnect; the caller is expected
+        to translate that into a 421 to the cage and close."""
+        if self._cfg.idle_timeout_seconds <= 0:
+            return await reader.readline()
+        return await asyncio.wait_for(
+            reader.readline(),
+            timeout=self._cfg.idle_timeout_seconds,
+        )
 
     async def _smtp_session(
         self,
@@ -296,7 +313,28 @@ class SmtpRelay:
 
         try:
             while True:
-                line = await client_reader.readline()
+                try:
+                    line = await self._readline_with_timeout(client_reader)
+                except asyncio.TimeoutError:
+                    log.info(
+                        "smtp relay %s: cage idle for %ds, closing",
+                        self._cfg.name, self._cfg.idle_timeout_seconds,
+                    )
+                    self._audit_log({
+                        "kind": "smtp_session",
+                        "relay": self._cfg.name,
+                        "decision": "closed",
+                        "reason": "cage idle timeout",
+                    })
+                    try:
+                        self._write_line(
+                            client_writer,
+                            b"421 4.4.2 idle timeout, closing connection",
+                        )
+                        await client_writer.drain()
+                    except Exception:
+                        pass
+                    return
                 if not line:
                     return
                 # SMTP commands are not case-sensitive; arguments may be.
@@ -333,13 +371,21 @@ class SmtpRelay:
                     if arg.upper().startswith("LOGIN"):
                         # Server normally responds 334 to ask for the
                         # username, then 334 for the password. We forge
-                        # the dialog to 235 immediately.
+                        # the dialog to 235 immediately. Continuation
+                        # reads share the same idle timeout so a cage
+                        # that goes silent mid-AUTH doesn't pin a slot.
                         self._write_line(client_writer, b"334 VXNlcm5hbWU6")
                         await client_writer.drain()
-                        await client_reader.readline()  # discard username
+                        try:
+                            await self._readline_with_timeout(client_reader)
+                        except asyncio.TimeoutError:
+                            return
                         self._write_line(client_writer, b"334 UGFzc3dvcmQ6")
                         await client_writer.drain()
-                        await client_reader.readline()  # discard password
+                        try:
+                            await self._readline_with_timeout(client_reader)
+                        except asyncio.TimeoutError:
+                            return
                     self._write_line(
                         client_writer,
                         b"235 2.7.0 already authenticated (relay)",
@@ -475,9 +521,25 @@ class SmtpRelay:
                         b"354 end data with <CR><LF>.<CR><LF>",
                     )
                     await client_writer.drain()
-                    body, oversize = await self._read_data(
-                        client_reader, self._cfg.max_message_bytes
-                    )
+                    try:
+                        body, oversize = await self._read_data(
+                            client_reader, self._cfg.max_message_bytes
+                        )
+                    except asyncio.TimeoutError:
+                        self._audit_log({
+                            "kind": "smtp_command",
+                            "relay": self._cfg.name,
+                            "command": "DATA",
+                            "decision": "blocked",
+                            "reason": "DATA reception idle timeout",
+                        })
+                        self._write_line(
+                            client_writer,
+                            b"451 4.4.2 DATA reception timed out",
+                        )
+                        await client_writer.drain()
+                        txn = _Transaction()
+                        continue
                     if oversize:
                         self._audit_log({
                             "kind": "smtp_command",
@@ -522,10 +584,12 @@ class SmtpRelay:
                         continue
                     # Open upstream lazily — no point burning a TLS
                     # handshake on a transaction that never makes it
-                    # past policy.
-                    if upstream is None:
-                        upstream = await self._connect_upstream()
+                    # past policy. Both connect and deliver share the
+                    # same upstream-error handling: 421 to the cage
+                    # plus a structured audit entry.
                     try:
+                        if upstream is None:
+                            upstream = await self._connect_upstream()
                         upstream_status = await upstream.deliver(
                             txn.sender, list(txn.recipients), body
                         )
@@ -542,15 +606,22 @@ class SmtpRelay:
                             "sender": txn.sender,
                             "recipients": list(txn.recipients),
                         })
+                        # 451 (transient, channel stays open) rather than
+                        # 421 (closing) — lets the cage's mailer retry
+                        # the next message on the same session if the
+                        # upstream comes back. We tear down our broken
+                        # upstream connection so the next transaction
+                        # opens a fresh one.
                         self._write_line(
                             client_writer,
                             b"451 4.4.0 upstream temporarily unavailable",
                         )
                         await client_writer.drain()
-                        try:
-                            await upstream.close()
-                        finally:
-                            upstream = None
+                        if upstream is not None:
+                            try:
+                                await upstream.close()
+                            finally:
+                                upstream = None
                         txn = _Transaction()
                         continue
                     self._audit_log({
@@ -624,7 +695,12 @@ class SmtpRelay:
         body = bytearray()
         oversize = False
         while True:
-            line = await reader.readline()
+            try:
+                line = await self._readline_with_timeout(reader)
+            except asyncio.TimeoutError:
+                # Mid-DATA idle: treat like a truncated message and
+                # let the caller surface the error to the cage.
+                raise
             if not line:
                 return bytes(body), oversize
             if line == b".\r\n" or line == b".\n":
@@ -791,8 +867,21 @@ class SmtpRelay:
         )
         upstream = _UpstreamSmtp(
             reader, writer, self._cfg.name, self._user, self._password,
+            idle_timeout_seconds=self._cfg.idle_timeout_seconds,
         )
-        await upstream.handshake()
+        try:
+            await upstream.handshake()
+        except Exception:
+            # Don't leak the socket if EHLO/AUTH fails. Otherwise the
+            # upstream's handler keeps reading from a dead client and
+            # `Server.wait_closed()` blocks until kernel TCP keepalive
+            # detects the half-open connection (~60s).
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            raise
         return upstream
 
 
@@ -811,6 +900,11 @@ class _UpstreamSmtp:
 
     Drives EHLO + AUTH PLAIN at handshake, then exposes ``deliver()``
     and ``rset()`` for transactions. Single-loop, no concurrency.
+
+    Every readline shares the same idle timeout as the cage side: a
+    silent upstream cannot pin our session indefinitely. TimeoutError
+    is raised through to the relay's session loop, which translates
+    it into a 451 to the cage.
     """
 
     def __init__(
@@ -820,19 +914,28 @@ class _UpstreamSmtp:
         relay_name: str,
         user: str,
         password: str,
+        idle_timeout_seconds: int = 0,
     ) -> None:
         self._r = reader
         self._w = writer
         self._relay_name = relay_name
         self._user = user
         self._password = password
+        self._idle_timeout = idle_timeout_seconds
+
+    async def _readline(self) -> bytes:
+        if self._idle_timeout <= 0:
+            return await self._r.readline()
+        return await asyncio.wait_for(
+            self._r.readline(), timeout=self._idle_timeout,
+        )
 
     async def _read_response(self) -> tuple[int, str]:
         """Read a (possibly multi-line) SMTP response. Returns (code, text)."""
         text_parts: list[str] = []
         code = 0
         while True:
-            line = await self._r.readline()
+            line = await self._readline()
             if not line:
                 raise ConnectionError("upstream closed")
             try:

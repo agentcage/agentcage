@@ -160,6 +160,11 @@ class RelayRecipientAllowlist:
 class RelayPolicy:
     # Common
     conn_rate_limit: str = "30/min"
+    # Maximum time the relay waits between commands before disconnecting
+    # an idle session. 0 disables. Defaults differ per relay type:
+    # SMTP=300 (5 min, RFC 5321 §4.5.3.2), IMAP=1800 (30 min, to permit
+    # IDLE heartbeats RFC 2177).
+    idle_timeout_seconds: int = 0
 
     # IMAP
     readonly: bool = False
@@ -424,6 +429,7 @@ def load_config(path: str) -> Config:
             conn_rate_limit=str(
                 pol_raw.get("conn_rate_limit") or "30/min"
             ),
+            idle_timeout_seconds=int(pol_raw.get("idle_timeout_seconds", 0)),
             readonly=bool(pol_raw.get("readonly", False)),
             folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
             sender_allowlist=list(pol_raw.get("sender_allowlist") or []),

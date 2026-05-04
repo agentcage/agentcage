@@ -906,3 +906,59 @@ class TestSharedValidation:
             "name": "r", "type": "imap", "listen": "127.0.0.1:1143",
             "upstream": {"host": "imap.example.com", "port": 993},
         })  # no exception
+
+
+
+# ── A2: idle timeout in pre-bridge phase ────────────────
+
+
+class TestImapIdleTimeout:
+    """A cage that opens the IMAP listener but never speaks (or whose
+    upstream goes silent during auth) must not pin the connection slot
+    forever. The bridge phase intentionally has no timeout because IMAP
+    IDLE legitimately sits quiet for ~29 minutes between heartbeats
+    (RFC 2177); only pre-bridge auth reads enforce the cap.
+    """
+
+    def test_silent_upstream_during_auth_surfaces_bye(self):
+        async def _go():
+            # Fake upstream that accepts the TCP connection but never
+            # sends the * OK greeting. We block on `reader.read()` so
+            # the handler exits as soon as the relay closes its end —
+            # if we used `asyncio.sleep` here, `Server.wait_closed()`
+            # in the cleanup would block on the still-running task.
+            async def _silent(reader, writer):
+                try:
+                    await reader.read()  # exits at EOF
+                finally:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+            silent = await asyncio.start_server(_silent, "127.0.0.1", 0)
+            silent_port = silent.sockets[0].getsockname()[1]
+            try:
+                entry = _relay_entry(silent_port)
+                entry["policy"]["idle_timeout_seconds"] = 1
+                async with _running_relay(entry) as (_, port):
+                    reader, writer = await asyncio.open_connection(
+                        "127.0.0.1", port,
+                    )
+                    try:
+                        line = await asyncio.wait_for(
+                            reader.readline(), timeout=5,
+                        )
+                        assert line.startswith(b"* BYE"), line
+                    finally:
+                        writer.close()
+                        try:
+                            await writer.wait_closed()
+                        except Exception:
+                            pass
+            finally:
+                silent.close()
+                await silent.wait_closed()
+
+        _run(_go())
