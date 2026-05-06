@@ -969,9 +969,12 @@ class TestImapIdleTimeout:
 
 from relays.imap import (
     _AUTHRES_REQUIRED_CRITERIA,
+    _build_from_allowlist_criteria,
+    _extra_search_criteria,
+    _inbound_filter_active,
     _is_literal_continued,
     _is_search_line,
-    _rewrite_search_with_authres,
+    _rewrite_search_append,
 )
 
 
@@ -1015,9 +1018,11 @@ class TestIsLiteralContinued:
         assert _is_literal_continued(b'a1 SEARCH HEADER "X" "{12}"\r\n') is False
 
 
-class TestRewriteSearchWithAuthres:
-    def test_appends_constraints_before_crlf(self):
-        rewritten = _rewrite_search_with_authres(b"a1 UID SEARCH UNSEEN\r\n")
+class TestRewriteSearchAppend:
+    def test_appends_before_crlf(self):
+        rewritten = _rewrite_search_append(
+            b"a1 UID SEARCH UNSEEN\r\n", _AUTHRES_REQUIRED_CRITERIA,
+        )
         assert rewritten.endswith(b"\r\n")
         assert _AUTHRES_REQUIRED_CRITERIA in rewritten
         assert rewritten.startswith(b"a1 UID SEARCH UNSEEN")
@@ -1025,12 +1030,16 @@ class TestRewriteSearchWithAuthres:
     def test_appends_when_only_lf(self):
         # Tolerant of bare LF for tests/manual entry; the relay always
         # gets CRLF over the wire from real clients.
-        rewritten = _rewrite_search_with_authres(b"a1 SEARCH ALL\n")
+        rewritten = _rewrite_search_append(
+            b"a1 SEARCH ALL\n", _AUTHRES_REQUIRED_CRITERIA,
+        )
         assert rewritten.endswith(b"\n")
         assert _AUTHRES_REQUIRED_CRITERIA in rewritten
 
     def test_three_separate_header_clauses(self):
-        rewritten = _rewrite_search_with_authres(b"a1 UID SEARCH ALL\r\n")
+        rewritten = _rewrite_search_append(
+            b"a1 UID SEARCH ALL\r\n", _AUTHRES_REQUIRED_CRITERIA,
+        )
         assert rewritten.count(b'HEADER "Authentication-Results"') == 3
         assert b'"dkim=pass"' in rewritten
         assert b'"spf=pass"' in rewritten
@@ -1319,6 +1328,264 @@ class TestSequenceFetchStoreBlock:
                         line = await _read_until_tag(reader, b"a1")
                         # Fake upstream OKs everything.
                         assert line.startswith(b"a1 OK"), line
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+
+# ── from_allowlist: SEARCH command rewrite ──────────────
+
+
+class TestBuildFromAllowlistCriteria:
+    def test_empty(self):
+        assert _build_from_allowlist_criteria([]) == b""
+
+    def test_single_address(self):
+        out = _build_from_allowlist_criteria(["luca@luca.io"])
+        assert out == b' FROM "luca@luca.io"'
+
+    def test_two_addresses(self):
+        out = _build_from_allowlist_criteria([
+            "luca@luca.io", "mirta@gmail.com",
+        ])
+        assert out == b' OR FROM "luca@luca.io" FROM "mirta@gmail.com"'
+
+    def test_three_addresses(self):
+        out = _build_from_allowlist_criteria(["a@x", "b@x", "c@x"])
+        # Two ORs prefix three FROM keys; greedy parsing yields
+        # ((a OR b) OR c) — left-fold semantics under IMAP §6.4.4.
+        assert out == b' OR OR FROM "a@x" FROM "b@x" FROM "c@x"'
+
+    def test_four_addresses_left_fold(self):
+        out = _build_from_allowlist_criteria(["a", "b", "c", "d"])
+        assert out == b' OR OR OR FROM "a" FROM "b" FROM "c" FROM "d"'
+
+    def test_address_with_quote_is_escaped(self):
+        # _quote() escapes backslash + quote per IMAP RFC 3501 §4.3.
+        out = _build_from_allowlist_criteria(['ev"il@x'])
+        assert out == b' FROM "ev\\"il@x"'
+
+
+class TestExtraSearchCriteria:
+    def _cfg(self, **policy):
+        from relays.imap import _RelayConfig
+        return _RelayConfig({
+            "name": "t", "listen": "127.0.0.1:0",
+            "upstream": {"host": "h", "port": 1},
+            "auth": {"user_source": "env:X", "password_source": "env:Y"},
+            "policy": policy,
+        })
+
+    def test_neither_filter(self):
+        assert _extra_search_criteria(
+            self._cfg(require_authentication=False)
+        ) == b""
+
+    def test_require_auth_only(self):
+        out = _extra_search_criteria(
+            self._cfg(require_authentication=True)
+        )
+        assert out == _AUTHRES_REQUIRED_CRITERIA
+
+    def test_from_allowlist_only(self):
+        out = _extra_search_criteria(self._cfg(
+            require_authentication=False,
+            from_allowlist=["luca@luca.io"],
+        ))
+        assert out == b' FROM "luca@luca.io"'
+
+    def test_both_filters_compose(self):
+        out = _extra_search_criteria(self._cfg(
+            require_authentication=True,
+            from_allowlist=["luca@luca.io", "mirta@x.io"],
+        ))
+        assert out.startswith(_AUTHRES_REQUIRED_CRITERIA)
+        assert out.endswith(
+            b' OR FROM "luca@luca.io" FROM "mirta@x.io"'
+        )
+
+
+class TestInboundFilterActive:
+    def _cfg(self, **policy):
+        from relays.imap import _RelayConfig
+        return _RelayConfig({
+            "name": "t", "listen": "127.0.0.1:0",
+            "upstream": {"host": "h", "port": 1},
+            "auth": {"user_source": "env:X", "password_source": "env:Y"},
+            "policy": policy,
+        })
+
+    def test_neither(self):
+        assert _inbound_filter_active(
+            self._cfg(require_authentication=False)
+        ) is False
+
+    def test_require_auth_only(self):
+        assert _inbound_filter_active(
+            self._cfg(require_authentication=True)
+        ) is True
+
+    def test_from_allowlist_only(self):
+        assert _inbound_filter_active(self._cfg(
+            require_authentication=False,
+            from_allowlist=["x@y"],
+        )) is True
+
+    def test_both(self):
+        assert _inbound_filter_active(self._cfg(
+            require_authentication=True,
+            from_allowlist=["x@y"],
+        )) is True
+
+
+def _from_allowlist_relay_entry(
+    upstream_port: int, addresses: list[str], *,
+    require_authentication: bool = False,
+) -> dict:
+    """Relay entry with from_allowlist set. Defaults
+    require_authentication to False so tests can isolate the
+    from-only behavior."""
+    entry = _relay_entry(upstream_port)
+    entry["policy"]["from_allowlist"] = addresses
+    entry["policy"]["require_authentication"] = require_authentication
+    return entry
+
+
+class TestFromAllowlistRewriteOnTheWire:
+    def test_uid_search_appends_or_from_criteria(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                entry = _from_allowlist_relay_entry(
+                    up_port, ["luca@luca.io", "mirta.rotondo@gmail.com"],
+                )
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 UID SEARCH UNSEEN\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID SEARCH" in c.upper()
+                )
+                assert b"UNSEEN" in forwarded
+                assert b'OR FROM "luca@luca.io" FROM "mirta.rotondo@gmail.com"' in forwarded
+                # No auth-results criteria when require_authentication
+                # is off in this test.
+                assert b"Authentication-Results" not in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_combined_with_require_authentication(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                entry = _from_allowlist_relay_entry(
+                    up_port, ["luca@luca.io"],
+                    require_authentication=True,
+                )
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID SEARCH" in c.upper()
+                )
+                # Both filter sets present.
+                assert b'"dkim=pass"' in forwarded
+                assert b'FROM "luca@luca.io"' in forwarded
+                # AND'd to the original ALL criterion.
+                assert b" ALL" in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_empty_allowlist_no_rewrite(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                entry = _relay_entry(up_port)
+                # Both off: from_allowlist empty, require_authentication false.
+                entry["policy"]["from_allowlist"] = []
+                entry["policy"]["require_authentication"] = False
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 UID SEARCH UNSEEN\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID SEARCH" in c.upper()
+                )
+                assert forwarded.strip() == b"a1 UID SEARCH UNSEEN"
+                assert b"FROM" not in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_sequence_fetch_rejected_with_from_allowlist_alone(self):
+        """from_allowlist alone (without require_authentication) is enough
+        to gate sequence-numbered FETCH/STORE — otherwise the cage could
+        bypass the SEARCH filter."""
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                entry = _from_allowlist_relay_entry(
+                    up_port, ["luca@luca.io"],
+                )
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 FETCH 1:* (UID)\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                        assert b" NO " in line
+                        assert b"UID" in line
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_literal_continuation_blocked_with_from_allowlist_alone(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                entry = _from_allowlist_relay_entry(
+                    up_port, ["luca@luca.io"],
+                )
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 UID SEARCH SUBJECT {5}\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                        assert b" NO " in line
+                        assert b"literal" in line.lower()
             finally:
                 upstream.close()
                 await upstream.wait_closed()

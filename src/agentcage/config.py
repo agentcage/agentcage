@@ -179,6 +179,17 @@ class RelayPolicy:
     # Authentication-Results, or for relays where filtering is not
     # appropriate (e.g. a debugging/inspection relay).
     require_authentication: bool = True
+    # Inbound sender allowlist. When non-empty, the IMAP relay rewrites
+    # SEARCH/UID SEARCH commands to AND-restrict to messages whose From
+    # header contains any of the listed addresses (IMAP FROM substring
+    # match). Combines with require_authentication — a message must pass
+    # every active filter to appear in SEARCH responses. Sequence-
+    # numbered FETCH/STORE rejection extends to from_allowlist alone.
+    # Caveat: IMAP FROM is a substring match across display name plus
+    # addr-spec, so a forged ``From: "luca@luca.io" <attacker@evil.com>``
+    # would match an allowlist of ``[luca@luca.io]``. Pair with
+    # require_authentication so DMARC alignment catches the forgery.
+    from_allowlist: list[str] = field(default_factory=list)
 
     # SMTP
     sender_allowlist: list[str] = field(default_factory=list)
@@ -448,6 +459,7 @@ def load_config(path: str) -> Config:
             require_authentication=bool(
                 pol_raw.get("require_authentication", True)
             ),
+            from_allowlist=list(pol_raw.get("from_allowlist") or []),
             sender_allowlist=list(pol_raw.get("sender_allowlist") or []),
             recipient_allowlist=recipient_allowlist,
             max_message_bytes=int(

@@ -308,7 +308,8 @@ Like `secret_injection`, the goal is the same: the cage container holds no upstr
 |---------|------|----------|-------------|
 | `policy.readonly` | `bool` | no | If `true`, block APPEND/DELETE/STORE/EXPUNGE/CREATE/RENAME/MOVE/COPY plus the write subcommands of UID. Default `false`. |
 | `policy.folder_allowlist` | `list[string]` | no | If non-empty, restrict SELECT/EXAMINE/STATUS to these mailbox names. LIST/LSUB always pass through (metadata only). Default `[]` (no filter). |
-| `policy.require_authentication` | `bool` | no | If `true` (default), rewrite SEARCH commands to require `dkim=pass spf=pass dmarc=pass` server-side, and block sequence-numbered FETCH/STORE so the cage can't bypass the filter. See "Inbound message authentication" below. Set `false` if the upstream MTA doesn't stamp `Authentication-Results`. |
+| `policy.require_authentication` | `bool` | no | If `true` (default), rewrite SEARCH commands to require `dkim=pass spf=pass dmarc=pass` server-side, and block sequence-numbered FETCH/STORE so the cage can't bypass the filter. See "Inbound message filtering" below. Set `false` if the upstream MTA doesn't stamp `Authentication-Results`. |
+| `policy.from_allowlist` | `list[string]` | no | If non-empty, AND-restrict SEARCH responses to messages whose `From` header substring-matches one of the listed addresses. Composes with `require_authentication` — both filters narrow the same SEARCH. See "Inbound message filtering" below. Default `[]` (no constraint). **Only safe when paired with `require_authentication`** — substring match alone can be spoofed via the From display-name field. |
 | `policy.conn_rate_limit` | `string` | no | Connection rate cap, e.g. `"30/min"`. Default `"30/min"`. |
 
 ### SMTP-specific policy (`type: smtp`)
@@ -338,24 +339,34 @@ If the cage tries LOGIN or AUTHENTICATE anyway, the relay intercepts and forges 
 
 Each policy decision (allowed, blocked, login attempt) emits a structured log line that the proxy container forwards to the existing audit pipeline.
 
-### Inbound message authentication (`require_authentication`)
+### Inbound message filtering
 
-When `policy.require_authentication: true` (the default), the IMAP relay enforces that the cage only sees mail the upstream MTA stamped as authenticated — DKIM, SPF, and DMARC must all show `=pass` on the `Authentication-Results:` header that the receiving MTA (Migadu, Fastmail, etc.) writes on every inbound message.
+Two policy fields — `require_authentication` and `from_allowlist` — narrow which messages the cage can see, by rewriting SEARCH commands on their way upstream so the IMAP server applies the filter server-side. Both compose: when both are active, a UID must satisfy every active filter to appear in SEARCH responses.
 
-How it works:
+**Mechanism (shared by both filters).** Every `SEARCH` and `UID SEARCH` command from the cage is rewritten on its way upstream. The relay appends additional IMAP search criteria (RFC 3501 §6.4.4) to the client's original criteria. IMAP search keys are implicit-AND, so appending narrows the result set without disturbing what the client asked for. The upstream IMAP server applies the filter. The relay forwards the response verbatim. The cage only ever learns UIDs of messages that satisfy both its own criteria and the configured filters.
 
-* Every `SEARCH` and `UID SEARCH` command from the cage is rewritten on its way upstream. The relay appends three IMAP `HEADER` search criteria (RFC 3501 §6.4.4) — `HEADER "Authentication-Results" "dkim=pass"`, `HEADER "Authentication-Results" "spf=pass"`, `HEADER "Authentication-Results" "dmarc=pass"` — to the client's existing search criteria. IMAP search keys are implicit-AND, so this narrows the result set without disturbing the original criteria.
-* The upstream IMAP server applies the filter. The relay forwards its response verbatim. The cage thus only ever learns the UIDs of messages that match its own criteria *and* have all three authentication methods stamped `=pass`.
-* To prevent bypass, sequence-numbered `FETCH` and `STORE` are rejected at the command layer (`UID FETCH` / `UID STORE` are still allowed). Without this gate, a cage could issue `FETCH 1:* (UID)` and learn UIDs the rewritten SEARCH would have hidden.
-* Multi-line SEARCH commands containing IMAP literal-string criteria (`{N}\r\n<bytes>`) are rejected with `NO`, since the rewrite logic only handles single-line commands. Modern IMAP clients (himalaya, mutt) build queries with quoted strings, not literals, so this is a no-op for the supported deployments.
+To prevent bypass, sequence-numbered `FETCH` and `STORE` are rejected at the command layer when any filter is active (`UID FETCH` / `UID STORE` remain allowed). Without this gate, a cage could issue `FETCH 1:* (UID)` and learn UIDs the rewritten SEARCH would have hidden. Multi-line SEARCH commands containing IMAP literal-string criteria (`{N}\r\n<bytes>`) are rejected with `NO`, since the rewrite logic only handles single-line commands. Modern IMAP clients (himalaya, mutt) build queries with quoted strings, not literals, so this is a no-op for the supported deployments.
 
-Why "rewrite" rather than "filter responses": appending criteria to the SEARCH command pushes filtering to the upstream IMAP server and keeps the relay close to its byte-passthrough role. No side-channel connection, no response parsing, no per-session state. The upstream server already does the heavy lifting; we just narrow the question.
+A `kind: imap_search_rewritten` audit entry records every rewrite, with `reason` listing the active filters (`require_authentication`, `from_allowlist`, or `require_authentication+from_allowlist`). Sequence-numbered FETCH/STORE rejections emit `kind: imap_command` with `decision: blocked, reason: UID-prefix required when inbound filter is active`.
+
+#### `require_authentication` (default `true`)
+
+Appends three `HEADER "Authentication-Results"` criteria — for `dkim=pass`, `spf=pass`, and `dmarc=pass` — so the cage only sees mail the upstream MTA stamped as authenticated at the receiving boundary. The receiving MTA (Migadu, Fastmail, etc.) writes the `Authentication-Results:` header on every inbound message; the relay reads its stamp via the IMAP server's substring search.
 
 `HEADER` is a substring match on the raw header value. The RFC 8601 result tokens (`none`, `pass`, `fail`, `neutral`, `softfail`, `temperror`, `permerror`, `policy`) are a closed set with `pass` as the only one starting with that string, so `dkim=pass` substring match is precise enough in practice. The relay does not parse the `Authentication-Results` value structurally — that's the upstream MTA's job.
 
-A `kind: imap_search_rewritten` audit entry records every rewrite. Sequence-numbered FETCH/STORE rejections emit `kind: imap_command` with `decision: blocked, reason: UID-prefix required when require_authentication is on`.
-
 **Default on.** Most upstream MTAs stamp `Authentication-Results`, and a cage acting on unauthenticated mail is almost always wrong. Set `false` only when the upstream MTA doesn't write that header, or for relays explicitly intended for unfiltered access (e.g. an admin/inspection relay).
+
+#### `from_allowlist` (default `[]`)
+
+Appends `OR FROM "addr1" FROM "addr2" ...` criteria so the cage only sees mail from the allowlisted senders. For N addresses, the relay emits N−1 `OR` keywords followed by N `FROM "..."` keys, which IMAP parses left-fold ((`a OR b) OR c`).
+
+```yaml
+policy:
+  from_allowlist: [luca@luca.io, mirta.rotondo@gmail.com]
+```
+
+**Caveat: `from_allowlist` is only safe when paired with `require_authentication`.** IMAP `FROM` is a substring match on the entire raw From header, including the display-name part. A forged `From: "luca@luca.io" <attacker@evil.com>` would substring-match the allowlist on the display name even though the actual sender is `attacker@evil.com`. With `require_authentication` on, DKIM/DMARC alignment at the upstream MTA already rejects messages whose `From` domain doesn't match the signing domain — so the impostor is filtered out before the cage's SEARCH ever runs. Without `require_authentication`, `from_allowlist` trusts the From substring at face value. Both filters together is the supported configuration.
 
 ### SMTP relay behavior
 
