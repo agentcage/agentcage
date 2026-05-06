@@ -67,116 +67,6 @@ _STRIPPED_CAPABILITIES = frozenset({"COMPRESS=DEFLATE"})
 # discover the allowlisted folders.
 _MAILBOX_ARG_COMMANDS = frozenset({"SELECT", "EXAMINE", "STATUS"})
 
-# Subcommands that must be UID-prefixed when any inbound filter is
-# active (require_authentication or from_allowlist). A sequence-numbered
-# FETCH/STORE on ``1:*`` would bypass the rewritten SEARCH (which only
-# constrains UIDs the client learns through a filtered SEARCH response).
-# Forcing UID prefix means the client can only act on UIDs the relay
-# returned to it.
-_REQUIRE_UID_WHEN_FILTERING = frozenset({"FETCH", "STORE"})
-
-# IMAP literal-string trailer: ``{N}\r\n`` (synchronizing) or ``{N+}\r\n``
-# (non-synchronizing, RFC 7888). A SEARCH command line ending with this
-# means the criteria continue with a literal payload on subsequent reads.
-# We don't try to rewrite multi-line SEARCH commands — the server-side
-# filter is appended only when the entire command fits on one readline.
-_LITERAL_TRAIL_RE = re.compile(rb"\{\d+\+?\}\r?\n$")
-
-# The HEADER constraints we append to a SEARCH command when
-# require_authentication is on. IMAP search keys are implicit-AND by
-# juxtaposition (RFC 3501 §6.4.4), so appending narrows the result set
-# to messages that match the client's criteria AND have all three of
-# ``dkim=pass``, ``spf=pass``, and ``dmarc=pass`` somewhere in the
-# Authentication-Results header value. ``HEADER`` is a substring match
-# server-side; the result tokens of RFC 8601 (none/pass/fail/neutral/
-# softfail/temperror/permerror/policy) are a closed set with ``pass`` as
-# the only one starting with that string, so substring is precise enough
-# in practice.
-_AUTHRES_REQUIRED_CRITERIA = (
-    b' HEADER "Authentication-Results" "dkim=pass"'
-    b' HEADER "Authentication-Results" "spf=pass"'
-    b' HEADER "Authentication-Results" "dmarc=pass"'
-)
-
-
-def _is_search_line(line: bytes) -> bool:
-    """Return True iff *line* is an untagged ``SEARCH`` or ``UID SEARCH``
-    command. Used to decide whether to rewrite the line."""
-    parts = line.split(None, 2)
-    if len(parts) < 2:
-        return False
-    cmd = parts[1].rstrip(b"\r\n").upper()
-    if cmd == b"SEARCH":
-        return True
-    if cmd == b"UID" and len(parts) >= 3:
-        sub = parts[2].split(None, 1)[0].rstrip(b"\r\n").upper()
-        return sub == b"SEARCH"
-    return False
-
-
-def _is_literal_continued(line: bytes) -> bool:
-    """Return True iff *line* ends with an IMAP literal marker, meaning
-    the command continues with the literal payload on subsequent reads.
-    """
-    return bool(_LITERAL_TRAIL_RE.search(line))
-
-
-def _build_from_allowlist_criteria(addresses: list[str]) -> bytes:
-    """Build IMAP SEARCH criteria that AND-restrict to messages whose
-    From header substring-matches any allowlisted address.
-
-    For N addresses, emits ``N-1`` ``OR`` keywords followed by N
-    ``FROM "..."`` keys. IMAP OR is binary (RFC 3501 §6.4.4) and parses
-    greedily, so chained ORs left-fold:
-    ``OR OR FROM a FROM b FROM c`` parses as ``(a OR b) OR c``.
-
-    Returns leading-space-prefixed bytes ready to append to a SEARCH
-    command line, or ``b""`` for an empty allowlist.
-
-    Caveat: IMAP ``FROM`` is a substring match on the entire raw From
-    header (including display name). ``FROM "luca@luca.io"`` matches a
-    forged ``From: "luca@luca.io" <attacker@evil.com>`` on the display
-    name. ``from_allowlist`` is therefore only safe when paired with
-    ``require_authentication`` — DKIM alignment under DMARC then catches
-    the forged From-domain. Documented in docs/configuration.md.
-    """
-    if not addresses:
-        return b""
-    parts = [b" FROM " + _quote(addr) for addr in addresses]
-    if len(parts) == 1:
-        return parts[0]
-    return b" OR" * (len(parts) - 1) + b"".join(parts)
-
-
-def _extra_search_criteria(cfg: "_RelayConfig") -> bytes:
-    """Build the criteria bytes to append to SEARCH commands given the
-    relay's policy. Returns ``b""`` when no inbound filter is active."""
-    parts: list[bytes] = []
-    if cfg.require_authentication:
-        parts.append(_AUTHRES_REQUIRED_CRITERIA)
-    if cfg.from_allowlist:
-        parts.append(_build_from_allowlist_criteria(cfg.from_allowlist))
-    return b"".join(parts)
-
-
-def _inbound_filter_active(cfg: "_RelayConfig") -> bool:
-    """True iff any inbound filter narrows SEARCH responses for this
-    relay. Used to gate the SEARCH rewrite, the literal-continuation
-    block, and the sequence-numbered FETCH/STORE rejection."""
-    return cfg.require_authentication or bool(cfg.from_allowlist)
-
-
-def _rewrite_search_append(line: bytes, extra: bytes) -> bytes:
-    """Append *extra* to a single-line SEARCH command, before the line's
-    terminating newline. Caller must verify ``not _is_literal_continued
-    (line)`` and that *extra* is non-empty.
-    """
-    if line.endswith(b"\r\n"):
-        return line[:-2] + extra + b"\r\n"
-    if line.endswith(b"\n"):
-        return line[:-1] + extra + b"\n"
-    return line + extra + b"\r\n"
-
 
 _RATE_LIMIT_RE = re.compile(r"^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$")
 _RATE_UNIT_SECS = {"sec": 1, "s": 1, "min": 60, "m": 60, "hour": 3600, "h": 3600}
@@ -256,29 +146,6 @@ class _RelayConfig:
         self.idle_timeout_seconds: int = int(
             policy.get("idle_timeout_seconds", 1800)
         )
-        # Inbound message authentication: rewrite SEARCH commands to
-        # require dkim/spf/dmarc =pass on Authentication-Results, and
-        # block sequence-numbered FETCH/STORE so the cage cannot
-        # bypass the SEARCH filter by referencing messages by position.
-        # Default on — most upstream MTAs stamp Authentication-Results
-        # and the cage shouldn't act on mail that failed authentication
-        # at the receiving boundary. Set false for relays whose upstream
-        # doesn't stamp the header or where filtering is undesirable.
-        self.require_authentication: bool = bool(
-            policy.get("require_authentication", True)
-        )
-        # Inbound sender allowlist: when non-empty, rewrite SEARCH
-        # commands to AND-restrict to messages whose From header
-        # substring-matches one of these addresses. Combines with
-        # require_authentication; both filters compose by appending
-        # additional criteria to the same SEARCH command.
-        # Caveat: IMAP FROM is a substring match (display name plus
-        # addr-spec), so this is only safe when paired with
-        # require_authentication, which catches forged From-domains
-        # via DKIM/DMARC alignment. Default empty (no constraint).
-        self.from_allowlist: list[str] = list(
-            policy.get("from_allowlist") or []
-        )
 
 
 class ImapRelay:
@@ -324,15 +191,13 @@ class ImapRelay:
         )
         log.info(
             "imap relay %s listening on %s -> %s:%d (readonly=%s, "
-            "folders=%s, require_authentication=%s, from_allowlist=%s)",
+            "folders=%s)",
             self._cfg.name,
             self._cfg.listen,
             self._cfg.upstream_host,
             self._cfg.upstream_port,
             self._cfg.readonly,
             self._cfg.folder_allowlist or "(any)",
-            self._cfg.require_authentication,
-            self._cfg.from_allowlist or "(any)",
         )
 
     async def stop(self) -> None:
@@ -644,75 +509,16 @@ class ImapRelay:
             if not line:
                 return
             decision = self._policy_check(line)
-            if decision is not None:
-                tag, reason, fake_status = decision
-                client_writer.write(
-                    tag + b" " + fake_status + b" "
-                    + reason.encode() + b"\r\n"
-                )
-                await client_writer.drain()
+            if decision is None:
+                upstream_writer.write(line)
+                await upstream_writer.drain()
                 continue
 
-            line = await self._maybe_rewrite(line, client_writer)
-            if line is None:
-                # Already responded to the client (deny path inside the
-                # rewrite — e.g. literal-continued SEARCH).
-                continue
-            upstream_writer.write(line)
-            await upstream_writer.drain()
-
-    async def _maybe_rewrite(
-        self,
-        line: bytes,
-        client_writer: asyncio.StreamWriter,
-    ) -> Optional[bytes]:
-        """Apply inbound-filter rewrites to *line* before it goes upstream.
-
-        Returns the (possibly rewritten) line for the caller to forward,
-        or ``None`` if the relay has already responded to the client and
-        the line should not be forwarded at all.
-        """
-        extra = _extra_search_criteria(self._cfg)
-        if not extra:
-            return line
-        if not _is_search_line(line):
-            return line
-        if _is_literal_continued(line):
-            tag = line.split(None, 1)[0]
-            log.warning(
-                "imap relay %s: blocked SEARCH with literal continuation "
-                "(inbound filter: only single-line SEARCH supported)",
-                self._cfg.name,
-            )
-            self._audit_log({
-                "kind": "imap_command",
-                "relay": self._cfg.name,
-                "command": "SEARCH",
-                "decision": "blocked",
-                "reason": (
-                    "SEARCH with literal continuation not supported "
-                    "under inbound filter"
-                ),
-            })
+            tag, reason, fake_status = decision
             client_writer.write(
-                tag + b" NO SEARCH with literal continuation not "
-                b"permitted under inbound filter\r\n"
+                tag + b" " + fake_status + b" " + reason.encode() + b"\r\n"
             )
             await client_writer.drain()
-            return None
-
-        rewritten = _rewrite_search_append(line, extra)
-        reasons: list[str] = []
-        if self._cfg.require_authentication:
-            reasons.append("require_authentication")
-        if self._cfg.from_allowlist:
-            reasons.append("from_allowlist")
-        self._audit_log({
-            "kind": "imap_search_rewritten",
-            "relay": self._cfg.name,
-            "reason": "+".join(reasons),
-        })
-        return rewritten
 
     async def _pipe_upstream_to_client(
         self,
@@ -797,37 +603,6 @@ class ImapRelay:
                     f"{effective_cmd} not permitted (readonly)",
                     b"NO",
                 )
-
-        # Inbound-filter policy: when any inbound filter is active
-        # (require_authentication or from_allowlist), the only UIDs the
-        # cage should know about are those the rewritten SEARCH returned.
-        # Sequence-numbered FETCH/STORE references messages by position,
-        # bypassing the filter; reject so the cage has to use UID FETCH /
-        # UID STORE on UIDs it learned legitimately.
-        if (
-            _inbound_filter_active(self._cfg)
-            and cmd in _REQUIRE_UID_WHEN_FILTERING
-        ):
-            log.warning(
-                "imap relay %s: blocked sequence-numbered %s "
-                "(inbound filter: UID prefix required)",
-                self._cfg.name, cmd,
-            )
-            self._audit_log({
-                "kind": "imap_command",
-                "relay": self._cfg.name,
-                "command": cmd,
-                "decision": "blocked",
-                "reason": (
-                    "UID-prefix required when inbound filter is active"
-                ),
-            })
-            return (
-                tag,
-                f"{cmd} not permitted without UID prefix "
-                f"(inbound filter active)",
-                b"NO",
-            )
 
         if (
             cmd in _MAILBOX_ARG_COMMANDS

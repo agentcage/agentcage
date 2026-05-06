@@ -169,27 +169,6 @@ class RelayPolicy:
     # IMAP
     readonly: bool = False
     folder_allowlist: list[str] = field(default_factory=list)
-    # When true (default), the IMAP relay rewrites SEARCH / UID SEARCH
-    # commands to append HEADER "Authentication-Results" "dkim=pass" /
-    # spf=pass / dmarc=pass criteria. The upstream IMAP server applies the
-    # filter; the cage receives only UIDs that pass DKIM, SPF, and DMARC
-    # at the receiving MTA. Sequence-numbered FETCH/STORE is also rejected
-    # so the cage cannot bypass the filter by referencing messages by
-    # position. Set to False if the upstream MTA does not stamp
-    # Authentication-Results, or for relays where filtering is not
-    # appropriate (e.g. a debugging/inspection relay).
-    require_authentication: bool = True
-    # Inbound sender allowlist. When non-empty, the IMAP relay rewrites
-    # SEARCH/UID SEARCH commands to AND-restrict to messages whose From
-    # header contains any of the listed addresses (IMAP FROM substring
-    # match). Combines with require_authentication — a message must pass
-    # every active filter to appear in SEARCH responses. Sequence-
-    # numbered FETCH/STORE rejection extends to from_allowlist alone.
-    # Caveat: IMAP FROM is a substring match across display name plus
-    # addr-spec, so a forged ``From: "luca@luca.io" <attacker@evil.com>``
-    # would match an allowlist of ``[luca@luca.io]``. Pair with
-    # require_authentication so DMARC alignment catches the forgery.
-    from_allowlist: list[str] = field(default_factory=list)
 
     # SMTP
     sender_allowlist: list[str] = field(default_factory=list)
@@ -456,10 +435,6 @@ def load_config(path: str) -> Config:
             idle_timeout_seconds=int(pol_raw.get("idle_timeout_seconds", 0)),
             readonly=bool(pol_raw.get("readonly", False)),
             folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
-            require_authentication=bool(
-                pol_raw.get("require_authentication", True)
-            ),
-            from_allowlist=list(pol_raw.get("from_allowlist") or []),
             sender_allowlist=list(pol_raw.get("sender_allowlist") or []),
             recipient_allowlist=recipient_allowlist,
             max_message_bytes=int(
