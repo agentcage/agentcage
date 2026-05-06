@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- IMAP relay: `policy.require_authentication` (default **true**) rewrites every SEARCH/UID SEARCH command to append three `HEADER "Authentication-Results"` criteria — `dkim=pass`, `spf=pass`, `dmarc=pass`. The upstream IMAP server applies the filter; the response forwards verbatim. The cage thus only sees UIDs of mail the receiving MTA stamped as authenticated. Sequence-numbered `FETCH`/`STORE` are rejected at the command layer so the cage cannot bypass the SEARCH filter by referencing messages by position. Multi-line SEARCH commands containing IMAP literal-string criteria are rejected with `NO`. New audit entries: `kind: imap_search_rewritten`, plus `kind: imap_command, decision: blocked` for the FETCH/STORE rejections. See `docs/configuration.md` ("Inbound message authentication") for the full design.
+
+### Changed
+- IMAP relay: the new `require_authentication` policy defaults to **true**. Existing relays that don't override this will start filtering SEARCH responses to authenticated mail only. **If your upstream MTA doesn't stamp `Authentication-Results`** (uncommon but possible for self-hosted setups), set `policy.require_authentication: false` in the relay entry to restore the prior verbatim-passthrough behavior.
+
 ## [0.14.3] - 2026-05-04
 
 ### Changed
