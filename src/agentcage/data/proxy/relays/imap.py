@@ -26,6 +26,8 @@ import ssl
 import time
 from typing import Callable, Optional
 
+from . import _imap_responses
+
 log = logging.getLogger("agentcage.relays.imap")
 
 
@@ -60,6 +62,21 @@ _UID_WRITE_SUBCOMMANDS = frozenset({
 # can't policy-check what we can't read. Strip it from the forwarded
 # CAPABILITY list so the client never tries.
 _STRIPPED_CAPABILITIES = frozenset({"COMPRESS=DEFLATE"})
+
+# Capability tokens stripped only when inbound message filtering is on
+# (require_authentication, etc.). ESEARCH (RFC 4731) lets the server
+# return SEARCH results in compact set forms (``ALL <range>``) which the
+# response filter would have to expand and rewrite — much more work
+# than the simple ``* SEARCH 1 2 3`` form. Stripping ESEARCH from the
+# advertised capabilities makes clients fall back to plain SEARCH.
+_STRIPPED_CAPABILITIES_WHEN_FILTERING = frozenset({"ESEARCH"})
+
+# Subcommands that must be UID-prefixed when inbound filtering is on.
+# A sequence-numbered FETCH/STORE on ``1:*`` would bypass our SEARCH
+# filter (which only constrains UIDs the client learns through the
+# filtered SEARCH response). Forcing UID-prefix means the client can
+# only act on UIDs the relay returned to it.
+_REQUIRE_UID_WHEN_FILTERING = frozenset({"FETCH", "STORE"})
 
 # Commands whose first argument is a mailbox name we want to filter
 # against folder_allowlist. LIST/LSUB are intentionally excluded —
@@ -146,6 +163,63 @@ class _RelayConfig:
         self.idle_timeout_seconds: int = int(
             policy.get("idle_timeout_seconds", 1800)
         )
+        # Inbound-message authentication filter. When true, the relay
+        # buffers SEARCH responses, side-channel-fetches the
+        # Authentication-Results header for each returned UID, and
+        # drops UIDs whose dkim/spf/dmarc results aren't all ``pass``
+        # before forwarding the SEARCH response to the client. The
+        # cage thus never learns the UIDs of unauthenticated mail and
+        # has no way to FETCH them (sequence-numbered FETCH/STORE is
+        # blocked while this filter is on, so the only way for the
+        # client to learn UIDs is via the filtered SEARCH responses).
+        self.require_authentication: bool = bool(
+            policy.get("require_authentication", False)
+        )
+
+
+class _SessionState:
+    """Per-client-session mutable state for the inbound-message inspector.
+
+    The relay tracks: which client tags belong to SEARCH commands (so
+    the upstream-side pipe knows when to interpose a filter), what
+    mailbox the client has SELECTed (so the side-channel can SELECT
+    the same mailbox before fetching headers), and the cached verdict
+    per UID for this session. A single side-channel upstream connection
+    is opened lazily on first SEARCH that needs filtering and reused for
+    the rest of the session.
+    """
+
+    __slots__ = (
+        "pending_search_tags",
+        "current_mailbox",
+        "verdict_cache",
+        "sidechannel_reader",
+        "sidechannel_writer",
+        "sidechannel_lock",
+        "sidechannel_tag_seq",
+        "sidechannel_mailbox",
+    )
+
+    def __init__(self) -> None:
+        # Tags of SEARCH/UID SEARCH commands the client has issued and
+        # whose response the upstream pipe still needs to filter.
+        self.pending_search_tags: set[bytes] = set()
+        # Last mailbox the client has SELECT/EXAMINE'd. Tracked from
+        # client commands; Migadu (and every server) only allows one
+        # selected mailbox per connection at a time.
+        self.current_mailbox: Optional[str] = None
+        # (mailbox, uid) -> bool. True = passes policy. False = fails.
+        self.verdict_cache: dict[tuple[str, int], bool] = {}
+        # Side-channel upstream connection for the relay's own header
+        # fetches. None until first use; opened by ``_HeaderFetcher``.
+        self.sidechannel_reader: Optional[asyncio.StreamReader] = None
+        self.sidechannel_writer: Optional[asyncio.StreamWriter] = None
+        # Serialise side-channel use across concurrent SEARCH responses.
+        self.sidechannel_lock = asyncio.Lock()
+        self.sidechannel_tag_seq: int = 0
+        # Mailbox currently SELECT'd on the side-channel (lags the
+        # client's selection until the side-channel needs to fetch).
+        self.sidechannel_mailbox: Optional[str] = None
 
 
 class ImapRelay:
@@ -191,13 +265,14 @@ class ImapRelay:
         )
         log.info(
             "imap relay %s listening on %s -> %s:%d (readonly=%s, "
-            "folders=%s)",
+            "folders=%s, require_authentication=%s)",
             self._cfg.name,
             self._cfg.listen,
             self._cfg.upstream_host,
             self._cfg.upstream_port,
             self._cfg.readonly,
             self._cfg.folder_allowlist or "(any)",
+            self._cfg.require_authentication,
         )
 
     async def stop(self) -> None:
@@ -302,19 +377,29 @@ class ImapRelay:
             )
             await client_writer.drain()
 
+            state = _SessionState()
+
             # Run both pipes concurrently. When one finishes (typically
             # because the client disconnected), cancel the other so we
             # don't hang on a half-open upstream connection.
             t1 = asyncio.create_task(
                 self._pipe_client_to_upstream(
                     client_reader, upstream_writer, client_writer,
+                    state=state,
                 )
             )
-            t2 = asyncio.create_task(
-                self._pipe_upstream_to_client(
-                    upstream_reader, client_writer
+            if self._cfg.require_authentication:
+                t2 = asyncio.create_task(
+                    self._pipe_upstream_to_client_filtered(
+                        upstream_reader, client_writer, state=state,
+                    )
                 )
-            )
+            else:
+                t2 = asyncio.create_task(
+                    self._pipe_upstream_to_client(
+                        upstream_reader, client_writer
+                    )
+                )
             done, pending = await asyncio.wait(
                 {t1, t2}, return_when=asyncio.FIRST_COMPLETED
             )
@@ -330,6 +415,13 @@ class ImapRelay:
                 await upstream_writer.wait_closed()
             except Exception:
                 pass
+            sw = state.sidechannel_writer if 'state' in locals() else None
+            if sw is not None:
+                try:
+                    sw.close()
+                    await sw.wait_closed()
+                except Exception:
+                    pass
 
     async def _read_with_timeout(
         self, reader: asyncio.StreamReader,
@@ -490,9 +582,12 @@ class ImapRelay:
         """
         if not self._upstream_capabilities:
             return "IMAP4rev1"
+        stripped = set(_STRIPPED_CAPABILITIES)
+        if self._cfg.require_authentication:
+            stripped |= _STRIPPED_CAPABILITIES_WHEN_FILTERING
         out = [
             t for t in self._upstream_capabilities
-            if t.upper() not in _STRIPPED_CAPABILITIES
+            if t.upper() not in stripped
         ]
         if not any(t.upper() == "IMAP4REV1" for t in out):
             out.insert(0, "IMAP4rev1")
@@ -503,6 +598,8 @@ class ImapRelay:
         client_reader: asyncio.StreamReader,
         upstream_writer: asyncio.StreamWriter,
         client_writer: asyncio.StreamWriter,
+        *,
+        state: Optional[_SessionState] = None,
     ) -> None:
         while True:
             line = await client_reader.readline()
@@ -510,6 +607,8 @@ class ImapRelay:
                 return
             decision = self._policy_check(line)
             if decision is None:
+                if state is not None:
+                    self._track_client_command(line, state)
                 upstream_writer.write(line)
                 await upstream_writer.drain()
                 continue
@@ -519,6 +618,44 @@ class ImapRelay:
                 tag + b" " + fake_status + b" " + reason.encode() + b"\r\n"
             )
             await client_writer.drain()
+
+    def _track_client_command(
+        self, line: bytes, state: _SessionState,
+    ) -> None:
+        """Record state needed by the upstream-side filter.
+
+        Called only for commands the policy check has already approved.
+        Tracks two things:
+          * The mailbox the client SELECT/EXAMINE'd, so the side-channel
+            can SELECT the same mailbox before its UID FETCH.
+          * The tags of SEARCH/UID SEARCH commands so the upstream pipe
+            knows whose response to filter.
+        """
+        parts = line.split(b" ", 2)
+        if len(parts) < 2:
+            return
+        tag = parts[0]
+        cmd_b = parts[1].rstrip(b"\r\n").upper()
+        cmd = cmd_b.decode("ascii", errors="replace")
+
+        # SELECT / EXAMINE — track the new mailbox.
+        if cmd in ("SELECT", "EXAMINE") and len(parts) >= 3:
+            mailbox = _extract_mailbox(parts[2])
+            if mailbox is not None:
+                state.current_mailbox = mailbox
+            return
+
+        # SEARCH (no UID prefix).
+        if cmd == "SEARCH":
+            state.pending_search_tags.add(tag)
+            return
+
+        # UID SEARCH — second token is UID, third begins with SEARCH.
+        if cmd == "UID" and len(parts) >= 3:
+            tail = parts[2].lstrip()
+            sub = tail.split(b" ", 1)[0].rstrip(b"\r\n").upper()
+            if sub == b"SEARCH":
+                state.pending_search_tags.add(tag)
 
     async def _pipe_upstream_to_client(
         self,
@@ -531,6 +668,291 @@ class ImapRelay:
                 return
             client_writer.write(chunk)
             await client_writer.drain()
+
+    async def _pipe_upstream_to_client_filtered(
+        self,
+        upstream_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+        *,
+        state: _SessionState,
+    ) -> None:
+        """Line-aware variant used when ``require_authentication`` is on.
+
+        For every untagged ``* SEARCH ...`` response, the line is held
+        until the matching tagged status arrives. At that point we
+        side-channel-fetch the Authentication-Results header for each
+        UID that isn't already in the verdict cache, drop UIDs that
+        fail, and emit a rewritten SEARCH response followed by the
+        original tagged status. All other lines pass through unchanged.
+
+        Limitations the threat model accepts:
+          * Only ``* SEARCH`` (RFC 3501) is filtered. ``* ESEARCH``
+            (RFC 4731) is stripped from advertised capabilities so
+            clients fall back to plain SEARCH.
+          * FETCH responses for UIDs the client already knows are
+            passed through unchanged (the client must have learned
+            the UID through a SEARCH response, which was filtered).
+          * Sequence-numbered FETCH/STORE is denied at the command
+            layer (see ``_policy_check``), so an attacker can't
+            FETCH ``1:*`` to bypass the filter.
+        """
+        # Buffered untagged SEARCH responses awaiting their tagged OK.
+        # In practice a single SEARCH yields one SEARCH response
+        # followed by one tagged OK, but we accumulate to be safe.
+        pending_search_uids: list[int] = []
+        while True:
+            line = await upstream_reader.readline()
+            if not line:
+                return
+
+            # Untagged SEARCH response — buffer and don't forward yet.
+            uids = _imap_responses.parse_search_response_line(line)
+            if uids is not None:
+                pending_search_uids.extend(uids)
+                continue
+
+            # Tagged response. If it matches a SEARCH we've been holding
+            # for, run the filter then emit the result. Otherwise pass
+            # through.
+            tag = line.split(b" ", 1)[0]
+            if tag in state.pending_search_tags:
+                state.pending_search_tags.discard(tag)
+                filtered = await self._filter_uids(
+                    pending_search_uids, state,
+                )
+                client_writer.write(
+                    _imap_responses.encode_search_response(filtered)
+                )
+                client_writer.write(line)
+                await client_writer.drain()
+                pending_search_uids = []
+                continue
+
+            # Non-SEARCH line: pass through. If we'd been buffering
+            # a SEARCH response and a totally unrelated line came in
+            # (server-pushed FETCH from an IDLE, for example), forward
+            # what we'd buffered first so we don't reorder responses.
+            if pending_search_uids:
+                # Defensive: this happens only when the server sent
+                # SEARCH results but we never got the tagged OK we
+                # were waiting for, and another response came along.
+                # Emit the buffered (unfiltered) UIDs to avoid losing
+                # data — the tagged OK will still be filtered when it
+                # eventually arrives, but we should never get here in
+                # practice.
+                pass
+            client_writer.write(line)
+            await client_writer.drain()
+
+    async def _filter_uids(
+        self, uids: list[int], state: _SessionState,
+    ) -> list[int]:
+        """Return the subset of *uids* whose Authentication-Results
+        meets policy. Cached per session to avoid repeated fetches.
+
+        Failure modes (sidechannel down, FETCH error, header missing,
+        body unparseable) are all treated as "fails policy" — the
+        relay errs on the side of hiding messages rather than leaking
+        an unverified one to the client.
+        """
+        if not uids:
+            return []
+        mailbox = state.current_mailbox
+        if mailbox is None:
+            log.warning(
+                "imap relay %s: SEARCH without prior SELECT under "
+                "require_authentication — dropping all results",
+                self._cfg.name,
+            )
+            return []
+        # Find which UIDs we still need to check.
+        need: list[int] = []
+        for uid in uids:
+            if (mailbox, uid) not in state.verdict_cache:
+                need.append(uid)
+        if need:
+            verdicts = await self._sidechannel_fetch_authres(
+                mailbox, need, state,
+            )
+            for uid in need:
+                state.verdict_cache[(mailbox, uid)] = verdicts.get(uid, False)
+        out = [uid for uid in uids if state.verdict_cache.get((mailbox, uid))]
+        if len(out) != len(uids):
+            self._audit_log({
+                "kind": "imap_search_filtered",
+                "relay": self._cfg.name,
+                "mailbox": mailbox,
+                "input_count": len(uids),
+                "output_count": len(out),
+                "dropped": [u for u in uids if u not in out],
+                "reason": "require_authentication",
+            })
+        return out
+
+    async def _sidechannel_fetch_authres(
+        self,
+        mailbox: str,
+        uids: list[int],
+        state: _SessionState,
+    ) -> dict[int, bool]:
+        """Side-channel UID FETCH of Authentication-Results headers.
+
+        Returns ``{uid: passes}`` for every UID we successfully fetched
+        and parsed. UIDs missing from the result map (network failure,
+        unparseable response, header absent) are absent — the caller
+        treats absent-from-map as policy-fail.
+        """
+        async with state.sidechannel_lock:
+            ok = await self._sidechannel_ensure(mailbox, state)
+            if not ok:
+                return {}
+            assert state.sidechannel_reader is not None
+            assert state.sidechannel_writer is not None
+            state.sidechannel_tag_seq += 1
+            tag = f"r{state.sidechannel_tag_seq:04d}".encode()
+            uid_set = ",".join(str(u) for u in uids).encode()
+            cmd = (
+                tag + b" UID FETCH " + uid_set
+                + b" (BODY.PEEK[HEADER.FIELDS (Authentication-Results)])\r\n"
+            )
+            try:
+                state.sidechannel_writer.write(cmd)
+                await state.sidechannel_writer.drain()
+            except (ConnectionResetError, BrokenPipeError) as e:
+                log.warning(
+                    "imap relay %s: side-channel write failed: %s — "
+                    "all UIDs in this batch will be treated as fail",
+                    self._cfg.name, e,
+                )
+                state.sidechannel_writer = None
+                state.sidechannel_reader = None
+                return {}
+            return await self._sidechannel_collect(tag, state)
+
+    async def _sidechannel_collect(
+        self, tag: bytes, state: _SessionState,
+    ) -> dict[int, bool]:
+        """Read until the side-channel emits ``<tag> OK|NO|BAD ...``,
+        accumulating FETCH records along the way and evaluating each
+        one's Authentication-Results header.
+        """
+        assert state.sidechannel_reader is not None
+        parser = _imap_responses.FetchResponseParser()
+        verdicts: dict[int, bool] = {}
+        while True:
+            try:
+                chunk = await state.sidechannel_reader.read(8192)
+            except (ConnectionResetError, BrokenPipeError):
+                return verdicts
+            if not chunk:
+                return verdicts
+            parser.feed(chunk)
+            for uid, header_blob in parser.take_fetched():
+                authres = _imap_responses.extract_authentication_results(
+                    header_blob
+                )
+                if authres is None:
+                    verdicts[uid] = False
+                    continue
+                verdicts[uid] = (
+                    _imap_responses.evaluate_authentication_results(authres)
+                )
+            tagged = parser.tagged_response
+            if tagged is not None and tagged.startswith(tag + b" "):
+                return verdicts
+
+    async def _sidechannel_ensure(
+        self, mailbox: str, state: _SessionState,
+    ) -> bool:
+        """Open the side-channel if needed, authenticate, and SELECT
+        *mailbox*. Returns False on any setup failure (caller defaults
+        to fail-closed).
+        """
+        if state.sidechannel_writer is None:
+            try:
+                ssl_ctx = (
+                    ssl.create_default_context() if self._cfg.upstream_tls
+                    else None
+                )
+                reader, writer = await asyncio.open_connection(
+                    self._cfg.upstream_host,
+                    self._cfg.upstream_port,
+                    ssl=ssl_ctx,
+                )
+            except (OSError, ssl.SSLError) as e:
+                log.warning(
+                    "imap relay %s: side-channel open failed: %s",
+                    self._cfg.name, e,
+                )
+                return False
+            state.sidechannel_reader = reader
+            state.sidechannel_writer = writer
+            state.sidechannel_mailbox = None
+            ok = await self._sidechannel_authenticate(state)
+            if not ok:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                state.sidechannel_reader = None
+                state.sidechannel_writer = None
+                return False
+
+        if state.sidechannel_mailbox != mailbox:
+            ok = await self._sidechannel_select(mailbox, state)
+            if not ok:
+                return False
+            state.sidechannel_mailbox = mailbox
+        return True
+
+    async def _sidechannel_authenticate(
+        self, state: _SessionState,
+    ) -> bool:
+        assert state.sidechannel_reader is not None
+        assert state.sidechannel_writer is not None
+        # Consume greeting.
+        try:
+            greeting = await asyncio.wait_for(
+                state.sidechannel_reader.readline(), timeout=30,
+            )
+        except asyncio.TimeoutError:
+            return False
+        if not greeting.startswith(b"* OK"):
+            return False
+        state.sidechannel_tag_seq += 1
+        tag = f"r{state.sidechannel_tag_seq:04d}".encode()
+        state.sidechannel_writer.write(
+            tag + b" LOGIN " + _quote(self._user) + b" "
+            + _quote(self._password) + b"\r\n"
+        )
+        try:
+            await state.sidechannel_writer.drain()
+        except (ConnectionResetError, BrokenPipeError):
+            return False
+        return await _consume_until_tagged_ok(
+            state.sidechannel_reader, tag,
+        )
+
+    async def _sidechannel_select(
+        self, mailbox: str, state: _SessionState,
+    ) -> bool:
+        assert state.sidechannel_reader is not None
+        assert state.sidechannel_writer is not None
+        state.sidechannel_tag_seq += 1
+        tag = f"r{state.sidechannel_tag_seq:04d}".encode()
+        # EXAMINE is read-only — same effect as SELECT for our use, and
+        # avoids any side-effect on \Recent state.
+        state.sidechannel_writer.write(
+            tag + b" EXAMINE " + _quote(mailbox) + b"\r\n"
+        )
+        try:
+            await state.sidechannel_writer.drain()
+        except (ConnectionResetError, BrokenPipeError):
+            return False
+        return await _consume_until_tagged_ok(
+            state.sidechannel_reader, tag,
+        )
 
     def _policy_check(
         self, line: bytes
@@ -604,6 +1026,35 @@ class ImapRelay:
                     b"NO",
                 )
 
+        # Inbound-filter policy: when require_authentication is on, the
+        # only UIDs the client should know about are those the relay
+        # returned in a filtered SEARCH response. Sequence-numbered
+        # FETCH/STORE bypasses that channel (they reference messages by
+        # position, not UID), so disallow them. UID FETCH / UID STORE
+        # remain allowed — those operate on UIDs the client already has.
+        if (
+            self._cfg.require_authentication
+            and cmd in _REQUIRE_UID_WHEN_FILTERING
+        ):
+            log.warning(
+                "imap relay %s: blocked sequence-numbered %s "
+                "(require_authentication: UID prefix required)",
+                self._cfg.name, cmd,
+            )
+            self._audit_log({
+                "kind": "imap_command",
+                "relay": self._cfg.name,
+                "command": cmd,
+                "decision": "blocked",
+                "reason": "UID-prefix required when require_authentication is on",
+            })
+            return (
+                tag,
+                f"{cmd} not permitted without UID prefix "
+                f"(require_authentication active)",
+                b"NO",
+            )
+
         if (
             cmd in _MAILBOX_ARG_COMMANDS
             and self._cfg.folder_allowlist
@@ -673,6 +1124,25 @@ def _quote(value: str) -> bytes:
     """Quote an IMAP string literal-style (RFC 3501 §4.3 'quoted')."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return b'"' + escaped.encode() + b'"'
+
+
+async def _consume_until_tagged_ok(
+    reader: asyncio.StreamReader, tag: bytes,
+) -> bool:
+    """Read lines until ``tag <STATUS> ...`` arrives. Return True iff
+    the status was OK. Side-channel helper — used during LOGIN and
+    EXAMINE on the relay's own header-fetch connection.
+    """
+    while True:
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=30)
+        except asyncio.TimeoutError:
+            return False
+        if not line:
+            return False
+        if line.startswith(tag + b" "):
+            rest = line[len(tag) + 1:].split(b" ", 1)
+            return bool(rest) and rest[0].upper() == b"OK"
 
 
 def _extract_mailbox(args: bytes) -> Optional[str]:

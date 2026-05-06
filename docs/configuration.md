@@ -308,6 +308,7 @@ Like `secret_injection`, the goal is the same: the cage container holds no upstr
 |---------|------|----------|-------------|
 | `policy.readonly` | `bool` | no | If `true`, block APPEND/DELETE/STORE/EXPUNGE/CREATE/RENAME/MOVE/COPY plus the write subcommands of UID. Default `false`. |
 | `policy.folder_allowlist` | `list[string]` | no | If non-empty, restrict SELECT/EXAMINE/STATUS to these mailbox names. LIST/LSUB always pass through (metadata only). Default `[]` (no filter). |
+| `policy.require_authentication` | `bool` | no | If `true`, drop UIDs whose `Authentication-Results` header doesn't show `dkim=pass spf=pass dmarc=pass` from every SEARCH response before forwarding to the cage, and block sequence-numbered FETCH/STORE so the cage can only act on UIDs the relay returned. See "Inbound message authentication" below. Default `false`. |
 | `policy.conn_rate_limit` | `string` | no | Connection rate cap, e.g. `"30/min"`. Default `"30/min"`. |
 
 ### SMTP-specific policy (`type: smtp`)
@@ -336,6 +337,25 @@ On client connect, the relay opens an authenticated TLS connection upstream and 
 If the cage tries LOGIN or AUTHENTICATE anyway, the relay intercepts and forges an `OK already authenticated` response — the spurious credentials never reach the upstream server.
 
 Each policy decision (allowed, blocked, login attempt) emits a structured log line that the proxy container forwards to the existing audit pipeline.
+
+### Inbound message authentication (`require_authentication`)
+
+When `policy.require_authentication: true`, the IMAP relay enforces that the cage only sees mail the upstream MTA stamped as authenticated. The receiving MTA (Migadu, Fastmail, etc.) writes an `Authentication-Results:` header on every inbound message recording its DKIM / SPF / DMARC verdicts; the relay reads that stamp and hides UIDs whose verdicts aren't all `pass`.
+
+How it works:
+
+* The relay buffers every `* SEARCH ...` (or `* UID SEARCH ...`) response from upstream until the matching tagged status arrives.
+* For each UID returned that isn't already in the per-session verdict cache, the relay opens a side-channel IMAP connection to the same upstream (lazy on first use, reused for the rest of the session) and issues `UID FETCH <ids> (BODY.PEEK[HEADER.FIELDS (Authentication-Results)])`.
+* It evaluates each fetched header against the required methods (`dkim`, `spf`, `dmarc` — all must show `=pass`) and caches the verdict per `(mailbox, uid)`.
+* It then emits a rewritten `* SEARCH` response containing only passing UIDs, followed by the upstream's tagged status. The cage never learns the UIDs of failing messages.
+
+To prevent the cage from bypassing the SEARCH filter via sequence-numbered FETCH (`FETCH 1:* ...`) — which would reference messages by position regardless of the SEARCH outcome — sequence-numbered `FETCH` and `STORE` are blocked at the command layer. The cage must use `UID FETCH` and `UID STORE`, which only reference UIDs it learned from a (filtered) SEARCH response.
+
+`ESEARCH` (RFC 4731) is stripped from the relay's advertised capability list when `require_authentication` is on. Compliant clients fall back to plain `* SEARCH` responses, which the relay knows how to filter.
+
+**Failure modes are fail-closed.** If the side-channel fails to authenticate, the FETCH errors, the header is missing, or the value is unparseable, the affected UID is dropped — the cage sees fewer messages, never an unverified one. A `kind: imap_search_filtered` audit entry records every drop along with the dropped UIDs and the reason.
+
+**Cost.** One additional upstream IMAP connection per cage IMAP session (the side-channel). Per-UID verdicts are cached for the lifetime of the session, so a cage that runs heartbeat polls every minute pays for one header fetch per *new* message, not per poll.
 
 ### SMTP relay behavior
 

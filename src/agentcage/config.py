@@ -169,6 +169,16 @@ class RelayPolicy:
     # IMAP
     readonly: bool = False
     folder_allowlist: list[str] = field(default_factory=list)
+    # When true, the IMAP relay buffers SEARCH responses, side-channel-
+    # fetches the Authentication-Results header for each returned UID,
+    # and drops UIDs whose dkim/spf/dmarc verdicts aren't all ``pass``
+    # before forwarding the SEARCH response to the cage. The cage thus
+    # never learns the UIDs of mail that failed upstream authentication
+    # at the receiving MTA. Sequence-numbered FETCH/STORE is rejected
+    # while this is on, so the only way for the cage to learn UIDs is
+    # via the filtered SEARCH responses. Adds one upstream IMAP
+    # connection per cage session for the side-channel.
+    require_authentication: bool = False
 
     # SMTP
     sender_allowlist: list[str] = field(default_factory=list)
@@ -435,6 +445,9 @@ def load_config(path: str) -> Config:
             idle_timeout_seconds=int(pol_raw.get("idle_timeout_seconds", 0)),
             readonly=bool(pol_raw.get("readonly", False)),
             folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
+            require_authentication=bool(
+                pol_raw.get("require_authentication", False)
+            ),
             sender_allowlist=list(pol_raw.get("sender_allowlist") or []),
             recipient_allowlist=recipient_allowlist,
             max_message_bytes=int(

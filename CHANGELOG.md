@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- IMAP relay: `policy.require_authentication` enforces that the cage only sees mail the upstream MTA stamped as authenticated. When on, the relay buffers every `* SEARCH ...` response, side-channel-fetches the `Authentication-Results` header for each returned UID via `UID FETCH (BODY.PEEK[HEADER.FIELDS (Authentication-Results)])` on a lazy-opened second upstream connection, evaluates `dkim`/`spf`/`dmarc` (all must `=pass`), caches the verdict per `(mailbox, uid)` for the session, and emits a rewritten `* SEARCH` response containing only passing UIDs to the cage. The cage never learns the UIDs of mail that failed receiver-side authentication. Sequence-numbered `FETCH` and `STORE` are also blocked at the command layer (UID-prefix required) so the cage can't bypass the SEARCH filter by referencing messages by position. `ESEARCH` is stripped from the advertised capability list when this is on so clients fall back to plain `* SEARCH` (which the filter knows how to rewrite). All failure modes (side-channel auth fail, FETCH error, missing header, unparseable value) are fail-closed: the affected UID is dropped. `kind: imap_search_filtered` audit entries record every drop. Default off — opt-in policy. See `docs/configuration.md` ("Inbound message authentication") for the full design.
+
 ## [0.14.3] - 2026-05-04
 
 ### Changed

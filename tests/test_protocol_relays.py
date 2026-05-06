@@ -962,3 +962,731 @@ class TestImapIdleTimeout:
                 await silent.wait_closed()
 
         _run(_go())
+
+
+# ── require_authentication: filtering tests ────────────
+
+
+from relays import _imap_responses
+
+
+class TestEvaluateAuthenticationResults:
+    """Pure-function check on the Authentication-Results evaluator."""
+
+    def test_all_pass(self):
+        h = "m8i.io; dkim=pass header.d=luca.io; spf=pass; dmarc=pass"
+        assert _imap_responses.evaluate_authentication_results(h) is True
+
+    def test_dkim_fail(self):
+        h = "m8i.io; dkim=fail; spf=pass; dmarc=pass"
+        assert _imap_responses.evaluate_authentication_results(h) is False
+
+    def test_spf_temperror(self):
+        h = "m8i.io; dkim=pass; spf=temperror; dmarc=pass"
+        assert _imap_responses.evaluate_authentication_results(h) is False
+
+    def test_dmarc_missing(self):
+        h = "m8i.io; dkim=pass; spf=pass"
+        assert _imap_responses.evaluate_authentication_results(h) is False
+
+    def test_empty(self):
+        assert _imap_responses.evaluate_authentication_results("") is False
+
+    def test_folded_header(self):
+        h = "m8i.io;\n\tdkim=pass header.d=luca.io;\n\tspf=pass;\n\tdmarc=pass"
+        assert _imap_responses.evaluate_authentication_results(h) is True
+
+    def test_first_occurrence_wins_for_relayed_results(self):
+        # If an upstream re-stamp says fail then a later hop says pass,
+        # the receiver-of-record (first stamp) decides.
+        h = "m8i.io; dkim=fail; dkim=pass; spf=pass; dmarc=pass"
+        assert _imap_responses.evaluate_authentication_results(h) is False
+
+
+class TestParseSearchResponseLine:
+    def test_with_uids(self):
+        assert _imap_responses.parse_search_response_line(
+            b"* SEARCH 12 17 23\r\n"
+        ) == [12, 17, 23]
+
+    def test_empty_search(self):
+        assert _imap_responses.parse_search_response_line(
+            b"* SEARCH\r\n"
+        ) == []
+
+    def test_not_a_search_line(self):
+        assert _imap_responses.parse_search_response_line(
+            b"* OK something\r\n"
+        ) is None
+
+    def test_garbage_uids_returns_none(self):
+        assert _imap_responses.parse_search_response_line(
+            b"* SEARCH 12 not-a-uid 23\r\n"
+        ) is None
+
+
+class TestEncodeSearchResponse:
+    def test_with_uids(self):
+        assert _imap_responses.encode_search_response([1, 2, 3]) == \
+            b"* SEARCH 1 2 3\r\n"
+
+    def test_empty(self):
+        assert _imap_responses.encode_search_response([]) == b"* SEARCH\r\n"
+
+
+class TestExtractAuthenticationResults:
+    def test_simple(self):
+        blob = (
+            b"Authentication-Results: m8i.io; dkim=pass; spf=pass; "
+            b"dmarc=pass\r\n\r\n"
+        )
+        v = _imap_responses.extract_authentication_results(blob)
+        assert v is not None
+        assert "dkim=pass" in v
+
+    def test_folded(self):
+        blob = (
+            b"Authentication-Results: m8i.io;\r\n"
+            b"\tdkim=pass header.d=luca.io;\r\n"
+            b"\tspf=pass;\r\n"
+            b"\tdmarc=pass\r\n\r\n"
+        )
+        v = _imap_responses.extract_authentication_results(blob)
+        assert v is not None
+        assert _imap_responses.evaluate_authentication_results(v) is True
+
+    def test_missing(self):
+        blob = b"Subject: hi\r\n\r\n"
+        assert _imap_responses.extract_authentication_results(blob) is None
+
+
+class TestFetchResponseParser:
+    def test_single_record(self):
+        blob = (
+            b"Authentication-Results: m8i.io; dkim=pass; spf=pass; "
+            b"dmarc=pass\r\n\r\n"
+        )
+        chunk = (
+            b"* 1 FETCH (UID 12 BODY[HEADER.FIELDS (AUTHENTICATION-RESULTS)] {"
+            + str(len(blob)).encode() + b"}\r\n"
+            + blob
+            + b")\r\n"
+            b"r0001 OK FETCH completed\r\n"
+        )
+        parser = _imap_responses.FetchResponseParser()
+        parser.feed(chunk)
+        records = parser.take_fetched()
+        assert len(records) == 1
+        uid, body = records[0]
+        assert uid == 12
+        assert b"dkim=pass" in body
+        assert parser.tagged_response is not None
+        assert parser.tagged_response.startswith(b"r0001 OK")
+
+    def test_multiple_records(self):
+        def _record(seq, uid, header):
+            return (
+                f"* {seq} FETCH (UID {uid} BODY[HEADER.FIELDS "
+                f"(AUTHENTICATION-RESULTS)] ".encode()
+                + b"{" + str(len(header)).encode() + b"}\r\n"
+                + header
+                + b")\r\n"
+            )
+        h_pass = b"Authentication-Results: m8i.io; dkim=pass; spf=pass; dmarc=pass\r\n\r\n"
+        h_fail = b"Authentication-Results: m8i.io; dkim=fail; spf=pass; dmarc=pass\r\n\r\n"
+        chunks = (
+            _record(1, 100, h_pass)
+            + _record(2, 101, h_fail)
+            + b"r0001 OK FETCH completed\r\n"
+        )
+        parser = _imap_responses.FetchResponseParser()
+        parser.feed(chunks)
+        records = parser.take_fetched()
+        assert [uid for uid, _ in records] == [100, 101]
+
+    def test_split_across_feeds(self):
+        blob = b"Authentication-Results: m8i.io; dkim=pass; spf=pass; dmarc=pass\r\n\r\n"
+        full = (
+            b"* 1 FETCH (UID 12 BODY[HEADER.FIELDS (AUTHENTICATION-RESULTS)] {"
+            + str(len(blob)).encode() + b"}\r\n"
+            + blob
+            + b")\r\n"
+            b"r0001 OK FETCH completed\r\n"
+        )
+        parser = _imap_responses.FetchResponseParser()
+        # Feed in awkward 7-byte chunks.
+        for i in range(0, len(full), 7):
+            parser.feed(full[i:i + 7])
+        records = parser.take_fetched()
+        assert len(records) == 1
+        assert records[0][0] == 12
+
+
+# ── End-to-end filtering ───────────────────────────────
+
+
+@dataclass
+class _FakeMessage:
+    uid: int
+    authres: str  # the inside of the Authentication-Results header
+
+
+async def _start_filtering_upstream(
+    messages: list[_FakeMessage],
+    *,
+    expected_user: str = "real-user@example.com",
+    expected_pass: str = "real-app-password",
+) -> tuple[asyncio.AbstractServer, int, "list[bytes]"]:
+    """Fake upstream that handles LOGIN, EXAMINE, SEARCH ALL, and
+    UID FETCH ... BODY[HEADER.FIELDS (Authentication-Results)].
+
+    Returns (server, port, recorded_commands). One server instance can
+    serve multiple connections (the relay opens a side-channel one for
+    its own header fetches in addition to the main client connection).
+    """
+    recorded: list[bytes] = []
+
+    by_uid = {m.uid: m for m in messages}
+
+    async def _handle(reader, writer):
+        try:
+            writer.write(b"* OK [CAPABILITY IMAP4rev1] fake ready\r\n")
+            await writer.drain()
+            authed = False
+            while True:
+                line = await reader.readline()
+                if not line:
+                    return
+                recorded.append(line)
+                parts = line.split(b" ", 2)
+                if len(parts) < 2:
+                    continue
+                tag = parts[0]
+                cmd = parts[1].rstrip(b"\r\n").upper()
+                rest = parts[2].rstrip(b"\r\n") if len(parts) >= 3 else b""
+
+                if cmd == b"LOGIN":
+                    sp = rest.split(b" ", 1)
+                    user = sp[0].strip(b'"').decode()
+                    pwd = (
+                        sp[1].strip(b'"').decode() if len(sp) > 1 else ""
+                    )
+                    if user == expected_user and pwd == expected_pass:
+                        writer.write(tag + b" OK LOGIN ok\r\n")
+                        authed = True
+                    else:
+                        writer.write(tag + b" NO bad creds\r\n")
+                    await writer.drain()
+                    continue
+                if not authed:
+                    writer.write(tag + b" BAD must auth\r\n")
+                    await writer.drain()
+                    continue
+                if cmd == b"EXAMINE" or cmd == b"SELECT":
+                    writer.write(b"* " + str(len(messages)).encode()
+                                 + b" EXISTS\r\n")
+                    writer.write(tag + b" OK EXAMINE done\r\n")
+                    await writer.drain()
+                    continue
+                if cmd == b"SEARCH" or (
+                    cmd == b"UID" and rest.upper().startswith(b"SEARCH")
+                ):
+                    uids = sorted(by_uid)
+                    if uids:
+                        writer.write(
+                            b"* SEARCH " + b" ".join(
+                                str(u).encode() for u in uids
+                            ) + b"\r\n"
+                        )
+                    else:
+                        writer.write(b"* SEARCH\r\n")
+                    writer.write(tag + b" OK SEARCH done\r\n")
+                    await writer.drain()
+                    continue
+                if cmd == b"UID" and rest.upper().startswith(b"FETCH"):
+                    after = rest.split(b" ", 1)[1] if b" " in rest else b""
+                    uid_set = after.split(b" ", 1)[0]
+                    target_uids: list[int] = []
+                    for tok in uid_set.split(b","):
+                        try:
+                            target_uids.append(int(tok))
+                        except ValueError:
+                            pass
+                    for uid in target_uids:
+                        msg = by_uid.get(uid)
+                        if msg is None:
+                            continue
+                        body = (
+                            f"Authentication-Results: {msg.authres}\r\n\r\n"
+                        ).encode()
+                        prefix = (
+                            f"* {uid} FETCH (UID {uid} BODY[HEADER.FIELDS "
+                            f"(AUTHENTICATION-RESULTS)] ".encode()
+                            + b"{" + str(len(body)).encode() + b"}\r\n"
+                        )
+                        writer.write(prefix + body + b")\r\n")
+                    writer.write(tag + b" OK FETCH done\r\n")
+                    await writer.drain()
+                    continue
+                if cmd == b"LOGOUT":
+                    writer.write(b"* BYE\r\n")
+                    writer.write(tag + b" OK LOGOUT\r\n")
+                    await writer.drain()
+                    return
+                # Anything else: respond OK so capability/noop/etc. work.
+                writer.write(tag + b" OK " + cmd + b" done\r\n")
+                await writer.drain()
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    return server, port, recorded
+
+
+def _filter_relay_entry(upstream_port: int) -> dict:
+    return {
+        "name": "filter-imap",
+        "type": "imap",
+        "listen": "127.0.0.1:0",
+        "upstream": {
+            "host": "127.0.0.1",
+            "port": upstream_port,
+            "tls": False,
+        },
+        "auth": {
+            "type": "imap-login",
+            "user_source": "env:TEST_IMAP_USER",
+            "password_source": "env:TEST_IMAP_PASS",
+        },
+        "policy": {
+            "require_authentication": True,
+            "conn_rate_limit": "30/min",
+        },
+    }
+
+
+async def _read_search_then_ok(
+    reader: asyncio.StreamReader, tag: bytes,
+) -> tuple[list[int], bytes]:
+    """Read until the tagged response, returning (uids, tagged_line)."""
+    uids: list[int] = []
+    while True:
+        line = await reader.readline()
+        if not line:
+            raise EOFError
+        s = _imap_responses.parse_search_response_line(line)
+        if s is not None:
+            uids = s
+            continue
+        if line.startswith(tag + b" "):
+            return uids, line
+
+
+class TestRequireAuthentication:
+    """Verify the inbound message inspector filters SEARCH responses."""
+
+    def test_filters_failing_dkim(self):
+        async def _go():
+            messages = [
+                _FakeMessage(10, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+                _FakeMessage(11, "m8i.io; dkim=fail; spf=pass; dmarc=pass"),
+                _FakeMessage(12, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()  # PREAUTH
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids, ok = await _read_search_then_ok(reader, b"a2")
+                        assert b" OK " in ok
+                        assert uids == [10, 12]
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_filters_missing_authentication_results_header(self):
+        async def _go():
+            messages = [
+                _FakeMessage(10, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+                _FakeMessage(11, ""),  # empty header value → fail closed
+                _FakeMessage(12, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids, _ok = await _read_search_then_ok(reader, b"a2")
+                        assert uids == [10, 12]
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_passes_when_all_messages_pass(self):
+        async def _go():
+            messages = [
+                _FakeMessage(20, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+                _FakeMessage(21, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids, _ok = await _read_search_then_ok(reader, b"a2")
+                        assert uids == [20, 21]
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_drops_all_when_all_fail(self):
+        async def _go():
+            messages = [
+                _FakeMessage(30, "m8i.io; dkim=fail; spf=pass; dmarc=pass"),
+                _FakeMessage(31, "m8i.io; dkim=pass; spf=fail; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids, ok = await _read_search_then_ok(reader, b"a2")
+                        assert b" OK " in ok
+                        assert uids == []
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_repeated_search_uses_per_session_cache(self):
+        """A second SEARCH for the same UIDs must NOT trigger a second
+        side-channel UID FETCH — verdicts are cached per session."""
+        async def _go():
+            messages = [
+                _FakeMessage(40, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+                _FakeMessage(41, "m8i.io; dkim=fail; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, recorded = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids1, _ = await _read_search_then_ok(reader, b"a2")
+                        writer.write(b"a3 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids2, _ = await _read_search_then_ok(reader, b"a3")
+                        assert uids1 == [40] == uids2
+                # Side-channel UID FETCH appeared exactly once.
+                fetches = [
+                    c for c in recorded
+                    if b" UID " in c and b"FETCH" in c.upper()
+                    and b"BODY.PEEK" in c.upper()
+                ]
+                assert len(fetches) == 1, fetches
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_sequence_numbered_fetch_rejected(self):
+        async def _go():
+            messages = [
+                _FakeMessage(10, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 FETCH 1:* (UID)\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a2")
+                        assert b" NO " in line
+                        assert b"UID" in line
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_sequence_numbered_store_rejected(self):
+        async def _go():
+            messages = [
+                _FakeMessage(10, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 STORE 1 +FLAGS \\Seen\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a2")
+                        assert b" NO " in line
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_uid_fetch_passes_through_unchanged(self):
+        """UID FETCH for a known-passing UID must return real data —
+        the relay only filters SEARCH, FETCH responses are pass-through.
+        """
+        async def _go():
+            messages = [
+                _FakeMessage(50, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids, _ = await _read_search_then_ok(reader, b"a2")
+                        assert uids == [50]
+                        writer.write(
+                            b"a3 UID FETCH 50 (FLAGS)\r\n"
+                        )
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a3")
+                        assert b" OK " in line
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_disabled_by_default_no_filter(self):
+        """With require_authentication unset, SEARCH responses are
+        verbatim-forwarded — failing UIDs are visible."""
+        async def _go():
+            messages = [
+                _FakeMessage(60, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+                _FakeMessage(61, "m8i.io; dkim=fail; spf=pass; dmarc=pass"),
+            ]
+            up, up_port, _ = await _start_filtering_upstream(messages)
+            try:
+                entry = _relay_entry(up_port)  # no require_authentication
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids, _ = await _read_search_then_ok(reader, b"a2")
+                        assert uids == [60, 61]
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_sidechannel_fetch_failure_drops_all(self):
+        """If the side-channel can't reach upstream (broken connection,
+        bad credentials), every UID in the batch is dropped — fail closed."""
+        async def _go():
+            # Upstream that accepts the main connection's LOGIN+SEARCH
+            # but refuses LOGIN on side-channel connections (after the
+            # first one).
+            login_count = [0]
+            messages = [
+                _FakeMessage(70, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            by_uid = {m.uid: m for m in messages}
+
+            async def _handle(reader, writer):
+                try:
+                    writer.write(
+                        b"* OK [CAPABILITY IMAP4rev1] fake ready\r\n"
+                    )
+                    await writer.drain()
+                    line = await reader.readline()
+                    if not line:
+                        return
+                    parts = line.split(b" ", 2)
+                    tag = parts[0]
+                    cmd = parts[1].rstrip(b"\r\n").upper()
+                    if cmd != b"LOGIN":
+                        writer.write(tag + b" BAD\r\n")
+                        await writer.drain()
+                        return
+                    login_count[0] += 1
+                    if login_count[0] > 1:
+                        writer.write(tag + b" NO bad creds\r\n")
+                        await writer.drain()
+                        return
+                    writer.write(tag + b" OK LOGIN ok\r\n")
+                    await writer.drain()
+                    while True:
+                        line = await reader.readline()
+                        if not line:
+                            return
+                        parts = line.split(b" ", 2)
+                        tag = parts[0]
+                        cmd = parts[1].rstrip(b"\r\n").upper()
+                        rest = parts[2].rstrip(b"\r\n") if len(parts) >= 3 else b""
+                        if cmd in (b"EXAMINE", b"SELECT"):
+                            writer.write(b"* 1 EXISTS\r\n")
+                            writer.write(tag + b" OK done\r\n")
+                            await writer.drain()
+                            continue
+                        if cmd == b"UID" and rest.upper().startswith(b"SEARCH"):
+                            uids = sorted(by_uid)
+                            writer.write(
+                                b"* SEARCH " + b" ".join(
+                                    str(u).encode() for u in uids
+                                ) + b"\r\n"
+                            )
+                            writer.write(tag + b" OK done\r\n")
+                            await writer.drain()
+                            continue
+                        writer.write(tag + b" OK\r\n")
+                        await writer.drain()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+                finally:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+            up = await asyncio.start_server(_handle, "127.0.0.1", 0)
+            up_port = up.sockets[0].getsockname()[1]
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 EXAMINE INBOX\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                        writer.write(b"a2 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        uids, ok = await _read_search_then_ok(reader, b"a2")
+                        # Side-channel can't auth → no verdicts → drop all.
+                        assert uids == []
+                        assert b" OK " in ok
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
+
+    def test_capabilities_strip_esearch_when_filtering(self):
+        async def _go():
+            messages = [
+                _FakeMessage(80, "m8i.io; dkim=pass; spf=pass; dmarc=pass"),
+            ]
+            # Override the greeting to advertise ESEARCH so we can check
+            # the relay strips it.
+            recorded: list[bytes] = []
+
+            async def _handle(reader, writer):
+                try:
+                    writer.write(
+                        b"* OK [CAPABILITY IMAP4rev1 ESEARCH IDLE] ready\r\n"
+                    )
+                    await writer.drain()
+                    line = await reader.readline()
+                    recorded.append(line)
+                    parts = line.split(b" ", 2)
+                    tag = parts[0]
+                    writer.write(tag + b" OK LOGIN ok\r\n")
+                    await writer.drain()
+                    while True:
+                        line = await reader.readline()
+                        if not line:
+                            return
+                        recorded.append(line)
+                        parts = line.split(b" ", 2)
+                        tag = parts[0]
+                        writer.write(tag + b" OK\r\n")
+                        await writer.drain()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+                finally:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+            up = await asyncio.start_server(_handle, "127.0.0.1", 0)
+            up_port = up.sockets[0].getsockname()[1]
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, _writer):
+                        greeting = await reader.readline()
+                        assert greeting.startswith(b"* PREAUTH")
+                        # ESEARCH must be absent from the relay's
+                        # advertised capability list.
+                        assert b"ESEARCH" not in greeting
+                        # IDLE remains.
+                        assert b"IDLE" in greeting
+            finally:
+                up.close()
+                await up.wait_closed()
+        _run(_go())
