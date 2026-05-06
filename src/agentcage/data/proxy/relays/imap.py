@@ -67,6 +67,69 @@ _STRIPPED_CAPABILITIES = frozenset({"COMPRESS=DEFLATE"})
 # discover the allowlisted folders.
 _MAILBOX_ARG_COMMANDS = frozenset({"SELECT", "EXAMINE", "STATUS"})
 
+# Subcommands that must be UID-prefixed when require_authentication is
+# active. A sequence-numbered FETCH/STORE on ``1:*`` would bypass the
+# rewritten SEARCH (which only constrains UIDs the client learns through
+# a filtered SEARCH response). Forcing UID prefix means the client can
+# only act on UIDs the relay returned to it.
+_REQUIRE_UID_WHEN_FILTERING = frozenset({"FETCH", "STORE"})
+
+# IMAP literal-string trailer: ``{N}\r\n`` (synchronizing) or ``{N+}\r\n``
+# (non-synchronizing, RFC 7888). A SEARCH command line ending with this
+# means the criteria continue with a literal payload on subsequent reads.
+# We don't try to rewrite multi-line SEARCH commands — the server-side
+# filter is appended only when the entire command fits on one readline.
+_LITERAL_TRAIL_RE = re.compile(rb"\{\d+\+?\}\r?\n$")
+
+# The HEADER constraints we append to a SEARCH command when
+# require_authentication is on. IMAP search keys are implicit-AND by
+# juxtaposition (RFC 3501 §6.4.4), so appending narrows the result set
+# to messages that match the client's criteria AND have all three of
+# ``dkim=pass``, ``spf=pass``, and ``dmarc=pass`` somewhere in the
+# Authentication-Results header value. ``HEADER`` is a substring match
+# server-side; the result tokens of RFC 8601 (none/pass/fail/neutral/
+# softfail/temperror/permerror/policy) are a closed set with ``pass`` as
+# the only one starting with that string, so substring is precise enough
+# in practice.
+_AUTHRES_REQUIRED_CRITERIA = (
+    b' HEADER "Authentication-Results" "dkim=pass"'
+    b' HEADER "Authentication-Results" "spf=pass"'
+    b' HEADER "Authentication-Results" "dmarc=pass"'
+)
+
+
+def _is_search_line(line: bytes) -> bool:
+    """Return True iff *line* is an untagged ``SEARCH`` or ``UID SEARCH``
+    command. Used to decide whether to rewrite the line."""
+    parts = line.split(None, 2)
+    if len(parts) < 2:
+        return False
+    cmd = parts[1].rstrip(b"\r\n").upper()
+    if cmd == b"SEARCH":
+        return True
+    if cmd == b"UID" and len(parts) >= 3:
+        sub = parts[2].split(None, 1)[0].rstrip(b"\r\n").upper()
+        return sub == b"SEARCH"
+    return False
+
+
+def _is_literal_continued(line: bytes) -> bool:
+    """Return True iff *line* ends with an IMAP literal marker, meaning
+    the command continues with the literal payload on subsequent reads.
+    """
+    return bool(_LITERAL_TRAIL_RE.search(line))
+
+
+def _rewrite_search_with_authres(line: bytes) -> bytes:
+    """Append the auth-results HEADER criteria to a single-line SEARCH
+    command. Caller must verify ``not _is_literal_continued(line)``.
+    """
+    if line.endswith(b"\r\n"):
+        return line[:-2] + _AUTHRES_REQUIRED_CRITERIA + b"\r\n"
+    if line.endswith(b"\n"):
+        return line[:-1] + _AUTHRES_REQUIRED_CRITERIA + b"\n"
+    return line + _AUTHRES_REQUIRED_CRITERIA + b"\r\n"
+
 
 _RATE_LIMIT_RE = re.compile(r"^\s*(\d+)\s*/\s*(sec|s|min|m|hour|h)\s*$")
 _RATE_UNIT_SECS = {"sec": 1, "s": 1, "min": 60, "m": 60, "hour": 3600, "h": 3600}
@@ -146,6 +209,17 @@ class _RelayConfig:
         self.idle_timeout_seconds: int = int(
             policy.get("idle_timeout_seconds", 1800)
         )
+        # Inbound message authentication: rewrite SEARCH commands to
+        # require dkim/spf/dmarc =pass on Authentication-Results, and
+        # block sequence-numbered FETCH/STORE so the cage cannot
+        # bypass the SEARCH filter by referencing messages by position.
+        # Default on — most upstream MTAs stamp Authentication-Results
+        # and the cage shouldn't act on mail that failed authentication
+        # at the receiving boundary. Set false for relays whose upstream
+        # doesn't stamp the header or where filtering is undesirable.
+        self.require_authentication: bool = bool(
+            policy.get("require_authentication", True)
+        )
 
 
 class ImapRelay:
@@ -191,13 +265,14 @@ class ImapRelay:
         )
         log.info(
             "imap relay %s listening on %s -> %s:%d (readonly=%s, "
-            "folders=%s)",
+            "folders=%s, require_authentication=%s)",
             self._cfg.name,
             self._cfg.listen,
             self._cfg.upstream_host,
             self._cfg.upstream_port,
             self._cfg.readonly,
             self._cfg.folder_allowlist or "(any)",
+            self._cfg.require_authentication,
         )
 
     async def stop(self) -> None:
@@ -509,16 +584,69 @@ class ImapRelay:
             if not line:
                 return
             decision = self._policy_check(line)
-            if decision is None:
-                upstream_writer.write(line)
-                await upstream_writer.drain()
+            if decision is not None:
+                tag, reason, fake_status = decision
+                client_writer.write(
+                    tag + b" " + fake_status + b" "
+                    + reason.encode() + b"\r\n"
+                )
+                await client_writer.drain()
                 continue
 
-            tag, reason, fake_status = decision
+            line = await self._maybe_rewrite(line, client_writer)
+            if line is None:
+                # Already responded to the client (deny path inside the
+                # rewrite — e.g. literal-continued SEARCH).
+                continue
+            upstream_writer.write(line)
+            await upstream_writer.drain()
+
+    async def _maybe_rewrite(
+        self,
+        line: bytes,
+        client_writer: asyncio.StreamWriter,
+    ) -> Optional[bytes]:
+        """Apply inbound-filter rewrites to *line* before it goes upstream.
+
+        Returns the (possibly rewritten) line for the caller to forward,
+        or ``None`` if the relay has already responded to the client and
+        the line should not be forwarded at all.
+        """
+        if not self._cfg.require_authentication:
+            return line
+        if not _is_search_line(line):
+            return line
+        if _is_literal_continued(line):
+            tag = line.split(None, 1)[0]
+            log.warning(
+                "imap relay %s: blocked SEARCH with literal continuation "
+                "(require_authentication: only single-line SEARCH supported)",
+                self._cfg.name,
+            )
+            self._audit_log({
+                "kind": "imap_command",
+                "relay": self._cfg.name,
+                "command": "SEARCH",
+                "decision": "blocked",
+                "reason": (
+                    "SEARCH with literal continuation not supported "
+                    "under require_authentication"
+                ),
+            })
             client_writer.write(
-                tag + b" " + fake_status + b" " + reason.encode() + b"\r\n"
+                tag + b" NO SEARCH with literal continuation not "
+                b"permitted under require_authentication\r\n"
             )
             await client_writer.drain()
+            return None
+
+        rewritten = _rewrite_search_with_authres(line)
+        self._audit_log({
+            "kind": "imap_search_rewritten",
+            "relay": self._cfg.name,
+            "reason": "require_authentication",
+        })
+        return rewritten
 
     async def _pipe_upstream_to_client(
         self,
@@ -603,6 +731,36 @@ class ImapRelay:
                     f"{effective_cmd} not permitted (readonly)",
                     b"NO",
                 )
+
+        # Inbound-filter policy: when require_authentication is on, the
+        # only UIDs the client should know about are those the rewritten
+        # SEARCH returned. Sequence-numbered FETCH/STORE references
+        # messages by position, bypassing the filter; reject so the cage
+        # has to use UID FETCH / UID STORE on UIDs it learned legitimately.
+        if (
+            self._cfg.require_authentication
+            and cmd in _REQUIRE_UID_WHEN_FILTERING
+        ):
+            log.warning(
+                "imap relay %s: blocked sequence-numbered %s "
+                "(require_authentication: UID prefix required)",
+                self._cfg.name, cmd,
+            )
+            self._audit_log({
+                "kind": "imap_command",
+                "relay": self._cfg.name,
+                "command": cmd,
+                "decision": "blocked",
+                "reason": (
+                    "UID-prefix required when require_authentication is on"
+                ),
+            })
+            return (
+                tag,
+                f"{cmd} not permitted without UID prefix "
+                f"(require_authentication active)",
+                b"NO",
+            )
 
         if (
             cmd in _MAILBOX_ARG_COMMANDS

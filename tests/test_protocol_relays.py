@@ -962,3 +962,364 @@ class TestImapIdleTimeout:
                 await silent.wait_closed()
 
         _run(_go())
+
+
+# ── require_authentication: SEARCH command rewrite ──────
+
+
+from relays.imap import (
+    _AUTHRES_REQUIRED_CRITERIA,
+    _is_literal_continued,
+    _is_search_line,
+    _rewrite_search_with_authres,
+)
+
+
+class TestIsSearchLine:
+    def test_plain_search(self):
+        assert _is_search_line(b"a1 SEARCH UNSEEN\r\n") is True
+
+    def test_uid_search(self):
+        assert _is_search_line(b"a1 UID SEARCH ALL\r\n") is True
+
+    def test_lowercase(self):
+        assert _is_search_line(b"a1 uid search all\r\n") is True
+
+    def test_uid_fetch_is_not_search(self):
+        assert _is_search_line(b"a1 UID FETCH 1 (FLAGS)\r\n") is False
+
+    def test_fetch(self):
+        assert _is_search_line(b"a1 FETCH 1 (FLAGS)\r\n") is False
+
+    def test_select(self):
+        assert _is_search_line(b"a1 SELECT INBOX\r\n") is False
+
+    def test_too_short(self):
+        assert _is_search_line(b"a1\r\n") is False
+
+
+class TestIsLiteralContinued:
+    def test_synchronizing_literal(self):
+        assert _is_literal_continued(b"a1 SEARCH SUBJECT {12}\r\n") is True
+
+    def test_non_synchronizing_literal(self):
+        assert _is_literal_continued(b"a1 SEARCH SUBJECT {12+}\r\n") is True
+
+    def test_no_literal(self):
+        assert _is_literal_continued(b"a1 SEARCH UNSEEN\r\n") is False
+
+    def test_literal_in_middle_not_at_end(self):
+        # IMAP literals are command continuations — they're always at
+        # end-of-line. A {N} mid-line that isn't followed by CRLF isn't
+        # a continuation marker.
+        assert _is_literal_continued(b'a1 SEARCH HEADER "X" "{12}"\r\n') is False
+
+
+class TestRewriteSearchWithAuthres:
+    def test_appends_constraints_before_crlf(self):
+        rewritten = _rewrite_search_with_authres(b"a1 UID SEARCH UNSEEN\r\n")
+        assert rewritten.endswith(b"\r\n")
+        assert _AUTHRES_REQUIRED_CRITERIA in rewritten
+        assert rewritten.startswith(b"a1 UID SEARCH UNSEEN")
+
+    def test_appends_when_only_lf(self):
+        # Tolerant of bare LF for tests/manual entry; the relay always
+        # gets CRLF over the wire from real clients.
+        rewritten = _rewrite_search_with_authres(b"a1 SEARCH ALL\n")
+        assert rewritten.endswith(b"\n")
+        assert _AUTHRES_REQUIRED_CRITERIA in rewritten
+
+    def test_three_separate_header_clauses(self):
+        rewritten = _rewrite_search_with_authres(b"a1 UID SEARCH ALL\r\n")
+        assert rewritten.count(b'HEADER "Authentication-Results"') == 3
+        assert b'"dkim=pass"' in rewritten
+        assert b'"spf=pass"' in rewritten
+        assert b'"dmarc=pass"' in rewritten
+
+
+# ── End-to-end SEARCH-rewrite ───────────────────────────
+
+
+def _filter_relay_entry(upstream_port: int, **overrides) -> dict:
+    """A relay entry with require_authentication explicit. The default is
+    True now, but tests prefer to be explicit so the intent is clear."""
+    entry = _relay_entry(upstream_port)
+    entry["policy"]["require_authentication"] = True
+    entry["policy"].update(overrides)
+    return entry
+
+
+class TestSearchRewriteOnTheWire:
+    """Verify the SEARCH command upstream actually saw the appended
+    HEADER criteria."""
+
+    def test_uid_search_unseen_rewritten(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()  # PREAUTH
+                        writer.write(b"a1 UID SEARCH UNSEEN\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                # Upstream's recorded line must contain all three HEADER
+                # constraints, AND'd to the original criteria.
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID SEARCH" in c.upper()
+                )
+                assert b"UNSEEN" in forwarded
+                assert b'HEADER "Authentication-Results" "dkim=pass"' in forwarded
+                assert b'HEADER "Authentication-Results" "spf=pass"' in forwarded
+                assert b'HEADER "Authentication-Results" "dmarc=pass"' in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_plain_search_also_rewritten(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 SEARCH ALL\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                forwarded = next(
+                    c for c in recorder.commands
+                    if c.upper().startswith(b"A1 SEARCH")
+                )
+                assert b"ALL" in forwarded.upper()
+                assert b'"dkim=pass"' in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_existing_criteria_preserved(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(
+                            b'a1 UID SEARCH OR FROM "x@y.com" SUBJECT "hi" UNSEEN\r\n'
+                        )
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID SEARCH" in c.upper()
+                )
+                # Original criteria intact, ours appended.
+                assert b'OR FROM "x@y.com" SUBJECT "hi" UNSEEN' in forwarded
+                assert forwarded.find(
+                    b'HEADER "Authentication-Results"'
+                ) > forwarded.find(b"UNSEEN")
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_search_with_literal_continuation_rejected(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        # Continuation literal — the criterion would
+                        # arrive on the next read. We block this whole
+                        # form because rewriting would corrupt the
+                        # multi-line command.
+                        writer.write(b"a1 UID SEARCH SUBJECT {5}\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                        assert b" NO " in line
+                        assert b"literal" in line.lower()
+                # Upstream never saw it.
+                for c in recorder.commands:
+                    assert b"UID SEARCH" not in c.upper(), c
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_disabled_passes_search_through_unmodified(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                entry = _relay_entry(up_port)
+                entry["policy"]["require_authentication"] = False
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 UID SEARCH UNSEEN\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID SEARCH" in c.upper()
+                )
+                # No rewrite — exact command on the wire.
+                assert forwarded.strip() == b"a1 UID SEARCH UNSEEN"
+                assert b"Authentication-Results" not in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_default_is_on(self):
+        """The relay defaults require_authentication=True; an entry
+        that omits the field still gets the rewrite."""
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                # _relay_entry() omits require_authentication entirely.
+                async with _running_relay(_relay_entry(up_port)) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 UID SEARCH ALL\r\n")
+                        await writer.drain()
+                        await _read_until_tag(reader, b"a1")
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID SEARCH" in c.upper()
+                )
+                assert b'"dkim=pass"' in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+
+class TestSequenceFetchStoreBlock:
+    """Sequence-numbered FETCH/STORE bypass the SEARCH filter (since
+    they reference messages by position, not UIDs the filtered SEARCH
+    returned). Reject at the policy layer."""
+
+    def test_sequence_fetch_rejected_when_filter_on(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 FETCH 1:* (UID)\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                        assert b" NO " in line
+                        assert b"UID" in line
+                # Upstream never saw the command.
+                for c in recorder.commands:
+                    assert not c.upper().startswith(b"A1 FETCH"), c
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_sequence_store_rejected_when_filter_on(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 STORE 1 +FLAGS \\Seen\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                        assert b" NO " in line
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_uid_fetch_passes_through(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_filter_relay_entry(up_port)) as (
+                    _, port,
+                ):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 UID FETCH 1 (FLAGS)\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                        assert line.startswith(b"a1 OK"), line
+                forwarded = next(
+                    c for c in recorder.commands
+                    if b"UID FETCH" in c.upper()
+                )
+                assert b"UID FETCH 1" in forwarded
+                # Not rewritten.
+                assert b"Authentication-Results" not in forwarded
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
+
+    def test_sequence_fetch_allowed_when_filter_off(self):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password",
+            )
+            try:
+                entry = _relay_entry(up_port)
+                entry["policy"]["require_authentication"] = False
+                async with _running_relay(entry) as (_, port):
+                    async with _imap_client(port) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 FETCH 1 (FLAGS)\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                        # Fake upstream OKs everything.
+                        assert line.startswith(b"a1 OK"), line
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        _run(_go())
