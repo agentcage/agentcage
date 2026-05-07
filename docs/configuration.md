@@ -15,6 +15,7 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 - [Restart policy and timeouts](#restart-policy-and-timeouts)
 - [Secret injection](#secret-injection-secret_injection)
 - [Domain filtering](#domain-filtering-domains)
+- [Proxy audit ports](#proxy-audit-ports-proxy)
 - [Secret detection](#secret-detection-secrets)
 - [Inspectors](#inspectors)
   - [Built-in inspectors](#built-in-inspectors)
@@ -467,6 +468,23 @@ domains:
   list:
     - api.anthropic.com
 ```
+
+---
+
+## Proxy audit ports (`proxy:`)
+
+`proxy.audit_ports` selects the TCP destination ports the proxy container REDIRECTs into mitmdump's transparent listener. Ports outside this list still reach their destination via L3 forwarding but skip `audit.jsonl`, the inspector chain, and the secret injector.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `audit_ports` | `list[int]` | `[80, 443]` | TCP ports to redirect to mitmdump's transparent listener. Extend to audit non-standard services (e.g. add `8448` for a Matrix homeserver). Reserved ports (`8443`, `8080`, any `protocol_relays[*].listen` port) are rejected. Empty list disables transparent capture. |
+
+```yaml
+proxy:
+  audit_ports: [80, 443, 8448]   # extend to capture matrix federation
+```
+
+See [`docs/proxy-audit-ports.md`](proxy-audit-ports.md) for the full discussion (worked example, reserved-port rationale, inspector noise on extended ports, the L4-vs-L7 trade-off).
 
 ---
 

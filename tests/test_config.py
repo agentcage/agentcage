@@ -900,3 +900,191 @@ class TestDomainConfigNewFormat:
         # Should warn about passthrough but NOT about uncovered domain
         assert any("passthrough bypasses TLS" in w for w in warnings)
         assert not any("not in the allow list" in w for w in warnings)
+
+
+class TestProxyConfig:
+    """proxy.audit_ports controls which TCP destination ports the proxy
+    container REDIRECTs into mitmdump's transparent listener. Default
+    keeps the historical [80, 443] coverage; adding more ports extends
+    audit visibility to non-standard services (e.g. 8448 for Matrix)."""
+
+    def test_default_audit_ports(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        assert cfg.proxy.audit_ports == [80, 443]
+
+    def test_custom_audit_ports(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [80, 443, 8448]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.proxy.audit_ports == [80, 443, 8448]
+        # Should validate without raising
+        validate_config(cfg)
+
+    def test_audit_ports_preserves_order(self, tmp_path):
+        """Operator-supplied order is preserved (matters for iptables
+        rule order — earlier rules match first)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [8448, 443, 80]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.proxy.audit_ports == [8448, 443, 80]
+
+    def test_empty_audit_ports_emits_warning(self, tmp_path):
+        """Empty list is a deliberate operator opt-out (L7-only). Surface
+        it as a warning so the posture change is visible."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: []
+        """))
+        cfg = load_config(str(p))
+        assert cfg.proxy.audit_ports == []
+        warnings = validate_config(cfg)
+        assert any(
+            "transparent capture disabled" in w for w in warnings
+        )
+
+    def test_audit_port_8443_rejected(self, tmp_path):
+        """8443 is mitmdump's transparent listener; redirecting to it
+        from itself would loop."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [80, 8443]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"8443.*reserved by mitmdump"):
+            validate_config(cfg)
+
+    def test_audit_port_8080_rejected(self, tmp_path):
+        """8080 is mitmdump's HTTP-proxy listener; redirecting it would
+        break the L7 HTTP_PROXY path."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [80, 8080]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"8080.*reserved by mitmdump"):
+            validate_config(cfg)
+
+    def test_audit_port_out_of_range_low(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [0]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"out of range"):
+            validate_config(cfg)
+
+    def test_audit_port_out_of_range_high(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [65536]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"out of range"):
+            validate_config(cfg)
+
+    def test_audit_port_non_integer_rejected(self, tmp_path):
+        """YAML strings/booleans/floats are rejected explicitly so a
+        typo like '443' (string) doesn't silently coerce."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports:
+                - "443"
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"must be integers"):
+            validate_config(cfg)
+
+    def test_audit_port_boolean_rejected(self, tmp_path):
+        """`true` is `int` in Python — explicitly reject it so YAML
+        `audit_ports: [true, 443]` doesn't silently become [1, 443]."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports:
+                - true
+                - 443
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"must be integers"):
+            validate_config(cfg)
+
+    def test_audit_port_duplicate_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [80, 443, 80]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"appears more than once"):
+            validate_config(cfg)
+
+    def test_audit_port_collides_with_relay_listen(self, tmp_path):
+        """A REDIRECT for a relay's listen port would intercept connections
+        meant for the in-process relay handler."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              podman_secrets:
+                - MIGADU_USER
+                - MIGADU_PASSWORD
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "0.0.0.0:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "podman:MIGADU_USER"
+                  password_source: "podman:MIGADU_PASSWORD"
+            proxy:
+              audit_ports: [80, 443, 1143]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"collides with protocol_relays"):
+            validate_config(cfg)

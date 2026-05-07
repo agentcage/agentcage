@@ -47,7 +47,9 @@ ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }}
 ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 1000:1000 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 1000:1000 "{{ capture_host_dir }}"{% endif %}'
 {% endif %}
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "printf '{% for srv in dns_servers %}nameserver {{ srv }}\n{% endfor %}' > /etc/resolv.conf"
-ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8443 && iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8443"
+{% if audit_ports %}
+ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "{% for port in audit_ports %}iptables -t nat -A PREROUTING -p tcp --dport {{ port }} -j REDIRECT --to-port 8443{% if not loop.last %} && {% endif %}{% endfor %}"
+{% endif %}
 Restart=on-failure
 
 [Install]

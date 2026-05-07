@@ -401,6 +401,84 @@ class TestProxyQuadlet:
         # Proxy should NOT use dnsmasq
         assert f"nameserver {addrs['ip_dns']}" not in content
 
+    def test_proxy_audit_ports_default(self, minimal_yaml):
+        """Default audit_ports preserves the [80, 443] redirects."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "--dport 80 -j REDIRECT --to-port 8443" in content
+        assert "--dport 443 -j REDIRECT --to-port 8443" in content
+        # Non-default ports must not appear unless requested.
+        assert "--dport 8448" not in content
+
+    def test_proxy_audit_ports_custom(self, tmp_path):
+        """Custom audit_ports list emits one rule per port, single &&-chain."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [80, 443, 8448]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        for port in (80, 443, 8448):
+            assert f"--dport {port} -j REDIRECT --to-port 8443" in content
+        # Single ExecStartPost line with chained rules — keeps service start
+        # atomic (all-or-nothing) so partial-rule states are impossible.
+        iptables_lines = [
+            line for line in content.splitlines()
+            if "iptables -t nat -A PREROUTING" in line
+        ]
+        assert len(iptables_lines) == 1
+        assert iptables_lines[0].count("iptables -t nat -A PREROUTING") == 3
+
+    def test_proxy_audit_ports_single(self, tmp_path):
+        """Single-port list emits one rule with no trailing &&."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: [443]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        iptables_lines = [
+            line for line in content.splitlines()
+            if "iptables -t nat -A PREROUTING" in line
+        ]
+        assert len(iptables_lines) == 1
+        assert "--dport 443 -j REDIRECT --to-port 8443" in iptables_lines[0]
+        assert "--dport 80" not in iptables_lines[0]
+        # No trailing && when there is exactly one rule.
+        assert not iptables_lines[0].rstrip().endswith("&&\"")
+
+    def test_proxy_audit_ports_empty_disables_redirect(self, tmp_path):
+        """Empty audit_ports omits the iptables ExecStartPost entirely.
+
+        This is the operator opt-out for L7-only setups (e.g. cages that
+        rely solely on HTTP_PROXY-aware apps for audit). Validation
+        emits a warning when this is detected; the quadlet must reflect
+        the explicit choice by NOT installing any PREROUTING rule.
+        """
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: []
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "iptables -t nat -A PREROUTING" not in content
+
 
 class TestCageQuadlet:
     def test_cage_basics(self, minimal_yaml):

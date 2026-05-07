@@ -123,6 +123,29 @@ class CaptureConfig:
     exclude_domains: list[str] = field(default_factory=list)
 
 
+# TCP destination ports the proxy container REDIRECTs into mitmdump's
+# transparent listener. Default catches HTTP/HTTPS on standard ports;
+# extend (e.g. add 8448 for a Matrix homeserver) to audit non-standard
+# services. Ports outside this list are still routed via the cage's
+# default route (the proxy container's IP) but are L3-forwarded without
+# inspection — they reach the destination but never appear in audit.jsonl,
+# the inspector chain, or the secret injector.
+DEFAULT_AUDIT_PORTS = (80, 443)
+
+# Reserved by mitmdump's own listeners; redirecting them would either
+# loop (8443 is the transparent listener's own port) or break the L7
+# HTTP_PROXY path (8080 is the regular HTTP-proxy listener).
+_MITMDUMP_RESERVED_PORTS = (8080, 8443)
+
+
+@dataclass
+class ProxyConfig:
+    """Cage proxy / transparent capture settings."""
+    audit_ports: list[int] = field(
+        default_factory=lambda: list(DEFAULT_AUDIT_PORTS)
+    )
+
+
 @dataclass
 class VmConfig:
     vcpus: int = 4
@@ -219,6 +242,7 @@ class Config:
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    proxy: ProxyConfig = field(default_factory=ProxyConfig)
     vm: VmConfig = field(default_factory=VmConfig)
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
@@ -515,6 +539,17 @@ def load_config(path: str) -> Config:
     cap.exclude_domains = list(cap_raw.get("exclude_domains") or [])
     cfg.capture = cap
 
+    # Proxy
+    px_raw = raw.get("proxy") or {}
+    px = ProxyConfig()
+    if "audit_ports" in px_raw:
+        # Preserve operator's order; cast to int for normal cases but defer
+        # type validation to validate_config so we report all bad entries
+        # together instead of failing on the first non-int.
+        raw_ports = px_raw["audit_ports"] or []
+        px.audit_ports = list(raw_ports)
+    cfg.proxy = px
+
     # Help text
     cfg.help = str(raw.get("help", "") or "")
 
@@ -611,6 +646,49 @@ def validate_config(config: Config) -> list[str]:
                     f"port {pn} out of range (1-65535) in port spec {port_spec!r}"
                 )
 
+    # Validate proxy.audit_ports — these become iptables PREROUTING REDIRECT
+    # rules in the proxy container. Reserved ports must be excluded because
+    # they collide with mitmdump's own listeners (8080 HTTP-proxy, 8443
+    # transparent) or with in-process listeners bound by protocol_relays.
+    seen_audit_ports: set[int] = set()
+    for entry in config.proxy.audit_ports:
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            raise ValueError(
+                f"proxy.audit_ports entries must be integers (got: {entry!r})"
+            )
+        if entry < 1 or entry > 65535:
+            raise ValueError(
+                f"proxy.audit_ports entry {entry} out of range (1-65535)"
+            )
+        if entry in _MITMDUMP_RESERVED_PORTS:
+            raise ValueError(
+                f"proxy.audit_ports entry {entry} is reserved by mitmdump "
+                f"(8080 = HTTP-proxy listener, 8443 = transparent listener); "
+                f"redirecting it would loop or break the L7 proxy path"
+            )
+        if entry in seen_audit_ports:
+            raise ValueError(
+                f"proxy.audit_ports entry {entry} appears more than once"
+            )
+        seen_audit_ports.add(entry)
+    # Cross-check against protocol_relays listen ports — those bind in the
+    # same proxy container, so a REDIRECT for the same port would steal
+    # connections away from the relay before it could see them.
+    for relay in config.protocol_relays:
+        host, _, port_s = relay.listen.rpartition(":")
+        if not port_s:
+            continue
+        try:
+            relay_port = int(port_s)
+        except ValueError:
+            continue
+        if relay_port in seen_audit_ports:
+            raise ValueError(
+                f"proxy.audit_ports entry {relay_port} collides with "
+                f"protocol_relays[{relay.name!r}].listen={relay.listen!r}; "
+                f"the REDIRECT would intercept connections meant for the relay"
+            )
+
     # Validate domain config
     if config.domains.allow and config.domains.block:
         raise ValueError(
@@ -618,6 +696,14 @@ def validate_config(config: Config) -> list[str]:
         )
 
     warnings = []
+
+    # Warn when transparent capture is fully disabled — only L7-aware
+    # traffic (apps that honor HTTP_PROXY) will be audited.
+    if not config.proxy.audit_ports:
+        warnings.append(
+            "proxy.audit_ports is empty: transparent capture disabled, "
+            "only L7 HTTP_PROXY-aware traffic will be audited"
+        )
 
     # Warn about passthrough implications
     if config.domains.passthrough:

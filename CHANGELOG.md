@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `proxy.audit_ports` config field selects the TCP destination ports the proxy container REDIRECTs into mitmdump's transparent listener. Default `[80, 443]` preserves the historical coverage; setting `proxy.audit_ports: [80, 443, 8448]` extends transparent capture to non-standard ports — useful for cages that talk to a Matrix homeserver, a non-443 webhook receiver, or any service running outside the conventional HTTP/HTTPS port pair. Pre-fix, traffic to a non-`80/443` destination was silently L3-forwarded by the proxy container without ever entering mitmdump's userspace, so it never reached `audit.jsonl`, the inspector chain, or the secret injector. The cage's domain allowlist still gated *which* hosts could be reached, but exfiltration on a permitted host over a non-standard port was unaudited. The new field is per-cage so extending one cage's audit surface doesn't widen others. Reserved ports (`8443` mitmdump transparent, `8080` mitmdump HTTP-proxy, any `protocol_relays[*].listen` port) are rejected by `validate_config` because each would conflict with an existing in-process listener inside the proxy container — a REDIRECT for an IMAP relay's port would steal connections from the relay handler before it could see them. Setting `proxy.audit_ports: []` disables transparent capture entirely (operator opt-out for L7-only setups); a config validation warning surfaces this as a deliberate posture change. See `docs/proxy-audit-ports.md` for the worked example and trade-off discussion.
+
 ## [0.14.3] - 2026-05-04
 
 ### Changed

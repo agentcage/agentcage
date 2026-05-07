@@ -335,6 +335,7 @@ def generate_quadlets(
         capture_host_dir=capture_host_dir,
         passthrough_regex=pt_regex,
         rootless=rootless,
+        audit_ports=config.proxy.audit_ports,
     )
 
     # Nested containers support
