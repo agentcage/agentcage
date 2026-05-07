@@ -1088,3 +1088,58 @@ class TestProxyConfig:
         cfg = load_config(str(p))
         with pytest.raises(ValueError, match=r"collides with protocol_relays"):
             validate_config(cfg)
+
+    def test_audit_port_collides_with_inbound_forward(self, tmp_path):
+        """For each container.ports inbound forward, the proxy container
+        runs an extra mitmdump reverse-mode listener on 0.0.0.0:<container_port>.
+        A REDIRECT for that port would intercept inbound connections
+        before the reverse listener could see them."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              ports:
+                - "0.0.0.0:9000:9000"
+            proxy:
+              audit_ports: [80, 443, 9000]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(
+            ValueError, match=r"collides with container\.ports inbound forward"
+        ):
+            validate_config(cfg)
+
+    def test_audit_port_collides_with_inbound_forward_short_spec(self, tmp_path):
+        """The 2-part port spec (HOST_PORT:CONTAINER_PORT) must also be
+        cross-checked against audit_ports."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              ports:
+                - "9000:9000"
+            proxy:
+              audit_ports: [80, 443, 9000]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(
+            ValueError, match=r"collides with container\.ports inbound forward"
+        ):
+            validate_config(cfg)
+
+    def test_audit_ports_must_be_list(self, tmp_path):
+        """A scalar audit_ports value (e.g. `audit_ports: 443`) should
+        produce a clean ValueError from load_config, not a TypeError
+        from list() iteration."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            proxy:
+              audit_ports: 443
+        """))
+        with pytest.raises(ValueError, match=r"must be a list of integers"):
+            load_config(str(p))

@@ -543,10 +543,15 @@ def load_config(path: str) -> Config:
     px_raw = raw.get("proxy") or {}
     px = ProxyConfig()
     if "audit_ports" in px_raw:
-        # Preserve operator's order; cast to int for normal cases but defer
-        # type validation to validate_config so we report all bad entries
-        # together instead of failing on the first non-int.
+        # Preserve the operator's literal entries; defer per-entry type/range
+        # validation to validate_config so all bad entries are reported
+        # together instead of failing on the first one.
         raw_ports = px_raw["audit_ports"] or []
+        if not isinstance(raw_ports, list):
+            raise ValueError(
+                f"proxy.audit_ports must be a list of integers "
+                f"(got: {raw_ports!r})"
+            )
         px.audit_ports = list(raw_ports)
     cfg.proxy = px
 
@@ -687,6 +692,30 @@ def validate_config(config: Config) -> list[str]:
                 f"proxy.audit_ports entry {relay_port} collides with "
                 f"protocol_relays[{relay.name!r}].listen={relay.listen!r}; "
                 f"the REDIRECT would intercept connections meant for the relay"
+            )
+    # Cross-check against container.ports inbound forwards — for each
+    # published port, the proxy container runs an extra mitmdump reverse
+    # listener on 0.0.0.0:<container_port>. PREROUTING REDIRECT fires before
+    # the netfilter INPUT decision, so an overlap silently steals inbound
+    # connections from the reverse listener and routes them to the
+    # transparent listener instead.
+    for port_spec in config.container.ports:
+        parts = port_spec.split(":")
+        if len(parts) == 3:
+            container_port_s = parts[2]
+        elif len(parts) == 2:
+            container_port_s = parts[1]
+        else:
+            continue
+        try:
+            container_port = int(container_port_s)
+        except ValueError:
+            continue
+        if container_port in seen_audit_ports:
+            raise ValueError(
+                f"proxy.audit_ports entry {container_port} collides with "
+                f"container.ports inbound forward {port_spec!r}; the REDIRECT "
+                f"would intercept connections meant for the cage's reverse-mode listener"
             )
 
     # Validate domain config
