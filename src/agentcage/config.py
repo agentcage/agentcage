@@ -123,27 +123,44 @@ class CaptureConfig:
     exclude_domains: list[str] = field(default_factory=list)
 
 
-# TCP destination ports the proxy container REDIRECTs into mitmdump's
-# transparent listener. Default catches HTTP/HTTPS on standard ports;
-# extend (e.g. add 8448 for a Matrix homeserver) to audit non-standard
-# services. Ports outside this list are still routed via the cage's
-# default route (the proxy container's IP) but are L3-forwarded without
-# inspection — they reach the destination but never appear in audit.jsonl,
-# the inspector chain, or the secret injector.
-DEFAULT_AUDIT_PORTS = (80, 443)
+# Default permitted destination ports for `ports.allow`. Catches HTTP
+# and HTTPS on standard ports. Extend (e.g. add 8448 for a Matrix
+# homeserver) to permit non-standard services. Ports outside this list
+# (and outside `ports.passthrough`) are dropped by the proxy's
+# filter:FORWARD policy.
+DEFAULT_ALLOW_PORTS = (80, 443)
 
 # Reserved by mitmdump's own listeners; redirecting them would either
 # loop (8443 is the transparent listener's own port) or break the L7
-# HTTP_PROXY path (8080 is the regular HTTP-proxy listener).
+# HTTP_PROXY path (8080 is the regular HTTP-proxy listener). Applied
+# only to inspected ports (= allow - passthrough); passthrough ports
+# never get a REDIRECT rule, so they don't conflict.
 _MITMDUMP_RESERVED_PORTS = (8080, 8443)
 
 
 @dataclass
-class ProxyConfig:
-    """Cage proxy / transparent capture settings."""
-    audit_ports: list[int] = field(
-        default_factory=lambda: list(DEFAULT_AUDIT_PORTS)
+class PortsConfig:
+    """Cage egress port policy.
+
+    Mirrors the shape of ``DomainConfig``:
+
+    - ``allow`` — TCP+UDP destination ports the cage may reach. Anything
+      not in ``allow`` (and not in ``passthrough``, which is implicitly
+      allowed) is dropped by the proxy's filter:FORWARD policy.
+    - ``passthrough`` — subset of allowed ports that bypass mitmdump
+      inspection. These flow L3-forwarded to upstream without entering
+      audit.jsonl, the inspector chain, or the secret injector. UDP
+      traffic to ports not in this list is blocked, so QUIC/HTTP3
+      requires an explicit entry.
+
+    Inspected ports = allow - passthrough. There is no opt-out flag for
+    the default-deny FORWARD policy; every cage gets it on next
+    ``cage update``.
+    """
+    allow: list[int] = field(
+        default_factory=lambda: list(DEFAULT_ALLOW_PORTS)
     )
+    passthrough: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -242,7 +259,7 @@ class Config:
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
-    proxy: ProxyConfig = field(default_factory=ProxyConfig)
+    ports: PortsConfig = field(default_factory=PortsConfig)
     vm: VmConfig = field(default_factory=VmConfig)
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
@@ -539,21 +556,29 @@ def load_config(path: str) -> Config:
     cap.exclude_domains = list(cap_raw.get("exclude_domains") or [])
     cfg.capture = cap
 
-    # Proxy
-    px_raw = raw.get("proxy") or {}
-    px = ProxyConfig()
-    if "audit_ports" in px_raw:
+    # Ports
+    pt_raw = raw.get("ports") or {}
+    pt = PortsConfig()
+    if "allow" in pt_raw:
         # Preserve the operator's literal entries; defer per-entry type/range
         # validation to validate_config so all bad entries are reported
         # together instead of failing on the first one.
-        raw_ports = px_raw["audit_ports"] or []
-        if not isinstance(raw_ports, list):
+        raw_allow = pt_raw["allow"] or []
+        if not isinstance(raw_allow, list):
             raise ValueError(
-                f"proxy.audit_ports must be a list of integers "
-                f"(got: {raw_ports!r})"
+                f"ports.allow must be a list of integers "
+                f"(got: {raw_allow!r})"
             )
-        px.audit_ports = list(raw_ports)
-    cfg.proxy = px
+        pt.allow = list(raw_allow)
+    if "passthrough" in pt_raw:
+        raw_pass = pt_raw["passthrough"] or []
+        if not isinstance(raw_pass, list):
+            raise ValueError(
+                f"ports.passthrough must be a list of integers "
+                f"(got: {raw_pass!r})"
+            )
+        pt.passthrough = list(raw_pass)
+    cfg.ports = pt
 
     # Help text
     cfg.help = str(raw.get("help", "") or "")
@@ -651,54 +676,89 @@ def validate_config(config: Config) -> list[str]:
                     f"port {pn} out of range (1-65535) in port spec {port_spec!r}"
                 )
 
-    # Validate proxy.audit_ports — these become iptables PREROUTING REDIRECT
-    # rules in the proxy container. Reserved ports must be excluded because
-    # they collide with mitmdump's own listeners (8080 HTTP-proxy, 8443
-    # transparent) or with in-process listeners bound by protocol_relays.
-    seen_audit_ports: set[int] = set()
-    for entry in config.proxy.audit_ports:
+    # Validate ports.allow + ports.passthrough.
+    #
+    # Mirrors the domains.allow / domains.passthrough relationship:
+    # `allow` is the superset of permitted destination ports, `passthrough`
+    # is the subset that bypasses inspection. A passthrough port not in
+    # `allow` is auto-merged at quadlet generation (with a warning here),
+    # mirroring _effective_dns_allowlist.
+    #
+    # Reserved-port checks apply only to the inspected set
+    # (= allow - passthrough), because reserved ports collide with
+    # mitmdump's REDIRECT path. Passthrough ports never get a REDIRECT
+    # rule — they hit filter:FORWARD ACCEPT — so they don't conflict with
+    # mitmdump's listeners or with in-process relays.
+    def _check_port_entry(entry: object, field_label: str) -> None:
         if isinstance(entry, bool) or not isinstance(entry, int):
             raise ValueError(
-                f"proxy.audit_ports entries must be integers (got: {entry!r})"
+                f"{field_label} entries must be integers (got: {entry!r})"
             )
         if entry < 1 or entry > 65535:
             raise ValueError(
-                f"proxy.audit_ports entry {entry} out of range (1-65535)"
+                f"{field_label} entry {entry} out of range (1-65535)"
             )
+
+    seen_allow_ports: set[int] = set()
+    for entry in config.ports.allow:
+        _check_port_entry(entry, "ports.allow")
+        if entry in seen_allow_ports:
+            raise ValueError(
+                f"ports.allow entry {entry} appears more than once"
+            )
+        seen_allow_ports.add(entry)
+
+    seen_passthrough_ports: set[int] = set()
+    for entry in config.ports.passthrough:
+        _check_port_entry(entry, "ports.passthrough")
+        if entry in seen_passthrough_ports:
+            raise ValueError(
+                f"ports.passthrough entry {entry} appears more than once"
+            )
+        seen_passthrough_ports.add(entry)
+
+    # Inspected = effective allow (allow ∪ passthrough) minus passthrough.
+    # Reserved-port checks apply here: each inspected port becomes a
+    # nat:PREROUTING REDIRECT rule, which collides with locally-bound
+    # listeners.
+    inspected_ports = (
+        seen_allow_ports | seen_passthrough_ports
+    ) - seen_passthrough_ports
+    for entry in inspected_ports:
         if entry in _MITMDUMP_RESERVED_PORTS:
             raise ValueError(
-                f"proxy.audit_ports entry {entry} is reserved by mitmdump "
+                f"ports.allow entry {entry} is reserved by mitmdump "
                 f"(8080 = HTTP-proxy listener, 8443 = transparent listener); "
-                f"redirecting it would loop or break the L7 proxy path"
+                f"redirecting it would loop or break the L7 proxy path. "
+                f"Move it to ports.passthrough if the cage needs to reach "
+                f"an upstream service on this port without inspection"
             )
-        if entry in seen_audit_ports:
-            raise ValueError(
-                f"proxy.audit_ports entry {entry} appears more than once"
-            )
-        seen_audit_ports.add(entry)
-    # Cross-check against protocol_relays listen ports — those bind in the
-    # same proxy container, so a REDIRECT for the same port would steal
-    # connections away from the relay before it could see them.
+    # Cross-check inspected ports against protocol_relays listen ports —
+    # those bind in the same proxy container, so a REDIRECT for the same
+    # port would steal connections away from the relay before it could
+    # see them.
     for relay in config.protocol_relays:
-        host, _, port_s = relay.listen.rpartition(":")
+        _, _, port_s = relay.listen.rpartition(":")
         if not port_s:
             continue
         try:
             relay_port = int(port_s)
         except ValueError:
             continue
-        if relay_port in seen_audit_ports:
+        if relay_port in inspected_ports:
             raise ValueError(
-                f"proxy.audit_ports entry {relay_port} collides with "
+                f"ports.allow entry {relay_port} collides with "
                 f"protocol_relays[{relay.name!r}].listen={relay.listen!r}; "
-                f"the REDIRECT would intercept connections meant for the relay"
+                f"the REDIRECT would intercept connections meant for the "
+                f"relay. Move it to ports.passthrough if the cage also "
+                f"talks to an external service on this port"
             )
-    # Cross-check against container.ports inbound forwards — for each
-    # published port, the proxy container runs an extra mitmdump reverse
-    # listener on 0.0.0.0:<container_port>. PREROUTING REDIRECT fires before
-    # the netfilter INPUT decision, so an overlap silently steals inbound
-    # connections from the reverse listener and routes them to the
-    # transparent listener instead.
+    # Cross-check inspected ports against container.ports inbound
+    # forwards — for each published port, the proxy container runs an
+    # extra mitmdump reverse listener on 0.0.0.0:<container_port>.
+    # PREROUTING REDIRECT fires before the netfilter INPUT decision, so
+    # an overlap silently steals inbound connections from the reverse
+    # listener and routes them to the transparent listener instead.
     for port_spec in config.container.ports:
         parts = port_spec.split(":")
         if len(parts) == 3:
@@ -711,11 +771,12 @@ def validate_config(config: Config) -> list[str]:
             container_port = int(container_port_s)
         except ValueError:
             continue
-        if container_port in seen_audit_ports:
+        if container_port in inspected_ports:
             raise ValueError(
-                f"proxy.audit_ports entry {container_port} collides with "
-                f"container.ports inbound forward {port_spec!r}; the REDIRECT "
-                f"would intercept connections meant for the cage's reverse-mode listener"
+                f"ports.allow entry {container_port} collides with "
+                f"container.ports inbound forward {port_spec!r}; the "
+                f"REDIRECT would intercept connections meant for the "
+                f"cage's reverse-mode listener"
             )
 
     # Validate domain config
@@ -726,12 +787,43 @@ def validate_config(config: Config) -> list[str]:
 
     warnings = []
 
+    # Warn when a passthrough port isn't explicitly listed in allow.
+    # Mirrors the domains.passthrough warning: the port is auto-merged
+    # into the effective allow set at quadlet generation time, but the
+    # operator should be aware their config relies on the merge.
+    allow_set = set(config.ports.allow)
+    for p in config.ports.passthrough:
+        if isinstance(p, int) and not isinstance(p, bool) and p not in allow_set:
+            warnings.append(
+                f"ports.passthrough entry {p} is not in ports.allow "
+                f"and will be added automatically to the effective "
+                f"allow list"
+            )
+
     # Warn when transparent capture is fully disabled — only L7-aware
-    # traffic (apps that honor HTTP_PROXY) will be audited.
-    if not config.proxy.audit_ports:
+    # traffic (apps that honor HTTP_PROXY) will be audited. Inspected
+    # ports = allow - passthrough; if empty, no REDIRECT rules are
+    # installed.
+    inspected_set = allow_set - set(config.ports.passthrough)
+    if not inspected_set:
         warnings.append(
-            "proxy.audit_ports is empty: transparent capture disabled, "
-            "only L7 HTTP_PROXY-aware traffic will be audited"
+            "ports has no inspected entries (allow - passthrough is "
+            "empty): transparent capture disabled, only L7 HTTP_PROXY-"
+            "aware traffic will be audited"
+        )
+
+    # Warn when default-deny would leave the cage with zero outbound.
+    # filter:FORWARD policy is DROP; inspected ports get REDIRECTed (so
+    # they don't traverse FORWARD), passthrough ports get an explicit
+    # ACCEPT. If the effective allow set is empty, ESTABLISHED,RELATED
+    # is the only allowed traffic — and the cage cannot initiate any
+    # new outbound connection.
+    effective_allow = allow_set | set(config.ports.passthrough)
+    if not effective_allow:
+        warnings.append(
+            "ports.allow and ports.passthrough are both empty: "
+            "the cage will have zero outbound connectivity (the proxy's "
+            "filter:FORWARD policy is DROP and no ports are allowed through)"
         )
 
     # Warn about passthrough implications

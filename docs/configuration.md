@@ -15,7 +15,7 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 - [Restart policy and timeouts](#restart-policy-and-timeouts)
 - [Secret injection](#secret-injection-secret_injection)
 - [Domain filtering](#domain-filtering-domains)
-- [Proxy audit ports](#proxy-audit-ports-proxy)
+- [Port policy](#port-policy-ports)
 - [Secret detection](#secret-detection-secrets)
 - [Inspectors](#inspectors)
   - [Built-in inspectors](#built-in-inspectors)
@@ -471,20 +471,29 @@ domains:
 
 ---
 
-## Proxy audit ports (`proxy:`)
+## Port policy (`ports:`)
 
-`proxy.audit_ports` selects the TCP destination ports the proxy container REDIRECTs into mitmdump's transparent listener. Ports outside this list still reach their destination via L3 forwarding but skip `audit.jsonl`, the inspector chain, and the secret injector.
+The proxy container enforces a default-deny `filter:FORWARD` policy on every cage. Cage→external traffic is dropped unless the destination port is listed in `ports.allow` (or in `ports.passthrough`, which auto-merges into the effective allow set).
+
+The shape mirrors `domains.allow` / `domains.passthrough`:
+
+- `ports.allow` — TCP+UDP destination ports the cage may reach. Inspected by default (REDIRECTed at `nat:PREROUTING` to mitmdump's transparent listener — runs through `audit.jsonl`, the inspector chain, and the secret injector).
+- `ports.passthrough` — subset of allowed ports that bypass inspection. Forwarded L3 to upstream without entering mitmdump.
+
+Inspected ports = `allow - passthrough`.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `audit_ports` | `list[int]` | `[80, 443]` | TCP ports to redirect to mitmdump's transparent listener. Extend to audit non-standard services (e.g. add `8448` for a Matrix homeserver). Reserved ports (`8443`, `8080`, any `protocol_relays[*].listen` port) are rejected. Empty list disables transparent capture. |
+| `allow` | `list[int]` | `[80, 443]` | TCP+UDP ports the cage is permitted to reach. Inspected unless also listed in `passthrough`. Extend to permit non-standard services (e.g. add `8448` for a Matrix homeserver, `123` for NTP). Reserved ports for the **inspected set** (`8443`, `8080`, any `protocol_relays[*].listen` port, any `container.ports[*].container_port` inbound forward) are rejected — move them to `passthrough` if the cage needs them. Empty list disables transparent capture. |
+| `passthrough` | `list[int]` | `[]` | Subset of allowed ports that bypass inspection. Each entry installs one TCP and one UDP `iptables -A FORWARD … -j ACCEPT` rule. Auto-merged into the effective allow set if not explicitly listed in `allow`, with a warning. Empty list (the default) means every allowed port is inspected. |
 
 ```yaml
-proxy:
-  audit_ports: [80, 443, 8448]   # extend to capture matrix federation
+ports:
+  allow: [80, 443, 8448, 123, 993]   # everything reachable
+  passthrough: [123, 993]            # NTP and IMAP bypass inspection
 ```
 
-See [`docs/proxy-audit-ports.md`](proxy-audit-ports.md) for the full discussion (worked example, reserved-port rationale, inspector noise on extended ports, the L4-vs-L7 trade-off).
+See [`docs/proxy-audit-ports.md`](proxy-audit-ports.md) for the full discussion (worked example, reserved-port rationale, default-deny migration impact, inspector noise on extended ports, the L4-vs-L7 trade-off).
 
 ---
 

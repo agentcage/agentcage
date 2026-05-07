@@ -131,6 +131,39 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
     return merged
 
 
+def _effective_port_lists(config: Config) -> tuple[list[int], list[int]]:
+    """Resolve ports.allow + ports.passthrough into (inspected, passthrough).
+
+    Mirrors `_effective_dns_allowlist`: passthrough entries auto-merge
+    into the effective allow set if the operator didn't list them
+    explicitly. Returns (inspected_ports, passthrough_ports), preserving
+    operator-supplied order:
+
+    - inspected_ports = ports.allow MINUS ports.passthrough (deduped,
+      order preserved). These become nat:PREROUTING REDIRECT rules in
+      the proxy container.
+    - passthrough_ports = ports.passthrough (deduped, order preserved).
+      These become filter:FORWARD ACCEPT rules (TCP+UDP per entry).
+    """
+    passthrough_set = set(config.ports.passthrough)
+    inspected: list[int] = []
+    seen: set[int] = set()
+    for p in config.ports.allow:
+        if p in passthrough_set or p in seen:
+            continue
+        inspected.append(p)
+        seen.add(p)
+    # Deduplicate passthrough preserving order.
+    passthrough: list[int] = []
+    seen_pt: set[int] = set()
+    for p in config.ports.passthrough:
+        if p in seen_pt:
+            continue
+        passthrough.append(p)
+        seen_pt.add(p)
+    return inspected, passthrough
+
+
 def _make_env() -> SandboxedEnvironment:
     env = SandboxedEnvironment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
@@ -320,6 +353,7 @@ def generate_quadlets(
         if config.domains.passthrough else ""
     )
     creds_dir = str(_state_creds_dir)
+    _inspected, _passthrough = _effective_port_lists(config)
 
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
@@ -335,7 +369,8 @@ def generate_quadlets(
         capture_host_dir=capture_host_dir,
         passthrough_regex=pt_regex,
         rootless=rootless,
-        audit_ports=config.proxy.audit_ports,
+        inspected_ports=_inspected,
+        passthrough_ports=_passthrough,
     )
 
     # Nested containers support

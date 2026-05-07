@@ -902,31 +902,66 @@ class TestDomainConfigNewFormat:
         assert not any("not in the allow list" in w for w in warnings)
 
 
-class TestProxyConfig:
-    """proxy.audit_ports controls which TCP destination ports the proxy
-    container REDIRECTs into mitmdump's transparent listener. Default
-    keeps the historical [80, 443] coverage; adding more ports extends
-    audit visibility to non-standard services (e.g. 8448 for Matrix)."""
+class TestPortsConfig:
+    """ports.allow + ports.passthrough mirror the domains.allow /
+    domains.passthrough pattern.
 
-    def test_default_audit_ports(self, minimal_yaml):
+    - ports.allow lists TCP+UDP destination ports the cage may reach.
+      Anything not in allow (and not in passthrough, which is implicitly
+      allowed) is dropped by the proxy's filter:FORWARD policy.
+    - ports.passthrough is a subset that bypasses mitmdump inspection.
+      Auto-merged into the effective allow set if the operator didn't
+      list them in allow, with a warning surfaced at validation time.
+
+    Inspected ports = allow - passthrough. These get nat:PREROUTING
+    REDIRECTs to mitmdump. Reserved-port checks (8080, 8443,
+    protocol_relays listen, container.ports inbound forwards) apply to
+    the inspected set only — passthrough ports never get a REDIRECT
+    rule and don't conflict with locally-bound listeners.
+    """
+
+    # --- defaults and shape ------------------------------------------------
+
+    def test_default_allow_is_http_https(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
-        assert cfg.proxy.audit_ports == [80, 443]
+        assert cfg.ports.allow == [80, 443]
 
-    def test_custom_audit_ports(self, tmp_path):
+    def test_default_passthrough_is_empty(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        assert cfg.ports.passthrough == []
+
+    def test_custom_allow(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: [80, 443, 8448]
+            ports:
+              allow: [80, 443, 8448]
         """))
         cfg = load_config(str(p))
-        assert cfg.proxy.audit_ports == [80, 443, 8448]
-        # Should validate without raising
+        assert cfg.ports.allow == [80, 443, 8448]
         validate_config(cfg)
 
-    def test_audit_ports_preserves_order(self, tmp_path):
+    def test_custom_passthrough(self, tmp_path):
+        """Operators list non-HTTP services explicitly (NTP, IMAP,
+        custom protocols). TCP and UDP on those ports are forwarded
+        without inspection."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: [80, 443, 123, 993]
+              passthrough: [123, 993]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.allow == [80, 443, 123, 993]
+        assert cfg.ports.passthrough == [123, 993]
+        validate_config(cfg)
+
+    def test_allow_preserves_order(self, tmp_path):
         """Operator-supplied order is preserved (matters for iptables
         rule order — earlier rules match first)."""
         p = tmp_path / "config.yaml"
@@ -934,87 +969,206 @@ class TestProxyConfig:
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: [8448, 443, 80]
+            ports:
+              allow: [8448, 443, 80]
         """))
         cfg = load_config(str(p))
-        assert cfg.proxy.audit_ports == [8448, 443, 80]
+        assert cfg.ports.allow == [8448, 443, 80]
 
-    def test_empty_audit_ports_emits_warning(self, tmp_path):
-        """Empty list is a deliberate operator opt-out (L7-only). Surface
-        it as a warning so the posture change is visible."""
+    def test_passthrough_preserves_order(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: []
+            ports:
+              allow: [80, 443, 5432, 123, 993]
+              passthrough: [5432, 123, 993]
         """))
         cfg = load_config(str(p))
-        assert cfg.proxy.audit_ports == []
+        assert cfg.ports.passthrough == [5432, 123, 993]
+
+    # --- passthrough auto-merge into allow (mirrors domains semantics) ----
+
+    def test_passthrough_not_in_allow_emits_warning(self, tmp_path):
+        """Mirrors domains.passthrough: if a passthrough port isn't in
+        ports.allow, validation warns the operator that the port will
+        be auto-added to the effective allow set at quadlet generation."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: [80, 443]
+              passthrough: [123]
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any(
+            "ports.passthrough entry 123 is not in ports.allow" in w
+            for w in warnings
+        )
+
+    def test_passthrough_in_allow_no_warning(self, tmp_path):
+        """When the passthrough port IS already in allow, no auto-merge
+        warning fires — the operator was explicit."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: [80, 443, 123]
+              passthrough: [123]
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert not any(
+            "is not in ports.allow" in w for w in warnings
+        )
+
+    # --- empty / boundary postures ----------------------------------------
+
+    def test_empty_allow_emits_no_inspected_warning(self, tmp_path):
+        """Empty inspected set (allow - passthrough) means no REDIRECT
+        rules — only the L7 path through HTTP_PROXY remains."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: []
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.allow == []
         warnings = validate_config(cfg)
         assert any(
             "transparent capture disabled" in w for w in warnings
         )
 
-    def test_audit_port_8443_rejected(self, tmp_path):
+    def test_both_lists_empty_warns_zero_outbound(self, tmp_path):
+        """When the effective allow set (allow ∪ passthrough) is empty
+        the cage has zero outbound connectivity — surface this as a
+        warning so the posture change is visible at create/update time."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: []
+              passthrough: []
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any("zero outbound connectivity" in w for w in warnings)
+
+    def test_passthrough_only_no_inspected_warning(self, tmp_path):
+        """ports.passthrough entries cover the FORWARD path; if allow
+        is empty, the inspected set (allow - passthrough) is also
+        empty, so the no-inspected warning fires."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: []
+              passthrough: [123]
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any(
+            "transparent capture disabled" in w for w in warnings
+        )
+        # Effective allow is non-empty (passthrough auto-merges) so no
+        # zero-outbound warning.
+        assert not any("zero outbound connectivity" in w for w in warnings)
+
+    # --- reserved-port rejection (applies only to inspected set) ----------
+
+    def test_allow_reserved_8443_rejected(self, tmp_path):
         """8443 is mitmdump's transparent listener; redirecting to it
-        from itself would loop."""
+        from itself would loop. Reserved unless moved to passthrough."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: [80, 8443]
+            ports:
+              allow: [80, 8443]
         """))
         cfg = load_config(str(p))
-        with pytest.raises(ValueError, match=r"8443.*reserved by mitmdump"):
+        with pytest.raises(ValueError, match=r"8443 is reserved by mitmdump"):
             validate_config(cfg)
 
-    def test_audit_port_8080_rejected(self, tmp_path):
+    def test_allow_reserved_8080_rejected(self, tmp_path):
         """8080 is mitmdump's HTTP-proxy listener; redirecting it would
-        break the L7 HTTP_PROXY path."""
+        break the L7 HTTP_PROXY path. Reserved unless moved to
+        passthrough."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: [80, 8080]
+            ports:
+              allow: [80, 8080]
         """))
         cfg = load_config(str(p))
-        with pytest.raises(ValueError, match=r"8080.*reserved by mitmdump"):
+        with pytest.raises(ValueError, match=r"8080 is reserved by mitmdump"):
             validate_config(cfg)
 
-    def test_audit_port_out_of_range_low(self, tmp_path):
+    def test_reserved_port_in_passthrough_is_OK(self, tmp_path):
+        """Putting a reserved port in passthrough is fine — passthrough
+        ports never get a REDIRECT rule, so they don't conflict with
+        mitmdump's own listeners. The proxy container's mitmdump still
+        listens on 8443 locally; the FORWARD ACCEPT only applies to
+        cage→external traffic on dport 8443."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: [0]
+            ports:
+              allow: [80, 443, 8443]
+              passthrough: [8443]
+        """))
+        cfg = load_config(str(p))
+        # Should validate without raising (the inspected set is
+        # {80, 443} — reserved-port check only sees the inspected set).
+        validate_config(cfg)
+
+    # --- per-entry validation (range, types, dedupe) ----------------------
+
+    def test_allow_out_of_range_low(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: [0]
         """))
         cfg = load_config(str(p))
         with pytest.raises(ValueError, match=r"out of range"):
             validate_config(cfg)
 
-    def test_audit_port_out_of_range_high(self, tmp_path):
+    def test_allow_out_of_range_high(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: [65536]
+            ports:
+              allow: [65536]
         """))
         cfg = load_config(str(p))
         with pytest.raises(ValueError, match=r"out of range"):
             validate_config(cfg)
 
-    def test_audit_port_non_integer_rejected(self, tmp_path):
+    def test_allow_string_rejected(self, tmp_path):
         """YAML strings/booleans/floats are rejected explicitly so a
         typo like '443' (string) doesn't silently coerce."""
         p = tmp_path / "config.yaml"
@@ -1022,24 +1176,24 @@ class TestProxyConfig:
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports:
+            ports:
+              allow:
                 - "443"
         """))
         cfg = load_config(str(p))
         with pytest.raises(ValueError, match=r"must be integers"):
             validate_config(cfg)
 
-    def test_audit_port_boolean_rejected(self, tmp_path):
+    def test_allow_boolean_rejected(self, tmp_path):
         """`true` is `int` in Python — explicitly reject it so YAML
-        `audit_ports: [true, 443]` doesn't silently become [1, 443]."""
+        `allow: [true, 443]` doesn't silently become [1, 443]."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports:
+            ports:
+              allow:
                 - true
                 - 443
         """))
@@ -1047,22 +1201,78 @@ class TestProxyConfig:
         with pytest.raises(ValueError, match=r"must be integers"):
             validate_config(cfg)
 
-    def test_audit_port_duplicate_rejected(self, tmp_path):
+    def test_allow_duplicate_rejected(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            proxy:
-              audit_ports: [80, 443, 80]
+            ports:
+              allow: [80, 443, 80]
         """))
         cfg = load_config(str(p))
         with pytest.raises(ValueError, match=r"appears more than once"):
             validate_config(cfg)
 
-    def test_audit_port_collides_with_relay_listen(self, tmp_path):
-        """A REDIRECT for a relay's listen port would intercept connections
-        meant for the in-process relay handler."""
+    def test_passthrough_string_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              passthrough:
+                - "123"
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"must be integers"):
+            validate_config(cfg)
+
+    def test_passthrough_duplicate_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              passthrough: [123, 993, 123]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"appears more than once"):
+            validate_config(cfg)
+
+    def test_allow_must_be_list(self, tmp_path):
+        """A scalar allow value (e.g. `allow: 443`) should produce a
+        clean ValueError from load_config, not a TypeError from list()
+        iteration."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              allow: 443
+        """))
+        with pytest.raises(ValueError, match=r"must be a list of integers"):
+            load_config(str(p))
+
+    def test_passthrough_must_be_list(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              passthrough: 123
+        """))
+        with pytest.raises(ValueError, match=r"must be a list of integers"):
+            load_config(str(p))
+
+    # --- collisions with other in-process listeners ------------------------
+
+    def test_inspected_collides_with_relay_listen(self, tmp_path):
+        """A REDIRECT for a relay's listen port would intercept
+        connections meant for the in-process relay handler."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -1082,18 +1292,49 @@ class TestProxyConfig:
                   type: imap-login
                   user_source: "podman:MIGADU_USER"
                   password_source: "podman:MIGADU_PASSWORD"
-            proxy:
-              audit_ports: [80, 443, 1143]
+            ports:
+              allow: [80, 443, 1143]
         """))
         cfg = load_config(str(p))
         with pytest.raises(ValueError, match=r"collides with protocol_relays"):
             validate_config(cfg)
 
-    def test_audit_port_collides_with_inbound_forward(self, tmp_path):
+    def test_relay_port_in_passthrough_is_OK(self, tmp_path):
+        """If the operator wants the cage to talk to an EXTERNAL service
+        on the relay's port (cage→external:1143), they can move 1143
+        to passthrough — no REDIRECT rule, no collision with the relay."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              podman_secrets:
+                - MIGADU_USER
+                - MIGADU_PASSWORD
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "0.0.0.0:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "podman:MIGADU_USER"
+                  password_source: "podman:MIGADU_PASSWORD"
+            ports:
+              allow: [80, 443, 1143]
+              passthrough: [1143]
+        """))
+        cfg = load_config(str(p))
+        validate_config(cfg)
+
+    def test_inspected_collides_with_inbound_forward(self, tmp_path):
         """For each container.ports inbound forward, the proxy container
-        runs an extra mitmdump reverse-mode listener on 0.0.0.0:<container_port>.
-        A REDIRECT for that port would intercept inbound connections
-        before the reverse listener could see them."""
+        runs an extra mitmdump reverse-mode listener on
+        0.0.0.0:<container_port>. A REDIRECT for that port would
+        intercept inbound connections before the reverse listener could
+        see them."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -1101,8 +1342,8 @@ class TestProxyConfig:
               image: test:latest
               ports:
                 - "0.0.0.0:9000:9000"
-            proxy:
-              audit_ports: [80, 443, 9000]
+            ports:
+              allow: [80, 443, 9000]
         """))
         cfg = load_config(str(p))
         with pytest.raises(
@@ -1110,9 +1351,9 @@ class TestProxyConfig:
         ):
             validate_config(cfg)
 
-    def test_audit_port_collides_with_inbound_forward_short_spec(self, tmp_path):
-        """The 2-part port spec (HOST_PORT:CONTAINER_PORT) must also be
-        cross-checked against audit_ports."""
+    def test_inspected_collides_with_inbound_forward_short_spec(self, tmp_path):
+        """The 2-part port spec (HOST_PORT:CONTAINER_PORT) is also
+        cross-checked against inspected ports."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -1120,26 +1361,11 @@ class TestProxyConfig:
               image: test:latest
               ports:
                 - "9000:9000"
-            proxy:
-              audit_ports: [80, 443, 9000]
+            ports:
+              allow: [80, 443, 9000]
         """))
         cfg = load_config(str(p))
         with pytest.raises(
             ValueError, match=r"collides with container\.ports inbound forward"
         ):
             validate_config(cfg)
-
-    def test_audit_ports_must_be_list(self, tmp_path):
-        """A scalar audit_ports value (e.g. `audit_ports: 443`) should
-        produce a clean ValueError from load_config, not a TypeError
-        from list() iteration."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            proxy:
-              audit_ports: 443
-        """))
-        with pytest.raises(ValueError, match=r"must be a list of integers"):
-            load_config(str(p))
