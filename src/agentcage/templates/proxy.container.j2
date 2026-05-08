@@ -50,7 +50,7 @@ ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "printf '{
 {% if inspected_tcp_ports %}
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "{% for port in inspected_tcp_ports %}iptables -t nat -A PREROUTING -p tcp --dport {{ port }} -j REDIRECT --to-port 8443{% if not loop.last %} && {% endif %}{% endfor %}"
 {% endif %}
-ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT && iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT{% for port in passthrough_tcp_ports %} && iptables -A FORWARD -p tcp --dport {{ port }} -j ACCEPT{% endfor %}{% for port in allow_udp_ports %} && iptables -A FORWARD -p udp --dport {{ port }} -j ACCEPT{% endfor %} && iptables -P FORWARD DROP"
+ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "iptables -P FORWARD DROP && iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT && iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT{% for port in passthrough_tcp_ports %} && iptables -A FORWARD -p tcp --dport {{ port }} -j ACCEPT{% endfor %}{% for port in allow_udp_ports %} && iptables -A FORWARD -p udp --dport {{ port }} -j ACCEPT{% endfor %}"
 ExecStartPost=/usr/bin/podman exec --user root {{ name }}-proxy sh -c "ip6tables -P FORWARD DROP"
 Restart=on-failure
 

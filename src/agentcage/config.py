@@ -578,10 +578,26 @@ def load_config(path: str) -> Config:
 
     # Ports — nested by protocol. Per-entry type/range validation is
     # deferred to validate_config so all bad entries are reported together.
+    # The structural shape (mappings at each level) is checked here so a
+    # malformed config like `ports: "yes"` or `ports.tcp: [80, 443]`
+    # (operator forgot the `allow:` key) raises a clean error rather than
+    # crashing with AttributeError/TypeError or silently swallowing the
+    # operator's intent.
     pt_raw = raw.get("ports") or {}
+    if not isinstance(pt_raw, dict):
+        raise ValueError(
+            f"ports must be a mapping with 'tcp' and/or 'udp' keys "
+            f"(got: {pt_raw!r})"
+        )
     pt = PortsConfig()
 
     tcp_raw = pt_raw.get("tcp") or {}
+    if not isinstance(tcp_raw, dict):
+        raise ValueError(
+            f"ports.tcp must be a mapping with 'allow' and/or "
+            f"'passthrough' keys (got: {tcp_raw!r}). If you meant to list "
+            f"TCP ports, use 'ports.tcp.allow: [...]'"
+        )
     if "allow" in tcp_raw:
         raw_tcp_allow = tcp_raw["allow"] or []
         if not isinstance(raw_tcp_allow, list):
@@ -600,6 +616,12 @@ def load_config(path: str) -> Config:
         pt.tcp.passthrough = list(raw_tcp_pass)
 
     udp_raw = pt_raw.get("udp") or {}
+    if not isinstance(udp_raw, dict):
+        raise ValueError(
+            f"ports.udp must be a mapping with an 'allow' key "
+            f"(got: {udp_raw!r}). If you meant to list UDP ports, "
+            f"use 'ports.udp.allow: [...]'"
+        )
     if "allow" in udp_raw:
         raw_udp_allow = udp_raw["allow"] or []
         if not isinstance(raw_udp_allow, list):
@@ -750,10 +772,12 @@ def validate_config(config: Config) -> list[str]:
 
     # Inspected TCP = effective allow (tcp.allow ∪ tcp.passthrough)
     # minus tcp.passthrough. Reserved-port checks apply here only.
-    inspected_tcp_ports = (
-        tcp_allow_set | tcp_passthrough_set
-    ) - tcp_passthrough_set
-    for entry in inspected_tcp_ports:
+    inspected_tcp_ports = tcp_allow_set - tcp_passthrough_set
+    # Sort before iterating: set order is non-deterministic in CPython,
+    # so with multiple reserved-port violations the operator would see a
+    # different "first violation" on each run. Sorted ascending means the
+    # smallest violating port is reported first, predictably.
+    for entry in sorted(inspected_tcp_ports):
         if entry in _MITMDUMP_RESERVED_PORTS:
             raise ValueError(
                 f"ports.tcp.allow entry {entry} is reserved by mitmdump "

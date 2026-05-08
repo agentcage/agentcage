@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Outbound ICMP echo-request is always permitted (`iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT`) so `ping` from inside a cage works for diagnostics. Replies ride the existing `ESTABLISHED,RELATED` rule. No config knob to disable.
 - `ip6tables -P FORWARD DROP` failsafe is installed on every cage. Today's podman networks are IPv4-only (`10.89.x.0/24`), so this is a latent-gap closure rather than active filtering — IPv6 traffic the cage might attempt is dropped at the proxy regardless.
 
+### Fixed
+- `load_config` now structurally validates the nested `ports` shape. Pre-fix, a malformed config like `ports: "yes"` crashed with `AttributeError`, `ports.tcp: 443` crashed with `TypeError`, and most concerning, `ports.tcp: [80, 443, 8448]` (operator forgot the `allow:` key) silently parsed as the default `[80, 443]` — the operator's intent to allow port 8448 was dropped without any warning, and Matrix federation traffic would then be silently blocked by the new default-deny FORWARD policy. Each level (`ports`, `ports.tcp`, `ports.udp`) now requires a mapping; non-mappings raise a clean `ValueError` with a hint pointing the operator at the right shape.
+- `proxy.container.j2` now installs `iptables -P FORWARD DROP` as the first rule in the FORWARD chain, before any `-A FORWARD ... ACCEPT` rules. Pre-fix, the policy was set last via `&&`-chained `ExecStartPost`; if any earlier `iptables` invocation failed (kernel module missing, transient failure), the chain short-circuited before reaching the policy line and the kernel default ACCEPT remained — fail-open. The default-deny posture is the headline of this feature; the failure mode now matches.
+- Reserved-port violation reporting in `validate_config` is now deterministic. Pre-fix, multiple violations in `ports.tcp.allow` (e.g. both `8080` and `8443`) reported a non-deterministic "first violation" because Python set iteration order varies. Now sorted ascending, so the smallest violating port is always reported first.
+
 ## [0.14.3] - 2026-05-04
 
 ### Changed

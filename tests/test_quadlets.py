@@ -597,7 +597,12 @@ class TestProxyQuadlet:
 
     def test_proxy_forward_atomic_chain(self, tmp_path):
         """The FORWARD ExecStartPost is a single &&-chained shell
-        command so partial-rule states are impossible."""
+        command so partial-rule states are impossible. Critically,
+        `-P FORWARD DROP` runs FIRST: if any subsequent ACCEPT rule
+        fails, packets matching the failed rule fall through to the
+        DROP policy (fail-closed) instead of leaving the kernel
+        default ACCEPT in place (fail-open). Default-deny is the
+        headline of this feature; the failure mode must match."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -620,14 +625,57 @@ class TestProxyQuadlet:
         # All FORWARD-related rules live on a single ExecStartPost line.
         assert len(forward_lines) == 1
         line = forward_lines[0]
-        # ESTABLISHED,RELATED → ICMP echo → per-port ACCEPTs → policy DROP.
+        # DROP first → ESTABLISHED,RELATED → ICMP echo → per-port ACCEPTs.
+        drop_pos = line.find("-P FORWARD DROP")
         est_pos = line.find("ESTABLISHED,RELATED")
         icmp_pos = line.find("icmp-type echo-request")
         tcp_pos = line.find("--dport 5432")
         udp_pos = line.find("--dport 123")
-        drop_pos = line.find("-P FORWARD DROP")
-        assert 0 < est_pos < icmp_pos < tcp_pos < drop_pos
-        assert 0 < icmp_pos < udp_pos < drop_pos
+        assert 0 < drop_pos < est_pos < icmp_pos < tcp_pos
+        assert 0 < icmp_pos < udp_pos
+
+    def test_proxy_jacque_worked_example_renders(self, tmp_path):
+        """The jacque worked example from docs/proxy-audit-ports.md is
+        the headline use case. Pin the rendered iptables rules so doc
+        updates don't silently regress the example: TCP/{80,443,8448}
+        REDIRECTed, UDP/123 (NTP) FORWARD-ACCEPTed, default-deny, ICMP
+        echo always-on."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: jacque
+            container:
+              image: localhost/jacque-cage:latest
+            ports:
+              tcp:
+                allow: [80, 443, 8448]
+              udp:
+                allow: [123]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["jacque-proxy.container"]
+        for port in (80, 443, 8448):
+            assert (
+                f"iptables -t nat -A PREROUTING -p tcp --dport {port} "
+                f"-j REDIRECT --to-port 8443" in content
+            )
+        # NTP allowed but uninspected.
+        assert "iptables -A FORWARD -p udp --dport 123 -j ACCEPT" in content
+        # Audited TCP ports never get FORWARD ACCEPT (they're REDIRECTed
+        # at PREROUTING and never traverse FORWARD).
+        for port in (80, 443, 8448):
+            assert (
+                f"iptables -A FORWARD -p tcp --dport {port} -j ACCEPT"
+                not in content
+            )
+        # Default-deny + ICMP echo always installed.
+        assert "iptables -P FORWARD DROP" in content
+        assert (
+            "iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT"
+            in content
+        )
+        # IPv6 failsafe.
+        assert "ip6tables -P FORWARD DROP" in content
 
     def test_proxy_inspected_tcp_not_re_accepted(self, minimal_yaml):
         """Inspected TCP ports are REDIRECTed at nat:PREROUTING and

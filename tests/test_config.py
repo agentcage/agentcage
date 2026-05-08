@@ -1512,6 +1512,115 @@ class TestPortsConfig:
         ):
             validate_config(cfg)
 
+    # --- structural shape: each level must be a mapping --------------------
+
+    def test_ports_must_be_mapping(self, tmp_path):
+        """`ports: "yes"` (or any non-mapping) raises a clean error
+        instead of crashing with AttributeError when load_config tries
+        to call .get() on a string."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports: "yes"
+        """))
+        with pytest.raises(ValueError, match=r"ports must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_tcp_must_be_mapping(self, tmp_path):
+        """`ports.tcp: 443` raises a clean error instead of crashing
+        with TypeError when 'allow' in <int> fails."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp: 443
+        """))
+        with pytest.raises(ValueError, match=r"ports.tcp must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_tcp_list_at_wrong_level_rejected(self, tmp_path):
+        """The silent-swallow nightmare: operator types `ports.tcp:
+        [80, 443, 8448]` (forgetting the `allow:` key). Pre-fix this
+        parsed as the default `[80, 443]` because `"allow" in [80,
+        443, 8448]` is False, so the operator's intent to allow port
+        8448 was silently dropped and Matrix federation traffic would
+        be blocked by the new default-deny FORWARD with no warning."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp: [80, 443, 8448]
+        """))
+        with pytest.raises(ValueError, match=r"ports.tcp must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_udp_must_be_mapping(self, tmp_path):
+        """`ports.udp: 123` raises a clean error rather than crashing."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp: 123
+        """))
+        with pytest.raises(ValueError, match=r"ports.udp must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_udp_list_at_wrong_level_rejected(self, tmp_path):
+        """Same silent-swallow gotcha as tcp, for udp."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp: [123, 443]
+        """))
+        with pytest.raises(ValueError, match=r"ports.udp must be a mapping"):
+            load_config(str(p))
+
+    # --- end-to-end coverage of the headline worked example ----------------
+
+    def test_jacque_worked_example_validates(self, tmp_path):
+        """The jacque worked example in docs/proxy-audit-ports.md is
+        the headline use case (Matrix bot with NTP + HTTPS audit + 8448
+        federation). Pin it as a regression test so doc updates and
+        config-shape changes don't silently invalidate the example."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: jacque
+            container:
+              image: localhost/jacque-cage:latest
+              env:
+                NODE_EXTRA_CA_CERTS: "/certs/mitmproxy-ca-cert.pem"
+            ports:
+              tcp:
+                allow: [80, 443, 8448]
+              udp:
+                allow: [123]
+            domains:
+              allow:
+                - anthropic.com
+                - homeserver.example
+                - pool.ntp.org
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        # No empty-set warnings, no auto-merge warnings, no zero-outbound.
+        assert not any("transparent capture disabled" in w for w in warnings)
+        assert not any("zero outbound" in w for w in warnings)
+        assert not any("is not in ports.tcp.allow" in w for w in warnings)
+        assert cfg.ports.tcp.allow == [80, 443, 8448]
+        assert cfg.ports.tcp.passthrough == []
+        assert cfg.ports.udp.allow == [123]
+
     def test_inbound_forward_port_in_udp_allow_is_OK(self, tmp_path):
         """The inbound-forward listener is TCP only. UDP/9000 doesn't
         conflict with the reverse-mode TCP listener on 0.0.0.0:9000."""
