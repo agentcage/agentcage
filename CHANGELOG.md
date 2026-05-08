@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-05-08
+
 ### Changed (BREAKING)
 - The proxy container now installs a default-deny `filter:FORWARD` policy on every cage. Cage→external traffic is dropped unless the destination port is listed in `ports.tcp.allow`, `ports.tcp.passthrough`, or `ports.udp.allow`. Pre-change, only ports `80` and `443` were REDIRECTed into mitmdump's transparent listener — every other TCP and UDP port silently L3-forwarded uninspected. The cage's `domains.allow` gated *which hosts* could be reached but said nothing about *which ports* could exit. An agent that resolved an allowed hostname could exfiltrate over any port (NTP, custom binary protocols, QUIC/HTTP3) with the audit pipeline blind. The new default-deny posture closes that gap.
 - **Migration impact**: every existing cage gets the new posture on the next `agentcage cage update`. Cages that talk *only* on the default `ports.tcp.allow` (`[80, 443]`) keep working unchanged. Cages that depend on outbound on any other port — NTP for clock sync (`123/udp`), Postgres (`5432/tcp`), IMAP (`993/tcp`), QUIC/HTTP3 (`443/udp`), custom services — must add those ports to `ports.tcp.allow`/`ports.tcp.passthrough` (TCP) or `ports.udp.allow` (UDP) or lose connectivity. DNS is unaffected: cages talk to the sidecar dns container directly on the same subnet and never traverse the proxy's FORWARD chain.
