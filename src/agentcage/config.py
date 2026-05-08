@@ -123,6 +123,66 @@ class CaptureConfig:
     exclude_domains: list[str] = field(default_factory=list)
 
 
+# Default permitted destination ports for `ports.tcp.allow`. Catches
+# HTTP and HTTPS on standard ports. Extend (e.g. add 8448 for a Matrix
+# homeserver) to permit non-standard services. Ports outside the
+# effective port policy are dropped by the proxy's filter:FORWARD policy.
+DEFAULT_TCP_ALLOW_PORTS = (80, 443)
+
+# Reserved by mitmdump's own listeners; redirecting them would either
+# loop (8443 is the transparent listener's own port) or break the L7
+# HTTP_PROXY path (8080 is the regular HTTP-proxy listener). Applied
+# only to inspected TCP ports (= tcp.allow - tcp.passthrough);
+# passthrough entries never get a REDIRECT rule and don't conflict.
+_MITMDUMP_RESERVED_PORTS = (8080, 8443)
+
+
+@dataclass
+class TcpPortsConfig:
+    """TCP egress port policy.
+
+    - ``allow`` — TCP destination ports the cage may reach. Anything not
+      in allow (and not in passthrough, which is implicitly allowed) is
+      dropped by the proxy's filter:FORWARD policy.
+    - ``passthrough`` — subset of allowed TCP ports that bypass mitmdump
+      inspection. These flow L3-forwarded to upstream without entering
+      audit.jsonl, the inspector chain, or the secret injector.
+
+    Inspected TCP ports = allow - passthrough.
+    """
+    allow: list[int] = field(
+        default_factory=lambda: list(DEFAULT_TCP_ALLOW_PORTS)
+    )
+    passthrough: list[int] = field(default_factory=list)
+
+
+@dataclass
+class UdpPortsConfig:
+    """UDP egress port policy.
+
+    - ``allow`` — UDP destination ports the cage may reach. UDP is never
+      inspected (mitmdump is HTTP-only); all entries are forwarded
+      uninspected. Ports not in allow are dropped by filter:FORWARD.
+
+    Defaults to empty. HTTP/3 (UDP/443), NTP (UDP/123), and any other
+    UDP-using protocol requires an explicit entry.
+    """
+    allow: list[int] = field(default_factory=list)
+
+
+@dataclass
+class PortsConfig:
+    """Cage egress port policy, split by protocol.
+
+    Layered on a default-deny filter:FORWARD policy (always installed,
+    no opt-out flag): every cage drops L4 traffic not explicitly allowed
+    here. Outbound ICMP echo-request is always permitted for diagnostics.
+    A separate ip6tables -P FORWARD DROP failsafe blocks all IPv6 forwarding.
+    """
+    tcp: TcpPortsConfig = field(default_factory=TcpPortsConfig)
+    udp: UdpPortsConfig = field(default_factory=UdpPortsConfig)
+
+
 @dataclass
 class VmConfig:
     vcpus: int = 4
@@ -219,6 +279,7 @@ class Config:
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    ports: PortsConfig = field(default_factory=PortsConfig)
     vm: VmConfig = field(default_factory=VmConfig)
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
@@ -515,6 +576,63 @@ def load_config(path: str) -> Config:
     cap.exclude_domains = list(cap_raw.get("exclude_domains") or [])
     cfg.capture = cap
 
+    # Ports — nested by protocol. Per-entry type/range validation is
+    # deferred to validate_config so all bad entries are reported together.
+    # The structural shape (mappings at each level) is checked here so a
+    # malformed config like `ports: "yes"` or `ports.tcp: [80, 443]`
+    # (operator forgot the `allow:` key) raises a clean error rather than
+    # crashing with AttributeError/TypeError or silently swallowing the
+    # operator's intent.
+    pt_raw = raw.get("ports") or {}
+    if not isinstance(pt_raw, dict):
+        raise ValueError(
+            f"ports must be a mapping with 'tcp' and/or 'udp' keys "
+            f"(got: {pt_raw!r})"
+        )
+    pt = PortsConfig()
+
+    tcp_raw = pt_raw.get("tcp") or {}
+    if not isinstance(tcp_raw, dict):
+        raise ValueError(
+            f"ports.tcp must be a mapping with 'allow' and/or "
+            f"'passthrough' keys (got: {tcp_raw!r}). If you meant to list "
+            f"TCP ports, use 'ports.tcp.allow: [...]'"
+        )
+    if "allow" in tcp_raw:
+        raw_tcp_allow = tcp_raw["allow"] or []
+        if not isinstance(raw_tcp_allow, list):
+            raise ValueError(
+                f"ports.tcp.allow must be a list of integers "
+                f"(got: {raw_tcp_allow!r})"
+            )
+        pt.tcp.allow = list(raw_tcp_allow)
+    if "passthrough" in tcp_raw:
+        raw_tcp_pass = tcp_raw["passthrough"] or []
+        if not isinstance(raw_tcp_pass, list):
+            raise ValueError(
+                f"ports.tcp.passthrough must be a list of integers "
+                f"(got: {raw_tcp_pass!r})"
+            )
+        pt.tcp.passthrough = list(raw_tcp_pass)
+
+    udp_raw = pt_raw.get("udp") or {}
+    if not isinstance(udp_raw, dict):
+        raise ValueError(
+            f"ports.udp must be a mapping with an 'allow' key "
+            f"(got: {udp_raw!r}). If you meant to list UDP ports, "
+            f"use 'ports.udp.allow: [...]'"
+        )
+    if "allow" in udp_raw:
+        raw_udp_allow = udp_raw["allow"] or []
+        if not isinstance(raw_udp_allow, list):
+            raise ValueError(
+                f"ports.udp.allow must be a list of integers "
+                f"(got: {raw_udp_allow!r})"
+            )
+        pt.udp.allow = list(raw_udp_allow)
+
+    cfg.ports = pt
+
     # Help text
     cfg.help = str(raw.get("help", "") or "")
 
@@ -611,6 +729,103 @@ def validate_config(config: Config) -> list[str]:
                     f"port {pn} out of range (1-65535) in port spec {port_spec!r}"
                 )
 
+    # Validate ports.tcp.allow + ports.tcp.passthrough + ports.udp.allow.
+    #
+    # Per-list type/range/dedupe validation is independent. Reserved-port
+    # checks apply only to the inspected TCP set (= tcp.allow -
+    # tcp.passthrough): those ports become nat:PREROUTING REDIRECT rules,
+    # which collide with mitmdump's own listeners and with in-process
+    # listeners (relays, reverse-mode mitmdump for inbound forwards).
+    # Passthrough ports never get a REDIRECT, so they don't conflict.
+    # UDP entries never get REDIRECT either — mitmdump can't audit UDP —
+    # so reserved-port checks don't apply to them.
+    def _check_port_entry(entry: object, field_label: str) -> None:
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            raise ValueError(
+                f"{field_label} entries must be integers (got: {entry!r})"
+            )
+        if entry < 1 or entry > 65535:
+            raise ValueError(
+                f"{field_label} entry {entry} out of range (1-65535)"
+            )
+
+    def _validate_port_list(entries: list, field_label: str) -> set[int]:
+        seen: set[int] = set()
+        for entry in entries:
+            _check_port_entry(entry, field_label)
+            if entry in seen:
+                raise ValueError(
+                    f"{field_label} entry {entry} appears more than once"
+                )
+            seen.add(entry)
+        return seen
+
+    tcp_allow_set = _validate_port_list(
+        config.ports.tcp.allow, "ports.tcp.allow"
+    )
+    tcp_passthrough_set = _validate_port_list(
+        config.ports.tcp.passthrough, "ports.tcp.passthrough"
+    )
+    udp_allow_set = _validate_port_list(
+        config.ports.udp.allow, "ports.udp.allow"
+    )
+
+    # Inspected TCP = effective allow (tcp.allow ∪ tcp.passthrough)
+    # minus tcp.passthrough. Reserved-port checks apply here only.
+    inspected_tcp_ports = tcp_allow_set - tcp_passthrough_set
+    # Sort before iterating: set order is non-deterministic in CPython,
+    # so with multiple reserved-port violations the operator would see a
+    # different "first violation" on each run. Sorted ascending means the
+    # smallest violating port is reported first, predictably.
+    for entry in sorted(inspected_tcp_ports):
+        if entry in _MITMDUMP_RESERVED_PORTS:
+            raise ValueError(
+                f"ports.tcp.allow entry {entry} is reserved by mitmdump "
+                f"(8080 = HTTP-proxy listener, 8443 = transparent listener); "
+                f"redirecting it would loop or break the L7 proxy path. "
+                f"Move it to ports.tcp.passthrough if the cage needs to "
+                f"reach an upstream service on this port without inspection"
+            )
+    # Cross-check inspected TCP ports against protocol_relays listen ports.
+    for relay in config.protocol_relays:
+        _, _, port_s = relay.listen.rpartition(":")
+        if not port_s:
+            continue
+        try:
+            relay_port = int(port_s)
+        except ValueError:
+            continue
+        if relay_port in inspected_tcp_ports:
+            raise ValueError(
+                f"ports.tcp.allow entry {relay_port} collides with "
+                f"protocol_relays[{relay.name!r}].listen={relay.listen!r}; "
+                f"the REDIRECT would intercept connections meant for the "
+                f"relay. Move it to ports.tcp.passthrough if the cage also "
+                f"talks to an external service on this port"
+            )
+    # Cross-check inspected TCP ports against container.ports inbound
+    # forwards — the proxy runs reverse-mode mitmdump listeners on
+    # those ports, and PREROUTING REDIRECT fires before INPUT.
+    for port_spec in config.container.ports:
+        parts = port_spec.split(":")
+        if len(parts) == 3:
+            container_port_s = parts[2]
+        elif len(parts) == 2:
+            container_port_s = parts[1]
+        else:
+            continue
+        try:
+            container_port = int(container_port_s)
+        except ValueError:
+            continue
+        if container_port in inspected_tcp_ports:
+            raise ValueError(
+                f"ports.tcp.allow entry {container_port} collides with "
+                f"container.ports inbound forward {port_spec!r}; the "
+                f"REDIRECT would intercept connections meant for the "
+                f"cage's reverse-mode listener"
+            )
+
     # Validate domain config
     if config.domains.allow and config.domains.block:
         raise ValueError(
@@ -618,6 +833,45 @@ def validate_config(config: Config) -> list[str]:
         )
 
     warnings = []
+
+    # Warn when a tcp.passthrough port isn't explicitly listed in
+    # tcp.allow — mirrors the domains.passthrough auto-merge warning.
+    for p in config.ports.tcp.passthrough:
+        if (
+            isinstance(p, int) and not isinstance(p, bool)
+            and p not in tcp_allow_set
+        ):
+            warnings.append(
+                f"ports.tcp.passthrough entry {p} is not in "
+                f"ports.tcp.allow and will be added automatically to "
+                f"the effective allow list"
+            )
+
+    # Warn when transparent TCP capture is fully disabled — only L7-aware
+    # traffic (apps that honor HTTP_PROXY) will be audited. Inspected
+    # TCP ports = tcp.allow - tcp.passthrough; if empty, no REDIRECT
+    # rules are installed.
+    if not inspected_tcp_ports:
+        warnings.append(
+            "ports has no inspected TCP entries (tcp.allow - "
+            "tcp.passthrough is empty): transparent capture disabled, "
+            "only L7 HTTP_PROXY-aware traffic will be audited"
+        )
+
+    # Warn when default-deny would leave the cage with zero outbound.
+    # filter:FORWARD policy is DROP; inspected TCP ports get REDIRECTed,
+    # tcp.passthrough gets explicit TCP ACCEPT, udp.allow gets UDP
+    # ACCEPT, ICMP echo-request always ACCEPT. If all three port lists
+    # are empty, only ICMP echo + ESTABLISHED,RELATED traffic is allowed
+    # and the cage cannot initiate any new TCP/UDP outbound connection.
+    effective_allow = tcp_allow_set | tcp_passthrough_set | udp_allow_set
+    if not effective_allow:
+        warnings.append(
+            "ports.tcp.allow, ports.tcp.passthrough, and ports.udp.allow "
+            "are all empty: the cage will have zero outbound TCP/UDP "
+            "connectivity (the proxy's filter:FORWARD policy is DROP "
+            "and no ports are allowed through)"
+        )
 
     # Warn about passthrough implications
     if config.domains.passthrough:

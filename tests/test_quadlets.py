@@ -401,6 +401,292 @@ class TestProxyQuadlet:
         # Proxy should NOT use dnsmasq
         assert f"nameserver {addrs['ip_dns']}" not in content
 
+    def test_proxy_inspected_tcp_default(self, minimal_yaml):
+        """Default ports.tcp.allow ([80, 443]) with empty passthrough
+        means the inspected TCP set is [80, 443]. Both get
+        nat:PREROUTING REDIRECTs to mitmdump's transparent listener."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "--dport 80 -j REDIRECT --to-port 8443" in content
+        assert "--dport 443 -j REDIRECT --to-port 8443" in content
+        # Non-default ports must not appear unless requested.
+        assert "--dport 8448" not in content
+
+    def test_proxy_inspected_tcp_custom(self, tmp_path):
+        """Custom tcp.allow list emits one REDIRECT rule per inspected
+        port (= tcp.allow - tcp.passthrough), single &&-chain."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 8448]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        for port in (80, 443, 8448):
+            assert f"--dport {port} -j REDIRECT --to-port 8443" in content
+        iptables_lines = [
+            line for line in content.splitlines()
+            if "iptables -t nat -A PREROUTING" in line
+        ]
+        assert len(iptables_lines) == 1
+        assert iptables_lines[0].count("iptables -t nat -A PREROUTING") == 3
+
+    def test_proxy_inspected_tcp_single(self, tmp_path):
+        """Single inspected TCP port emits one rule with no trailing &&."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [443]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        iptables_lines = [
+            line for line in content.splitlines()
+            if "iptables -t nat -A PREROUTING" in line
+        ]
+        assert len(iptables_lines) == 1
+        assert "--dport 443 -j REDIRECT --to-port 8443" in iptables_lines[0]
+        assert "--dport 80" not in iptables_lines[0]
+        assert not iptables_lines[0].rstrip().endswith("&&\"")
+
+    def test_proxy_no_inspected_tcp_omits_redirect(self, tmp_path):
+        """When inspected TCP (tcp.allow - tcp.passthrough) is empty,
+        the nat:PREROUTING ExecStartPost is omitted entirely."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: []
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "iptables -t nat -A PREROUTING" not in content
+
+    def test_proxy_tcp_passthrough_subtracts_from_inspected(self, tmp_path):
+        """Putting a port in BOTH tcp.allow and tcp.passthrough means
+        it's allowed but bypasses inspection — no REDIRECT, just a
+        FORWARD ACCEPT for TCP."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 5432]
+                passthrough: [5432]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "--dport 80 -j REDIRECT --to-port 8443" in content
+        assert "--dport 443 -j REDIRECT --to-port 8443" in content
+        assert "--dport 5432 -j REDIRECT --to-port 8443" not in content
+        assert "iptables -A FORWARD -p tcp --dport 5432 -j ACCEPT" in content
+        # No automatic UDP rule for tcp.passthrough — UDP requires
+        # explicit udp.allow listing.
+        assert "iptables -A FORWARD -p udp --dport 5432 -j ACCEPT" not in content
+
+    def test_proxy_tcp_passthrough_auto_merges_into_allow(self, tmp_path):
+        """If a tcp.passthrough port isn't explicitly in tcp.allow, the
+        FORWARD ACCEPT still gets installed (auto-merge)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443]
+                passthrough: [5432]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "iptables -A FORWARD -p tcp --dport 5432 -j ACCEPT" in content
+        assert "--dport 5432 -j REDIRECT --to-port 8443" not in content
+
+    def test_proxy_udp_allow_renders_forward_accept(self, tmp_path):
+        """Each udp.allow port emits exactly one filter:FORWARD UDP
+        ACCEPT (no REDIRECT, no TCP rule)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow: [123, 443]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "iptables -A FORWARD -p udp --dport 123 -j ACCEPT" in content
+        assert "iptables -A FORWARD -p udp --dport 443 -j ACCEPT" in content
+        # No REDIRECT for UDP entries — mitmdump can't audit UDP.
+        assert "--dport 123 -j REDIRECT" not in content
+        # No automatic TCP rule for udp.allow — TCP entries live in
+        # tcp.allow / tcp.passthrough.
+        assert "iptables -A FORWARD -p tcp --dport 123 -j ACCEPT" not in content
+
+    def test_proxy_quic_alongside_tcp_inspection(self, tmp_path):
+        """The headline case: TCP/443 is REDIRECTed (HTTP/2 audited),
+        UDP/443 is FORWARD-ACCEPTed (HTTP/3 reachable, uninspected).
+        Same port, two protocols, governed independently."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443]
+              udp:
+                allow: [443]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "-p tcp --dport 443 -j REDIRECT --to-port 8443" in content
+        assert "iptables -A FORWARD -p udp --dport 443 -j ACCEPT" in content
+
+    def test_proxy_forward_default_deny_always_installed(self, minimal_yaml):
+        """The filter:FORWARD policy DROP, ESTABLISHED,RELATED ACCEPT,
+        and ICMP echo-request ACCEPT are installed for every cage —
+        there is no opt-out flag. With the default config (no
+        passthrough, no UDP), only TCP/{80,443} (REDIRECTed at
+        PREROUTING) plus echo + replies reach upstream."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert (
+            "iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED "
+            "-j ACCEPT" in content
+        )
+        assert (
+            "iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT"
+            in content
+        )
+        assert "iptables -P FORWARD DROP" in content
+        assert "iptables -A FORWARD -p tcp --dport" not in content
+        assert "iptables -A FORWARD -p udp --dport" not in content
+
+    def test_proxy_ipv6_forward_drop_failsafe(self, minimal_yaml):
+        """Always install ip6tables -P FORWARD DROP — IPv6 is not
+        currently inspected and podman networks are IPv4-only, so this
+        is a latent-gap failsafe rather than active filtering."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "ip6tables -P FORWARD DROP" in content
+
+    def test_proxy_forward_atomic_chain(self, tmp_path):
+        """The FORWARD ExecStartPost is a single &&-chained shell
+        command so partial-rule states are impossible. Critically,
+        `-P FORWARD DROP` runs FIRST: if any subsequent ACCEPT rule
+        fails, packets matching the failed rule fall through to the
+        DROP policy (fail-closed) instead of leaving the kernel
+        default ACCEPT in place (fail-open). Default-deny is the
+        headline of this feature; the failure mode must match."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 5432]
+                passthrough: [5432]
+              udp:
+                allow: [123]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        forward_lines = [
+            line for line in content.splitlines()
+            if "iptables -A FORWARD" in line or "iptables -P FORWARD" in line
+        ]
+        # All FORWARD-related rules live on a single ExecStartPost line.
+        assert len(forward_lines) == 1
+        line = forward_lines[0]
+        # DROP first → ESTABLISHED,RELATED → ICMP echo → per-port ACCEPTs.
+        drop_pos = line.find("-P FORWARD DROP")
+        est_pos = line.find("ESTABLISHED,RELATED")
+        icmp_pos = line.find("icmp-type echo-request")
+        tcp_pos = line.find("--dport 5432")
+        udp_pos = line.find("--dport 123")
+        assert 0 < drop_pos < est_pos < icmp_pos < tcp_pos
+        assert 0 < icmp_pos < udp_pos
+
+    def test_proxy_jacque_worked_example_renders(self, tmp_path):
+        """The jacque worked example from docs/proxy-audit-ports.md is
+        the headline use case. Pin the rendered iptables rules so doc
+        updates don't silently regress the example: TCP/{80,443,8448}
+        REDIRECTed, UDP/123 (NTP) FORWARD-ACCEPTed, default-deny, ICMP
+        echo always-on."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: jacque
+            container:
+              image: localhost/jacque-cage:latest
+            ports:
+              tcp:
+                allow: [80, 443, 8448]
+              udp:
+                allow: [123]
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["jacque-proxy.container"]
+        for port in (80, 443, 8448):
+            assert (
+                f"iptables -t nat -A PREROUTING -p tcp --dport {port} "
+                f"-j REDIRECT --to-port 8443" in content
+            )
+        # NTP allowed but uninspected.
+        assert "iptables -A FORWARD -p udp --dport 123 -j ACCEPT" in content
+        # Audited TCP ports never get FORWARD ACCEPT (they're REDIRECTed
+        # at PREROUTING and never traverse FORWARD).
+        for port in (80, 443, 8448):
+            assert (
+                f"iptables -A FORWARD -p tcp --dport {port} -j ACCEPT"
+                not in content
+            )
+        # Default-deny + ICMP echo always installed.
+        assert "iptables -P FORWARD DROP" in content
+        assert (
+            "iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT"
+            in content
+        )
+        # IPv6 failsafe.
+        assert "ip6tables -P FORWARD DROP" in content
+
+    def test_proxy_inspected_tcp_not_re_accepted(self, minimal_yaml):
+        """Inspected TCP ports are REDIRECTed at nat:PREROUTING and
+        never traverse filter:FORWARD, so they should NOT have explicit
+        ACCEPT rules in FORWARD."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-proxy.container"]
+        assert "iptables -A FORWARD -p tcp --dport 80 -j ACCEPT" not in content
+        assert "iptables -A FORWARD -p tcp --dport 443 -j ACCEPT" not in content
+
 
 class TestCageQuadlet:
     def test_cage_basics(self, minimal_yaml):

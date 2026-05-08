@@ -16,6 +16,12 @@ ENV PYTHONUNBUFFERED=1
 # ships a custom entrypoint that chowns it at runtime (which fails under
 # rootless Podman).  We bypass the entrypoint and make the home dir traversable
 # so the mitmproxy user (UID 1000) can access the cert volume at .mitmproxy/.
+# The iptables package on Debian (used by the upstream mitmproxy image)
+# installs both `iptables` and `ip6tables` binaries via the iptables-nft /
+# iptables-legacy alternatives. proxy.container.j2's ExecStartPost relies
+# on `ip6tables -P FORWARD DROP` as a v6 forwarding failsafe; if the base
+# image is ever changed to one that doesn't ship ip6tables (some
+# distroless or alpine variants), add it explicitly here.
 RUN apt-get update && apt-get install -y --no-install-recommends iptables && rm -rf /var/lib/apt/lists/*
 RUN chmod 755 /home/mitmproxy
 ENTRYPOINT []

@@ -131,6 +131,45 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
     return merged
 
 
+def _effective_port_policy(
+    config: Config,
+) -> tuple[list[int], list[int], list[int]]:
+    """Resolve the nested ports config into the three lists rendered
+    into the proxy quadlet, preserving operator-supplied order:
+
+    - inspected_tcp = tcp.allow MINUS tcp.passthrough (deduped). Becomes
+      one nat:PREROUTING REDIRECT rule per port.
+    - passthrough_tcp = tcp.passthrough (deduped). Becomes one
+      filter:FORWARD -p tcp ACCEPT per port. Auto-merges into the
+      effective allow set if the operator didn't list it in tcp.allow.
+    - allow_udp = udp.allow (deduped). Becomes one filter:FORWARD
+      -p udp ACCEPT per port. UDP is never inspected.
+    """
+    passthrough_set = set(config.ports.tcp.passthrough)
+    inspected_tcp: list[int] = []
+    seen: set[int] = set()
+    for p in config.ports.tcp.allow:
+        if p in passthrough_set or p in seen:
+            continue
+        inspected_tcp.append(p)
+        seen.add(p)
+    passthrough_tcp: list[int] = []
+    seen_pt: set[int] = set()
+    for p in config.ports.tcp.passthrough:
+        if p in seen_pt:
+            continue
+        passthrough_tcp.append(p)
+        seen_pt.add(p)
+    allow_udp: list[int] = []
+    seen_udp: set[int] = set()
+    for p in config.ports.udp.allow:
+        if p in seen_udp:
+            continue
+        allow_udp.append(p)
+        seen_udp.add(p)
+    return inspected_tcp, passthrough_tcp, allow_udp
+
+
 def _make_env() -> SandboxedEnvironment:
     env = SandboxedEnvironment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
@@ -320,6 +359,7 @@ def generate_quadlets(
         if config.domains.passthrough else ""
     )
     creds_dir = str(_state_creds_dir)
+    _inspected_tcp, _passthrough_tcp, _allow_udp = _effective_port_policy(config)
 
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
@@ -335,6 +375,9 @@ def generate_quadlets(
         capture_host_dir=capture_host_dir,
         passthrough_regex=pt_regex,
         rootless=rootless,
+        inspected_tcp_ports=_inspected_tcp,
+        passthrough_tcp_ports=_passthrough_tcp,
+        allow_udp_ports=_allow_udp,
     )
 
     # Nested containers support

@@ -15,6 +15,7 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 - [Restart policy and timeouts](#restart-policy-and-timeouts)
 - [Secret injection](#secret-injection-secret_injection)
 - [Domain filtering](#domain-filtering-domains)
+- [Port policy](#port-policy-ports)
 - [Secret detection](#secret-detection-secrets)
 - [Inspectors](#inspectors)
   - [Built-in inspectors](#built-in-inspectors)
@@ -467,6 +468,37 @@ domains:
   list:
     - api.anthropic.com
 ```
+
+---
+
+## Port policy (`ports:`)
+
+The proxy container enforces a default-deny `filter:FORWARD` policy on every cage. Cage→external traffic is dropped unless the destination port is listed below. Outbound ICMP echo-request is always permitted for diagnostics. IPv6 forwarding is dropped by an `ip6tables -P FORWARD DROP` failsafe.
+
+Egress policy is split by transport protocol:
+
+- `ports.tcp.allow` — TCP destination ports the cage may reach. Inspected by default (REDIRECTed at `nat:PREROUTING` to mitmdump's transparent listener — runs through `audit.jsonl`, the inspector chain, and the secret injector).
+- `ports.tcp.passthrough` — subset of allowed TCP ports that bypass inspection. Forwarded L3 to upstream without entering mitmdump.
+- `ports.udp.allow` — UDP destination ports the cage may reach. Always uninspected (mitmdump is HTTP-only).
+
+Inspected TCP ports = `tcp.allow - tcp.passthrough`.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `tcp.allow` | `list[int]` | `[80, 443]` | TCP ports the cage is permitted to reach. Inspected unless also listed in `tcp.passthrough`. Extend to permit non-standard services (e.g. add `8448` for a Matrix homeserver). Reserved ports for the **inspected TCP set** (`8443`, `8080`, any `protocol_relays[*].listen` port, any `container.ports[*].container_port` inbound forward) are rejected — move them to `tcp.passthrough` if the cage needs them. Empty list disables transparent capture. |
+| `tcp.passthrough` | `list[int]` | `[]` | Subset of allowed TCP ports that bypass inspection. Each entry installs one `iptables -A FORWARD -p tcp --dport N -j ACCEPT` rule. Auto-merged into the effective allow set if not explicitly listed in `tcp.allow`, with a warning. |
+| `udp.allow` | `list[int]` | `[]` | UDP ports the cage is permitted to reach. Each entry installs one `iptables -A FORWARD -p udp --dport N -j ACCEPT` rule. Required for NTP (`123`), QUIC/HTTP3 (`443`), and any other UDP service the cage needs. Independent of `tcp.allow` — same port number can appear in both. |
+
+```yaml
+ports:
+  tcp:
+    allow: [80, 443, 8448, 5432]   # HTTP, HTTPS, Matrix federation, Postgres
+    passthrough: [5432]            # postgres bypasses inspection
+  udp:
+    allow: [123, 443]              # NTP and HTTP/3
+```
+
+See [`docs/proxy-audit-ports.md`](proxy-audit-ports.md) for the full discussion (worked example, reserved-port rationale, ICMP/IPv6/UDP rationale, default-deny migration impact, inspector noise on extended ports, the L4-vs-L7 trade-off).
 
 ---
 

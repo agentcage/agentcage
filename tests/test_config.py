@@ -900,3 +900,742 @@ class TestDomainConfigNewFormat:
         # Should warn about passthrough but NOT about uncovered domain
         assert any("passthrough bypasses TLS" in w for w in warnings)
         assert not any("not in the allow list" in w for w in warnings)
+
+
+class TestPortsConfig:
+    """ports.tcp.{allow,passthrough} + ports.udp.allow split egress port
+    policy by protocol. Layered on a default-deny filter:FORWARD policy.
+
+    - tcp.allow / tcp.passthrough mirror domains.allow / domains.passthrough.
+      Inspected TCP = tcp.allow - tcp.passthrough → nat:PREROUTING REDIRECT
+      to mitmdump. Passthrough TCP → filter:FORWARD ACCEPT (uninspected).
+    - udp.allow → filter:FORWARD ACCEPT (UDP is never inspected; mitmdump
+      is HTTP-only). Defaults empty so QUIC/HTTP3 (UDP/443) and NTP (UDP/123)
+      need explicit opt-in.
+
+    Reserved-port checks (8080, 8443, protocol_relays listen, container.ports
+    inbound forwards) apply to the inspected TCP set only.
+    """
+
+    # --- defaults and shape -----------------------------------------------
+
+    def test_default_tcp_allow_is_http_https(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        assert cfg.ports.tcp.allow == [80, 443]
+
+    def test_default_tcp_passthrough_is_empty(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        assert cfg.ports.tcp.passthrough == []
+
+    def test_default_udp_allow_is_empty(self, minimal_yaml):
+        """UDP is opt-in. Nothing forwarded by default — operators must
+        list NTP, QUIC, etc. explicitly. Default-deny FORWARD drops the
+        rest."""
+        cfg = load_config(minimal_yaml)
+        assert cfg.ports.udp.allow == []
+
+    def test_custom_tcp_allow(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 8448]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.tcp.allow == [80, 443, 8448]
+        validate_config(cfg)
+
+    def test_custom_tcp_passthrough(self, tmp_path):
+        """Operators list non-HTTP TCP services explicitly (Postgres,
+        IMAP, custom). Forwarded without inspection."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 5432, 993]
+                passthrough: [5432, 993]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.tcp.allow == [80, 443, 5432, 993]
+        assert cfg.ports.tcp.passthrough == [5432, 993]
+        validate_config(cfg)
+
+    def test_custom_udp_allow(self, tmp_path):
+        """UDP requires explicit opt-in: NTP (123), QUIC/HTTP3 (443)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow: [123, 443]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.udp.allow == [123, 443]
+        validate_config(cfg)
+
+    def test_quic_alongside_tcp_inspection(self, tmp_path):
+        """The headline use case: TCP/443 inspected (HTTP/2 audited)
+        AND UDP/443 allowed uninspected (HTTP/3 reachable). The two
+        protocols on the same port are governed independently."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443]
+              udp:
+                allow: [443]
+        """))
+        cfg = load_config(str(p))
+        validate_config(cfg)
+        assert cfg.ports.tcp.allow == [80, 443]
+        assert cfg.ports.udp.allow == [443]
+
+    def test_tcp_allow_preserves_order(self, tmp_path):
+        """Operator-supplied order is preserved (matters for iptables
+        rule order — earlier rules match first)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [8448, 443, 80]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.tcp.allow == [8448, 443, 80]
+
+    def test_tcp_passthrough_preserves_order(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 5432, 123, 993]
+                passthrough: [5432, 123, 993]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.tcp.passthrough == [5432, 123, 993]
+
+    def test_udp_allow_preserves_order(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow: [443, 123, 53]
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.udp.allow == [443, 123, 53]
+
+    # --- passthrough auto-merge into allow (mirrors domains semantics) ----
+
+    def test_tcp_passthrough_not_in_allow_emits_warning(self, tmp_path):
+        """Mirrors domains.passthrough: if a tcp.passthrough port isn't
+        in tcp.allow, validation warns the operator that the port will
+        be auto-added to the effective allow set at quadlet generation."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443]
+                passthrough: [5432]
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any(
+            "ports.tcp.passthrough entry 5432 is not in ports.tcp.allow"
+            in w
+            for w in warnings
+        )
+
+    def test_tcp_passthrough_in_allow_no_warning(self, tmp_path):
+        """When the passthrough port IS already in tcp.allow, no
+        auto-merge warning fires — the operator was explicit."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 5432]
+                passthrough: [5432]
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert not any(
+            "is not in ports.tcp.allow" in w for w in warnings
+        )
+
+    # --- empty / boundary postures ----------------------------------------
+
+    def test_empty_tcp_allow_emits_no_inspected_warning(self, tmp_path):
+        """Empty inspected TCP set means no REDIRECT rules — only the
+        L7 path through HTTP_PROXY remains."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: []
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.tcp.allow == []
+        warnings = validate_config(cfg)
+        assert any(
+            "transparent capture disabled" in w for w in warnings
+        )
+
+    def test_all_lists_empty_warns_zero_outbound(self, tmp_path):
+        """When tcp.allow, tcp.passthrough, AND udp.allow are all empty
+        the cage has zero outbound TCP/UDP — surface this as a warning."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: []
+                passthrough: []
+              udp:
+                allow: []
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any("zero outbound TCP/UDP" in w for w in warnings)
+
+    def test_udp_only_no_zero_outbound_warning(self, tmp_path):
+        """A UDP-only cage (e.g. an SNMP collector) has non-zero
+        outbound — no zero-outbound warning, but the no-inspected
+        warning does fire because tcp.allow is empty."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: []
+              udp:
+                allow: [161]
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any("transparent capture disabled" in w for w in warnings)
+        assert not any("zero outbound TCP/UDP" in w for w in warnings)
+
+    # --- reserved-port rejection (applies only to inspected TCP set) ------
+
+    def test_tcp_allow_reserved_8443_rejected(self, tmp_path):
+        """8443 is mitmdump's transparent listener; redirecting to it
+        from itself would loop. Reserved unless moved to passthrough."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 8443]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"8443 is reserved by mitmdump"):
+            validate_config(cfg)
+
+    def test_tcp_allow_reserved_8080_rejected(self, tmp_path):
+        """8080 is mitmdump's HTTP-proxy listener; redirecting it would
+        break the L7 HTTP_PROXY path. Reserved unless moved to
+        passthrough."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 8080]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"8080 is reserved by mitmdump"):
+            validate_config(cfg)
+
+    def test_reserved_port_in_tcp_passthrough_is_OK(self, tmp_path):
+        """Putting a reserved port in tcp.passthrough is fine —
+        passthrough never gets a REDIRECT rule, so no conflict with
+        mitmdump's own listeners."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 8443]
+                passthrough: [8443]
+        """))
+        cfg = load_config(str(p))
+        validate_config(cfg)
+
+    def test_reserved_port_in_udp_allow_is_OK(self, tmp_path):
+        """UDP entries never get REDIRECT (mitmdump can't audit UDP),
+        so 8443/udp doesn't conflict with mitmdump's TCP listener."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow: [8443, 8080]
+        """))
+        cfg = load_config(str(p))
+        validate_config(cfg)
+
+    # --- per-entry validation (range, types, dedupe) ----------------------
+
+    def test_tcp_allow_out_of_range_low(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [0]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"out of range"):
+            validate_config(cfg)
+
+    def test_tcp_allow_out_of_range_high(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [65536]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"out of range"):
+            validate_config(cfg)
+
+    def test_udp_allow_out_of_range(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow: [70000]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"out of range"):
+            validate_config(cfg)
+
+    def test_tcp_allow_string_rejected(self, tmp_path):
+        """YAML strings/booleans/floats are rejected explicitly so a
+        typo like '443' (string) doesn't silently coerce."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow:
+                  - "443"
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"must be integers"):
+            validate_config(cfg)
+
+    def test_tcp_allow_boolean_rejected(self, tmp_path):
+        """`true` is `int` in Python — explicitly reject so YAML
+        `allow: [true, 443]` doesn't silently become [1, 443]."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow:
+                  - true
+                  - 443
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"must be integers"):
+            validate_config(cfg)
+
+    def test_udp_allow_boolean_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow:
+                  - true
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"must be integers"):
+            validate_config(cfg)
+
+    def test_tcp_allow_duplicate_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: [80, 443, 80]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"appears more than once"):
+            validate_config(cfg)
+
+    def test_tcp_passthrough_string_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                passthrough:
+                  - "5432"
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"must be integers"):
+            validate_config(cfg)
+
+    def test_tcp_passthrough_duplicate_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                passthrough: [123, 993, 123]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"appears more than once"):
+            validate_config(cfg)
+
+    def test_udp_allow_duplicate_rejected(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow: [123, 443, 123]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"appears more than once"):
+            validate_config(cfg)
+
+    def test_tcp_allow_must_be_list(self, tmp_path):
+        """A scalar value (e.g. `allow: 443`) should produce a clean
+        ValueError from load_config, not a TypeError from list()
+        iteration."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                allow: 443
+        """))
+        with pytest.raises(ValueError, match=r"must be a list of integers"):
+            load_config(str(p))
+
+    def test_tcp_passthrough_must_be_list(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp:
+                passthrough: 5432
+        """))
+        with pytest.raises(ValueError, match=r"must be a list of integers"):
+            load_config(str(p))
+
+    def test_udp_allow_must_be_list(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp:
+                allow: 123
+        """))
+        with pytest.raises(ValueError, match=r"must be a list of integers"):
+            load_config(str(p))
+
+    # --- collisions with other in-process listeners ------------------------
+
+    def test_inspected_collides_with_relay_listen(self, tmp_path):
+        """A REDIRECT for a relay's listen port would intercept
+        connections meant for the in-process relay handler."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              podman_secrets:
+                - MIGADU_USER
+                - MIGADU_PASSWORD
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "0.0.0.0:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "podman:MIGADU_USER"
+                  password_source: "podman:MIGADU_PASSWORD"
+            ports:
+              tcp:
+                allow: [80, 443, 1143]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(ValueError, match=r"collides with protocol_relays"):
+            validate_config(cfg)
+
+    def test_relay_port_in_tcp_passthrough_is_OK(self, tmp_path):
+        """Moving the relay's port to tcp.passthrough lets the cage
+        reach an external service on the same port (e.g. cage→external
+        imap on 1143) without intercepting the relay's listener."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              podman_secrets:
+                - MIGADU_USER
+                - MIGADU_PASSWORD
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "0.0.0.0:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "podman:MIGADU_USER"
+                  password_source: "podman:MIGADU_PASSWORD"
+            ports:
+              tcp:
+                allow: [80, 443, 1143]
+                passthrough: [1143]
+        """))
+        cfg = load_config(str(p))
+        validate_config(cfg)
+
+    def test_inspected_collides_with_inbound_forward(self, tmp_path):
+        """For each container.ports inbound forward, the proxy container
+        runs an extra mitmdump reverse-mode listener on
+        0.0.0.0:<container_port>. A REDIRECT for that port would
+        intercept inbound connections before the reverse listener could
+        see them."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              ports:
+                - "0.0.0.0:9000:9000"
+            ports:
+              tcp:
+                allow: [80, 443, 9000]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(
+            ValueError, match=r"collides with container\.ports inbound forward"
+        ):
+            validate_config(cfg)
+
+    def test_inspected_collides_with_inbound_forward_short_spec(self, tmp_path):
+        """The 2-part port spec (HOST_PORT:CONTAINER_PORT) is also
+        cross-checked against inspected ports."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              ports:
+                - "9000:9000"
+            ports:
+              tcp:
+                allow: [80, 443, 9000]
+        """))
+        cfg = load_config(str(p))
+        with pytest.raises(
+            ValueError, match=r"collides with container\.ports inbound forward"
+        ):
+            validate_config(cfg)
+
+    # --- structural shape: each level must be a mapping --------------------
+
+    def test_ports_must_be_mapping(self, tmp_path):
+        """`ports: "yes"` (or any non-mapping) raises a clean error
+        instead of crashing with AttributeError when load_config tries
+        to call .get() on a string."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports: "yes"
+        """))
+        with pytest.raises(ValueError, match=r"ports must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_tcp_must_be_mapping(self, tmp_path):
+        """`ports.tcp: 443` raises a clean error instead of crashing
+        with TypeError when 'allow' in <int> fails."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp: 443
+        """))
+        with pytest.raises(ValueError, match=r"ports.tcp must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_tcp_list_at_wrong_level_rejected(self, tmp_path):
+        """The silent-swallow nightmare: operator types `ports.tcp:
+        [80, 443, 8448]` (forgetting the `allow:` key). Pre-fix this
+        parsed as the default `[80, 443]` because `"allow" in [80,
+        443, 8448]` is False, so the operator's intent to allow port
+        8448 was silently dropped and Matrix federation traffic would
+        be blocked by the new default-deny FORWARD with no warning."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              tcp: [80, 443, 8448]
+        """))
+        with pytest.raises(ValueError, match=r"ports.tcp must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_udp_must_be_mapping(self, tmp_path):
+        """`ports.udp: 123` raises a clean error rather than crashing."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp: 123
+        """))
+        with pytest.raises(ValueError, match=r"ports.udp must be a mapping"):
+            load_config(str(p))
+
+    def test_ports_udp_list_at_wrong_level_rejected(self, tmp_path):
+        """Same silent-swallow gotcha as tcp, for udp."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              udp: [123, 443]
+        """))
+        with pytest.raises(ValueError, match=r"ports.udp must be a mapping"):
+            load_config(str(p))
+
+    # --- end-to-end coverage of the headline worked example ----------------
+
+    def test_jacque_worked_example_validates(self, tmp_path):
+        """The jacque worked example in docs/proxy-audit-ports.md is
+        the headline use case (Matrix bot with NTP + HTTPS audit + 8448
+        federation). Pin it as a regression test so doc updates and
+        config-shape changes don't silently invalidate the example."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: jacque
+            container:
+              image: localhost/jacque-cage:latest
+              env:
+                NODE_EXTRA_CA_CERTS: "/certs/mitmproxy-ca-cert.pem"
+            ports:
+              tcp:
+                allow: [80, 443, 8448]
+              udp:
+                allow: [123]
+            domains:
+              allow:
+                - anthropic.com
+                - homeserver.example
+                - pool.ntp.org
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        # No empty-set warnings, no auto-merge warnings, no zero-outbound.
+        assert not any("transparent capture disabled" in w for w in warnings)
+        assert not any("zero outbound" in w for w in warnings)
+        assert not any("is not in ports.tcp.allow" in w for w in warnings)
+        assert cfg.ports.tcp.allow == [80, 443, 8448]
+        assert cfg.ports.tcp.passthrough == []
+        assert cfg.ports.udp.allow == [123]
+
+    def test_inbound_forward_port_in_udp_allow_is_OK(self, tmp_path):
+        """The inbound-forward listener is TCP only. UDP/9000 doesn't
+        conflict with the reverse-mode TCP listener on 0.0.0.0:9000."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              ports:
+                - "0.0.0.0:9000:9000"
+            ports:
+              tcp:
+                allow: [80, 443]
+              udp:
+                allow: [9000]
+        """))
+        cfg = load_config(str(p))
+        validate_config(cfg)

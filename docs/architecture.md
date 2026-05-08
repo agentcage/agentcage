@@ -49,17 +49,17 @@ In VM mode, the entire topology runs inside a Lima VM with a dedicated guest ker
 
 This is the **only** architectural difference between the modes. The inspector chain, secret injection, DNS filtering, and all other inspection logic are identical.
 
-**Agent** -- The user's container (e.g. an AI coding agent), at fixed IP `10.89.0.2`. It is connected *only* to the internal network. A default route via the proxy container and iptables REDIRECT rules provide **transparent proxy interception**: all outbound HTTP (port 80) and HTTPS (port 443) traffic is intercepted by mitmproxy regardless of whether the application respects `HTTP_PROXY` environment variables. `HTTP_PROXY` and `HTTPS_PROXY` are still set for proxy-aware applications on non-standard ports. Published ports are not exposed on the agent container — they are served by the proxy.
+**Agent** -- The user's container (e.g. an AI coding agent), at fixed IP `10.89.0.2`. It is connected *only* to the internal network. A default route via the proxy container and iptables REDIRECT rules provide **transparent proxy interception**: outbound TCP traffic to ports listed in `ports.tcp.allow` (default `[80, 443]`) is intercepted by mitmproxy regardless of whether the application respects `HTTP_PROXY` environment variables. The proxy applies a default-deny `filter:FORWARD` policy, so any TCP/UDP destination port not listed in the cage's `ports` config is dropped at the proxy. `HTTP_PROXY` and `HTTPS_PROXY` are still set for proxy-aware applications. Published ports are not exposed on the agent container — they are served by the proxy.
 
 **DNS sidecar (dnsmasq)** -- Dual-homed: connected to both the internal network (at `10.89.0.10`) and the default `podman` network. It handles DNS resolution for agents that resolve hostnames before proxying. In allowlist mode, non-allowlisted domains resolve to a placeholder IP (`198.51.100.1`, RFC 5737 TEST-NET-2) instead of failing, so SSRF guards that pre-resolve DNS continue to work. Upstream DNS servers default to `1.1.1.1` and `8.8.8.8` but are configurable via `dns_servers`.
 
 **Proxy (mitmproxy + addon.py)** -- Dual-homed: connected to both networks. Runs the [inspector chain](#inspector-chain) against every request. Operates in multiple modes simultaneously:
 
-- **Forward proxy** (`:8080`) -- handles outbound traffic from proxy-aware applications on non-standard ports
-- **Transparent proxy** (`:8443`) -- handles outbound HTTP/HTTPS traffic redirected by iptables from ports 80 and 443, intercepting traffic from applications that don't use proxy env vars
+- **Forward proxy** (`:8080`) -- handles outbound traffic from proxy-aware applications via `HTTP_PROXY`
+- **Transparent proxy** (`:8443`) -- handles outbound TCP traffic redirected by iptables from the inspected port set (`ports.tcp.allow - ports.tcp.passthrough`, default `[80, 443]`), intercepting traffic from applications that don't use proxy env vars
 - **Reverse proxy** (one listener per published port, when ports are configured) -- handles inbound traffic from the host, forwarding to the agent at `10.89.0.2`
 
-All directions pass through the full inspector chain (domain filtering, secret detection, entropy analysis, etc.). The `NET_ADMIN` capability is granted to the proxy container to allow iptables REDIRECT rules.
+All directions pass through the full inspector chain (domain filtering, secret detection, entropy analysis, etc.). The `NET_ADMIN` capability is granted to the proxy container to allow iptables REDIRECT rules and to enforce the default-deny `filter:FORWARD` policy.
 
 ## Network Isolation
 
@@ -145,17 +145,19 @@ Two environment variables are set in the cage container so that common runtimes 
 
 ## Transparent Proxy Interception
 
-In container mode, all outbound HTTP/HTTPS traffic is intercepted transparently at the network level, regardless of whether the application uses proxy environment variables:
+In container mode, outbound TCP traffic to the inspected port set is intercepted transparently at the network level, regardless of whether the application uses proxy environment variables:
 
 1. **Default route** -- An `ExecStartPost` script uses `nsenter` to add a default route in the cage container's network namespace, pointing to the proxy container's IP. This gives the cage container a path to send packets to arbitrary IPs (which previously had no route on the internal network).
 
-2. **iptables REDIRECT** -- The proxy container has `NET_ADMIN` capability and runs iptables rules that redirect inbound traffic on ports 80 and 443 to mitmproxy's transparent listener on port 8443. The `-i eth0` flag restricts this to traffic arriving from the internal network.
+2. **iptables REDIRECT** -- The proxy container has `NET_ADMIN` capability and runs iptables rules that redirect TCP traffic on each inspected port (`ports.tcp.allow - ports.tcp.passthrough`, default `[80, 443]`) to mitmproxy's transparent listener on port 8443. Operators extend `ports.tcp.allow` to permit non-standard services (e.g. `8448` for a Matrix homeserver, `5432` for Postgres). See [Port policy](proxy-audit-ports.md) for the full discussion.
 
-3. **mitmproxy transparent mode** -- mitmproxy runs with `--mode transparent@8443` alongside its regular forward proxy mode on port 8080. It uses `SO_ORIGINAL_DST` to determine the original destination of redirected connections.
+3. **mitmproxy transparent mode** -- mitmproxy runs with `--mode transparent@8443` alongside its regular forward proxy mode on port 8080. It uses `SO_ORIGINAL_DST` to determine the original destination of redirected connections — so any TLS-terminated TCP port works without per-port mitmproxy configuration.
 
-This means Go's custom `http.Transport`, Node.js `fetch()`, Rust's `reqwest`, and any other HTTP client that creates direct connections to ports 80/443 will have their traffic intercepted and inspected — no runtime-specific patching required.
+4. **Default-deny `filter:FORWARD`** -- Anything not in `ports.tcp.allow`, `ports.tcp.passthrough`, or `ports.udp.allow` is dropped at the proxy. ICMP echo-request is always permitted for diagnostics. An `ip6tables -P FORWARD DROP` failsafe blocks IPv6 forwarding.
 
-`HTTP_PROXY` / `HTTPS_PROXY` environment variables are still set for proxy-aware applications that use non-standard ports (which are not covered by the iptables REDIRECT rules).
+This means Go's custom `http.Transport`, Node.js `fetch()`, Rust's `reqwest`, and any other HTTP client that creates direct connections to inspected TCP ports will have their traffic intercepted and inspected — no runtime-specific patching required.
+
+`HTTP_PROXY` / `HTTPS_PROXY` environment variables are still set for proxy-aware applications. UDP traffic on ports listed in `ports.udp.allow` is forwarded uninspected (mitmproxy is HTTP-only).
 
 In VM mode, transparent interception is not yet implemented — applications must use `HTTP_PROXY` env vars.
 
