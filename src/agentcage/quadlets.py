@@ -208,13 +208,14 @@ def render_dns_quadlet(
         }
     else:
         addrs = cage_network_addrs(name, used_octets=used_octets)
-    dns_allowlist = _effective_dns_allowlist(config)
+    from agentcage.state import dns_allowlist_path
     return env.get_template("dns.container.j2").render(
         name=name,
         **addrs,
         dns_servers=config.dns_servers,
         log_dns_queries=config.logging.dns_queries,
-        dns_allowlist=dns_allowlist,
+        dns_allowlist_enabled=(config.domains.mode == "allowlist"),
+        dns_allowlist_host_path=str(dns_allowlist_path(name)),
     )
 
 
@@ -336,13 +337,16 @@ def generate_quadlets(
         volume_name=f"agentcage-certs-{name}",
     )
 
-    # DNS container — pass domain allowlist for DNS-level filtering
-    dns_allowlist = _effective_dns_allowlist(config)
+    # DNS container — allowlist comes from a sidecar file mounted in
+    # (state.dns_allowlist_path). The quadlet only encodes whether allowlist
+    # mode is on; the contents change without touching the systemd unit.
+    from agentcage.state import dns_allowlist_path
     files[f"{name}-dns.container"] = env.get_template("dns.container.j2").render(
         **common,
         dns_servers=config.dns_servers,
         log_dns_queries=config.logging.dns_queries,
-        dns_allowlist=dns_allowlist,
+        dns_allowlist_enabled=(config.domains.mode == "allowlist"),
+        dns_allowlist_host_path=str(dns_allowlist_path(deploy_name or name)),
     )
 
     # Capture volume — host path for capture JSONL

@@ -393,9 +393,10 @@ class TestCageRestart:
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
     @patch("agentcage.services.get_backend")
     @patch("agentcage.cli.state")
-    def test_restart_restarts_container(self, mock_state, mock_get_backend):
+    def test_restart_restarts_container(self, mock_state, mock_get_backend, _mock_ensure_dns):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("container")
         backend = mock_get_backend.return_value
@@ -404,9 +405,10 @@ class TestCageRestart:
         assert "Restarted" in result.output
         backend.restart.assert_called_once_with("test")
 
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
     @patch("agentcage.services.get_backend")
     @patch("agentcage.cli.state")
-    def test_restart_restarts_vm(self, mock_state, mock_get_backend):
+    def test_restart_restarts_vm(self, mock_state, mock_get_backend, _mock_ensure_dns):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("vm")
         backend = mock_get_backend.return_value
@@ -414,6 +416,77 @@ class TestCageRestart:
         assert result.exit_code == 0
         assert "Restarted" in result.output
         backend.restart.assert_called_once_with("test")
+
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.services.get_backend")
+    @patch("agentcage.cli.state")
+    def test_restart_regenerates_proxy_config(self, mock_state, mock_get_backend,
+                                              mock_ensure_dns):
+        """Restart must regenerate proxy-config.yaml from cage.yaml so
+        out-of-band edits to cage.yaml are picked up on reload."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        mock_state.load_deployment_config.return_value = cfg
+        result = _runner().invoke(main, ["cage", "restart", "test"])
+        assert result.exit_code == 0
+        mock_state.save_proxy_config.assert_called_once_with("test")
+
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.services.get_backend")
+    @patch("agentcage.cli.state")
+    def test_restart_regenerates_dns_allowlist(self, mock_state, mock_get_backend,
+                                               mock_ensure_dns):
+        """Restart must regenerate the dns-allowlist.conf sidecar file so
+        dnsmasq picks up domain changes — and must run the quadlet-current
+        check too, which is the (cheap) migration safety net."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        mock_state.load_deployment_config.return_value = cfg
+        result = _runner().invoke(main, ["cage", "restart", "test"])
+        assert result.exit_code == 0
+        mock_state.save_dns_allowlist.assert_called_once_with("test")
+        mock_ensure_dns.assert_called_once_with(cfg)
+
+
+class TestCageStart:
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.secret_resolver.resolve_and_populate")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._ensure_patches")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_start_regenerates_proxy_config(self, mock_state, MockPodman,
+                                            mock_ensure_patches,
+                                            mock_get_backend, mock_resolve,
+                                            mock_ensure_dns):
+        """Start must regenerate proxy-config.yaml from cage.yaml so any
+        edits made while the cage was stopped are applied on next start."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        result = _runner().invoke(main, ["cage", "start", "test"])
+        assert result.exit_code == 0
+        mock_state.save_proxy_config.assert_called_once_with("test")
+        mock_get_backend.return_value.start.assert_called_once_with("test")
+
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.secret_resolver.resolve_and_populate")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._ensure_patches")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_start_regenerates_dns_allowlist(self, mock_state, MockPodman,
+                                             mock_ensure_patches,
+                                             mock_get_backend, mock_resolve,
+                                             mock_ensure_dns):
+        """Start must regenerate dns-allowlist.conf and run the quadlet
+        migration check before starting services."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        mock_state.load_deployment_config.return_value = cfg
+        result = _runner().invoke(main, ["cage", "start", "test"])
+        assert result.exit_code == 0
+        mock_state.save_dns_allowlist.assert_called_once_with("test")
+        mock_ensure_dns.assert_called_once_with(cfg)
 
 
 class TestCageVerify:

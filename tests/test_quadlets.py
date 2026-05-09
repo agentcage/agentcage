@@ -122,10 +122,15 @@ class TestDnsQuadlet:
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-dns.container"]
-        # Should return placeholder IP for non-allowlisted and allow only listed ones
+        # Sinkhole stays in the quadlet; per-domain forwarders now live in
+        # the dns-allowlist.conf sidecar file referenced by --servers-file.
         assert "--address=/#/198.51.100.1" in content
-        assert "--server=/api.anthropic.com/100.100.100.100" in content
-        assert "--server=/github.com/100.100.100.100" in content
+        assert "--servers-file=/etc/dnsmasq-allow.conf" in content
+        assert "/etc/dnsmasq-allow.conf:ro,Z" in content
+        # The per-domain lines must NOT be baked into the quadlet — that's
+        # what we're moving away from so domain edits don't churn systemd.
+        assert "--server=/api.anthropic.com/" not in content
+        assert "--server=/github.com/" not in content
 
     def test_proxy_cage_local_resolves_to_proxy_ip(self, tmp_path):
         """proxy.cage.local is the canonical hostname for cage-internal
@@ -168,8 +173,11 @@ class TestDnsQuadlet:
         import re
         assert re.search(r"--address=/proxy\.cage\.local/10\.89\.\d+\.11", content), content
 
-    def test_dns_allowlist_forwards_to_all_servers(self, tmp_path):
-        """Each allowlisted domain should be forwarded to every DNS server."""
+    def test_dns_allowlist_forwards_to_all_servers(self, tmp_path, patch_state_dirs):
+        """Each allowlisted domain × upstream pair should appear in the
+        dns-allowlist.conf sidecar file (and therefore reach dnsmasq via
+        --servers-file). The quadlet itself stays stable across domain edits."""
+        state = patch_state_dirs
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -184,14 +192,11 @@ class TestDnsQuadlet:
               - 1.1.1.1
               - 8.8.8.8
         """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "--address=/#/198.51.100.1" in content
-        # Each domain forwarded to ALL three servers
+        state.save_deployment("test", str(p))
+        body = open(state.save_dns_allowlist("test")).read()
         for domain in ("github.com", "pypi.org"):
             for server in ("100.100.100.100", "1.1.1.1", "8.8.8.8"):
-                assert f"--server=/{domain}/{server}" in content
+                assert f"server=/{domain}/{server}" in body
 
     def test_dns_allowlist_uses_wrapper(self, tmp_path):
         """When allowlist is active, dnsmasq is wrapped with dns-audit.sh."""
@@ -1234,7 +1239,11 @@ class TestPassthroughQuadlets:
         proxy = files["test-proxy.container"]
         assert "--ignore-hosts" not in proxy
 
-    def test_dns_includes_passthrough_domains(self, tmp_path):
+    def test_dns_includes_passthrough_domains(self, tmp_path, patch_state_dirs):
+        """Passthrough domains must resolve via real DNS (not the sinkhole),
+        so they are merged into the dns-allowlist.conf sidecar alongside
+        normal allow entries."""
+        state = patch_state_dirs
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -1248,14 +1257,15 @@ class TestPassthroughQuadlets:
             dns_servers:
               - 100.100.100.100
         """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        dns = files["test-dns.container"]
-        assert "--server=/whatsapp.com/100.100.100.100" in dns
-        assert "--server=/anthropic.com/100.100.100.100" in dns
+        state.save_deployment("test", str(p))
+        body = open(state.save_dns_allowlist("test")).read()
+        assert "server=/whatsapp.com/100.100.100.100" in body
+        assert "server=/anthropic.com/100.100.100.100" in body
 
-    def test_backward_compat_mode_list_quadlets(self, tmp_path):
-        """Old mode+list format still generates correct quadlets."""
+    def test_backward_compat_mode_list_quadlets(self, tmp_path, patch_state_dirs):
+        """Old ``mode: allowlist`` + ``list:`` format still produces the right
+        sidecar file and a quadlet with the sinkhole + servers-file flag."""
+        state = patch_state_dirs
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -1268,8 +1278,12 @@ class TestPassthroughQuadlets:
             dns_servers:
               - 100.100.100.100
         """))
+        state.save_deployment("test", str(p))
+        body = open(state.save_dns_allowlist("test")).read()
+        assert "server=/api.anthropic.com/100.100.100.100" in body
+
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         dns = files["test-dns.container"]
-        assert "--server=/api.anthropic.com/100.100.100.100" in dns
         assert "--address=/#/198.51.100.1" in dns
+        assert "--servers-file=/etc/dnsmasq-allow.conf" in dns

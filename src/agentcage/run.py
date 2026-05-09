@@ -421,6 +421,7 @@ def execute(
 
         # Save proxy config and get its host path (mounted into proxy container)
         config_host_path = state.save_proxy_config(cage_name)
+        state.save_dns_allowlist(cage_name)
 
         if verbose:
             # VM mode builds images inside the VM — skip host scaffold setup

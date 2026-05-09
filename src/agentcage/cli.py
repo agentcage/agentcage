@@ -69,8 +69,28 @@ def _build_container_image(cfg, config_dir: Path, podman: Podman) -> None:
 def _restart_cage(name: str, cfg=None):
     """Restart all services for a cage using the appropriate backend.
 
-    Delegates to :func:`agentcage.services.restart_cage`.
+    Regenerates the two cage.yaml-derived files first so out-of-band edits
+    to ``cage.yaml`` (or older state where the derived files drifted) are
+    picked up on restart:
+
+    - ``proxy-config.yaml`` — what mitmdump reads for HTTP/HTTPS allowlist
+      decisions.
+    - ``dns-allowlist.conf`` — what dnsmasq reads via ``--servers-file`` for
+      DNS-layer allowlist filtering. Mounted into the dnsmasq sidecar; not
+      part of the systemd unit, so updating it doesn't require a
+      daemon-reload — just a service restart, which we're about to do anyway.
+
+    The DNS quadlet itself almost never has to change (its content no longer
+    depends on the domain list); :func:`_ensure_dns_quadlet_current` handles
+    the rare migration case where an older agentcage left a stale unit on
+    disk. Delegates the actual service restart to
+    :func:`agentcage.services.restart_cage`.
     """
+    if cfg is None:
+        cfg = state.load_deployment_config(name)
+    state.save_proxy_config(name)
+    state.save_dns_allowlist(name)
+    _ensure_dns_quadlet_current(cfg)
     from agentcage.services import restart_cage
     restart_cage(name, cfg)
 
@@ -509,6 +529,7 @@ def cage_create(config_path: str, secrets: tuple):
         )
 
     config_host_path = state.save_proxy_config(name)
+    state.save_dns_allowlist(name)
 
     # Build from Containerfile if configured (container mode only)
     if cfg.isolation == "container" and cfg.container.build.containerfile:
@@ -715,6 +736,7 @@ def cage_update(name: str, config_path: str | None):
     meta["agentcage_version"] = version("agentcage")
     state.save_metadata(name, meta)
     config_host_path = state.save_proxy_config(name)
+    state.save_dns_allowlist(name)
 
     podman = Podman()
 
@@ -1150,6 +1172,14 @@ def cage_start(name: str):
     # Refresh env:/cmd: secrets before starting (they may have changed)
     from agentcage.secret_resolver import resolve_and_populate
     resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
+
+    # Regenerate derived files from cage.yaml so any edits made while
+    # the cage was stopped are applied on the next start. The dns
+    # allowlist is a sidecar file mounted into dnsmasq; the quadlet
+    # itself only needs rewriting on the (rare) migration case.
+    state.save_proxy_config(name)
+    state.save_dns_allowlist(name)
+    _ensure_dns_quadlet_current(cfg)
 
     backend = get_backend(cfg)
     backend.start(name)
@@ -2009,8 +2039,9 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
             deploy_dir = Path(state.stored_config_path(target_name)).parent
             shutil.copy2(str(meta_src), str(deploy_dir / "metadata.json"))
 
-        # Regenerate proxy-config.yaml
+        # Regenerate derived files (proxy + dns allowlist)
         state.save_proxy_config(target_name)
+        state.save_dns_allowlist(target_name)
 
         # ── Build and deploy ──
         if no_start:
@@ -2339,36 +2370,84 @@ def domain_list(name: str):
             click.echo(f"{d} [passthrough only]")
 
 
-def _update_dns_quadlet(cfg) -> None:
-    """Regenerate the DNS quadlet and restart all cage services.
+def _ensure_dns_quadlet_current(cfg) -> bool:
+    """Make sure the on-disk DNS quadlet matches what the current template
+    renders for *cfg*. Returns True if the quadlet had to be rewritten (and
+    daemon-reload was issued), False if it was already up-to-date.
 
-    A DNS-only restart cascades via the Requires= dependency chain
-    (proxy Requires dns, cage Requires proxy) and leaves proxy/cage
-    stopped.  We stop all three explicitly, then start in dependency
-    order so everything comes back up cleanly.
+    The DNS quadlet's content is now stable across domain-allowlist changes —
+    the allowlist lives in a sidecar file mounted into dnsmasq, not on the
+    quadlet's command line. So in steady state this function is a cheap
+    string-compare and returns False without touching systemd.
+
+    A True return is the migration path: an older agentcage may have written
+    a quadlet that bakes the allowlist into ``--server=/...`` flags. The
+    first run under the new code rewrites the unit and does one daemon-reload;
+    every subsequent call is a no-op.
     """
     from agentcage.quadlets import render_dns_quadlet
 
     backend = get_backend(cfg)
     name = cfg.name
 
-    # Read the actual deployed network octet from metadata so we
-    # preserve the existing subnet.  Recomputing via the hash could
-    # yield a different octet if collision resolution shifted it at
-    # deploy time.
+    # Use the actual deployed network octet from metadata so we don't
+    # accidentally shift the subnet on already-deployed cages.
     meta = state.load_metadata(name)
     octet = meta.get("network_octet")
-    dns_content = render_dns_quadlet(cfg, network_octet=octet)
+    desired = render_dns_quadlet(cfg, network_octet=octet)
 
     if cfg.isolation == "vm":
         inst = LimaInstance(name)
-        # Write quadlet inside VM then restart services
+        # Read the current quadlet from inside the VM and compare.
+        result = inst.exec(
+            ["bash", "-c",
+             f"cat ~/.config/containers/systemd/{shlex.quote(name)}-dns.container 2>/dev/null || true"],
+            check=False,
+        )
+        current = (result.stdout or "")
+        if current == desired:
+            return False
         import base64
-        encoded = base64.b64encode(dns_content.encode()).decode()
+        encoded = base64.b64encode(desired.encode()).decode()
         inst.exec(["bash", "-c",
                    f"mkdir -p ~/.config/containers/systemd && "
                    f"echo '{encoded}' | base64 -d > ~/.config/containers/systemd/{shlex.quote(name)}-dns.container"])
         inst.exec(["systemctl", "--user", "daemon-reload"])
+        return True
+    else:
+        quadlet_path = backend.unit_dir() / f"{name}-dns.container"
+        current = quadlet_path.read_text() if quadlet_path.is_file() else ""
+        if current == desired:
+            return False
+        quadlet_path.write_text(desired)
+        systemd.daemon_reload()
+        return True
+
+
+def _update_dns_quadlet(cfg) -> None:
+    """Apply a domain-allowlist change to the dnsmasq sidecar.
+
+    Writes the allowlist sidecar file from cage.yaml and, if the cage is
+    running, restarts the dns/proxy/cage services in dependency order so
+    dnsmasq picks up the new file. The DNS quadlet itself almost never
+    needs rewriting — the allowlist isn't baked into it any more — so the
+    common path skips daemon-reload entirely. The migration safety check
+    in :func:`_ensure_dns_quadlet_current` covers cages whose on-disk
+    quadlet still has the old shape from a pre-upgrade install.
+
+    Note on the cascade: a DNS-only restart cascades via the ``Requires=``
+    dependency chain (proxy Requires dns, cage Requires proxy) and would
+    leave proxy/cage stopped.  We stop all three explicitly, then start in
+    dependency order so everything comes back up cleanly.
+    """
+    state.save_dns_allowlist(cfg.name)
+    _ensure_dns_quadlet_current(cfg)
+
+    backend = get_backend(cfg)
+    name = cfg.name
+
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
         if backend.is_running(name, "dns"):
             services = backend.service_names(name)
             for svc in services:
@@ -2377,9 +2456,6 @@ def _update_dns_quadlet(cfg) -> None:
             for svc in reversed(services):
                 inst.exec(["systemctl", "--user", "start", f"{name}-{svc}.service"])
     else:
-        quadlet_dir = backend.unit_dir()
-        (quadlet_dir / f"{name}-dns.container").write_text(dns_content)
-        systemd.daemon_reload()
         if backend.is_running(name, "dns"):
             # Stop most-dependent first, start dependencies first.
             services = backend.service_names(name)
