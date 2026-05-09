@@ -1,6 +1,11 @@
 [Unit]
 Description=agentcage mitmproxy
-Requires={{ name }}-dns.service
+# Wants= (not Requires=) so a dns restart — domain add/rm flush, dnsmasq
+# config update — does NOT cascade-stop the proxy. After= keeps boot-time
+# ordering: proxy starts after dns. If dns is down while the proxy is
+# running, hostname lookups fail with NXDOMAIN; the proxy stays up and
+# resumes when dns comes back.
+Wants={{ name }}-dns.service
 After={{ name }}-dns.service
 
 [Container]

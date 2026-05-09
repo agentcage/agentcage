@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `<cage>-cage.container` and `<cage>-proxy.container` quadlets now declare `Wants=` (instead of `Requires=`) on their upstream service, paired with the same `After=` ordering they had before. Net effect: a proxy restart no longer cascade-stops the cage, and a dns restart no longer cascade-stops the proxy. The boot-time activation order is unchanged (After= still gates startup). The motivating case: a `systemctl restart <cage>-proxy.service` (e.g. after a manual `proxy-config.yaml` regen, or as part of a `domain add`/`domain rm` cascade) used to drag the cage container down with it via the `Requires=` chain, which then took down stateful in-cage workloads — Matrix E2EE olm sessions especially. With `Wants=`, the cage stays up; its outbound traffic sees brief NXDOMAIN / proxy-unavailable while the upstream restarts, and resumes when the sidecar returns.
+- `_update_dns_quadlet` (the helper behind `domain add` / `domain rm`) no longer stops/starts the cage. With the new `Wants=` model the cage no longer needs to be bounced for systemd to be happy, so domain edits restart only `<cage>-dns.service` then `<cage>-proxy.service`. Stateful in-cage workloads now ride through domain changes without re-initializing.
+
+### Added
+- New `container.graceful_restart_signal` cage.yaml field (default empty). When set to a signal name (e.g. `SIGUSR1`), `agentcage cage restart` delivers that signal to the cage container's main process via `podman kill --signal=<name> <cage>-cage` instead of doing a `systemctl restart` of the cage unit. The cage process never exits — systemd never sees a stop — so workloads that handle their own graceful restart can preserve in-memory state across the restart. Proxy and DNS containers still restart conventionally; they're agentcage-owned and stateless. If the signal can't be delivered (container not running, unknown signal, podman error), the code logs the reason and falls back to the historical full-unit restart so the cage still ends up restarted, just less gracefully. The motivating workload is openclaw 2026.5+, which loses its Matrix E2EE olm sessions when the container is SIGTERM/SIGKILL'd mid-sync but recovers cleanly from an in-process SIGUSR1 restart; the openclaw scaffold now defaults `graceful_restart_signal: SIGUSR1` so new openclaw cages get this for free.
+
 ## [0.15.1] - 2026-05-09
 
 ### Changed
