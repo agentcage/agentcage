@@ -72,6 +72,16 @@ class ContainerConfig:
     restart_sec: int = 10
     timeout_start_sec: int = 600
     timeout_stop_sec: int = 30
+    # Signal name (e.g. "SIGUSR1") that the workload uses for an in-process
+    # restart. When set, ``agentcage cage restart`` (and the cage half of
+    # the dns-quadlet reload cascade) sends this signal to the cage
+    # container's main process via ``podman kill --signal=<name>`` instead
+    # of doing a ``systemctl restart``. This avoids the SIGTERM→SIGKILL
+    # path for workloads that handle their own graceful restart and would
+    # otherwise lose in-memory state (e.g. openclaw 2026.5+ Matrix olm
+    # sessions). Empty string keeps the historical behavior — full
+    # systemctl restart of the unit.
+    graceful_restart_signal: str = ""
 
 
 _VALID_LEVELS = ("debug", "info", "warning", "error", "critical")
@@ -406,6 +416,13 @@ def load_config(path: str) -> Config:
     cc.restart_sec = c.get("restart_sec") if c.get("restart_sec") is not None else 10
     cc.timeout_start_sec = c.get("timeout_start_sec", 120) or 0
     cc.timeout_stop_sec = c.get("timeout_stop_sec", 30) or 0
+    grs = c.get("graceful_restart_signal", "") or ""
+    if grs and not isinstance(grs, str):
+        raise ValueError(
+            f"container.graceful_restart_signal must be a signal name "
+            f"string (e.g. 'SIGUSR1'), got {type(grs).__name__}"
+        )
+    cc.graceful_restart_signal = grs
 
     # Build config
     build_raw = c.get("build") or {}

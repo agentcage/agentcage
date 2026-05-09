@@ -273,8 +273,11 @@ class TestProxyQuadlet:
         content = files["test-proxy.container"]
         assert "ContainerName=test-proxy" in content
         assert "Image=localhost/agentcage-proxy" in content
-        assert "Requires=test-dns.service" in content
+        # Wants= (not Requires=) so a dns restart doesn't cascade-stop
+        # the proxy. After= preserves boot-time ordering.
+        assert "Wants=test-dns.service" in content
         assert "After=test-dns.service" in content
+        assert "Requires=test-dns.service" not in content
         assert "Volume=/home/user/config.yaml:/etc/agentcage/config.yaml:ro,Z" in content
         assert "Volume=test-certs.volume:/home/mitmproxy/.mitmproxy:Z" in content
         assert "AddCapability=NET_ADMIN" in content
@@ -701,8 +704,12 @@ class TestCageQuadlet:
         content = files["test-cage.container"]
         assert "ContainerName=test-cage" in content
         assert "Image=localhost/test:latest" in content
-        assert "Requires=test-proxy.service" in content
+        # Wants= (not Requires=) so a proxy restart does NOT cascade-stop
+        # the cage container — preserves stateful workloads (e.g. matrix
+        # olm sessions). After= preserves boot-time ordering.
+        assert "Wants=test-proxy.service" in content
         assert "After=test-proxy.service" in content
+        assert "Requires=test-proxy.service" not in content
         assert f'Environment="HTTP_PROXY=http://{addrs["ip_proxy"]}:8080"' in content
         assert f'Environment="HTTPS_PROXY=http://{addrs["ip_proxy"]}:8080"' in content
         assert f'Environment="http_proxy=http://{addrs["ip_proxy"]}:8080"' in content

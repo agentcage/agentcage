@@ -447,6 +447,68 @@ class TestCageRestart:
         mock_state.save_dns_allowlist.assert_called_once_with("test")
         mock_ensure_dns.assert_called_once_with(cfg)
 
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_restart_signals_cage_when_graceful_signal_set(
+        self, mock_state, mock_get_backend, mock_ensure_dns,
+        MockPodman, mock_systemd,
+    ):
+        """When ``container.graceful_restart_signal`` is set, the cage
+        container should be signaled (in-process restart) and only proxy
+        + dns should hit ``systemctl restart`` — never the cage unit."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container", graceful_restart_signal="SIGUSR1")
+        cfg.name = "test"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
+        podman = MockPodman.return_value
+        podman.container_kill.return_value = (True, "")
+
+        result = _runner().invoke(main, ["cage", "restart", "test"])
+        assert result.exit_code == 0
+        podman.container_kill.assert_called_once_with("test-cage", "SIGUSR1")
+        # Only the companion services get a unit restart — the cage unit
+        # is intentionally left alone so its in-memory state survives.
+        restarted = [
+            call.args[0] for call in mock_systemd.restart_unit.call_args_list
+        ]
+        assert "test-dns.service" in restarted
+        assert "test-proxy.service" in restarted
+        assert "test-cage.service" not in restarted
+
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_restart_falls_back_to_unit_when_signal_delivery_fails(
+        self, mock_state, mock_get_backend, mock_ensure_dns,
+        MockPodman, mock_systemd,
+    ):
+        """If the signal can't be delivered (container missing, unknown
+        signal name, podman error), fall back to the historical full-unit
+        restart so the cage still ends up restarted — just less gracefully."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container", graceful_restart_signal="SIGUSR1")
+        cfg.name = "test"
+        mock_state.load_deployment_config.return_value = cfg
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
+        podman = MockPodman.return_value
+        podman.container_kill.return_value = (False, "no such signal")
+
+        result = _runner().invoke(main, ["cage", "restart", "test"])
+        assert result.exit_code == 0
+        # Attempted the signal, then fell back to the conventional
+        # services.restart_cage path (which does a full systemctl restart
+        # of all three units via the backend mock).
+        podman.container_kill.assert_called_once()
+        assert "falling back to systemctl restart" in result.output
+
 
 class TestCageStart:
     @patch("agentcage.cli._ensure_dns_quadlet_current")
@@ -612,12 +674,16 @@ class TestCageVerify:
         assert "1 warnings" in result.output
 
 
-def _mock_config(isolation="container", lifecycle="service", scaffold=""):
+def _mock_config(isolation="container", lifecycle="service", scaffold="",
+                 graceful_restart_signal=""):
     cfg = MagicMock()
     cfg.isolation = isolation
     cfg.lifecycle = lifecycle
     cfg.scaffold = scaffold
     cfg.container.nested_containers = False
+    # Default to "" so existing tests get the historical full-unit
+    # restart path; opt in by passing graceful_restart_signal="SIGUSR1".
+    cfg.container.graceful_restart_signal = graceful_restart_signal
     return cfg
 
 

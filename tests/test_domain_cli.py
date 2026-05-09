@@ -324,3 +324,59 @@ class TestDomainRm:
         # Should still be in allow, but removed from passthrough
         assert "whatsapp.com" in saved["domains"]["allow"]
         assert "whatsapp.com" not in saved["domains"]["passthrough"]
+
+
+class TestUpdateDnsQuadletDoesNotTouchCage:
+    """`cage Wants proxy` (and `proxy Wants dns`) replaces `Requires=`, so a
+    DNS-allowlist update no longer needs to bounce the cage to keep systemd
+    happy. The cage container is left running; its outbound traffic sees a
+    brief window of NXDOMAIN / proxy-down while dns and proxy restart, then
+    resumes. This is what makes domain add/rm safe for stateful workloads
+    (matrix olm sessions, long-poll syncs)."""
+
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_update_dns_quadlet_restarts_dns_and_proxy_only(
+        self, mock_state, mock_get_backend, mock_systemd, mock_ensure,
+    ):
+        from agentcage.cli import _update_dns_quadlet
+
+        cfg = MagicMock()
+        cfg.name = "basic"
+        cfg.isolation = "container"
+        cfg.container.graceful_restart_signal = ""
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = True
+
+        _update_dns_quadlet(cfg)
+
+        restarted = [
+            call.args[0] for call in mock_systemd.restart_unit.call_args_list
+        ]
+        assert restarted == ["basic-dns.service", "basic-proxy.service"]
+        # The cage unit must NOT be touched here — that's the whole point.
+        assert "basic-cage.service" not in restarted
+        # Likewise we should not have called stop_unit on anything.
+        mock_systemd.stop_unit.assert_not_called()
+
+    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_update_dns_quadlet_noop_when_dns_not_running(
+        self, mock_state, mock_get_backend, mock_systemd, mock_ensure,
+    ):
+        from agentcage.cli import _update_dns_quadlet
+
+        cfg = MagicMock()
+        cfg.name = "basic"
+        cfg.isolation = "container"
+        cfg.container.graceful_restart_signal = ""
+        backend = mock_get_backend.return_value
+        backend.is_running.return_value = False  # dns not running
+
+        _update_dns_quadlet(cfg)
+
+        mock_systemd.restart_unit.assert_not_called()

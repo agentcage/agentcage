@@ -104,6 +104,21 @@ class Podman:
         )
         return r.returncode, r.stdout
 
+    def container_kill(self, name: str, signal: str) -> tuple[bool, str]:
+        """Send *signal* to the running container's main process.
+
+        Used by the in-process restart path (``graceful_restart_signal``):
+        the container keeps running, the workload handles the signal and
+        re-initializes itself without exiting. Returns ``(ok, stderr)`` so
+        the caller can log a precise reason when the kill fails (container
+        not running, unknown signal, etc.).
+        """
+        r = subprocess.run(
+            [*_podman_cmd(), "kill", "--signal", signal, name],
+            capture_output=True, text=True,
+        )
+        return r.returncode == 0, (r.stderr or "").strip()
+
     def network_remove(self, name: str) -> bool:
         r = subprocess.run([*_podman_cmd(), "network", "rm", name],
                            capture_output=True)
