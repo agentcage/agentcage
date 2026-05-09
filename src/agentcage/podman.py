@@ -44,12 +44,25 @@ class Podman:
         no_cache: bool = False,
         build_args: dict[str, str] | None = None,
         quiet: bool = False,
+        pull: bool = False,
     ) -> None:
+        """Run ``podman build`` to produce *tag*.
+
+        *no_cache* invalidates podman's per-layer build cache.
+        *pull* forces ``--pull=always``, re-fetching the base image (the
+        Containerfile's ``FROM`` ref) from the registry instead of reusing
+        the locally cached copy. The two flags are independent: ``no_cache``
+        alone will reuse a stale base image; ``pull`` alone will reuse
+        cached intermediate layers built on top of the freshly-pulled base.
+        Pass both for a fully clean rebuild.
+        """
         cmd = [*_podman_cmd(), "build", "-t", tag]
         if containerfile is not None:
             cmd.extend(["-f", containerfile])
         if no_cache:
             cmd.append("--no-cache")
+        if pull:
+            cmd.append("--pull=always")
         for cap in cap_add or []:
             cmd.extend(["--cap-add", cap])
         for k, v in (build_args or {}).items():

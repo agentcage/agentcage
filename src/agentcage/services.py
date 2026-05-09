@@ -169,6 +169,8 @@ def build_container_image(
     config_dir: Path,
     podman: Podman,
     echo: Callable[[str], None] | None = None,
+    no_cache: bool = False,
+    pull: bool = False,
 ) -> None:
     """Build the main container image from a Containerfile.
 
@@ -177,6 +179,19 @@ def build_container_image(
     relative to it.
 
     *echo* is an optional callback for progress messages (e.g. click.echo).
+
+    *no_cache* forces ``podman build --no-cache`` so every layer is rebuilt
+    from scratch. Use this when the on-disk Containerfile changed but the
+    layer cache would otherwise short-circuit the rebuild — for example
+    after pulling a fresh agentcage release that changed the Containerfile
+    or any of the files it COPYs in.
+
+    *pull* forces ``podman build --pull=always`` so the Containerfile's
+    ``FROM`` base image is re-fetched from the registry instead of reused
+    from the local image cache. Complements *no_cache*: *no_cache*
+    invalidates the per-layer build cache, *pull* invalidates the
+    base-image cache. Combine both for a fully clean rebuild (e.g. when a
+    ``:latest`` upstream base bumped versions and you want the new one).
     """
     from agentcage.registry import resolve_build_args
 
@@ -197,13 +212,15 @@ def build_container_image(
             echo(f"Build arg {key}: {new}")
 
     if echo:
-        echo(f"Building {cfg.container.image}...")
+        echo(f"Building {cfg.container.image}{' (no-cache)' if no_cache else ''}...")
     podman.build_image(
         cfg.container.image,
         str(containerfile),
         context_dir,
         cap_add=_BUILD_CAPS,
         build_args=resolved_args,
+        no_cache=no_cache,
+        pull=pull,
     )
 
 

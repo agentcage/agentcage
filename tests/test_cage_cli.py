@@ -82,6 +82,123 @@ class TestCageUpdate:
         assert "does not match" in result.output
 
 
+class TestCageUpdateNoCache:
+    """`agentcage cage update --no-cache` must propagate the flag down to
+    the build-image step so podman gets `--no-cache` and rebuilds every
+    layer instead of short-circuiting from the layer cache. Default
+    (`no_cache=False`) must keep the cached behavior."""
+
+    def _setup(self, mock_state, MockPodman, tmp_path):
+        from agentcage.config import Config, ContainerConfig, BuildConfig
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = tmp_path
+        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
+        mock_state.load_metadata.return_value = {}
+        # cage_update reads raw config via state.load_raw_config to do
+        # scaffold-aware tag resolution; return a real dict so the
+        # `image_base, _, current_tag = current_image.rpartition(":")`
+        # tuple-unpack doesn't blow up on a MagicMock.
+        mock_state.load_raw_config.return_value = {
+            "name": "test",
+            "container": {"image": "test:latest", "build": {"args": {}}},
+        }
+        mock_state.load_deployment_config.return_value = Config(
+            name="test",
+            isolation="container",
+            container=ContainerConfig(
+                image="test:latest",
+                build=BuildConfig(containerfile="Containerfile", args={}),
+            ),
+        )
+        podman = MockPodman.return_value
+        podman.pull.return_value = True
+        return podman
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._build_container_image")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_no_cache_flag_propagates(self, mock_state, MockPodman, mock_systemd,
+                                      mock_build, mock_backend, _check_secrets,
+                                      _check_ports, _build_deploy, tmp_path):
+        self._setup(mock_state, MockPodman, tmp_path)
+        result = _runner().invoke(main, ["cage", "update", "test", "--no-cache"])
+        assert result.exit_code == 0, result.output
+        # _build_container_image is the CLI wrapper; must be called with no_cache=True.
+        assert mock_build.called
+        assert mock_build.call_args.kwargs.get("no_cache") is True
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._build_container_image")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_default_keeps_layer_cache(self, mock_state, MockPodman, mock_systemd,
+                                       mock_build, mock_backend, _check_secrets,
+                                       _check_ports, _build_deploy, tmp_path):
+        """Default `cage update` (no flag) must keep cache-on behavior — this
+        is what makes incremental rebuilds fast."""
+        self._setup(mock_state, MockPodman, tmp_path)
+        result = _runner().invoke(main, ["cage", "update", "test"])
+        assert result.exit_code == 0, result.output
+        assert mock_build.called
+        assert mock_build.call_args.kwargs.get("no_cache") is False
+        assert mock_build.call_args.kwargs.get("pull") is False
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._build_container_image")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_pull_flag_propagates(self, mock_state, MockPodman, mock_systemd,
+                                  mock_build, mock_backend, _check_secrets,
+                                  _check_ports, _build_deploy, tmp_path):
+        """`cage update --pull` must propagate pull=True to the build wrapper
+        so podman gets `--pull=always` and re-fetches the base image from
+        the registry instead of reusing the local image cache."""
+        self._setup(mock_state, MockPodman, tmp_path)
+        result = _runner().invoke(main, ["cage", "update", "test", "--pull"])
+        assert result.exit_code == 0, result.output
+        assert mock_build.called
+        assert mock_build.call_args.kwargs.get("pull") is True
+        # --pull alone leaves layer cache on.
+        assert mock_build.call_args.kwargs.get("no_cache") is False
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._build_container_image")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_pull_combines_with_no_cache(self, mock_state, MockPodman, mock_systemd,
+                                         mock_build, mock_backend, _check_secrets,
+                                         _check_ports, _build_deploy, tmp_path):
+        """`cage update --pull --no-cache` is the fully-clean-rebuild path:
+        both base-image cache (--pull) and layer cache (--no-cache) are
+        invalidated. This is what an operator wants when an upstream
+        :latest base bumped versions and the Containerfile changed too."""
+        self._setup(mock_state, MockPodman, tmp_path)
+        result = _runner().invoke(
+            main, ["cage", "update", "test", "--pull", "--no-cache"]
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_build.called
+        assert mock_build.call_args.kwargs.get("pull") is True
+        assert mock_build.call_args.kwargs.get("no_cache") is True
+
+
 class TestCageUpdateBuildArgs:
     """Verify `cage update` re-resolves scaffold-declared-untagged build args."""
 
