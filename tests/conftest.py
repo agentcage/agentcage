@@ -30,6 +30,19 @@ sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
 
 @pytest.fixture
+def patch_state_dirs(tmp_path, monkeypatch):
+    """Redirect agentcage.state's filesystem roots into tmp_path. Prevents
+    tests that exercise save_proxy_config / save_dns_allowlist / etc. from
+    writing into the developer's real ~/.config/agentcage."""
+    import agentcage.state as state
+    config_dir = tmp_path / "config" / "agentcage"
+    monkeypatch.setattr(state, "_CONFIG_DIR", config_dir)
+    monkeypatch.setattr(state, "_DEPLOYMENTS_DIR", config_dir / "cages")
+    monkeypatch.setattr(state, "_DATA_DIR", tmp_path / "data" / "agentcage")
+    return state
+
+
+@pytest.fixture
 def minimal_yaml(tmp_path):
     """Write a minimal valid config and return its path."""
     p = tmp_path / "config.yaml"

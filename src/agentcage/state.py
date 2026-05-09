@@ -138,3 +138,38 @@ def save_proxy_config(name: str) -> str:
     with open(p, "w") as f:
         yaml.safe_dump(proxy_cfg, f, default_flow_style=False, sort_keys=False)
     return str(p)
+
+
+def dns_allowlist_path(name: str) -> Path:
+    """Return the host path of the dnsmasq sidecar's allowlist file.
+
+    The dnsmasq quadlet mounts this file read-only at
+    ``/etc/dnsmasq-allow.conf`` and reads it via ``--servers-file``. Decoupling
+    the allowlist from the quadlet's command line means a domain change is
+    just a file rewrite — no systemd unit churn, no daemon-reload.
+    """
+    return _deploy_dir(name) / "dns-allowlist.conf"
+
+
+def save_dns_allowlist(name: str) -> str:
+    """Write the dnsmasq allowlist file for *name* from its stored cage.yaml.
+
+    The output is dnsmasq's ``--servers-file`` format: one ``server=/<domain>/<upstream>``
+    line per (allowed-domain × upstream-server) pair. dnsmasq treats this as
+    a partial config, additive to anything in the main quadlet command line,
+    and re-reads it on container start (or SIGHUP). Returns the path written.
+
+    Idempotent. Cheap. Always safe to call. Empty when the cage isn't in
+    allowlist mode — dnsmasq is fine with an empty file.
+    """
+    from agentcage.quadlets import _effective_dns_allowlist
+    cfg = load_deployment_config(name)
+    p = dns_allowlist_path(name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"server=/{domain}/{srv}"
+        for domain in _effective_dns_allowlist(cfg)
+        for srv in cfg.dns_servers
+    ]
+    p.write_text("\n".join(lines) + ("\n" if lines else ""))
+    return str(p)

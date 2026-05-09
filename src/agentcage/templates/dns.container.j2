@@ -7,7 +7,8 @@ Image=localhost/agentcage-dns
 Network={{ name }}-net.network:ip={{ ip_dns }}
 Network=podman
 AddCapability=NET_BIND_SERVICE
-{% if dns_allowlist %}Exec=/usr/local/bin/dns-audit.sh{% if log_dns_queries %} --log-allowed{% endif %} -- dnsmasq --no-daemon --log-queries --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %} --address=/proxy.cage.local/{{ ip_proxy }} --address=/#/198.51.100.1{% for domain in dns_allowlist %}{% for srv in dns_servers %} --server=/{{ domain }}/{{ srv }}{% endfor %}{% endfor %}{% else %}Exec=dnsmasq --no-daemon{% if log_dns_queries %} --log-queries{% endif %} --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %} --address=/proxy.cage.local/{{ ip_proxy }}{% endif %}
+{% if dns_allowlist_enabled %}Volume={{ dns_allowlist_host_path }}:/etc/dnsmasq-allow.conf:ro,Z
+Exec=/usr/local/bin/dns-audit.sh{% if log_dns_queries %} --log-allowed{% endif %} -- dnsmasq --no-daemon --log-queries --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %} --address=/proxy.cage.local/{{ ip_proxy }} --address=/#/198.51.100.1 --servers-file=/etc/dnsmasq-allow.conf{% else %}Exec=dnsmasq --no-daemon{% if log_dns_queries %} --log-queries{% endif %} --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %} --address=/proxy.cage.local/{{ ip_proxy }}{% endif %}
 
 
 [Service]

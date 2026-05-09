@@ -152,6 +152,78 @@ class TestSaveProxyConfig:
         assert proxy_cfg["protocol_relays"][0]["name"] == "migadu-imap"
 
 
+class TestSaveDnsAllowlist:
+    """save_dns_allowlist writes dnsmasq's --servers-file format from cage.yaml."""
+
+    def test_writes_one_line_per_domain_upstream_pair(self, tmp_path, _patch_state_dirs):
+        state = _patch_state_dirs
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(textwrap.dedent("""\
+            name: app
+            container:
+              image: localhost/app:latest
+            domains:
+              allow:
+                - api.example.com
+                - github.com
+            dns_servers:
+              - 1.1.1.1
+              - 8.8.8.8
+        """))
+        state.save_deployment("app", str(cfg))
+        path = state.save_dns_allowlist("app")
+        body = Path(path).read_text().splitlines()
+        # 2 domains × 2 upstreams = 4 lines, deterministic order
+        assert body == [
+            "server=/api.example.com/1.1.1.1",
+            "server=/api.example.com/8.8.8.8",
+            "server=/github.com/1.1.1.1",
+            "server=/github.com/8.8.8.8",
+        ]
+
+    def test_empty_when_not_in_allowlist_mode(self, tmp_path, _patch_state_dirs):
+        """Block-mode and the implicit no-domains case must produce an empty
+        file — dnsmasq tolerates an empty --servers-file fine, and the
+        sinkhole flag is gated separately on allowlist mode."""
+        state = _patch_state_dirs
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(textwrap.dedent("""\
+            name: app
+            container:
+              image: localhost/app:latest
+            domains:
+              block:
+                - bad.example
+            dns_servers:
+              - 1.1.1.1
+        """))
+        state.save_deployment("app", str(cfg))
+        path = state.save_dns_allowlist("app")
+        assert Path(path).read_text() == ""
+
+    def test_passthrough_merged_into_dns_lines(self, tmp_path, _patch_state_dirs):
+        """Passthrough domains must resolve via real DNS too, so they belong
+        in the allowlist file alongside regular allow entries."""
+        state = _patch_state_dirs
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(textwrap.dedent("""\
+            name: app
+            container:
+              image: localhost/app:latest
+            domains:
+              allow:
+                - allowed.example
+              passthrough:
+                - passthrough.example
+            dns_servers:
+              - 1.1.1.1
+        """))
+        state.save_deployment("app", str(cfg))
+        body = Path(state.save_dns_allowlist("app")).read_text()
+        assert "server=/allowed.example/1.1.1.1" in body
+        assert "server=/passthrough.example/1.1.1.1" in body
+
+
 class TestSaveAndLoadMetadata:
     """save_metadata / load_metadata round-trip."""
 
