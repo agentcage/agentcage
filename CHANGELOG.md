@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-05-09
+
 ### Changed
 - The DNS sidecar's allowlist no longer lives on dnsmasq's command line. The per-domain `--server=/<domain>/<upstream>` flags that were rendered into `<cage>-dns.container` are gone; in their place, the quadlet mounts a new sidecar file at `/etc/dnsmasq-allow.conf` (host path: `~/.config/agentcage/cages/<name>/dns-allowlist.conf`) and runs dnsmasq with `--servers-file=/etc/dnsmasq-allow.conf`. The file is dnsmasq's native config-format — one `server=/<domain>/<upstream>` line per (allowed-domain × upstream-server) pair — and is written by a new `state.save_dns_allowlist(name)` helper. Net effect: the systemd unit content is now stable across domain edits, so `agentcage domain add` / `domain rm` and `agentcage cage start` / `cage restart` can apply allowlist changes with just a file rewrite plus `systemctl restart` — no `daemon-reload`, no unit-file churn, no surprise cascade beyond the existing `Requires=` chain. The `_update_dns_quadlet` helper still exists as the public reload contract for `domain add` / `domain rm` (and is what existing tests mock), but its implementation reduces to "write the sidecar file, run a cheap migration check, restart services if running."
 - One-time migration: existing cages have a quadlet that bakes the allowlist into the command line and lacks the new mount. The first `cage restart` (or the first `domain add` / `domain rm`) under this version detects the mismatch via the new `_ensure_dns_quadlet_current(cfg)` helper, rewrites the unit to the new shape, and runs one `daemon-reload`. From then on the quadlet stays untouched.
