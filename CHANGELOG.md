@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `agentcage cage update --no-cache` (and `cage create --no-cache`) flag forces a full image rebuild, passing `--no-cache` through to `podman build` so every layer is rebuilt from scratch. Useful after pulling a fresh agentcage release that changed the Containerfile or any of its build context — without it, podman's layer cache will short-circuit the rebuild and the new Containerfile directives (e.g. a fresh `ENTRYPOINT`) silently won't take effect, leaving operators chasing why a new release didn't change runtime behavior. Default is unchanged (cache on); only opt in when you specifically want a clean rebuild.
+- `agentcage cage update --pull` (and `cage create --pull`) flag forces `podman build --pull=always`, re-fetching the Containerfile's `FROM` base image from the registry instead of reusing the locally cached copy. Independent from `--no-cache`: `--no-cache` invalidates podman's per-layer build cache, `--pull` invalidates the base-image cache. Combine both (`--no-cache --pull`) for a fully clean rebuild. Motivating case: a cage's `FROM ghcr.io/openclaw/openclaw:latest` was stuck on an old `:latest` digest in the local image store even after `cage update --no-cache`, because layer-cache invalidation does not re-resolve the base ref against the registry; the new flag does.
+
 ## [0.15.2] - 2026-05-09
 
 ### Changed

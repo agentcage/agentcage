@@ -61,9 +61,12 @@ def _podman_for_cage(name: str) -> Podman:
     return Podman()
 
 
-def _build_container_image(cfg, config_dir: Path, podman: Podman) -> None:
+def _build_container_image(cfg, config_dir: Path, podman: Podman,
+                           no_cache: bool = False,
+                           pull: bool = False) -> None:
     """CLI wrapper that passes click.echo to the service layer."""
-    _build_container_image_svc(cfg, config_dir, podman, echo=click.echo)
+    _build_container_image_svc(cfg, config_dir, podman, echo=click.echo,
+                               no_cache=no_cache, pull=pull)
 
 
 def _signal_cage_container(name: str, cfg) -> bool:
@@ -474,7 +477,11 @@ def cage():
 @click.option("-c", "--config", "config_path", required=True, type=click.Path(exists=True))
 @click.option("-s", "--set-secret", "secrets", multiple=True,
               help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
-def cage_create(config_path: str, secrets: tuple):
+@click.option("--no-cache", is_flag=True,
+              help="Force a full image rebuild (ignore podman's layer cache).")
+@click.option("--pull", is_flag=True,
+              help="Force re-pull of the base image from the registry.")
+def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool):
     """Build images, generate quadlets, install, and start a new cage."""
     from agentcage import output as _out
     _out.banner(version("agentcage"))
@@ -615,7 +622,7 @@ def cage_create(config_path: str, secrets: tuple):
 
     # Build from Containerfile if configured (container mode only)
     if cfg.isolation == "container" and cfg.container.build.containerfile:
-        _build_container_image(cfg, Path(config_path).parent, podman)
+        _build_container_image(cfg, Path(config_path).parent, podman, no_cache=no_cache, pull=pull)
 
     # Pull image on host (container mode) — VM mode pulls inside the VM
     if cfg.isolation == "container":
@@ -660,7 +667,15 @@ def cage_create(config_path: str, secrets: tuple):
 @cage.command("update")
 @click.argument("name")
 @click.option("-c", "--config", "config_path", type=click.Path(exists=True))
-def cage_update(name: str, config_path: str | None):
+@click.option("--no-cache", is_flag=True,
+              help="Force a full image rebuild (ignore podman's layer cache). "
+                   "Use after pulling a fresh agentcage release that changed "
+                   "the Containerfile or any of its build context.")
+@click.option("--pull", is_flag=True,
+              help="Force re-pull of the base image from the registry "
+                   "(--pull=always). Combine with --no-cache for a fully "
+                   "clean rebuild.")
+def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
     """Rebuild and restart an existing cage."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
@@ -863,7 +878,7 @@ def cage_update(name: str, config_path: str | None):
     # Build from Containerfile if configured (container mode only)
     if cfg.isolation == "container" and cfg.container.build.containerfile:
         config_dir = Path(config_path).parent if config_path else state.deployment_dir(name)
-        _build_container_image(cfg, config_dir, podman)
+        _build_container_image(cfg, config_dir, podman, no_cache=no_cache, pull=pull)
 
     # Pull image on host (container mode) — VM mode pulls inside the VM
     if cfg.isolation == "container":
