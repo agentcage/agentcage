@@ -60,9 +60,13 @@ else
 fi
 
 # 4.5: Removed domain blocked (poll — proxy may need a moment)
+# Timeout raised to 75s after a 45s flake landed exactly on the boundary
+# (poll timed out, the very next curl returned 403). The settling window
+# after `domain rm` includes a dns sidecar restart + a proxy restart, plus
+# any DNS-cache decay inside the cage; 75s gives that comfortable headroom.
 e2e_timer_start
 wait_ready "$BASE" 60 || true
-if wait_http_blocked "$BASE/fetch?url=http://example.com" 45; then
+if wait_http_blocked "$BASE/fetch?url=http://example.com" 75; then
   e2e_pass "4.5" "Removed domain blocked"
 else
   CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://example.com" 2>/dev/null || echo "000")
