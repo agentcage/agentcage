@@ -28,12 +28,6 @@ container:
   nested_containers: true
   command: ["/usr/local/bin/entrypoint.sh"]
 
-  # openclaw 2026.5+ does an in-process restart on SIGUSR1 (PID stays).
-  # `agentcage cage restart` (and the dns-allowlist reload cascade)
-  # delivers this signal instead of recreating the container, so Matrix
-  # E2EE olm sessions and other in-memory state survive the restart.
-  graceful_restart_signal: SIGUSR1
-
   add_capabilities:
     - NET_BIND_SERVICE
 

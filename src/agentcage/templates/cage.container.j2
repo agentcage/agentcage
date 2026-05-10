@@ -1,12 +1,6 @@
 [Unit]
 Description=agentcage cage
-# Wants= (not Requires=) so a proxy restart — including the brief stop+start
-# from a `cage update` on the proxy quadlet, or a manual mitmdump bounce —
-# does NOT cascade-stop the cage container. After= keeps the boot-time
-# ordering: cage starts after proxy on a fresh boot. If the proxy is down
-# while the cage is running, the cage's outbound traffic just times out
-# (default route is via {{ ip_proxy }}); the security posture is preserved.
-Wants={{ name }}-proxy.service
+Requires={{ name }}-proxy.service
 After={{ name }}-proxy.service
 
 [Container]
