@@ -69,80 +69,6 @@ def _build_container_image(cfg, config_dir: Path, podman: Podman,
                                no_cache=no_cache, pull=pull)
 
 
-def _signal_cage_container(name: str, cfg) -> bool:
-    """If ``cfg.container.graceful_restart_signal`` is set, deliver it to
-    the running cage container so the workload can do an in-process
-    restart, and return True. Otherwise return False so the caller falls
-    back to a full ``systemctl restart`` of the cage unit.
-
-    The cage container's process never exits — systemd never sees a stop —
-    so the workload can preserve in-memory state (e.g. openclaw's Matrix
-    olm sessions) across the restart. Proxy and DNS containers still
-    restart conventionally; they're agentcage-owned and stateless.
-
-    Returns False (and logs a warning) when the signal can't be delivered
-    — container not running, unknown signal, etc. — so the caller does the
-    historical full-unit restart and the cage still ends up restarted, just
-    less gracefully.
-    """
-    sig = cfg.container.graceful_restart_signal
-    if not sig:
-        return False
-    backend = get_backend(cfg)
-    if not backend.is_running(name, "cage"):
-        return False
-
-    container_name = f"{name}-cage"
-    if cfg.isolation == "vm":
-        inst = LimaInstance(name)
-        result = inst.exec(
-            ["podman", "kill", "--signal", sig, container_name],
-            check=False,
-        )
-        ok = result.returncode == 0
-        err = (result.stderr or "").strip()
-    else:
-        ok, err = Podman().container_kill(container_name, sig)
-
-    if not ok:
-        click.echo(
-            f"warning: graceful_restart_signal {sig} → {container_name} "
-            f"failed ({err or 'unknown error'}); falling back to "
-            f"systemctl restart",
-            err=True,
-        )
-        return False
-    click.echo(f"Sent {sig} to {container_name} (in-process restart)")
-    return True
-
-
-def _restart_cage_companions(cfg) -> None:
-    """Restart only the proxy and dns services (not the cage). Used when
-    the cage itself was already handled via ``_signal_cage_container``.
-
-    Proxy and dns are agentcage-owned and stateless, so a hard restart
-    here is fine — and it's what makes the freshly-written
-    ``proxy-config.yaml`` / ``dns-allowlist.conf`` actually take effect.
-    """
-    name = cfg.name
-    if cfg.isolation == "vm":
-        inst = LimaInstance(name)
-        for svc in ("dns", "proxy"):
-            inst.exec(
-                ["systemctl", "--user", "restart", f"{name}-{svc}.service"],
-                check=False,
-            )
-    else:
-        for svc in ("dns", "proxy"):
-            try:
-                systemd.restart_unit(f"{name}-{svc}.service")
-            except Exception as e:
-                click.echo(
-                    f"warning: failed to restart {name}-{svc}: {e}",
-                    err=True,
-                )
-
-
 def _restart_cage(name: str, cfg=None):
     """Restart all services for a cage using the appropriate backend.
 
@@ -160,22 +86,14 @@ def _restart_cage(name: str, cfg=None):
     The DNS quadlet itself almost never has to change (its content no longer
     depends on the domain list); :func:`_ensure_dns_quadlet_current` handles
     the rare migration case where an older agentcage left a stale unit on
-    disk.
-
-    If the cage declares ``container.graceful_restart_signal``, the cage
-    container is restarted in-process via that signal (proxy + dns still
-    restart conventionally, since they're stateless). Otherwise this falls
-    through to :func:`agentcage.services.restart_cage` for the historical
-    full-unit restart of all three.
+    disk. Delegates the actual service restart to
+    :func:`agentcage.services.restart_cage`.
     """
     if cfg is None:
         cfg = state.load_deployment_config(name)
     state.save_proxy_config(name)
     state.save_dns_allowlist(name)
     _ensure_dns_quadlet_current(cfg)
-    if _signal_cage_container(name, cfg):
-        _restart_cage_companions(cfg)
-        return
     from agentcage.services import restart_cage
     restart_cage(name, cfg)
 
@@ -2525,21 +2443,17 @@ def _update_dns_quadlet(cfg) -> None:
     """Apply a domain-allowlist change to the dnsmasq sidecar.
 
     Writes the allowlist sidecar file from cage.yaml and, if the cage is
-    running, restarts the dns and proxy services so dnsmasq picks up the
-    new file and mitmproxy refreshes its upstream view. The DNS quadlet
-    itself almost never needs rewriting — the allowlist isn't baked into
-    it any more — so the common path skips daemon-reload entirely. The
-    migration safety check in :func:`_ensure_dns_quadlet_current` covers
-    cages whose on-disk quadlet still has the old shape from a
-    pre-upgrade install.
+    running, restarts the dns/proxy/cage services in dependency order so
+    dnsmasq picks up the new file. The DNS quadlet itself almost never
+    needs rewriting — the allowlist isn't baked into it any more — so the
+    common path skips daemon-reload entirely. The migration safety check
+    in :func:`_ensure_dns_quadlet_current` covers cages whose on-disk
+    quadlet still has the old shape from a pre-upgrade install.
 
-    The cage container is intentionally left running. With ``cage Wants
-    proxy`` (not ``Requires=``), a proxy restart no longer cascades and
-    drags the cage down with it. The cage's outbound traffic sees brief
-    DNS / proxy unavailability during the bounce and resumes when the
-    sidecars come back — which is exactly what we want for stateful
-    workloads (matrix olm sessions, long-poll syncs) that would otherwise
-    lose state on a hard restart.
+    Note on the cascade: a DNS-only restart cascades via the ``Requires=``
+    dependency chain (proxy Requires dns, cage Requires proxy) and would
+    leave proxy/cage stopped.  We stop all three explicitly, then start in
+    dependency order so everything comes back up cleanly.
     """
     state.save_dns_allowlist(cfg.name)
     _ensure_dns_quadlet_current(cfg)
@@ -2547,27 +2461,26 @@ def _update_dns_quadlet(cfg) -> None:
     backend = get_backend(cfg)
     name = cfg.name
 
-    if not backend.is_running(name, "dns"):
-        return
-
-    # Restart dns first (it has no upstream deps), then proxy
-    # (proxy Wants dns, so it picks up dnsmasq once dns is back).
     if cfg.isolation == "vm":
         inst = LimaInstance(name)
-        for svc in ("dns", "proxy"):
-            inst.exec(
-                ["systemctl", "--user", "restart", f"{name}-{svc}.service"],
-                check=False,
-            )
+        if backend.is_running(name, "dns"):
+            services = backend.service_names(name)
+            for svc in services:
+                inst.exec(["systemctl", "--user", "stop", f"{name}-{svc}.service"],
+                          check=False)
+            for svc in reversed(services):
+                inst.exec(["systemctl", "--user", "start", f"{name}-{svc}.service"])
     else:
-        for svc in ("dns", "proxy"):
-            try:
-                systemd.restart_unit(f"{name}-{svc}.service")
-            except Exception as e:
-                click.echo(
-                    f"warning: failed to restart {name}-{svc}: {e}",
-                    err=True,
-                )
+        if backend.is_running(name, "dns"):
+            # Stop most-dependent first, start dependencies first.
+            services = backend.service_names(name)
+            for svc in services:
+                try:
+                    systemd.stop_unit(f"{name}-{svc}.service")
+                except Exception:
+                    pass
+            for svc in reversed(services):
+                systemd.start_unit(f"{name}-{svc}.service")
 
 
 @domain.command("add")

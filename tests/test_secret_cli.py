@@ -19,10 +19,6 @@ def _mock_container_config():
     cfg.name = "myapp"
     cfg.secret_injection = []
     cfg.container.podman_secrets = []
-    # Default to the historical behavior (full systemctl restart cascade)
-    # so test paths that don't care about signal-restart aren't forced
-    # to mock Podman().container_kill().
-    cfg.container.graceful_restart_signal = ""
     return cfg
 
 

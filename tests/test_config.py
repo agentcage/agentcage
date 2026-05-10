@@ -30,7 +30,6 @@ class TestLoadConfigMinimal:
         assert cc.restart_sec == 10
         assert cc.timeout_start_sec == 120
         assert cc.timeout_stop_sec == 30
-        assert cc.graceful_restart_signal == ""
         assert cc.memory == ""
         assert cc.cpus == ""
         assert cc.command == []
@@ -44,28 +43,6 @@ class TestLoadConfigMinimal:
     def test_no_secret_injection(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         assert cfg.secret_injection == []
-
-    def test_graceful_restart_signal_parses(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: app
-            container:
-              image: localhost/app:latest
-              graceful_restart_signal: SIGUSR1
-        """))
-        cfg = load_config(str(p))
-        assert cfg.container.graceful_restart_signal == "SIGUSR1"
-
-    def test_graceful_restart_signal_rejects_non_string(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: app
-            container:
-              image: localhost/app:latest
-              graceful_restart_signal: 12
-        """))
-        with pytest.raises(ValueError, match="graceful_restart_signal"):
-            load_config(str(p))
 
     def test_default_dns_servers(self, minimal_yaml, monkeypatch):
         monkeypatch.setattr(
