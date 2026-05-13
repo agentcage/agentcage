@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-05-13
+
 ### Fixed
 - `brave_api_key` regex no longer false-positives on base64-encoded image bytes sent to `api.anthropic.com` (and other JSON or binary upload targets). The previous pattern `BSAI[a-zA-Z0-9_-]{20,255}` collided with random `BSAI...` substrings inside ~2 MB JPEGs at roughly a 40% hit rate, hard-blocking every Anthropic vision API batch with `{"blocked":true,"reason":"secret detected: brave_api_key"}`. Two-part fix: (1) the pattern is now `(?<![A-Za-z0-9_-])BSAI[a-zA-Z0-9_-]{28}(?![A-Za-z0-9_-])`, locked to Brave's documented 32-char total length and surrounded by negative lookbehind/lookahead on the base64 alphabet so a coincidental `BSAI...` substring inside a base64 blob no longer matches; (2) the secrets inspector now skips `body_text` scanning when the request's `Content-Type` is `image/*`, `audio/*`, `video/*`, `application/octet-stream`, or `application/pdf` — URL and headers are still scanned, so a real secret leaking through those still gets caught even on a binary-body request. Empirically reproduced on a jacque (Matrix bot) image-tool batch that lost ~17 photo uploads in a row before the fix.
 
