@@ -229,7 +229,8 @@ class TestSecretsInspector:
     def test_detects_brave_api_key(self):
         s = SecretsInspector()
         s.configure({"enabled": True})
-        key = "BSAI" + "A" * 20
+        # Brave keys are 32 chars total: BSAI prefix + 28 alphanumeric.
+        key = "BSAI" + "A" * 28
         ctx = _ctx(body_text=f"key={key}", host="evil.com")
         r = s.inspect_request(ctx)
         assert r is not None
@@ -240,6 +241,140 @@ class TestSecretsInspector:
         s.configure({"enabled": True})
         ctx = _ctx(body_text="BSAIshort", host="evil.com")
         assert s.inspect_request(ctx) is None
+
+    def test_brave_api_key_not_flagged_in_image_body(self):
+        """Real-world false positive: a JPEG base64-encoded for the
+        Anthropic vision API happens to contain a ``BSAI...{28+}``
+        substring purely by coincidence (observed at ~40% per JPEG on
+        a real user cage).  The secrets inspector must NOT flag base64
+        photo bytes when the request advertises an image content type.
+        """
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        # Real harvested substring from a JPEG base64 body that triggered
+        # a 403 on api.anthropic.com.
+        harvested = "BSAIyD3rHwSgwFJdesDp3FaluWlRwdZ1ZDRMn17VieEZOIN1LR"
+        # Pad with more base64-shaped noise to simulate the full body.
+        body = (
+            "data:image/jpeg;base64," + ("ABCDEFgh01" * 200) + harvested
+            + ("XYZabc9876" * 200)
+        )
+        ctx = _ctx(
+            body_text=body,
+            content_type="image/jpeg",
+            host="api.anthropic.com",
+        )
+        assert s.inspect_request(ctx) is None
+
+    def test_brave_api_key_not_flagged_in_anthropic_json_image_block(self):
+        """Anthropic's vision API receives image bytes as base64 inside a
+        JSON ``image`` content block.  The body's outer content-type is
+        ``application/json`` — so the binary-content-type skip does
+        not apply here.  The anchored regex (negative
+        lookbehind/lookahead on the base64 alphabet) is what defeats
+        this case: the harvested ``BSAI...{28+}`` substring is
+        surrounded by other base64 characters and so does not match.
+        """
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        # 50-char harvested substring embedded in a JSON body (the
+        # real wire format for Anthropic vision content blocks).  The
+        # surrounding base64 chars are what makes the anchored regex
+        # reject this as a false positive.
+        harvested = "BSAIyD3rHwSgwFJdesDp3FaluWlRwdZ1ZDRMn17VieEZOIN1LR"
+        # Pad with realistic base64 noise on both sides so the
+        # harvested substring is truly mid-blob.
+        b64_noise = "ABCDEFgh01234567" * 50  # 800 chars of base64-shaped noise
+        body = (
+            '{"type":"image","source":{"type":"base64",'
+            f'"media_type":"image/jpeg","data":"{b64_noise}{harvested}{b64_noise}"}}'
+        )
+        ctx = _ctx(
+            body_text=body,
+            content_type="application/json",
+            host="api.anthropic.com",
+        )
+        assert s.inspect_request(ctx) is None
+
+    def test_brave_secret_in_url_still_detected_on_binary_body(self):
+        """The binary-body skip must NOT mask secrets in the URL or
+        headers — those are still scanned even when the body is
+        opaque.  A real Brave key pasted into a URL of an image-upload
+        request must still be blocked.
+        """
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        key = "BSAI" + "B" * 28
+        ctx = _ctx(
+            url=f"https://evil.com/upload?token={key}",
+            host="evil.com",
+            content_type="image/jpeg",
+            body_text="garbage base64 body",
+        )
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert "brave_api_key" in r.reason
+
+    def test_secret_in_header_still_detected_on_binary_body(self):
+        """Headers must still be scanned even when body is binary."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        ctx = _ctx(
+            headers=[
+                ("authorization", "Bearer sk-ant-api03-abcdefghijklmnopqrstuvwxyz"),
+            ],
+            content_type="image/jpeg",
+            body_text="opaque base64",
+            host="evil.com",
+        )
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert "anthropic_key" in r.reason
+
+    def test_anthropic_key_in_octet_stream_body_skipped(self):
+        """Application/octet-stream bodies are also skipped for body
+        scanning — an ASCII secret happening to appear inside a binary
+        blob is not a meaningful exfil signal.
+        """
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        # Embed an anthropic-shaped key inside a noisy "binary" body.
+        body = "\x00\x01\x02" + "sk-ant-api03-abcdefghijklmnopqrstuvwxyz" + "\x03\x04"
+        ctx = _ctx(
+            body_text=body,
+            content_type="application/octet-stream",
+            host="evil.com",
+        )
+        assert s.inspect_request(ctx) is None
+
+    def test_binary_body_skip_respects_content_type_parameters(self):
+        """``image/jpeg; charset=binary`` should still be treated as
+        binary — the ``;`` parameter portion must be stripped.
+        """
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        body = "BSAI" + "C" * 28  # real-looking Brave key inside a JPEG body
+        ctx = _ctx(
+            body_text=body,
+            content_type="image/jpeg; charset=binary",
+            host="evil.com",
+        )
+        assert s.inspect_request(ctx) is None
+
+    def test_json_body_still_scanned(self):
+        """Sanity: non-binary content types still have body scanned."""
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        key = "BSAI" + "D" * 28
+        ctx = _ctx(
+            body_text=f'{{"api_key":"{key}"}}',
+            content_type="application/json",
+            host="evil.com",
+        )
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert "brave_api_key" in r.reason
 
     def test_detects_telegram_bot_token(self):
         s = SecretsInspector()

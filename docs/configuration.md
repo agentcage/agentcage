@@ -534,7 +534,7 @@ Detected secrets always result in a **block** action (403 response). Use `allow_
 | `azure_jwt` | `eyJ[A-Za-z0-9_-]{50,}\.eyJ[A-Za-z0-9_-]{50,}` | `eyJhbG...eyJpc...` |
 | `openrouter_key` | `sk-or-v1-[a-f0-9]{64}` | `sk-or-v1-abc123...` |
 | `perplexity_key` | `pplx-[a-zA-Z0-9]{48}` | `pplx-abc123...` |
-| `brave_api_key` | `BSAI[a-zA-Z0-9_-]{20,255}` | `BSAabc123...` |
+| `brave_api_key` | `(?<![A-Za-z0-9_-])BSAI[a-zA-Z0-9_-]{28}(?![A-Za-z0-9_-])` | `BSAIabc...` (32 chars total) |
 | `telegram_bot_token` | `[0-9]{8,10}:[A-Za-z0-9_-]{35}` | `123456789:AAAA...` |
 | `discord_bot_token` | `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}` | `MAAA...BBBB.CCCC...` |
 | `firecrawl_key` | `fc-[a-zA-Z0-9]{32,}` | `fc-abc123...` |
