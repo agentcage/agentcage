@@ -131,6 +131,54 @@ class TestLoadConfigSecretInjectionFormats:
         assert cfg.secret_injection[1].inject_to == ["example.com"]
 
 
+class TestLoadConfigSecretsScope:
+    def test_default_scope_is_auto(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+        """))
+        cfg = load_config(str(p))
+        assert cfg.secrets.scope == "auto"
+
+    def test_explicit_user_scope(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secrets:
+              scope: user
+        """))
+        cfg = load_config(str(p))
+        assert cfg.secrets.scope == "user"
+
+    def test_explicit_system_scope(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secrets:
+              scope: system
+        """))
+        cfg = load_config(str(p))
+        assert cfg.secrets.scope == "system"
+
+    def test_invalid_scope_raises(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secrets:
+              scope: bogus
+        """))
+        with pytest.raises(ValueError, match="invalid secrets.scope"):
+            load_config(str(p))
+
+
 class TestProtocolRelaysParser:
     def _yaml(self, tmp_path, body):
         p = tmp_path / "config.yaml"

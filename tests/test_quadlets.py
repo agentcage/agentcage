@@ -360,6 +360,46 @@ class TestProxyQuadlet:
         assert "MIGADU_USER" not in cage_content
         assert "MIGADU_PASSWORD" not in cage_content
 
+    def test_proxy_creds_user_scope_emits_user_flag(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secrets:
+              scope: user
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+                source: "systemd-creds:"
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="myapp")
+        content = files["test-proxy.container"]
+        assert "systemd-creds --user decrypt" in content
+
+    def test_proxy_creds_system_scope_omits_user_flag(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secrets:
+              scope: system
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+                source: "systemd-creds:"
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="myapp")
+        content = files["test-proxy.container"]
+        decrypt_line = next(
+            ln for ln in content.splitlines() if "systemd-creds" in ln and "decrypt" in ln
+        )
+        assert "systemd-creds decrypt" in decrypt_line
+        assert "--user" not in decrypt_line
+
     def test_proxy_default_flags(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")

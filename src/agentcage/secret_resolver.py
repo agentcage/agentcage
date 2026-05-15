@@ -75,24 +75,50 @@ def detect_default_backend() -> str:
     """Detect the best available secret backend for this platform.
 
     Returns "systemd-creds" only if the binary exists, systemd is 250+,
-    and encryption actually works (host key or TPM2 available).
+    and encryption actually works (host key, TPM2, or per-user key).
     """
     if shutil.which("systemd-creds") and _systemd_version() >= 250:
-        if _systemd_creds_usable():
+        if detect_default_scope() is not None:
             return "systemd-creds"
     return "podman"
 
 
-def _systemd_creds_usable() -> bool:
-    """Test whether systemd-creds encrypt/decrypt actually works."""
+@functools.lru_cache(maxsize=1)
+def detect_default_scope() -> str | None:
+    """Pick the encryption scope to use when secrets.scope=auto.
+
+    Prefers "user" when the invoker is non-root and user-scoped encryption
+    works (no polkit prompt routed to the desktop user). Falls back to
+    "system" when only the host key is available. Returns None when no
+    scope works.
+    """
+    non_root = os.geteuid() != 0 if hasattr(os, "geteuid") else True
+    if non_root and _systemd_creds_works("user"):
+        return "user"
+    if _systemd_creds_works("system"):
+        return "system"
+    return None
+
+
+@functools.lru_cache(maxsize=2)
+def _systemd_creds_works(scope: str) -> bool:
+    """Test whether systemd-creds encrypt works for the given scope."""
+    cmd = ["systemd-creds"]
+    if scope == "user":
+        cmd.append("--user")
+    cmd += ["encrypt", "--name", "_probe", "-", "-"]
     try:
         r = subprocess.run(
-            ["systemd-creds", "encrypt", "--name", "_probe", "-", "-"],
-            input="probe", text=True, capture_output=True, timeout=5,
+            cmd, input="probe", text=True, capture_output=True, timeout=5,
         )
         return r.returncode == 0
     except Exception:
         return False
+
+
+def _systemd_creds_usable() -> bool:
+    """Back-compat shim: True if any scope works."""
+    return detect_default_scope() is not None
 
 
 def resolve(source: str, env_name: str, state_dir: Path) -> ResolveResult:
@@ -182,20 +208,52 @@ def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
     return resolved
 
 
-def encrypt_secret(name: str, value: str, state_dir: Path) -> Path:
+def resolve_scope(configured: str) -> str:
+    """Resolve a configured scope ("auto"/"user"/"system") to a concrete one.
+
+    "auto" picks "user" when the invoker is non-root and user-scoped
+    encryption works, otherwise "system". Explicit values pass through.
+    Raises ValueError if no usable scope is found in auto mode.
+    """
+    if configured in ("user", "system"):
+        return configured
+    if configured != "auto":
+        raise ValueError(f"invalid secrets.scope: {configured!r}")
+    detected = detect_default_scope()
+    if detected is None:
+        raise ValueError(
+            "systemd-creds encryption is not usable in either user or "
+            "system scope on this host"
+        )
+    return detected
+
+
+def encrypt_secret(
+    name: str, value: str, state_dir: Path, scope: str = "system",
+) -> Path:
     """Encrypt a secret with systemd-creds and store the encrypted blob.
+
+    ``scope="user"`` uses the per-user key (no polkit prompt — required
+    for service users on hosts with an active graphical session).
+    ``scope="system"`` uses the host key / TPM2.
 
     Uses a 30s timeout because TPM2 operations can occasionally block
     on hardware (slow TPM chip, contention with another process).
     """
+    if scope not in ("user", "system"):
+        raise ValueError(f"invalid scope: {scope!r}")
     creds_dir = state_dir / "creds"
     creds_dir.mkdir(parents=True, exist_ok=True)
     out_path = creds_dir / f"{name}.cred"
 
+    cmd = ["systemd-creds"]
+    if scope == "user":
+        cmd.append("--user")
+    cmd += ["encrypt", "--name", name, "-", str(out_path)]
+
     try:
         r = subprocess.run(
-            ["systemd-creds", "encrypt", "--name", name, "-", str(out_path)],
-            input=value, text=True, capture_output=True, timeout=30,
+            cmd, input=value, text=True, capture_output=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
         raise ValueError(
