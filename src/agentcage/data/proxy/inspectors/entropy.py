@@ -71,6 +71,14 @@ class EntropyInspector(Inspector):
                                 that host. Built-in defaults cover common
                                 CDN providers (CloudFront, S3, GCS, Azure).
                                 User config is merged on top of defaults.
+                                A list containing the single entry `"*"`
+                                disables URL entropy checks entirely for
+                                that host — both query params and path
+                                segments are skipped. Useful for hosts
+                                that legitimately send many opaque
+                                high-entropy tokens (e.g. googleapis.com
+                                continuation cursors) where enumerating
+                                every param name is fragile.
     """
 
     name = "entropy"
@@ -163,6 +171,9 @@ class EntropyInspector(Inspector):
         for h, params in self.host_url_param_allowlist.items():
             if host == h or host.endswith("." + h):
                 allowed_params |= params
+        # Wildcard "*" disables URL-param entropy checks for this host.
+        if "*" in allowed_params:
+            return None
         for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
             if key.lower() in allowed_params:
                 continue
@@ -198,6 +209,13 @@ class EntropyInspector(Inspector):
         parsed = urlparse(ctx.url)
         if not parsed.path:
             return None
+        # Wildcard "*" in host_url_param_allowlist disables URL entropy
+        # checks entirely for this host (params and path segments).
+        host = ctx.host.lower()
+        for h, params in self.host_url_param_allowlist.items():
+            if host == h or host.endswith("." + h):
+                if "*" in params:
+                    return None
         for segment in parsed.path.split("/"):
             if not segment:
                 continue

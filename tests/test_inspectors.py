@@ -1201,6 +1201,137 @@ class TestEntropyInspector:
         assert "token" in e.host_url_param_allowlist["custom-cdn.example.com"]
         assert "sig" in e.host_url_param_allowlist["custom-cdn.example.com"]
 
+    # ── wildcard "*" tests ──
+
+    def test_url_param_host_allowlist_wildcard_skips_params(self):
+        """Wildcard '*' allows all high-entropy params on the host."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+            "host_url_param_allowlist": {"example.com": ["*"]},
+        })
+        import base64, os
+        tok = base64.urlsafe_b64encode(os.urandom(256)).decode().rstrip("=")
+        ctx = _ctx(
+            url=f"https://example.com/x?pageToken={tok}&syncToken={tok}",
+            host="example.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        assert e.inspect_request(ctx) is None
+
+    def test_url_param_host_allowlist_wildcard_skips_path(self):
+        """Wildcard '*' also disables path-segment entropy checks."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+            "host_url_param_allowlist": {"example.com": ["*"]},
+        })
+        import base64, os
+        seg = base64.urlsafe_b64encode(os.urandom(256)).decode().rstrip("=")
+        ctx = _ctx(
+            url=f"https://example.com/{seg}/file",
+            host="example.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        assert e.inspect_request(ctx) is None
+
+    def test_url_param_host_allowlist_wildcard_matches_subdomain(self):
+        """Wildcard inherits the existing suffix-match semantics."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+            "host_url_param_allowlist": {"example.com": ["*"]},
+        })
+        import base64, os
+        tok = base64.urlsafe_b64encode(os.urandom(256)).decode().rstrip("=")
+        seg = base64.urlsafe_b64encode(os.urandom(256)).decode().rstrip("=")
+        ctx_param = _ctx(
+            url=f"https://sub.example.com/x?pageToken={tok}",
+            host="sub.example.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        ctx_path = _ctx(
+            url=f"https://sub.example.com/{seg}/file",
+            host="sub.example.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        assert e.inspect_request(ctx_param) is None
+        assert e.inspect_request(ctx_path) is None
+
+    def test_url_param_host_allowlist_no_wildcard_still_blocks(self):
+        """Regression guard: without wildcard, high-entropy values still block."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+        })
+        import base64, os
+        tok = base64.urlsafe_b64encode(os.urandom(256)).decode().rstrip("=")
+        ctx_param = _ctx(
+            url=f"https://example.com/x?pageToken={tok}",
+            host="example.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        r = e.inspect_request(ctx_param)
+        assert r is not None
+        assert r.action == "block"
+        assert "pageToken" in r.reason
+
+        seg = base64.urlsafe_b64encode(os.urandom(256)).decode().rstrip("=")
+        ctx_path = _ctx(
+            url=f"https://example.com/{seg}/file",
+            host="example.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        r = e.inspect_request(ctx_path)
+        assert r is not None
+        assert r.action == "block"
+        assert "path segment" in r.reason
+
+    def test_url_param_host_allowlist_wildcard_other_host_still_blocks(self):
+        """Wildcard on one host does not affect a different host."""
+        e = EntropyInspector()
+        e.configure({
+            "threshold": 7.0,
+            "min_body_bytes": 64,
+            "action": "block",
+            "url_threshold": 5.5,
+            "url_min_value_bytes": 32,
+            "host_url_param_allowlist": {"example.com": ["*"]},
+        })
+        import base64, os
+        tok = base64.urlsafe_b64encode(os.urandom(256)).decode().rstrip("=")
+        ctx = _ctx(
+            url=f"https://evil.com/exfil?pageToken={tok}",
+            host="evil.com",
+            body_bytes=None,
+            body_entropy=None,
+        )
+        r = e.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+
 
 # ── ContentTypeInspector ─────────────────────────────────
 
