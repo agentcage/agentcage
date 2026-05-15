@@ -51,18 +51,49 @@ class TestDefaultInspectors:
         addon._load_custom_inspectors()
         return addon
 
-    def test_entropy_and_content_type_load_by_default(self):
+    def test_entropy_not_loaded_by_default(self):
+        """Bare config (no `entropy:` key, no `inspectors:` entry) → entropy
+        inspector is NOT loaded. Opt-in default flip (vs. 0.15.4)."""
         addon = self._make_addon("domains: {}")
         names = [i.name for i in addon.inspectors]
-        assert "entropy" in names
+        assert "entropy" not in names
+
+    def test_content_type_loads_by_default(self):
+        addon = self._make_addon("domains: {}")
+        names = [i.name for i in addon.inspectors]
         assert "content-type" in names
 
-    def test_entropy_defaults_to_block_mode(self):
-        addon = self._make_addon("domains: {}")
+    def test_entropy_opt_in_empty_dict_loads_defaults(self):
+        """`entropy: {}` opts in with default config."""
+        addon = self._make_addon("entropy: {}\ndomains: {}")
         entropy = next(i for i in addon.inspectors if i.name == "entropy")
         assert entropy.action == "block"
         assert entropy.threshold == 7.0
         assert entropy.min_body_bytes == 256
+
+    def test_entropy_opt_in_via_inspectors_block(self):
+        """`inspectors: - name: entropy` opts in via the custom-inspector path."""
+        addon = self._make_addon(textwrap.dedent("""\
+            domains: {}
+            inspectors:
+              - name: entropy
+        """))
+        names = [i.name for i in addon.inspectors]
+        assert "entropy" in names
+
+    def test_entropy_opt_in_via_inspectors_block_with_config(self):
+        """`inspectors: - name: entropy` with explicit config applies overrides."""
+        addon = self._make_addon(textwrap.dedent("""\
+            domains: {}
+            inspectors:
+              - name: entropy
+                config:
+                  threshold: 7.5
+                  action: flag
+        """))
+        entropy = next(i for i in addon.inspectors if i.name == "entropy")
+        assert entropy.threshold == 7.5
+        assert entropy.action == "flag"
 
     def test_content_type_defaults_to_block_mode(self):
         addon = self._make_addon("domains: {}")
@@ -72,6 +103,7 @@ class TestDefaultInspectors:
         assert ct.detect_base64 is True
 
     def test_entropy_disabled_with_false(self):
+        """Legacy `entropy: false` still doesn't load (regression guard)."""
         addon = self._make_addon("entropy: false\ndomains: {}")
         names = [i.name for i in addon.inspectors]
         assert "entropy" not in names
@@ -92,9 +124,16 @@ class TestDefaultInspectors:
         assert entropy.threshold == 6.0
         assert entropy.action == "block"
 
-    def test_minimal_config_loads_all_five_inspectors(self):
-        """A bare config should load domain, secrets, body-size, entropy, content-type."""
+    def test_minimal_config_loads_four_inspectors(self):
+        """A bare config (no entropy opt-in) loads domain, secrets,
+        body-size, content-type — entropy is opt-in."""
         addon = self._make_addon("domains: {}\nsecrets: {}")
+        names = sorted(i.name for i in addon.inspectors)
+        assert names == ["body-size", "content-type", "domain", "secrets"]
+
+    def test_minimal_config_with_entropy_opt_in(self):
+        """Explicit `entropy: {}` brings back all five inspectors."""
+        addon = self._make_addon("domains: {}\nsecrets: {}\nentropy: {}")
         names = sorted(i.name for i in addon.inspectors)
         assert names == ["body-size", "content-type", "domain", "entropy", "secrets"]
 

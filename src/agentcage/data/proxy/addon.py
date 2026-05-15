@@ -275,10 +275,12 @@ class Agentcage:
         if max_body:
             out["body-size"] = {"max_bytes": max_body}
 
-        # entropy — on by default in flag mode; disable with entropy: false
-        entropy_cfg = self.cfg.get("entropy", {})
-        if entropy_cfg is not False:
-            out["entropy"] = entropy_cfg if isinstance(entropy_cfg, dict) else {}
+        # entropy — opt-in. Enable via top-level `entropy: {...}` (dict, may be
+        # empty for defaults) or by adding `- name: entropy` to `inspectors:`.
+        # `entropy: false` continues to be a no-op (legacy disable).
+        entropy_cfg = self.cfg.get("entropy")
+        if isinstance(entropy_cfg, dict):
+            out["entropy"] = entropy_cfg
 
         # content-type — on by default in flag mode; disable with content_type: false
         ct_cfg = self.cfg.get("content_type", {})

@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `secrets.scope` config field (`auto` | `user` | `system`, default `auto`) selects which systemd-creds key encrypts a cage's secrets. `auto` picks `user` when the invoker is non-root and `systemd-creds --user encrypt` probes successfully, else falls back to `system`. Motivating case: when a service user like `jacque-svc` runs `agentcage secret set NAME KEY` on a host with an active graphical session, the system-scope `io.systemd.credentials.encrypt` polkit action is routed to the desktop user's polkit agent and prompts for their password — which the unattended service user can't satisfy. User-scoped encryption uses the per-user key under `~/.config/credstore/` and bypasses polkit entirely. The .cred files are encrypted/decrypted with the same scope; quadlets already run under `systemctl --user`, so a user-scoped blob decrypts cleanly in the proxy `ExecStartPre`. `encrypt_secret(name, value, state_dir, scope=...)`, `resolve_scope(configured)`, and `detect_default_scope()` are the new public knobs; `agentcage doctor` reports the selected scope (and warns that user-scoped blobs are bound to the user rather than the host's TPM/hardware).
 - `host_url_param_allowlist` now accepts the wildcard entry `"*"` to disable URL entropy checks entirely for a host. A list containing the single value `"*"` short-circuits both `_check_url_params` and `_check_url_path` for the matched host (and its subdomains, matching the existing suffix logic), so neither query-param values nor path segments are entropy-scanned. Motivating case: hosts like `googleapis.com` legitimately emit many opaque high-entropy continuation cursors (Drive `pageToken`, Calendar `syncToken`, plus future tokens we haven't seen yet) and maintaining an explicit param-name list is fragile — every new Google API surface that ships a new cursor name re-blocks the cage until the operator names it. The wildcard is one knob: `host_url_param_allowlist: {"googleapis.com": ["*"]}` covers params and path segments together. Body entropy is unchanged; this only relaxes the URL-side checks.
 
+### Changed (BREAKING — security-relevant default)
+- The Shannon-entropy inspector is now **opt-in** rather than on-by-default. Pre-change, every cage that didn't explicitly set `entropy: false` had the inspector loaded in `block` mode at threshold `7.0` over request bodies, URL query parameters, and URL path segments. Post-change, the inspector is loaded only when the operator explicitly opts in — either by adding a top-level `entropy: {}` block to `cage.yaml` (empty dict = defaults, or a non-empty dict to override) or by listing `- name: entropy` under the `inspectors:` section. A bare config with no entropy key (and no `inspectors:` entry naming entropy) gets four built-in inspectors loaded — `domain`, `secrets`, `body-size`, `content-type` — but not `entropy`. The `entropy: false` legacy disable continues to be a no-op for forward compatibility.
+- **Security implication**: the entropy inspector is the only built-in that catches encrypted or compressed payload exfiltration smuggled inside an otherwise-allowlisted HTTP request — random/compressed bytes hiding in a JSON field, a URL parameter, or a path segment. Flipping the default to opt-in removes that automatic detection layer on every new cage and on every existing cage that didn't have an explicit `entropy:` section pinning the prior behavior. The other inspectors stay strict: `secrets` (regex-based key detection) still blocks every leaking pattern it knows about, `content-type` (text-with-high-entropy + base64-blob scan) still flags obvious binary smuggling in text bodies, `domain` still enforces the host allowlist, and `body-size` still caps payload bytes. Entropy was specifically the layer most likely to false-positive on legitimate high-entropy strings — Google API pagination tokens, JWTs, opaque cursors, base64-encoded UUIDs, signed S3 presigned-URL query params — and the friction was significant enough that operators were accumulating per-host content-type exemptions, URL allowlists, and `entropy: false` lines just to clear the inspector. The team's call: cleaner default, with the protection one line away for any cage that wants it.
+- **Migration**: to keep the prior on-by-default behavior verbatim, add either of the following to your `cage.yaml`:
+
+  ```yaml
+  # Option 1: top-level key, defaults applied (threshold 7.0, block mode)
+  entropy: {}
+
+  # Option 2: top-level key, explicit overrides
+  entropy:
+    threshold: 7.0
+    action: block
+
+  # Option 3: under the inspectors list (also works alongside other inspectors)
+  inspectors:
+    - name: entropy
+  ```
+
+  All built-in agentcage scaffolds (`openclaw`, `picoclaw`, `nanoclaw`, `claude-code`, `codex`, `alpine-curl`, `scaffold-starter`) already list `- name: entropy` under `inspectors:`, so cages created from those scaffolds keep their entropy inspector loaded with no further action. The behavior change only affects custom `cage.yaml` files that relied on the previous default-on behavior without an explicit opt-in. For cages that do opt in, the URL-allowlist wildcarding from #99 is the cleanest way to silence per-host false positives without disabling the inspector entirely.
+
 ## [0.15.4] - 2026-05-13
 
 ### Fixed
