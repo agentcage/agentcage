@@ -13,11 +13,14 @@ from agentcage.secret_resolver import (
     ResolveAction,
     ResolveResult,
     detect_default_backend,
+    detect_default_scope,
     encrypt_secret,
     resolve,
     resolve_and_populate,
+    resolve_scope,
     validate_env_name,
     validate_source,
+    _systemd_creds_works,
 )
 
 
@@ -156,7 +159,7 @@ class TestDetectDefaultBackend:
         detect_default_backend.cache_clear()
         with mock.patch("agentcage.secret_resolver.shutil.which", return_value="/usr/bin/systemd-creds"):
             with mock.patch("agentcage.secret_resolver._systemd_version", return_value=256):
-                with mock.patch("agentcage.secret_resolver._systemd_creds_usable", return_value=True):
+                with mock.patch("agentcage.secret_resolver.detect_default_scope", return_value="user"):
                     assert detect_default_backend() == "systemd-creds"
         detect_default_backend.cache_clear()
 
@@ -170,7 +173,7 @@ class TestDetectDefaultBackend:
         detect_default_backend.cache_clear()
         with mock.patch("agentcage.secret_resolver.shutil.which", return_value="/usr/bin/systemd-creds"):
             with mock.patch("agentcage.secret_resolver._systemd_version", return_value=256):
-                with mock.patch("agentcage.secret_resolver._systemd_creds_usable", return_value=False):
+                with mock.patch("agentcage.secret_resolver.detect_default_scope", return_value=None):
                     assert detect_default_backend() == "podman"
         detect_default_backend.cache_clear()
 
@@ -262,3 +265,131 @@ class TestEncryptSecret:
             )
             with pytest.raises(ValueError, match="systemd-creds encrypt failed"):
                 encrypt_secret("KEY", "val", tmp_path)
+
+    def test_encrypt_user_scope_passes_user_flag(self, tmp_path):
+        with mock.patch("agentcage.secret_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            encrypt_secret("API_KEY", "v", tmp_path, scope="user")
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "systemd-creds"
+        assert "--user" in argv
+        assert argv.index("--user") < argv.index("encrypt")
+
+    def test_encrypt_system_scope_omits_user_flag(self, tmp_path):
+        with mock.patch("agentcage.secret_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            encrypt_secret("API_KEY", "v", tmp_path, scope="system")
+        argv = mock_run.call_args[0][0]
+        assert "--user" not in argv
+
+    def test_encrypt_default_scope_is_system(self, tmp_path):
+        with mock.patch("agentcage.secret_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            encrypt_secret("API_KEY", "v", tmp_path)
+        argv = mock_run.call_args[0][0]
+        assert "--user" not in argv
+
+    def test_encrypt_invalid_scope_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="invalid scope"):
+            encrypt_secret("K", "v", tmp_path, scope="bogus")
+
+
+class TestSystemdCredsWorksProbe:
+    def test_user_scope_passes_user_flag(self):
+        _systemd_creds_works.cache_clear()
+        with mock.patch("agentcage.secret_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            _systemd_creds_works("user")
+        argv = mock_run.call_args[0][0]
+        assert "--user" in argv
+        _systemd_creds_works.cache_clear()
+
+    def test_system_scope_omits_user_flag(self):
+        _systemd_creds_works.cache_clear()
+        with mock.patch("agentcage.secret_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0)
+            _systemd_creds_works("system")
+        argv = mock_run.call_args[0][0]
+        assert "--user" not in argv
+        _systemd_creds_works.cache_clear()
+
+    def test_nonzero_returncode_is_false(self):
+        _systemd_creds_works.cache_clear()
+        with mock.patch("agentcage.secret_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=1)
+            assert _systemd_creds_works("user") is False
+        _systemd_creds_works.cache_clear()
+
+    def test_subprocess_exception_is_false(self):
+        _systemd_creds_works.cache_clear()
+        with mock.patch("agentcage.secret_resolver.subprocess.run",
+                        side_effect=FileNotFoundError):
+            assert _systemd_creds_works("system") is False
+        _systemd_creds_works.cache_clear()
+
+
+class TestDetectDefaultScope:
+    def test_non_root_prefers_user(self):
+        detect_default_scope.cache_clear()
+        with mock.patch("agentcage.secret_resolver.os.geteuid", return_value=1000):
+            with mock.patch("agentcage.secret_resolver._systemd_creds_works",
+                            side_effect=lambda s: s == "user"):
+                assert detect_default_scope() == "user"
+        detect_default_scope.cache_clear()
+
+    def test_root_skips_user_scope(self):
+        detect_default_scope.cache_clear()
+        with mock.patch("agentcage.secret_resolver.os.geteuid", return_value=0):
+            calls: list[str] = []
+
+            def _probe(scope: str) -> bool:
+                calls.append(scope)
+                return scope == "system"
+
+            with mock.patch("agentcage.secret_resolver._systemd_creds_works",
+                            side_effect=_probe):
+                assert detect_default_scope() == "system"
+            assert "user" not in calls
+        detect_default_scope.cache_clear()
+
+    def test_falls_back_to_system_when_user_fails(self):
+        detect_default_scope.cache_clear()
+        with mock.patch("agentcage.secret_resolver.os.geteuid", return_value=1000):
+            with mock.patch("agentcage.secret_resolver._systemd_creds_works",
+                            side_effect=lambda s: s == "system"):
+                assert detect_default_scope() == "system"
+        detect_default_scope.cache_clear()
+
+    def test_none_when_neither_works(self):
+        detect_default_scope.cache_clear()
+        with mock.patch("agentcage.secret_resolver.os.geteuid", return_value=1000):
+            with mock.patch("agentcage.secret_resolver._systemd_creds_works",
+                            return_value=False):
+                assert detect_default_scope() is None
+        detect_default_scope.cache_clear()
+
+
+class TestResolveScope:
+    def test_explicit_user_passes_through(self):
+        assert resolve_scope("user") == "user"
+
+    def test_explicit_system_passes_through(self):
+        assert resolve_scope("system") == "system"
+
+    def test_auto_picks_detected(self):
+        with mock.patch("agentcage.secret_resolver.detect_default_scope",
+                        return_value="user"):
+            assert resolve_scope("auto") == "user"
+        with mock.patch("agentcage.secret_resolver.detect_default_scope",
+                        return_value="system"):
+            assert resolve_scope("auto") == "system"
+
+    def test_auto_none_raises(self):
+        with mock.patch("agentcage.secret_resolver.detect_default_scope",
+                        return_value=None):
+            with pytest.raises(ValueError, match="not usable"):
+                resolve_scope("auto")
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError, match="invalid secrets.scope"):
+            resolve_scope("bogus")

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `secrets.scope` config field (`auto` | `user` | `system`, default `auto`) selects which systemd-creds key encrypts a cage's secrets. `auto` picks `user` when the invoker is non-root and `systemd-creds --user encrypt` probes successfully, else falls back to `system`. Motivating case: when a service user like `jacque-svc` runs `agentcage secret set NAME KEY` on a host with an active graphical session, the system-scope `io.systemd.credentials.encrypt` polkit action is routed to the desktop user's polkit agent and prompts for their password — which the unattended service user can't satisfy. User-scoped encryption uses the per-user key under `~/.config/credstore/` and bypasses polkit entirely. The .cred files are encrypted/decrypted with the same scope; quadlets already run under `systemctl --user`, so a user-scoped blob decrypts cleanly in the proxy `ExecStartPre`. `encrypt_secret(name, value, state_dir, scope=...)`, `resolve_scope(configured)`, and `detect_default_scope()` are the new public knobs; `agentcage doctor` reports the selected scope (and warns that user-scoped blobs are bound to the user rather than the host's TPM/hardware).
+
 ## [0.15.4] - 2026-05-13
 
 ### Fixed

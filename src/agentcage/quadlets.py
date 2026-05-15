@@ -365,6 +365,20 @@ def generate_quadlets(
     creds_dir = str(_state_creds_dir)
     _inspected_tcp, _passthrough_tcp, _allow_udp = _effective_port_policy(config)
 
+    # Resolve secrets.scope (auto/user/system) into the concrete flag passed
+    # to systemd-creds decrypt in the proxy quadlet's ExecStartPre. The
+    # quadlet runs under `systemctl --user`, so --user picks the per-user
+    # decryption key — no polkit prompt at start time.
+    creds_scope_flag = ""
+    if creds_secrets:
+        from agentcage.secret_resolver import resolve_scope
+        try:
+            _scope = resolve_scope(config.secrets.scope)
+        except ValueError:
+            _scope = "system"
+        if _scope == "user":
+            creds_scope_flag = "--user "
+
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
         config_host_path=config_host_path,
@@ -372,6 +386,7 @@ def generate_quadlets(
         deploy_name=deploy_name,
         creds_secrets=creds_secrets,
         creds_dir=creds_dir,
+        creds_scope_flag=creds_scope_flag,
         log_proxy_connections=config.logging.proxy_connections,
         dns_servers=config.dns_servers,
         inbound_forwards=inbound_forwards,

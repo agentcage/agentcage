@@ -495,9 +495,16 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool):
                     use_creds = (source_scheme == "systemd-creds"
                                  or (not source_scheme and default_backend == "systemd-creds"))
                 if use_creds:
+                    from agentcage.secret_resolver import resolve_scope
                     try:
-                        encrypt_secret(key, val, state.deployment_dir(name))
-                        click.echo(f"Secret '{key}' encrypted with systemd-creds.")
+                        scope = resolve_scope(cfg.secrets.scope)
+                        encrypt_secret(
+                            key, val, state.deployment_dir(name), scope=scope,
+                        )
+                        click.echo(
+                            f"Secret '{key}' encrypted with systemd-creds "
+                            f"({scope}-scope)."
+                        )
                         continue
                     except ValueError as e:
                         click.echo(f"warning: systemd-creds encrypt failed: {e}", err=True)
@@ -2203,14 +2210,19 @@ def secret_set(name: str, key: str):
                      or (not source_scheme and backend == "systemd-creds"))
 
     if use_creds:
+        from agentcage.secret_resolver import resolve_scope
         try:
-            encrypt_secret(key, value, state.deployment_dir(name))
+            scope = resolve_scope(cfg.secrets.scope)
+            encrypt_secret(key, value, state.deployment_dir(name), scope=scope)
             # Remove any stale podman secret with the same name — the
             # ExecStartPre in the quadlet will repopulate it from the
             # encrypted blob at service start.
             if podman.secret_exists(full_name):
                 podman.secret_remove(full_name)
-            click.echo(f"Secret '{key}' encrypted with systemd-creds.")
+            click.echo(
+                f"Secret '{key}' encrypted with systemd-creds "
+                f"({scope}-scope)."
+            )
         except ValueError as e:
             click.echo(f"error: {e}", err=True)
             click.echo("Falling back to Podman secret store.", err=True)
@@ -2288,6 +2300,13 @@ def secret_migrate(name: str, backend: str, remove_old: bool):
         click.echo(f"No secrets found for '{name}'.")
         return
 
+    from agentcage.secret_resolver import resolve_scope
+    try:
+        scope = resolve_scope(cfg.secrets.scope)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
+
     migrated = 0
     for s in secrets:
         sname = s.get("Name", "")
@@ -2304,8 +2323,8 @@ def secret_migrate(name: str, backend: str, remove_old: bool):
 
         # Encrypt with systemd-creds (per-secret atomic: encrypt, then optionally remove)
         try:
-            encrypt_secret(key, value, state.deployment_dir(name))
-            click.echo(f"  Encrypted: {key}")
+            encrypt_secret(key, value, state.deployment_dir(name), scope=scope)
+            click.echo(f"  Encrypted: {key} ({scope}-scope)")
             migrated += 1
         except ValueError as e:
             click.echo(f"  error: {key}: {e}", err=True)

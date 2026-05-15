@@ -223,12 +223,22 @@ def check_disk_space() -> CheckResult:
 def _check_secret_backend() -> CheckResult:
     """Report the detected secret storage backend."""
     from agentcage.secret_resolver import (
-        detect_default_backend, _systemd_version,
+        detect_default_backend, detect_default_scope, _systemd_version,
     )
 
     backend = detect_default_backend()
     if backend == "systemd-creds":
         ver = _systemd_version()
+        scope = detect_default_scope() or "system"
+        if scope == "user":
+            return CheckResult(
+                "pass",
+                f"systemd-creds --user (systemd {ver}, per-user key)",
+                hint="Secrets encrypted with the per-user key — bound to "
+                     "this user, not the host. No polkit prompt at "
+                     "encrypt or decrypt time, so service users can set "
+                     "secrets unattended.",
+            )
         return CheckResult(
             "pass",
             f"systemd-creds (systemd {ver}, secrets encrypted at rest)",

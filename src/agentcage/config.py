@@ -19,6 +19,13 @@ from agentcage.data.proxy.relays._validate import (
 
 KNOWN_TRANSFORMS = frozenset({"google-jwt-bearer"})
 
+_VALID_SECRET_SCOPES = ("auto", "user", "system")
+
+
+@dataclass
+class SecretsConfig:
+    scope: str = "auto"  # "auto" | "user" | "system"
+
 
 @dataclass
 class SecretInjectionRule:
@@ -273,6 +280,7 @@ class Config:
     isolation: str = "container"  # "container" | "vm"
     lifecycle: str = "service"  # "service" | "interactive" | "ephemeral"
     container: ContainerConfig = field(default_factory=ContainerConfig)
+    secrets: SecretsConfig = field(default_factory=SecretsConfig)
     secret_injection: list[SecretInjectionRule] = field(default_factory=list)
     protocol_relays: list[ProtocolRelay] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
@@ -415,6 +423,16 @@ def load_config(path: str) -> Config:
     cc.build = bb
 
     cfg.container = cc
+
+    # Secrets section — encryption scope for systemd-creds
+    secrets_raw = raw.get("secrets") or {}
+    scope = str(secrets_raw.get("scope", "auto"))
+    if scope not in _VALID_SECRET_SCOPES:
+        valid = ", ".join(_VALID_SECRET_SCOPES)
+        raise ValueError(
+            f"invalid secrets.scope: {scope!r}. Valid: {valid}"
+        )
+    cfg.secrets = SecretsConfig(scope=scope)
 
     # Secret injection — accepts list or {"rules": [...]}
     si_cfg = raw.get("secret_injection") or []
