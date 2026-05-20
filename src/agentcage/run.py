@@ -279,6 +279,37 @@ def _detect_isolation() -> str:
     return "vm" if platform.system() == "Darwin" else "container"
 
 
+def _ensure_volume_dirs(volumes: list[str]) -> None:
+    """Create missing host directories for a cage's bind-mount volumes.
+
+    Scaffolds declare volumes for state persistence — the claude-code
+    scaffold mounts ``~/.claude`` so the agent's login survives across
+    sessions. On a fresh machine that directory does not exist yet;
+    podman cannot bind-mount a missing source, and the Lima/quadlet
+    layers would skip it (so a login inside the cage never round-trips
+    to the host). Create it up front instead.
+
+    Only *directory* sources inside the home directory are created. A
+    spec whose host path looks like a file (has an extension) or still
+    carries an unexpanded ``${VAR}`` is left untouched — a single file
+    cannot be shared into the Lima VM, and the mount layers skip those
+    safely on their own.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    for vol in volumes:
+        host_part = vol.split(":")[0]
+        expanded = os.path.expandvars(os.path.expanduser(host_part))
+        if "$" in expanded:
+            continue  # unresolved variable — not ours to create
+        real = os.path.realpath(expanded)
+        if os.path.exists(real):
+            continue
+        if os.path.splitext(os.path.basename(real))[1]:
+            continue  # looks like a file — leave it to the skip logic
+        if real == home or real.startswith(home + os.sep):
+            os.makedirs(real, exist_ok=True)
+
+
 def _vm_podman_prefix(isolation: str, cage_name: str) -> list[str]:
     """Command prefix needed to reach Podman for a cage.
 
@@ -367,6 +398,11 @@ def execute(
     warnings = validate_config(cfg)
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
+
+    # Create missing bind-mount directories so state persists (e.g. the
+    # claude-code scaffold's ~/.claude — without this, a login inside the
+    # cage never round-trips to the host).
+    _ensure_volume_dirs(cfg.container.volumes)
 
     # Check port availability
     unavailable = check_port_availability(cfg)
