@@ -6,7 +6,7 @@ Common commands for managing an agentcage cage. Replace `myapp` with your cage n
 
 ```bash
 # Edit config directly, then apply (rebuilds + reloads)
-$EDITOR ~/.local/share/agentcage/myapp/cage.yaml && agentcage cage update myapp
+$EDITOR ~/.config/agentcage/cages/myapp/cage.yaml && agentcage cage update myapp
 
 # Rebuild and restart (after config or image changes)
 agentcage cage update myapp

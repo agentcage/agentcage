@@ -667,28 +667,30 @@ agentcage uses a **pluggable inspector chain**. Each HTTP request passes through
 | `domain` | on | Domain allowlist/blocklist enforcement |
 | `secrets` | on | Regex-based secret leak detection (always blocks) |
 | `body-size` | on | Request body size limits (loaded when `max_request_body` > 0; default is 10 MB). Per-host overrides via `host_max_bytes` — see below |
-| `entropy` | off | Shannon entropy analysis — detects encrypted/compressed payloads |
-| `content-type` | off | Content-type mismatch detection and base64 blob scanning |
+| `content-type` | on | Content-type mismatch detection and base64 blob scanning. Disable with top-level `content_type: false` |
+| `entropy` | off (opt-in) | Shannon entropy analysis — detects encrypted/compressed payloads |
 
-The `domain`, `secrets`, and `body-size` inspectors are loaded automatically from their top-level config sections. The `entropy` and `content-type` inspectors must be explicitly enabled via the `inspectors:` section:
+The `domain`, `secrets`, `body-size`, and `content-type` inspectors are loaded automatically: `domain`, `secrets`, and `content-type` from their top-level config sections, `body-size` whenever `max_request_body` is non-zero.
 
-```yaml
-inspectors:
-  - name: entropy
-    config:
-      threshold: 7.0
-  - name: content-type
-    config:
-      detect_base64: true
-```
-
-You can also enable them with no config to use all defaults:
+`entropy` is the only built-in **not** loaded by default. As of v0.16.0 it is opt-in — a cage with no entropy configuration runs without it. Enable it with a top-level `entropy:` block or by listing it under `inspectors:`:
 
 ```yaml
+# Option 1 — top-level block, empty {} applies defaults (threshold 7.0, block mode)
+entropy: {}
+
+# Option 2 — top-level block with overrides
+entropy:
+  threshold: 7.0
+  action: block
+
+# Option 3 — under the inspectors list
 inspectors:
   - name: entropy
-  - name: content-type
 ```
+
+All built-in scaffolds list `- name: entropy` under `inspectors:`, so cages created from a scaffold keep the entropy inspector loaded. Only a custom `cage.yaml` that relied on the pre-v0.16.0 default-on behavior needs to add one of the above; `entropy: false` remains a no-op for backward compatibility.
+
+To tune `content-type` (e.g. base64 detection), re-declare it under `inspectors:` — see [Content-type inspector](#content-type-inspector).
 
 ### Body-size inspector
 
@@ -718,7 +720,7 @@ Detects high-entropy payloads that may indicate encrypted or compressed data exf
 |---------|------|---------|-------------|
 | `threshold` | `float` | `7.0` | Entropy threshold in bits/byte (0.0–8.0) to trigger |
 | `min_body_bytes` | `int` | `256` | Minimum body size to evaluate |
-| `action` | `string` | `"flag"` | `"block"` or `"flag"` |
+| `action` | `string` | `"block"` | `"block"` or `"flag"` |
 | `exempt_content_types` | `list[string]` | `["image/", "application/gzip", "application/zip", "application/octet-stream"]` | Content-type prefixes to skip |
 
 Reference entropy ranges:
@@ -740,7 +742,7 @@ Detects content-type mismatches (text type with high entropy) and hidden base64 
 | `entropy_ceiling` | `float` | `6.5` | Max expected entropy for text content types |
 | `detect_base64` | `bool` | `true` | Enable base64 blob detection |
 | `base64_min_len` | `int` | `256` | Minimum base64 match length to trigger |
-| `action` | `string` | `"flag"` | `"block"` or `"flag"` |
+| `action` | `string` | `"block"` | `"block"` or `"flag"` |
 | `host_exempt_content_types` | `dict[string, list[string]]` | `{}` | Per-host content-type exemptions (subdomain suffix matching). Mirrors the entropy inspector's knob — use it for legitimate high-entropy bodies declared as a "text-like" content-type, e.g. `multipart/form-data` PDF uploads to a paperless-ngx host. |
 
 Text content-type prefixes checked: `application/json`, `application/xml`, `text/`, `application/x-www-form-urlencoded`, `multipart/form-data`.

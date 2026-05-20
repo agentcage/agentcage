@@ -6,6 +6,7 @@
 - [Security & Threat Model](security.md) — threat model, defense layers, isolation modes, known limitations
 - [Configuration Reference](configuration.md) — all settings, defaults, and examples
 - [CLI Reference](cli.md) — full command set and options
+- [Port Policy](proxy-audit-ports.md) — `ports.tcp` / `ports.udp` allowlists, the default-deny FORWARD chain, worked examples
 
 ## Isolation
 

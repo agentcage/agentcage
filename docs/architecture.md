@@ -78,8 +78,8 @@ All HTTP traffic passes through a pluggable inspector chain implemented in `addo
 | `domain` | on | Domain allowlist/blocklist enforcement |
 | `secrets` | on | Regex-based secret leak detection |
 | `body-size` | on | Request body size limits |
-| `entropy` | off | Shannon entropy analysis for encrypted/compressed payloads |
-| `content-type` | off | Content-type mismatch and base64 blob detection |
+| `content-type` | on | Content-type mismatch and base64 blob detection |
+| `entropy` | off (opt-in) | Shannon entropy analysis for encrypted/compressed payloads |
 
 Custom inspectors can be added via Python files that extend the `Inspector` base class. Inspectors can also implement `inspect_response()` to scan inbound responses after forwarding.
 
