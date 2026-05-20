@@ -794,7 +794,12 @@ class TestCageQuadlet:
         assert "TimeoutStartSec=120" in content
         assert "TimeoutStopSec=30" in content
 
-    def test_cage_full_config(self, full_yaml):
+    def test_cage_full_config(self, full_yaml, tmp_path, monkeypatch):
+        # The fixture's volume "./agent" is a relative path — make it
+        # resolvable and inside the (mocked) home so it is not skipped.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "agent").mkdir()
         cfg = load_config(full_yaml)
         addrs = cage_network_addrs("myapp")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
@@ -884,8 +889,12 @@ class TestCageQuadlet:
         assert "target=" not in content
 
     def test_cage_env_var_expansion(self, tmp_path, monkeypatch):
-        home = os.path.expanduser("~")
-        monkeypatch.setenv("MY_TEST_DIR", home)
+        # Treat tmp_path as home so the volume passes the within-home check;
+        # the host path must exist or it would (correctly) be skipped.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setenv("MY_TEST_DIR", str(tmp_path))
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -899,8 +908,26 @@ class TestCageQuadlet:
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-cage.container"]
-        assert f"Volume={home}/data:/app:ro" in content
-        assert f'Environment="DATA_DIR={home}/data"' in content
+        assert f"Volume={data_dir}:/app:ro" in content
+        assert f'Environment="DATA_DIR={tmp_path}/data"' in content
+
+    def test_cage_skips_nonexistent_volume(self, tmp_path, monkeypatch):
+        """A volume whose host path does not exist is skipped, not emitted —
+        podman cannot bind-mount a missing source (it fails the container
+        with `statfs ...: no such file or directory`)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              volumes:
+                - "~/.claude:/home/node/.claude:rw"
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-cage.container"]
+        assert "/home/node/.claude" not in content
 
     def test_cage_volume_outside_home_rejected(self, tmp_path):
         p = tmp_path / "config.yaml"
