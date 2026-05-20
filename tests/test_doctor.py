@@ -535,19 +535,32 @@ class TestMacOS:
         assert r.level == "pass"
         assert "macOS" in r.message
 
-    def test_lima_hint_is_brew(self):
+    def test_lima_required_error_on_macos(self):
+        """On macOS the VM is the only isolation mode — missing Lima is fatal,
+        so it must report as an error, not a soft warning."""
         with patch("agentcage.doctor._IS_MACOS", True), \
              patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
             r = check_lima("unknown")
-        assert r.level == "warn"
+        assert r.level == "error"
         assert "brew install lima" in r.hint
 
-    def test_secret_backend_no_systemd_advice(self):
+    def test_secret_backend_macos_with_podman(self):
         from agentcage.doctor import _check_secret_backend
-        with patch("agentcage.doctor._IS_MACOS", True):
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.shutil.which", return_value="/opt/homebrew/bin/podman"):
             r = _check_secret_backend()
         assert r.level == "pass"
         assert "systemd" not in r.message
+
+    def test_secret_backend_macos_without_podman(self):
+        """When Podman is absent on macOS, the secret check must warn — not
+        falsely report a working secret store."""
+        from agentcage.doctor import _check_secret_backend
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.shutil.which", return_value=None):
+            r = _check_secret_backend()
+        assert r.level == "warn"
+        assert "Podman" in r.message
 
     def test_run_doctor_skips_linux_only_checks(self):
         """QEMU / systemd-linger / cgroup checks must not run on macOS, and a

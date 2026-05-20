@@ -168,7 +168,11 @@ def check_podman_rootless(distro: str) -> CheckResult:
 
 
 def check_lima(distro: str) -> CheckResult:
-    """Check lima is installed (optional)."""
+    """Check lima is installed.
+
+    Optional on Linux (container isolation works without it), but
+    mandatory on macOS where the VM is the only isolation mode.
+    """
     try:
         r = subprocess.run(["limactl", "--version"], capture_output=True, text=True, timeout=5)
         if r.returncode == 0:
@@ -178,9 +182,13 @@ def check_lima(distro: str) -> CheckResult:
             return CheckResult("pass", f"Lima {ver}")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    hint = "brew install lima" if _IS_MACOS \
-        else _INSTALL_LIMA.get(distro, _INSTALL_LIMA["unknown"])
-    return CheckResult("warn", "Lima not found (needed for VM mode)", hint=hint)
+    if _IS_MACOS:
+        # On macOS the VM is the only isolation mode — without Lima no
+        # cage can ever start, so this is an error, not a warning.
+        return CheckResult("error", "Lima not found (required on macOS)",
+                           hint="brew install lima")
+    return CheckResult("warn", "Lima not found (needed for VM mode)",
+                       hint=_INSTALL_LIMA.get(distro, _INSTALL_LIMA["unknown"]))
 
 
 def check_qemu(distro: str) -> CheckResult:
@@ -237,12 +245,19 @@ def _check_secret_backend() -> CheckResult:
     """Report the detected secret storage backend."""
     if _IS_MACOS:
         # systemd-creds does not exist on macOS — secrets use the Podman
-        # store and are bridged into the VM at start.
+        # store and are bridged into the VM at start. Probe for Podman so
+        # the check reflects whether 'agentcage secret set' actually works.
+        if shutil.which("podman"):
+            return CheckResult(
+                "pass",
+                "Podman secret store",
+                hint="Secrets are stored via host Podman and bridged into the VM.",
+            )
         return CheckResult(
-            "pass",
-            "Podman secret store",
-            hint="On macOS, 'agentcage secret set' requires Podman "
-                 "(brew install podman); secrets are bridged into the VM.",
+            "warn",
+            "Podman not installed — 'agentcage secret set' unavailable",
+            hint="brew install podman to store cage secrets "
+                 "(cages still run without it).",
         )
     from agentcage.secret_resolver import (
         detect_default_backend, detect_default_scope, _systemd_version,
