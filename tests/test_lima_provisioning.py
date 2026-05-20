@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from unittest.mock import patch
 
@@ -158,6 +159,19 @@ class TestGenerateLimaConfig:
         output = generate_lima_config(cfg)
         assert "podman" in output
 
+    def test_provision_targets_host_username(self):
+        """The provision script targets the real guest user (the host user
+        Lima mirrors, resolved from the passwd database), not a hardcoded
+        'lima' account, and does not rely on Lima's discouraged
+        $LIMA_CIDATA_* variables."""
+        import pwd
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        expected_user = pwd.getpwuid(os.getuid()).pw_name
+        assert f'lima_user="{expected_user}"' in output
+        assert 'enable-linger "$lima_user"' in output
+        assert "LIMA_CIDATA" not in output
+
     def test_name_in_comment(self):
         cfg = MockConfig(name="my-agent")
         output = generate_lima_config(cfg)
@@ -254,6 +268,15 @@ class TestGenerateLimaConfig:
         locations = [m["location"] for m in parsed["mounts"]]
         assert str(vol_dir) in locations
 
+    def test_no_tmp_lima_mount(self):
+        """The hardcoded /tmp/lima mount is gone — it does not exist on a
+        fresh host and a missing mount source wedges VM startup."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        parsed = yaml.safe_load(output)
+        locations = [m["location"] for m in parsed["mounts"]]
+        assert "/tmp/lima" not in locations
+
 
 # ---------------------------------------------------------------------------
 # Tests for _extra_mounts_for_volumes
@@ -302,3 +325,26 @@ class TestExtraMountsForVolumes:
         d.mkdir()
         mounts = _extra_mounts_for_volumes([f"{d}:/a:ro", f"{d}:/b:ro"])
         assert len(mounts) == 1
+
+    def test_skips_nonexistent_host_path(self, tmp_path):
+        """A volume whose host path does not exist must not become a Lima
+        mount — Lima would only warn, then the VM hangs on startup."""
+        missing = tmp_path / "does-not-exist"
+        assert _extra_mounts_for_volumes([f"{missing}:/x:rw"]) == []
+
+    def test_expands_env_var_in_host_path(self, tmp_path, monkeypatch):
+        """${PROJECT_DIR} (and friends) must be expanded, not passed
+        through to Lima as a literal path."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        monkeypatch.setenv("PROJECT_DIR", str(proj))
+        mounts = _extra_mounts_for_volumes(["${PROJECT_DIR}:/workspace:rw"])
+        assert len(mounts) == 1
+        assert mounts[0]["location"] == os.path.realpath(str(proj))
+        assert mounts[0]["writable"] is True
+
+    def test_skips_unexpanded_env_var(self, monkeypatch):
+        """If a variable cannot be expanded, the literal ${VAR} path must
+        be skipped rather than handed to Lima."""
+        monkeypatch.delenv("PROJECT_DIR", raising=False)
+        assert _extra_mounts_for_volumes(["${PROJECT_DIR}:/workspace:rw"]) == []

@@ -8,6 +8,7 @@ import re
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
+import click
 from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
@@ -244,20 +245,41 @@ def generate_quadlets(
 
     # Expand ~ and env vars in volume paths and env values
     expanded_volumes = []
+    home = os.path.realpath(os.path.expanduser("~"))
     for v in cc.volumes:
         # Expand ~ in the host path portion (before the first ':')
         parts = v.split(":", 1)
         parts[0] = os.path.expanduser(parts[0])
         expanded = os.path.expandvars(":".join(parts))
-        # Validate host path portion (before first ':') resolves safely
         host_path = expanded.split(":")[0]
+
+        # Skip a volume whose ${VAR} did not expand — it cannot be mounted.
+        if "$" in host_path:
+            click.echo(
+                f"warning: skipping volume {host_path!r} (unresolved variable)",
+                err=True,
+            )
+            continue
+
+        # Validate host path portion (before first ':') resolves safely
         real = os.path.realpath(host_path)
-        home = os.path.realpath(os.path.expanduser("~"))
         if not (real.startswith(home + os.sep) or real == home):
             raise ValueError(
                 f"volume host path {host_path!r} resolves to {real!r} "
                 f"which is outside the home directory ({home!r})"
             )
+
+        # Skip optional mounts whose host source does not exist. podman
+        # cannot bind-mount a missing path — the container fails to start
+        # with `statfs ...: no such file or directory` — and on the VM
+        # backend the path is not mounted into the VM either.
+        if not os.path.exists(real):
+            click.echo(
+                f"warning: skipping volume {host_path!r} (host path does not exist)",
+                err=True,
+            )
+            continue
+
         expanded_volumes.append(expanded)
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
 

@@ -134,6 +134,7 @@ def _monitor_proxy(
     stop_event: threading.Event,
     cage_name: str | None = None,
     interactive: bool = False,
+    podman_prefix: list[str] | None = None,
 ) -> None:
     """Tail proxy logs and print blocked-request notifications to the terminal.
 
@@ -156,7 +157,7 @@ def _monitor_proxy(
 
     try:
         proc = subprocess.Popen(
-            ["podman", "logs", "-f", proxy_container],
+            (podman_prefix or []) + ["podman", "logs", "-f", proxy_container],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -278,6 +279,90 @@ def _detect_isolation() -> str:
     return "vm" if platform.system() == "Darwin" else "container"
 
 
+def _ensure_volume_dirs(volumes: list[str]) -> None:
+    """Create missing host directories for a cage's bind-mount volumes.
+
+    Scaffolds declare volumes for state persistence — the claude-code
+    scaffold mounts ``~/.claude`` so the agent's login survives across
+    sessions. On a fresh machine that directory does not exist yet;
+    podman cannot bind-mount a missing source, and the Lima/quadlet
+    layers would skip it (so a login inside the cage never round-trips
+    to the host). Create it up front instead.
+
+    Only *directory* sources inside the home directory are created. A
+    spec whose host path looks like a file (has an extension) or still
+    carries an unexpanded ``${VAR}`` is left untouched — a single file
+    cannot be shared into the Lima VM, and the mount layers skip those
+    safely on their own.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    for vol in volumes:
+        host_part = vol.split(":")[0]
+        expanded = os.path.expandvars(os.path.expanduser(host_part))
+        if "$" in expanded:
+            continue  # unresolved variable — not ours to create
+        real = os.path.realpath(expanded)
+        if os.path.exists(real):
+            continue
+        if os.path.splitext(os.path.basename(real))[1]:
+            continue  # looks like a file — leave it to the skip logic
+        if real == home or real.startswith(home + os.sep):
+            os.makedirs(real, exist_ok=True)
+
+
+def _stage_set_secrets(
+    cage_name: str, secrets: tuple[str, ...], isolation: str, podman,
+) -> set[str]:
+    """Stage ``--set-secret`` values and return the set of provided keys.
+
+    Container mode writes them straight to the host Podman store. The VM
+    backend has no host Podman, so values are staged to
+    ``pending_secrets.json`` in the deployment dir (mode 0600) — the VM
+    backend reads it and creates the secrets inside the VM. This mirrors
+    what ``agentcage cage create`` already does for VM cages.
+    """
+    parsed: list[tuple[str, str]] = []
+    for spec in secrets:
+        if "=" in spec:
+            key, val = spec.split("=", 1)
+        else:
+            key = spec
+            val = click.prompt(f"Value for {key}", hide_input=True)
+        parsed.append((key, val))
+
+    if isolation == "vm":
+        if parsed:
+            secrets_file = state.deployment_dir(cage_name) / "pending_secrets.json"
+            # 0o600 — staged secret values must not be world-readable.
+            fd = os.open(str(secrets_file),
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, json.dumps(parsed).encode())
+            finally:
+                os.close(fd)
+    else:
+        for key, val in parsed:
+            full = f"{cage_name}.{key}"
+            if podman.secret_exists(full):
+                podman.secret_remove(full)
+            podman.secret_create(full, val)
+
+    return {key for key, _ in parsed}
+
+
+def _vm_podman_prefix(isolation: str, cage_name: str) -> list[str]:
+    """Command prefix needed to reach Podman for a cage.
+
+    On the VM backend there is no host Podman — containers run inside the
+    Lima VM, so podman commands must be routed through ``limactl shell``.
+    On the container backend Podman runs on the host and no prefix is
+    needed.
+    """
+    if isolation == "vm":
+        return ["limactl", "shell", f"agentcage-{cage_name}", "--"]
+    return []
+
+
 def execute(
     scaffold: str,
     *,
@@ -354,6 +439,11 @@ def execute(
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
 
+    # Create missing bind-mount directories so state persists (e.g. the
+    # claude-code scaffold's ~/.claude — without this, a login inside the
+    # cage never round-trips to the host).
+    _ensure_volume_dirs(cfg.container.volumes)
+
     # Check port availability
     unavailable = check_port_availability(cfg)
     if unavailable:
@@ -383,28 +473,22 @@ def execute(
     try:
         podman = Podman()
 
-        # Set secrets passed via --set-secret
-        provided_keys: set[str] = set()
-        for spec in secrets:
-            if "=" in spec:
-                key, val = spec.split("=", 1)
-            else:
-                key = spec
-                val = click.prompt(f"Value for {key}", hide_input=True)
-            full = f"{cage_name}.{key}"
-            if podman.secret_exists(full):
-                podman.secret_remove(full)
-            podman.secret_create(full, val)
-            provided_keys.add(key)
+        # Set secrets passed via --set-secret. Container mode writes the
+        # host Podman store; VM mode stages them for the VM backend (there
+        # is no host Podman on macOS).
+        provided_keys = _stage_set_secrets(cage_name, secrets, cfg.isolation, podman)
 
-        # Resolve secrets from configured backends (env:, cmd:, systemd-creds:)
-        from agentcage.secret_resolver import resolve_and_populate
-        provided_keys |= resolve_and_populate(
-            podman, cfg, cage_name,
-            state.deployment_dir(cage_name),
-            skip_keys=provided_keys,
-            strict=False,  # agentcage run has its own cleanup on failure
-        )
+        # Resolve secrets from configured backends (env:, cmd:, systemd-creds:).
+        # Container mode only — matches `agentcage cage create`; on the VM
+        # backend the VM bridges its own secrets after it starts.
+        if cfg.isolation == "container":
+            from agentcage.secret_resolver import resolve_and_populate
+            provided_keys |= resolve_and_populate(
+                podman, cfg, cage_name,
+                state.deployment_dir(cage_name),
+                skip_keys=provided_keys,
+                strict=False,  # agentcage run has its own cleanup on failure
+            )
 
         # Strip secret injection rules for secrets not provided —
         # keeps only rules whose secrets were passed via --set-secret
@@ -494,19 +578,23 @@ def execute(
     proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
+    # On the VM backend, route exec and log monitoring through the Lima VM.
+    podman_prefix = _vm_podman_prefix(cfg.isolation, cage_name)
+
     # Monitor proxy logs for blocked requests
     monitor_stop = threading.Event()
     monitor_thread = threading.Thread(
         target=_monitor_proxy,
         args=(proxy_container, monitor_stop),
-        kwargs={"cage_name": cage_name, "interactive": interactive_domains},
+        kwargs={"cage_name": cage_name, "interactive": interactive_domains,
+                "podman_prefix": podman_prefix},
         daemon=True,
     )
     monitor_thread.start()
 
     try:
         result = subprocess.run(
-            ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
+            podman_prefix + ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
         )
         exit_code = result.returncode
     except KeyboardInterrupt:

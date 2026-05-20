@@ -520,3 +520,76 @@ class TestCheckResilience:
         assert len(results) == 1
         assert results[0].level == "warn"
         assert "corrupt" in results[0].message
+
+
+# ---------------------------------------------------------------------------
+# macOS awareness — Linux-only checks must not fire on macOS
+# ---------------------------------------------------------------------------
+
+class TestMacOS:
+    def test_podman_optional_when_missing(self):
+        """On macOS a missing host Podman is not an error — it is optional."""
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
+            r = check_podman("unknown")
+        assert r.level == "pass"
+        assert "macOS" in r.message
+
+    def test_lima_required_error_on_macos(self):
+        """On macOS the VM is the only isolation mode — missing Lima is fatal,
+        so it must report as an error, not a soft warning."""
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
+            r = check_lima("unknown")
+        assert r.level == "error"
+        assert "brew install lima" in r.hint
+
+    def test_secret_backend_macos_with_podman(self):
+        from agentcage.doctor import _check_secret_backend
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.shutil.which", return_value="/opt/homebrew/bin/podman"):
+            r = _check_secret_backend()
+        assert r.level == "pass"
+        assert "systemd" not in r.message
+
+    def test_secret_backend_macos_without_podman(self):
+        """When Podman is absent on macOS, the secret check must warn — not
+        falsely report a working secret store."""
+        from agentcage.doctor import _check_secret_backend
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.shutil.which", return_value=None):
+            r = _check_secret_backend()
+        assert r.level == "warn"
+        assert "Podman" in r.message
+
+    def test_run_doctor_skips_linux_only_checks(self):
+        """QEMU / systemd-linger / cgroup checks must not run on macOS, and a
+        healthy fresh macOS install must report zero errors."""
+        def fake_run(cmd, **kwargs):
+            prog = cmd[0] if cmd else ""
+            if prog == "podman":
+                raise FileNotFoundError
+            if prog == "limactl":
+                return subprocess.CompletedProcess(cmd, 0, stdout="limactl version 2.1.1\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+        usage = MagicMock()
+        usage.free = 50 * 1024 ** 3
+        mock_sock = MagicMock()
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor._python_version_info", return_value=(3, 12, 5)), \
+             patch("agentcage.doctor.subprocess.run", side_effect=fake_run), \
+             patch("agentcage.doctor.shutil.disk_usage", return_value=usage), \
+             patch("agentcage.doctor.socket.getaddrinfo", return_value=[("ok",)]), \
+             patch("agentcage.doctor.socket.socket") as msock, \
+             patch("agentcage.state.list_deployments", return_value=[]), \
+             patch("agentcage.doctor._detect_distro", return_value="unknown"):
+            msock.return_value.__enter__ = MagicMock(return_value=mock_sock)
+            msock.return_value.__exit__ = MagicMock(return_value=False)
+            results = run_doctor()
+
+        messages = " ".join(r.message for r in results)
+        assert "QEMU" not in messages
+        assert "cgroup" not in messages
+        assert "linger" not in messages
+        assert not any(r.level == "error" for r in results)
