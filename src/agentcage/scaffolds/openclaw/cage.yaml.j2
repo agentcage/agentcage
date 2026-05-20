@@ -142,10 +142,13 @@ domains:
     #- gitlab.com
 
     # ── Container registries (needed for nested containers) ──
+    # docker.io and docker.com are allowed with all subdomains: that
+    # covers the registry (registry-1.docker.io), the token service
+    # (auth.docker.io), and the CDN edges Docker Hub redirects blob
+    # downloads to — it shifts between Cloudflare and AWS CloudFront
+    # (production.cloudflare.docker.com / production.cloudfront.docker.com).
     - docker.io
-    - registry-1.docker.io
-    - auth.docker.io
-    - production.cloudflare.docker.com
+    - docker.com
     - ghcr.io
     - pkg-containers.githubusercontent.com
     - r2.cloudflarestorage.com
@@ -193,8 +196,9 @@ logging:
 
 # ── Inspectors ──
 inspectors:
-  - name: entropy
   - name: content-type
+  # Add `- name: entropy` to also flag encrypted/compressed payloads
+  # (off by default — it false-positives on legitimate high-entropy data).
   # Allow Docker registry JWT auth tokens to reach container registries
   - name: secrets
     config:

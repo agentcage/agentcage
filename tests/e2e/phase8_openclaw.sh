@@ -324,13 +324,13 @@ else
   else
     echo "--- 8.10 podman run output ---"
     printf '%s\n' "$np_out"
-    echo "--- 8.10 proxy audit (last 40) ---"
-    agentcage cage audit "$CAGE" --json-lines -n 40 2>/dev/null || true
-    echo "--- 8.10 proxy container log (tail) ---"
-    podman logs --tail 60 "${CAGE}-proxy" 2>&1 | tail -60 || true
+    # The proxy audit log shows any host the cage's domain inspector
+    # blocked during the pull (a common failure mode for nested podman).
+    echo "--- 8.10 proxy audit (last 20) ---"
+    agentcage cage audit "$CAGE" --json-lines -n 20 2>/dev/null || true
     echo "--- end 8.10 output ---"
     e2e_fail "8.10" "nested podman smoke (busybox)" \
-      "podman run inside cage failed (scaffold uid/subuid/overlay regression?)"
+      "podman run inside cage failed (see podman output / proxy audit above)"
   fi
 fi
 
