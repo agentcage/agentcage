@@ -150,6 +150,45 @@ has_agentcage() {
 }
 
 # ---------------------------------------------------------------------------
+# Install: Homebrew (macOS only)
+# ---------------------------------------------------------------------------
+
+install_homebrew() {
+    # Homebrew may already be installed but not yet on PATH (common right
+    # after a fresh install, or in a non-login shell). Pick it up first.
+    if ! command -v brew >/dev/null 2>&1; then
+        if [ -x /opt/homebrew/bin/brew ]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [ -x /usr/local/bin/brew ]; then
+            eval "$(/usr/local/bin/brew shellenv)"
+        fi
+    fi
+
+    if command -v brew >/dev/null 2>&1; then
+        info "Homebrew is already installed"
+        return
+    fi
+
+    info "Homebrew not found — installing it (required on macOS)..."
+    info "The Homebrew installer may prompt for your password."
+    need_cmd curl
+    NONINTERACTIVE=1 /bin/bash -c \
+        "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+    # Put brew on PATH for the rest of this script (Apple Silicon, then Intel).
+    if [ -x /opt/homebrew/bin/brew ]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -x /usr/local/bin/brew ]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+
+    if ! command -v brew >/dev/null 2>&1; then
+        err "Homebrew installation failed. Install it manually from https://brew.sh and re-run."
+    fi
+    info "Homebrew installed"
+}
+
+# ---------------------------------------------------------------------------
 # Install: Podman
 # ---------------------------------------------------------------------------
 
@@ -402,10 +441,8 @@ main() {
     detect_distro
 
     if [ "$OS" = "macos" ]; then
-        if ! command -v brew >/dev/null 2>&1; then
-            err "Homebrew is required on macOS. Install it from https://brew.sh"
-        fi
-        info "Detected macOS with Homebrew"
+        info "Detected macOS"
+        install_homebrew
     elif [ "$IS_WSL" = true ]; then
         info "Detected Linux ($DISTRO) under WSL2"
     else

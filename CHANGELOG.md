@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `install.sh` now bootstraps Homebrew on macOS instead of aborting with `error: Homebrew is required` when it is missing. Homebrew is itself a prerequisite, so a genuinely fresh Mac could never run the documented one-line installer. The installer now installs Homebrew non-interactively, and also picks up an existing Homebrew that is installed but not yet on `PATH`.
+
 ## [0.16.0] - 2026-05-15
 
 ### Added
