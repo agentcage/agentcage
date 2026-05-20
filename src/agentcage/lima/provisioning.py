@@ -13,9 +13,6 @@ from jinja2.sandbox import SandboxedEnvironment
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "lima"
 
-# Default Lima user inside the VM
-_LIMA_USER = "lima"
-
 # Directories that must NEVER be mounted into the VM, even if a user volume
 # points inside them.  Checked as resolved real-path prefixes.
 _BLOCKED_MOUNT_DIRS = (
@@ -146,9 +143,10 @@ def generate_lima_config(config: object) -> str:
     # Compute memory in GiB (ceiling division)
     mem_gb = math.ceil(config.vm.mem_mb / 1024)
 
-    # Render provisioning script
+    # Render provisioning script. The guest username is resolved inside the
+    # script at run time from $LIMA_CIDATA_USER, so no template var is needed.
     provision_tmpl = env.get_template("provision.sh.j2")
-    provision_script = provision_tmpl.render(lima_user=_LIMA_USER)
+    provision_script = provision_tmpl.render()
 
     # Parse port forwards
     port_forwards = _parse_port_forwards(config.container.ports)

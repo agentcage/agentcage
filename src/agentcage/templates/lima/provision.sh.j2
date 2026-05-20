@@ -2,6 +2,11 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
+# Lima names the guest user after the *host* user (e.g. "alice"), not a
+# fixed "lima" account. It exports the real name to provision scripts as
+# $LIMA_CIDATA_USER — use that instead of a hardcoded guess.
+lima_user="${LIMA_CIDATA_USER:?LIMA_CIDATA_USER not set by Lima}"
+
 # Install Podman and dependencies
 apt-get update -qq
 apt-get install -y -qq podman fuse-overlayfs uidmap slirp4netns socat iptables
@@ -20,16 +25,16 @@ STOR
 sysctl -w net.ipv4.ip_unprivileged_port_start=80
 echo "net.ipv4.ip_unprivileged_port_start=80" > /etc/sysctl.d/99-agentcage.conf
 
-# Allow the lima user to read journald logs (needed for podman logs + agentcage cage logs)
-usermod -aG systemd-journal {{ lima_user }} || true
-usermod -aG adm {{ lima_user }} || true
+# Allow the cage user to read journald logs (needed for podman logs + agentcage cage logs)
+usermod -aG systemd-journal "$lima_user" || true
+usermod -aG adm "$lima_user" || true
 
 # Ensure journal files are group-readable for systemd-journal members (least privilege)
 mkdir -p /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal
 chmod -R g+rX /var/log/journal
 
-# Enable lingering for the lima user so systemd user services persist
-loginctl enable-linger {{ lima_user }}
+# Enable lingering for the cage user so systemd user services persist
+loginctl enable-linger "$lima_user"
 
 echo "agentcage provisioning complete"

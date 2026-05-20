@@ -159,6 +159,14 @@ class TestGenerateLimaConfig:
         output = generate_lima_config(cfg)
         assert "podman" in output
 
+    def test_provision_resolves_guest_user_at_runtime(self):
+        """The provision script must resolve the guest user from Lima's
+        $LIMA_CIDATA_USER, not assume a hardcoded 'lima' account."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        assert "LIMA_CIDATA_USER" in output
+        assert 'enable-linger "$lima_user"' in output
+
     def test_name_in_comment(self):
         cfg = MockConfig(name="my-agent")
         output = generate_lima_config(cfg)
