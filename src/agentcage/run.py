@@ -134,6 +134,7 @@ def _monitor_proxy(
     stop_event: threading.Event,
     cage_name: str | None = None,
     interactive: bool = False,
+    podman_prefix: list[str] | None = None,
 ) -> None:
     """Tail proxy logs and print blocked-request notifications to the terminal.
 
@@ -156,7 +157,7 @@ def _monitor_proxy(
 
     try:
         proc = subprocess.Popen(
-            ["podman", "logs", "-f", proxy_container],
+            (podman_prefix or []) + ["podman", "logs", "-f", proxy_container],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -276,6 +277,19 @@ def _monitor_proxy(
 def _detect_isolation() -> str:
     """Return 'vm' on macOS, 'container' on Linux."""
     return "vm" if platform.system() == "Darwin" else "container"
+
+
+def _vm_podman_prefix(isolation: str, cage_name: str) -> list[str]:
+    """Command prefix needed to reach Podman for a cage.
+
+    On the VM backend there is no host Podman — containers run inside the
+    Lima VM, so podman commands must be routed through ``limactl shell``.
+    On the container backend Podman runs on the host and no prefix is
+    needed.
+    """
+    if isolation == "vm":
+        return ["limactl", "shell", f"agentcage-{cage_name}", "--"]
+    return []
 
 
 def execute(
@@ -494,19 +508,23 @@ def execute(
     proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
+    # On the VM backend, route exec and log monitoring through the Lima VM.
+    podman_prefix = _vm_podman_prefix(cfg.isolation, cage_name)
+
     # Monitor proxy logs for blocked requests
     monitor_stop = threading.Event()
     monitor_thread = threading.Thread(
         target=_monitor_proxy,
         args=(proxy_container, monitor_stop),
-        kwargs={"cage_name": cage_name, "interactive": interactive_domains},
+        kwargs={"cage_name": cage_name, "interactive": interactive_domains,
+                "podman_prefix": podman_prefix},
         daemon=True,
     )
     monitor_thread.start()
 
     try:
         result = subprocess.run(
-            ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
+            podman_prefix + ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
         )
         exit_code = result.returncode
     except KeyboardInterrupt:

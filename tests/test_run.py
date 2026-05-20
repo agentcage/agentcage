@@ -5,7 +5,19 @@ from unittest.mock import patch
 
 import pytest
 
-from agentcage.run import generate_name
+from agentcage.run import _vm_podman_prefix, generate_name
+
+
+class TestVmPodmanPrefix:
+    """The interactive session must reach Podman inside the VM on macOS."""
+
+    def test_vm_routes_through_limactl(self):
+        assert _vm_podman_prefix("vm", "my-cage") == [
+            "limactl", "shell", "agentcage-my-cage", "--",
+        ]
+
+    def test_container_needs_no_prefix(self):
+        assert _vm_podman_prefix("container", "my-cage") == []
 
 
 class TestGenerateName:
