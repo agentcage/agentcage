@@ -310,6 +310,46 @@ def _ensure_volume_dirs(volumes: list[str]) -> None:
             os.makedirs(real, exist_ok=True)
 
 
+def _stage_set_secrets(
+    cage_name: str, secrets: tuple[str, ...], isolation: str, podman,
+) -> set[str]:
+    """Stage ``--set-secret`` values and return the set of provided keys.
+
+    Container mode writes them straight to the host Podman store. The VM
+    backend has no host Podman, so values are staged to
+    ``pending_secrets.json`` in the deployment dir (mode 0600) — the VM
+    backend reads it and creates the secrets inside the VM. This mirrors
+    what ``agentcage cage create`` already does for VM cages.
+    """
+    parsed: list[tuple[str, str]] = []
+    for spec in secrets:
+        if "=" in spec:
+            key, val = spec.split("=", 1)
+        else:
+            key = spec
+            val = click.prompt(f"Value for {key}", hide_input=True)
+        parsed.append((key, val))
+
+    if isolation == "vm":
+        if parsed:
+            secrets_file = state.deployment_dir(cage_name) / "pending_secrets.json"
+            # 0o600 — staged secret values must not be world-readable.
+            fd = os.open(str(secrets_file),
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, json.dumps(parsed).encode())
+            finally:
+                os.close(fd)
+    else:
+        for key, val in parsed:
+            full = f"{cage_name}.{key}"
+            if podman.secret_exists(full):
+                podman.secret_remove(full)
+            podman.secret_create(full, val)
+
+    return {key for key, _ in parsed}
+
+
 def _vm_podman_prefix(isolation: str, cage_name: str) -> list[str]:
     """Command prefix needed to reach Podman for a cage.
 
@@ -433,28 +473,22 @@ def execute(
     try:
         podman = Podman()
 
-        # Set secrets passed via --set-secret
-        provided_keys: set[str] = set()
-        for spec in secrets:
-            if "=" in spec:
-                key, val = spec.split("=", 1)
-            else:
-                key = spec
-                val = click.prompt(f"Value for {key}", hide_input=True)
-            full = f"{cage_name}.{key}"
-            if podman.secret_exists(full):
-                podman.secret_remove(full)
-            podman.secret_create(full, val)
-            provided_keys.add(key)
+        # Set secrets passed via --set-secret. Container mode writes the
+        # host Podman store; VM mode stages them for the VM backend (there
+        # is no host Podman on macOS).
+        provided_keys = _stage_set_secrets(cage_name, secrets, cfg.isolation, podman)
 
-        # Resolve secrets from configured backends (env:, cmd:, systemd-creds:)
-        from agentcage.secret_resolver import resolve_and_populate
-        provided_keys |= resolve_and_populate(
-            podman, cfg, cage_name,
-            state.deployment_dir(cage_name),
-            skip_keys=provided_keys,
-            strict=False,  # agentcage run has its own cleanup on failure
-        )
+        # Resolve secrets from configured backends (env:, cmd:, systemd-creds:).
+        # Container mode only — matches `agentcage cage create`; on the VM
+        # backend the VM bridges its own secrets after it starts.
+        if cfg.isolation == "container":
+            from agentcage.secret_resolver import resolve_and_populate
+            provided_keys |= resolve_and_populate(
+                podman, cfg, cage_name,
+                state.deployment_dir(cage_name),
+                skip_keys=provided_keys,
+                strict=False,  # agentcage run has its own cleanup on failure
+            )
 
         # Strip secret injection rules for secrets not provided —
         # keeps only rules whose secrets were passed via --set-secret

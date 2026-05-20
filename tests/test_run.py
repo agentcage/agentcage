@@ -1,11 +1,17 @@
 """Tests for agentcage.run module (generate_name, execute)."""
 
+import json
 import re
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentcage.run import _ensure_volume_dirs, _vm_podman_prefix, generate_name
+from agentcage.run import (
+    _ensure_volume_dirs,
+    _stage_set_secrets,
+    _vm_podman_prefix,
+    generate_name,
+)
 
 
 class TestVmPodmanPrefix:
@@ -57,6 +63,41 @@ class TestEnsureVolumeDirs:
         outside = tmp_path / "elsewhere"
         _ensure_volume_dirs([f"{outside}:/x:rw"])
         assert not outside.exists()
+
+
+class TestStageSetSecrets:
+    """--set-secret values: host Podman in container mode, staged file in VM mode."""
+
+    def test_vm_mode_writes_pending_file(self, tmp_path):
+        with patch("agentcage.run.state.deployment_dir", return_value=tmp_path):
+            keys = _stage_set_secrets("my-cage", ("API_KEY=secret123",), "vm", None)
+        assert keys == {"API_KEY"}
+        pending = tmp_path / "pending_secrets.json"
+        assert json.loads(pending.read_text()) == [["API_KEY", "secret123"]]
+        # 0600 — staged secrets must not be group/world readable
+        assert (pending.stat().st_mode & 0o077) == 0
+
+    def test_vm_mode_no_secrets_writes_nothing(self, tmp_path):
+        with patch("agentcage.run.state.deployment_dir", return_value=tmp_path):
+            keys = _stage_set_secrets("my-cage", (), "vm", None)
+        assert keys == set()
+        assert not (tmp_path / "pending_secrets.json").exists()
+
+    def test_container_mode_uses_host_podman(self):
+        podman = MagicMock()
+        podman.secret_exists.return_value = False
+        keys = _stage_set_secrets("my-cage", ("API_KEY=v",), "container", podman)
+        assert keys == {"API_KEY"}
+        podman.secret_create.assert_called_once_with("my-cage.API_KEY", "v")
+
+    def test_vm_mode_never_calls_host_podman(self):
+        # The whole point: VM mode must not touch host Podman.
+        podman = MagicMock()
+        with patch("agentcage.run.state.deployment_dir") as dd:
+            import tempfile
+            dd.return_value = __import__("pathlib").Path(tempfile.mkdtemp())
+            _stage_set_secrets("c", ("K=V",), "vm", podman)
+        podman.secret_create.assert_not_called()
 
 
 class TestGenerateName:
