@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `install.sh` now bootstraps Homebrew on macOS instead of aborting with `error: Homebrew is required` when it is missing. Homebrew is itself a prerequisite, so a genuinely fresh Mac could never run the documented one-line installer. The installer now installs Homebrew non-interactively, and also picks up an existing Homebrew that is installed but not yet on `PATH`.
+- `agentcage doctor` is now macOS-aware. It no longer reports a fistful of bogus errors and warnings on a healthy macOS install: QEMU, systemd linger and cgroup v2 checks (all Linux-only) are skipped, a missing host Podman is reported as optional rather than an error, and the secret-store and Lima hints no longer recommend Linux-only remediation (`systemd 250+`, distro package managers).
 
 ## [0.16.0] - 2026-05-15
 

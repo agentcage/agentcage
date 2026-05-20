@@ -17,6 +17,12 @@ import click
 from agentcage.output import dim, green, red
 
 
+# True when running on macOS. Used to skip Linux-only diagnostics
+# (QEMU, systemd linger, cgroup v2) and tailor remediation hints —
+# on macOS cages run inside a Lima VM via the vz hypervisor.
+_IS_MACOS = sys.platform == "darwin"
+
+
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -133,6 +139,12 @@ def check_podman(distro: str) -> CheckResult:
             return CheckResult("pass", f"Podman {ver}")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+    if _IS_MACOS:
+        # On macOS, containers run inside the Lima VM — host Podman is
+        # optional and only used by 'agentcage secret set'.
+        return CheckResult("pass",
+                           "Podman not installed (optional on macOS — "
+                           "only needed for 'agentcage secret set')")
     return CheckResult("error", "Podman not found",
                        hint=_INSTALL_PODMAN.get(distro, _INSTALL_PODMAN["unknown"]))
 
@@ -166,8 +178,9 @@ def check_lima(distro: str) -> CheckResult:
             return CheckResult("pass", f"Lima {ver}")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    return CheckResult("warn", "Lima not found (needed for VM mode)",
-                       hint=_INSTALL_LIMA.get(distro, _INSTALL_LIMA["unknown"]))
+    hint = "brew install lima" if _IS_MACOS \
+        else _INSTALL_LIMA.get(distro, _INSTALL_LIMA["unknown"])
+    return CheckResult("warn", "Lima not found (needed for VM mode)", hint=hint)
 
 
 def check_qemu(distro: str) -> CheckResult:
@@ -222,6 +235,15 @@ def check_disk_space() -> CheckResult:
 
 def _check_secret_backend() -> CheckResult:
     """Report the detected secret storage backend."""
+    if _IS_MACOS:
+        # systemd-creds does not exist on macOS — secrets use the Podman
+        # store and are bridged into the VM at start.
+        return CheckResult(
+            "pass",
+            "Podman secret store",
+            hint="On macOS, 'agentcage secret set' requires Podman "
+                 "(brew install podman); secrets are bridged into the VM.",
+        )
     from agentcage.secret_resolver import (
         detect_default_backend, detect_default_scope, _systemd_version,
     )
@@ -473,18 +495,23 @@ def run_doctor() -> list[CheckResult]:
     prereqs = Section("Prerequisites")
     prereqs.results.append(_safe_check(check_python_version, label="Python version"))
     prereqs.results.append(_safe_check(check_podman, distro, label="Podman"))
-    # Only check rootless if podman was found
-    if prereqs.results[-1].level == "pass":
+    # Only check rootless if podman was found — and only on Linux, where
+    # Podman runs on the host (on macOS it runs inside the VM).
+    if prereqs.results[-1].level == "pass" and not _IS_MACOS:
         prereqs.results.append(_safe_check(check_podman_rootless, distro, label="Podman rootless"))
     prereqs.results.append(_safe_check(check_lima, distro, label="Lima"))
-    prereqs.results.append(_safe_check(check_qemu, distro, label="QEMU"))
-    prereqs.results.append(_safe_check(check_systemd_linger, label="systemd linger"))
+    # QEMU and systemd linger are Linux-only — macOS uses the vz hypervisor.
+    if not _IS_MACOS:
+        prereqs.results.append(_safe_check(check_qemu, distro, label="QEMU"))
+        prereqs.results.append(_safe_check(check_systemd_linger, label="systemd linger"))
     _print_section(prereqs)
     all_results.extend(prereqs.results)
 
     # --- System ---
     system = Section("System")
-    system.results.append(_safe_check(check_cgroup_v2, label="cgroup v2"))
+    # cgroup v2 is a Linux kernel feature — not applicable on macOS.
+    if not _IS_MACOS:
+        system.results.append(_safe_check(check_cgroup_v2, label="cgroup v2"))
     system.results.append(_safe_check(check_disk_space, label="disk space"))
     _print_section(system)
     all_results.extend(system.results)
