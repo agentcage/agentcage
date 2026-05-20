@@ -34,8 +34,6 @@ mounts:
   - location: "{{ extra_mount.location }}"
     writable: {{ extra_mount.writable | lower }}
 {% endfor %}
-  - location: "/tmp/lima"
-    writable: true
 
 containerd:
   system: false

@@ -7,6 +7,7 @@ import os
 import platform
 from pathlib import Path
 
+import click
 from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
@@ -56,28 +57,29 @@ def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
     """Derive additional Lima mounts for user-defined container volumes.
 
     Each volume spec ``host:container[:opts]`` needs the *host* portion
-    visible inside the VM via virtiofs.  We resolve the host path and
-    reject anything under a blocked sensitive directory.
+    visible inside the VM via virtiofs.  The host path is expanded (both
+    ``~`` and ``${VARS}`` such as ``${PROJECT_DIR}``), checked against the
+    blocked sensitive directories, and — crucially — skipped if it does
+    not exist.  Lima only *warns* about a missing mount source, but the
+    VM then never finishes starting (SSH bring-up wedges), so a bogus
+    mount must never be emitted.
 
     Returns a list of ``{"location": ..., "writable": ...}`` dicts.
     """
     home = os.path.realpath(os.path.expanduser("~"))
+    config_dir = os.path.realpath(os.path.expanduser("~/.config/agentcage"))
+    data_dir = os.path.realpath(os.path.expanduser("~/.local/share/agentcage"))
     seen: set[str] = set()
     mounts: list[dict] = []
 
     for vol in volumes:
         host_part = vol.split(":")[0]
-        host_path = os.path.realpath(os.path.expanduser(host_part))
+        # Expand ~ and ${VARS} (e.g. ${PROJECT_DIR}) before resolving.
+        expanded = os.path.expandvars(os.path.expanduser(host_part))
+        host_path = os.path.realpath(expanded)
 
-        # Skip if already covered by the default mounts
-        config_dir = os.path.realpath(os.path.expanduser("~/.config/agentcage"))
-        data_dir = os.path.realpath(os.path.expanduser("~/.local/share/agentcage"))
-        if host_path.startswith(config_dir + os.sep) or host_path == config_dir:
-            continue
-        if host_path.startswith(data_dir + os.sep) or host_path == data_dir:
-            continue
-
-        # Block sensitive directories
+        # Block sensitive directories — checked before the existence test
+        # below so an explicit attempt to mount ~/.ssh always fails loudly.
         for blocked in _BLOCKED_MOUNT_DIRS:
             blocked_path = os.path.join(home, blocked)
             if host_path == blocked_path or host_path.startswith(blocked_path + os.sep):
@@ -85,6 +87,23 @@ def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
                     f"volume host path {host_part!r} resolves under ~/{blocked} "
                     f"which must not be exposed to the VM"
                 )
+
+        # Skip if already covered by the default mounts
+        if host_path.startswith(config_dir + os.sep) or host_path == config_dir:
+            continue
+        if host_path.startswith(data_dir + os.sep) or host_path == data_dir:
+            continue
+
+        # Skip paths that did not expand or do not exist on the host.
+        # Lima cannot virtiofs-mount a missing source, and handing it one
+        # anyway wedges VM startup at the SSH requirement.
+        if "$" in host_path or not os.path.exists(host_path):
+            click.echo(
+                f"warning: not mounting {host_part!r} into the VM "
+                f"(host path does not exist)",
+                err=True,
+            )
+            continue
 
         if host_path in seen:
             continue
