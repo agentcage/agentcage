@@ -313,11 +313,20 @@ fi
 e2e_timer_start
 if ! agentcage cage exec "$CAGE" -- podman ps >/dev/null 2>&1; then
   e2e_skip "8.10" "nested podman smoke" "nested podman not usable in this environment"
-elif agentcage cage exec "$CAGE" -- podman run --rm docker.io/library/busybox echo ok 2>/dev/null | grep -q '^ok$'; then
-  e2e_pass "8.10" "nested podman smoke (busybox)"
 else
-  e2e_fail "8.10" "nested podman smoke (busybox)" \
-    "podman run inside cage failed (scaffold uid/subuid/overlay regression?)"
+  # Capture combined output so a failure shows the actual podman error
+  # instead of swallowing it.
+  np_out=$(agentcage cage exec "$CAGE" -- \
+    podman run --rm docker.io/library/busybox echo ok 2>&1)
+  if printf '%s\n' "$np_out" | grep -q '^ok$'; then
+    e2e_pass "8.10" "nested podman smoke (busybox)"
+  else
+    echo "--- 8.10 podman run output ---"
+    printf '%s\n' "$np_out"
+    echo "--- end 8.10 output ---"
+    e2e_fail "8.10" "nested podman smoke (busybox)" \
+      "podman run inside cage failed (scaffold uid/subuid/overlay regression?)"
+  fi
 fi
 
 # Trap handles teardown
