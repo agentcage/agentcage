@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import math
 import os
 import platform
@@ -143,10 +144,11 @@ def generate_lima_config(config: object) -> str:
     # Compute memory in GiB (ceiling division)
     mem_gb = math.ceil(config.vm.mem_mb / 1024)
 
-    # Render provisioning script. The guest username is resolved inside the
-    # script at run time from $LIMA_CIDATA_USER, so no template var is needed.
+    # Render provisioning script. Lima names the guest user after the host
+    # user, and agentcage runs limactl as that same user — so the host
+    # username (resolved here) is the guest username.
     provision_tmpl = env.get_template("provision.sh.j2")
-    provision_script = provision_tmpl.render()
+    provision_script = provision_tmpl.render(lima_user=getpass.getuser())
 
     # Parse port forwards
     port_forwards = _parse_port_forwards(config.container.ports)

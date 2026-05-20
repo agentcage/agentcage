@@ -2,10 +2,12 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-# Lima names the guest user after the *host* user (e.g. "alice"), not a
-# fixed "lima" account. It exports the real name to provision scripts as
-# $LIMA_CIDATA_USER — use that instead of a hardcoded guess.
-lima_user="${LIMA_CIDATA_USER:?LIMA_CIDATA_USER not set by Lima}"
+# Lima names the guest user after the *host* user (not a fixed "lima"
+# account). agentcage invokes limactl as that same user, so the host
+# username is the guest username and is templated in here at config
+# generation — Lima 2.x warns against reading its cidata env vars from
+# provisioning scripts.
+lima_user="{{ lima_user }}"
 
 # Install Podman and dependencies
 apt-get update -qq
