@@ -126,6 +126,7 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 | `secret list NAME` | List secrets for a cage (with status if cage exists) |
 | `secret set NAME KEY` | Set a secret (prompts for value or reads stdin) |
 | `secret rm NAME KEY` | Remove a secret |
+| `secret migrate NAME` | Migrate a cage's secrets to a different storage backend |
 
 **Aliases:** `ls` → `list`
 
@@ -147,7 +148,7 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 agentcage cage create -c <config>
 ```
 
-Creates a new cage from a config file. Use `-s KEY=VALUE` (repeatable) to set secrets inline during creation. This single command:
+Creates a new cage from a config file. Use `-s KEY=VALUE` (repeatable) to set secrets inline during creation. Pass `--no-cache` to force a full image rebuild (ignore podman's layer cache) or `--pull` to force a re-pull of the base image from the registry. This single command:
 
 1. Validates the config
 2. Checks that all required secrets exist in Podman
@@ -187,6 +188,13 @@ Rebuild and restart an existing cage. Use this after changing code or config:
 
 Stops the running services before rebuilding, then starts them again.
 
+### Options
+
+| Option | Description |
+|---|---|
+| `--no-cache` | Force a full image rebuild, ignoring podman's layer cache. Use after pulling a fresh agentcage release that changed the `Containerfile` or its build context. |
+| `--pull` | Force a re-pull of the base image from the registry (`--pull=always`). Invalidates the base-image cache, independent of `--no-cache`. Combine both for a fully clean rebuild. |
+
 ## `cage list`
 
 ```
@@ -214,7 +222,7 @@ Tears down a cage completely:
 2. Removes quadlet files from `~/.config/containers/systemd/`
 3. Removes the Podman network and certificate volume
 4. Removes all scoped secrets (e.g., `myapp.ANTHROPIC_API_KEY`) — unless `--keep-secrets` is passed
-5. Removes deployment state from `~/.config/agentcage/deployments/<name>/`
+5. Removes deployment state from `~/.config/agentcage/cages/<name>/`
 
 User-defined named volumes and bind-mounted data are never removed. Pass `-y` to skip the confirmation prompt. Pass `--keep-secrets` to preserve scoped secrets (useful when destroying and recreating a cage).
 
@@ -291,7 +299,7 @@ Start a stopped cage.
 agentcage cage restart <name>
 ```
 
-Restarts containers without rebuilding images. Useful after config-only changes (the config YAML is bind-mounted into the proxy container, so a restart picks it up).
+Restarts containers without rebuilding images. Useful after config-only changes: `restart` (and `start`) regenerate `proxy-config.yaml` and `dns-allowlist.conf` from `cage.yaml` before bouncing services, so the running cage always reflects the current config on disk.
 
 **Alias:** `cage reload`
 
@@ -554,6 +562,21 @@ agentcage secret rm <name> <key>
 ```
 
 Removes a secret from Podman. If the cage is currently running, it is automatically reloaded.
+
+## `secret migrate`
+
+```
+agentcage secret migrate <name> [--backend systemd-creds] [--remove-old|--keep-old]
+```
+
+Migrates a cage's secrets to a different storage backend. The `systemd-creds` backend re-encrypts each secret with a systemd-creds key so the plaintext no longer lives in the Podman secret store.
+
+| Option | Description |
+|---|---|
+| `--backend systemd-creds` | Target backend for secret storage. |
+| `--remove-old` / `--keep-old` | Remove (or keep) the old plaintext secrets in the Podman store after migration. |
+
+The encrypting key's scope — `user` or `system` — follows the cage's `secrets.scope` config field (`auto` | `user` | `system`, default `auto`). `agentcage doctor` reports the scope a cage resolved to.
 
 ## `domain list`
 

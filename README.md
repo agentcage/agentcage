@@ -157,15 +157,18 @@ agentcage cage destroy myapp
 |---|---|
 | `run` | *(top-level)* -- run a coding agent in a sandbox (`agentcage run claude-code`) |
 | `init` | *(top-level)* -- scaffold a config file |
-| `cage` | `create`, `update`, `edit`, `list`, `destroy`, `prune`, `verify`, `restart`, `logs`, `exec`, `audit`, `har`, `backup`, `restore` (aliases: `ls`/`ps`/`status` → `list`, `rm` → `destroy`, `reload` → `restart`) |
-| `secret` | `set`, `list`, `rm` (alias: `ls` → `list`) |
+| `doctor` | *(top-level)* -- check system prerequisites |
+| `update` | *(top-level)* -- self-update agentcage |
+| `cage` | `create`, `update`, `list`, `show`, `verify`, `start`, `stop`, `restart`, `logs`, `exec`, `shell`, `audit`, `har`, `backup`, `restore`, `destroy`, `prune` (aliases: `ls`/`ps`/`status` → `list`, `describe`/`inspect` → `show`, `rm`/`delete` → `destroy`, `reload` → `restart`) |
+| `secret` | `set`, `list`, `migrate`, `rm` (alias: `ls` → `list`) |
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
+| `scaffold` | `list`, `show`, `create`, `edit`, `delete`, `export` -- manage custom scaffolds |
 
 See [CLI Reference](docs/cli.md) for full documentation of all commands and options.
 
 ## Configuration
 
-See the [Configuration Reference](docs/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/). Deployment state is tracked per-cage in `~/.config/agentcage/deployments/<name>/`.
+See the [Configuration Reference](docs/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/). Deployment state is tracked per-cage in `~/.config/agentcage/cages/<name>/`.
 
 ## Security
 
