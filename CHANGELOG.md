@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-05-20
+
 ### Fixed
 - The `openclaw` scaffold's nested container pulls work again. `podman run` inside the cage failed pulling an image because Docker Hub serves image blobs from a CDN host (`production.cloudfront.docker.com`) the scaffold's domain allowlist did not cover — the cage proxy returned 403. The allowlist now permits `docker.io` and `docker.com` with all subdomains, covering the registry, the token service, and whichever CDN edge Docker Hub redirects blob downloads to.
 - The Shannon-entropy inspector is no longer enabled by default in the built-in scaffolds. It is already globally opt-in (it false-positives on legitimate high-entropy data — auth tokens, content digests, compressed payloads), but every scaffold's `cage.yaml` re-enabled it, which is the wrong default. Add `- name: entropy` under `inspectors:` to turn it back on for a cage that wants it.
