@@ -161,12 +161,14 @@ class TestGenerateLimaConfig:
 
     def test_provision_targets_host_username(self):
         """The provision script targets the real guest user (the host user
-        Lima mirrors), not a hardcoded 'lima' account — and does not rely on
-        Lima's discouraged $LIMA_CIDATA_* variables."""
-        import getpass
+        Lima mirrors, resolved from the passwd database), not a hardcoded
+        'lima' account, and does not rely on Lima's discouraged
+        $LIMA_CIDATA_* variables."""
+        import pwd
         cfg = MockConfig(name="test-cage")
         output = generate_lima_config(cfg)
-        assert f'lima_user="{getpass.getuser()}"' in output
+        expected_user = pwd.getpwuid(os.getuid()).pw_name
+        assert f'lima_user="{expected_user}"' in output
         assert 'enable-linger "$lima_user"' in output
         assert "LIMA_CIDATA" not in output
 

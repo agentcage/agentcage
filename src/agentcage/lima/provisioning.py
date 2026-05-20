@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import getpass
 import math
 import os
 import platform
+import pwd
 from pathlib import Path
 
 import click
@@ -145,10 +145,13 @@ def generate_lima_config(config: object) -> str:
     mem_gb = math.ceil(config.vm.mem_mb / 1024)
 
     # Render provisioning script. Lima names the guest user after the host
-    # user, and agentcage runs limactl as that same user — so the host
-    # username (resolved here) is the guest username.
+    # user, deriving it from the invoking UID's passwd entry. Resolve it the
+    # same way — pwd.getpwuid(os.getuid()), not getpass.getuser(), which
+    # trusts $USER/$LOGNAME and can disagree under sudo or an overridden env.
     provision_tmpl = env.get_template("provision.sh.j2")
-    provision_script = provision_tmpl.render(lima_user=getpass.getuser())
+    provision_script = provision_tmpl.render(
+        lima_user=pwd.getpwuid(os.getuid()).pw_name,
+    )
 
     # Parse port forwards
     port_forwards = _parse_port_forwards(config.container.ports)
