@@ -315,9 +315,10 @@ if ! agentcage cage exec "$CAGE" -- podman ps >/dev/null 2>&1; then
   e2e_skip "8.10" "nested podman smoke" "nested podman not usable in this environment"
 else
   # Capture combined output so a failure shows the actual podman error
-  # instead of swallowing it.
+  # instead of swallowing it. `|| true` keeps a non-zero `podman run`
+  # from aborting the script under `set -e`.
   np_out=$(agentcage cage exec "$CAGE" -- \
-    podman run --rm docker.io/library/busybox echo ok 2>&1)
+    podman run --rm docker.io/library/busybox echo ok 2>&1) || true
   if printf '%s\n' "$np_out" | grep -q '^ok$'; then
     e2e_pass "8.10" "nested podman smoke (busybox)"
   else
