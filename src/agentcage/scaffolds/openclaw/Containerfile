@@ -18,9 +18,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcairo2 libasound2 fonts-liberation xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Allow rootless podman for the node user (uid 1000)
-RUN echo "node:100000:65536" >> /etc/subuid \
- && echo "node:100000:65536" >> /etc/subgid
+# Allow rootless podman for the node user (uid 1000). Recent openclaw
+# images already ship a node entry in /etc/subuid and /etc/subgid;
+# appending a second, overlapping range makes newuidmap reject the
+# mapping, so nested `podman run` inside the cage fails. Only add an
+# entry when one is missing.
+RUN if ! grep -qE '^node:' /etc/subuid; then echo "node:100000:65536" >> /etc/subuid; fi \
+ && if ! grep -qE '^node:' /etc/subgid; then echo "node:100000:65536" >> /etc/subgid; fi
 
 # Create user-level containers config so rootless podman uses the
 # bind-mounted /var/lib/containers volume instead of ~/.local/share

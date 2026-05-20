@@ -138,25 +138,27 @@ class TestDefaultInspectors:
         assert names == ["body-size", "content-type", "domain", "entropy", "secrets"]
 
     def test_openclaw_preset_loads_inspectors(self):
-        """The openclaw scaffold config should load entropy + content-type."""
+        """The openclaw scaffold loads content-type/domain/secrets — but not
+        the entropy inspector, which scaffolds no longer opt into."""
         from agentcage.init import render_config
         cfg_text = render_config("test-oc", scaffold="openclaw")
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
-        assert "entropy" in names
         assert "content-type" in names
         assert "domain" in names
         assert "secrets" in names
+        assert "entropy" not in names
 
     def test_picoclaw_preset_loads_inspectors(self):
-        """The picoclaw scaffold config should load entropy + content-type."""
+        """The picoclaw scaffold loads content-type/domain — but not the
+        entropy inspector, which scaffolds no longer opt into."""
         from agentcage.init import render_config
         cfg_text = render_config("test-pico", scaffold="picoclaw")
         addon = self._make_addon(cfg_text)
         names = [i.name for i in addon.inspectors]
-        assert "entropy" in names
         assert "content-type" in names
         assert "domain" in names
+        assert "entropy" not in names
 
     def test_picoclaw_preset_parses_via_load_config(self, tmp_path):
         """The picoclaw scaffold should produce valid YAML that load_config accepts."""

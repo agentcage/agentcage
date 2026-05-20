@@ -105,8 +105,9 @@ logging:
 
 # ── Inspectors ──
 inspectors:
-  - name: entropy
   - name: content-type
+  # Add `- name: entropy` to also flag encrypted/compressed payloads
+  # (off by default — it false-positives on legitimate high-entropy data).
   # Allow Docker registry JWT auth tokens to reach container registries
   - name: secrets
     config:

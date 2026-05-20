@@ -313,11 +313,25 @@ fi
 e2e_timer_start
 if ! agentcage cage exec "$CAGE" -- podman ps >/dev/null 2>&1; then
   e2e_skip "8.10" "nested podman smoke" "nested podman not usable in this environment"
-elif agentcage cage exec "$CAGE" -- podman run --rm docker.io/library/busybox echo ok 2>/dev/null | grep -q '^ok$'; then
-  e2e_pass "8.10" "nested podman smoke (busybox)"
 else
-  e2e_fail "8.10" "nested podman smoke (busybox)" \
-    "podman run inside cage failed (scaffold uid/subuid/overlay regression?)"
+  # Capture combined output so a failure shows the actual podman error
+  # instead of swallowing it. `|| true` keeps a non-zero `podman run`
+  # from aborting the script under `set -e`.
+  np_out=$(agentcage cage exec "$CAGE" -- \
+    podman run --rm docker.io/library/busybox echo ok 2>&1) || true
+  if printf '%s\n' "$np_out" | grep -q '^ok$'; then
+    e2e_pass "8.10" "nested podman smoke (busybox)"
+  else
+    echo "--- 8.10 podman run output ---"
+    printf '%s\n' "$np_out"
+    # The proxy audit log shows any host the cage's domain inspector
+    # blocked during the pull (a common failure mode for nested podman).
+    echo "--- 8.10 proxy audit (last 20) ---"
+    agentcage cage audit "$CAGE" --json-lines -n 20 2>/dev/null || true
+    echo "--- end 8.10 output ---"
+    e2e_fail "8.10" "nested podman smoke (busybox)" \
+      "podman run inside cage failed (see podman output / proxy audit above)"
+  fi
 fi
 
 # Trap handles teardown
