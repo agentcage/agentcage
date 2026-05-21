@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch, call, ANY
 import click
 from click.testing import CliRunner
 
-from agentcage.cli import main
+from agentcage.cli import main, _stage_build_context
 
 
 def _runner():
@@ -1083,3 +1083,98 @@ class TestCageExec:
         mock_run.assert_called_once_with(
             ["podman", "exec", "myapp-cage", "cat", "/etc/hostname"]
         )
+
+
+class TestStageBuildContext:
+    """`_stage_build_context` snapshots a Containerfile's build inputs into
+    the cage state dir so `cage update` (without -c) can rebuild."""
+
+    def _src(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Containerfile").write_text("FROM scratch\nCOPY skill /opt/skill\n")
+        return src
+
+    def test_stages_sibling_directory(self, tmp_path):
+        """REGRESSION (#95): a directory the Containerfile COPYs in must be
+        staged — the old file-only copy silently dropped it, breaking the
+        rebuild with 'no such file or directory'."""
+        src, dest = self._src(tmp_path), tmp_path / "dest"
+        dest.mkdir()
+        skill = src / "skill"
+        skill.mkdir()
+        (skill / "main.py").write_text("print('hi')")
+        (skill / "nested").mkdir()
+        (skill / "nested" / "data.txt").write_text("payload")
+
+        _stage_build_context(src, dest)
+
+        assert (dest / "skill" / "main.py").read_text() == "print('hi')"
+        assert (dest / "skill" / "nested" / "data.txt").read_text() == "payload"
+
+    def test_stages_sibling_files(self, tmp_path):
+        src, dest = self._src(tmp_path), tmp_path / "dest"
+        dest.mkdir()
+        (src / "entrypoint.sh").write_text("#!/bin/sh\n")
+
+        _stage_build_context(src, dest)
+
+        assert (dest / "Containerfile").exists()
+        assert (dest / "entrypoint.sh").read_text() == "#!/bin/sh\n"
+
+    def test_skips_config_files(self, tmp_path):
+        """cage.yaml-style configs and .j2 templates are not build inputs."""
+        src, dest = self._src(tmp_path), tmp_path / "dest"
+        dest.mkdir()
+        (src / "cage.yaml").write_text("name: test\n")
+        (src / "other.yml").write_text("x: 1\n")
+        (src / "tpl.j2").write_text("{{ x }}\n")
+
+        _stage_build_context(src, dest)
+
+        assert not (dest / "cage.yaml").exists()
+        assert not (dest / "other.yml").exists()
+        assert not (dest / "tpl.j2").exists()
+
+    def test_filters_build_noise_from_directories(self, tmp_path):
+        """Caches and VCS metadata must not pollute the staged context."""
+        src, dest = self._src(tmp_path), tmp_path / "dest"
+        dest.mkdir()
+        skill = src / "skill"
+        (skill / "__pycache__").mkdir(parents=True)
+        (skill / "__pycache__" / "x.pyc").write_text("junk")
+        (skill / ".git").mkdir()
+        (skill / ".git" / "config").write_text("junk")
+        (skill / "node_modules").mkdir()
+        (skill / "real.py").write_text("ok")
+
+        _stage_build_context(src, dest)
+
+        assert (dest / "skill" / "real.py").exists()
+        assert not (dest / "skill" / "__pycache__").exists()
+        assert not (dest / "skill" / ".git").exists()
+        assert not (dest / "skill" / "node_modules").exists()
+
+    def test_clobber_false_preserves_existing(self, tmp_path):
+        """Scaffold init must not overwrite inputs the operator already has."""
+        src, dest = self._src(tmp_path), tmp_path / "dest"
+        dest.mkdir()
+        (dest / "Containerfile").write_text("USER EDITED\n")
+
+        _stage_build_context(src, dest, clobber=False)
+
+        assert (dest / "Containerfile").read_text() == "USER EDITED\n"
+
+    def test_clobber_true_refreshes_existing_dir(self, tmp_path):
+        """Re-running an update merges fresh files into an already-staged
+        directory rather than failing on the existing path."""
+        src, dest = self._src(tmp_path), tmp_path / "dest"
+        dest.mkdir()
+        (src / "skill").mkdir()
+        (src / "skill" / "v.py").write_text("v2")
+        (dest / "skill").mkdir()
+        (dest / "skill" / "v.py").write_text("v1")
+
+        _stage_build_context(src, dest)
+
+        assert (dest / "skill" / "v.py").read_text() == "v2"
