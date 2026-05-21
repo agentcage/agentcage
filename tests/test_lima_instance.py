@@ -26,9 +26,20 @@ class TestCreate:
             mock_run.return_value = MagicMock(returncode=0)
             inst.create("/path/to/config.yaml")
             mock_run.assert_called_once_with(
-                ["limactl", "create", "--name=agentcage-mycage", "/path/to/config.yaml"],
+                ["limactl", "create", "--yes",
+                 "--name=agentcage-mycage", "/path/to/config.yaml"],
                 check=True,
             )
+
+    def test_create_passes_yes_to_skip_survey(self):
+        """`limactl create` must get --yes so it never blocks on the
+        interactive instance-creation survey when a TTY is attached."""
+        inst = LimaInstance("mycage")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            inst.create("/path/to/config.yaml")
+            args, _ = mock_run.call_args
+            assert "--yes" in args[0]
 
 
 class TestStart:
