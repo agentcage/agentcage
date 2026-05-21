@@ -400,6 +400,32 @@ class TestProxyQuadlet:
         assert "systemd-creds decrypt" in decrypt_line
         assert "--user" not in decrypt_line
 
+    def test_proxy_creds_decrypt_passes_name(self, tmp_path):
+        # systemd-creds decrypt validates the name embedded in the .cred
+        # against an expected name. With output going to stdout it cannot
+        # derive that name from the input path, so the decrypt must pass
+        # --name explicitly — matching the `--name <ENV>` that
+        # `agentcage secret set` encrypts each .cred with. Without it the
+        # proxy's ExecStartPre fails ("Name in credential doesn't match
+        # expectations") and the whole cage cannot start.
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+                source: "systemd-creds:"
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="myapp")
+        content = files["test-proxy.container"]
+        decrypt_line = next(
+            ln for ln in content.splitlines() if "systemd-creds" in ln and "decrypt" in ln
+        )
+        assert '--name "API_KEY"' in decrypt_line
+
     def test_proxy_default_flags(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
