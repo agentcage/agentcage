@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `agentcage doctor` no longer includes a "Cages" section. Per-cage health (running / stopped / orphaned) duplicated `agentcage cage list`, which has richer output; `doctor` now focuses solely on whether the system itself is ready.
+
 ### Removed
 - `agentcage update` self-update command. Use `uv tool upgrade agentcage` or `pipx upgrade agentcage` instead — package managers do PyPI polling, installer detection, and version comparison better than a duplicated CLI surface.
 - `agentcage secret migrate` subcommand. Cross-backend migration was a one-time op for users predating the systemd-creds default; the replacement is the documented "Migrating between secret backends" recipe in `docs/configuration.md` (re-set secrets after editing `secret.backend` in `cage.yaml`).
