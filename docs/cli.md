@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI has top-level **`run`**, **`init`**, **`doctor`**, and **`update`** commands, and four command groups: **`cage`**, **`secret`**, **`domain`**, and **`scaffold`**.
+The CLI has top-level **`run`**, **`init`**, and **`doctor`** commands, and four command groups: **`cage`**, **`secret`**, **`domain`**, and **`scaffold`**.
 
 ```
 agentcage run SCAFFOLD [options]
@@ -656,16 +656,6 @@ agentcage doctor
 ```
 
 Checks that all required tools are installed and properly configured (Podman, systemd, Lima, etc.). Reports pass/fail for each prerequisite.
-
----
-
-## `update` -- Self-update
-
-```
-agentcage update
-```
-
-Updates agentcage to the latest version.
 
 ---
 

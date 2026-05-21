@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- `agentcage update` self-update command. Use `uv tool upgrade agentcage` or `pipx upgrade agentcage` instead — package managers do PyPI polling, installer detection, and version comparison better than a duplicated CLI surface.
+
 ### Fixed
 - `cage update` (without `-c`) no longer breaks rebuilds for cages whose Containerfile `COPY`s a directory tree. The build-context staging step copied sibling *files* into the cage state dir but skipped sibling *directories*, so a bare `cage update` — which rebuilds from the state dir — could not reproduce a build context that `cage update -c` (which builds from the original config dir) handled fine. The rebuild then failed inside `podman build` with `copier: stat: "...": no such file or directory`, and because the cage container is removed during the update the cage was left `stopped`. Staging now copies directories as well as files (skipping `__pycache__`, `.git`, `node_modules` and soft-deleted leftovers), across all four sites that snapshot a build context: `cage create`, `cage update -c`, `cage update`'s scaffold refresh, and scaffold init.
 
