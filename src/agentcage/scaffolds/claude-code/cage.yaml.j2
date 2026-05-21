@@ -42,8 +42,11 @@ container:
     # Auth & settings — mount host ~/.claude so login persists across sessions.
     # Remove these lines to isolate cage state from the host.
     - "~/.claude:/home/node/.claude:rw"
-    # ~/.claude.json is a single file: shared on the container backend, but
-    # skipped on the VM backend (Lima virtiofs can only share directories).
+    # ~/.claude.json carries Claude Code's global config. The container
+    # backend bind-mounts it directly; the VM backend stages a copy into
+    # the cage's data dir and mounts that (Lima virtiofs can't share a
+    # single file). On the VM backend the staged copy is one-way — cage
+    # edits do not flow back to the host file.
     - "~/.claude.json:/home/node/.claude.json:rw"
   #  # Git config (uncomment to enable)
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Single-file volume sources now work on the VM backend. Lima's virtiofs can only share directories, so a volume like the claude-code scaffold's `~/.claude.json` previously could not be carried into a VM cage (v0.17.1 just skipped it). `generate_quadlets` now stages a copy of any file-source volume into `~/.local/share/agentcage/<cage>/seed/` — a directory Lima already mounts — and bind-mounts the staged copy. The claude-code cage on macOS therefore starts with Claude Code's global config (`~/.claude.json`) in place. The staged copy is one-way: the cage reads and may write it, but changes do not flow back to the host file; re-staging on every deploy keeps the seed current. The container backend is unchanged — it bind-mounts single files directly.
+
 ## [0.17.1] - 2026-05-21
 
 ### Fixed

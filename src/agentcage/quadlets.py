@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
@@ -220,6 +221,28 @@ def render_dns_quadlet(
     )
 
 
+def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
+    """Stage a single-file volume source so the VM backend can mount it.
+
+    Lima's virtiofs shares directories, not single files, so a volume
+    whose host source is a regular file (e.g. the claude-code scaffold's
+    ``~/.claude.json``) cannot be handed to the VM directly. Copy it into
+    ``~/.local/share/agentcage/<cage>/seed/`` instead — that directory is
+    already virtiofs-mounted into the VM — and return the staged path for
+    the cage quadlet to bind-mount.
+
+    The copy is one-way: the cage reads and may write the staged file,
+    but changes are not propagated back to the host original. Staging
+    runs on every deploy, so the seed tracks the host file over time.
+    """
+    data_dir = os.path.realpath(os.path.expanduser("~/.local/share/agentcage"))
+    seed_dir = os.path.join(data_dir, deploy_name, "seed")
+    os.makedirs(seed_dir, exist_ok=True)
+    staged = os.path.join(seed_dir, os.path.basename(real_path))
+    shutil.copy2(real_path, staged)
+    return staged
+
+
 def generate_quadlets(
     config: Config,
     config_host_path: str,
@@ -280,14 +303,15 @@ def generate_quadlets(
             )
             continue
 
-        # VM backend: Lima only virtiofs-shares directories, so a
-        # file-source volume (e.g. ~/.claude.json) is never surfaced
-        # inside the VM. Emitting the bind-mount anyway makes podman
-        # auto-create an empty directory at the source — the agent then
-        # sees a directory where it expects a file. Drop it; the
-        # Lima-config layer already warned the user. Container mode
-        # bind-mounts files directly, so it keeps them.
+        # VM backend: Lima's virtiofs shares directories, not single
+        # files, so a file-source volume (e.g. ~/.claude.json) cannot be
+        # mounted into the VM directly. Stage a copy into the cage's data
+        # dir — which is virtiofs-mounted — and bind-mount the staged
+        # path instead. Container mode bind-mounts files directly.
         if config.isolation == "vm" and not os.path.isdir(real):
+            staged = _stage_vm_file_volume(real, deploy_name or name)
+            container_part = expanded.split(":", 1)[1]
+            expanded_volumes.append(f"{staged}:{container_part}")
             continue
 
         expanded_volumes.append(expanded)
