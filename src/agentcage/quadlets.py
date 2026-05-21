@@ -280,6 +280,16 @@ def generate_quadlets(
             )
             continue
 
+        # VM backend: Lima only virtiofs-shares directories, so a
+        # file-source volume (e.g. ~/.claude.json) is never surfaced
+        # inside the VM. Emitting the bind-mount anyway makes podman
+        # auto-create an empty directory at the source — the agent then
+        # sees a directory where it expects a file. Drop it; the
+        # Lima-config layer already warned the user. Container mode
+        # bind-mounts files directly, so it keeps them.
+        if config.isolation == "vm" and not os.path.isdir(real):
+            continue
+
         expanded_volumes.append(expanded)
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
 

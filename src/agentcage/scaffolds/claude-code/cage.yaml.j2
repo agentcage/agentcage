@@ -42,6 +42,8 @@ container:
     # Auth & settings — mount host ~/.claude so login persists across sessions.
     # Remove these lines to isolate cage state from the host.
     - "~/.claude:/home/node/.claude:rw"
+    # ~/.claude.json is a single file: shared on the container backend, but
+    # skipped on the VM backend (Lima virtiofs can only share directories).
     - "~/.claude.json:/home/node/.claude.json:rw"
   #  # Git config (uncomment to enable)
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"
