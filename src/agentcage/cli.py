@@ -2300,6 +2300,13 @@ def _ensure_dns_quadlet_current(cfg) -> bool:
 
     if cfg.isolation == "vm":
         inst = LimaInstance(name)
+        # The DNS quadlet lives inside the VM. If the VM is not running we
+        # cannot — and need not — touch it now: the VM backend reinstalls
+        # every quadlet from the host config dir when the VM next starts.
+        # Without this guard, `cage start` / `cage restart` / domain edits
+        # on a stopped VM cage crash with an unhandled `limactl shell` error.
+        if not inst.is_running():
+            return False
         # Read the current quadlet from inside the VM and compare.
         result = inst.exec(
             ["bash", "-c",

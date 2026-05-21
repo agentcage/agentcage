@@ -170,8 +170,22 @@ install_homebrew() {
     fi
 
     info "Homebrew not found — installing it (required on macOS)..."
-    info "The Homebrew installer may prompt for your password."
     need_cmd curl
+
+    # The Homebrew installer is run with NONINTERACTIVE=1 below so it does not
+    # block on prompts when this script is piped from curl. A side effect of
+    # that mode: Homebrew probes for sudo with `sudo -n` and will NOT prompt
+    # for a password — so on a genuinely fresh Mac with no cached sudo
+    # credentials it aborts with "Need sudo access on macOS" even though the
+    # user is an administrator. Prime the sudo credential cache here, with a
+    # single prompt, so Homebrew's non-interactive probe succeeds.
+    if ! sudo -n true 2>/dev/null; then
+        info "Homebrew needs administrator access — you may be prompted for your password."
+        if ! sudo -v; then
+            err "could not obtain sudo access, which Homebrew requires. Run 'sudo -v' in this terminal and re-run the installer, or install Homebrew manually from https://brew.sh"
+        fi
+    fi
+
     NONINTERACTIVE=1 /bin/bash -c \
         "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 

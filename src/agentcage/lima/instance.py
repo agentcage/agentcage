@@ -14,9 +14,16 @@ class LimaInstance:
         self.name = f"agentcage-{cage_name}"
 
     def create(self, config_path: str) -> None:
-        """Create a Lima instance using the given config file."""
+        """Create a Lima instance using the given config file.
+
+        ``--yes`` skips ``limactl create``'s interactive "Proceed with the
+        current configuration / Open an editor / ..." survey. Lima only shows
+        that survey when a TTY is attached, so without ``--yes`` the first
+        interactive ``agentcage run`` on a fresh machine would hang on a
+        prompt hidden behind the "Starting cage..." spinner.
+        """
         subprocess.run(
-            ["limactl", "create", f"--name={self.name}", config_path],
+            ["limactl", "create", "--yes", f"--name={self.name}", config_path],
             check=True,
         )
 

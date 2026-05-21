@@ -606,6 +606,49 @@ class TestCageStart:
         mock_ensure_dns.assert_called_once_with(cfg)
 
 
+class TestEnsureDnsQuadletCurrent:
+    """The DNS-quadlet migration check execs inside the Lima VM — it must
+    not crash when that VM is stopped (the normal state for `cage start`,
+    `cage restart` and domain edits on an exited cage)."""
+
+    @patch("agentcage.quadlets.render_dns_quadlet", return_value="DESIRED")
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_vm_not_running_is_noop(self, mock_state, mock_get_backend,
+                                    MockLima, _mock_render):
+        from agentcage.cli import _ensure_dns_quadlet_current
+        mock_state.load_metadata.return_value = {"network_octet": 42}
+        inst = MockLima.return_value
+        inst.is_running.return_value = False
+        cfg = _mock_config("vm")
+        cfg.name = "test"
+
+        result = _ensure_dns_quadlet_current(cfg)
+
+        assert result is False
+        inst.exec.assert_not_called()
+
+    @patch("agentcage.quadlets.render_dns_quadlet", return_value="DESIRED")
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_vm_running_reads_quadlet(self, mock_state, mock_get_backend,
+                                      MockLima, _mock_render):
+        from agentcage.cli import _ensure_dns_quadlet_current
+        mock_state.load_metadata.return_value = {"network_octet": 42}
+        inst = MockLima.return_value
+        inst.is_running.return_value = True
+        inst.exec.return_value = MagicMock(stdout="DESIRED")
+        cfg = _mock_config("vm")
+        cfg.name = "test"
+
+        result = _ensure_dns_quadlet_current(cfg)
+
+        assert result is False
+        inst.exec.assert_called_once()  # the read; no write (current == desired)
+
+
 class TestCageVerify:
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
