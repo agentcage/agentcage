@@ -25,8 +25,6 @@ class TestListScaffolds:
         """The scaffolds/ directory should contain at least the shipped scaffolds."""
         scaffolds = list_scaffolds()
         assert "openclaw" in scaffolds
-        assert "nanoclaw" in scaffolds
-        assert "picoclaw" in scaffolds
         assert "claude-code" in scaffolds
         assert "codex" in scaffolds
 
@@ -45,16 +43,6 @@ class TestScaffoldMeta:
         assert meta is not None
         assert "build" in meta
         assert len(meta["build"]) > 0
-
-    def test_nanoclaw_has_next_steps(self):
-        meta = load_scaffold_meta("nanoclaw")
-        assert meta is not None
-        assert "next_steps" in meta
-
-    def test_picoclaw_has_build_entry(self):
-        meta = load_scaffold_meta("picoclaw")
-        assert meta is not None
-        assert "build" in meta
 
     def test_nonexistent_scaffold_returns_none(self):
         assert load_scaffold_meta("nonexistent-scaffold-xyz") is None
@@ -78,22 +66,6 @@ class TestScaffoldRendering:
         cfg = load_config(str(p))
         assert cfg.name == "test-oc"
         assert cfg.container.image != ""
-
-    def test_nanoclaw_renders_valid_yaml(self):
-        cfg_text = render_config("my-nano", scaffold="nanoclaw")
-        parsed = yaml.safe_load(cfg_text)
-        assert parsed["name"] == "my-nano"
-        assert "container" in parsed
-        assert parsed["container"]["nested_containers"] is True
-
-    def test_nanoclaw_renders_parseable_config(self, tmp_path):
-        from agentcage.config import load_config
-        cfg_text = render_config("test-nano", scaffold="nanoclaw")
-        p = tmp_path / "cage.yaml"
-        p.write_text(cfg_text)
-        cfg = load_config(str(p))
-        assert cfg.name == "test-nano"
-        assert cfg.container.nested_containers is True
 
     def test_default_scaffold_renders_valid_yaml(self):
         cfg_text = render_config("my-test")
@@ -221,16 +193,6 @@ class TestScaffoldConfigIntegration:
         # Should not raise
         validate_config(cfg)
 
-    def test_nanoclaw_passes_validation(self, tmp_path):
-        from agentcage.config import load_config, validate_config
-        cfg_text = render_config("test-nano", scaffold="nanoclaw")
-        p = tmp_path / "cage.yaml"
-        p.write_text(cfg_text)
-        cfg = load_config(str(p))
-        # validate_config returns warnings for nested_containers; should not raise
-        warnings = validate_config(cfg)
-        assert isinstance(warnings, list)
-
 
 class TestInferScaffoldFromImage:
     """Verify infer_scaffold_from_image() correctly maps image refs to scaffold names."""
@@ -243,15 +205,6 @@ class TestInferScaffoldFromImage:
     def test_untagged_openclaw_matches(self):
         """scaffold.yaml build entries use untagged refs — must match too."""
         assert infer_scaffold_from_image("localhost/agentcage-scaffold-openclaw") == "openclaw"
-
-    def test_tagged_nanoclaw_matches(self):
-        assert infer_scaffold_from_image(
-            "localhost/agentcage-scaffold-nanoclaw:latest"
-        ) == "nanoclaw"
-
-    def test_untagged_nanoclaw_matches(self):
-        """nanoclaw's cage.yaml.j2 declares its image without a tag."""
-        assert infer_scaffold_from_image("localhost/agentcage-scaffold-nanoclaw") == "nanoclaw"
 
     def test_hyphenated_scaffold_name(self):
         assert infer_scaffold_from_image(

@@ -17,8 +17,6 @@
 - [Claude Code](../src/agentcage/scaffolds/claude-code/README.md) — Anthropic's CLI coding agent
 - [Codex](../src/agentcage/scaffolds/codex/README.md) — OpenAI's CLI coding agent
 - [OpenClaw](../src/agentcage/scaffolds/openclaw/README.md) — full-featured AI coding agent
-- [PicoClaw](../src/agentcage/scaffolds/picoclaw/README.md) — ultra-lightweight agent gateway
-- [NanoClaw](../src/agentcage/scaffolds/nanoclaw/README.md) — nested container agent framework
 - [Managing Your Cage](cage-management.md) — common operations and troubleshooting
 
 ## Reference

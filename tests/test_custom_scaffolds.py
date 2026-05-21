@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -344,54 +343,20 @@ class TestScaffoldExport:
         assert "already exists" in result.output
 
 
-# ── shadow warning ──────────────────────────────────────────────
-
-
-class TestShadowWarning:
-
-    @patch("agentcage.init._project_scaffolds_dir", return_value=None)
-    def test_shadow_warning_on_render(self, _mock_proj, tmp_path):
-        user_dir = tmp_path / "user-scaffolds"
-        user_ac = user_dir / "alpine-curl"
-        user_ac.mkdir(parents=True)
-        # Copy the real alpine-curl scaffold files so rendering works
-        shutil.copytree(
-            str(_SCAFFOLDS_DIR / "alpine-curl"),
-            str(user_ac),
-            dirs_exist_ok=True,
-        )
-
-        with patch("agentcage.init._USER_SCAFFOLDS_DIR", user_dir):
-            from agentcage.init import render_config
-            from io import StringIO
-            import sys
-            stderr = StringIO()
-            old_stderr = sys.stderr
-            try:
-                # render_config prints shadow warning to stderr via click
-                result = render_config("test", scaffold="alpine-curl")
-                # The warning goes through click.echo(err=True)
-            finally:
-                sys.stderr = old_stderr
-            # Just verify it resolved to user dir
-            resolved = resolve_scaffold("alpine-curl")
-            assert resolved == user_ac
-
-
 # ── scaffold metadata fields ────────────────────────────────────
 
 
 class TestScaffoldMetadataFields:
 
     def test_all_builtins_have_description(self):
-        for name in ["claude-code", "codex", "openclaw", "picoclaw", "nanoclaw", "alpine-curl"]:
+        for name in ["claude-code", "codex", "openclaw"]:
             meta = load_scaffold_meta(name)
             assert meta is not None, f"{name} has no scaffold.yaml"
             assert "description" in meta, f"{name} missing description"
             assert meta["description"], f"{name} has empty description"
 
     def test_all_builtins_have_lifecycle(self):
-        for name in ["claude-code", "codex", "openclaw", "picoclaw", "nanoclaw", "alpine-curl"]:
+        for name in ["claude-code", "codex", "openclaw"]:
             meta = load_scaffold_meta(name)
             assert meta is not None
             assert "lifecycle" in meta, f"{name} missing lifecycle"

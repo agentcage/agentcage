@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - `agentcage update` self-update command. Use `uv tool upgrade agentcage` or `pipx upgrade agentcage` instead — package managers do PyPI polling, installer detection, and version comparison better than a duplicated CLI surface.
 - `agentcage secret migrate` subcommand. Cross-backend migration was a one-time op for users predating the systemd-creds default; the replacement is the documented "Migrating between secret backends" recipe in `docs/configuration.md` (re-set secrets after editing `secret.backend` in `cage.yaml`).
+- `alpine-curl` scaffold — curl-test demo with no agent surface.
+- `nanoclaw` scaffold — mirrored upstream nested-container framework; drifted from upstream and forced agentcage to track upstream container layout. Anyone using it can fork the scaffold dir from a previous release.
+- `picoclaw` scaffold — mirrored upstream lightweight gateway; same drift story. Anyone using it can fork the scaffold dir from a previous release.
 
 ### Fixed
 - `cage update` (without `-c`) no longer breaks rebuilds for cages whose Containerfile `COPY`s a directory tree. The build-context staging step copied sibling *files* into the cage state dir but skipped sibling *directories*, so a bare `cage update` — which rebuilds from the state dir — could not reproduce a build context that `cage update -c` (which builds from the original config dir) handled fine. The rebuild then failed inside `podman build` with `copier: stat: "...": no such file or directory`, and because the cage container is removed during the update the cage was left `stopped`. Staging now copies directories as well as files (skipping `__pycache__`, `.git`, `node_modules` and soft-deleted leftovers), across all four sites that snapshot a build context: `cage create`, `cage update -c`, `cage update`'s scaffold refresh, and scaffold init.

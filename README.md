@@ -10,7 +10,7 @@ Don't let your agent phone home.
 
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
 
-> **Coding agents:** [Claude Code](src/agentcage/scaffolds/claude-code/README.md) · [Codex](src/agentcage/scaffolds/codex/README.md) &nbsp;|&nbsp; **Agent platforms:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md) · [PicoClaw](src/agentcage/scaffolds/picoclaw/README.md) · [NanoClaw](src/agentcage/scaffolds/nanoclaw/README.md)
+> **Coding agents:** [Claude Code](src/agentcage/scaffolds/claude-code/README.md) · [Codex](src/agentcage/scaffolds/codex/README.md) &nbsp;|&nbsp; **Agent platforms:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md)
 
 <p align="center">
   <a href="https://asciinema.org/a/838890"><img src="https://asciinema.org/a/838890.svg" alt="agentcage demo" width="700"></a>

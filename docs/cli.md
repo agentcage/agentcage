@@ -37,9 +37,6 @@ agentcage init myapp --image python:3.12-slim
 # OpenClaw scaffold
 agentcage init myclaw --scaffold openclaw
 
-# NanoClaw scaffold (nested containers)
-agentcage init myapp --scaffold nanoclaw
-
 # Claude Code scaffold
 agentcage init mycc --scaffold claude-code
 
