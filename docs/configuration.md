@@ -207,7 +207,16 @@ secret_injection:
 
 **Security note:** The `cmd:` backend runs shell commands with the privileges of the user running agentcage. This is the same trust boundary as Containerfile execution. If your `cage.yaml` comes from an untrusted source, review `source: "cmd:..."` entries before running `cage create`.
 
-**Migration:** Existing cages with secrets in Podman's store can be migrated to systemd-creds encryption with `agentcage secret migrate CAGE`.
+### Migrating between secret backends
+
+To switch a cage between secret backends (e.g. legacy Podman store → systemd-creds), re-set each secret under the new backend:
+
+1. `agentcage secret list <cage>` — capture the list of secret keys defined for the cage.
+2. Edit `cage.yaml` and set `secret.backend` to the desired backend.
+3. `agentcage cage update <cage>` — regenerate quadlets with the new backend.
+4. `agentcage secret set <cage> <key>` for each key from step 1 — values are stored under the new backend.
+
+Existing values in the old backend are not migrated automatically; once the cage is updated and new secrets are set, the old store entries are unused and can be removed with `podman secret rm` or left in place (they are inert).
 
 ### Domain restrictions
 
