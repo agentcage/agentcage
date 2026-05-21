@@ -955,6 +955,44 @@ class TestCageQuadlet:
         content = files["test-cage.container"]
         assert "/home/node/.claude" not in content
 
+    def test_cage_skips_file_volume_on_vm(self, tmp_path, monkeypatch):
+        """On the VM backend a file-source volume is skipped — Lima only
+        virtiofs-shares directories, so the file is never inside the VM
+        and podman would auto-create an empty dir at the target."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".claude.json").write_text("{}")
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+              volumes:
+                - "~/.claude.json:/home/node/.claude.json:rw"
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-cage.container"]
+        assert "/home/node/.claude.json" not in content
+
+    def test_cage_keeps_file_volume_on_container(self, tmp_path, monkeypatch):
+        """Container mode bind-mounts a single file directly — podman
+        supports it, so a file-source volume must be preserved."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".claude.json").write_text("{}")
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              volumes:
+                - "~/.claude.json:/home/node/.claude.json:rw"
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-cage.container"]
+        assert "/home/node/.claude.json" in content
+
     def test_cage_volume_outside_home_rejected(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\

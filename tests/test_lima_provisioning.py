@@ -332,6 +332,15 @@ class TestExtraMountsForVolumes:
         missing = tmp_path / "does-not-exist"
         assert _extra_mounts_for_volumes([f"{missing}:/x:rw"]) == []
 
+    def test_skips_file_host_path(self, tmp_path):
+        """A volume whose host source is a single file must not become a
+        Lima mount — `limactl create` fatals with "refers to a
+        non-directory path" because virtiofs only shares directories.
+        This is the claude-code scaffold's ~/.claude.json case."""
+        f = tmp_path / "config.json"
+        f.write_text("{}")
+        assert _extra_mounts_for_volumes([f"{f}:/home/node/.claude.json:rw"]) == []
+
     def test_expands_env_var_in_host_path(self, tmp_path, monkeypatch):
         """${PROJECT_DIR} (and friends) must be expanded, not passed
         through to Lima as a literal path."""

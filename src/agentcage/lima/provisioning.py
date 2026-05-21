@@ -103,6 +103,20 @@ def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
             )
             continue
 
+        # Lima only virtiofs-shares directories. A volume whose host
+        # source is a single file (e.g. the claude-code scaffold's
+        # ~/.claude.json) makes `limactl create` fail fatally with
+        # "field mounts[N].location refers to a non-directory path".
+        # Skip it — the quadlet layer drops the matching bind-mount so
+        # the cage still starts, just without that file shared in.
+        if not os.path.isdir(host_path):
+            click.echo(
+                f"warning: not mounting {host_part!r} into the VM "
+                f"(Lima can only share directories, not single files)",
+                err=True,
+            )
+            continue
+
         if host_path in seen:
             continue
         seen.add(host_path)
