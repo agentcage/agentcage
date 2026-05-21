@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-05-21
+
 ### Fixed
 - `agentcage run claude-code` (and any VM-isolation cage with a single-file volume) no longer aborts with `limactl create` fatal `field mounts[N].location refers to a non-directory path`. The claude-code scaffold mounts `~/.claude.json` — a single file — but Lima's virtiofs can only share directories. The Lima-config generator emitted the file as a `mounts[].location` anyway, so `limactl create` rejected the whole config and the cage never built. `_extra_mounts_for_volumes` now skips volume sources that are not directories (with a warning), and `generate_quadlets` drops the matching bind-mount on the VM backend so the cage still starts without it. The container backend is unaffected — podman bind-mounts single files directly, so `~/.claude.json` is still shared there.
 
