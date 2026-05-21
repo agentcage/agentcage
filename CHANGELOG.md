@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-05-21
+
 ### Changed
 - `agentcage doctor` no longer includes a "Cages" section. Per-cage health (running / stopped / orphaned) duplicated `agentcage cage list`, which has richer output; `doctor` now focuses solely on whether the system itself is ready.
 
