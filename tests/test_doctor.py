@@ -13,7 +13,6 @@ from agentcage.doctor import (
     _detect_distro,
     _python_version_info,
     _safe_check,
-    _safe_check_multi,
     check_cgroup_v2,
     check_disk_space,
     check_dns,
@@ -25,7 +24,6 @@ from agentcage.doctor import (
     check_qemu,
     check_subnet_conflicts,
     check_systemd_linger,
-    check_cages,
     run_doctor,
 )
 
@@ -259,42 +257,6 @@ class TestCheckPort:
 
 
 # ---------------------------------------------------------------------------
-# Cage health checks
-# ---------------------------------------------------------------------------
-
-class TestCheckCages:
-    def test_no_deployments(self):
-        with patch("agentcage.state.list_deployments", return_value=[]):
-            results = check_cages()
-        assert len(results) == 1
-        assert results[0].level == "pass"
-
-    def test_running_container(self):
-        mock_cfg = MagicMock()
-        mock_cfg.isolation = "container"
-        with patch("agentcage.state.list_deployments", return_value=["test-cage"]):
-            with patch("agentcage.state.load_deployment_config", return_value=mock_cfg):
-                with patch("agentcage.backends.container.ContainerBackend.is_running",
-                           return_value=True):
-                    results = check_cages()
-        assert len(results) == 1
-        assert results[0].level == "pass"
-        assert "running" in results[0].message
-
-    def test_stopped_container(self):
-        mock_cfg = MagicMock()
-        mock_cfg.isolation = "container"
-        with patch("agentcage.state.list_deployments", return_value=["test-cage"]):
-            with patch("agentcage.state.load_deployment_config", return_value=mock_cfg):
-                with patch("agentcage.backends.container.ContainerBackend.is_running",
-                           return_value=False):
-                    results = check_cages()
-        assert len(results) == 1
-        assert results[0].level == "warn"
-        assert "stopped" in results[0].message
-
-
-# ---------------------------------------------------------------------------
 # Integration: run_doctor
 # ---------------------------------------------------------------------------
 
@@ -355,11 +317,6 @@ class TestRunDoctor:
         m = p.start()
         m.return_value.__enter__ = MagicMock(return_value=mock_sock)
         m.return_value.__exit__ = MagicMock(return_value=False)
-        patches.append(p)
-
-        # No cages
-        p = patch("agentcage.state.list_deployments", return_value=[])
-        p.start()
         patches.append(p)
 
         # Distro
@@ -471,22 +428,6 @@ class TestSafeCheck:
         assert "hello" in r.message
 
 
-class TestSafeCheckMulti:
-    def test_passes_through_normal_list(self):
-        def ok():
-            return [CheckResult("pass", "a"), CheckResult("warn", "b")]
-        results = _safe_check_multi(ok, label="test")
-        assert len(results) == 2
-
-    def test_catches_unexpected_exception(self):
-        def boom():
-            raise RuntimeError("kaboom")
-        results = _safe_check_multi(boom, label="cages")
-        assert len(results) == 1
-        assert results[0].level == "warn"
-        assert "crashed" in results[0].message
-
-
 # ---------------------------------------------------------------------------
 # Resilience: individual check error handling
 # ---------------------------------------------------------------------------
@@ -512,14 +453,6 @@ class TestCheckResilience:
                    side_effect=OSError("permission denied")):
             r = check_cgroup_v2()
         assert r.level == "warn"
-
-    def test_cages_list_deployments_failure(self):
-        with patch("agentcage.state.list_deployments",
-                   side_effect=RuntimeError("state dir corrupt")):
-            results = check_cages()
-        assert len(results) == 1
-        assert results[0].level == "warn"
-        assert "corrupt" in results[0].message
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +515,6 @@ class TestMacOS:
              patch("agentcage.doctor.shutil.disk_usage", return_value=usage), \
              patch("agentcage.doctor.socket.getaddrinfo", return_value=[("ok",)]), \
              patch("agentcage.doctor.socket.socket") as msock, \
-             patch("agentcage.state.list_deployments", return_value=[]), \
              patch("agentcage.doctor._detect_distro", return_value="unknown"):
             msock.return_value.__enter__ = MagicMock(return_value=mock_sock)
             msock.return_value.__exit__ = MagicMock(return_value=False)

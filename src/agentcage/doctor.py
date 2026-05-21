@@ -393,65 +393,6 @@ def check_port(port: int) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
-# Cage health checks
-# ---------------------------------------------------------------------------
-
-def check_cages() -> list[CheckResult]:
-    """Check health of existing cage deployments."""
-    try:
-        from agentcage import state  # noqa: F811 — deferred import to avoid circular deps
-        from agentcage.backends.container import ContainerBackend  # noqa: F811
-    except Exception as exc:
-        return [CheckResult("warn", f"Could not load cage modules: {exc}")]
-
-    results: list[CheckResult] = []
-    try:
-        deployments = state.list_deployments()
-    except Exception as exc:
-        return [CheckResult("warn", f"Could not list deployments: {exc}")]
-    if not deployments:
-        results.append(CheckResult("pass", "No cages configured"))
-        return results
-
-    for name in deployments:
-        try:
-            cfg = state.load_deployment_config(name)
-        except Exception:
-            results.append(CheckResult("warn", f"{name}: could not load config"))
-            continue
-
-        if cfg.isolation == "vm":
-            # Check Lima VM status
-            try:
-                from agentcage.lima.instance import LimaInstance
-                inst = LimaInstance(name)
-                if inst.is_running():
-                    results.append(CheckResult("pass", f"{name}: running (VM)"))
-                elif inst.exists():
-                    results.append(CheckResult("warn", f"{name}: VM exists but stopped"))
-                else:
-                    results.append(CheckResult("warn",
-                                               f"{name}: state exists, no VM (orphaned)",
-                                               hint=f"agentcage cage destroy {name}"))
-            except Exception:
-                results.append(CheckResult("warn", f"{name}: could not check VM status"))
-        else:
-            # Container mode: check if the main cage container is running
-            try:
-                backend = ContainerBackend()
-                if backend.is_running(name, "cage"):
-                    results.append(CheckResult("pass", f"{name}: running"))
-                else:
-                    results.append(CheckResult("warn",
-                                               f"{name}: stopped (state exists, no container)",
-                                               hint=f"agentcage cage start {name}"))
-            except Exception:
-                results.append(CheckResult("warn", f"{name}: could not check container status"))
-
-    return results
-
-
-# ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
 
@@ -488,14 +429,6 @@ def _safe_check(fn, *args, label: str = "check") -> CheckResult:
         return fn(*args)
     except Exception as exc:
         return CheckResult("warn", f"{label} crashed: {exc}")
-
-
-def _safe_check_multi(fn, *args, label: str = "check") -> list[CheckResult]:
-    """Run a check function that returns a list, catching any unexpected exception."""
-    try:
-        return fn(*args)
-    except Exception as exc:
-        return [CheckResult("warn", f"{label} crashed: {exc}")]
 
 
 def run_doctor() -> list[CheckResult]:
@@ -545,12 +478,6 @@ def run_doctor() -> list[CheckResult]:
         network.results.append(_safe_check(check_port, port, label=f"port {port}"))
     _print_section(network)
     all_results.extend(network.results)
-
-    # --- Cages ---
-    cages = Section("Cages")
-    cages.results.extend(_safe_check_multi(check_cages, label="cage health"))
-    _print_section(cages)
-    all_results.extend(cages.results)
 
     # --- Summary ---
     errors = sum(1 for r in all_results if r.level == "error")
