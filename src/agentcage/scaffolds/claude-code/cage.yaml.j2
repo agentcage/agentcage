@@ -22,8 +22,8 @@ name: {{ name }}
 isolation: vm
 
 vm:
-  vcpus: 2
-  mem_mb: 4096
+  vcpus: 4
+  mem_mb: 8192
 {% endif %}
 
 lifecycle: interactive
@@ -60,8 +60,8 @@ container:
     - "/tmp:rw,noexec,nosuid,size=256M"
 
   # Resource limits
-  memory: "2g"
-  cpus: "2.0"
+  memory: "8g"
+  cpus: "4.0"
 
   timeout_start_sec: 60
 
