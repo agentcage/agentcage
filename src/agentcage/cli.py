@@ -69,6 +69,46 @@ def _build_container_image(cfg, config_dir: Path, podman: Podman,
                                no_cache=no_cache, pull=pull)
 
 
+# Entries in a Containerfile's directory that are agentcage config, not
+# build inputs — skipped when staging the build context.
+_BUILD_CONTEXT_SKIP_SUFFIXES = (".yaml", ".yml", ".j2")
+
+# Build noise that must never be copied into a cage's staged build context:
+# caches, VCS metadata, dependency trees, soft-deleted leftovers.
+_BUILD_CONTEXT_IGNORE = shutil.ignore_patterns(
+    "__pycache__", "*.pyc", ".git", "node_modules", "*.deleted.*",
+)
+
+
+def _stage_build_context(src_dir: Path, dest_dir: Path,
+                         *, clobber: bool = True) -> None:
+    """Copy a Containerfile's sibling build inputs into a cage's state dir.
+
+    Stages both files *and* directories so a later ``cage update`` (without
+    ``-c``) — which rebuilds from the state dir — has the complete build
+    context. A Containerfile that ``COPY``s a directory tree (skill
+    bundles, vendored packages) would otherwise fail the rebuild because
+    only sibling files were staged.
+
+    cage.yaml-style configs and ``.j2`` templates are skipped; build noise
+    (``__pycache__``, ``.git``, ``node_modules``, ...) is filtered out of
+    copied directories. With *clobber* false, entries already present in
+    *dest_dir* are left untouched.
+    """
+    for f in src_dir.iterdir():
+        if f.suffix in _BUILD_CONTEXT_SKIP_SUFFIXES:
+            continue
+        dest = dest_dir / f.name
+        if not clobber and dest.exists():
+            continue
+        if f.is_dir():
+            shutil.copytree(
+                f, dest, ignore=_BUILD_CONTEXT_IGNORE, dirs_exist_ok=True,
+            )
+        elif f.is_file():
+            shutil.copy2(str(f), str(dest))
+
+
 def _restart_cage(name: str, cfg=None):
     """Restart all services for a cage using the appropriate backend.
 
@@ -324,11 +364,9 @@ def init(name: str | None, output: str, image: str, isolation: str,
                 if "containerfile" in entry:
                     src_cf = scaffold_dir_path / entry["containerfile"]
                     if src_cf.is_file():
-                        for f in src_cf.parent.iterdir():
-                            if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
-                                dst = dest.parent / f.name
-                                if not dst.exists():
-                                    shutil.copy2(str(f), str(dst))
+                        _stage_build_context(
+                            src_cf.parent, dest.parent, clobber=False,
+                        )
     scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
@@ -460,15 +498,13 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool):
         metadata["scaffold"] = scaffold_name
     state.save_metadata(name, metadata)
 
-    # Copy Containerfile and sibling files into state dir so cage update
-    # can rebuild (Containerfiles may COPY other files from the build context)
+    # Copy the Containerfile and its sibling build inputs into the state dir
+    # so cage update can rebuild (Containerfiles may COPY files and whole
+    # directory trees from the build context)
     if cfg.container.build.containerfile:
         src_cf = Path(config_path).parent / cfg.container.build.containerfile
         if src_cf.is_file():
-            dest_dir = state.deployment_dir(name)
-            for f in src_cf.parent.iterdir():
-                if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
-                    shutil.copy2(str(f), str(dest_dir / f.name))
+            _stage_build_context(src_cf.parent, state.deployment_dir(name))
 
     # Set secrets passed via --set-secret (before build so they're available)
     if secrets:
@@ -622,15 +658,13 @@ def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
             )
             sys.exit(1)
         state.save_deployment(name, config_path)
-        # Copy Containerfile and sibling files into state dir so future
-        # updates can rebuild (Containerfiles may COPY from build context)
+        # Copy the Containerfile and its sibling build inputs into the state
+        # dir so future updates can rebuild (Containerfiles may COPY files
+        # and whole directory trees from the build context)
         if cfg.container.build.containerfile:
             src_cf = Path(config_path).parent / cfg.container.build.containerfile
             if src_cf.is_file():
-                dest_dir = state.deployment_dir(name)
-                for f in src_cf.parent.iterdir():
-                    if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
-                        shutil.copy2(str(f), str(dest_dir / f.name))
+                _stage_build_context(src_cf.parent, state.deployment_dir(name))
     else:
         # Auto-resolve latest image tags for stored configs
         from agentcage.init import (
@@ -707,11 +741,9 @@ def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
 
             scaffold_dir = resolve_scaffold(scaffold_name)
             if scaffold_dir is not None:
-                # Copy fresh Containerfile + sibling files from scaffold
-                dest_dir = state.deployment_dir(name)
-                for f in scaffold_dir.iterdir():
-                    if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
-                        shutil.copy2(str(f), str(dest_dir / f.name))
+                # Copy fresh Containerfile + sibling build inputs (files and
+                # directory trees) from the scaffold
+                _stage_build_context(scaffold_dir, state.deployment_dir(name))
 
                 # Re-render scaffold template and patch command + new env vars
                 try:
