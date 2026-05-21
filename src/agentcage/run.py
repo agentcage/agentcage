@@ -156,6 +156,15 @@ def _monitor_proxy(
     try:
         proc = subprocess.Popen(
             (podman_prefix or []) + ["podman", "logs", "-f", proxy_container],
+            # Detach stdin from the controlling terminal. On the VM
+            # backend the command is wrapped in `limactl shell` → ssh,
+            # and ssh reads its stdin to forward it to the remote side.
+            # If it inherits the terminal it races the interactive
+            # `podman exec -it` session for the user's keystrokes —
+            # roughly half are stolen, so every key has to be pressed
+            # twice. The monitor never reads stdin (the interactive
+            # domain prompt opens /dev/tty directly), so DEVNULL is safe.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
