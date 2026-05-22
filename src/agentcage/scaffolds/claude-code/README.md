@@ -41,7 +41,7 @@ This creates `cage.yaml` with sensible defaults and auto-builds the `agentcage-s
 
 #### 2. Authenticate
 
-**Subscription (Claude Pro/Team/Enterprise):**
+**Subscription — log in inside the cage:**
 
 ```bash
 agentcage cage create -c cage.yaml
@@ -49,6 +49,19 @@ agentcage cage exec myagent -- claude login
 ```
 
 Follow the URL to authenticate. The token is saved in the `~/.claude` volume mount, so it persists across sessions.
+
+**Subscription — reuse your host login (no in-cage login):**
+
+On macOS, `claude login` stores its credentials in the system Keychain, which a Linux cage cannot read. Instead, mint a long-lived OAuth token on the host and inject it:
+
+```bash
+claude setup-token                                  # on the host — mints a token
+agentcage secret set myagent CLAUDE_CODE_OAUTH_TOKEN # paste the token
+```
+
+Then uncomment the `CLAUDE_CODE_OAUTH_TOKEN` block under `secret_injection` in `cage.yaml`, and remove the `ANTHROPIC_API_KEY` rule (Claude Code prefers the API key when both are set). Claude Code sends the placeholder `{{CLAUDE_CODE_OAUTH_TOKEN}}` as a bearer token, and the proxy swaps it for the real value en route to `anthropic.com` — the real token never enters the cage.
+
+This is the best option for persistent and headless cages: the token is long-lived, so there is no per-session refresh that could collide with your host login.
 
 **API key:**
 
@@ -110,11 +123,21 @@ Remove the `~/.claude` mounts to fully isolate the cage from host state. Git con
 
 ### Secret injection
 
-The scaffold pre-configures secret injection for the Anthropic API key. To enable GitHub push via HTTPS, uncomment the `GITHUB_TOKEN` block in `cage.yaml` and set the secret:
+The scaffold pre-configures secret injection for the Anthropic API key. Two more
+rules ship commented out in `cage.yaml`:
+
+- `CLAUDE_CODE_OAUTH_TOKEN` — subscription auth without an in-cage `claude login`
+  (see [Authenticate](#2-authenticate) above).
+- `GITHUB_TOKEN` — GitHub push over HTTPS.
+
+Uncomment the block you need and set the secret:
 
 ```bash
 agentcage secret set myagent GITHUB_TOKEN
 ```
+
+Injected secrets are swapped by the proxy on the wire — the real value never
+enters the cage, the cage env only ever holds the `{{PLACEHOLDER}}`.
 
 ### Domain allowlist
 

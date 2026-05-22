@@ -7,12 +7,17 @@
 #   3. Or use the run command:
 #        agentcage run claude-code
 #
-# Authentication:
-#   Option A — Subscription (Claude Pro/Team/Enterprise):
+# Authentication — pick one:
+#   A — Subscription, log in inside the cage:
 #     agentcage cage exec {{ name }} -- claude login
-#     (follow the URL to authenticate, token saved in ~/.claude volume)
+#     (follow the URL; the token is saved in the ~/.claude volume)
 #
-#   Option B — API key:
+#   B — Subscription, reuse your host login (no in-cage login):
+#     claude setup-token                  # on the host — mints a long-lived token
+#     agentcage secret set {{ name }} CLAUDE_CODE_OAUTH_TOKEN
+#     (also uncomment the CLAUDE_CODE_OAUTH_TOKEN block under secret_injection)
+#
+#   C — API key:
 #     agentcage secret set {{ name }} ANTHROPIC_API_KEY
 #     agentcage cage restart {{ name }}
 
@@ -76,6 +81,18 @@ secret_injection:
     placeholder: "{%raw%}{{ANTHROPIC_API_KEY}}{%endraw%}"
     inject_to:
       - anthropic.com
+
+  # Subscription auth without an in-cage `claude login`. Mint a long-lived
+  # token on the host with `claude setup-token`, then:
+  #   agentcage secret set {{ name }} CLAUDE_CODE_OAUTH_TOKEN
+  # Claude Code reads CLAUDE_CODE_OAUTH_TOKEN and sends it as a bearer token;
+  # the proxy swaps the placeholder for the real value en route to anthropic.com.
+  # If you enable this, remove the ANTHROPIC_API_KEY rule above — Claude Code
+  # prefers the API key when both are set.
+  #- env: CLAUDE_CODE_OAUTH_TOKEN
+  #  placeholder: "{%raw%}{{CLAUDE_CODE_OAUTH_TOKEN}}{%endraw%}"
+  #  inject_to:
+  #    - anthropic.com
 
   # Uncomment for GitHub push via HTTPS:
   #- env: GITHUB_TOKEN
