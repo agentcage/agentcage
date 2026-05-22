@@ -1315,16 +1315,21 @@ def _level_grep_pattern(services: tuple, min_level: str | None) -> str:
 def _logs_vm(name, services, lines, no_follow, min_level=None):
     """Show logs from inside the Lima VM via limactl shell."""
     inst = LimaInstance(name)
-    # Inside the VM, journalctl works normally with the quadlet services
+    # Quadlets run as systemd --user units, but conmon writes their logs to
+    # the system journal — so query via --user-unit. Lima's persistent SSH
+    # ControlMaster is established before provisioning runs `usermod -aG
+    # systemd-journal`, so the SSH session lacks the group; `sg` adds it
+    # for the journalctl process.
     units = [f"{name}-{svc}" for svc in services]
-    cmd = ["journalctl", "--user"]
+    inner = ["journalctl"]
     for u in units:
-        cmd += ["-u", u]
-    cmd += ["-n", str(lines), "-o", "cat"]
+        inner += ["--user-unit", u]
+    inner += ["-n", str(lines), "-o", "cat"]
     if not no_follow:
-        cmd.append("-f")
+        inner.append("-f")
 
-    full_cmd = ["limactl", "shell", inst.name, "--"] + cmd
+    full_cmd = ["limactl", "shell", inst.name, "--",
+                "sg", "systemd-journal", "-c", shlex.join(inner)]
     if min_level is None:
         os.execvp("limactl", full_cmd)
     else:
@@ -1465,22 +1470,34 @@ def _build_audit_journal_cmd(
 ) -> list[str]:
     """Build the journalctl command for reading audit entries."""
     if cfg.isolation == "vm":
-        inst = LimaInstance(name)
-        cmd = ["limactl", "shell", inst.name, "--",
-               "journalctl", "--user", "-u", f"{name}-proxy", "-u", f"{name}-dns", "-o", "cat"]
+        # In VM mode the proxy/dns are systemd --user services, but conmon
+        # routes their logs to the system journal — so the right filter is
+        # --user-unit, not "--user -u". And Lima's persistent SSH
+        # ControlMaster is established before provisioning runs `usermod
+        # -aG systemd-journal`, so the SSH session inherits stale groups
+        # and the user can't read system.journal directly. `sg
+        # systemd-journal -c '...'` adds the missing group for the
+        # journalctl process, which works for both existing and new VMs.
+        journal_cmd = ["journalctl", "--user-unit", f"{name}-proxy",
+                       "--user-unit", f"{name}-dns", "-o", "cat"]
     else:
-        cmd = ["journalctl", "--user", "-u", f"{name}-proxy", "-u", f"{name}-dns", "-o", "cat"]
+        journal_cmd = ["journalctl", "--user", "-u", f"{name}-proxy",
+                       "-u", f"{name}-dns", "-o", "cat"]
 
     if since:
-        cmd += ["--since", _normalize_since(since)]
+        journal_cmd += ["--since", _normalize_since(since)]
 
     if follow:
-        cmd.append("-f")
+        journal_cmd.append("-f")
     else:
         # Over-read: many lines aren't audit entries
-        cmd += ["-n", "10000"]
+        journal_cmd += ["-n", "10000"]
 
-    return cmd
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        return ["limactl", "shell", inst.name, "--",
+                "sg", "systemd-journal", "-c", shlex.join(journal_cmd)]
+    return journal_cmd
 
 
 def _audit_batch(name, cfg, filt, lines, since, as_json, no_color):
