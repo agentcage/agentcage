@@ -1,8 +1,16 @@
-"""Interact with systemd via systemctl --user."""
+"""Interact with systemd via systemctl --user.
+
+On platforms without systemd (notably macOS), ``systemctl`` is absent from
+``PATH``. The public functions in this module become no-ops in that case so
+that callers running on a host that genuinely has no systemd (e.g. cleaning
+up resources from a container-backed cage on macOS) do not crash with
+``FileNotFoundError``.
+"""
 
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 
 
@@ -18,17 +26,29 @@ def _systemctl_cmd() -> list[str]:
     return ["systemctl", "--user"]
 
 
+def _systemctl_available() -> bool:
+    return shutil.which("systemctl") is not None
+
+
 def daemon_reload() -> None:
+    if not _systemctl_available():
+        return
     subprocess.run([*_systemctl_cmd(), "daemon-reload"], check=True)
 
 
 def start_unit(name: str) -> None:
+    if not _systemctl_available():
+        return
     subprocess.run([*_systemctl_cmd(), "start", name], check=True)
 
 
 def stop_unit(name: str) -> None:
+    if not _systemctl_available():
+        return
     subprocess.run([*_systemctl_cmd(), "stop", name], check=True)
 
 
 def restart_unit(name: str) -> None:
+    if not _systemctl_available():
+        return
     subprocess.run([*_systemctl_cmd(), "restart", name], check=True)
