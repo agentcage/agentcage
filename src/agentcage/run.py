@@ -34,7 +34,12 @@ import click
 
 from agentcage import state
 from agentcage.backends import get_backend
-from agentcage.config import load_config, validate_config
+from agentcage.config import (
+    Config,
+    SecretInjectionRule,
+    load_config,
+    validate_config,
+)
 from agentcage.init import list_scaffolds, load_scaffold_meta, render_config, resolve_scaffold, run_scaffold_setup
 from agentcage.podman import Podman
 from agentcage.services import build_and_deploy, check_port_availability, destroy_cage
@@ -370,6 +375,70 @@ def _vm_podman_prefix(isolation: str, cage_name: str) -> list[str]:
     return []
 
 
+_CLAUDE_CODE_AUTH_HELP = """\
+No Claude Code authentication found.
+
+Claude Code inside a cage can't read the macOS Keychain, so the host's
+`claude login` doesn't carry over. Set up auth, then re-run:
+
+  Subscription — mint a token on the host (recommended):
+      claude setup-token
+      export CLAUDE_CODE_OAUTH_TOKEN=<token>
+      agentcage run claude-code
+
+  API key:
+      agentcage run claude-code -s ANTHROPIC_API_KEY\
+"""
+
+
+def _preflight_claude_code_auth(
+    cfg: Config, secrets: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    """Verify a ``run`` claude-code cage will have working auth.
+
+    ``agentcage run claude-code`` drops the user straight into Claude
+    Code, so a cage with no credentials means a confusing in-session
+    failure. Check up front instead.
+
+    When ``CLAUDE_CODE_OAUTH_TOKEN`` is set in the environment it is wired
+    in automatically — the injection rule is added to *cfg* and the token
+    appended to *secrets* for staging. (The scaffold ships that rule
+    commented out: an active rule would make ``cage create`` demand the
+    secret.) Returns the possibly-extended *secrets* tuple. When no auth
+    path exists at all, prints setup guidance and returns ``None``.
+    """
+    secret_keys = {s.split("=", 1)[0] for s in secrets}
+    env_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+
+    have_oauth = bool(env_token) or "CLAUDE_CODE_OAUTH_TOKEN" in secret_keys
+    have_api_key = "ANTHROPIC_API_KEY" in secret_keys
+    # A prior in-cage `claude login` persists here via the ~/.claude mount.
+    have_login = os.path.isfile(
+        os.path.expanduser("~/.claude/.credentials.json")
+    )
+
+    if not (have_oauth or have_api_key or have_login):
+        click.echo(_CLAUDE_CODE_AUTH_HELP, err=True)
+        return None
+
+    if have_oauth and not any(
+        r.env == "CLAUDE_CODE_OAUTH_TOKEN" for r in cfg.secret_injection
+    ):
+        # `run` strips injection rules whose secret was not provided, so
+        # adding the rule here is only effective alongside the staged
+        # secret below (or an explicit `-s CLAUDE_CODE_OAUTH_TOKEN`).
+        cfg.secret_injection.append(SecretInjectionRule(
+            env="CLAUDE_CODE_OAUTH_TOKEN",
+            placeholder="{{CLAUDE_CODE_OAUTH_TOKEN}}",
+            inject_to=["anthropic.com"],
+        ))
+    if env_token and "CLAUDE_CODE_OAUTH_TOKEN" not in secret_keys:
+        click.echo("Using CLAUDE_CODE_OAUTH_TOKEN from your environment.")
+        secrets = secrets + (f"CLAUDE_CODE_OAUTH_TOKEN={env_token}",)
+
+    return secrets
+
+
 def execute(
     scaffold: str,
     *,
@@ -445,6 +514,15 @@ def execute(
     warnings = validate_config(cfg)
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
+
+    # Claude Code drops the user straight into a session — make sure the
+    # cage will actually be authenticated before building it.
+    if scaffold == "claude-code":
+        checked = _preflight_claude_code_auth(cfg, secrets)
+        if checked is None:
+            shutil.rmtree(str(config_dir), ignore_errors=True)
+            return 1
+        secrets = checked
 
     # Create missing bind-mount directories so state persists (e.g. the
     # claude-code scaffold's ~/.claude — without this, a login inside the

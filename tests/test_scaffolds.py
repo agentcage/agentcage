@@ -163,6 +163,18 @@ class TestCodingAgentScaffolds:
         secrets = parsed.get("secret_injection", [])
         assert any(s["env"] == "ANTHROPIC_API_KEY" for s in secrets)
 
+    def test_claude_code_oauth_token_rule_present_but_inactive(self):
+        """The CLAUDE_CODE_OAUTH_TOKEN injection rule ships commented out —
+        present as guidance, but not active (an active rule would make
+        `cage create` demand the secret). The placeholder must render
+        literally, not be expanded by Jinja."""
+        cfg_text = render_config("test-cc", scaffold="claude-code")
+        assert "#- env: CLAUDE_CODE_OAUTH_TOKEN" in cfg_text
+        assert "{{CLAUDE_CODE_OAUTH_TOKEN}}" in cfg_text
+        parsed = yaml.safe_load(cfg_text)
+        active = [s["env"] for s in parsed.get("secret_injection", [])]
+        assert active == ["ANTHROPIC_API_KEY"]
+
     def test_claude_code_has_help_text(self):
         cfg_text = render_config("test-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)

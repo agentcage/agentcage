@@ -955,12 +955,12 @@ class TestCageQuadlet:
         content = files["test-cage.container"]
         assert "/home/node/.claude" not in content
 
-    def test_cage_skips_file_volume_on_vm(self, tmp_path, monkeypatch):
-        """On the VM backend a file-source volume is skipped — Lima only
-        virtiofs-shares directories, so the file is never inside the VM
-        and podman would auto-create an empty dir at the target."""
+    def test_cage_stages_file_volume_on_vm(self, tmp_path, monkeypatch):
+        """On the VM backend a file-source volume is staged into the
+        cage's data dir (which Lima mounts) and bind-mounted from there —
+        Lima virtiofs cannot share a single file directly."""
         monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / ".claude.json").write_text("{}")
+        (tmp_path / ".claude.json").write_text('{"seed": true}')
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -971,9 +971,16 @@ class TestCageQuadlet:
                 - "~/.claude.json:/home/node/.claude.json:rw"
         """))
         cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", "test")
         content = files["test-cage.container"]
-        assert "/home/node/.claude.json" not in content
+
+        # The staged copy exists and carries the host file's content.
+        staged = tmp_path / ".local/share/agentcage/test/seed/.claude.json"
+        assert staged.is_file()
+        assert staged.read_text() == '{"seed": true}'
+        # The quadlet bind-mounts the staged copy, not the bare ~/.claude.json.
+        assert "/agentcage/test/seed/.claude.json:/home/node/.claude.json:rw" in content
+        assert f"{tmp_path}/.claude.json:" not in content
 
     def test_cage_keeps_file_volume_on_container(self, tmp_path, monkeypatch):
         """Container mode bind-mounts a single file directly — podman
