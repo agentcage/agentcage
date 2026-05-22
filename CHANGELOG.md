@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-05-22
+
 ### Added
 - Single-file volume sources now work on the VM backend. Lima's virtiofs can only share directories, so a volume like the claude-code scaffold's `~/.claude.json` previously could not be carried into a VM cage (v0.17.1 just skipped it). `generate_quadlets` now stages a copy of any file-source volume into `~/.local/share/agentcage/<cage>/seed/` — a directory Lima already mounts — and bind-mounts the staged copy. The claude-code cage on macOS therefore starts with Claude Code's global config (`~/.claude.json`) in place. The staged copy is one-way: the cage reads and may write it, but changes do not flow back to the host file; re-staging on every deploy keeps the seed current. The container backend is unchanged — it bind-mounts single files directly.
 - The `claude-code` scaffold ships a (commented-out) `CLAUDE_CODE_OAUTH_TOKEN` secret-injection rule for subscription auth without an in-cage `claude login`. On macOS `claude login` stores credentials in the Keychain, which a Linux cage cannot read; mint a long-lived token on the host with `claude setup-token`, `agentcage secret set <cage> CLAUDE_CODE_OAUTH_TOKEN`, and uncomment the rule. The proxy swaps the placeholder for the real token en route to `anthropic.com`, so it never enters the cage. The rule is commented out by default because an active injection rule makes `cage create` require the secret. Scaffold README and `cage.yaml` header updated with the three auth options.
