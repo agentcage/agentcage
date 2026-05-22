@@ -1,6 +1,7 @@
 """Tests for interactive domain prompts in agentcage run."""
 
 import json
+import subprocess
 import threading
 from io import StringIO
 from unittest.mock import MagicMock, patch
@@ -158,6 +159,37 @@ class TestMonitorProxyInteractive:
         assert "blocked" in output
         assert "stripe.com" in output
         assert "Add stripe.com to allowlist?" in output
+
+    @patch("agentcage.run.subprocess.run")
+    @patch("agentcage.run.subprocess.Popen")
+    def test_log_monitor_detaches_stdin(self, mock_popen, mock_run):
+        """The proxy-log monitor must not let its subprocess inherit the
+        terminal. On the VM backend the command is wrapped in `limactl
+        shell` → ssh; ssh reads the controlling terminal and would steal
+        keystrokes from the interactive `podman exec -it` session — the
+        user ends up pressing every key twice. stdin must be DEVNULL."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        tty_output = _NoCloseStringIO()
+        stop = threading.Event()
+
+        with patch("builtins.open") as mock_open:
+            def open_side_effect(path, mode="r"):
+                if path == "/dev/tty" and mode == "w":
+                    return tty_output
+                raise OSError("no tty_r")
+            mock_open.side_effect = open_side_effect
+
+            _monitor_proxy(
+                "test-proxy", stop,
+                cage_name="test-cage", interactive=False,
+                podman_prefix=["limactl", "shell", "agentcage-test", "--"],
+            )
+
+        assert mock_popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
 
     @patch("agentcage.run.subprocess.run")
     @patch("agentcage.run.subprocess.Popen")

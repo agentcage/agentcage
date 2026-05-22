@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Claude Code (and any interactive cage TUI) on the VM backend no longer needs every keystroke pressed twice. The proxy-log monitor spawned `podman logs -f` without detaching stdin; on the VM backend that command is wrapped in `limactl shell` → `ssh`, and `ssh` reads its inherited stdin to forward to the remote side. With the interactive `podman exec -it` session sharing the same controlling terminal, two `ssh` processes raced for the user's keystrokes and roughly half were swallowed by the log monitor. The monitor's subprocess now runs with `stdin=subprocess.DEVNULL`. The container backend was unaffected because `podman logs` runs there directly, with no `ssh` in the path.
+
 ## [0.17.1] - 2026-05-21
 
 ### Fixed
