@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `claude-code` scaffold ships a (commented-out) `CLAUDE_CODE_OAUTH_TOKEN` secret-injection rule for subscription auth without an in-cage `claude login`. On macOS `claude login` stores credentials in the Keychain, which a Linux cage cannot read; mint a long-lived token on the host with `claude setup-token`, `agentcage secret set <cage> CLAUDE_CODE_OAUTH_TOKEN`, and uncomment the rule. The proxy swaps the placeholder for the real token en route to `anthropic.com`, so it never enters the cage. The rule is commented out by default because an active injection rule makes `cage create` require the secret. Scaffold README and `cage.yaml` header updated with the three auth options.
 - `agentcage run claude-code` now preflights authentication. If `CLAUDE_CODE_OAUTH_TOKEN` is set in the environment it is wired in automatically — the injection rule is added and the token staged, no `-s` flag or config edit needed. If no auth path is found at all (no token, no `-s` secret, no `~/.claude/.credentials.json` from a prior in-cage login) the command exits with `claude setup-token` instructions instead of dropping the user into an unauthenticated Claude Code session.
 
+### Changed
+- The `claude-code` scaffold now defaults to larger resources: the Lima VM gets 4 vCPUs / 8 GiB (was 2 / 4 GiB) and the cage container limits are raised to 4 CPUs / 8 GiB (was 2.0 / 2 GiB). Coding agents are memory-hungry — builds, language servers, and large repos pushed the old 2 GiB container limit. Both values are still plain scaffold defaults; edit `cage.yaml` to tune them per cage.
+
+### Fixed
+- Claude Code (and any interactive cage TUI) on the VM backend no longer needs every keystroke pressed twice. The proxy-log monitor spawned `podman logs -f` without detaching stdin; on the VM backend that command is wrapped in `limactl shell` → `ssh`, and `ssh` reads its inherited stdin to forward to the remote side. With the interactive `podman exec -it` session sharing the same controlling terminal, two `ssh` processes raced for the user's keystrokes and roughly half were swallowed by the log monitor. The monitor's subprocess now runs with `stdin=subprocess.DEVNULL`. The container backend was unaffected because `podman logs` runs there directly, with no `ssh` in the path.
+
 ## [0.17.1] - 2026-05-21
 
 ### Fixed
