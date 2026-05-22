@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-05-22
+
+### Fixed
+- `agentcage cage rm` on macOS no longer aborts mid-cleanup with `FileNotFoundError: 'systemctl'`, which leaked the cage's podman network, volumes, and scoped secrets. The container backend's `destroy_resources()` calls `systemd.daemon_reload()` unconditionally, but macOS has no `systemctl`. The four public functions in `systemd.py` (`daemon_reload`, `start_unit`, `stop_unit`, `restart_unit`) now check `shutil.which("systemctl")` and become no-ops when it is absent, so cleanup runs to completion on hosts without systemd.
+- `agentcage cage audit` and `cage logs` on a VM-backend cage no longer print `No journal files were opened due to insufficient permissions` and return nothing. Two causes, both in `cli.py`: the proxy/dns quadlets run as `systemd --user` units but conmon routes their container output to the *system* journal, so `journalctl --user -u` matched nothing — the commands now filter with `--user-unit`. And Lima establishes its persistent SSH ControlMaster before provisioning adds the VM user to the `systemd-journal` group, so the reused SSH session inherits stale groups and cannot read `system.journal`; the `journalctl` invocation is now wrapped in `sg systemd-journal -c` to re-fetch the group. No re-provisioning is required — the fix works on already-running VM cages.
+
 ## [0.17.2] - 2026-05-22
 
 ### Added
