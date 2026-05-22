@@ -18,14 +18,21 @@ There are two ways to run Claude Code in a cage: a one-command ephemeral session
 The fastest way to get started. Builds the image, creates a temporary cage, drops you into an interactive Claude Code session, and tears down the cage when you exit.
 
 ```bash
-# API key auth
+# Subscription — mint a token once on the host, then just run
+claude setup-token
+export CLAUDE_CODE_OAUTH_TOKEN=<token>
+agentcage run claude-code
+
+# API key
 agentcage run claude-code -s ANTHROPIC_API_KEY
 
 # With a specific project directory
-agentcage run claude-code -s ANTHROPIC_API_KEY --project ~/myrepo
+agentcage run claude-code --project ~/myrepo
 ```
 
-You'll be prompted to enter the API key value on first run. The cage is removed on exit; audit logs are preserved.
+`agentcage run claude-code` checks for authentication before building the cage. If `CLAUDE_CODE_OAUTH_TOKEN` is set in your environment it is wired in automatically (no `-s` flag needed). If no auth is found at all — no token, no `-s` secret, and no `~/.claude/.credentials.json` from a previous in-cage `claude login` — it exits with setup instructions instead of dropping you into an unauthenticated session.
+
+The cage is removed on exit; audit logs are preserved.
 
 ### Persistent interactive cage (`agentcage cage`)
 
