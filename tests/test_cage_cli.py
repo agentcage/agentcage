@@ -833,16 +833,15 @@ class TestCageLogs:
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
     def test_logs_vm_default(self, mock_state, mock_execvp, MockLimaInstance):
-        """All services requested → limactl shell + journalctl with all units."""
+        """All services requested → limactl shell + sg systemd-journal -c journalctl --user-unit."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("vm")
         MockLimaInstance.return_value.name = "agentcage-basic"
         result = _runner().invoke(main, ["cage", "logs", "basic"])
         mock_execvp.assert_called_once_with("limactl", [
             "limactl", "shell", "agentcage-basic", "--",
-            "journalctl", "--user",
-            "-u", "basic-cage", "-u", "basic-proxy", "-u", "basic-dns",
-            "-n", "50", "-o", "cat",
+            "sg", "systemd-journal", "-c",
+            "journalctl --user-unit basic-cage --user-unit basic-proxy --user-unit basic-dns -n 50 -o cat",
         ])
 
     @patch("agentcage.cli.subprocess.Popen")
@@ -863,11 +862,12 @@ class TestCageLogs:
             "cage", "logs", "basic", "-s", "proxy", "--no-follow", "-l", "warning",
         ])
 
-        # Should call Popen with limactl shell
+        # Should call Popen with limactl shell wrapping journalctl in sg systemd-journal -c
         call_args = mock_popen.call_args[0][0]
         assert call_args[0] == "limactl"
         assert "agentcage-basic" in call_args
-        assert "basic-proxy" in call_args
+        assert "sg" in call_args and "systemd-journal" in call_args
+        assert "basic-proxy" in call_args[-1]
         mock_execvp.assert_not_called()
 
     @patch("agentcage.cli.subprocess.Popen")
@@ -882,11 +882,12 @@ class TestCageLogs:
         result = _runner().invoke(main, [
             "cage", "logs", "basic", "-s", "proxy", "-s", "dns",
         ])
-        # execvp called with limactl and both units
+        # execvp called with limactl wrapping journalctl in sg systemd-journal -c
         mock_execvp.assert_called_once()
         call_args = mock_execvp.call_args[0][1]
-        assert "basic-proxy" in call_args
-        assert "basic-dns" in call_args
+        assert "sg" in call_args and "systemd-journal" in call_args
+        assert "basic-proxy" in call_args[-1]
+        assert "basic-dns" in call_args[-1]
 
 
 # ── sample audit JSON lines ──────────────────────────────
@@ -969,11 +970,12 @@ class TestCageAudit:
         assert result.exit_code == 0
         assert "evil.com" in result.output
 
-        # Verify command uses limactl shell with proxy unit
+        # Verify command uses limactl shell + sg systemd-journal -c wrapping journalctl
         cmd = mock_popen.call_args[0][0]
         assert cmd[0] == "limactl"
         assert "agentcage-myvm" in cmd
-        assert "myvm-proxy" in cmd
+        assert "sg" in cmd and "systemd-journal" in cmd
+        assert "myvm-proxy" in cmd[-1]
 
     @patch("agentcage.cli.subprocess.Popen")
     @patch("agentcage.cli.state")
