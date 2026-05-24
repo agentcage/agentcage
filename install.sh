@@ -438,17 +438,21 @@ install_apple_container() {
         info "Apple 'container' installed"
     fi
 
-    # Start the apiserver + install the recommended Linux kernel. Both are
-    # idempotent (--enable-kernel-install skips re-install if the kernel
-    # symlink already exists).
+    # Start the apiserver + install the recommended Linux kernel.
+    # `container system start --enable-kernel-install` is idempotent:
+    # - apiserver already up + kernel installed -> fast no-op
+    # - apiserver down + kernel installed       -> starts apiserver
+    # - no kernel                                -> downloads + installs + starts
+    # We used to gate this on a `container system status | grep -q running`
+    # check, but the *stopped* state prints "apiserver is **not running**
+    # and not registered with launchd" which matches the literal "running"
+    # token and made the conditional take the wrong branch on every fresh
+    # install (#131). The check was never worth its own complexity given
+    # the start command is already idempotent — just always call it.
     CONTAINER_BIN=$(command -v container 2>/dev/null || echo /usr/local/bin/container)
-    if "$CONTAINER_BIN" system status 2>/dev/null | grep -q running; then
-        info "Apple 'container' apiserver already running"
-    else
-        info "Starting Apple 'container' apiserver (one-time, installs Kata kernel)..."
-        "$CONTAINER_BIN" system start --enable-kernel-install >/dev/null 2>&1 || \
-            warn "container system start failed; run it manually before using apple-container isolation"
-    fi
+    info "Ensuring Apple 'container' apiserver is running (one-time kernel install on first run)..."
+    "$CONTAINER_BIN" system start --enable-kernel-install >/dev/null 2>&1 || \
+        warn "container system start failed; run 'container system start --enable-kernel-install' manually before using apple-container isolation"
 }
 
 # ---------------------------------------------------------------------------
