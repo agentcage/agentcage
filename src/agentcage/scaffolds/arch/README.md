@@ -1,6 +1,6 @@
 # arch
 
-Minimal Arch Linux cage for testing agentcage primitives — no AI agent, no extra tools, no outbound network by default.
+Minimal Arch Linux cage — no AI agent, no extra tools, no outbound network by default.
 
 Image: `docker.io/library/archlinux:latest` (~150 MB, includes bash, coreutils, pacman).
 

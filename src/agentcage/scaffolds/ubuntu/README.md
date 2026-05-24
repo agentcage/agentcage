@@ -1,6 +1,6 @@
 # ubuntu
 
-Minimal Ubuntu cage for testing agentcage primitives — no AI agent, no extra tools, no outbound network by default.
+Minimal Ubuntu cage — no AI agent, no extra tools, no outbound network by default.
 
 Image: `docker.io/library/ubuntu:latest` (current LTS, ~80 MB; includes bash, coreutils, apt).
 

@@ -1,6 +1,6 @@
 # alpine
 
-Minimal Alpine Linux cage for testing agentcage primitives — no AI agent, no extra tools, no outbound network by default.
+Minimal Alpine Linux cage — no AI agent, no extra tools, no outbound network by default.
 
 Image: `docker.io/library/alpine:latest` (~7 MB, includes `sh`, `apk`, busybox userland).
 

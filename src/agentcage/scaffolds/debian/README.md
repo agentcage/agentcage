@@ -1,6 +1,6 @@
 # debian
 
-Minimal Debian cage for testing agentcage primitives — no AI agent, no extra tools, no outbound network by default.
+Minimal Debian cage — no AI agent, no extra tools, no outbound network by default.
 
 Image: `docker.io/library/debian:stable-slim` (~75 MB; includes bash, coreutils, apt).
 

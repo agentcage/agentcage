@@ -1,4 +1,4 @@
-description: "Minimal ubuntu cage for testing agentcage primitives"
+description: "Minimal ubuntu cage"
 lifecycle: interactive
 
 build:

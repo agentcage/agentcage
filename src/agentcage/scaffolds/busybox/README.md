@@ -1,6 +1,6 @@
 # busybox
 
-Minimal busybox cage for testing agentcage primitives — no AI agent, no extra tools, no outbound network by default.
+Minimal busybox cage — no AI agent, no extra tools, no outbound network by default.
 
 Image: `docker.io/library/busybox:latest` (single static binary, ~5 MB).
 

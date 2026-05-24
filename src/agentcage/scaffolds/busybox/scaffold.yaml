@@ -1,4 +1,4 @@
-description: "Minimal busybox cage for testing agentcage primitives"
+description: "Minimal busybox cage"
 lifecycle: interactive
 
 build:
