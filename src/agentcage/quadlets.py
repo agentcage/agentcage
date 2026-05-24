@@ -19,6 +19,7 @@ from agentcage.config import Config
 def cage_network_addrs(
     name: str,
     used_octets: set[int] | None = None,
+    network_octet: int | None = None,
 ) -> dict[str, str]:
     """Derive deterministic, unique network addresses for a cage.
 
@@ -29,7 +30,24 @@ def cage_network_addrs(
     If *used_octets* is provided, the function checks for collisions and
     increments the third octet until a free slot is found.  Raises
     ``RuntimeError`` if all 254 slots are taken.
+
+    If *network_octet* is provided, the addresses are derived directly
+    from that octet, bypassing the hash and any collision resolution.
+    This is the correct path for updates to an already-deployed cage
+    whose podman network is pinned to the previously-allocated subnet —
+    re-allocating would produce IPs that fall outside the existing
+    ``<name>-net`` subnet and the DNS/proxy containers would refuse to
+    start with ``requested static ip not in any subnet on network``.
+    *used_octets* is ignored when *network_octet* is set.
     """
+    if network_octet is not None:
+        prefix = f"10.89.{network_octet}"
+        return {
+            "subnet": f"{prefix}.0/24",
+            "ip_cage": f"{prefix}.2",
+            "ip_dns": f"{prefix}.10",
+            "ip_proxy": f"{prefix}.11",
+        }
     h = hashlib.md5(name.encode()).hexdigest()
     octet = (int(h[:8], 16) % 254) + 1
     if used_octets is not None:
@@ -200,16 +218,9 @@ def render_dns_quadlet(
     """
     env = _make_env()
     name = config.name
-    if network_octet is not None:
-        prefix = f"10.89.{network_octet}"
-        addrs = {
-            "subnet": f"{prefix}.0/24",
-            "ip_cage": f"{prefix}.2",
-            "ip_dns": f"{prefix}.10",
-            "ip_proxy": f"{prefix}.11",
-        }
-    else:
-        addrs = cage_network_addrs(name, used_octets=used_octets)
+    addrs = cage_network_addrs(
+        name, used_octets=used_octets, network_octet=network_octet,
+    )
     from agentcage.state import dns_allowlist_path
     return env.get_template("dns.container.j2").render(
         name=name,
@@ -250,6 +261,7 @@ def generate_quadlets(
     deploy_name: str = "",
     rootless: bool = True,
     used_octets: set[int] | None = None,
+    network_octet: int | None = None,
 ) -> dict[str, str]:
     """Return {filename: content} for all 5 quadlet files.
 
@@ -260,6 +272,12 @@ def generate_quadlets(
         deploy_name: Deployment name for secret prefixing.  When set, podman
             secret references become ``{deploy_name}.{key}`` with
             ``target={key}`` so the container still sees the original env name.
+        network_octet: When set, pins the cage to a specific ``10.89.<octet>.0/24``
+            subnet, bypassing hash-based allocation. Used by ``cage update`` to
+            preserve the already-allocated subnet of an existing cage — the
+            podman network is created once at cage-create time and re-deriving
+            a different octet on update would generate quadlets whose static
+            IPs don't fall in the existing ``<name>-net`` subnet.
     """
     env = _make_env()
     name = config.name
@@ -382,7 +400,9 @@ def generate_quadlets(
             "publish_spec": f"{host_bind}:{host_port}:{container_port}",
         })
 
-    addrs = cage_network_addrs(name, used_octets=used_octets)
+    addrs = cage_network_addrs(
+        name, used_octets=used_octets, network_octet=network_octet,
+    )
     common = {"name": name, **addrs}
 
     # Network

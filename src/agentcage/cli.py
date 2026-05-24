@@ -767,8 +767,26 @@ def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
                 err=True,
             )
 
+    # Preserve the cage's existing network octet across updates. The podman
+    # network was created at cage-create time with the originally-assigned
+    # subnet; re-deriving from the hash here (which can land on a different
+    # octet if create-time collision resolution shifted it) would generate
+    # quadlets whose static IPs don't fall in `<name>-net` and the DNS
+    # sidecar would refuse to start with:
+    #   "requested static ip 10.89.X.10 not in any subnet on network <name>-net"
+    # See: https://github.com/agentcage/agentcage/issues/... (cage update
+    # regenerated quadlets with a fresh octet on single-cage systems).
     from agentcage.quadlets import collect_used_octets as _collect_update
-    _build_and_deploy(cfg, config_host_path, name, podman, used_octets=_collect_update(exclude=name))
+    _existing_meta = state.load_metadata(name) or {}
+    _existing_octet = _existing_meta.get("network_octet")
+    _build_and_deploy(
+        cfg,
+        config_host_path,
+        name,
+        podman,
+        used_octets=_collect_update(exclude=name),
+        network_octet=_existing_octet,
+    )
     click.echo(f"Updated cage '{name}'")
 
     if cfg.help:

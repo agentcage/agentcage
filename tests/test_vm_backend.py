@@ -99,7 +99,14 @@ class TestGenerateUnits:
             units = backend.generate_units(config, "/path/config.yaml", "/path/patches", "testcage")
 
         mock_lima.assert_called_once_with(config)
-        mock_quadlets.assert_called_once_with(config, "/path/config.yaml", "/path/patches", "testcage", used_octets=None)
+        mock_quadlets.assert_called_once_with(
+            config,
+            "/path/config.yaml",
+            "/path/patches",
+            "testcage",
+            used_octets=None,
+            network_octet=None,
+        )
 
         assert "lima.yaml" in units
         assert units["lima.yaml"] == "lima: yaml content"
