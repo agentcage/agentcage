@@ -25,13 +25,18 @@ RUN if ! command -v apt-get >/dev/null 2>&1; then \
 #   curl        -- mitmproxy bundle fetch
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         libcap2-bin util-linux jq iptables dnsmasq ca-certificates curl procps \
+        iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Fetch the official mitmproxy PyInstaller bundle. It's self-contained: ships
-# its own Python interpreter + deps. ~107MB unpacked. Pinned to v12.2.3 here;
-# bump together with the user image's glibc support guarantees.
+# its own Python interpreter + deps. ~107MB unpacked. Pinned to v12.2.3 with
+# SHA256 verification — without the pin, a compromised CDN / BGP hijack /
+# build-time MITM could swap in a malicious mitmproxy which then runs as PID
+# 1 of every cage with CAP_SYS_ADMIN. Bump the version + sha256 together.
 RUN curl -fsSL -o /tmp/mitmproxy.tar.gz \
         https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-aarch64.tar.gz \
+    && echo "b358643a6c4f4b39e33d985350f660b724fece95687d7daa899ef0c4e211f681  /tmp/mitmproxy.tar.gz" \
+        | sha256sum -c - \
     && mkdir -p /opt/agentcage/mitmproxy \
     && tar xzf /tmp/mitmproxy.tar.gz -C /opt/agentcage/mitmproxy \
     && rm /tmp/mitmproxy.tar.gz

@@ -5,27 +5,45 @@
 # distinct exit code so failures are diagnosable from `container logs`):
 #
 #   10. Remount /proc with hidepid=2  → cage cannot enumerate other UIDs' PIDs
-#   20. Resolve cage CMD              → read JSON file, jq @sh shell-quotes
-#   30. Start dnsmasq (uid 201)       → in-microVM DNS that rewrites every
-#                                        real-world domain to 127.0.0.1
-#   40. Start mitmproxy (uid 200)     → transparent egress filter on
-#                                        127.0.0.1:8080 (HTTP) and 127.0.0.1:8443
-#                                        (HTTPS). Enforces a domain allowlist
-#                                        via --allow-hosts; logs flows to
-#                                        /var/log/agentcage/audit.log.
-#   50. Wait for mitmproxy CA cert    → CA is generated on first start and
-#                                        written to /home/proxy/.mitmproxy/.
+#   20. Resolve cage CMD              → read /etc/agentcage/cage-cmd.json,
+#                                        shell-quote via jq @sh
+#   30. Start dnsmasq (uid 201)       → recursive resolver forwarding to
+#                                        1.1.1.1/8.8.8.8 (see dnsmasq.conf).
+#                                        cage→dnsmasq is the only way to do
+#                                        DNS from inside the cage.
+#   40. Start mitmproxy (uid 200)     → transparent egress filter listening
+#                                        on 127.0.0.1:8080 (handles both
+#                                        HTTP and HTTPS via SNI sniffing,
+#                                        single port). iptables in stage 80
+#                                        REDIRECTs the cage's tcp/80 and
+#                                        tcp/443 to it. Domain allowlist is
+#                                        enforced by allowlist_addon.py
+#                                        (rendered from cage.yaml's
+#                                        `domains.allow`); non-listed hosts
+#                                        get a 403 from the proxy itself.
+#   50. Wait for mitmproxy ready      → poll CA cert AND listening port. If
+#                                        we skip the port check, iptables in
+#                                        stage 80 would REDIRECT cage traffic
+#                                        to a closed socket → cage sees
+#                                        "connection refused" with no clue.
 #   60. Install CA in cage trust      → update-ca-certificates so cage HTTPS
 #                                        clients trust the proxy's MITM cert.
 #   70. Configure /etc/resolv.conf    → cage DNS queries hit local dnsmasq.
-#   80. iptables egress lockdown      → DROP all cage egress except to
-#                                        127.0.0.1:8080/8443/53. CAP_NET_ADMIN
-#                                        gone after capsh, cage cannot revert.
-#   90. Drop caps, switch user, exec  → capsh setuid 1000, clears all caps,
-#                                        NO_NEW_PRIVS set; exec the cage CMD.
+#   80. iptables egress lockdown      → DROP all cage egress except (a) to
+#                                        the dnsmasq + mitmproxy ports on
+#                                        loopback, (b) the REDIRECT of
+#                                        tcp/80+tcp/443 to mitmproxy. uid 200
+#                                        and uid 201 (proxy/dns themselves)
+#                                        are allowed out. IPv6 is killed at
+#                                        netfilter + sysctl so AAAA records
+#                                        cannot bypass the v4-only NAT.
+#   90. Drop caps, switch user, exec  → capsh sets NO_NEW_PRIVS, drops the
+#                                        bounding set, setuid to cage (uid
+#                                        1000), exec the cage CMD.
 #
 # This script runs with CAP_SYS_ADMIN + CAP_NET_ADMIN granted at container
-# run time. Both are gone by the time the cage workload starts.
+# run time (see backends/apple_container.py). Both are gone by the time the
+# cage workload starts.
 #
 # Security-critical code. Changes require /codex review per issue #120.
 
@@ -49,52 +67,37 @@ log "stage 20: cage CMD = ${CMD_LINE}"
 #-- 30. Start dnsmasq ------------------------------------------------------
 log "stage 30: starting dnsmasq (uid 201)"
 mkdir -p /var/log/agentcage
-# Foreground dnsmasq with our config (which rewrites everything to 127.0.0.1).
-# We use start-stop-daemon style: launch in background, capture PID, check
-# liveness after a beat.
+chown acdns:acdns /var/log/agentcage
 dnsmasq \
   --conf-file=/etc/agentcage/dnsmasq.conf \
   --user=acdns \
   --keep-in-foreground \
   --log-facility=/var/log/agentcage/dnsmasq.log \
   &
-DNSMASQ_PID=$!
-sleep 1
-kill -0 "${DNSMASQ_PID}" 2>/dev/null \
-  || die "dnsmasq failed to start; see /var/log/agentcage/dnsmasq.log" 30
+# Wait up to 5s for dnsmasq to actually bind 127.0.0.1:53 — `kill -0 PID`
+# after a 1s sleep is racy (dnsmasq could die at second 1.5).
+i=0
+while [ "$i" -lt 5 ]; do
+  if ss -lnu 2>/dev/null | grep -q '127.0.0.1:53'; then break; fi
+  sleep 1; i=$((i+1))
+done
+ss -lnu 2>/dev/null | grep -q '127.0.0.1:53' \
+  || die "dnsmasq did not bind 127.0.0.1:53; see /var/log/agentcage/dnsmasq.log" 30
 
 #-- 40. Start mitmproxy ----------------------------------------------------
 log "stage 40: starting mitmproxy (uid 200)"
+# Chown the mitmproxy home + log dir BEFORE starting mitmproxy so the
+# ownership state is final before any file the proxy writes lands here.
 mkdir -p /home/acproxy/.mitmproxy /var/log/agentcage
-chown acproxy:acproxy /home/acproxy /home/acproxy/.mitmproxy /var/log/agentcage
-
-# Read allowlist (one host per line) into a single regex
-# "^(host1|host2|host3)$" that mitmdump's --allow-hosts can apply against
-# every request's host. Subdomains are matched explicitly via
-# (^|\.)host$ — same behaviour as the existing DomainInspector.
-ALLOW_REGEX=$(
-  if [ -s /etc/agentcage/allowlist.txt ]; then
-    awk 'NF { gsub(/\./, "\\."); printf("%s(^|\\.)%s$", sep, $0); sep="|" } END { print "" }' \
-        /etc/agentcage/allowlist.txt
-  fi
-)
-# If the allowlist is empty (no domains configured), mitmproxy blocks
-# everything — that's the safer default and matches what users would expect
-# from a misconfigured cage.
-if [ -z "${ALLOW_REGEX}" ]; then
-  ALLOW_REGEX='^$'
-  log "WARN: empty allowlist — cage will block ALL egress"
-fi
-log "stage 40: allowlist regex = ${ALLOW_REGEX}"
-
-# Run mitmdump as proxy uid. HOME must point at /home/proxy so the CA cert
-# lands at /home/proxy/.mitmproxy/mitmproxy-ca-cert.pem.
-# Transparent mode lets a single listener handle both HTTP (the original
-# destination is recovered via SO_ORIGINAL_DST set by iptables REDIRECT)
-# and HTTPS (via TLS SNI sniffing). iptables in stage 80 REDIRECTs both
-# tcp/80 and tcp/443 from the cage's uid to this listener.
-mkdir -p /var/log/agentcage
+chown acproxy:acproxy /home/acproxy /home/acproxy/.mitmproxy
 chown acproxy:acproxy /var/log/agentcage
+
+# The mitmproxy addon (/opt/agentcage/allowlist_addon.py) reads
+# /etc/agentcage/allowlist.txt and 403s non-listed hosts from the proxy
+# itself — the upstream connection is never opened. The addon checks
+# `flow.request.pretty_host` which in transparent mode resolves to the
+# TLS SNI / destination IP, NOT a (potentially spoofed) HTTP Host header.
+# This invariant is what makes `--set keep_host_header=true` safe.
 su -s /bin/sh -c '
   cd /home/acproxy
   HOME=/home/acproxy /opt/agentcage/mitmproxy/mitmdump \
@@ -107,17 +110,21 @@ su -s /bin/sh -c '
     --set termlog_verbosity=info \
     >> /var/log/agentcage/proxy.log 2>&1 &
 ' acproxy
-sleep 1
 
-#-- 50. Wait for mitmproxy CA cert ----------------------------------------
-log "stage 50: waiting for mitmproxy CA cert (max 15s)"
+#-- 50. Wait for mitmproxy CA + listening port -----------------------------
+log "stage 50: waiting for mitmproxy CA cert AND listening port (max 20s)"
 CA_PATH=/home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem
 i=0
-while [ ! -s "${CA_PATH}" ] && [ "$i" -lt 15 ]; do
+while [ "$i" -lt 20 ]; do
+  if [ -s "${CA_PATH}" ] && ss -lnt 2>/dev/null | grep -q '127.0.0.1:8080'; then
+    break
+  fi
   sleep 1; i=$((i+1))
 done
 [ -s "${CA_PATH}" ] || die "mitmproxy CA cert never appeared; see /var/log/agentcage/proxy.log" 50
-log "stage 50: CA ready at ${CA_PATH}"
+ss -lnt 2>/dev/null | grep -q '127.0.0.1:8080' \
+  || die "mitmproxy listener never came up on 127.0.0.1:8080; see /var/log/agentcage/proxy.log" 51
+log "stage 50: mitmproxy ready (CA at ${CA_PATH}, listening on :8080)"
 
 #-- 60. Install CA cert into cage trust store ------------------------------
 log "stage 60: installing CA into cage trust store"
@@ -127,51 +134,77 @@ update-ca-certificates --fresh >/dev/null 2>&1 \
 
 #-- 70. Cage DNS -----------------------------------------------------------
 log "stage 70: pointing /etc/resolv.conf at local dnsmasq"
+# This overrides whatever the user image set for /etc/resolv.conf. A user
+# image with a special resolver setup will get clobbered — acceptable for
+# v1 because the cage's only legal DNS path goes through dnsmasq anyway.
 printf 'nameserver 127.0.0.1\n' > /etc/resolv.conf
 
 #-- 80. iptables egress lockdown ------------------------------------------
 log "stage 80: applying iptables egress rules"
-# Kill IPv6 entirely. The microVM kernel has v6 enabled and dnsmasq
-# returns AAAA records (which would let the cage bypass our v4-only NAT
-# REDIRECT). Two belt-and-braces measures:
-#   1. ip6tables DROP all chains (so v6 packets are dropped at netfilter)
-#   2. sysctl disable_ipv6 (so the v6 stack itself is inert)
-ip6tables -P INPUT DROP   2>/dev/null || true
-ip6tables -P OUTPUT DROP  2>/dev/null || true
-ip6tables -P FORWARD DROP 2>/dev/null || true
-sysctl -w net.ipv6.conf.all.disable_ipv6=1   >/dev/null 2>&1 || true
-sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
-# Allow loopback freely (cage→proxy, cage→dnsmasq).
+# Kill IPv6 entirely IF the v6 stack exists in the microVM. dnsmasq
+# returns AAAA records (forwarded from upstream); without the v6 lockdown
+# the cage's curl would pick a v6 address first, bypassing our v4-only
+# NAT REDIRECT. We require both ip6tables AND the sysctl to succeed when
+# v6 is present so a kernel-side regression is loud, not silent.
+if [ -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]; then
+  ip6tables -P INPUT DROP   || die "ip6tables INPUT DROP failed" 80
+  ip6tables -P OUTPUT DROP  || die "ip6tables OUTPUT DROP failed" 80
+  ip6tables -P FORWARD DROP || die "ip6tables FORWARD DROP failed" 80
+  sysctl -w net.ipv6.conf.all.disable_ipv6=1     >/dev/null \
+    || die "sysctl ipv6 all disable failed" 80
+  sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null \
+    || die "sysctl ipv6 default disable failed" 80
+fi
+
+# Default deny on OUTPUT. Every allowed path below must be explicit.
 iptables -P OUTPUT DROP
-iptables -A OUTPUT -o lo -j ACCEPT
-# Allow established/related (so responses come back in).
+
+# Allow established/related so responses come back in.
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-# Cage's egress to 80/443 → REDIRECT to local mitmproxy on 8080
-# (transparent mode handles both HTTP and HTTPS on one port).
+
+# Cage's egress to tcp/80 and tcp/443 → REDIRECT to local mitmproxy on
+# 8080 (transparent mode handles both HTTP and HTTPS on one port).
 iptables -t nat -A OUTPUT -p tcp --dport 80 -m owner --uid-owner 1000 \
     -j REDIRECT --to-ports 8080
 iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner --uid-owner 1000 \
     -j REDIRECT --to-ports 8080
-# Allow cage→loopback:8080 + DNS (both UDP and TCP for completeness).
+
+# Loopback access is allowed PER PORT, not blanket `-o lo -j ACCEPT`. The
+# catch-all would let the cage reach any loopback service a user image
+# happens to bind (debug endpoints, status servers, future mitmproxy UI
+# ports). Restrict to the only two services the cage needs to reach.
+#   - 127.0.0.1:8080 → mitmproxy (post-REDIRECT)
+#   - 127.0.0.1:53   → dnsmasq (DNS, both UDP and TCP)
 iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport 8080 -j ACCEPT
 iptables -A OUTPUT -p udp -d 127.0.0.1 --dport 53 -j ACCEPT
 iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport 53 -j ACCEPT
-# Proxy and dns themselves need internet egress. They run as uid 200/201;
-# the cage runs as 1000. owner-uid match lets us allow proxy/dns out while
-# locking the cage in.
+# mitmproxy ↔ self (the addon talks to mitmproxy's own internals) and
+# dnsmasq ↔ self need full loopback; uid-owner ACCEPT rules below cover
+# that path because both run as their respective per-component uids.
+
+# Proxy and dns themselves need internet egress. The cage runs as 1000;
+# owner-uid match lets us allow proxy/dns out while locking the cage in.
 iptables -A OUTPUT -m owner --uid-owner 200 -j ACCEPT
 iptables -A OUTPUT -m owner --uid-owner 201 -j ACCEPT
 
 #-- 90. Drop caps + exec cage workload ------------------------------------
 log "stage 90: dropping caps, switching to cage user (uid 1000)"
-# capsh argv order:
-#   --no-new-privs --> set NO_NEW_PRIVS prctl (sticks across exec); blocks
-#                      cage's children from gaining caps via setuid binaries
-#   --user=cage    --> setuid+setgid+initgroups. The uid 0→1000 transition
-#                      clears CapEff/Prm. CapBnd survives the transition but
-#                      NO_NEW_PRIVS makes it irrelevant.
+# capsh argv (order matters — flags are processed left to right):
+#   --no-new-privs  → set NO_NEW_PRIVS prctl. Sticks across execve; blocks
+#                     cage's children from gaining caps via setuid/setcap
+#                     binaries.
+#   --drop=all      → empty the bounding set BEFORE the user switch. With
+#                     NoNewPrivs set this is defense-in-depth (the kernel
+#                     already refuses to grant file caps under NNP), but
+#                     guarantees the cage cannot acquire any capability
+#                     even if NNP enforcement regresses or future code
+#                     adds a privileged path we haven't considered.
+#   --user=cage     → setuid+setgid+initgroups to cage (uid 1000). The
+#                     uid 0→1000 transition clears CapEff/CapPrm/CapInh.
+#                     CapBnd is already empty from --drop=all above.
 exec capsh \
   --no-new-privs \
+  --drop=all \
   --user=cage \
   --shell=/bin/sh \
   -- -c "exec ${CMD_LINE}"

@@ -5,11 +5,22 @@ macOS 26+ Apple Silicon. Each cage is one Apple container (one microVM); the
 agentcage supervisor runs as PID 1 and applies hardening before exec'ing the
 user's cage workload.
 
-v1 scope (this PR): supervisor + hardening (hidepid, cap drop, NO_NEW_PRIVS,
-non-root cage user). Proxy + DNS + Keychain secrets are deferred to follow-up
-PRs — the cage has direct internet egress in v1, which the doctor command
-warns about. Lima remains the recommended backend for untrusted workloads
-until the egress filter lands.
+What ships in this backend:
+  - Hardened cage process: uid 1000, CapEff/Prm/Inh/Bnd all empty,
+    NoNewPrivs=1, hidepid=2 on /proc.
+  - Egress filter: in-microVM mitmproxy (uid 200) intercepts the cage's
+    tcp/80 + tcp/443 via iptables REDIRECT; non-allowlisted hosts get a
+    403 from the proxy. dnsmasq (uid 201) is the only DNS path. IPv6 is
+    killed at netfilter + sysctl so AAAA records can't bypass v4 NAT.
+  - Cage HTTPS is MITMed with a per-cage CA installed in the cage's trust
+    store before the workload starts.
+
+Not yet shipped (follow-ups tracked in #120):
+  - Server-side {{SECRET:...}} placeholder injection via the existing
+    SecretInjector — for now the cage sees env-injected secrets raw.
+  - `agentcage cage audit` integration (mitmproxy already writes proxy.log
+    inside the cage; CLI plumbing is part of the Backend protocol lift).
+  - Backend protocol lift for exec/logs/audit.
 """
 
 from __future__ import annotations
@@ -79,10 +90,11 @@ class AppleContainerBackend:
 
         if not quiet:
             click.echo(f"Building apple-container wrapper for {deploy_name}...")
-        # Collect the cage's domain allowlist for mitmproxy's --allow-hosts.
-        # The supervisor turns it into a single regex at startup; an empty
-        # allowlist means "block all egress" (safer than "allow all").
-        allowlist = list(getattr(config.domains, "allow", None) or [])
+        # Collect the cage's domain allowlist for the mitmproxy addon.
+        # config.domains and .allow are dataclass fields with safe defaults,
+        # so no defensive getattr is needed. An empty allowlist means
+        # "block all egress" (safer default than "allow all").
+        allowlist = list(config.domains.allow or [])
         ac_wrapper.build_wrapper(
             deploy_name, user_image, user_cmd=user_cmd, allowlist=allowlist,
         )
@@ -209,5 +221,9 @@ class AppleContainerBackend:
         return status == "running"
 
     def service_names(self, name: str) -> list[str]:  # noqa: ARG002
-        # v1: single container per cage; no proxy/dns yet.
-        return ["cage"]
+        # Three components run inside one Apple microVM per cage:
+        # the cage workload, mitmproxy (the egress filter), and dnsmasq
+        # (the resolver). cli.py uses these names for status display and
+        # — once `exec`/`logs`/`audit` are lifted onto the Backend
+        # protocol — for targeted component access.
+        return ["cage", "proxy", "dns"]
