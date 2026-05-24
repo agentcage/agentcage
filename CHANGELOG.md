@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-05-24
+
+### Added
+- `--time` flag on `agentcage cage create` and `agentcage run` (both isolation backends) records each phase of cage creation into a per-cage JSONL ledger at `~/.local/share/agentcage/<cage>/timings/` and prints a phase/ms/% summary table on completion (success or failure). When the flag is set (or `AGENTCAGE_TIMING=1` is exported), each phase also echoes `[timing] <label>: <ms>ms` to stderr as it exits. Default is silent. Phases instrumented: `lima.create`, `lima.start`, `copy.build_context`, `build.proxy`, `build.dns`, `pull.cage` / `build.cage`, `deploy.quadlets`, `deploy.bridge_secrets`, `deploy.pending_secrets`, `systemd.start`, `systemd.wait_proxy`, `systemd.start_cage`. The ledger files rotate at 20 per cage; timing-path errors are swallowed so instrumentation never breaks the code it wraps. (#118)
+
+### Performance
+- The Lima VM's provisioning script (`provision.sh.j2`) now invokes `apt-get install` with `--no-install-recommends`, cutting ~50 MB of unused dependencies (mail-transport-agent and friends) from the fresh Ubuntu cloud image. `socat` is also dropped from the install list — it was never referenced by any agentcage code path. Core deps (`podman`, `fuse-overlayfs`, `uidmap`, `slirp4netns`, `iptables`) remain. Smaller disk footprint, faster `apt-get install` on every cold VM. (#119)
+- The hardcoded 5-second `time.sleep` between starting infra systemd services inside the Lima VM and verifying their state is replaced with an active poll (`_wait_infra_active`, `vm.py`) that ticks every 100 ms with the same 5-second deadline. Warm restarts where services come up in milliseconds now finish that phase in sub-second instead of waiting the full 5 s. Cold runs are unchanged — same effective deadline, same retry path. (#119)
+- The mitmproxy readiness poll is converted from iteration-count to a `time.monotonic()` deadline, and `PROXY_READINESS_POLL_INTERVAL_S` is tightened from 1.0 s to 0.25 s. The 30-second timeout is preserved while polling 4× more often; median proxy-ready wait shrinks by up to ~0.75 s. (#119)
+
+Measured on a fresh M1 Mac (alpine sleep-infinity cage, Ubuntu cloud image cached): `agentcage cage create --time` reports a 43.4-second wall time, with `systemd.start` consistently 1.3–2.4 s (was a flat 5 s) and `systemd.wait_proxy` at 41 ms.
+
 ## [0.17.3] - 2026-05-22
 
 ### Fixed
