@@ -1,0 +1,11 @@
+description: "Minimal arch cage for testing agentcage primitives"
+lifecycle: interactive
+
+build:
+  - image: "localhost/agentcage-scaffold-arch:latest"
+    containerfile: "Containerfile"
+
+next_steps:
+  - "agentcage cage create -c {dest}"
+  - "agentcage cage exec {name} -- bash"
+  - "Or use: agentcage run arch"
