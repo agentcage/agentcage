@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.6] - 2026-05-24
+
 ### Fixed
-- `agentcage cage update <name>` no longer regenerates quadlets with a fresh network octet that doesn't match the existing `<name>-net` podman network. On a single-cage system the hash-based allocator could land on a different octet at update time than at create time (because the cage being updated was excluded from the "used" set, so create-time collision resolution didn't reproduce), causing the DNS sidecar to fail at start with `Error: requested static ip 10.89.X.10 not in any subnet on network <name>-net` and cascading to the cage + proxy as dependency failures. `cage update` now reads the persisted `network_octet` from the cage's `metadata.json` and pins the subnet to the original allocation. The fix threads a new `network_octet` parameter through `build_and_deploy → generate_units → generate_quadlets → cage_network_addrs`; when set, it bypasses hash-based allocation entirely. New regression tests in `test_cage_cli.py` cover the CLI, the renderer, and the `services.build_and_deploy` plumbing.
+- `agentcage cage update <name>` no longer regenerates quadlets with a fresh network octet that doesn't match the existing `<name>-net` podman network. On a single-cage system the hash-based allocator could land on a different octet at update time than at create time (because the cage being updated was excluded from the "used" set, so create-time collision resolution didn't reproduce), causing the DNS sidecar to fail at start with `Error: requested static ip 10.89.X.10 not in any subnet on network <name>-net` and cascading to the cage + proxy as dependency failures. `cage update` now reads the persisted `network_octet` from the cage's `metadata.json` and pins the subnet to the original allocation. The fix threads a new `network_octet` parameter through `build_and_deploy → generate_units → generate_quadlets → cage_network_addrs`; when set, it bypasses hash-based allocation entirely. New regression tests in `test_cage_cli.py` cover the CLI, the renderer, and the `services.build_and_deploy` plumbing. (#126)
 
 ## [0.17.5] - 2026-05-24
 
