@@ -1,0 +1,41 @@
+{# Per-cage wrapper Containerfile.
+   Layers the agentcage supervisor + hardening onto the user's cage image.
+   The user's original ENTRYPOINT+CMD is baked into AGENTCAGE_CAGE_CMD as
+   a JSON array; the supervisor parses it at runtime. #}
+FROM {{ user_image }}
+
+# Install supervisor dependencies (capsh from libcap, util-linux for unshare,
+# jq for parsing the cage CMD JSON without shell-escape nightmares).
+# Supports debian/ubuntu and alpine; falls through with a documented error
+# for other bases.
+RUN if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            libcap2-bin util-linux jq \
+        && rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache libcap util-linux jq; \
+    else \
+        echo "agentcage apple-container supervisor needs libcap (capsh) + util-linux + jq; install them in your base image" >&2; \
+        exit 78; \
+    fi
+
+# Create the unprivileged cage user (uid 1000) that the supervisor switches to.
+# The home dir is owned by the user; / stays root-owned.
+RUN (id cage >/dev/null 2>&1) || ( \
+        if command -v useradd >/dev/null 2>&1; then \
+            useradd -u 1000 -m -s /bin/sh cage; \
+        else \
+            adduser -D -u 1000 -s /bin/sh cage; \
+        fi \
+    )
+
+# Install supervisor + the cage CMD as a JSON file. Using a file (read at
+# runtime) instead of an ENV var avoids the Containerfile ENV-quoting/JSON-
+# escaping nightmare for cage CMDs containing shell metacharacters.
+COPY supervisor.sh /opt/agentcage/supervisor
+COPY cage-cmd.json /etc/agentcage/cage-cmd.json
+RUN chmod 0755 /opt/agentcage/supervisor
+
+# Supervisor runs as PID 1.
+ENTRYPOINT ["/opt/agentcage/supervisor"]
+CMD []

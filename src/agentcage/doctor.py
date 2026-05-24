@@ -191,6 +191,28 @@ def check_lima(distro: str) -> CheckResult:
                        hint=_INSTALL_LIMA.get(distro, _INSTALL_LIMA["unknown"]))
 
 
+def _check_apple_container() -> CheckResult:
+    """Check Apple `container` CLI for the apple-container backend.
+
+    Optional on macOS. If absent, Lima is still the default and the doctor
+    just notes that apple-container isolation is unavailable.
+    """
+    from agentcage.apple_container import prerequisites as ac_prereq
+    issues = ac_prereq.check_prerequisites()
+    if not issues:
+        return CheckResult(
+            "pass",
+            "Apple container available (apple-container isolation enabled)",
+            hint="Faster cage create than Lima, but no egress filter yet (v1). "
+                 "Use Lima for untrusted workloads.",
+        )
+    return CheckResult(
+        "warn",
+        "Apple container unavailable; apple-container isolation will not work",
+        hint=issues[0],
+    )
+
+
 def check_qemu(distro: str) -> CheckResult:
     """Check QEMU is installed (optional, Linux VM mode only)."""
     try:
@@ -448,6 +470,8 @@ def run_doctor() -> list[CheckResult]:
     if prereqs.results[-1].level == "pass" and not _IS_MACOS:
         prereqs.results.append(_safe_check(check_podman_rootless, distro, label="Podman rootless"))
     prereqs.results.append(_safe_check(check_lima, distro, label="Lima"))
+    if _IS_MACOS:
+        prereqs.results.append(_safe_check(_check_apple_container, label="Apple container"))
     # QEMU and systemd linger are Linux-only — macOS uses the vz hypervisor.
     if not _IS_MACOS:
         prereqs.results.append(_safe_check(check_qemu, distro, label="QEMU"))

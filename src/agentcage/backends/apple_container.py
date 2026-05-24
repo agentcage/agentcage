@@ -1,0 +1,199 @@
+"""Apple container backend — single hardened microVM per cage.
+
+See issue #120 for the design. This backend uses Apple's `container` CLI on
+macOS 26+ Apple Silicon. Each cage is one Apple container (one microVM); the
+agentcage supervisor runs as PID 1 and applies hardening before exec'ing the
+user's cage workload.
+
+v1 scope (this PR): supervisor + hardening (hidepid, cap drop, NO_NEW_PRIVS,
+non-root cage user). Proxy + DNS + Keychain secrets are deferred to follow-up
+PRs — the cage has direct internet egress in v1, which the doctor command
+warns about. Lima remains the recommended backend for untrusted workloads
+until the egress filter lands.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+from pathlib import Path
+
+import click
+
+from agentcage.apple_container import cli as ac_cli
+from agentcage.apple_container import prerequisites as ac_prereq
+from agentcage.apple_container import wrapper as ac_wrapper
+from agentcage.config import Config
+
+
+class AppleContainerBackend:
+    """Backend using Apple's `container` CLI with a hardened supervisor."""
+
+    # --- helpers --------------------------------------------------------------
+
+    def _state_dir(self, name: str) -> Path:
+        return Path(os.path.expanduser("~/.config/agentcage/apple-container")) / name
+
+    # --- Backend protocol -----------------------------------------------------
+
+    def check_prerequisites(self, config: Config) -> list[str]:  # noqa: ARG002
+        return ac_prereq.check_prerequisites()
+
+    def build_artifacts(
+        self, config: Config, deploy_name: str, *, quiet: bool = False
+    ) -> None:
+        """Build the per-cage wrapper image.
+
+        For the apple-container backend, the only artifact we produce is the
+        wrapped user image (user's image + supervisor). The user's cage image
+        itself must already be pullable / built — we don't build it here.
+        """
+        user_image = config.container.image
+        if not user_image:
+            raise ValueError("cage has no container.image set")
+
+        # Pull the user image first so `image inspect` works.
+        # (This is a no-op if it's already local.)
+        if not quiet:
+            click.echo(f"Ensuring user image is available: {user_image}")
+        pull_result = ac_cli.run(
+            ["image", "pull", user_image],
+            check=False,
+            capture_output=False,
+        )
+        if pull_result.returncode != 0 and not ac_cli.image_inspect(user_image):
+            raise RuntimeError(
+                f"failed to pull user image {user_image!r} and it is not built locally"
+            )
+
+        # Resolve original CMD before building (so we can fail early with a
+        # clear error if the user image has no CMD).
+        try:
+            user_cmd = ac_wrapper._user_cmd(user_image)
+        except ValueError as e:
+            raise RuntimeError(
+                f"cannot determine cage entrypoint: {e}; "
+                "set CMD in your Containerfile or use a scaffold that provides one"
+            ) from e
+
+        if not quiet:
+            click.echo(f"Building apple-container wrapper for {deploy_name}...")
+        ac_wrapper.build_wrapper(deploy_name, user_image, user_cmd=user_cmd)
+        if not quiet:
+            click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")
+
+    def generate_units(
+        self,
+        config: Config,
+        config_host_path: str,  # noqa: ARG002
+        patches_host_dir: str,  # noqa: ARG002
+        deploy_name: str,
+        used_octets: set[int] | None = None,  # noqa: ARG002
+    ) -> dict[str, str]:
+        """Generate a cage metadata JSON used by `start` to construct argv."""
+        unit_json = json.dumps(
+            {
+                "name": deploy_name,
+                "user_image": config.container.image,
+                "cpus": getattr(config.vm, "vcpus", 0) or 0,
+                "mem_mb": getattr(config.vm, "mem_mb", 0) or 0,
+                "lifecycle": config.lifecycle,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        return {f"{deploy_name}.json": unit_json}
+
+    def unit_dir(self) -> Path:
+        return Path(os.path.expanduser("~/.config/agentcage/apple-container"))
+
+    def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
+        dest = self.unit_dir()
+        dest.mkdir(parents=True, exist_ok=True)
+        for filename, content in units.items():
+            (dest / filename).write_text(content)
+        if not quiet:
+            click.echo(f"Installed apple-container unit metadata to {dest}/")
+
+    def start(self, name: str, *, quiet: bool = False) -> None:
+        """Run the wrapped image as a long-lived Apple container."""
+        # Read the unit metadata to recover cage config.
+        unit_path = self.unit_dir() / f"{name}.json"
+        if not unit_path.exists():
+            raise RuntimeError(
+                f"apple-container unit metadata missing at {unit_path}; "
+                f"run `agentcage cage create {name}` first"
+            )
+        meta = json.loads(unit_path.read_text())
+
+        image = ac_wrapper.wrapped_image_name(name)
+        if not ac_cli.image_inspect(image):
+            raise RuntimeError(
+                f"wrapped image {image!r} not found — was build_artifacts() called?"
+            )
+
+        # If a container with this name already exists, stop+delete it first
+        # (start should be idempotent like the other backends).
+        existing = ac_cli.inspect(name)
+        if existing is not None:
+            ac_cli.run(["stop", name], check=False)
+            ac_cli.run(["delete", "-f", name], check=False)
+
+        argv = ["run", "-d", "--name", name, "--cap-add", "CAP_SYS_ADMIN"]
+        if meta.get("cpus"):
+            argv += ["--cpus", str(meta["cpus"])]
+        if meta.get("mem_mb"):
+            # Apple `container` accepts e.g. "2g" or raw bytes.
+            argv += ["--memory", f"{meta['mem_mb']}m"]
+        argv.append(image)
+
+        result = ac_cli.run(argv, check=False, capture_output=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"`container run` failed (exit {result.returncode})")
+        if not quiet:
+            click.echo(f"Started {name} (apple-container)")
+
+    def stop(self, name: str) -> None:
+        ac_cli.run(["stop", name], check=False)
+
+    def restart(self, name: str) -> None:
+        self.stop(name)
+        self.start(name)
+
+    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:  # noqa: ARG002
+        removed: list[str] = []
+        # Container
+        if ac_cli.inspect(name) is not None:
+            ac_cli.run(["stop", name], check=False)
+            r = ac_cli.run(["delete", "-f", name], check=False)
+            if r.returncode == 0:
+                removed.append(f"container:{name}")
+        # Image
+        image = ac_wrapper.wrapped_image_name(name)
+        if ac_cli.image_inspect(image) is not None:
+            r = ac_cli.run(["image", "delete", image], check=False)
+            if r.returncode == 0:
+                removed.append(f"image:{image}")
+        # State dir
+        unit_path = self.unit_dir() / f"{name}.json"
+        if unit_path.exists():
+            unit_path.unlink()
+            removed.append(f"unit:{unit_path}")
+        state = self._state_dir(name)
+        if state.exists():
+            shutil.rmtree(state)
+            removed.append(f"state:{state}")
+        return removed
+
+    def is_running(self, name: str, service: str) -> bool:  # noqa: ARG002
+        data = ac_cli.inspect(name)
+        if not data:
+            return False
+        # Apple's inspect returns {"status": "running" | "stopped" | ...}.
+        status = data.get("status") or data.get("Status")
+        return status == "running"
+
+    def service_names(self, name: str) -> list[str]:  # noqa: ARG002
+        # v1: single container per cage; no proxy/dns yet.
+        return ["cage"]

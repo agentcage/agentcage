@@ -277,7 +277,7 @@ _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
 @dataclass
 class Config:
     name: str = ""
-    isolation: str = "container"  # "container" | "vm"
+    isolation: str = "container"  # "container" | "vm" | "apple-container"
     lifecycle: str = "service"  # "service" | "interactive" | "ephemeral"
     container: ContainerConfig = field(default_factory=ContainerConfig)
     secrets: SecretsConfig = field(default_factory=SecretsConfig)
@@ -685,9 +685,10 @@ def validate_config(config: Config) -> list[str]:
             f"invalid container image reference: {config.container.image!r}"
         )
 
-    if config.isolation not in ("container", "vm"):
+    if config.isolation not in ("container", "vm", "apple-container"):
         raise ValueError(
-            f"isolation must be 'container' or 'vm' (got: {config.isolation!r})"
+            f"isolation must be 'container', 'vm', or 'apple-container' "
+            f"(got: {config.isolation!r})"
         )
 
     if config.lifecycle not in _VALID_LIFECYCLES:
@@ -698,8 +699,21 @@ def validate_config(config: Config) -> list[str]:
 
     if config.isolation == "container" and platform.system() == "Darwin":
         raise ValueError(
-            "container isolation is not available on macOS; use vm instead"
+            "container isolation is not available on macOS; "
+            "use vm or apple-container instead"
         )
+
+    if config.isolation == "apple-container":
+        if platform.system() != "Darwin":
+            raise ValueError(
+                "apple-container isolation requires macOS; "
+                f"current platform is {platform.system()}"
+            )
+        if platform.machine() != "arm64":
+            raise ValueError(
+                "apple-container isolation requires Apple Silicon (arm64); "
+                f"current arch is {platform.machine()}"
+            )
 
     if config.isolation == "vm":
         vm = config.vm
