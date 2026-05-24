@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.5] - 2026-05-24
+
+### Fixed
+- `agentcage cage create` and `agentcage run` against a fresh Lima VM no longer wedge during cloud-init provisioning. The provision script called `loginctl enable-linger "$lima_user"`, which goes through systemd-logind over D-Bus; after the preceding `usermod -aG systemd-journal/adm` against the already-active Lima SSH user, that dbus call has been observed to time out at 25 s, after which logind sits at ~100 % CPU and every later `pam_systemd(sshd:session)` fails with `Connection timed out`. The agentcage `bridge_secrets` step's `podman secret rm` over SSH then falls back to the system bus and futex-deadlocks for tens of minutes before returning. The provision script now writes logind's linger sentinel file directly (`mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/$lima_user`) — same end state as `loginctl enable-linger`, no dbus round-trip, can't wedge. New regression test in `test_lima_provisioning.py` asserts no `loginctl` invocation in the rendered script. (#123)
+
 ## [0.17.4] - 2026-05-24
 
 ### Added
