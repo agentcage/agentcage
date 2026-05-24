@@ -1,0 +1,12 @@
+description: "Pi.dev terminal coding harness"
+lifecycle: interactive
+
+build:
+  - image: "localhost/agentcage-scaffold-pi:latest"
+    containerfile: "Containerfile"
+    cap_add: [CAP_SETFCAP, CAP_SETUID, CAP_SETGID, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER]
+
+next_steps:
+  - "agentcage cage create -c {dest}"
+  - "agentcage cage exec {name} -- pi"
+  - "Or use: agentcage run pi"

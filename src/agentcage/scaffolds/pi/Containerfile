@@ -14,10 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
-# Install OpenAI Codex CLI (latest stable).
-# --ignore-scripts skips npm postinstall hooks (defense-in-depth — the
-# package's runtime code still runs, only postinstall is skipped).
-RUN npm install -g --ignore-scripts @openai/codex
+# Install Pi coding agent (latest stable).
+# --ignore-scripts mirrors the official install command from
+# https://pi.dev/docs/latest — it skips lifecycle hooks that pi does not need.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # node:22-slim already has user node (1000:1000)
 USER node

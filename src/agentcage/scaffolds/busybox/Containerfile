@@ -1,0 +1,3 @@
+FROM docker.io/library/busybox:latest
+
+WORKDIR /workspace

@@ -1,0 +1,82 @@
+# agentcage configuration for {{ name }} (busybox scaffold)
+#
+# Minimal cage for testing agentcage primitives — no AI agent, no tools
+# beyond what busybox ships, no outbound network allowed by default.
+#
+# Quick start:
+#   1. Deploy:  agentcage cage create -c cage.yaml
+#   2. Drop into a shell:
+#        agentcage cage exec {{ name }} -- sh
+#   3. Or use the run command:
+#        agentcage run busybox
+
+name: {{ name }}
+{% if isolation == "vm" %}
+
+isolation: vm
+
+vm:
+  vcpus: 2
+  mem_mb: 2048
+{% endif %}
+
+lifecycle: interactive
+
+scaffold: busybox
+
+container:
+  image: "localhost/agentcage-scaffold-busybox:latest"
+  build:
+    containerfile: "Containerfile"
+  command: ["sleep", "infinity"]
+
+  # Project directory — mount your repo here if you want to poke at it.
+  volumes:
+    - "${PROJECT_DIR}:/workspace:rw"
+
+  read_only: false
+
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=64M"
+
+  # Resource limits — test cages are small
+  memory: "1g"
+  cpus: "1.0"
+
+  timeout_start_sec: 30
+
+# ── Secret injection (none by default) ──
+# Uncomment for GitHub push over HTTPS or any other host you want to inject to.
+#secret_injection:
+#  - env: GITHUB_TOKEN
+#    placeholder: "{%raw%}{{GITHUB_TOKEN}}{%endraw%}"
+#    inject_to:
+#      - github.com
+
+# ── Domain allowlist (empty by default) ──
+# Add the hosts you want the cage to reach. Subdomains are matched
+# automatically (e.g. "github.com" also allows "api.github.com").
+domains:
+  allow: []
+    # - example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: content-type
+
+# ── Exec aliases ──
+exec_aliases:
+  sh: ["sh"]
+
+# ── Help ──
+help: |
+  Drop into a shell:
+    agentcage cage exec {{ name }} -- sh
+
+  Or use the run command (creates ephemeral cage):
+    agentcage run busybox
