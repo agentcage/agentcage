@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.7] - 2026-05-24
+
+### Added
+- New built-in `pi` scaffold for the [Pi.dev terminal coding harness](https://pi.dev/docs/latest). `agentcage init <name> --scaffold pi` produces a cage that pre-installs Pi (`@earendil-works/pi-coding-agent`) on `node:22-slim`, mounts `~/.pi` for persistent `/login` credentials and session state, and pre-injects `ANTHROPIC_API_KEY` via proxy placeholder substitution. `agentcage run pi` short form supported via the scaffold's exec alias. Container and VM isolation both rendered + validated. Pi-specific details: `pi.dev` allowlisted for update + auth endpoints; `fd-find` pre-installed and symlinked to `/usr/local/bin/fd` so Pi finds the system binary on startup instead of fetching it from `api.github.com/repos/sharkdp/fd/releases/latest`. (#124)
+
+### Changed
+- All three coding-agent scaffolds (`claude-code`, `codex`, `pi`) now share consistent defaults:
+  - `fd-find` pre-installed + `fdfind` → `fd` symlink in every Containerfile. Without this, all three agents fetch `fd` from GitHub releases at startup (blocked by the default allowlist).
+  - `npm install -g` now runs with `--ignore-scripts` at image-build time. Defense-in-depth: skips npm postinstall hooks; runtime package code is unaffected.
+  - Package-registry domains (`npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org`) are commented out by default in `cage.yaml.j2`. Agent deps are baked in at image-build time, so the running cage doesn't need access to public package indexes. Users who run `npm install` / `pip install` in `/workspace` uncomment the relevant lines.
+- `claude-code` scaffold: telemetry domains (`datadoghq.com`, `githubusercontent.com`, `sentry.io`) are commented out by default. Preferred fix for the "claude hangs at splash" issue is `"telemetry": "disabled"` in `~/.claude/settings.json`; the allowlist entries become an opt-in fallback. README troubleshooting section updated.
+- `claude-code` scaffold: `~/.claude.json` volume mount removed from the default. Auth tokens live in `~/.claude/.credentials.json` and are still covered by the `~/.claude` mount; only the global UX config (model choice, theme, etc.) was carried by the file mount. Commented-out so users can re-enable if they want host preferences to follow them into the cage.
+- `codex` scaffold: container resources bumped from 2 GiB / 2 CPUs to 8 GiB / 4 CPUs, VM from 2 vcpu / 4 GiB to 4 vcpu / 8 GiB. Matches `claude-code` and `pi`. Coding agents are memory-hungry; old defaults pushed real workloads against the limit. (#128)
+
 ## [0.17.6] - 2026-05-24
 
 ### Fixed
