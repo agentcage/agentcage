@@ -294,6 +294,37 @@ class Config:
     scaffold: str = ""  # scaffold name, stored in metadata for cage ls
 
 
+def default_isolation() -> str:
+    """Return the best isolation backend for the current host.
+
+    Resolution order (first match wins):
+      - Linux              -> "container" (rootless podman on host)
+      - macOS 26+ ASi with the `container` CLI installed -> "apple-container"
+      - macOS (any other)  -> "vm" (Lima)
+
+    The probe uses ``shutil.which`` for the `container` binary (no
+    subprocess) so it's safe to call on every config load. We don't probe
+    whether the apiserver is *running* — validation catches "installed but
+    stopped" with a clear hint.
+    """
+    if platform.system() != "Darwin":
+        return "container"
+    if platform.machine() != "arm64":
+        return "vm"
+    # macOS major version. mac_ver() returns ("26.3.2", ...) etc.
+    try:
+        major = int((platform.mac_ver()[0] or "0").split(".")[0])
+    except (ValueError, IndexError):
+        major = 0
+    if major < 26:
+        return "vm"
+    # Lazy import to avoid a circular dep at module load time.
+    from agentcage.apple_container import cli as _ac_cli  # noqa: PLC0415
+    if _ac_cli.container_binary() is None:
+        return "vm"
+    return "apple-container"
+
+
 def _is_loopback(addr: str) -> bool:
     """Return True if *addr* is a loopback IP (127.0.0.0/8 or ::1)."""
     try:
@@ -359,7 +390,7 @@ def load_config(path: str) -> Config:
 
     cfg = Config()
     cfg.name = raw.get("name", "")
-    cfg.isolation = raw.get("isolation", "container")
+    cfg.isolation = raw.get("isolation") or default_isolation()
     cfg.lifecycle = raw.get("lifecycle", "service")
     cfg.scaffold = raw.get("scaffold", "")
 

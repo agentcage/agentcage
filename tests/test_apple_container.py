@@ -11,7 +11,7 @@ import pytest
 from agentcage.apple_container import cli as ac_cli
 from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import wrapper as ac_wrapper
-from agentcage.config import Config, validate_config
+from agentcage.config import Config, default_isolation, validate_config
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +92,40 @@ def test_apple_container_isolation_rejects_intel():
          patch.object(platform, "machine", return_value="x86_64"):
         with pytest.raises(ValueError, match="Apple Silicon"):
             validate_config(cfg)
+
+
+def test_default_isolation_linux_is_container():
+    with patch.object(platform, "system", return_value="Linux"):
+        assert default_isolation() == "container"
+
+
+def test_default_isolation_intel_mac_is_vm():
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="x86_64"):
+        assert default_isolation() == "vm"
+
+
+def test_default_isolation_old_macos_is_vm():
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="arm64"), \
+         patch.object(platform, "mac_ver", return_value=("15.6.1", ("", "", ""), "arm64")):
+        assert default_isolation() == "vm"
+
+
+def test_default_isolation_macos_26_without_container_cli_is_vm():
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="arm64"), \
+         patch.object(platform, "mac_ver", return_value=("26.0.0", ("", "", ""), "arm64")), \
+         patch.object(ac_cli, "container_binary", return_value=None):
+        assert default_isolation() == "vm"
+
+
+def test_default_isolation_macos_26_with_container_cli_is_apple_container():
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="arm64"), \
+         patch.object(platform, "mac_ver", return_value=("26.3.2", ("", "", ""), "arm64")), \
+         patch.object(ac_cli, "container_binary", return_value="/usr/local/bin/container"):
+        assert default_isolation() == "apple-container"
 
 
 def test_unknown_isolation_rejected():

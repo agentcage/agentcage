@@ -287,8 +287,16 @@ def _monitor_proxy(
 
 
 def _detect_isolation() -> str:
-    """Return 'vm' on macOS, 'container' on Linux."""
-    return "vm" if platform.system() == "Darwin" else "container"
+    """Return the best default isolation for this host.
+
+    On macOS 26+ Apple Silicon with the Apple `container` CLI installed,
+    this returns 'apple-container'. Older macOS or Intel falls back to
+    'vm' (Lima). Linux returns 'container' (rootless podman on host).
+    Centralised in :func:`agentcage.config.default_isolation` so the
+    cage.yaml parser and ``agentcage run`` agree on the default.
+    """
+    from agentcage.config import default_isolation
+    return default_isolation()
 
 
 def _ensure_volume_dirs(volumes: list[str]) -> None:
