@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-05-24
+
+### Fixed
+- `agentcage run claude-code` no longer fails with `failed to exec [claude] Error Domain=NSPOSIXErrorDomain Code=8 "Exec format error"` (ENOEXEC) on the apple-container backend (and any other backend that exec()s the symlinked binary directly). Recent `@anthropic-ai/claude-code` npm releases switched from a JS-with-shebang `claude.exe` to a platform-native binary architecture where `bin/claude.exe` is a no-shebang error stub until the package's own `install.cjs` runs and replaces it with (or symlinks it to) the right `claude-code-linux-<arch>/claude` ELF. The scaffold's `npm install -g --ignore-scripts @anthropic-ai/claude-code` (defense-in-depth against transitive postinstalls) correctly skipped all postinstall hooks — but that also skipped claude-code's own install.cjs, so `claude.exe` stayed as the error stub. The kernel returned ENOEXEC because the stub had no shebang and was not an ELF. Fix: keep `--ignore-scripts` for the broad install, then run `node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs` explicitly afterward. Defense-in-depth is preserved (transitive postinstalls still don't run); claude-code's own setup runs. Verified on macOS 26.3.2 + ASi: `claude.exe` is now an ELF executable and `claude --version` prints `2.1.150 (Claude Code)`. (#132, #133)
+
 ## [0.20.0] - 2026-05-24
 
 Major release introducing the **apple-container** isolation backend on macOS 26+ Apple Silicon, with full security parity with Lima on the threat model that matters (egress allowlist, HTTPS MITM, hardened cage workload). New default on supported hosts; Lima/container backends unchanged. See [Apple Container Isolation](docs/apple-container.md) for the deep dive.
