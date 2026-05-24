@@ -297,10 +297,12 @@ def init(name: str | None, output: str, image: str, isolation: str,
               help="Isolation backend (default: auto-detect from platform).")
 @click.option("-i", "--interactive-domains", is_flag=True,
               help="Prompt to add blocked domains to the allowlist in real-time.")
+@click.option("--time", "show_timing", is_flag=True,
+              help="Echo per-phase wall times and print a summary on completion.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
         secrets: tuple[str, ...], verbose: bool, isolation: str | None,
-        interactive_domains: bool,
+        interactive_domains: bool, show_timing: bool,
         extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
 
@@ -314,10 +316,13 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
       agentcage run claude-code -i
     """
     from agentcage.run import execute
+    if show_timing:
+        os.environ["AGENTCAGE_TIMING"] = "1"
     exit_code = execute(
         scaffold, project_dir=project_dir, name=name,
         secrets=secrets, extra_args=extra_args, verbose=verbose,
         isolation=isolation, interactive_domains=interactive_domains,
+        show_timing=show_timing,
     )
     sys.exit(exit_code)
 
@@ -338,10 +343,17 @@ def cage():
               help="Force a full image rebuild (ignore podman's layer cache).")
 @click.option("--pull", is_flag=True,
               help="Force re-pull of the base image from the registry.")
-def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool):
+@click.option("--time", "show_timing", is_flag=True,
+              help="Echo per-phase wall times and print a summary on completion.")
+def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool,
+                show_timing: bool):
     """Build images, generate quadlets, install, and start a new cage."""
     from agentcage import output as _out
+    from agentcage import _timing
     _out.banner(version("agentcage"))
+
+    if show_timing:
+        os.environ["AGENTCAGE_TIMING"] = "1"
 
     cfg = load_config(config_path)
     try:
@@ -484,17 +496,19 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool):
 
     # Build from Containerfile if configured (container mode only)
     if cfg.isolation == "container" and cfg.container.build.containerfile:
-        _build_container_image(cfg, Path(config_path).parent, podman, no_cache=no_cache, pull=pull)
+        with _timing.Phase("build.cage", cage=name):
+            _build_container_image(cfg, Path(config_path).parent, podman, no_cache=no_cache, pull=pull)
 
     # Pull image on host (container mode) — VM mode pulls inside the VM
     if cfg.isolation == "container":
         click.echo(f"Pulling {cfg.container.image}...")
-        if not podman.pull(cfg.container.image):
-            click.echo(
-                f"warning: pull failed for {cfg.container.image} "
-                f"(local image or no network — continuing with cached image)",
-                err=True,
-            )
+        with _timing.Phase("pull.cage", cage=name):
+            if not podman.pull(cfg.container.image):
+                click.echo(
+                    f"warning: pull failed for {cfg.container.image} "
+                    f"(local image or no network — continuing with cached image)",
+                    err=True,
+                )
 
     # Collect existing subnets to avoid collisions with other cages
     from agentcage.quadlets import collect_used_octets
@@ -515,6 +529,8 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool):
         click.echo(f"  Inspect quadlets: ls {backend.unit_dir()}/{name}-*", err=True)
         click.echo(f"  Retry:           agentcage cage update {name}", err=True)
         click.echo(f"  Clean up:        agentcage cage destroy {name}", err=True)
+        if show_timing:
+            _timing.print_summary(name)
         raise
 
     click.echo()
@@ -524,6 +540,9 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool):
     if cfg.help:
         click.echo()
         click.echo(cfg.help.rstrip())
+
+    if show_timing:
+        _timing.print_summary(name)
 
 
 @cage.command("update")
