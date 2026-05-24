@@ -9,9 +9,14 @@ export DEBIAN_FRONTEND=noninteractive
 # provisioning scripts.
 lima_user="{{ lima_user }}"
 
-# Install Podman and dependencies
+# Install Podman and dependencies.
+# --no-install-recommends keeps the install lean: Ubuntu's `podman` recommends
+# pull in mail-transport-agent + assorted extras that ~50 MB on a fresh image
+# and nothing in agentcage uses. `socat` was previously in this list but is
+# not referenced anywhere in the agentcage codebase — dropped.
 apt-get update -qq
-apt-get install -y -qq podman fuse-overlayfs uidmap slirp4netns socat iptables
+apt-get install -y -qq --no-install-recommends \
+    podman fuse-overlayfs uidmap slirp4netns iptables
 
 # Configure Podman storage
 mkdir -p /etc/containers

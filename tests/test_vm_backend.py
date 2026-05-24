@@ -440,6 +440,65 @@ class TestServiceNames:
         assert backend.service_names("foo") == backend.service_names("bar")
 
 
+class TestWaitInfraActive:
+    """Behavioral tests for _wait_infra_active — the replacement for
+    the unconditional 5-second sleep that previously gated systemd startup."""
+
+    def test_returns_empty_immediately_when_all_active(self):
+        from agentcage.backends.vm import _wait_infra_active
+
+        mock_inst = MagicMock()
+        mock_result = MagicMock()
+        mock_result.stdout = "active"
+        mock_inst.exec.return_value = mock_result
+
+        import time as _time
+        t0 = _time.monotonic()
+        pending = _wait_infra_active(
+            mock_inst, ["a-net-network", "b-certs-volume"],
+            timeout_s=5.0, interval_s=0.01,
+        )
+        elapsed = _time.monotonic() - t0
+
+        assert pending == []
+        # The whole call should be a single poll round (no sleep) — well
+        # under the old unconditional 5-second wait.
+        assert elapsed < 0.5
+
+    def test_returns_pending_when_timeout_elapses(self):
+        from agentcage.backends.vm import _wait_infra_active
+
+        mock_inst = MagicMock()
+        mock_result = MagicMock()
+        mock_result.stdout = "activating"
+        mock_inst.exec.return_value = mock_result
+
+        pending = _wait_infra_active(
+            mock_inst, ["x-foo"],
+            timeout_s=0.05, interval_s=0.01,
+        )
+        assert pending == ["x-foo"]
+
+    def test_polls_until_active(self):
+        from agentcage.backends.vm import _wait_infra_active
+
+        mock_inst = MagicMock()
+        # First two polls report not-active, third reports active.
+        sequence = [
+            MagicMock(stdout="activating"),
+            MagicMock(stdout="activating"),
+            MagicMock(stdout="active"),
+        ]
+        mock_inst.exec.side_effect = sequence
+
+        pending = _wait_infra_active(
+            mock_inst, ["a-net"],
+            timeout_s=5.0, interval_s=0.01,
+        )
+        assert pending == []
+        assert mock_inst.exec.call_count == 3
+
+
 class TestGetBackend:
     def test_returns_vm_backend_for_vm_isolation(self):
         from agentcage.backends import get_backend
