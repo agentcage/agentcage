@@ -52,6 +52,16 @@ container:
 
   timeout_start_sec: 30
 
+  # Capabilities needed by apk to install packages (chown installed files,
+  # set setuid bits, etc.). The cage drops ALL caps by default; these are
+  # the minimum re-added for `apk add <pkg>` to succeed as root.
+  add_capabilities:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+    - SETUID
+    - SETGID
+
 # ── Secret injection (none by default) ──
 # Uncomment for GitHub push over HTTPS or any other host you want to inject to.
 #secret_injection:
@@ -60,11 +70,14 @@ container:
 #    inject_to:
 #      - github.com
 
-# ── Domain allowlist (empty by default) ──
-# Add the hosts you want the cage to reach. Subdomains are matched
-# automatically (e.g. "github.com" also allows "api.github.com").
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com").
 domains:
-  allow: []
+  allow:
+    # ── Alpine package mirrors (apk update / apk add) ──
+    - alpinelinux.org
+    # Add more hosts your test needs:
     # - example.com
 
 # ── Logging ──
