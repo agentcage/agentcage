@@ -118,8 +118,8 @@ The scaffold organizes domains into tiers:
 **AI provider** (required):
 - `openai.com`
 
-**Package registries**:
-- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org`
+**Package registries** (commented out):
+- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — Codex's deps are installed at image-build time, so the running cage doesn't need them. Uncomment if your agent runs `npm install` / `pip install` in the workspace.
 
 **Code hosting** (commented out):
 - `github.com`, `githubusercontent.com`
