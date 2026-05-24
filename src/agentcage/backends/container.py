@@ -75,9 +75,18 @@ class ContainerBackend:
         patches_host_dir: str,
         deploy_name: str,
         used_octets: set[int] | None = None,
+        network_octet: int | None = None,
     ) -> dict[str, str]:
         rootless = self._podman.info().get("host", {}).get("security", {}).get("rootless", True)
-        return generate_quadlets(config, config_host_path, patches_host_dir, deploy_name, rootless=rootless, used_octets=used_octets)
+        return generate_quadlets(
+            config,
+            config_host_path,
+            patches_host_dir,
+            deploy_name,
+            rootless=rootless,
+            used_octets=used_octets,
+            network_octet=network_octet,
+        )
 
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/containers/systemd"))

@@ -418,6 +418,210 @@ class TestCageUpdateBuildArgs:
         assert "could not resolve latest tag" not in result.output
 
 
+class TestCageUpdatePreservesNetworkOctet:
+    """`agentcage cage update` must reuse the cage's already-allocated network
+    octet instead of re-deriving it from the cage-name hash.
+
+    Regression test for the bug where `cage update` regenerated quadlets with
+    a fresh octet that didn't match the existing ``<name>-net`` podman network,
+    causing the DNS sidecar to fail at start with::
+
+        Error: requested static ip 10.89.X.10 not in any subnet on network <name>-net
+
+    The fix reads ``network_octet`` from the cage's persisted metadata and
+    threads it through ``build_and_deploy`` so the renderer pins the subnet
+    to the existing one instead of re-allocating.
+    """
+
+    def _setup(self, mock_state, MockPodman, tmp_path, *, persisted_octet):
+        from agentcage.config import Config, ContainerConfig, BuildConfig
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = tmp_path
+        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
+        # The cage was already created and its network octet was persisted
+        # to metadata.json. cage_update must read this and pass it through.
+        mock_state.load_metadata.return_value = {
+            "network_octet": persisted_octet,
+            "agentcage_version": "0.0.0",
+        }
+        mock_state.load_raw_config.return_value = {
+            "name": "test",
+            "container": {"image": "test:latest", "build": {"args": {}}},
+        }
+        mock_state.load_deployment_config.return_value = Config(
+            name="test",
+            isolation="container",
+            container=ContainerConfig(
+                image="test:latest",
+                build=BuildConfig(containerfile="Containerfile", args={}),
+            ),
+        )
+        podman = MockPodman.return_value
+        podman.pull.return_value = True
+        return podman
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._build_container_image")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_update_passes_persisted_octet(
+        self, mock_state, MockPodman, mock_systemd,
+        mock_build_img, mock_backend, _check_secrets,
+        _check_ports, _build_deploy, tmp_path,
+    ):
+        # An existing cage whose network was allocated octet 174 at
+        # cage-create time. The hash for "test" can land on a different
+        # octet — the point is that `update` must honor what's persisted.
+        self._setup(mock_state, MockPodman, tmp_path, persisted_octet=174)
+        result = _runner().invoke(main, ["cage", "update", "test"])
+        assert result.exit_code == 0, result.output
+        assert _build_deploy.called
+        # The persisted octet must be passed through unchanged.
+        assert _build_deploy.call_args.kwargs.get("network_octet") == 174
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._build_container_image")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_update_passes_none_when_metadata_missing(
+        self, mock_state, MockPodman, mock_systemd,
+        mock_build_img, mock_backend, _check_secrets,
+        _check_ports, _build_deploy, tmp_path,
+    ):
+        """Legacy cages with no ``network_octet`` in metadata fall back to the
+        hash-based allocator (network_octet=None). Update must not crash."""
+        from agentcage.config import Config, ContainerConfig, BuildConfig
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = tmp_path
+        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
+        mock_state.load_metadata.return_value = {}  # legacy: no octet persisted
+        mock_state.load_raw_config.return_value = {
+            "name": "test",
+            "container": {"image": "test:latest", "build": {"args": {}}},
+        }
+        mock_state.load_deployment_config.return_value = Config(
+            name="test",
+            isolation="container",
+            container=ContainerConfig(
+                image="test:latest",
+                build=BuildConfig(containerfile="Containerfile", args={}),
+            ),
+        )
+        MockPodman.return_value.pull.return_value = True
+
+        result = _runner().invoke(main, ["cage", "update", "test"])
+        assert result.exit_code == 0, result.output
+        assert _build_deploy.called
+        assert _build_deploy.call_args.kwargs.get("network_octet") is None
+
+
+class TestCageUpdateNetworkOctetEndToEnd:
+    """Verify the renderer honors network_octet through the full
+    ``build_and_deploy`` → ``generate_quadlets`` chain.
+
+    This is the "did the plumbing actually work" check: even if cli.py reads
+    the octet and passes it down, the quadlet content has to reflect the
+    pinned subnet."""
+
+    def test_pinned_octet_appears_in_generated_quadlets(self):
+        """generate_quadlets with network_octet must produce IPs in that subnet."""
+        from agentcage.config import Config, ContainerConfig
+        from agentcage.quadlets import generate_quadlets
+
+        cfg = Config(
+            name="pi01",
+            isolation="container",
+            container=ContainerConfig(image="x:latest"),
+            domains=__import__(
+                "agentcage.config", fromlist=["DomainConfig"],
+            ).DomainConfig(mode="allowlist", allow=["example.com"]),
+        )
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="pi01", network_octet=174,
+        )
+        # The network subnet must be 10.89.174.0/24
+        net = files["pi01-net.network"]
+        assert "10.89.174.0/24" in net, net
+        # DNS sidecar must request 10.89.174.10 (in the subnet)
+        dns = files["pi01-dns.container"]
+        assert "10.89.174.10" in dns, dns
+        # Proxy must request 10.89.174.11
+        proxy = files["pi01-proxy.container"]
+        assert "10.89.174.11" in proxy, proxy
+        # Cage gets 10.89.174.2
+        cage = files["pi01-cage.container"]
+        assert "10.89.174.2" in cage, cage
+
+    def test_pinned_octet_overrides_hash(self):
+        """When network_octet is given, the hash-derived octet is ignored —
+        the renderer trusts the caller's pin. This is what makes
+        ``cage update`` preserve the existing subnet."""
+        from agentcage.config import Config, ContainerConfig
+        from agentcage.quadlets import cage_network_addrs, generate_quadlets
+
+        # Pick a cage name whose hash octet is NOT 7 (almost any name).
+        natural = cage_network_addrs("pi01")
+        natural_octet = int(natural["subnet"].split(".")[2])
+        pinned_octet = 1 if natural_octet != 1 else 2
+        assert pinned_octet != natural_octet
+
+        cfg = Config(
+            name="pi01",
+            isolation="container",
+            container=ContainerConfig(image="x:latest"),
+            domains=__import__(
+                "agentcage.config", fromlist=["DomainConfig"],
+            ).DomainConfig(mode="allowlist", allow=["example.com"]),
+        )
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches",
+            deploy_name="pi01", network_octet=pinned_octet,
+        )
+        assert f"10.89.{pinned_octet}.0/24" in files["pi01-net.network"]
+        assert f"10.89.{natural_octet}." not in files["pi01-net.network"]
+
+    def test_build_and_deploy_threads_network_octet_to_backend(self):
+        """services.build_and_deploy must hand network_octet to the backend
+        (which forwards it to generate_quadlets) — verifies the plumbing
+        between cli.py and the renderer."""
+        from agentcage.config import Config, ContainerConfig
+        from agentcage.services import build_and_deploy
+
+        cfg = Config(
+            name="pi01",
+            isolation="container",
+            container=ContainerConfig(image="x:latest"),
+        )
+
+        with patch("agentcage.services.get_backend") as mock_get_backend, \
+             patch("agentcage.services.ensure_patches", return_value="/tmp"), \
+             patch("agentcage.services.state") as mock_state, \
+             patch("builtins.open", MagicMock()):
+            mock_backend = MagicMock()
+            mock_backend.generate_units.return_value = {}
+            mock_get_backend.return_value = mock_backend
+            mock_state.load_metadata.return_value = {}
+
+            build_and_deploy(
+                cfg, "/cfg.yaml", "pi01", MagicMock(), network_octet=174,
+            )
+
+        # The backend must receive the same network_octet.
+        kwargs = mock_backend.generate_units.call_args.kwargs
+        assert kwargs.get("network_octet") == 174
+        # And the persisted octet must be the pinned one, not a hash.
+        saved = mock_state.save_metadata.call_args[0][1]
+        assert saved["network_octet"] == 174
+
+
 class TestCageDestroy:
     @patch("agentcage.cli._destroy_cage")
     def test_destroy_with_yes(self, mock_destroy, tmp_path):
