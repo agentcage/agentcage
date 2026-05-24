@@ -30,7 +30,7 @@ Example configs: [`basic/cage.yaml`](../examples/basic/) | [`openclaw/cage.yaml`
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `name` | `string` | *(required)* | Project name — used as the prefix for container names, network name, and quadlet filenames (e.g. `myapp` produces `myapp-cage`, `myapp-proxy`, etc.) |
-| `isolation` | `string` | `"container"` | Isolation backend: `"container"` (rootless Podman, default) or `"vm"` (Lima VM). Old `"firecracker"` configs are silently upgraded to `"vm"`. |
+| `isolation` | `string` | platform-dependent | Isolation backend: `"container"` (rootless Podman, Linux), `"vm"` (Lima VM, both platforms), or `"apple-container"` (Apple `container` microVM, macOS 26+ Apple Silicon — see [Apple Container Isolation](apple-container.md)). When omitted, `agentcage.config.default_isolation()` picks the best available: `apple-container` on macOS 26+ ASi with the `container` CLI installed, `vm` on other macOS / Intel hosts, `container` on Linux. Old `"firecracker"` configs are silently upgraded to `"vm"`. |
 | `lifecycle` | `string` | `"service"` | Cage lifecycle mode: `"service"` (always running, auto-restart), `"interactive"` (on-demand, stops on exit, state preserved), or `"ephemeral"` (stops on exit, destroyed by `cage prune`). |
 | `scaffold` | `string` | `""` | Scaffold name used to generate this config (shown in `cage list` output). |
 | `log_allowed` | `bool` | `false` | Log allowed requests to the proxy journal |

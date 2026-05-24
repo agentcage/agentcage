@@ -29,7 +29,13 @@ Most agent deployments hand the agent a [**lethal trifecta**](https://simonwilli
 - **DNS filtering** -- allowlist-based dnsmasq sidecar, placeholder IPs for unauthorized domains
 - **Fail-closed by default** -- all hardening on out of the box; component failure stops traffic
 
-Both container mode (rootless Podman) and VM mode (Lima KVM) are supported -- see [Security & Threat Model](docs/security.md#isolation-modes-and-the-threat-surface) for the comparison. For the full container topology and inspector chain, see [Architecture](docs/architecture.md).
+Three isolation backends are supported:
+
+- **container** (Linux, default) — rootless Podman containers on the host
+- **vm** (Linux + macOS) — a Lima VM per cage with hardware isolation via KVM
+- **apple-container** (macOS 26+ Apple Silicon, new in 0.20) — a single Apple `container` microVM per cage with the egress filter (mitmproxy + dnsmasq + iptables) running inside, supervised by an in-microVM PID 1 that drops to uid 1000 / zero caps / NoNewPrivs before exec'ing the cage workload. ~10–20× faster than Lima and ~3× less RAM per cage; the default on macOS 26+ when Apple's `container` CLI is installed.
+
+See [Security & Threat Model](docs/security.md#isolation-modes-and-the-threat-surface) for the comparison and the threat-by-threat matrix. For the full container topology and inspector chain, see [Architecture](docs/architecture.md). For apple-container specifics, see [Apple Container Isolation](docs/apple-container.md).
 
 ## Quick Start
 
@@ -105,11 +111,24 @@ curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.
 
 | OS | Command |
 |---|---|
-| macOS | `brew install lima python uv` |
+| macOS (any version) | `brew install lima python uv` |
 | Arch Linux | `sudo pacman -S qemu-full python uv` + [install Lima](https://lima-vm.io/docs/installation/) |
 | Debian / Ubuntu | `sudo apt install qemu-system python3 && curl -LsSf https://astral.sh/uv/install.sh \| sh` + [install Lima](https://lima-vm.io/docs/installation/) |
 
-On macOS, only VM mode is available. Podman is optional (only needed for `agentcage secret set`). See [VM Isolation](docs/vm.md) for details.
+*apple-container mode* (macOS 26+ Apple Silicon, recommended on that platform) -- prerequisites: Apple's [`container`](https://github.com/apple/container) CLI, Python 3.12+, [uv](https://docs.astral.sh/uv/).
+
+```bash
+# Install Apple container (from the latest GitHub release .pkg)
+PKG=$(curl -fsSL https://api.github.com/repos/apple/container/releases/latest \
+      | grep -oE 'https://github.com/apple/container/releases/download/[^"]+\.pkg' | head -1)
+curl -fsSLO "$PKG" && sudo installer -pkg "$(basename "$PKG")" -target /
+container system start --enable-kernel-install
+
+# Plus Python + uv
+brew install python uv
+```
+
+On macOS 26+ Apple Silicon hosts with `container` installed, `apple-container` is the **default** when `isolation:` is omitted from `cage.yaml`. Older macOS, Intel Macs, and macOS 26 hosts without `container` continue to default to `vm` (Lima). Podman is optional on macOS (only needed for `agentcage secret set` with the container backend). See [Apple Container Isolation](docs/apple-container.md) for details, security trade-offs, and limitations.
 
 Then install agentcage:
 
