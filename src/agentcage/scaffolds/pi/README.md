@@ -147,8 +147,8 @@ The scaffold organizes domains into tiers:
 **Pi update + auth**:
 - `pi.dev`
 
-**Package registries**:
-- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org`
+**Package registries** (commented out):
+- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — pi's deps are installed at image-build time, so the running cage doesn't need them. Uncomment if your agent runs `npm install` / `pip install` in the workspace.
 
 **Code hosting** (commented out):
 - `github.com`, `githubusercontent.com`
