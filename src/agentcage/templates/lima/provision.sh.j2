@@ -41,7 +41,17 @@ mkdir -p /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal
 chmod -R g+rX /var/log/journal
 
-# Enable lingering for the cage user so systemd user services persist
-loginctl enable-linger "$lima_user"
+# Enable lingering for the cage user so systemd user services persist.
+# Touch the sentinel file directly rather than running
+# `loginctl enable-linger`: the latter goes through systemd-logind over
+# D-Bus, and during cloud-init that call has been observed to deadlock
+# (the preceding `usermod -aG` on the user who already has an active
+# SSH session leaves logind unresponsive — its dbus calls then time out
+# at 25 s). Once wedged, every subsequent ssh login fails with
+# `pam_systemd: Failed to create session: Connection timed out`, which
+# wedges the entire agentcage flow. The sentinel file is logind's own
+# state, so writing it has the same effect without round-tripping dbus.
+mkdir -p /var/lib/systemd/linger
+touch "/var/lib/systemd/linger/$lima_user"
 
 echo "agentcage provisioning complete"

@@ -185,8 +185,27 @@ class TestGenerateLimaConfig:
         output = generate_lima_config(cfg)
         expected_user = pwd.getpwuid(os.getuid()).pw_name
         assert f'lima_user="{expected_user}"' in output
-        assert 'enable-linger "$lima_user"' in output
+        # Linger is enabled by touching the sentinel file directly (the
+        # loginctl/dbus path was observed to deadlock during cloud-init).
+        assert '/var/lib/systemd/linger/$lima_user' in output
         assert "LIMA_CIDATA" not in output
+
+    def test_provision_does_not_call_loginctl_enable_linger(self):
+        """`loginctl enable-linger` goes through systemd-logind over D-Bus.
+        During cloud-init that call has been observed to deadlock for the
+        rest of the boot (the preceding `usermod -aG` on a user with an
+        active SSH session can leave logind unresponsive). The provision
+        script must instead write logind's own linger sentinel file."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        # An actual command invocation always sits at the start of a line
+        # (possibly after whitespace). Ignore matches inside comments.
+        code_lines = [
+            ln for ln in output.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        assert not any("loginctl" in ln for ln in code_lines)
+        assert "/var/lib/systemd/linger" in output
 
     def test_name_in_comment(self):
         cfg = MockConfig(name="my-agent")
