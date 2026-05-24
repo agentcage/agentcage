@@ -120,13 +120,12 @@ See [Managing Your Cage](../../docs/cage-management.md) for common operations (e
 
 ### Volumes
 
-The scaffold mounts three paths from the host:
+The scaffold mounts two paths from the host:
 
 - `${PROJECT_DIR}:/workspace:rw` -- your project directory (set by `agentcage init`)
-- `~/.claude:/home/node/.claude:rw` -- Claude auth tokens and settings
-- `~/.claude.json:/home/node/.claude.json:rw` -- Claude global config
+- `~/.claude:/home/node/.claude:rw` -- Claude auth tokens and settings (credentials at `~/.claude/.credentials.json` live here)
 
-Remove the `~/.claude` mounts to fully isolate the cage from host state. Git config and SSH known hosts mounts are commented out in `cage.yaml` -- uncomment them if you need git push.
+`~/.claude.json` (Claude Code's global UX config — model choice, theme, etc.) is **not** mounted by default; uncomment the line in `cage.yaml` if you want host preferences to follow you into the cage. Git config and SSH known hosts mounts are commented out -- uncomment them if you need git push. Remove the `~/.claude` mount to fully isolate the cage from host state.
 
 ### Secret injection
 
@@ -153,11 +152,11 @@ The scaffold organizes domains into tiers:
 **AI provider** (required):
 - `anthropic.com`, `claude.com`
 
-**Telemetry** (Claude Code hangs on startup if these are blocked):
-- `datadoghq.com`, `githubusercontent.com`, `sentry.io`
+**Telemetry** (commented out):
+- `datadoghq.com`, `githubusercontent.com`, `sentry.io` — Claude Code may hang at the splash screen if telemetry is enabled AND these are blocked. Preferred fix: set `"telemetry": "disabled"` in `~/.claude/settings.json`. Fallback: uncomment these in `cage.yaml`.
 
-**Package registries**:
-- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org`
+**Package registries** (commented out):
+- `npmjs.org`, `npmjs.com`, `pypi.org`, `files.pythonhosted.org`, `nodejs.org` — Claude Code's deps are installed at image-build time, so the running cage doesn't need them. Uncomment if your agent runs `npm install` / `pip install` in the workspace.
 
 **Code hosting** (commented out):
 - `github.com`, `githubusercontent.com`
@@ -166,5 +165,5 @@ Subdomains are matched automatically -- adding `anthropic.com` also allows `api.
 
 ## Troubleshooting
 
-**Claude Code hangs on startup**: The telemetry domains (`datadoghq.com`, `sentry.io`) must be in the allowlist. Claude Code blocks on telemetry init if these are unreachable.
+**Claude Code hangs on startup**: telemetry is enabled and the telemetry domains are blocked. Either set `"telemetry": "disabled"` in `~/.claude/settings.json` (recommended for sandbox use) or uncomment the `datadoghq.com` / `githubusercontent.com` / `sentry.io` lines under `domains.allow` in `cage.yaml`.
 

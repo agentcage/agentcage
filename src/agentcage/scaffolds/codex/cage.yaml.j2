@@ -17,8 +17,8 @@ name: {{ name }}
 isolation: vm
 
 vm:
-  vcpus: 2
-  mem_mb: 4096
+  vcpus: 4
+  mem_mb: 8192
 {% endif %}
 
 lifecycle: interactive
@@ -52,8 +52,8 @@ container:
     - "/tmp:rw,noexec,nosuid,size=256M"
 
   # Resource limits
-  memory: "2g"
-  cpus: "2.0"
+  memory: "8g"
+  cpus: "4.0"
 
   timeout_start_sec: 60
 
@@ -73,17 +73,23 @@ secret_injection:
   #    - github.com
 
 # ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "openai.com" also allows
+# "api.openai.com").
 domains:
   allow:
     # ── AI provider ──
     - openai.com
 
-    # ── Package registries ──
-    - npmjs.org
-    - npmjs.com
-    - pypi.org
-    - files.pythonhosted.org
-    - nodejs.org
+    # ── Package registries (commented out by default) ──
+    # Codex's deps are installed at image-build time (see Containerfile),
+    # so the running cage doesn't need access to public package indexes.
+    # Uncomment the ones you need if your agent installs packages at
+    # runtime (e.g. `npm install` in /workspace, `pip install`, etc.).
+    #- npmjs.org
+    #- npmjs.com
+    #- pypi.org
+    #- files.pythonhosted.org
+    #- nodejs.org
 
     # ── Code hosting (uncomment for git push) ──
     #- github.com

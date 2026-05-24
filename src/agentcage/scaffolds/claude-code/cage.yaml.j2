@@ -45,14 +45,14 @@ container:
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
     # Auth & settings — mount host ~/.claude so login persists across sessions.
-    # Remove these lines to isolate cage state from the host.
+    # Remove this line to isolate cage state from the host.
     - "~/.claude:/home/node/.claude:rw"
-    # ~/.claude.json carries Claude Code's global config. The container
-    # backend bind-mounts it directly; the VM backend stages a copy into
-    # the cage's data dir and mounts that (Lima virtiofs can't share a
-    # single file). On the VM backend the staged copy is one-way — cage
-    # edits do not flow back to the host file.
-    - "~/.claude.json:/home/node/.claude.json:rw"
+    # ~/.claude.json (Claude Code's global UX config) is intentionally NOT
+    # mounted by default. Uncomment if you want your host preferences (model
+    # choice, theme, etc.) to follow you into the cage. Auth tokens live in
+    # ~/.claude/.credentials.json and are already covered by the mount above.
+    # Note: the VM backend stages a one-way copy (cage edits don't flow back).
+    #- "~/.claude.json:/home/node/.claude.json:rw"
   #  # Git config (uncomment to enable)
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"
   #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
@@ -109,17 +109,25 @@ domains:
     - anthropic.com
     - claude.com
 
-    # ── Telemetry (Claude Code hangs on startup if these are blocked) ──
-    - datadoghq.com
-    - githubusercontent.com
-    - sentry.io
+    # ── Telemetry (commented out by default) ──
+    # Claude Code may hang on startup if these are blocked AND it's
+    # configured to report telemetry. If `claude` hangs at the splash
+    # screen, uncomment these (or disable telemetry in `~/.claude/settings.json`
+    # with `"telemetry": "disabled"` — preferred for sandbox use).
+    #- datadoghq.com
+    #- githubusercontent.com
+    #- sentry.io
 
-    # ── Package registries ──
-    - npmjs.org
-    - npmjs.com
-    - pypi.org
-    - files.pythonhosted.org
-    - nodejs.org
+    # ── Package registries (commented out by default) ──
+    # Claude Code's deps are installed at image-build time (see Containerfile),
+    # so the running cage doesn't need access to public package indexes.
+    # Uncomment the ones you need if your agent installs packages at
+    # runtime (e.g. `npm install` in /workspace, `pip install`, etc.).
+    #- npmjs.org
+    #- npmjs.com
+    #- pypi.org
+    #- files.pythonhosted.org
+    #- nodejs.org
 
     # ── Code hosting (uncomment for git push) ──
     #- github.com

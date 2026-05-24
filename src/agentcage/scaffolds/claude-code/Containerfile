@@ -10,10 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         python3 \
         ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+        fd-find \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
-# Install Claude Code CLI (latest stable)
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI (latest stable).
+# --ignore-scripts skips npm postinstall hooks (defense-in-depth — the
+# package's runtime code still runs, only postinstall is skipped).
+RUN npm install -g --ignore-scripts @anthropic-ai/claude-code
 
 # node:22-slim already has user node (1000:1000)
 USER node
