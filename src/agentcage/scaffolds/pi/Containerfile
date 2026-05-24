@@ -10,7 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         python3 \
         ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+        fd-find \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
 # Install Pi coding agent (latest stable).
 # --ignore-scripts mirrors the official install command from
