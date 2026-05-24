@@ -79,7 +79,13 @@ class AppleContainerBackend:
 
         if not quiet:
             click.echo(f"Building apple-container wrapper for {deploy_name}...")
-        ac_wrapper.build_wrapper(deploy_name, user_image, user_cmd=user_cmd)
+        # Collect the cage's domain allowlist for mitmproxy's --allow-hosts.
+        # The supervisor turns it into a single regex at startup; an empty
+        # allowlist means "block all egress" (safer than "allow all").
+        allowlist = list(getattr(config.domains, "allow", None) or [])
+        ac_wrapper.build_wrapper(
+            deploy_name, user_image, user_cmd=user_cmd, allowlist=allowlist,
+        )
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")
 
@@ -140,7 +146,15 @@ class AppleContainerBackend:
             ac_cli.run(["stop", name], check=False)
             ac_cli.run(["delete", "-f", name], check=False)
 
-        argv = ["run", "-d", "--name", name, "--cap-add", "CAP_SYS_ADMIN"]
+        # CAP_SYS_ADMIN: supervisor needs it to remount /proc with hidepid=2
+        # and to mount the proxy's private tmpfs. CAP_NET_ADMIN: supervisor
+        # needs it to apply the iptables egress lockdown. Both are dropped
+        # by capsh before the cage workload starts.
+        argv = [
+            "run", "-d", "--name", name,
+            "--cap-add", "CAP_SYS_ADMIN",
+            "--cap-add", "CAP_NET_ADMIN",
+        ]
         if meta.get("cpus"):
             argv += ["--cpus", str(meta["cpus"])]
         if meta.get("mem_mb"):

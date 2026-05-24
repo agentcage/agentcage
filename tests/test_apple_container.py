@@ -159,13 +159,49 @@ def test_stage_build_context_writes_cmd_json(tmp_path):
     assert json.loads(cmd_json) == ["sh", "-c", "echo $FOO & wait"]
 
 
-def test_render_wrapper_supports_apk_and_apt_bases():
-    """The RUN step in the template must handle both alpine and debian bases."""
+def test_render_wrapper_requires_glibc_base():
+    """The wrapper template hard-errors at build time on non-apt bases.
+
+    mitmproxy's bundled binary is built against glibc; alpine/musl bases
+    can't run it. The Containerfile contains an explicit check.
+    """
     out = ac_wrapper.render_wrapper_containerfile(
         "alpine:3.20", user_cmd=["sh"],
     )
     assert "apt-get" in out
-    assert "apk add" in out
+    assert "requires a glibc-based user image" in out
+    assert "exit 78" in out
+
+
+def test_stage_build_context_writes_allowlist(tmp_path):
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"], allowlist=["example.com", "api.github.com"]
+    )
+    lines = (tmp_path / "allowlist.txt").read_text().splitlines()
+    assert lines == ["example.com", "api.github.com"]
+
+
+def test_stage_build_context_empty_allowlist_means_block_all(tmp_path):
+    """Empty allowlist file is intentional — supervisor reads it as 'block all'."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=None)
+    assert (tmp_path / "allowlist.txt").read_text() == ""
+
+
+def test_stage_build_context_includes_dnsmasq_conf(tmp_path):
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    assert (tmp_path / "dnsmasq.conf").exists()
+    # dnsmasq must forward to a real upstream so cage gets real IPs
+    # (transparent mitmproxy needs SO_ORIGINAL_DST = real IP, not 127.0.0.1)
+    assert "server=1.1.1.1" in (tmp_path / "dnsmasq.conf").read_text()
+
+
+def test_stage_build_context_includes_allowlist_addon(tmp_path):
+    """The mitmproxy addon that enforces the allowlist must be staged in."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    assert (tmp_path / "allowlist_addon.py").exists()
+    addon = (tmp_path / "allowlist_addon.py").read_text()
+    assert "AllowlistAddon" in addon
+    assert "403" in addon  # must respond with 403, not silently pass
 
 
 def test_user_cmd_missing_image_raises():

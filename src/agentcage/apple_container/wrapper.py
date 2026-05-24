@@ -84,16 +84,29 @@ def render_wrapper_containerfile(user_image: str, *, user_cmd: list[str] | None 
     return tmpl.render(user_image=user_image)
 
 
-def stage_build_context(dest: Path, user_cmd: list[str]) -> None:
-    """Stage supervisor + cage-cmd.json into *dest* for the build context.
+def stage_build_context(
+    dest: Path, user_cmd: list[str], allowlist: list[str] | None = None
+) -> None:
+    """Stage supervisor + cage CMD + egress filter config into *dest*.
 
-    Writing the cage CMD as a JSON file (not an ENV var) sidesteps the
-    Containerfile ENV-quoting nightmare for commands containing shell
-    metacharacters. The supervisor parses it at runtime with `jq @sh`.
+    Files written:
+      - supervisor.sh    -- PID 1 of the cage microVM (security-critical)
+      - dnsmasq.conf     -- static catch-all that rewrites every DNS query
+                            to 127.0.0.1
+      - cage-cmd.json    -- user image's original ENTRYPOINT+CMD, exec'd by
+                            the supervisor after the egress filter is up
+      - allowlist.txt    -- one host per line; supervisor builds a single
+                            regex for mitmproxy's --allow-hosts. Empty
+                            allowlist means "block everything" (safer
+                            default than "allow everything").
     """
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(_DATA_DIR / "supervisor.sh", dest / "supervisor.sh")
+    shutil.copy2(_DATA_DIR / "dnsmasq.conf", dest / "dnsmasq.conf")
+    shutil.copy2(_DATA_DIR / "allowlist_addon.py", dest / "allowlist_addon.py")
     (dest / "cage-cmd.json").write_text(json.dumps(user_cmd))
+    allow_lines = "\n".join(h.strip() for h in (allowlist or []) if h.strip())
+    (dest / "allowlist.txt").write_text(allow_lines + ("\n" if allow_lines else ""))
 
 
 def wrapped_image_name(cage_name: str) -> str:
@@ -101,7 +114,13 @@ def wrapped_image_name(cage_name: str) -> str:
     return f"localhost/agentcage-apple-{cage_name}:latest"
 
 
-def build_wrapper(cage_name: str, user_image: str, *, user_cmd: list[str] | None = None) -> str:
+def build_wrapper(
+    cage_name: str,
+    user_image: str,
+    *,
+    user_cmd: list[str] | None = None,
+    allowlist: list[str] | None = None,
+) -> str:
     """Generate Containerfile, stage build context, run `container build`.
 
     Returns the built image reference.
@@ -117,7 +136,7 @@ def build_wrapper(cage_name: str, user_image: str, *, user_cmd: list[str] | None
     with tempfile.TemporaryDirectory(prefix="agentcage-apple-build-") as tmp:
         tmpdir = Path(tmp)
         (tmpdir / "Containerfile").write_text(containerfile)
-        stage_build_context(tmpdir, user_cmd)
+        stage_build_context(tmpdir, user_cmd, allowlist=allowlist)
         ac_cli.run(
             ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],
             capture_output=False,  # stream output to user
