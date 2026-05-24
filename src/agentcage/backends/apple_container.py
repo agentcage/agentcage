@@ -34,6 +34,7 @@ import click
 
 from agentcage.apple_container import cli as ac_cli
 from agentcage.apple_container import prerequisites as ac_prereq
+from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
 
@@ -64,8 +65,18 @@ class AppleContainerBackend:
         if not user_image:
             raise ValueError("cage has no container.image set")
 
-        # Pull the user image first so `image inspect` works.
-        # (This is a no-op if it's already local.)
+        # If the cage came from a scaffold (cage.yaml has `scaffold:`),
+        # build any scaffold-declared images via Apple `container build`
+        # FIRST. The wrapper's `FROM <user_image>` references one of these
+        # tags, so it must exist before wrapper build kicks off. This
+        # replaces the host-podman path in `run.py`'s `run_scaffold_setup`
+        # which does not work on macOS (no host podman).
+        scaffold_name = getattr(config, "scaffold", "") or ""
+        if scaffold_name:
+            ac_scaffold.build_scaffold_images(scaffold_name, quiet=quiet)
+
+        # Pull the user image (no-op if it was just built by the scaffold
+        # step above, or if it's already local).
         if not quiet:
             click.echo(f"Ensuring user image is available: {user_image}")
         pull_result = ac_cli.run(
@@ -108,8 +119,18 @@ class AppleContainerBackend:
         patches_host_dir: str,  # noqa: ARG002
         deploy_name: str,
         used_octets: set[int] | None = None,  # noqa: ARG002
+        network_octet: int | None = None,  # noqa: ARG002
     ) -> dict[str, str]:
-        """Generate a cage metadata JSON used by `start` to construct argv."""
+        """Generate a cage metadata JSON used by `start` to construct argv.
+
+        ``used_octets`` and ``network_octet`` are accepted to match the
+        Backend protocol but ignored. Apple `container` networks are
+        per-cage with auto-allocated subnets — there is no shared 10.89.X
+        pool to coordinate against, and the cage's effective network is
+        Apple's default vmnet (no custom network created by this backend
+        in v1; egress is locked to localhost via iptables in the
+        supervisor).
+        """
         unit_json = json.dumps(
             {
                 "name": deploy_name,
