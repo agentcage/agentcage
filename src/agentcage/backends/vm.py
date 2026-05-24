@@ -20,8 +20,39 @@ from agentcage.quadlets import generate_quadlets
 
 
 VM_SERVICE_STARTUP_DELAY_S = 5
+VM_SERVICE_STARTUP_POLL_INTERVAL_S = 0.1
 PROXY_READINESS_TIMEOUT_S = 30
-PROXY_READINESS_POLL_INTERVAL_S = 1
+PROXY_READINESS_POLL_INTERVAL_S = 0.25
+
+
+def _wait_infra_active(
+    inst: LimaInstance,
+    services: list[str],
+    timeout_s: float = VM_SERVICE_STARTUP_DELAY_S,
+    interval_s: float = VM_SERVICE_STARTUP_POLL_INTERVAL_S,
+) -> list[str]:
+    """Poll ``systemctl --user is-active`` for *services* until all active or *timeout_s*.
+
+    Returns the list of services still not active when the function returns
+    (empty on success). Replaces a blanket ``time.sleep(5)`` that previously
+    waited the full delay even when services came up in milliseconds.
+    """
+    deadline = time.monotonic() + timeout_s
+    pending = list(services)
+    while pending:
+        next_pending: list[str] = []
+        for svc in pending:
+            r = inst.exec(
+                ["systemctl", "--user", "is-active", f"{svc}.service"],
+                check=False,
+            )
+            if r.stdout.strip() != "active":
+                next_pending.append(svc)
+        pending = next_pending
+        if not pending or time.monotonic() >= deadline:
+            break
+        time.sleep(interval_s)
+    return pending
 
 
 class VmBackend:
@@ -255,29 +286,32 @@ class VmBackend:
                 except Exception as e:
                     click.echo(f"warning: failed to start {svc}: {e}", err=True)
 
-            # Check for failed services and retry after a delay
-            # (handles race conditions like virtiofs targeted mounts not being ready)
-            time.sleep(VM_SERVICE_STARTUP_DELAY_S)
+            # Wait for infrastructure services to come up, polling every 100ms
+            # instead of sleeping the full delay. On warm restarts the services
+            # are usually active within a few hundred ms; the old unconditional
+            # 5s sleep was pure idle time. The deadline is the same as before
+            # (handles race conditions like virtiofs targeted mounts not being
+            # ready), so cold runs are unaffected.
+            infra = services[:-1]  # everything except cage
+            not_yet_active = _wait_infra_active(inst, infra)
             inst.exec(["systemctl", "--user", "reset-failed"], check=False)
 
-            # Retry failed infrastructure services first (not cage)
-            infra = services[:-1]  # everything except cage
-            for svc in infra:
+            # Retry whatever did not come up within the deadline.
+            for svc in not_yet_active:
                 try:
-                    result = inst.exec(
-                        ["systemctl", "--user", "is-active", f"{svc}.service"],
-                        check=False,
-                    )
-                    if result.stdout.strip() != "active":
-                        click.echo(f"Retrying {svc}...")
-                        inst.exec(["systemctl", "--user", "restart", f"{svc}.service"])
+                    click.echo(f"Retrying {svc}...")
+                    inst.exec(["systemctl", "--user", "restart", f"{svc}.service"])
                 except Exception as e:
                     click.echo(f"warning: retry failed for {svc}: {e}", err=True)
 
-        # Wait for proxy to be ready (CA cert generated) before starting cage
+        # Wait for proxy to be ready (CA cert generated) before starting cage.
+        # Time-based deadline (not iteration count) so the poll interval can
+        # be tightened without shrinking the timeout — mitmproxy is usually
+        # ready in 2-6s, so a sub-second interval shaves time off the median.
         click.echo("Waiting for proxy to be ready...")
         with Phase("systemd.wait_proxy", cage=name):
-            for _ in range(PROXY_READINESS_TIMEOUT_S):
+            proxy_deadline = time.monotonic() + PROXY_READINESS_TIMEOUT_S
+            while time.monotonic() < proxy_deadline:
                 result = inst.exec(
                     ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
                     check=False,

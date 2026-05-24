@@ -159,6 +159,22 @@ class TestGenerateLimaConfig:
         output = generate_lima_config(cfg)
         assert "podman" in output
 
+    def test_provision_install_skips_recommends_and_socat(self):
+        """The apt-get install line must use --no-install-recommends (cuts
+        ~50 MB of unused dependencies on a fresh Ubuntu cloud image) and
+        must not pull in socat (no caller references it in the repo).
+        """
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        # Locate the install line.
+        install_lines = [
+            ln for ln in output.splitlines()
+            if "apt-get install" in ln or ("podman" in ln and "uidmap" in ln)
+        ]
+        joined = "\n".join(install_lines)
+        assert "--no-install-recommends" in joined
+        assert "socat" not in joined
+
     def test_provision_targets_host_username(self):
         """The provision script targets the real guest user (the host user
         Lima mirrors, resolved from the passwd database), not a hardcoded
