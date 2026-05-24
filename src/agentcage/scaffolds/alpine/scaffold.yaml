@@ -1,0 +1,11 @@
+description: "Minimal alpine cage for testing agentcage primitives"
+lifecycle: interactive
+
+build:
+  - image: "localhost/agentcage-scaffold-alpine:latest"
+    containerfile: "Containerfile"
+
+next_steps:
+  - "agentcage cage create -c {dest}"
+  - "agentcage cage exec {name} -- sh"
+  - "Or use: agentcage run alpine"

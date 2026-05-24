@@ -1,0 +1,3 @@
+FROM docker.io/library/archlinux:latest
+
+WORKDIR /workspace
