@@ -52,6 +52,17 @@ detect_os() {
             IS_WSL=true
         fi
     fi
+
+    # macOS 26+ Apple Silicon → apple-container is the default isolation
+    # (Lima becomes optional). Detect both axes once here.
+    APPLE_SILICON=false
+    MACOS_MAJOR=0
+    if [ "$OS" = "macos" ]; then
+        [ "$(uname -m)" = "arm64" ] && APPLE_SILICON=true
+        # sw_vers prints e.g. "26.3.2"
+        MACOS_MAJOR=$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)
+        : "${MACOS_MAJOR:=0}"
+    fi
 }
 
 detect_distro() {
@@ -369,13 +380,96 @@ setup_podman_machine() {
 }
 
 # ---------------------------------------------------------------------------
+# Apple `container` (macOS 26+ Apple Silicon, default isolation on that host)
+# ---------------------------------------------------------------------------
+
+has_apple_container() {
+    command -v container >/dev/null 2>&1 \
+        || [ -x /usr/local/bin/container ] \
+        || [ -x /opt/homebrew/bin/container ]
+}
+
+install_apple_container() {
+    # Only macOS 26+ on Apple Silicon. Earlier macOS or Intel falls through
+    # to install_lima below.
+    if [ "$OS" != "macos" ] || [ "$APPLE_SILICON" = false ]; then
+        return
+    fi
+    if [ "$MACOS_MAJOR" -lt 26 ] 2>/dev/null; then
+        return
+    fi
+
+    if has_apple_container; then
+        info "Apple 'container' is already installed ($(container --version 2>/dev/null | head -1))"
+    else
+        info "Installing Apple 'container' (macOS 26+ Apple Silicon default isolation)..."
+        need_cmd curl
+        # Latest release .pkg URL from the apple/container GitHub releases API.
+        PKG_URL=$(curl -fsSL https://api.github.com/repos/apple/container/releases/latest \
+                  | grep -oE 'https://github.com/apple/container/releases/download/[^"]+\.pkg' \
+                  | head -1)
+        if [ -z "$PKG_URL" ]; then
+            warn "could not resolve apple/container latest release URL — install manually from https://github.com/apple/container/releases"
+            warn "apple-container isolation will not be available; falling back to Lima."
+            WANT_LIMA=true
+            return
+        fi
+        PKG_FILE=$(basename "$PKG_URL")
+        TMPDIR_PKG=$(mktemp -d)
+        info "Downloading $PKG_FILE ..."
+        if ! curl -fsSL -o "$TMPDIR_PKG/$PKG_FILE" "$PKG_URL"; then
+            warn "download failed; falling back to Lima."
+            WANT_LIMA=true
+            return
+        fi
+        # The pkg installer needs admin rights.
+        if ! sudo -n true 2>/dev/null; then
+            info "Apple 'container' install needs administrator access — you may be prompted for your password."
+            sudo -v || { warn "sudo unavailable; falling back to Lima."; WANT_LIMA=true; return; }
+        fi
+        sudo installer -pkg "$TMPDIR_PKG/$PKG_FILE" -target /
+        rm -rf "$TMPDIR_PKG"
+        # /usr/local/bin is not always on PATH for the calling shell.
+        if ! has_apple_container; then
+            warn "container CLI not on PATH; check /usr/local/bin/container"
+            WANT_LIMA=true
+            return
+        fi
+        info "Apple 'container' installed"
+    fi
+
+    # Start the apiserver + install the recommended Linux kernel. Both are
+    # idempotent (--enable-kernel-install skips re-install if the kernel
+    # symlink already exists).
+    CONTAINER_BIN=$(command -v container 2>/dev/null || echo /usr/local/bin/container)
+    if "$CONTAINER_BIN" system status 2>/dev/null | grep -q running; then
+        info "Apple 'container' apiserver already running"
+    else
+        info "Starting Apple 'container' apiserver (one-time, installs Kata kernel)..."
+        "$CONTAINER_BIN" system start --enable-kernel-install >/dev/null 2>&1 || \
+            warn "container system start failed; run it manually before using apple-container isolation"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Lima (optional, for VM isolation mode)
 # ---------------------------------------------------------------------------
 
 install_lima() {
-    # On macOS, Lima is required (VM is the only isolation mode)
+    # On macOS, Lima used to be required (only isolation option). Starting
+    # in 0.20 the default on macOS 26+ Apple Silicon is apple-container,
+    # which makes Lima OPTIONAL on that platform. Older macOS, Intel Macs,
+    # and macOS 26 hosts where Apple's container CLI failed to install
+    # still need Lima.
     if [ "$OS" = "macos" ]; then
-        WANT_LIMA=true
+        if [ "$APPLE_SILICON" = true ] && [ "$MACOS_MAJOR" -ge 26 ] 2>/dev/null \
+           && has_apple_container; then
+            # apple-container handles macOS isolation; only install Lima
+            # if the user explicitly asked for it via --with-lima.
+            :
+        else
+            WANT_LIMA=true
+        fi
     fi
 
     if [ "$WANT_LIMA" = false ]; then
@@ -424,12 +518,17 @@ agentcage installer
 
 Installs agentcage and all prerequisites (Podman, Python 3.12+, uv).
 
+On macOS 26+ Apple Silicon also installs Apple's 'container' CLI (the
+default isolation backend on that platform). On older macOS / Intel Macs
+falls back to installing Lima (the only isolation option there).
+
 Usage:
   curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
   curl -fsSL ... | sh -s -- --with-lima
 
 Options:
-  --with-lima   Also install Lima (required for isolation: vm mode)
+  --with-lima   Also install Lima (required for isolation: vm mode).
+                Auto-set on macOS hosts where apple-container is unavailable.
   --help, -h    Show this help message
 HELP
                 exit 0
@@ -474,6 +573,7 @@ main() {
     install_agentcage
 
     setup_podman_machine
+    install_apple_container
     install_lima
 
     # --- Success message ---
@@ -492,10 +592,15 @@ main() {
         info "Note: Podman uses the WSL2 Linux kernel for containers."
     fi
 
-    if [ "$WANT_LIMA" = true ]; then
+    if [ "$OS" = "macos" ] && [ "$APPLE_SILICON" = true ] \
+       && [ "$MACOS_MAJOR" -ge 26 ] 2>/dev/null && has_apple_container; then
+        info ""
+        info "macOS isolation default: apple-container (Apple 'container' microVM per cage)."
+        info "Set 'isolation: vm' in cage.yaml to force Lima instead."
+    elif [ "$WANT_LIMA" = true ]; then
         info ""
         if [ "$OS" = "macos" ]; then
-            info "Lima is set up. On macOS, all cages use VM isolation (Lima)."
+            info "Lima is set up. On this macOS host, all cages use VM isolation (Lima)."
         else
             info "Lima is set up. Use 'isolation: vm' in cage.yaml for VM-level isolation."
         fi

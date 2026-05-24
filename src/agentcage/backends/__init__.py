@@ -13,6 +13,10 @@ def get_backend(config: Config) -> Backend:
         from agentcage.backends.vm import VmBackend
 
         return VmBackend()
+    if isolation == "apple-container":
+        from agentcage.backends.apple_container import AppleContainerBackend
+
+        return AppleContainerBackend()
     from agentcage.backends.container import ContainerBackend
 
     return ContainerBackend()

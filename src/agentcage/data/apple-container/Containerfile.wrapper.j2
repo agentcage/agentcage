@@ -1,0 +1,85 @@
+{# Per-cage wrapper Containerfile.
+   Layers the agentcage supervisor + egress filter (mitmproxy + dnsmasq)
+   on top of the user's cage image. The user's original ENTRYPOINT+CMD is
+   captured in /etc/agentcage/cage-cmd.json and exec'd by the supervisor
+   after the egress filter is in place. #}
+FROM {{ user_image }}
+
+# Switch to root for the install + user-add steps below. Many user images
+# (claude-code, codex, node:*, etc.) set a non-root USER which makes the
+# apt-get RUN fail with EACCES on /var/lib/apt/lists. The supervisor itself
+# runs as root (PID 1 of the microVM) until stage 90 where capsh setuid's
+# to the cage user — the final cage workload still runs unprivileged.
+USER root
+
+# apple-container backend requires a glibc-based user image (debian, ubuntu,
+# distroless with package manager, etc.) because the bundled mitmproxy
+# binary is built against glibc. Alpine/musl bases fail at COPY-time below.
+RUN if ! command -v apt-get >/dev/null 2>&1; then \
+        echo "agentcage apple-container backend requires a debian/ubuntu user image" >&2; \
+        echo "(mitmproxy bundle is glibc-only; alpine support is a v2 follow-up)" >&2; \
+        exit 78; \
+    fi
+
+# Supervisor runtime deps:
+#   libcap2-bin -- capsh (cap drop + user switch)
+#   util-linux  -- unshare (mount-ns for proxy secrets)
+#   jq          -- argv parsing of /etc/agentcage/cage-cmd.json
+#   iptables    -- supervisor's egress filter setup
+#   dnsmasq     -- in-microVM DNS that rewrites real-world domains to localhost
+#   ca-certificates -- update-ca-certificates installs the mitmproxy CA into
+#                      the cage's trust store
+#   curl        -- mitmproxy bundle fetch
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        libcap2-bin util-linux jq iptables dnsmasq ca-certificates curl procps \
+        iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Fetch the official mitmproxy PyInstaller bundle. It's self-contained: ships
+# its own Python interpreter + deps. ~107MB unpacked. Pinned to v12.2.3 with
+# SHA256 verification — without the pin, a compromised CDN / BGP hijack /
+# build-time MITM could swap in a malicious mitmproxy which then runs as PID
+# 1 of every cage with CAP_SYS_ADMIN. Bump the version + sha256 together.
+RUN curl -fsSL -o /tmp/mitmproxy.tar.gz \
+        https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-aarch64.tar.gz \
+    && echo "b358643a6c4f4b39e33d985350f660b724fece95687d7daa899ef0c4e211f681  /tmp/mitmproxy.tar.gz" \
+        | sha256sum -c - \
+    && mkdir -p /opt/agentcage/mitmproxy \
+    && tar xzf /tmp/mitmproxy.tar.gz -C /opt/agentcage/mitmproxy \
+    && rm /tmp/mitmproxy.tar.gz
+
+# Per-component users (egress filter components run unprivileged; cage runs
+# at uid 1000). These uids are referenced from the supervisor.
+# Names are prefixed with `ac` to avoid colliding with system users (debian
+# bookworm has `proxy` at uid 13, which would silently take precedence and
+# leave mitmproxy running as uid 13 — invisible to our uid-200 iptables
+# rule, so all mitmproxy egress would be dropped). Bail loudly if the
+# uids we want are already taken by other users.
+RUN getent passwd 200 >/dev/null && { echo "uid 200 already taken" >&2; exit 79; } || true \
+    && getent passwd 201 >/dev/null && { echo "uid 201 already taken" >&2; exit 79; } || true \
+    && useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acproxy \
+    && useradd --uid 201 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acdns \
+    && if getent passwd 1000 >/dev/null; then \
+         # User image already has a user at uid 1000 (claude-code uses
+         # `claude`, node:* uses `node`, etc.). Reuse that uid for the
+         # cage workload — capsh in the supervisor uses uid 1000 numeric,
+         # not a hard-coded name. We add a `cage` alias to the same uid
+         # via /etc/passwd line append (useradd refuses to share a uid).
+         existing=$(getent passwd 1000 | cut -d: -f1); \
+         echo "reusing existing uid-1000 user: $existing" >&2; \
+       else \
+         useradd --uid 1000 --create-home --shell /bin/sh cage; \
+       fi
+
+# Supervisor + cage CMD + proxy config staged into the build context by
+# AppleContainerBackend.build_artifacts().
+COPY supervisor.sh /opt/agentcage/supervisor
+COPY allowlist_addon.py /opt/agentcage/allowlist_addon.py
+COPY cage-cmd.json /etc/agentcage/cage-cmd.json
+COPY allowlist.txt /etc/agentcage/allowlist.txt
+COPY dnsmasq.conf /etc/agentcage/dnsmasq.conf
+RUN chmod 0755 /opt/agentcage/supervisor
+
+# Supervisor runs as PID 1.
+ENTRYPOINT ["/opt/agentcage/supervisor"]
+CMD []

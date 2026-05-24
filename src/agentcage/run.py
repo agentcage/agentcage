@@ -287,8 +287,16 @@ def _monitor_proxy(
 
 
 def _detect_isolation() -> str:
-    """Return 'vm' on macOS, 'container' on Linux."""
-    return "vm" if platform.system() == "Darwin" else "container"
+    """Return the best default isolation for this host.
+
+    On macOS 26+ Apple Silicon with the Apple `container` CLI installed,
+    this returns 'apple-container'. Older macOS or Intel falls back to
+    'vm' (Lima). Linux returns 'container' (rootless podman on host).
+    Centralised in :func:`agentcage.config.default_isolation` so the
+    cage.yaml parser and ``agentcage run`` agree on the default.
+    """
+    from agentcage.config import default_isolation
+    return default_isolation()
 
 
 def _ensure_volume_dirs(volumes: list[str]) -> None:
@@ -342,7 +350,14 @@ def _stage_set_secrets(
             val = click.prompt(f"Value for {key}", hide_input=True)
         parsed.append((key, val))
 
-    if isolation == "vm":
+    if isolation in ("vm", "apple-container"):
+        # Neither backend has access to host podman on macOS. Stage to a
+        # per-cage pending_secrets.json (0600) and let the backend pick it
+        # up at start time. v1 of apple-container reads the file but does
+        # not yet plumb secrets into the cage (Keychain integration is a
+        # follow-up — see #120) — the file's presence is enough to keep
+        # downstream code working; the secret values are effectively
+        # discarded until the Keychain path lands.
         if parsed:
             secrets_file = state.deployment_dir(cage_name) / "pending_secrets.json"
             # 0o600 — staged secret values must not be world-readable.
@@ -594,8 +609,10 @@ def execute(
         state.save_dns_allowlist(cage_name)
 
         if verbose:
-            # VM mode builds images inside the VM — skip host scaffold setup
-            if cfg.isolation != "vm":
+            # VM mode builds images inside the VM, apple-container builds
+            # via Apple's `container` CLI from inside the backend — skip
+            # the host-podman scaffold setup for both.
+            if cfg.isolation == "container":
                 run_scaffold_setup(
                     scaffold, cage_name, str(config_path),
                 )
@@ -608,8 +625,10 @@ def execute(
             )
         else:
             with output.Spinner("Starting cage..."):
-                # VM mode builds images inside the VM — skip host scaffold setup
-                if cfg.isolation != "vm":
+                # VM mode builds images inside the VM, apple-container builds
+                # via Apple's `container` CLI from inside the backend — skip
+                # the host-podman scaffold setup for both.
+                if cfg.isolation == "container":
                     run_scaffold_setup(
                         scaffold, cage_name, str(config_path),
                         quiet=True,
@@ -670,35 +689,61 @@ def execute(
 
     # Run interactive session
     exit_code = 0
-    container_name = f"{cfg.name}-cage"
-    proxy_container = f"{cfg.name}-proxy"
+    # On apple-container the supervised cage workload runs as PID 1 of a
+    # single Apple `container` per cage (no -proxy / -dns / -cage suffix
+    # split). Both the container name and the exec path use Apple's
+    # `container` CLI; proxy log monitoring goes through the same single
+    # container. Backend-protocol lift for `exec`/`logs`/`audit` is the
+    # right long-term fix — these special-cases live in cli/run.py today.
+    is_apple = cfg.isolation == "apple-container"
+    if is_apple:
+        container_name = cfg.name
+        proxy_container = cfg.name
+    else:
+        container_name = f"{cfg.name}-cage"
+        proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
     # On the VM backend, route exec and log monitoring through the Lima VM.
     podman_prefix = _vm_podman_prefix(cfg.isolation, cage_name)
 
-    # Monitor proxy logs for blocked requests
+    # Skip the proxy-log monitor on apple-container — it relies on
+    # `podman logs -f <proxy-container>` and we don't have a separate
+    # proxy container or host podman. The audit log inside the cage is
+    # still written (mitmproxy → /var/log/agentcage/proxy.log); CLI
+    # integration is part of the deferred Backend-protocol lift.
     monitor_stop = threading.Event()
-    monitor_thread = threading.Thread(
-        target=_monitor_proxy,
-        args=(proxy_container, monitor_stop),
-        kwargs={"cage_name": cage_name, "interactive": interactive_domains,
-                "podman_prefix": podman_prefix},
-        daemon=True,
-    )
-    monitor_thread.start()
+    if not is_apple:
+        monitor_thread = threading.Thread(
+            target=_monitor_proxy,
+            args=(proxy_container, monitor_stop),
+            kwargs={"cage_name": cage_name, "interactive": interactive_domains,
+                    "podman_prefix": podman_prefix},
+            daemon=True,
+        )
+        monitor_thread.start()
+    else:
+        monitor_thread = None
 
     try:
-        result = subprocess.run(
-            podman_prefix + ["podman", "exec"] + exec_flags + [container_name] + exec_cmd,
-        )
+        if is_apple:
+            from agentcage.apple_container import cli as ac_cli
+            container_bin = ac_cli.container_binary() or "container"
+            cmd = [container_bin, "exec"] + exec_flags + [container_name] + exec_cmd
+        else:
+            cmd = (
+                podman_prefix + ["podman", "exec"]
+                + exec_flags + [container_name] + exec_cmd
+            )
+        result = subprocess.run(cmd)
         exit_code = result.returncode
     except KeyboardInterrupt:
         click.echo("\nSession interrupted.")
         exit_code = 130
     finally:
         monitor_stop.set()
-        monitor_thread.join(timeout=3)
+        if monitor_thread is not None:
+            monitor_thread.join(timeout=3)
         click.echo()
         output.separator()
         with output.Spinner("Stopping cage..."):

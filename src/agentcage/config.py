@@ -277,7 +277,7 @@ _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
 @dataclass
 class Config:
     name: str = ""
-    isolation: str = "container"  # "container" | "vm"
+    isolation: str = "container"  # "container" | "vm" | "apple-container"
     lifecycle: str = "service"  # "service" | "interactive" | "ephemeral"
     container: ContainerConfig = field(default_factory=ContainerConfig)
     secrets: SecretsConfig = field(default_factory=SecretsConfig)
@@ -292,6 +292,37 @@ class Config:
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
     scaffold: str = ""  # scaffold name, stored in metadata for cage ls
+
+
+def default_isolation() -> str:
+    """Return the best isolation backend for the current host.
+
+    Resolution order (first match wins):
+      - Linux              -> "container" (rootless podman on host)
+      - macOS 26+ ASi with the `container` CLI installed -> "apple-container"
+      - macOS (any other)  -> "vm" (Lima)
+
+    The probe uses ``shutil.which`` for the `container` binary (no
+    subprocess) so it's safe to call on every config load. We don't probe
+    whether the apiserver is *running* — validation catches "installed but
+    stopped" with a clear hint.
+    """
+    if platform.system() != "Darwin":
+        return "container"
+    if platform.machine() != "arm64":
+        return "vm"
+    # macOS major version. mac_ver() returns ("26.3.2", ...) etc.
+    try:
+        major = int((platform.mac_ver()[0] or "0").split(".")[0])
+    except (ValueError, IndexError):
+        major = 0
+    if major < 26:
+        return "vm"
+    # Lazy import to avoid a circular dep at module load time.
+    from agentcage.apple_container import cli as _ac_cli  # noqa: PLC0415
+    if _ac_cli.container_binary() is None:
+        return "vm"
+    return "apple-container"
 
 
 def _is_loopback(addr: str) -> bool:
@@ -359,7 +390,7 @@ def load_config(path: str) -> Config:
 
     cfg = Config()
     cfg.name = raw.get("name", "")
-    cfg.isolation = raw.get("isolation", "container")
+    cfg.isolation = raw.get("isolation") or default_isolation()
     cfg.lifecycle = raw.get("lifecycle", "service")
     cfg.scaffold = raw.get("scaffold", "")
 
@@ -685,9 +716,10 @@ def validate_config(config: Config) -> list[str]:
             f"invalid container image reference: {config.container.image!r}"
         )
 
-    if config.isolation not in ("container", "vm"):
+    if config.isolation not in ("container", "vm", "apple-container"):
         raise ValueError(
-            f"isolation must be 'container' or 'vm' (got: {config.isolation!r})"
+            f"isolation must be 'container', 'vm', or 'apple-container' "
+            f"(got: {config.isolation!r})"
         )
 
     if config.lifecycle not in _VALID_LIFECYCLES:
@@ -698,8 +730,21 @@ def validate_config(config: Config) -> list[str]:
 
     if config.isolation == "container" and platform.system() == "Darwin":
         raise ValueError(
-            "container isolation is not available on macOS; use vm instead"
+            "container isolation is not available on macOS; "
+            "use vm or apple-container instead"
         )
+
+    if config.isolation == "apple-container":
+        if platform.system() != "Darwin":
+            raise ValueError(
+                "apple-container isolation requires macOS; "
+                f"current platform is {platform.system()}"
+            )
+        if platform.machine() != "arm64":
+            raise ValueError(
+                "apple-container isolation requires Apple Silicon (arm64); "
+                f"current arch is {platform.machine()}"
+            )
 
     if config.isolation == "vm":
         vm = config.vm

@@ -11,6 +11,7 @@
 ## Isolation
 
 - [Lima VM Isolation](vm.md) — KVM-based hardware isolation via Lima
+- [Apple Container Isolation](apple-container.md) — Apple `container` microVM per cage, macOS 26+ Apple Silicon (default on that platform)
 
 ## Setup Guides
 

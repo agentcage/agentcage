@@ -199,8 +199,12 @@ main.add_command(scaffold)
               help="Output file path.", show_default=True)
 @click.option("--image", default="node:22-slim",
               help="Container image.", show_default=True)
-@click.option("--isolation", type=click.Choice(["container", "vm"]),
-              default="container", help="Isolation backend.", show_default=True)
+@click.option("--isolation",
+              type=click.Choice(["container", "vm", "apple-container"]),
+              default=None,
+              help="Isolation backend (default: auto-detect from platform — "
+                   "container on Linux, apple-container on macOS 26+ ASi "
+                   "when Apple `container` is installed, vm otherwise).")
 @click.option("--force", is_flag=True, help="Overwrite existing file.")
 @click.option("--scaffold", default=None,
               help="Use a scaffold template (e.g. openclaw).")
@@ -208,11 +212,14 @@ main.add_command(scaffold)
               help="List available scaffolds and exit.")
 @click.option("--port", type=int, default=None,
               help="Host port to publish (scaffold-specific).")
-def init(name: str | None, output: str, image: str, isolation: str,
+def init(name: str | None, output: str, image: str, isolation: str | None,
          force: bool, scaffold: str | None, list_scaffolds: bool,
          port: int | None):
     """Scaffold a new agentcage config file."""
+    from agentcage.config import default_isolation
     from agentcage.init import list_scaffolds as _list_scaffolds, render_config
+    if isolation is None:
+        isolation = default_isolation()
 
     if list_scaffolds:
         scaffolds = _list_scaffolds()
@@ -293,7 +300,9 @@ def init(name: str | None, output: str, image: str, isolation: str,
 @click.option("-s", "--set-secret", "secrets", multiple=True,
               help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
 @click.option("-v", "--verbose", is_flag=True, help="Show full build output.")
-@click.option("--isolation", type=click.Choice(["container", "vm"]), default=None,
+@click.option("--isolation",
+              type=click.Choice(["container", "vm", "apple-container"]),
+              default=None,
               help="Isolation backend (default: auto-detect from platform).")
 @click.option("-i", "--interactive-domains", is_flag=True,
               help="Prompt to add blocked domains to the allowlist in real-time.")

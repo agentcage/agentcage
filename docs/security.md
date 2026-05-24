@@ -8,35 +8,39 @@ For architecture details, see [Architecture](architecture.md). For configuration
 
 ### Isolation modes and the threat surface
 
-agentcage offers two isolation modes that affect the threat model differently:
+agentcage offers three isolation modes that affect the threat model differently:
 
-**Container mode** (default) — The agent runs in a rootless Podman container with hardened defaults (read-only rootfs, all capabilities dropped, no-new-privileges). Network isolation is enforced by Podman's internal network. This provides strong defense against HTTP-based exfiltration, but all containers share the host kernel. A container escape via a kernel or runtime CVE is out of scope for this mode.
+**Container mode** (Linux default) — The agent runs in a rootless Podman container with hardened defaults (read-only rootfs, all capabilities dropped, no-new-privileges). Network isolation is enforced by Podman's internal network. This provides strong defense against HTTP-based exfiltration, but all containers share the host kernel. A container escape via a kernel or runtime CVE is out of scope for this mode.
 
 **VM mode** — The same container topology runs inside a Lima VM with a dedicated guest kernel, isolated by KVM hardware virtualization. This brings "kernel or container escapes" **into scope** as a defended threat: an escape from the container lands inside the VM, not on the host. The host sees only the Lima VM process.
 
-| Threat | Container mode | VM mode |
-|---|---|---|
-| HTTP/HTTPS exfiltration | Defended (proxy inspection) | Defended (same) |
-| Secret leakage | Defended (injection + scanning) | Defended (same) |
-| Unauthorized API calls | Defended (domain filtering) | Defended (same) |
-| DNS exfiltration | Partially defended (placeholder IPs) | Partially defended (same) |
-| Container/runtime escape | **Out of scope** (shared kernel) | Defended (VM boundary) |
-| Kernel exploit | **Out of scope** (shared kernel) | Defended (guest kernel) |
-| Side-channel attacks | Out of scope | Out of scope |
+**apple-container mode** (macOS 26+ Apple Silicon default, new in 0.20) — Each cage runs in a single Apple `container` microVM with its own kernel (hypervisor boundary via Apple's Virtualization.framework). The supervisor inside the microVM stands up mitmproxy + dnsmasq + iptables, installs the proxy CA into the cage's trust store, then drops to uid 1000 / zero caps / NoNewPrivs before exec'ing the cage workload. Functionally equivalent to VM mode on every threat where it matters, with one documented trade-off: there is no second backstop network layer (Lima's `<cage>-net` is non-routed; Apple custom networks always have NAT). The cage's iptables — which the cage workload cannot mutate (CAP_NET_ADMIN dropped) — is the sole defense rather than the second layer.
+
+| Threat | Container mode | VM mode | apple-container mode |
+|---|---|---|---|
+| HTTP/HTTPS exfiltration | Defended (proxy inspection) | Defended (same) | Defended (in-microVM proxy + addon allowlist) |
+| Secret leakage | Defended (injection + scanning) | Defended (same) | **Partial** — egress filter + MITM in place; server-side `{{SECRET:...}}` injection deferred (v1 ships filter only) |
+| Unauthorized API calls | Defended (domain filtering) | Defended (same) | Defended (mitmproxy addon 403s non-listed hosts) |
+| DNS exfiltration | Partially defended (placeholder IPs) | Partially defended (same) | Partially defended (cage's only DNS path is local dnsmasq) |
+| Container/runtime escape | **Out of scope** (shared kernel) | Defended (VM boundary) | Defended (microVM boundary) |
+| Kernel exploit | **Out of scope** (shared kernel) | Defended (guest kernel) | Defended (microVM kernel) |
+| Side-channel attacks | Out of scope | Out of scope | Out of scope |
 
 ### Isolation modes
 
-| | Container mode (default) | VM mode |
-|---|---|---|
-| **Isolation** | Linux namespaces (rootless Podman) | Hardware virtualization (KVM via Lima) |
-| **Kernel** | Shared with host | Dedicated guest kernel per cage |
-| **Container escape risk** | Mitigated by hardening, not eliminated | Eliminated — escape lands in VM, not on host |
-| **Root required** | No | No (Lima handles VM networking) |
-| **macOS support** | No (use VM mode) | Yes (Lima supports macOS) |
-| **Boot overhead** | ~1s | ~15–30s |
-| **Best for** | Development, CI, low-risk workloads | Production, untrusted agents, high-security |
+| | Container mode | VM mode | apple-container mode |
+|---|---|---|---|
+| **Isolation** | Linux namespaces (rootless Podman) | Hardware virtualization (KVM via Lima) | Hardware virtualization (Virtualization.framework, Apple `container` per cage) |
+| **Kernel** | Shared with host | Dedicated guest kernel per cage | Dedicated microVM kernel per cage |
+| **Container escape risk** | Mitigated by hardening, not eliminated | Eliminated — escape lands in VM, not on host | Eliminated — escape lands in microVM, not on host |
+| **Egress defense layers** | iptables-in-cage + non-routed `<cage>-net` (two) | iptables-in-cage + non-routed `<cage>-net` (two) | iptables-in-cage only (one; CAP_NET_ADMIN dropped so cage can't bypass) |
+| **Root required** | No | No (Lima handles VM networking) | No (Apple's `container` is rootless) |
+| **macOS support** | No (use VM or apple-container) | Yes (Lima supports macOS) | macOS 26+ Apple Silicon only |
+| **User image constraint** | Any glibc-or-musl Linux | Any (built inside the VM) | Glibc-based (debian/ubuntu/etc) — mitmproxy bundle is glibc-only |
+| **Boot overhead** | ~1s | ~15–30s | ~3–5s warm, ~25–30s cold |
+| **Best for** | Development, CI on Linux | Production, untrusted agents, high-security | Fast iteration on macOS 26+; default macOS path |
 
-Set `isolation: vm` in your config to use VM mode. See [Lima VM Isolation](vm.md) for setup and details.
+Set `isolation: vm` or `isolation: apple-container` explicitly in your config to override the platform default. See [Lima VM Isolation](vm.md) and [Apple Container Isolation](apple-container.md) for setup and per-backend details.
 
 ### What agentcage prevents
 
