@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.8] - 2026-05-24
+
+### Added
+- Five minimal base-image scaffolds — `busybox`, `alpine`, `arch`, `ubuntu`, `debian` — intended for testing agentcage primitives without the noise of a coding agent. Each is `FROM docker.io/library/<base>:latest` (debian uses `stable-slim`) with `WORKDIR /workspace` and nothing else — no apt/apk installs, no extra tools. The cage starts under `interactive` lifecycle with `sleep infinity` and an exec alias for the appropriate shell (`sh` for busybox/alpine, `bash` for arch/ubuntu/debian). Defaults are deliberately tight: empty `domains.allow` (every outbound request blocked until you add hosts), no active `secret_injection` rules, no `cap_add` in the scaffold's build step (the FROM + WORKDIR build needs zero capabilities), 1 GiB / 1 CPU container limits, 2 vcpu / 2 GiB VM. Auto-discovered by `list_scaffolds()` — no Python changes; both isolation modes render and validate clean. (#129)
+
 ## [0.17.7] - 2026-05-24
 
 ### Added
