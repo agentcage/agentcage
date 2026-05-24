@@ -11,6 +11,7 @@ from pathlib import Path
 
 import click
 
+from agentcage._timing import Phase
 from agentcage.config import Config
 from agentcage.lima import prerequisites as lima_prerequisites
 from agentcage.lima.instance import LimaInstance
@@ -58,39 +59,44 @@ class VmBackend:
         click.echo("Copying build context into VM...")
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
         inst.exec(["mkdir", "-p", vm_build_dir])
-        subprocess.run(
-            ["limactl", "copy", "-r",
-             f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
-            check=True,
-        )
+        with Phase("copy.build_context", cage=deploy_name):
+            subprocess.run(
+                ["limactl", "copy", "-r",
+                 f"{data_dir}/.", f"{inst.name}:{vm_build_dir}/"],
+                check=True,
+            )
 
         click.echo("Building proxy image inside VM...")
-        inst.exec([
-            "podman", "build",
-            "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
-            "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
-            "--cap-add=CAP_DAC_OVERRIDE",
-            "-t", "agentcage-proxy",
-            "-f", f"{vm_build_dir}/containers/Containerfile.proxy",
-            vm_build_dir,
-        ])
+        with Phase("build.proxy", cage=deploy_name):
+            inst.exec([
+                "podman", "build",
+                "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
+                "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
+                "--cap-add=CAP_DAC_OVERRIDE",
+                "-t", "agentcage-proxy",
+                "-f", f"{vm_build_dir}/containers/Containerfile.proxy",
+                vm_build_dir,
+            ])
         click.echo("Building DNS image inside VM...")
-        inst.exec([
-            "podman", "build",
-            "--cap-add=CAP_SETFCAP",
-            "-t", "agentcage-dns",
-            "-f", f"{vm_build_dir}/containers/Containerfile.dns",
-            vm_build_dir,
-        ])
+        with Phase("build.dns", cage=deploy_name):
+            inst.exec([
+                "podman", "build",
+                "--cap-add=CAP_SETFCAP",
+                "-t", "agentcage-dns",
+                "-f", f"{vm_build_dir}/containers/Containerfile.dns",
+                vm_build_dir,
+            ])
 
         # Build or pull the cage image inside the VM
         if config and config.container.image:
             if config.container.build.containerfile:
                 # Scaffold image — copy Containerfile and build inside the VM
-                self._build_cage_image_in_vm(config, deploy_name, inst, vm_build_dir)
+                with Phase("build.cage", cage=deploy_name):
+                    self._build_cage_image_in_vm(config, deploy_name, inst, vm_build_dir)
             else:
                 click.echo(f"Pulling {config.container.image} inside VM...")
-                inst.exec(["podman", "pull", config.container.image], check=False)
+                with Phase("pull.cage", cage=deploy_name):
+                    inst.exec(["podman", "pull", config.container.image], check=False)
 
         # Cleanup
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
@@ -132,12 +138,14 @@ class VmBackend:
 
         if not inst.exists():
             click.echo("Creating Lima VM instance...")
-            inst.create(str(config_path))
+            with Phase("lima.create", cage=name):
+                inst.create(str(config_path))
             click.echo("VM created. Starting...")
 
         if not inst.is_running():
             click.echo("Starting Lima VM...")
-            inst.start()
+            with Phase("lima.start", cage=name):
+                inst.start()
             click.echo("VM started and provisioned.")
 
         # Deploy cage into the VM
@@ -200,27 +208,30 @@ class VmBackend:
 
         # Install quadlets inside the VM (use ~ to get the correct home dir,
         # Lima maps the host user into the guest)
-        inst.exec(["bash", "-c", "mkdir -p ~/.config/containers/systemd"])
-        vm_quadlet_dir = inst.exec(
-            ["bash", "-c", "echo ~/.config/containers/systemd"]
-        ).stdout.strip()
+        with Phase("deploy.quadlets", cage=name):
+            inst.exec(["bash", "-c", "mkdir -p ~/.config/containers/systemd"])
+            vm_quadlet_dir = inst.exec(
+                ["bash", "-c", "echo ~/.config/containers/systemd"]
+            ).stdout.strip()
 
-        for qfile in quadlet_dir.iterdir():
-            if qfile.is_file():
-                content = qfile.read_text()
-                # Write quadlet file inside VM via base64 to avoid
-                # heredoc injection (content could contain the delimiter)
-                encoded = base64.b64encode(content.encode()).decode()
-                inst.exec([
-                    "bash", "-c",
-                    f"echo '{encoded}' | base64 -d > {shlex.quote(vm_quadlet_dir)}/{shlex.quote(qfile.name)}",
-                ])
+            for qfile in quadlet_dir.iterdir():
+                if qfile.is_file():
+                    content = qfile.read_text()
+                    # Write quadlet file inside VM via base64 to avoid
+                    # heredoc injection (content could contain the delimiter)
+                    encoded = base64.b64encode(content.encode()).decode()
+                    inst.exec([
+                        "bash", "-c",
+                        f"echo '{encoded}' | base64 -d > {shlex.quote(vm_quadlet_dir)}/{shlex.quote(qfile.name)}",
+                    ])
 
         # Bridge secrets from host Podman into VM's Podman
-        self._bridge_secrets(name, inst)
+        with Phase("deploy.bridge_secrets", cage=name):
+            self._bridge_secrets(name, inst)
 
         # Create any pending secrets (from cage create --set-secret)
-        self._create_pending_secrets(name, inst)
+        with Phase("deploy.pending_secrets", cage=name):
+            self._create_pending_secrets(name, inst)
 
         # Build container images and pull cage image inside the VM
         self.build_artifacts(config, name)
@@ -236,55 +247,58 @@ class VmBackend:
             f"{name}-cage",
         ]
 
-        # First attempt
-        for svc in services:
-            try:
-                inst.exec(["systemctl", "--user", "start", f"{svc}.service"])
-            except Exception as e:
-                click.echo(f"warning: failed to start {svc}: {e}", err=True)
+        with Phase("systemd.start", cage=name):
+            # First attempt
+            for svc in services:
+                try:
+                    inst.exec(["systemctl", "--user", "start", f"{svc}.service"])
+                except Exception as e:
+                    click.echo(f"warning: failed to start {svc}: {e}", err=True)
 
-        # Check for failed services and retry after a delay
-        # (handles race conditions like virtiofs targeted mounts not being ready)
-        time.sleep(VM_SERVICE_STARTUP_DELAY_S)
-        inst.exec(["systemctl", "--user", "reset-failed"], check=False)
+            # Check for failed services and retry after a delay
+            # (handles race conditions like virtiofs targeted mounts not being ready)
+            time.sleep(VM_SERVICE_STARTUP_DELAY_S)
+            inst.exec(["systemctl", "--user", "reset-failed"], check=False)
 
-        # Retry failed infrastructure services first (not cage)
-        infra = services[:-1]  # everything except cage
-        for svc in infra:
-            try:
-                result = inst.exec(
-                    ["systemctl", "--user", "is-active", f"{svc}.service"],
-                    check=False,
-                )
-                if result.stdout.strip() != "active":
-                    click.echo(f"Retrying {svc}...")
-                    inst.exec(["systemctl", "--user", "restart", f"{svc}.service"])
-            except Exception as e:
-                click.echo(f"warning: retry failed for {svc}: {e}", err=True)
+            # Retry failed infrastructure services first (not cage)
+            infra = services[:-1]  # everything except cage
+            for svc in infra:
+                try:
+                    result = inst.exec(
+                        ["systemctl", "--user", "is-active", f"{svc}.service"],
+                        check=False,
+                    )
+                    if result.stdout.strip() != "active":
+                        click.echo(f"Retrying {svc}...")
+                        inst.exec(["systemctl", "--user", "restart", f"{svc}.service"])
+                except Exception as e:
+                    click.echo(f"warning: retry failed for {svc}: {e}", err=True)
 
         # Wait for proxy to be ready (CA cert generated) before starting cage
         click.echo("Waiting for proxy to be ready...")
-        for _ in range(PROXY_READINESS_TIMEOUT_S):
-            result = inst.exec(
-                ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
-                check=False,
-            )
-            if result.stdout.strip() == "active":
-                break
-            time.sleep(PROXY_READINESS_POLL_INTERVAL_S)
+        with Phase("systemd.wait_proxy", cage=name):
+            for _ in range(PROXY_READINESS_TIMEOUT_S):
+                result = inst.exec(
+                    ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
+                    check=False,
+                )
+                if result.stdout.strip() == "active":
+                    break
+                time.sleep(PROXY_READINESS_POLL_INTERVAL_S)
 
         # Now start the cage
         cage_svc = f"{name}-cage"
-        try:
-            result = inst.exec(
-                ["systemctl", "--user", "is-active", f"{cage_svc}.service"],
-                check=False,
-            )
-            if result.stdout.strip() != "active":
-                inst.exec(["systemctl", "--user", "reset-failed"], check=False)
-                inst.exec(["systemctl", "--user", "start", f"{cage_svc}.service"])
-        except Exception as e:
-            click.echo(f"warning: failed to start {cage_svc}: {e}", err=True)
+        with Phase("systemd.start_cage", cage=name):
+            try:
+                result = inst.exec(
+                    ["systemctl", "--user", "is-active", f"{cage_svc}.service"],
+                    check=False,
+                )
+                if result.stdout.strip() != "active":
+                    inst.exec(["systemctl", "--user", "reset-failed"], check=False)
+                    inst.exec(["systemctl", "--user", "start", f"{cage_svc}.service"])
+            except Exception as e:
+                click.echo(f"warning: failed to start {cage_svc}: {e}", err=True)
 
     def _create_pending_secrets(self, name: str, inst: LimaInstance) -> None:
         """Create secrets from cage create --set-secret inside the VM."""

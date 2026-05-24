@@ -8,9 +8,20 @@ from pathlib import Path
 import click
 
 from agentcage import systemd
+from agentcage._timing import Phase
 from agentcage.config import Config
 from agentcage.podman import Podman
 from agentcage.quadlets import generate_quadlets
+
+
+def _cage_from_units(units: dict[str, str]) -> str | None:
+    """Recover the cage name from a quadlet filename ("foo-cage.container" → "foo")."""
+    for fname in units:
+        for suffix in ("-cage.container", "-proxy.container", "-dns.container",
+                       "-net.network", "-certs.volume"):
+            if fname.endswith(suffix):
+                return fname[: -len(suffix)]
+    return None
 
 
 class ContainerBackend:
@@ -38,22 +49,24 @@ class ContainerBackend:
 
         if not quiet:
             click.echo("Building proxy image...")
-        self._podman.build_image(
-            "agentcage-proxy",
-            os.path.join(containers_dir, "Containerfile.proxy"),
-            build_context,
-            cap_add=["CAP_CHOWN", "CAP_FOWNER", "CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE"],
-            quiet=quiet,
-        )
+        with Phase("build.proxy", cage=deploy_name):
+            self._podman.build_image(
+                "agentcage-proxy",
+                os.path.join(containers_dir, "Containerfile.proxy"),
+                build_context,
+                cap_add=["CAP_CHOWN", "CAP_FOWNER", "CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE"],
+                quiet=quiet,
+            )
         if not quiet:
             click.echo("Building DNS image...")
-        self._podman.build_image(
-            "agentcage-dns",
-            os.path.join(containers_dir, "Containerfile.dns"),
-            build_context,
-            cap_add=["CAP_SETFCAP"],
-            quiet=quiet,
-        )
+        with Phase("build.dns", cage=deploy_name):
+            self._podman.build_image(
+                "agentcage-dns",
+                os.path.join(containers_dir, "Containerfile.dns"),
+                build_context,
+                cap_add=["CAP_SETFCAP"],
+                quiet=quiet,
+            )
 
     def generate_units(
         self,
@@ -72,32 +85,38 @@ class ContainerBackend:
     def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
-        for filename, content in units.items():
-            (dest / filename).write_text(content)
-        if not quiet:
-            click.echo(f"Installed quadlet files to {dest}/")
-        systemd.daemon_reload()
+        # The deploy_name isn't threaded down here; pull it from any unit name
+        # (units are keyed "<name>-cage.container" / etc.). Best-effort.
+        cage = _cage_from_units(units)
+        with Phase("deploy.quadlets", cage=cage):
+            for filename, content in units.items():
+                (dest / filename).write_text(content)
+            if not quiet:
+                click.echo(f"Installed quadlet files to {dest}/")
+            systemd.daemon_reload()
 
     def start(self, name: str, *, quiet: bool = False) -> None:
         # Restart network/volume first so they're recreated
         # (systemd may think they're still active from a previous run even if
         # podman resources were removed by 'cage destroy')
-        try:
-            systemd.restart_unit(f"{name}-net-network.service")
-        except Exception as e:
-            if not quiet:
-                click.echo(f"warning: failed to restart network service: {e}", err=True)
-        try:
-            systemd.restart_unit(f"{name}-certs-volume.service")
-        except Exception as e:
-            if not quiet:
-                click.echo(f"warning: failed to restart volume service: {e}", err=True)
-        if (self.unit_dir() / f"{name}-podman-storage.volume").exists():
+        with Phase("systemd.start", cage=name):
             try:
-                systemd.restart_unit(f"{name}-podman-storage-volume.service")
-            except Exception:
-                pass
-        systemd.start_unit(f"{name}-cage.service")
+                systemd.restart_unit(f"{name}-net-network.service")
+            except Exception as e:
+                if not quiet:
+                    click.echo(f"warning: failed to restart network service: {e}", err=True)
+            try:
+                systemd.restart_unit(f"{name}-certs-volume.service")
+            except Exception as e:
+                if not quiet:
+                    click.echo(f"warning: failed to restart volume service: {e}", err=True)
+            if (self.unit_dir() / f"{name}-podman-storage.volume").exists():
+                try:
+                    systemd.restart_unit(f"{name}-podman-storage-volume.service")
+                except Exception:
+                    pass
+        with Phase("systemd.start_cage", cage=name):
+            systemd.start_unit(f"{name}-cage.service")
         if not quiet:
             click.echo(f"Started {name}-cage")
 

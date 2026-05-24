@@ -449,6 +449,7 @@ def execute(
     verbose: bool = False,
     isolation: str | None = None,
     interactive_domains: bool = False,
+    show_timing: bool = False,
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
 
@@ -629,6 +630,9 @@ def execute(
             click.echo(e.stderr, err=True)
         if e.stdout:
             click.echo(e.stdout, err=True)
+        if show_timing:
+            from agentcage import _timing
+            _timing.print_summary(cage_name)
         if state.deployment_exists(cage_name):
             state.remove_deployment(cage_name)
         shutil.rmtree(str(config_dir), ignore_errors=True)
@@ -636,10 +640,17 @@ def execute(
     except Exception as e:
         output.step_fail(f"Failed to build/deploy cage: {e}")
         # Clean up partial state
+        if show_timing:
+            from agentcage import _timing
+            _timing.print_summary(cage_name)
         if state.deployment_exists(cage_name):
             state.remove_deployment(cage_name)
         shutil.rmtree(str(config_dir), ignore_errors=True)
         return 1
+
+    if show_timing:
+        from agentcage import _timing
+        _timing.print_summary(cage_name)
 
     # Summary
     click.echo()
