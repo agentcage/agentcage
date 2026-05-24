@@ -1,4 +1,4 @@
-description: "Minimal alpine cage for testing agentcage primitives"
+description: "Minimal alpine cage"
 lifecycle: interactive
 
 build:

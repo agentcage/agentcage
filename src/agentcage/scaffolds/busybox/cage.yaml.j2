@@ -1,6 +1,6 @@
 # agentcage configuration for {{ name }} (busybox scaffold)
 #
-# Minimal cage for testing agentcage primitives — no AI agent, no tools
+# Minimal cage — no AI agent, no tools
 # beyond what busybox ships, no outbound network allowed by default.
 #
 # Quick start:
@@ -33,6 +33,13 @@ container:
   # Project directory — mount your repo here if you want to poke at it.
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
+
+  # Use the image's default USER (root for these base images). The
+  # agentcage default of "1000:1000" doesn't resolve to a real user
+  # in minimal base images, so `whoami` returns nothing and sudo is
+  # uninstallable. Inside the cage you are root; rootless podman maps
+  # that UID to your host user for bind-mounted writes.
+  user: ""
 
   read_only: false
 

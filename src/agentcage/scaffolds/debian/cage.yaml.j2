@@ -1,6 +1,6 @@
 # agentcage configuration for {{ name }} (debian scaffold)
 #
-# Minimal cage for testing agentcage primitives — no AI agent, no tools
+# Minimal cage — no AI agent, no tools
 # beyond what debian:stable-slim ships, no outbound network allowed by default.
 #
 # Quick start:
@@ -28,11 +28,24 @@ container:
   image: "localhost/agentcage-scaffold-debian:latest"
   build:
     containerfile: "Containerfile"
-  command: ["sleep", "infinity"]
+  # Install the agentcage MITM proxy CA into the system trust store at
+  # startup so apt (and any other tool that doesn't read SSL_CERT_FILE)
+  # can talk to the package mirrors over the intercepted TLS connection.
+  command:
+    - "sh"
+    - "-c"
+    - "cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/agentcage-proxy.crt && update-ca-certificates >/dev/null 2>&1 && exec sleep infinity"
 
   # Project directory — mount your repo here if you want to poke at it.
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
+
+  # Use the image's default USER (root for these base images). The
+  # agentcage default of "1000:1000" doesn't resolve to a real user
+  # in minimal base images, so `whoami` returns nothing and sudo is
+  # uninstallable. Inside the cage you are root; rootless podman maps
+  # that UID to your host user for bind-mounted writes.
+  user: ""
 
   read_only: false
 
@@ -45,6 +58,16 @@ container:
 
   timeout_start_sec: 30
 
+  # Capabilities needed by apt to install packages (chown installed files,
+  # set setuid bits, etc.). The cage drops ALL caps by default; these are
+  # the minimum re-added for `apt-get install <pkg>` to succeed as root.
+  add_capabilities:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+    - SETUID
+    - SETGID
+
 # ── Secret injection (none by default) ──
 # Uncomment for GitHub push over HTTPS or any other host you want to inject to.
 #secret_injection:
@@ -53,11 +76,15 @@ container:
 #    inject_to:
 #      - github.com
 
-# ── Domain allowlist (empty by default) ──
-# Add the hosts you want the cage to reach. Subdomains are matched
-# automatically (e.g. "github.com" also allows "api.github.com").
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com").
 domains:
-  allow: []
+  allow:
+    # ── Debian package mirrors (apt-get update / apt-get install) ──
+    - deb.debian.org
+    - security.debian.org
+    # Add more hosts your test needs:
     # - example.com
 
 # ── Logging ──

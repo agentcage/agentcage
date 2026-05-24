@@ -1,4 +1,4 @@
-description: "Minimal arch cage for testing agentcage primitives"
+description: "Minimal arch cage"
 lifecycle: interactive
 
 build:

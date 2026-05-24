@@ -1,3 +1,11 @@
 FROM docker.io/library/debian:stable-slim
 
+# ca-certificates provides /etc/ssl/certs + the `update-ca-certificates`
+# helper. Needed so the cage's startup script can install the agentcage
+# MITM proxy CA into the system trust store and apt/curl/etc. trust the
+# intercepted TLS handshake to the package mirrors.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace

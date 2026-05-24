@@ -1,6 +1,6 @@
 # ubuntu
 
-Minimal Ubuntu cage for testing agentcage primitives — no AI agent, no extra tools, no outbound network by default.
+Minimal Ubuntu cage — no AI agent, only `ca-certificates` added on top of the base image so `apt` trusts the agentcage MITM proxy, package mirrors pre-allowlisted so `apt-get` works out of the box.
 
 Image: `docker.io/library/ubuntu:latest` (current LTS, ~80 MB; includes bash, coreutils, apt).
 
@@ -20,10 +20,11 @@ agentcage run ubuntu
 
 ## What you get
 
-- `sleep infinity` keeps the container alive; you drop in via `cage exec`.
+- The cage's startup command installs the agentcage MITM proxy CA into Ubuntu's system trust store (`update-ca-certificates`) so apt trusts the intercepted TLS to the mirrors. Then `sleep infinity` keeps the container alive; you drop in via `cage exec`.
 - `${PROJECT_DIR}:/workspace:rw` is the only volume mount.
-- Domain allowlist is empty — every outbound request is blocked by the proxy. Add hosts under `domains.allow` in `cage.yaml` to test specific paths.
-- No tools beyond Ubuntu's base. To `apt-get install` you'll need to allowlist `archive.ubuntu.com` and `security.ubuntu.com`.
+- Domain allowlist pre-allows `archive.ubuntu.com` and `security.ubuntu.com`. Everything else is blocked by the proxy until you add it under `domains.allow` in `cage.yaml`.
+- Cage runs as root with the minimum `add_capabilities` for `apt` to install packages (`CHOWN`, `FOWNER`, `DAC_OVERRIDE`, `SETUID`, `SETGID`).
+- `apt-get update && apt-get install -y curl` works out of the box.
 - No secrets pre-injected. A commented-out `GITHUB_TOKEN` block is left in `cage.yaml` as a starting point.
 
 ## Use cases
