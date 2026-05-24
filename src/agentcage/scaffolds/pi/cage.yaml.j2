@@ -1,0 +1,147 @@
+# agentcage configuration for {{ name }} (Pi scaffold)
+#
+# Quick start:
+#   1. Deploy:  agentcage cage create -c cage.yaml
+#   2. Start a session:
+#        agentcage cage exec {{ name }} -- pi
+#   3. Or use the run command:
+#        agentcage run pi
+#
+# Authentication — pick one:
+#   A — Interactive login inside the cage (subscription providers):
+#     agentcage cage exec {{ name }} -- pi
+#     # then type /login at the prompt
+#     # credentials are saved in the ~/.pi volume
+#
+#   B — API key (Anthropic):
+#     agentcage secret set {{ name }} ANTHROPIC_API_KEY
+#     agentcage cage restart {{ name }}
+#
+#   C — API key (OpenAI):
+#     agentcage secret set {{ name }} OPENAI_API_KEY
+#     # also uncomment the OPENAI_API_KEY block under secret_injection
+#     agentcage cage restart {{ name }}
+
+name: {{ name }}
+{% if isolation == "vm" %}
+
+isolation: vm
+
+vm:
+  vcpus: 4
+  mem_mb: 8192
+{% endif %}
+
+lifecycle: interactive
+
+scaffold: pi
+
+container:
+  image: "localhost/agentcage-scaffold-pi:latest"
+  build:
+    containerfile: "Containerfile"
+  command: ["sleep", "infinity"]
+
+  # Project directory — mount your repo here
+  volumes:
+    - "${PROJECT_DIR}:/workspace:rw"
+    # Auth & settings — mount host ~/.pi so /login persists across sessions.
+    # Pi stores global config at ~/.pi/agent/settings.json and per-session
+    # state under ~/.pi/ as well. Remove this line to isolate cage state
+    # from the host.
+    - "~/.pi:/home/node/.pi:rw"
+  #  # Git config (uncomment to enable)
+  #  - "~/.gitconfig:/home/node/.gitconfig:ro"
+  #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"
+
+  # Map host UID into container so mounted files have correct ownership
+  userns: "keep-id"
+  user: ""
+
+  # Coding agents need to write to various paths in the home directory
+  read_only: false
+
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=256M"
+
+  # Resource limits
+  memory: "8g"
+  cpus: "4.0"
+
+  timeout_start_sec: 60
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
+secret_injection:
+  - env: ANTHROPIC_API_KEY
+    placeholder: "{%raw%}{{ANTHROPIC_API_KEY}}{%endraw%}"
+    inject_to:
+      - anthropic.com
+
+  # Uncomment if you want Pi to talk to OpenAI models:
+  #- env: OPENAI_API_KEY
+  #  placeholder: "{%raw%}{{OPENAI_API_KEY}}{%endraw%}"
+  #  inject_to:
+  #    - openai.com
+
+  # Uncomment for GitHub push via HTTPS:
+  #- env: GITHUB_TOKEN
+  #  placeholder: "{%raw%}{{GITHUB_TOKEN}}{%endraw%}"
+  #  inject_to:
+  #    - github.com
+
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "anthropic.com" also allows
+# "api.anthropic.com").
+domains:
+  allow:
+    # ── AI providers ──
+    - anthropic.com
+    - claude.com
+    # Uncomment for OpenAI models:
+    #- openai.com
+
+    # ── Pi update + auth endpoints ──
+    - pi.dev
+
+    # ── Package registries ──
+    - npmjs.org
+    - npmjs.com
+    - pypi.org
+    - files.pythonhosted.org
+    - nodejs.org
+
+    # ── Code hosting (uncomment for git push) ──
+    #- github.com
+    #- githubusercontent.com
+
+    # Add domains your agent needs access to:
+    #- example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: content-type
+  # Add `- name: entropy` to also flag encrypted/compressed payloads
+  # (off by default — it false-positives on legitimate high-entropy data).
+
+# ── Exec aliases ──
+exec_aliases:
+  pi: ["pi"]
+
+# ── Help ──
+help: |
+  Start a Pi session:
+    agentcage cage exec {{ name }} -- pi
+
+  Or use the run command (creates ephemeral cage):
+    agentcage run pi
+
+  Authentication:
+    Subscription: agentcage cage exec {{ name }} -- pi   (then /login)
+    API key:      agentcage secret set {{ name }} ANTHROPIC_API_KEY
