@@ -127,13 +127,26 @@ fi
 # login HTML on GET / (authentication is per-API-endpoint, not page-level).
 # The signal we care about: something identifiable as openclaw is serving
 # on this port — not a stray reverse-proxy error page.
+#
+# We retry within a 30s window rather than firing a single curl because
+# openclaw 2026.5+ gateway boot is non-monotonic: the upstream wait_ready
+# loop above exits on the first HTTP 200, but openclaw can then internally
+# restart its server one or more times during init before settling. A
+# single curl here can catch the gap and time out (curl: (28) Operation
+# timed out). The recovery idiom mirrors 8.4 below, which already waits
+# for the gateway after a SIGUSR1 restart.
 e2e_timer_start
-body=$(curl -sS --max-time 10 "$BASE/" 2>&1 || true)
+body=""
+for _ in $(seq 1 15); do
+  body=$(curl -sS --max-time 5 "$BASE/" 2>&1 || true)
+  echo "$body" | grep -q "OpenClaw Control" && break
+  sleep 2
+done
 if echo "$body" | grep -q "OpenClaw Control"; then
   e2e_pass "8.1" "gateway serves OpenClaw Control UI"
 else
   e2e_fail "8.1" "gateway serves OpenClaw Control UI" \
-    "expected 'OpenClaw Control' in response; got: $(echo "$body" | head -3)"
+    "expected 'OpenClaw Control' in response within 30s; last got: $(echo "$body" | head -3)"
 fi
 
 # 8.2: openclaw health OK via exec alias. Proves exec_aliases wiring
