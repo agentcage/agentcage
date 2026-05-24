@@ -15,9 +15,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 
 # Install Claude Code CLI (latest stable).
-# --ignore-scripts skips npm postinstall hooks (defense-in-depth — the
-# package's runtime code still runs, only postinstall is skipped).
-RUN npm install -g --ignore-scripts @anthropic-ai/claude-code
+# --ignore-scripts skips npm postinstall hooks for ALL packages in the
+# dependency tree (defense-in-depth against malicious transitive
+# postinstalls). Then run claude-code's own install.cjs explicitly —
+# it's required to wire `/usr/local/bin/claude` (which is a symlink to
+# `bin/claude.exe`) to the platform-native binary downloaded into
+# `node_modules/@anthropic-ai/claude-code-linux-<arch>/claude`. Without
+# this step the symlinked `claude.exe` is a no-shebang error stub that
+# exec()s with ENOEXEC (issue #132).
+RUN npm install -g --ignore-scripts @anthropic-ai/claude-code \
+    && node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs
 
 # node:22-slim already has user node (1000:1000)
 USER node
