@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-05-25
+
+Two more security fixes for apple-container, follow-ups to the 0.21.2 capsh work. **Upgrade recommended for any apple-container deployment that uses `agentcage run -s KEY=VAL` to pass secrets, or where the `agentcage run` entry point opens an interactive cage session.**
+
+### Security
+
+- **`agentcage run` now wraps the cage session in capsh** — same NoNewPrivs + drop=all + uid 1000 hardening 0.21.2 added to `cage exec`. Pre-this-release, the `agentcage run` apple-container path in `run.py` constructed a raw `container exec` argv inline that inherited the wrapper image's USER (root), so `agentcage run claude-code` (the most common entry point) opened a session as **uid 0** with the full container cap set — even after the 0.21.2 fix to `cage exec`. Now routes through `AppleContainerBackend.exec_argv()` so the same capsh wrap applies. (#165)
+- **`apple_container.start()` reads secrets from `pending_secrets.json`, not `os.environ`.** Before: `agentcage cage create -s KEY=VAL` and `agentcage run -s KEY=VAL` staged the value in `<deployment_dir>/pending_secrets.json` but apple-container's `start()` then ignored that file and called `os.environ.get(env_name)` instead — silently dropping the explicit `-s` value AND implicitly leaking arbitrary host shell env vars matching declared secret names. Now `start()` reads only from `pending_secrets.json` (the 0600 plaintext-at-rest persistence mechanism documented in 0.21.1; Keychain integration tracked in #120). Missing values produce a clear `not provided via --set-secret` warning instead of substituting host env. Additionally the pre-0.21.1 cleartext-env fallback for unit JSON without `secret_env_placeholders` is removed — old cages get a warning telling them to `cage update`, rather than silently re-leaking the raw value onto `container run`'s argv. (#164)
+
 ## [0.21.2] - 2026-05-25
 
 Two security fixes for `cage exec` on apple-container plus three apple-container parity items (inspectors, protocol_relays, HAR body capture). **Upgrade recommended for any apple-container deployment.**
