@@ -997,16 +997,7 @@ def cage_verify(name: str):
     if cfg.isolation == "container":
         _verify_container(name, _pass, _fail, _warn)
     elif _is_apple_container(cfg):
-        # The apple-container backend does service-level checks via
-        # `backend.is_running` (already run above). Deeper inside-the-cage
-        # probes (proxy CA, egress block, nested podman) aren't wired up
-        # yet on this backend — keep verify a no-crash one-liner rather
-        # than shelling out to host podman.
-        click.echo()
-        click.echo(
-            "  [INFO] deeper checks (CA / egress / nested) are not yet "
-            "implemented for apple-container; service-status checks only"
-        )
+        _verify_apple_container(name, _pass, _fail, _warn)
     else:
         _verify_vm(name, _pass, _fail)
 
@@ -1145,6 +1136,100 @@ def _verify_container(name: str, _pass, _fail, _warn):
             _fail("Podman is NOT rootless")
     except Exception:
         _fail("Podman is NOT rootless")
+
+
+def _verify_apple_container(name: str, _pass, _fail, _warn):
+    """Apple-container probes: CA cert, dnsmasq DNS, egress filter.
+
+    Service-status (is the cage `running`?) was already checked in the
+    backend-agnostic block above; this only adds the inside-the-cage
+    invariants that mean the supervisor wired itself up correctly.
+
+    Each check execs `container exec <cage> ...` via Apple's CLI and
+    inspects the exit code / output. Failures don't abort the verify
+    run — every check independently reports PASS/FAIL/WARN.
+    """
+    from agentcage.apple_container import cli as ac_cli
+
+    binary = ac_cli.container_binary()
+    if binary is None:
+        _warn(
+            "Apple `container` CLI not found; install from "
+            "https://github.com/apple/container/releases"
+        )
+        return
+
+    def _exec(argv: list[str]) -> tuple[int, str]:
+        """`container exec <name> <argv>` returning (exit, combined output).
+
+        Run via subprocess.run (not os.execvp like the cage_exec
+        command, which replaces the process) — verify is a query, not
+        a hand-off.
+        """
+        cp = subprocess.run(
+            [binary, "exec", name, *argv],
+            capture_output=True, text=True, check=False,
+        )
+        return cp.returncode, (cp.stdout + cp.stderr).strip()
+
+    # -- 1. CA cert at /certs/mitmproxy-ca-cert.pem (mirrored at stage 60)
+    click.echo()
+    click.echo("-- CA Certificate --")
+    ec, _ = _exec(["test", "-f", "/certs/mitmproxy-ca-cert.pem"])
+    if ec == 0:
+        _pass("mitmproxy CA cert exists at /certs/mitmproxy-ca-cert.pem")
+    else:
+        _fail("mitmproxy CA cert NOT found at /certs/mitmproxy-ca-cert.pem")
+
+    # -- 2. /etc/resolv.conf points to local dnsmasq (stage 70)
+    click.echo()
+    click.echo("-- DNS routing --")
+    ec, out = _exec(["cat", "/etc/resolv.conf"])
+    if ec == 0 and "nameserver 127.0.0.1" in out:
+        _pass("/etc/resolv.conf points to local dnsmasq (127.0.0.1)")
+    else:
+        _fail(
+            f"/etc/resolv.conf does NOT route to local dnsmasq "
+            f"(got: {out!r})"
+        )
+
+    # -- 3. Egress filtering: blocked domain returns 403 from mitmproxy
+    # Use a fixed domain that should never be in any cage's allowlist;
+    # mitmproxy's allowlist_addon should respond with 403.
+    click.echo()
+    click.echo("-- Egress Filtering --")
+    ec, _ = _exec(["which", "curl"])
+    if ec != 0:
+        _warn(
+            "curl not in cage image — cannot probe egress filtering "
+            "(consider installing curl in the user image to enable "
+            "this check)"
+        )
+    else:
+        # `-w '%{http_code}'` prints the HTTP status to stdout; `-o
+        # /dev/null` discards the body; `--max-time 5` caps the probe.
+        ec, status = _exec([
+            "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+            "--max-time", "5",
+            "https://evil-exfil-server.io",
+        ])
+        if status == "403":
+            _pass(
+                "Blocked domain (evil-exfil-server.io) is denied "
+                "(HTTP 403 from mitmproxy)"
+            )
+        elif status in ("000", ""):
+            # Connection refused / timeout — also a pass (the proxy or
+            # iptables dropped it); just less informative.
+            _pass(
+                f"Blocked domain (evil-exfil-server.io) is denied "
+                f"(HTTP {status or '000'})"
+            )
+        else:
+            _fail(
+                f"Blocked domain returned HTTP {status} — egress "
+                f"filtering may be broken"
+            )
 
 
 def _verify_vm(name: str, _pass, _fail):
