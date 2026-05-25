@@ -1693,26 +1693,42 @@ def cage_shell(name: str, service: str, as_root: bool):
                 err=True,
             )
             sys.exit(1)
-        # Same privilege model as cage_exec: default to uid 1000 (the
-        # cage workload's user) so an operator shell can't bypass the
-        # egress filter or read /home/acproxy/secrets/. --as-root opts
-        # back into the root-shell debug path. The shell-detection probe
-        # below runs as root so it can `test -x` files the cage user
-        # might not have read on; the resulting shell exec uses the
-        # downgraded uid via `-u 1000`.
-        user_flags = [] if as_root else ["-u", "1000"]
+        # Probes run as root so `test -x` can read setuid files that
+        # uid 1000 might not.
         for shell in ("/bin/bash", "/bin/sh"):
             result = subprocess.run(
                 [binary, "exec", name, "test", "-x", shell],
                 capture_output=True,
             )
             if result.returncode == 0:
-                exec_flags = ["-it"] if sys.stdin.isatty() else []
-                os.execvp(binary, [binary, "exec", *user_flags, *exec_flags,
-                                   name, shell])
+                chosen_shell = shell
+                break
+        else:
+            chosen_shell = "/bin/sh"
         exec_flags = ["-it"] if sys.stdin.isatty() else []
-        os.execvp(binary, [binary, "exec", *user_flags, *exec_flags,
-                           name, "/bin/sh"])
+        if as_root:
+            # Operator debug path — image's USER (root on wrapper),
+            # full cap set, NoNewPrivs=0. For apt-get install etc.
+            os.execvp(binary, [binary, "exec", *exec_flags, name, chosen_shell])
+        # Secure default — wrap in capsh exactly like the supervisor's
+        # stage-90 privilege drop: NoNewPrivs=1 + drop=all (CapBnd=0)
+        # + setuid to the uid-1000 user (resolved by name via getent;
+        # capsh --user= takes a name, not a numeric uid). Closes the
+        # setuid-binary-re-acquire-caps escalation that a plain `-u
+        # 1000` would leave open (cage ships /usr/bin/su,
+        # /usr/bin/mount, etc. setuid-root; without NoNewPrivs=1 a
+        # kernel-side re-grant of CapBnd via setuid is the documented
+        # escape path).
+        inner = (
+            "CAGE_USER=$(getent passwd 1000 | cut -d: -f1) && "
+            "exec capsh --no-new-privs --drop=all "
+            "--user=\"$CAGE_USER\" --shell=/bin/sh "
+            f"-- -c 'exec {chosen_shell}'"
+        )
+        os.execvp(binary, [
+            binary, "exec", "-u", "0", *exec_flags, name,
+            "/bin/sh", "-c", inner,
+        ])
 
     container = f"{name}-{service}"
     # Auto-detect bash or fall back to sh

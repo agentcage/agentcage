@@ -42,41 +42,58 @@ class TestCageExecAppleContainer:
     @patch("agentcage.apple_container.cli.container_binary")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_exec_defaults_to_uid_1000(
+    def test_exec_wraps_in_capsh_for_nonewprivs_and_drop_all(
         self, mock_state, mock_execvp, mock_binary,
     ):
-        """SECURITY: exec on apple-container defaults to `-u 1000` (the
-        cage workload's user) so an interactive `cage exec <cage> --
-        claude` runs claude with the workload's empty cap set — NOT
-        with the wrapper image's root + CAP_NET_ADMIN, which would
-        let claude `iptables -F` and bypass the egress filter, or
-        `cat /home/acproxy/secrets/*` via CAP_DAC_OVERRIDE.
+        """SECURITY: exec on apple-container wraps the user's command in
+        ``capsh --no-new-privs --drop=all --user=1000 ...``, the same
+        primitive supervisor.sh uses at stage 90. Three properties
+        this gives the exec session that a plain `-u 1000` wouldn't:
 
-        Pre-this-fix the exec ran as root by default (Apple's
-        container exec respects the image USER which is `root` on
-        the wrapper). This regression test pins the secure default."""
+          1. NoNewPrivs=1 — kernel refuses to grant caps via setuid
+             binaries (cage ships /usr/bin/su, /usr/bin/mount,
+             /usr/lib/openssh/ssh-keysign, etc. as 4755-mode root)
+          2. CapBnd=0 — drop=all clears the bounding set BEFORE the
+             user switch; without it, CapBnd would still contain
+             CAP_NET_ADMIN + CAP_SYS_ADMIN from the container's cap
+             set, leaving a re-grant path open
+          3. uid 1000 with all caps empty — exec session has the same
+             identity + fs ACL access as the workload
+
+        Pre-fix history:
+          - Originally `cage exec <cage> -- claude` ran as root with
+            full caps (image USER=root, container exec inherits)
+          - First fix (#162) added `-u 1000` so eff/prm caps drop, but
+            left CapBnd non-empty AND NoNewPrivs=0 — a setuid-root
+            binary could re-acquire CAP_NET_ADMIN and `iptables -F`
+            the egress filter
+          - This fix (capsh wrap) closes that last door"""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         mock_binary.return_value = "/usr/local/bin/container"
 
         _runner().invoke(main, ["cage", "exec", "demo", "--", "ls", "-la"])
 
-        # Routed through the apple `container` CLI WITH `-u 1000`.
         mock_execvp.assert_called_once_with(
             "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "-u", "1000",
-             "demo", "ls", "-la"],
+            ["/usr/local/bin/container", "exec", "-u", "0",
+             "demo",
+             "/bin/sh", "-c",
+             'CAGE_USER=$(getent passwd 1000 | cut -d: -f1) && '
+             'exec capsh --no-new-privs --drop=all '
+             '--user="$CAGE_USER" --shell=/bin/sh '
+             '-- -c \'exec ls -la\''],
         )
 
     @patch("agentcage.apple_container.cli.container_binary")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_exec_as_root_opts_back_to_root(
+    def test_exec_as_root_skips_capsh_wrap(
         self, mock_state, mock_execvp, mock_binary,
     ):
-        """`--as-root` preserves the operator-debug path: drops the
-        `-u 1000` override so the exec session inherits the wrapper's
-        USER (root). For one-off ops needs (`apt-get install`, etc.)."""
+        """`--as-root` bypasses capsh entirely — operator gets a root
+        shell with the container's full cap set + NoNewPrivs=0.
+        Necessary for `apt-get install` and similar one-off ops."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         mock_binary.return_value = "/usr/local/bin/container"
@@ -86,7 +103,11 @@ class TestCageExecAppleContainer:
         )
 
         argv = mock_execvp.call_args.args[1]
-        assert "-u" not in argv
+        # No capsh = full root with the container's caps.
+        assert "capsh" not in argv
+        assert "--no-new-privs" not in argv
+        assert "--drop=all" not in argv
+        # And no `-u 1000` either; image USER (root on wrapper) applies.
         assert "1000" not in argv
         assert "iptables" in argv
 
@@ -155,13 +176,21 @@ class TestCageShellAppleContainer:
             "/usr/local/bin/container", "exec", "demo", "test", "-x", "/bin/bash",
         ]
         # And the *first* execvp call is the bash that probed OK,
-        # WITH `-u 1000` (default privilege drop — see cage_exec tests
-        # for the security rationale).
+        # WRAPPED in `/bin/sh -c '... capsh --no-new-privs --drop=all
+        # --user="$CAGE_USER" ...'` (same primitive supervisor.sh uses
+        # at stage 90; see cage_exec tests for the security rationale).
+        # The shell wrapper resolves uid 1000 to its name because
+        # capsh's --user= takes a name, not a numeric uid.
         first_exec = mock_execvp.call_args_list[0]
         assert first_exec.args == (
             "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "-u", "1000",
-             "demo", "/bin/bash"],
+            ["/usr/local/bin/container", "exec", "-u", "0",
+             "demo",
+             "/bin/sh", "-c",
+             'CAGE_USER=$(getent passwd 1000 | cut -d: -f1) && '
+             'exec capsh --no-new-privs --drop=all '
+             '--user="$CAGE_USER" --shell=/bin/sh '
+             "-- -c 'exec /bin/bash'"],
         )
 
     @patch("agentcage.apple_container.cli.container_binary")
@@ -189,8 +218,13 @@ class TestCageShellAppleContainer:
         first_exec = mock_execvp.call_args_list[0]
         assert first_exec.args == (
             "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "-u", "1000",
-             "demo", "/bin/sh"],
+            ["/usr/local/bin/container", "exec", "-u", "0",
+             "demo",
+             "/bin/sh", "-c",
+             'CAGE_USER=$(getent passwd 1000 | cut -d: -f1) && '
+             'exec capsh --no-new-privs --drop=all '
+             '--user="$CAGE_USER" --shell=/bin/sh '
+             "-- -c 'exec /bin/sh'"],
         )
 
 
