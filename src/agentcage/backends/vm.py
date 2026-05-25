@@ -505,3 +505,67 @@ class VmBackend:
 
     def service_names(self, name: str) -> list[str]:
         return ["cage", "proxy", "dns"]
+
+    # --- Backend protocol: process inspection / streaming --------------------
+    #
+    # The VM backend wraps everything in ``limactl shell <inst> --`` and the
+    # journal needs ``sg systemd-journal`` because Lima's persistent SSH
+    # ControlMaster establishes the session before provisioning runs
+    # ``usermod -aG systemd-journal`` and the SSH inherits stale groups.
+
+    def exec_argv(
+        self,
+        name: str,
+        service: str,
+        cmd: list[str],
+        *,
+        interactive: bool = False,
+    ) -> list[str]:
+        inst = self._instance(name)
+        flags = ["-it"] if interactive else []
+        return ["limactl", "shell", inst.name, "--",
+                "podman", "exec", *flags, f"{name}-{service}", *cmd]
+
+    def logs_argv(
+        self,
+        name: str,
+        services: list[str],
+        *,
+        follow: bool = False,
+        lines: int = 0,
+        min_level: str | None = None,  # noqa: ARG002
+    ) -> list[str]:
+        import shlex
+        inst = self._instance(name)
+        # conmon routes proxy/dns logs to the system journal even when the
+        # service unit is a `--user` one, so the right filter is
+        # `--user-unit` rather than `--user -u`.
+        journal_argv = ["journalctl", "-o", "cat"]
+        for svc in services:
+            journal_argv += ["--user-unit", f"{name}-{svc}"]
+        if follow:
+            journal_argv.append("-f")
+        if lines:
+            journal_argv += ["-n", str(lines)]
+        return ["limactl", "shell", inst.name, "--",
+                "sg", "systemd-journal", "-c", shlex.join(journal_argv)]
+
+    def audit_argv(
+        self,
+        name: str,
+        *,
+        since: str | None = None,
+        follow: bool = False,
+    ) -> list[str]:
+        import shlex
+        inst = self._instance(name)
+        journal_argv = ["journalctl", "--user-unit", f"{name}-proxy",
+                        "--user-unit", f"{name}-dns", "-o", "cat"]
+        if since:
+            journal_argv += ["--since", since]
+        if follow:
+            journal_argv.append("-f")
+        else:
+            journal_argv += ["-n", "10000"]
+        return ["limactl", "shell", inst.name, "--",
+                "sg", "systemd-journal", "-c", shlex.join(journal_argv)]
