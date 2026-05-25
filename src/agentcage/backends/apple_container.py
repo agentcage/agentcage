@@ -281,11 +281,57 @@ class AppleContainerBackend:
             }
             for r in (config.secret_injection or [])
         ]
+        # Protocol relays (IMAP, SMTP) — same metadata-only contract as
+        # secret_injection: the credential VALUES never go into the
+        # image layer; only the structural config does. Credential env
+        # names are resolved at `start()` and written to the per-cage
+        # secrets bind mount alongside secret_injection values, so the
+        # in-cage addon can read them at relay-start time.
+        relay_rules = [
+            {
+                "name": r.name,
+                "type": r.type,
+                "listen": r.listen,
+                "upstream": {
+                    "host": r.upstream.host,
+                    "port": r.upstream.port,
+                    "tls": r.upstream.tls,
+                },
+                "auth": {
+                    "type": r.auth.type,
+                    "user_source": r.auth.user_source,
+                    "password_source": r.auth.password_source,
+                },
+                "policy": {
+                    "readonly": r.policy.readonly,
+                    "folder_allowlist": list(r.policy.folder_allowlist or []),
+                    "sender_allowlist": list(r.policy.sender_allowlist or []),
+                    "recipient_allowlist": {
+                        "addresses": list(
+                            r.policy.recipient_allowlist.addresses or []
+                        ),
+                        "domains": list(
+                            r.policy.recipient_allowlist.domains or []
+                        ),
+                    },
+                    "max_message_bytes": r.policy.max_message_bytes,
+                    "max_recipients": r.policy.max_recipients,
+                    "conn_rate_limit": r.policy.conn_rate_limit,
+                    "send_rate_limit": r.policy.send_rate_limit,
+                    "idle_timeout_seconds": r.policy.idle_timeout_seconds,
+                    "bypass_inspectors_for_allowlisted": list(
+                        r.policy.bypass_inspectors_for_allowlisted or []
+                    ),
+                },
+            }
+            for r in (config.protocol_relays or [])
+        ]
         ac_wrapper.build_wrapper(
             deploy_name, user_image,
             user_cmd=user_cmd,
             allowlist=allowlist,
             secret_injection_rules=secret_rules,
+            protocol_relays=relay_rules,
         )
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")
@@ -336,6 +382,21 @@ class AppleContainerBackend:
         secret_env_placeholders = {
             r.env: r.placeholder for r in (config.secret_injection or [])
         }
+        # Protocol-relay credential env names — must reach the mitmproxy
+        # process inside the cage (where the relay's _resolve_credential
+        # reads them) but must NOT reach the cage workload's env. We
+        # write each value into the same per-cage secrets bind mount
+        # secret_injection uses; the addon reads it at relay-start time
+        # and sets os.environ[<env>] before constructing the relay.
+        # Critically, these env names do NOT get a `-e` flag on
+        # `container run` — that's how we keep them off the cage
+        # workload's environ block.
+        relay_secret_envs: list[str] = []
+        for relay in (config.protocol_relays or []):
+            for src in (relay.auth.user_source, relay.auth.password_source):
+                scheme, _, var = (src or "").partition(":")
+                if scheme and var and var not in relay_secret_envs:
+                    relay_secret_envs.append(var)
         unit_json = json.dumps(
             {
                 "name": deploy_name,
@@ -345,6 +406,7 @@ class AppleContainerBackend:
                 "lifecycle": config.lifecycle,
                 "secret_envs": secret_envs,
                 "secret_env_placeholders": secret_env_placeholders,
+                "relay_secret_envs": relay_secret_envs,
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
             },
             indent=2,
@@ -458,7 +520,17 @@ class AppleContainerBackend:
         # existing cages keep working after upgrade.
         placeholders = meta.get("secret_env_placeholders") or {}
         secret_envs = meta.get("secret_envs") or list(placeholders.keys())
-        if secret_envs:
+        # Protocol-relay credential env names. Same secrets bind mount as
+        # secret_injection — but NO `-e` flag is added to `container run`,
+        # so the cage workload's environ block never carries the relay
+        # password. The in-cage mitmproxy addon reads each file in its
+        # `running()` hook and `os.environ[var] = value` before calling
+        # the relay's constructor.
+        relay_secret_envs = meta.get("relay_secret_envs") or []
+        all_secret_envs = list(secret_envs) + [
+            v for v in relay_secret_envs if v not in secret_envs
+        ]
+        if all_secret_envs:
             secrets_dir = self.secrets_dir(name)
             secrets_dir.mkdir(parents=True, exist_ok=True)
             os.chmod(secrets_dir, 0o700)
@@ -466,15 +538,32 @@ class AppleContainerBackend:
             # rules don't linger in the bind mount.
             for stale in secrets_dir.iterdir():
                 stale.unlink()
-            for env_name in secret_envs:
+            relay_only = set(relay_secret_envs) - set(secret_envs)
+            for env_name in all_secret_envs:
                 value = os.environ.get(env_name)
                 if value is None:
-                    click.echo(
-                        f"warning: secret_injection env {env_name!r} "
-                        f"not set in host environment; placeholder will "
-                        f"NOT be substituted in cage requests",
-                        err=True,
-                    )
+                    if env_name in relay_only:
+                        click.echo(
+                            f"warning: protocol_relays env {env_name!r} "
+                            f"not set in host environment; the relay "
+                            f"will fail to start with empty credentials",
+                            err=True,
+                        )
+                    else:
+                        click.echo(
+                            f"warning: secret_injection env {env_name!r} "
+                            f"not set in host environment; placeholder will "
+                            f"NOT be substituted in cage requests",
+                            err=True,
+                        )
+                    continue
+                if env_name in relay_only:
+                    # Relay credential — file goes in the bind mount so
+                    # the addon can read it, but no `-e` so the cage
+                    # workload never sees the credential name in its env.
+                    secret_file = secrets_dir / env_name
+                    secret_file.write_text(value)
+                    os.chmod(secret_file, 0o600)
                     continue
                 placeholder = placeholders.get(env_name)
                 if placeholder:

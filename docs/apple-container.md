@@ -174,6 +174,49 @@ and dnsmasq run inside the same microVM)
 
 **Proper fix path (deferred).** Would need a routing layer in the supervisor that listens on a control socket and proxies exec requests to the right component's namespace. Architectural, not a small patch.
 
+### `protocol_relays:` — wired (was a gap pre-0.21.x)
+
+**Status.** Fixed. `protocol_relays:` entries (IMAP, SMTP) now spawn real TCP listeners inside the apple-container microVM. The in-cage mitmproxy addon's `running()` hook reads the cage's relay list from `/etc/agentcage/protocol_relays.json` (baked in at wrapper-build time), dispatches each entry's `type` through the same `data/proxy/relays` registry the container backend uses, and starts a listener on the configured `listen:` address. Pre-0.21.1 the config parsed cleanly but silently spawned nothing — outbound SMTP / IMAP from the cage would just hang. Audit events from the relay (`smtp_data`, `imap_command`, `smtp_command`, ...) land in the same `audit.jsonl` as HTTP allow/block decisions, so `cage audit` surfaces them under one timeline.
+
+**Credential handling.** Relay credentials (`auth.user_source: env:SMTP_USER`, etc.) take the same hardened path `secret_injection:` does on 0.21.1+: the backend writes each value into the per-cage secrets bind mount (`<state>/<cage>/secrets/<env>`, mode 0600), supervisor stage 35 re-stages into `/home/acproxy/secrets/<env>` (chown 200:200 mode 0400) for mitmproxy, then `umount`s the host bind so the cage workload cannot read it. The addon reads each relay-secret file in its `running()` hook and sets `os.environ[<env>]` for the relay's own `_resolve_credential` to pick up. Crucially, relay credentials are **NOT** passed as `-e` flags to `container run` — they live only in the mitmproxy process's env, so `container inspect <cage>` and the cage workload's `/proc/self/environ` never carry them.
+
+**Loopback access.** Cage workloads reach the relay over loopback on whatever port the cage author chose in `listen:`. Supervisor stage 80 reads `protocol_relays.json` and adds a per-port `iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport <port> -j ACCEPT` rule — without it the default-DROP filter chain would silently kill cage→relay connections.
+
+**Inspector chain (caveat).** The apple-container relay path currently runs with `inspectors=None` — relay-level policy (`recipient_allowlist`, `sender_allowlist`, `max_message_bytes`, rate limits) still applies, but the body inspector chain (`secrets`, `entropy`, `content-type`) does not run on SMTP `DATA` payloads. Full inspector-chain parity is the next item under #120; the container backend already wires it (`src/agentcage/data/proxy/addon.py:_start_protocol_relays`).
+
+**Example.**
+
+```yaml
+# cage.yaml — outbound SMTP through a hardened relay
+name: mail-cage
+isolation: apple-container
+container:
+  image: ubuntu:24.04
+domains:
+  allow:
+    - smtp.example.net   # only the upstream MTA is reachable
+protocol_relays:
+  - name: primary-smtp
+    type: smtp
+    listen: 127.0.0.1:2525
+    upstream:
+      host: smtp.example.net
+      port: 587
+      tls: true
+    auth:
+      type: smtp-plain
+      user_source: env:SMTP_USER
+      password_source: env:SMTP_PASS
+    policy:
+      sender_allowlist: ["bot@local"]
+      recipient_allowlist:
+        domains: ["example.com"]
+      max_message_bytes: 1048576
+      send_rate_limit: "20/hour"
+```
+
+`SMTP_USER` / `SMTP_PASS` must be set in the host environment at `cage start` time — the backend writes them into the secrets bind mount and the cage workload never sees them.
+
 ### `secret_injection.transform` — wired (was a gap pre-0.21.x)
 
 **Status.** Fixed. `transform: google-jwt-bearer` (and any future entry in `KNOWN_TRANSFORMS`) now runs end-to-end on apple-container: the in-cage mitmproxy addon loads the same `data/proxy/transforms` registry the container backend uses, mints a derived value at request time (e.g. a short-lived OAuth bearer from a service-account JWT), and substitutes that — not the raw env-passed credential — into the outbound request. The "silently has no effect on apple-container" warning no longer fires for known transforms.

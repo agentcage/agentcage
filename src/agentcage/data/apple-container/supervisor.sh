@@ -243,6 +243,29 @@ iptables -t nat -A OUTPUT -p tcp --dport 443 \
 iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport 8080 -j ACCEPT
 iptables -A OUTPUT -p udp -d 127.0.0.1 --dport 53 -j ACCEPT
 iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport 53 -j ACCEPT
+
+# Protocol relays (IMAP, SMTP) listen on cage-author-chosen ports inside
+# the same mitmproxy process (uid 200). The cage workload reaches them
+# over loopback — without an explicit ACCEPT per relay port the default
+# DROP policy would silently kill cage→relay connections. The relay
+# listens on whatever ``listen:`` says in cage.yaml; we read the JSON
+# the wrapper baked into the image and open one loopback ACCEPT per
+# unique destination port. jq is already required for stage 20.
+if [ -f /etc/agentcage/protocol_relays.json ]; then
+  RELAY_PORTS=$(jq -r '
+    .[]
+    | .listen // ""
+    | split(":")
+    | .[-1]
+    | select(test("^[0-9]+$"))
+  ' /etc/agentcage/protocol_relays.json 2>/dev/null \
+    | sort -u || true)
+  for port in ${RELAY_PORTS}; do
+    log "stage 80: allowing loopback access on protocol_relay port ${port}"
+    iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport "${port}" -j ACCEPT \
+      || die "iptables protocol_relay loopback rule failed (port ${port})" 82
+  done
+fi
 # mitmproxy ↔ self (the addon talks to mitmproxy's own internals) and
 # dnsmasq ↔ self need full loopback; uid-owner ACCEPT rules below cover
 # that path because both run as their respective per-component uids.

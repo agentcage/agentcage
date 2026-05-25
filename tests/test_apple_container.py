@@ -1614,3 +1614,439 @@ def test_response_redaction_skips_binary_body(tmp_path, monkeypatch):
     assert flow.response.content == binary
     # Header still got redacted.
     assert flow.response.headers["X-Trace"] == "echo {{AGENTCAGE_REDACT_SECRET}} back"
+
+
+# ---------------------------------------------------------------------------
+# protocol_relays (PR #160): SMTP/IMAP listeners on apple-container
+# ---------------------------------------------------------------------------
+
+
+def _smtp_relay_entry(name="primary-smtp", port=2525):
+    return {
+        "name": name,
+        "type": "smtp",
+        "listen": f"127.0.0.1:{port}",
+        "upstream": {
+            "host": "smtp.example.net",
+            "port": 587,
+            "tls": True,
+        },
+        "auth": {
+            "type": "smtp-plain",
+            "user_source": "env:AGENTCAGE_SMTP_USER",
+            "password_source": "env:AGENTCAGE_SMTP_PASSWORD",
+        },
+        "policy": {
+            "sender_allowlist": ["sender@local"],
+            "recipient_allowlist": {"domains": ["example.com"]},
+        },
+    }
+
+
+def test_stage_build_context_writes_protocol_relays_json(tmp_path):
+    """The cage's ``protocol_relays:`` list is baked into the wrapper image
+    so the in-cage addon can spawn listeners at mitmproxy startup. The
+    file must be JSON the addon's loader can read+parse — same shape as
+    secret_injection.json.
+    """
+    relays = [_smtp_relay_entry()]
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"],
+        allowlist=["smtp.example.net"],
+        protocol_relays=relays,
+    )
+    pr = json.loads((tmp_path / "protocol_relays.json").read_text())
+    assert pr == relays
+    assert pr[0]["type"] == "smtp"
+    assert pr[0]["listen"] == "127.0.0.1:2525"
+
+
+def test_stage_build_context_empty_protocol_relays(tmp_path):
+    """No relays declared → empty list (NOT a missing file), so the
+    addon's loader can read unconditionally without a path check."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    assert (tmp_path / "protocol_relays.json").exists()
+    assert json.loads((tmp_path / "protocol_relays.json").read_text()) == []
+
+
+def test_stage_build_context_stages_relays_tarball(tmp_path):
+    """The ``relays`` package must be staged as a tarball so the in-cage
+    addon can ``from relays import get`` after ADD-extraction. Same
+    rationale as the transforms tarball — Apple's container build
+    silently drops the contents of a directory COPY."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    archive = tmp_path / "relays.tar.gz"
+    assert archive.exists()
+    import tarfile as _tf
+    with _tf.open(archive) as tar:
+        names = sorted(tar.getnames())
+    assert "__init__.py" in names
+    assert "smtp.py" in names
+    assert "imap.py" in names
+    assert "_validate.py" in names
+
+
+def test_stage_build_context_stages_inspectors_tarball(tmp_path):
+    """The ``relays.smtp`` module imports ``inspectors.base`` at module
+    load time — bundling the inspectors package satisfies that import
+    even though the apple-container addon currently passes
+    ``inspectors=None`` to relay constructors. Without this the addon
+    crashes at relay-import time the moment a cage declares
+    ``protocol_relays:``."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    archive = tmp_path / "inspectors.tar.gz"
+    assert archive.exists()
+    import tarfile as _tf
+    with _tf.open(archive) as tar:
+        names = sorted(tar.getnames())
+    assert "__init__.py" in names
+    assert "base.py" in names
+    assert "util.py" in names
+
+
+def test_wrapper_containerfile_adds_relays_and_inspectors():
+    """The Containerfile must ADD relays.tar.gz + inspectors.tar.gz
+    next to the addon — mitmproxy's script loader puts the addon's
+    dir on sys.path, so the packages live at /opt/agentcage/{relays,
+    inspectors}/ for ``from relays import get`` to resolve."""
+    out = ac_wrapper.render_wrapper_containerfile(
+        "docker.io/library/alpine:3.20",
+        user_cmd=["sh", "-c", "echo hi"],
+    )
+    assert "ADD relays.tar.gz /opt/agentcage/relays/" in out
+    assert "ADD inspectors.tar.gz /opt/agentcage/inspectors/" in out
+    assert "COPY protocol_relays.json /etc/agentcage/protocol_relays.json" in out
+    # And we must NOT regress to the broken directory-COPY form.
+    assert "COPY relays /opt/agentcage/relays" not in out
+    assert "COPY inspectors /opt/agentcage/inspectors" not in out
+
+
+def test_backend_threads_protocol_relays_into_build_artifacts(
+    tmp_path, monkeypatch,
+):
+    """The apple-container backend must forward ``protocol_relays`` from
+    the parsed Config through to wrapper.build_wrapper. Catches the
+    silent-drop regression: rule loaded fine, image built fine, but
+    the cage saw no relays.json baked in."""
+    captured: dict = {}
+
+    def fake_build_wrapper(_name, _image, **kwargs):
+        captured["protocol_relays"] = kwargs.get("protocol_relays")
+        return "localhost/agentcage-apple-test:latest"
+
+    from agentcage.backends import apple_container as backend_mod
+    monkeypatch.setattr(
+        backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper,
+    )
+    monkeypatch.setattr(
+        ac_cli, "image_inspect",
+        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
+    )
+    monkeypatch.setattr(
+        ac_cli, "run",
+        lambda *_a, **_kw: type(
+            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
+        )(),
+    )
+
+    from agentcage.config import (
+        ProtocolRelay, RelayAuth, RelayPolicy,
+        RelayRecipientAllowlist, RelayUpstream,
+    )
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/test:latest"
+    cfg.container.command = ["/bin/sh"]
+    cfg.protocol_relays = [
+        ProtocolRelay(
+            name="primary",
+            type="smtp",
+            listen="127.0.0.1:2525",
+            upstream=RelayUpstream(
+                host="smtp.example.net", port=587, tls=True,
+            ),
+            auth=RelayAuth(
+                type="smtp-plain",
+                user_source="env:SMTP_USER",
+                password_source="env:SMTP_PASS",
+            ),
+            policy=RelayPolicy(
+                recipient_allowlist=RelayRecipientAllowlist(
+                    domains=["example.com"],
+                ),
+            ),
+        ),
+    ]
+    cfg.domains.allow = ["smtp.example.net"]
+
+    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    relays = captured["protocol_relays"]
+    assert len(relays) == 1
+    assert relays[0]["name"] == "primary"
+    assert relays[0]["type"] == "smtp"
+    assert relays[0]["listen"] == "127.0.0.1:2525"
+    assert relays[0]["upstream"]["host"] == "smtp.example.net"
+    assert relays[0]["auth"]["user_source"] == "env:SMTP_USER"
+    # The policy must carry over so the in-cage addon can construct
+    # the same SmtpRelay state machine the container backend does.
+    assert relays[0]["policy"]["recipient_allowlist"]["domains"] == [
+        "example.com",
+    ]
+
+
+def test_backend_protocol_relay_envs_collected_into_unit_json(monkeypatch):
+    """``generate_units`` must capture every relay credential env name
+    so ``start()`` knows to read+stage the value into the per-cage
+    secrets dir. Crucially, these env names are NOT placed in
+    ``secret_envs`` — that list drives the ``-e PLACEHOLDER`` flag
+    set, and relay credentials must stay off the cage workload's env
+    block.
+    """
+    from agentcage.config import (
+        ProtocolRelay, RelayAuth, RelayPolicy,
+        RelayRecipientAllowlist, RelayUpstream,
+    )
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/test:latest"
+    cfg.protocol_relays = [
+        ProtocolRelay(
+            name="primary",
+            type="smtp",
+            listen="127.0.0.1:2525",
+            upstream=RelayUpstream(host="smtp.example.net", port=587),
+            auth=RelayAuth(
+                type="smtp-plain",
+                user_source="env:SMTP_USER",
+                password_source="env:SMTP_PASS",
+            ),
+            policy=RelayPolicy(
+                recipient_allowlist=RelayRecipientAllowlist(),
+            ),
+        ),
+    ]
+    cfg.domains.allow = ["smtp.example.net"]
+
+    units = AppleContainerBackend().generate_units(
+        cfg, "/dev/null", "/dev/null", "t",
+    )
+    meta = json.loads(units["t.json"])
+    assert sorted(meta["relay_secret_envs"]) == ["SMTP_PASS", "SMTP_USER"]
+    # Relay creds must NOT appear in secret_envs — start() uses that
+    # list to set `-e ENV={{PLACEHOLDER}}` on the cage workload, which
+    # is exactly what we DON'T want for relay credentials.
+    assert "SMTP_USER" not in meta["secret_envs"]
+    assert "SMTP_PASS" not in meta["secret_envs"]
+
+
+def test_addon_running_hook_spawns_relay(monkeypatch, tmp_path):
+    """End-to-end addon test: a protocol_relays entry in the JSON file
+    causes the addon's ``running()`` hook to dispatch through the
+    relays registry, instantiate the relay class, and schedule
+    ``start()`` on the asyncio loop. The relay's credential env vars
+    are seeded from the secrets dir before instantiation so the
+    relay's ``_resolve_credential`` succeeds.
+
+    Uses a fake relay registered in-process so we don't need a real
+    SMTP listener or network. The wiring is the load-bearing part —
+    the SMTP state machine is already covered in
+    tests/test_protocol_relays_smtp.py.
+    """
+    import asyncio
+    import importlib
+    import os
+    import sys
+
+    addon_dir = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container"
+    )
+    proxy_dir = addon_dir.parent / "proxy"
+    monkeypatch.syspath_prepend(str(addon_dir))
+    monkeypatch.syspath_prepend(str(proxy_dir))
+
+    # Pre-stage the relay credential in the secrets dir the addon
+    # reads from. The supervisor stage 35 normally does this from the
+    # host bind mount; for unit testing we just write the file.
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "AGENTCAGE_RELAY_USER").write_text("relay-user")
+    (secrets_dir / "AGENTCAGE_RELAY_PASS").write_text("relay-pass")
+
+    relays_cfg = [{
+        "name": "test-relay",
+        # We use type "smtp" so structural validation passes, then
+        # swap the registry below to return a fake class. Using a made-up
+        # type here would be rejected by validate_relay_entry before
+        # the registry is even consulted.
+        "type": "smtp",
+        "listen": "127.0.0.1:25000",
+        "upstream": {"host": "smtp.example.net", "port": 587, "tls": True},
+        "auth": {
+            "type": "smtp-plain",
+            "user_source": "env:AGENTCAGE_RELAY_USER",
+            "password_source": "env:AGENTCAGE_RELAY_PASS",
+        },
+        "policy": {
+            "recipient_allowlist": {"domains": ["example.com"]},
+        },
+    }]
+    relays_path = tmp_path / "protocol_relays.json"
+    relays_path.write_text(json.dumps(relays_cfg))
+    (tmp_path / "allowlist.txt").write_text("smtp.example.net\n")
+    (tmp_path / "secret_injection.json").write_text("[]")
+
+    # Register a fake relay class on the shared registry so the addon's
+    # ``_get_relay`` lookup resolves without us needing a real SMTP
+    # listener. The fake records the kwargs it was called with and
+    # exposes start/stop coroutines.
+    import relays as _r  # noqa: WPS433  (test-only)
+    importlib.reload(_r)
+
+    constructed: list[dict] = []
+
+    class _FakeRelay:
+        def __init__(self, entry, *, audit_log, log_allowed, inspectors):
+            constructed.append({
+                "entry": entry,
+                "audit_log": audit_log,
+                "log_allowed": log_allowed,
+                "inspectors": inspectors,
+            })
+            self.started = False
+            self.stopped = False
+
+        async def start(self):
+            self.started = True
+
+        async def stop(self):
+            self.stopped = True
+
+    # Swap the smtp slot in the registry for our fake. The addon's
+    # ``_get_relay("smtp")`` looks up ``_REGISTRY["smtp"]`` first, so an
+    # explicit register() of the same name short-circuits ``_lazy_load``.
+    _r.register("smtp", _FakeRelay)
+
+    # Point the addon's module-level paths at our tmp files BEFORE import.
+    sys.modules.pop("allowlist_addon", None)
+    allowlist_addon = importlib.import_module("allowlist_addon")
+    allowlist_addon.SECRETS_DIR = str(secrets_dir)
+    allowlist_addon.SECRET_INJECTION_PATH = str(
+        tmp_path / "secret_injection.json"
+    )
+    allowlist_addon.ALLOWLIST_PATH = str(tmp_path / "allowlist.txt")
+    allowlist_addon.PROTOCOL_RELAYS_PATH = str(relays_path)
+    allowlist_addon.AUDIT_LOG_PATH = str(tmp_path / "audit.jsonl")
+    allowlist_addon.CAPTURE_PATH = str(tmp_path / "capture.jsonl")
+
+    addon = allowlist_addon.AllowlistAddon()
+    # Relay entries are loaded at __init__ but listeners are deferred
+    # to ``running()`` (need the mitmproxy asyncio loop).
+    assert len(addon._relay_entries) == 1
+    assert addon._relays == []
+
+    # Drive the running() hook on a real loop and let the start task run.
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        addon.running()
+        # One tick to let the scheduled task progress.
+        loop.run_until_complete(asyncio.sleep(0))
+    finally:
+        loop.run_until_complete(addon.done())
+        loop.close()
+        asyncio.set_event_loop(None)
+
+    assert len(constructed) == 1
+    record = constructed[0]
+    # The relay constructor was called with the entry from the JSON
+    # plus our addon's audit sink — so SMTP audit records land in the
+    # same audit.jsonl as HTTP allow/block decisions.
+    assert record["entry"]["name"] == "test-relay"
+    assert callable(record["audit_log"])
+    # ``inspectors=None`` is the v1 wiring; tracked in #120.
+    assert record["inspectors"] is None
+    # Credentials must have been seeded into os.environ before
+    # construction — that's the apple-container-specific glue that
+    # lets the relay's own ``_resolve_credential("env:VAR")`` work
+    # against the bind-mounted secrets file.
+    assert os.environ.get("AGENTCAGE_RELAY_USER") == "relay-user"
+    assert os.environ.get("AGENTCAGE_RELAY_PASS") == "relay-pass"
+    # The relay was started and then stopped (done() drains).
+    assert len(addon._relays) == 1
+    relay_obj = addon._relays[0]
+    assert relay_obj.started is True
+    assert relay_obj.stopped is True
+
+
+def test_addon_running_hook_no_relays_is_noop(monkeypatch, tmp_path):
+    """A cage with no ``protocol_relays:`` must not touch the relays
+    package at all — keeps existing apple-container cages from paying
+    the cost of an unnecessary import and avoids spurious failures on
+    import errors when no relay was ever configured."""
+    addon_mod = _load_addon_module()
+    monkeypatch.setattr(
+        addon_mod, "PROTOCOL_RELAYS_PATH", str(tmp_path / "no-such-file.json"),
+    )
+    monkeypatch.setattr(
+        addon_mod, "ALLOWLIST_PATH", str(tmp_path / "allowlist.txt"),
+    )
+    monkeypatch.setattr(
+        addon_mod, "SECRET_INJECTION_PATH",
+        str(tmp_path / "secret_injection.json"),
+    )
+    (tmp_path / "allowlist.txt").write_text("a.com\n")
+    (tmp_path / "secret_injection.json").write_text("[]")
+    addon = addon_mod.AllowlistAddon()
+    assert addon._relay_entries == []
+    addon.running()  # should be a no-op
+    assert addon._relays == []
+
+
+def test_validate_config_protocol_relays_on_apple_container_no_warning():
+    """A cage.yaml with ``protocol_relays:`` on apple-container must NOT
+    trigger any silent-drop warning — relays are wired now. (We never
+    had an explicit warning for this, but the test pins the contract
+    in case someone adds one later.)
+
+    Construct the Config directly so the test runs on any host (the
+    platform-gated isolation acceptance is exercised elsewhere).
+    """
+    from agentcage.config import (
+        ProtocolRelay, RelayAuth, RelayPolicy,
+        RelayRecipientAllowlist, RelayUpstream,
+    )
+    # Patch the platform check so validate_config accepts
+    # isolation="apple-container" off-Mac.
+    with patch.object(platform, "system", return_value="Darwin"), \
+            patch.object(platform, "machine", return_value="arm64"), \
+            patch.object(
+                platform, "mac_ver",
+                return_value=("26.0", ("", "", ""), ""),
+            ):
+        cfg = Config(name="relays-cage", isolation="apple-container")
+        cfg.container.image = "ubuntu:24.04"
+        cfg.domains.allow = ["smtp.example.net"]
+        cfg.ports.tcp.passthrough = [2525]
+        cfg.protocol_relays = [
+            ProtocolRelay(
+                name="primary",
+                type="smtp",
+                listen="127.0.0.1:2525",
+                upstream=RelayUpstream(
+                    host="smtp.example.net", port=587, tls=True,
+                ),
+                auth=RelayAuth(
+                    type="smtp-plain",
+                    user_source="env:SMTP_USER",
+                    password_source="env:SMTP_PASS",
+                ),
+                policy=RelayPolicy(
+                    recipient_allowlist=RelayRecipientAllowlist(
+                        domains=["example.com"],
+                    ),
+                ),
+            ),
+        ]
+        warnings = validate_config(cfg)
+    relay_warnings = [w for w in warnings if "protocol_relays" in w]
+    assert relay_warnings == []

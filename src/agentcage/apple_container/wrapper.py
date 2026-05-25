@@ -28,6 +28,22 @@ _DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "apple-container"
 _TRANSFORMS_SRC = (
     Path(__file__).resolve().parent.parent / "data" / "proxy" / "transforms"
 )
+# Protocol relays (IMAP, SMTP) — non-HTTP secret-injection listeners that
+# run on the same mitmproxy event loop as the HTTP allowlist. Bundled
+# into the apple-container image so the addon can do
+# ``from relays import get`` once a cage.yaml declares ``protocol_relays:``.
+_RELAYS_SRC = (
+    Path(__file__).resolve().parent.parent / "data" / "proxy" / "relays"
+)
+# Inspector base classes that ``relays.smtp`` imports at module load
+# (``from inspectors.base import InspectionContext, ...``). Bundled
+# even though the apple-container addon currently passes
+# ``inspectors=None`` to relay constructors — without the package on
+# sys.path the relay module itself fails to import. Tracked as part
+# of the broader inspector-chain parity work in #120.
+_INSPECTORS_SRC = (
+    Path(__file__).resolve().parent.parent / "data" / "proxy" / "inspectors"
+)
 
 
 def _user_cmd(user_image: str) -> list[str]:
@@ -92,11 +108,33 @@ def render_wrapper_containerfile(user_image: str, *, user_cmd: list[str] | None 
     return tmpl.render(user_image=user_image)
 
 
+def _pack_tarball(src: Path, archive: Path) -> None:
+    """Pack ``src``'s top-level entries into a flat ``archive`` tarball.
+
+    Excludes ``__pycache__`` (host-local Python bytecode that bloats
+    the image layer and ruins layer determinism). Entries are added in
+    sorted order so each rebuild with unchanged source produces a
+    bit-identical artifact — helps Apple's container layer cache and
+    is required for reproducible-build digests downstream.
+
+    The archive uses flat (top-level-only) ``arcname``s so an
+    ``ADD foo.tar.gz /opt/agentcage/foo/`` directive in the
+    Containerfile drops the contents straight into the target dir
+    — no nested ``foo/foo/...`` directory.
+    """
+    with tarfile.open(archive, "w:gz") as tar:
+        for entry in sorted(src.iterdir()):
+            if entry.name == "__pycache__":
+                continue
+            tar.add(entry, arcname=entry.name)
+
+
 def stage_build_context(
     dest: Path,
     user_cmd: list[str],
     allowlist: list[str] | None = None,
     secret_injection_rules: list[dict] | None = None,
+    protocol_relays: list[dict] | None = None,
 ) -> None:
     """Stage supervisor + cage CMD + egress filter config into *dest*.
 
@@ -118,8 +156,26 @@ def stage_build_context(
                                  implementations (google-jwt-bearer, ...)
                                  the container backend uses. Rules with no
                                  ``transform`` field never load this code.
+      - relays.tar.gz         -- tarball of ``data/proxy/relays`` so the
+                                 in-cage addon can ``from relays import get``
+                                 to spawn IMAP/SMTP listeners declared in
+                                 cage.yaml ``protocol_relays:``.
+      - inspectors.tar.gz     -- tarball of ``data/proxy/inspectors`` —
+                                 the relays package imports
+                                 ``inspectors.base`` at module load even
+                                 when the apple-container addon passes
+                                 ``inspectors=None``; bundling satisfies
+                                 the import without dragging the full
+                                 mitmproxy inspector wiring in.
+      - protocol_relays.json  -- the cage's ``protocol_relays:`` list
+                                 (passes through ``name/type/listen/
+                                 upstream/auth/policy``). Credential
+                                 VALUES are NOT here — the addon reads
+                                 them at relay-start time from the same
+                                 ``/home/acproxy/secrets/<env>`` files
+                                 secret_injection uses.
 
-    NOTE on the tarball: Apple's ``container build`` (0.5+) silently
+    NOTE on the tarballs: Apple's ``container build`` (0.5+) silently
     drops the contents when a Containerfile does ``COPY <dir> <dst>``
     — the destination directory exists but is empty. ADD'ing a
     ``.tar.gz`` works because the underlying buildkit path
@@ -131,26 +187,24 @@ def stage_build_context(
     shutil.copy2(_DATA_DIR / "supervisor.sh", dest / "supervisor.sh")
     shutil.copy2(_DATA_DIR / "dnsmasq.conf", dest / "dnsmasq.conf")
     shutil.copy2(_DATA_DIR / "allowlist_addon.py", dest / "allowlist_addon.py")
-    # Pack the transforms package into a deterministic tarball so each
-    # rebuild with unchanged source produces a bit-identical artifact
-    # (helps Apple's container layer cache; would also help reproducible
-    # builds if/when we cross-check image digests in CI). Tarball is
-    # small (a few KB) so the .gz / non-.gz choice doesn't matter.
-    transforms_archive = dest / "transforms.tar.gz"
-    with tarfile.open(transforms_archive, "w:gz") as tar:
-        for entry in sorted(_TRANSFORMS_SRC.iterdir()):
-            # Skip Python bytecode caches — they're host-local and would
-            # bloat the layer for zero functional benefit.
-            if entry.name == "__pycache__":
-                continue
-            # arcname is relative to the archive root so ADD extracts
-            # straight into /opt/agentcage/transforms/<file>.
-            tar.add(entry, arcname=entry.name)
+    # Pack the transforms, relays, and inspectors packages into
+    # deterministic tarballs (sorted entries, no __pycache__). Each is
+    # a few KB; the COPY-drop bug forces us through ADD for every
+    # directory we want bundled.
+    _pack_tarball(_TRANSFORMS_SRC, dest / "transforms.tar.gz")
+    _pack_tarball(_RELAYS_SRC, dest / "relays.tar.gz")
+    _pack_tarball(_INSPECTORS_SRC, dest / "inspectors.tar.gz")
     (dest / "cage-cmd.json").write_text(json.dumps(user_cmd))
     allow_lines = "\n".join(h.strip() for h in (allowlist or []) if h.strip())
     (dest / "allowlist.txt").write_text(allow_lines + ("\n" if allow_lines else ""))
     (dest / "secret_injection.json").write_text(
         json.dumps(secret_injection_rules or [])
+    )
+    # protocol_relays.json is always written (possibly as ``[]``) so the
+    # in-cage addon's loader can read+parse unconditionally — same
+    # pattern as secret_injection.json above.
+    (dest / "protocol_relays.json").write_text(
+        json.dumps(protocol_relays or [])
     )
 
 
@@ -166,6 +220,7 @@ def build_wrapper(
     user_cmd: list[str] | None = None,
     allowlist: list[str] | None = None,
     secret_injection_rules: list[dict] | None = None,
+    protocol_relays: list[dict] | None = None,
 ) -> str:
     """Generate Containerfile, stage build context, run `container build`.
 
@@ -185,6 +240,7 @@ def build_wrapper(
         stage_build_context(
             tmpdir, user_cmd, allowlist=allowlist,
             secret_injection_rules=secret_injection_rules,
+            protocol_relays=protocol_relays,
         )
         ac_cli.run(
             ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],
