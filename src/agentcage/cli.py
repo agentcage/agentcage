@@ -2604,18 +2604,24 @@ def _update_dns_quadlet(cfg) -> None:
             for svc in reversed(services):
                 inst.exec(["systemctl", "--user", "start", f"{name}-{svc}.service"])
     elif _is_apple_container(cfg):
-        # On apple-container the proxy/dns allowlist is baked into the
-        # wrapper image at build time, so the new allowlist only takes
-        # effect after a `cage update`. Restart the cage so the user at
-        # least sees a fresh container; warn that a rebuild is required
-        # for the change to apply.
-        if backend.is_running(name, "cage"):
-            backend.restart(name)
-        click.echo(
-            "note: apple-container bakes the allowlist into the wrapper "
-            "image; run `agentcage cage update " + name + "` to apply.",
-            err=True,
-        )
+        # On apple-container the dnsmasq + mitmproxy allowlists are baked
+        # into the wrapper image at build_artifacts() time — there's no
+        # bind-mounted allowlist file the running supervisor can re-read
+        # yet (that infra lands with the observability bridge in #120).
+        # A plain restart would re-execute the OLD allowlist; the change
+        # the user just saved to cage.yaml would silently not apply.
+        #
+        # Trigger the same build path `cage update` uses: rebuild the
+        # wrapper image (Apple's layer cache makes this ~1–2s on warm
+        # systems), then restart so the cage runs against the new image.
+        # Users no longer have to remember "now run cage update" — domain
+        # add/rm behaves like container/vm: change saved → effect applied.
+        was_running = backend.is_running(name, "cage")
+        if was_running:
+            backend.stop(name)
+        backend.build_artifacts(cfg, name, quiet=True)
+        if was_running:
+            backend.start(name, quiet=True)
     else:
         if backend.is_running(name, "dns"):
             # Stop most-dependent first, start dependencies first.
