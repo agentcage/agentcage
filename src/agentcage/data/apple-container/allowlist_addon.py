@@ -29,6 +29,7 @@ changes. Empty allowlist means "block everything".
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -39,6 +40,7 @@ from mitmproxy import ctx, http
 
 ALLOWLIST_PATH = "/etc/agentcage/allowlist.txt"
 SECRET_INJECTION_PATH = "/etc/agentcage/secret_injection.json"
+PROTOCOL_RELAYS_PATH = "/etc/agentcage/protocol_relays.json"
 # Per-cage resolved-secret files; supervisor stage 35 re-stages from
 # the host-bind-mounted /run/agentcage/secrets to this acproxy-only path
 # (chown 200:200, mode 0400). The cage workload (uid 1000) cannot read
@@ -88,6 +90,26 @@ def _load_secret_injection_rules() -> list[dict]:
     """
     try:
         with open(SECRET_INJECTION_PATH) as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _load_protocol_relays() -> list[dict]:
+    """Load the cage's ``protocol_relays`` list, baked in at build time.
+
+    Each entry is a YAML-parsed protocol_relays mapping with
+    ``name/type/listen/upstream/auth/policy`` keys. The actual
+    credential VALUES are NOT in this file (they live alongside
+    secret_injection secrets at /home/acproxy/secrets/<env> after
+    supervisor stage 35 re-stages them). The addon resolves them
+    in ``_seed_relay_secrets_env`` below before constructing each
+    relay so the relay's own ``_resolve_credential(scheme:VAR)``
+    can read them straight from ``os.environ``.
+    """
+    try:
+        with open(PROTOCOL_RELAYS_PATH) as f:
             data = json.load(f)
             return data if isinstance(data, list) else []
     except (OSError, ValueError):
@@ -181,6 +203,15 @@ class AllowlistAddon:
             )
         self._audit_fh = self._open_log(AUDIT_LOG_PATH)
         self._capture_fh = self._open_log(CAPTURE_PATH)
+
+        # Protocol relays (IMAP, SMTP, ...) — loaded here, instantiated
+        # in the ``running()`` hook once the mitmproxy asyncio loop is
+        # live. We can't start TCP listeners from __init__ because the
+        # loop may not exist yet (mitmproxy creates it during its own
+        # startup). The relay objects themselves live in
+        # ``self._relays`` so the ``done()`` hook can drain them.
+        self._relay_entries: list[dict] = _load_protocol_relays()
+        self._relays: list = []
 
     @staticmethod
     def _host_matches_inject_to(host: str, inject_to: list[str]) -> bool:
@@ -490,6 +521,201 @@ class AllowlistAddon:
             },
         }
         self._write(self._capture_fh, capture)
+
+    # ── Protocol relays (IMAP, SMTP, ...) ──────────────────
+
+    def _seed_relay_secrets_env(self, entry: dict) -> None:
+        """Populate ``os.environ`` with the relay's credential env vars
+        before constructing the relay class.
+
+        The relay's ``_resolve_credential("env:VAR")`` (and the equivalent
+        ``cmd:``/``systemd-creds:``/``podman:`` schemes — same code path)
+        simply reads ``os.environ[VAR]`` at instantiation time. On
+        apple-container the cleartext value lives in
+        ``/home/acproxy/secrets/<VAR>`` (re-staged by supervisor stage 35
+        from the host bind mount). We read each file once here and copy
+        it into the addon process's env so the relay's resolver works
+        with no patching.
+
+        The cage workload (uid 1000) never sees these env vars: they
+        are set on the mitmproxy process (uid 200) and are NOT among
+        the ``-e`` flags ``AppleContainerBackend.start()`` passes to
+        ``container run`` — those are filtered to only secret_injection
+        env names. Defense-in-depth: even ``container inspect <cage>``
+        won't show relay credentials in the env block.
+        """
+        auth = entry.get("auth") or {}
+        for key in ("user_source", "password_source"):
+            src = str(auth.get(key, "") or "")
+            scheme, _, var = src.partition(":")
+            if not var or scheme not in (
+                "env", "cmd", "systemd-creds", "podman", "",
+            ):
+                continue
+            if os.environ.get(var):
+                continue  # already set by container -e (legacy path)
+            secret_file = os.path.join(SECRETS_DIR, var)
+            try:
+                with open(secret_file) as f:
+                    value = f.read()
+            except OSError:
+                continue
+            if value:
+                os.environ[var] = value
+
+    def _start_relay(self, entry: dict) -> None:
+        """Instantiate one relay and schedule its ``start()`` on the
+        mitmproxy event loop. Surfaces failures to the audit log
+        instead of crashing the proxy.
+
+        The container backend's addon does the same dance in
+        ``_start_protocol_relays`` — we mirror that pattern so cages
+        get the same operator-visible diagnostics on either backend.
+        """
+        rname = entry.get("name", "?") if isinstance(entry, dict) else "?"
+        # Late import: ``relays.smtp`` pulls in ``inspectors.base`` at
+        # module load. Doing the import lazily keeps a config-less
+        # apple-container cage from paying the cost (and keeps the
+        # addon importable on the host for unit tests when the
+        # ``relays`` package isn't on sys.path).
+        try:
+            from relays import get as _get_relay
+            from relays._validate import validate_relay_entry
+        except ImportError as exc:
+            ctx.log.warn(
+                f"[agentcage] protocol_relays: cannot import relays "
+                f"package ({exc}); skipping {rname!r}"
+            )
+            self._audit({
+                "kind": "relay_import_failed",
+                "relay": rname,
+                "error": str(exc),
+                "source": "apple-container",
+            })
+            return
+
+        try:
+            validate_relay_entry(entry)
+        except ValueError as exc:
+            ctx.log.warn(
+                f"[agentcage] protocol_relays: {rname!r} invalid: {exc}"
+            )
+            self._audit({
+                "kind": "relay_config_invalid",
+                "relay": rname,
+                "error": str(exc),
+                "source": "apple-container",
+            })
+            return
+
+        rtype = entry["type"]
+        try:
+            cls = _get_relay(rtype)
+        except KeyError as exc:
+            ctx.log.warn(
+                f"[agentcage] protocol_relays: unknown type {exc}"
+            )
+            self._audit({
+                "kind": "relay_unknown_type",
+                "relay": rname,
+                "error": str(exc),
+                "source": "apple-container",
+            })
+            return
+
+        self._seed_relay_secrets_env(entry)
+
+        try:
+            relay = cls(
+                entry,
+                audit_log=self._audit,
+                log_allowed=False,
+                # Inspector chain wiring is the next parity item; for now
+                # apple-container relays run with the per-protocol policy
+                # (recipient/sender allowlist, size + rate caps) but no
+                # body inspector chain. Tracked under issue #120.
+                inspectors=None,
+            )
+        except Exception as exc:
+            ctx.log.warn(
+                f"[agentcage] protocol_relays: {rname!r} init failed: {exc}"
+            )
+            self._audit({
+                "kind": "relay_init_failed",
+                "relay": rname,
+                "error": str(exc),
+                "source": "apple-container",
+            })
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+            task = loop.create_task(relay.start())
+        except Exception as exc:
+            ctx.log.warn(
+                f"[agentcage] protocol_relays: {rname!r} schedule failed: "
+                f"{exc}"
+            )
+            self._audit({
+                "kind": "relay_start_failed",
+                "relay": rname,
+                "error": str(exc),
+                "source": "apple-container",
+            })
+            return
+
+        def _on_done(t: "asyncio.Task", name: str = rname) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is None:
+                return
+            ctx.log.error(
+                f"[agentcage] protocol_relays: {name!r} start failed: {exc}"
+            )
+            self._audit({
+                "kind": "relay_start_failed",
+                "relay": name,
+                "error": str(exc),
+                "source": "apple-container",
+            })
+
+        task.add_done_callback(_on_done)
+        self._relays.append(relay)
+        ctx.log.info(
+            f"[agentcage] protocol_relays: scheduled {rname!r} ({rtype})"
+        )
+
+    def running(self) -> None:
+        """mitmproxy lifecycle hook: called once the proxy is fully up.
+
+        We start protocol_relays listeners here (not in ``__init__``)
+        because relay TCP listeners need the asyncio loop that mitmproxy
+        creates during its own startup. Same hook the container backend
+        uses for the symmetric ``_start_protocol_relays`` call.
+        """
+        if not self._relay_entries:
+            return
+        for entry in self._relay_entries:
+            if not isinstance(entry, dict):
+                continue
+            self._start_relay(entry)
+
+    async def done(self) -> None:
+        """mitmproxy lifecycle hook: graceful shutdown.
+
+        ``SmtpRelay.stop()`` / ``ImapRelay.stop()`` cancel in-flight
+        client sessions so long-lived IDLE / DATA streams get a clean
+        protocol-level close (``* BYE`` for IMAP, ``421`` for SMTP)
+        instead of a TCP reset. Without this hook the careful shutdown
+        logic in each relay is bypassed when mitmproxy tears down.
+        """
+        relays = list(self._relays)
+        if not relays:
+            return
+        await asyncio.gather(
+            *[r.stop() for r in relays], return_exceptions=True
+        )
 
 
 addons = [AllowlistAddon()]

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`protocol_relays:` wired on apple-container.** Pre-this-PR the parser accepted `protocol_relays:` entries (IMAP, SMTP) but the apple-container backend silently spawned no listeners — outbound mail from the cage just hung. The wrapper now bakes the cage's relay list into `/etc/agentcage/protocol_relays.json`, bundles the shared `data/proxy/{relays,inspectors}` packages into the image, and the addon's `running()` hook dispatches each entry through the same registry the container backend uses. Credentials take the hardened path from #158: written to the per-cage secrets bind mount, re-staged for uid 200 by supervisor stage 35, and read by the addon at relay-start time — never passed as `-e` flags, so `container inspect` and the cage workload's `/proc/self/environ` stay clean. Supervisor stage 80 reads `protocol_relays.json` and opens a per-port loopback ACCEPT so cage→relay connections survive the default-DROP egress lockdown. Inspector-chain wiring on relay `DATA` payloads is the next parity item under #120; per-protocol policy (recipient/sender allowlist, rate caps, size cap) is fully active today.
+
 ## [0.21.1] - 2026-05-25
 
 Three follow-ups on the 0.21.0 apple-container secret-injection model. The big one is #158 — secrets are no longer cleartext in the cage's env. Together these close out the documented gaps from `docs/apple-container.md` post-0.21.0.

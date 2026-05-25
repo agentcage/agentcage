@@ -97,12 +97,22 @@ COPY allowlist_addon.py /opt/agentcage/allowlist_addon.py
 # Apple's `container build` 0.5+ silently drops the contents of a COPY'd
 # directory — the target dir exists but is empty. Confirmed on macOS 26
 # with `container --version` 0.5.x; tracked alongside #120 follow-ups.
-RUN mkdir -p /opt/agentcage/transforms
+RUN mkdir -p /opt/agentcage/transforms /opt/agentcage/relays /opt/agentcage/inspectors
 ADD transforms.tar.gz /opt/agentcage/transforms/
+# Protocol relays (IMAP, SMTP) and the inspector base classes they
+# import. Same tarball workaround for the directory-COPY bug — see
+# the transforms ADD above. The mitmproxy script loader puts the
+# addon's directory on sys.path, so we put the relays + inspectors
+# packages NEXT to the addon so ``from relays import get`` and
+# ``from inspectors.base import ...`` both resolve from the same
+# import root the addon lives under.
+ADD relays.tar.gz /opt/agentcage/relays/
+ADD inspectors.tar.gz /opt/agentcage/inspectors/
 COPY cage-cmd.json /etc/agentcage/cage-cmd.json
 COPY allowlist.txt /etc/agentcage/allowlist.txt
 COPY dnsmasq.conf /etc/agentcage/dnsmasq.conf
 COPY secret_injection.json /etc/agentcage/secret_injection.json
+COPY protocol_relays.json /etc/agentcage/protocol_relays.json
 RUN chmod 0755 /opt/agentcage/supervisor
 
 # Supervisor runs as PID 1.
