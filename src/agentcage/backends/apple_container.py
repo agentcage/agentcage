@@ -162,8 +162,24 @@ class AppleContainerBackend:
         # so no defensive getattr is needed. An empty allowlist means
         # "block all egress" (safer default than "allow all").
         allowlist = list(config.domains.allow or [])
+        # Secret-injection rules — only the metadata (env name, placeholder,
+        # inject_to allow-list of domains) is baked into the image. The
+        # actual secret VALUES are env-passed at `container run` time
+        # (see `start()` below) so the build context — which ends up in
+        # the image layer — stays free of secrets.
+        secret_rules = [
+            {
+                "env": r.env,
+                "placeholder": r.placeholder,
+                "inject_to": list(r.inject_to or []),
+            }
+            for r in (config.secret_injection or [])
+        ]
         ac_wrapper.build_wrapper(
-            deploy_name, user_image, user_cmd=user_cmd, allowlist=allowlist,
+            deploy_name, user_image,
+            user_cmd=user_cmd,
+            allowlist=allowlist,
+            secret_injection_rules=secret_rules,
         )
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")
@@ -201,6 +217,11 @@ class AppleContainerBackend:
         memory = config.container.memory or (
             f"{config.vm.mem_mb}m" if getattr(config.vm, "mem_mb", 0) else ""
         )
+        # Persist the secret-injection rule list so `start()` knows which
+        # env vars to forward into the microVM at `container run` time.
+        # Only the env names are stored — the actual secret values come
+        # from the host environment (or, in future, a Keychain lookup).
+        secret_envs = [r.env for r in (config.secret_injection or [])]
         unit_json = json.dumps(
             {
                 "name": deploy_name,
@@ -208,6 +229,7 @@ class AppleContainerBackend:
                 "cpus": cpus,
                 "memory": memory,
                 "lifecycle": config.lifecycle,
+                "secret_envs": secret_envs,
             },
             indent=2,
             sort_keys=True,
@@ -298,6 +320,27 @@ class AppleContainerBackend:
             argv += ["--memory", _normalize_memory(str(memory_raw))]
         elif meta.get("mem_mb"):  # pre-0.20.6 unit JSON
             argv += ["--memory", f"{meta['mem_mb']}M"]
+
+        # Secret-injection env-passing. For each env named in the cage's
+        # `secret_injection:` rules, look it up in the current host
+        # environment and forward via `-e NAME=value` to `container run`.
+        # The mitmproxy addon inside the cage reads these at startup and
+        # uses them to substitute `{{NAME}}` placeholders in outbound
+        # requests destined for the rule's inject_to allow-list.
+        # Missing env vars are skipped with a stderr warning rather than
+        # failing — the cage may not need every secret on every host.
+        for env_name in meta.get("secret_envs") or []:
+            value = os.environ.get(env_name)
+            if value is None:
+                click.echo(
+                    f"warning: secret_injection env {env_name!r} "
+                    f"not set in host environment; placeholder will "
+                    f"NOT be substituted in cage requests",
+                    err=True,
+                )
+                continue
+            argv += ["-e", f"{env_name}={value}"]
+
         argv.append(image)
 
         result = ac_cli.run(argv, check=False, capture_output=False)

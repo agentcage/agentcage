@@ -206,6 +206,70 @@ def test_stage_build_context_includes_allowlist_addon(tmp_path):
     assert "403" in addon  # must respond with 403, not silently pass
 
 
+def test_stage_build_context_includes_secret_injection_rules(tmp_path):
+    """secret_injection rules baked into the wrapper image at build time —
+    the actual secret VALUES are env-passed at container run time so the
+    image stays free of credentials. The mitmproxy addon reads the rule
+    list from /etc/agentcage/secret_injection.json at startup and resolves
+    each `env` against os.environ."""
+    rules = [
+        {"env": "API_KEY", "placeholder": "{{API_KEY}}",
+         "inject_to": ["api.example.com"]},
+    ]
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"], allowlist=["a.com"], secret_injection_rules=rules,
+    )
+    si = json.loads((tmp_path / "secret_injection.json").read_text())
+    assert si == rules
+
+
+def test_stage_build_context_empty_secret_injection(tmp_path):
+    """No rules → empty list (NOT a missing file), so the addon's loader
+    can read+parse unconditionally."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    assert (tmp_path / "secret_injection.json").exists()
+    assert json.loads((tmp_path / "secret_injection.json").read_text()) == []
+
+
+def test_start_argv_forwards_secret_envs(tmp_path, monkeypatch):
+    """start() reads secret_envs from the unit metadata and forwards each
+    via `-e NAME=value`. Missing env vars are skipped (with a warning)."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "user_image": "x",
+        "cpus": "",
+        "memory": "",
+        "lifecycle": "interactive",
+        "secret_envs": ["API_KEY", "MISSING_KEY"],
+    }))
+    monkeypatch.setenv("API_KEY", "sk-real-1234")
+    monkeypatch.delenv("MISSING_KEY", raising=False)
+
+    captured_argv = []
+
+    def fake_run(argv, **_kwargs):
+        captured_argv.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    logs_dir = tmp_path / "logs"
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=logs_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    run_argv = next(a for a in captured_argv if a[0] == "run")
+    assert "-e" in run_argv
+    assert "API_KEY=sk-real-1234" in run_argv
+    # Missing env name MUST NOT appear (no `-e MISSING_KEY=` with empty value).
+    assert "MISSING_KEY=" not in " ".join(run_argv)
+
+
 def test_nat_redirect_excludes_proxy_and_dns_not_only_uid_1000(tmp_path):
     """REGRESSION: NAT REDIRECT for tcp/80 and tcp/443 must catch every
     uid except the egress components (uid 200 = mitmproxy, uid 201 = dnsmasq),
