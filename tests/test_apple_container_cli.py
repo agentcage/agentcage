@@ -224,18 +224,65 @@ class TestCageVerifyAppleContainer:
         assert "apple-container" in result.output
 
 
-# ── cage audit / har / backup / restore: gated on apple-container ──
+# ── cage audit + har: bridged via host-bind-mounted JSONL ──
 
 
-class TestCageGatedCommandsAppleContainer:
+class TestCageAuditHarAppleContainer:
+    """`cage audit` / `cage har` no longer exit unsupported — they read
+    audit.jsonl / capture.jsonl from the host-bind-mounted logs dir
+    (PR-5 added the bind mount; PR-6 wired the readers). If the JSONL
+    file doesn't exist yet (cage just created and no traffic, or the
+    cage predates 0.20.6), the command exits with a clear pointer to
+    `cage update`."""
+
+    @patch("agentcage.cli._apple_container_audit_path")
     @patch("agentcage.cli.state")
-    def test_audit_exits_unsupported(self, mock_state):
+    def test_audit_missing_file_exits_with_hint(
+        self, mock_state, mock_path, tmp_path,
+    ):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        # Non-existent path → friendly error pointing at `cage update`.
+        mock_path.return_value = tmp_path / "does-not-exist.jsonl"
+
         result = _runner().invoke(main, ["cage", "audit", "demo"])
+
         assert result.exit_code != 0
-        assert "apple-container" in result.output
-        assert "not yet implemented" in result.output
+        assert "no audit log yet" in result.output
+        assert "cage update" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli._apple_container_audit_path")
+    @patch("agentcage.cli.state")
+    def test_audit_uses_tail_reader_on_apple_container(
+        self, mock_state, mock_path, mock_popen, tmp_path,
+    ):
+        """Once the audit file exists, audit reads it via `tail -n 10000`
+        rather than journalctl; subprocess.Popen receives the right argv."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        audit_path = tmp_path / "audit.jsonl"
+        audit_path.touch()
+        mock_path.return_value = audit_path
+
+        fake_proc = MagicMock()
+        fake_proc.stdout = iter([])
+        mock_popen.return_value = fake_proc
+
+        _runner().invoke(main, ["cage", "audit", "demo"])
+
+        # First Popen call is the tail of the host audit file.
+        popen_argv = mock_popen.call_args.args[0]
+        assert popen_argv[0] == "tail"
+        assert str(audit_path) in popen_argv
+
+
+# ── cage backup / restore: still unsupported (Plan 3 PR-10) ──
+
+
+class TestCageBackupRestoreStillUnsupported:
+    """Backup/restore stay unsupported on apple-container until the
+    secret-store abstraction lands (Plan 3 PR-10)."""
 
     @patch("agentcage.cli.state")
     def test_backup_exits_unsupported(self, mock_state):
