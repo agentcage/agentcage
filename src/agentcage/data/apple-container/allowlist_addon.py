@@ -72,9 +72,14 @@ def _host_allowed(host: str, allowed: set[str]) -> bool:
 def _load_secret_injection_rules() -> list[dict]:
     """Load the cage's secret_injection rule list, baked in at build time.
 
-    Each rule is ``{"env": str, "placeholder": str, "inject_to": [str]}``.
-    The actual secret VALUE is read from ``os.environ[env]`` at request
-    time (forwarded by ``AppleContainerBackend.start()`` via ``-e``).
+    Each rule is ``{"env": str, "placeholder": str, "inject_to": [str],
+    "transform": str, "transform_config": dict}``. The actual secret VALUE
+    is read from ``os.environ[env]`` at request time (forwarded by
+    ``AppleContainerBackend.start()`` via ``-e``). ``transform`` is
+    optional — when set the addon looks the name up in the bundled
+    ``transforms`` package and calls ``cls(value, transform_config).
+    get_value()`` to mint a derived substitution value (e.g. a fresh
+    Google OAuth bearer) instead of using the raw env value verbatim.
     """
     try:
         with open(SECRET_INJECTION_PATH) as f:
@@ -82,6 +87,23 @@ def _load_secret_injection_rules() -> list[dict]:
             return data if isinstance(data, list) else []
     except (OSError, ValueError):
         return []
+
+
+def _build_transform_fn(name: str, secret: str, config: dict):
+    """Look up *name* in the bundled transforms registry and bind it.
+
+    Returns a zero-arg callable that yields the substitution value at
+    request time (the transform may cache internally). Raises if the
+    name is unknown or the transform fails to initialize — the caller
+    drops the rule and logs.
+    """
+    # Lazy import so a rule list with no transforms doesn't pay the
+    # cryptography import cost at addon load.
+    from transforms import get as _get
+
+    cls = _get(name)
+    instance = cls(secret, config)
+    return instance.get_value
 
 
 class AllowlistAddon:
@@ -95,21 +117,50 @@ class AllowlistAddon:
         # later os.environ changes won't propagate. Skip rules whose
         # env var isn't set (the backend logs a warning at start, and
         # the placeholder simply doesn't get substituted).
+        #
+        # Rules with a non-empty ``transform`` go through the bundled
+        # transforms registry (data/proxy/transforms, staged into
+        # /opt/agentcage/transforms by stage_build_context). The
+        # ``transform_fn`` callable replaces ``value`` at substitution
+        # time so the raw env-passed credential never lands on the wire
+        # — same contract as the container backend's SecretInjector.
         self._resolved_secrets: list[dict] = []
         for rule in self.injection_rules:
-            value = os.environ.get(rule.get("env", ""))
+            env_name = rule.get("env", "")
+            value = os.environ.get(env_name)
             if not value:
                 continue
+            transform_name = rule.get("transform", "") or ""
+            transform_fn = None
+            if transform_name:
+                transform_config = rule.get("transform_config") or {}
+                try:
+                    transform_fn = _build_transform_fn(
+                        transform_name, value, transform_config
+                    )
+                except Exception as exc:
+                    ctx.log.warn(
+                        f"[agentcage] secret_injection transform "
+                        f"{transform_name!r} for {env_name!r} failed to "
+                        f"initialize: {exc} — skipping rule"
+                    )
+                    continue
             self._resolved_secrets.append({
-                "env": rule["env"],
+                "env": env_name,
                 "placeholder": rule["placeholder"],
                 "value": value,
                 "inject_to": [d.lower() for d in (rule.get("inject_to") or [])],
+                "transform": transform_name,
+                "transform_fn": transform_fn,
             })
         if self._resolved_secrets:
             ctx.log.info(
                 f"[agentcage] secret injection: "
-                f"{[r['env'] for r in self._resolved_secrets]}"
+                + ", ".join(
+                    f"{r['env']}"
+                    + (f"({r['transform']})" if r["transform"] else "")
+                    for r in self._resolved_secrets
+                )
             )
         self._audit_fh = self._open_log(AUDIT_LOG_PATH)
         self._capture_fh = self._open_log(CAPTURE_PATH)
@@ -128,19 +179,47 @@ class AllowlistAddon:
             return True
         return any(host == d or host.endswith("." + d) for d in inject_to)
 
-    def _maybe_inject(self, flow: http.HTTPFlow) -> list[str]:
+    def _maybe_inject(
+        self, flow: http.HTTPFlow
+    ) -> tuple[list[str], dict[str, str]]:
         """Substitute placeholders in request headers/body for matching hosts.
 
-        Returns the list of env names that had at least one substitution
-        performed; the audit entry surfaces this as `secrets_injected`.
+        Returns ``(injected_envs, transforms_by_env)``:
+          * ``injected_envs`` — env names that had at least one
+            substitution performed (audit ``secrets_injected``)
+          * ``transforms_by_env`` — mapping ``env → transform_name`` for
+            the subset of those rules that ran through a transform (e.g.
+            ``{"GCP_SA_KEY": "google-jwt-bearer"}``); audit
+            ``secret_transforms``
+
+        When a rule has a transform configured, the transform's
+        ``get_value()`` is called per request — the transform itself is
+        responsible for caching (google-jwt-bearer caches the minted
+        access token until expiry). If the transform raises, the rule is
+        skipped and the placeholder is left in place so the upstream
+        request fails closed instead of leaking the raw credential.
         """
         host = flow.request.pretty_host.lower()
         injected: list[str] = []
+        transforms: dict[str, str] = {}
         for rule in self._resolved_secrets:
             if not self._host_matches_inject_to(host, rule["inject_to"]):
                 continue
             placeholder = rule["placeholder"]
-            value = rule["value"]
+            transform_fn = rule.get("transform_fn")
+            if transform_fn is not None:
+                try:
+                    value = transform_fn()
+                except Exception as exc:
+                    ctx.log.warn(
+                        f"[agentcage] secret_injection transform "
+                        f"{rule['transform']!r} for {rule['env']!r} "
+                        f"failed at request time: {exc} — leaving "
+                        f"placeholder in place"
+                    )
+                    continue
+            else:
+                value = rule["value"]
             replaced_any = False
             # Headers
             for name, val in list(flow.request.headers.items()):
@@ -159,7 +238,9 @@ class AllowlistAddon:
                 replaced_any = True
             if replaced_any:
                 injected.append(rule["env"])
-        return injected
+                if rule["transform"]:
+                    transforms[rule["env"]] = rule["transform"]
+        return injected, transforms
 
     def _maybe_redact(self, flow: http.HTTPFlow) -> list[str]:
         """Replace real secret values with placeholders on inbound responses.
@@ -270,10 +351,17 @@ class AllowlistAddon:
             # Apply secret injection BEFORE the upstream request goes out.
             # Substitutions happen in place; we record the env names in
             # the audit entry so the operator can see what was swapped.
-            injected = self._maybe_inject(flow)
+            # `secret_transforms` is a sibling field (mapping env →
+            # transform name) — present only when at least one rule ran
+            # through a transform like google-jwt-bearer, so the operator
+            # can distinguish raw-env substitution from derived-value
+            # substitution at audit time.
+            injected, transforms = self._maybe_inject(flow)
             entry["decision"] = "allowed"
             entry["reason"] = "domain-allowlist"
             entry["secrets_injected"] = injected
+            if transforms:
+                entry["secret_transforms"] = transforms
             self._audit(entry)
             return
 

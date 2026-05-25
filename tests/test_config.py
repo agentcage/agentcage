@@ -1866,7 +1866,11 @@ class TestAppleContainerSilentDrops:
             "container.security_label_disable" in w for w in warnings
         ), warnings
 
-    def test_secret_injection_transform_warns(self, tmp_path):
+    def test_secret_injection_known_transform_no_longer_warns(self, tmp_path):
+        """Once the in-cage addon learned to dispatch on `transform`, the
+        old "silently has no effect on apple-container" warning had to
+        stop firing for known transforms — otherwise users get gaslit
+        about a working feature."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
@@ -1877,12 +1881,17 @@ class TestAppleContainerSilentDrops:
               - env: API_KEY
                 placeholder: "{{API_KEY}}"
                 transform: google-jwt-bearer
+                transform_config:
+                  scopes:
+                    - https://www.googleapis.com/auth/calendar.readonly
                 inject_to:
                   - api.example.com
         """))
         _, warnings = self._validate_under_apple(str(p))
-        assert any(
-            "secret_injection" in w and "transform" in w for w in warnings
+        assert not any(
+            "secret_injection" in w and "transform" in w
+            and "silently has no effect" in w
+            for w in warnings
         ), warnings
 
     def test_container_isolation_no_silent_drop_warnings(self, tmp_path):

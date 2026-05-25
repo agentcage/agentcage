@@ -174,26 +174,30 @@ and dnsmasq run inside the same microVM)
 
 **Proper fix path (deferred).** Would need a routing layer in the supervisor that listens on a control socket and proxies exec requests to the right component's namespace. Architectural, not a small patch.
 
-### `secret_injection.transform` accepted but not applied
+### `secret_injection.transform` — wired (was a gap pre-0.21.x)
 
-**Symptom.** Setting `transform: google-jwt-bearer` (or any other transform) on a `secret_injection` rule passes `validate_config` but the proxy substitutes the literal env-var value, not the transform output. `validate_config` emits a warning:
+**Status.** Fixed. `transform: google-jwt-bearer` (and any future entry in `KNOWN_TRANSFORMS`) now runs end-to-end on apple-container: the in-cage mitmproxy addon loads the same `data/proxy/transforms` registry the container backend uses, mints a derived value at request time (e.g. a short-lived OAuth bearer from a service-account JWT), and substitutes that — not the raw env-passed credential — into the outbound request. The "silently has no effect on apple-container" warning no longer fires for known transforms.
 
+**Fail-closed contract.** If the transform fails to initialize (bad SA key) or to mint at request time (Google rejects the assertion, network error, rate limit), the addon leaves the placeholder in place and logs the failure. The upstream sees `Bearer {{TOKEN}}` literally and 401s — the raw credential never leaks as a fallback.
+
+**Audit.** The per-request audit entry includes `"secret_transforms": {"<env>": "<transform_name>"}` whenever a transform ran, so the operator can distinguish raw-env substitution from derived-value substitution in `cage audit`.
+
+**Example.**
+
+```yaml
+# cage.yaml
+secret_injection:
+  - env: GCP_SA_KEY            # SA JSON, full key — never leaves the proxy
+    placeholder: "{{GCP_BEARER}}"
+    transform: google-jwt-bearer
+    transform_config:
+      scopes:
+        - https://www.googleapis.com/auth/calendar.readonly
+    inject_to:
+      - www.googleapis.com
 ```
-warning: secret_injection['MY_SA_JWT'].transform ='google-jwt-bearer':
-silently has no effect on apple-container (server-side
-{{SECRET:...}} placeholder substitution is not wired yet — the
-cage sees the raw env-passed value). See issue #120.
-```
 
-**Why.** Transforms are part of the container backend's `SecretInjector`. The apple-container addon does direct string substitution only.
-
-**Workaround.** Pre-compute the transformed value host-side and pass it as the env var:
-
-```bash
-# Instead of relying on transform: google-jwt-bearer:
-export GOOGLE_BEARER_TOKEN=$(gcloud auth print-access-token)
-agentcage cage start mycage  # the cage sees GOOGLE_BEARER_TOKEN directly
-```
+Cage agent sends `Authorization: Bearer {{GCP_BEARER}}`; the proxy substitutes a freshly minted (cached until expiry) `ya29.<...>` access token.
 
 ### `cage backup --include-secrets` rejected
 

@@ -243,15 +243,20 @@ class AppleContainerBackend:
         # "block all egress" (safer default than "allow all").
         allowlist = list(config.domains.allow or [])
         # Secret-injection rules — only the metadata (env name, placeholder,
-        # inject_to allow-list of domains) is baked into the image. The
-        # actual secret VALUES are env-passed at `container run` time
-        # (see `start()` below) so the build context — which ends up in
-        # the image layer — stays free of secrets.
+        # inject_to allow-list of domains, transform name + its config) is
+        # baked into the image. The actual secret VALUES are env-passed at
+        # `container run` time (see `start()` below) so the build context —
+        # which ends up in the image layer — stays free of secrets. The
+        # ``transform`` field tells the in-cage addon to derive a value
+        # (e.g. mint a Google OAuth bearer from a service-account JWT)
+        # instead of substituting the raw env value verbatim.
         secret_rules = [
             {
                 "env": r.env,
                 "placeholder": r.placeholder,
                 "inject_to": list(r.inject_to or []),
+                "transform": r.transform or "",
+                "transform_config": dict(r.transform_config or {}),
             }
             for r in (config.secret_injection or [])
         ]
