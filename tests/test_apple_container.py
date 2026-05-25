@@ -703,7 +703,13 @@ def test_start_argv_uses_file_delivery_when_placeholders_known(
     ``-e <env>={{<env>}}`` (the placeholder, NOT the cleartext value) to
     `container run`. This is the entire point — host `ps`, `container
     inspect`, and `cage exec ... -- env` all see only the placeholder.
+
+    Values come from ``<deployment_dir>/pending_secrets.json`` (written
+    by ``-s KEY=VAL``). The host shell environment is NEVER consulted.
     """
+    import agentcage.state as _state
+    monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
+
     backend = AppleContainerBackend()
     unit_dir = tmp_path / "apple-container"
     unit_dir.mkdir()
@@ -719,8 +725,17 @@ def test_start_argv_uses_file_delivery_when_placeholders_known(
             "MISSING_KEY": "{{MISSING_KEY}}",
         },
     }))
-    monkeypatch.setenv("API_KEY", "sk-real-1234")
-    monkeypatch.delenv("MISSING_KEY", raising=False)
+    # Stage API_KEY via pending_secrets.json (the -s KEY=VAL path).
+    # Deliberately omit MISSING_KEY so we can assert it's skipped.
+    deploy_dir = _state.deployment_dir("demo")
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+    (deploy_dir / "pending_secrets.json").write_text(
+        json.dumps([["API_KEY", "sk-real-1234"]])
+    )
+    # Also set them in the host env — this MUST be ignored. The whole
+    # point of this fix is that env is no longer an implicit secret source.
+    monkeypatch.setenv("API_KEY", "from-host-env-DO-NOT-USE")
+    monkeypatch.setenv("MISSING_KEY", "from-host-env-DO-NOT-USE")
 
     captured_argv = []
 
@@ -755,6 +770,8 @@ def test_start_argv_uses_file_delivery_when_placeholders_known(
     # The missing env has NO file (skipped) and isn't in argv.
     assert not (secrets_dir / "MISSING_KEY").exists()
     assert "MISSING_KEY=" not in " ".join(run_argv)
+    # Host-env value MUST NOT have leaked in for either secret.
+    assert "from-host-env-DO-NOT-USE" not in " ".join(run_argv)
     # The secrets dir itself is mode 0700 (only host user can read).
     assert oct(secrets_dir.stat().st_mode & 0o777) == "0o700"
 
@@ -766,6 +783,9 @@ def test_start_argv_drops_stale_secrets_from_prior_starts(
     that's been removed from cage.yaml doesn't linger in the bind mount
     after `cage update`. Keeps the secrets dir an accurate reflection
     of the current rule list."""
+    import agentcage.state as _state
+    monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
+
     backend = AppleContainerBackend()
     unit_dir = tmp_path / "apple-container"
     unit_dir.mkdir()
@@ -778,7 +798,11 @@ def test_start_argv_drops_stale_secrets_from_prior_starts(
         "secret_envs": ["NEW_KEY"],
         "secret_env_placeholders": {"NEW_KEY": "{{NEW_KEY}}"},
     }))
-    monkeypatch.setenv("NEW_KEY", "new-value")
+    deploy_dir = _state.deployment_dir("demo")
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+    (deploy_dir / "pending_secrets.json").write_text(
+        json.dumps([["NEW_KEY", "new-value"]])
+    )
 
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()
@@ -801,11 +825,17 @@ def test_start_argv_drops_stale_secrets_from_prior_starts(
     assert (secrets_dir / "NEW_KEY").read_text() == "new-value"
 
 
-def test_start_argv_backcompat_pre_021_1_cleartext(tmp_path, monkeypatch):
-    """Backward compat: unit JSON without ``secret_env_placeholders``
-    (cage last started under 0.21.0) falls back to the old
-    ``-e NAME=value`` cleartext path so existing cages keep starting
-    after upgrade without a `cage update`."""
+def test_start_argv_pre_021_1_unit_json_refuses_cleartext_fallback(
+    tmp_path, monkeypatch,
+):
+    """Pre-0.21.1 unit JSON (no ``secret_env_placeholders``) MUST NOT
+    fall back to the old `-e NAME=value` cleartext path: that would
+    leak the secret onto host `ps -ef` and the cage workload's
+    /proc/self/environ. Operator gets a warning telling them to run
+    `cage update` to regenerate the unit JSON."""
+    import agentcage.state as _state
+    monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
+
     backend = AppleContainerBackend()
     unit_dir = tmp_path / "apple-container"
     unit_dir.mkdir()
@@ -818,6 +848,14 @@ def test_start_argv_backcompat_pre_021_1_cleartext(tmp_path, monkeypatch):
         "secret_envs": ["API_KEY"],
         # no secret_env_placeholders — pre-0.21.1 shape
     }))
+    # Even with the value staged AND in the host env, no placeholder
+    # means we refuse to inject — the value is intentionally NOT routed
+    # through cleartext-env as a fallback.
+    deploy_dir = _state.deployment_dir("demo")
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+    (deploy_dir / "pending_secrets.json").write_text(
+        json.dumps([["API_KEY", "sk-real-1234"]])
+    )
     monkeypatch.setenv("API_KEY", "sk-real-1234")
 
     captured_argv = []
@@ -826,17 +864,21 @@ def test_start_argv_backcompat_pre_021_1_cleartext(tmp_path, monkeypatch):
         captured_argv.append(list(argv))
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
+    secrets_dir = tmp_path / "secrets"
     with patch.object(backend, "unit_dir", return_value=unit_dir), \
          patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
-         patch.object(backend, "secrets_dir", return_value=tmp_path / "secrets"), \
+         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
          patch.object(ac_cli, "run", side_effect=fake_run):
         backend.start("demo", quiet=True)
 
     run_argv = next(a for a in captured_argv if a[0] == "run")
-    # Backward-compat: cleartext value via -e, no bind mount.
-    assert "API_KEY=sk-real-1234" in run_argv
+    # Value MUST NOT appear anywhere on the `container run` argv.
+    assert "sk-real-1234" not in " ".join(run_argv)
+    assert "API_KEY=sk-real-1234" not in run_argv
+    # No secret file written, no bind mount.
+    assert not (secrets_dir / "API_KEY").exists()
     assert not any("secrets:ro" in a for a in run_argv)
 
 
@@ -901,9 +943,16 @@ def test_supervisor_umounts_secrets_after_restaging(tmp_path):
     assert 'die "could not unmount /run/agentcage/secrets' in sup
 
 
-def test_start_argv_forwards_secret_envs(tmp_path, monkeypatch):
-    """start() reads secret_envs from the unit metadata and forwards each
-    via `-e NAME=value`. Missing env vars are skipped (with a warning)."""
+def test_start_argv_ignores_host_env_when_pending_secrets_missing(
+    tmp_path, monkeypatch,
+):
+    """Regression for the implicit-env-secret leak: even when the unit
+    JSON carries a placeholder map AND the host env has a value for the
+    secret, start() MUST NOT inject anything if pending_secrets.json
+    doesn't have a matching entry. Only --set-secret values are honored."""
+    import agentcage.state as _state
+    monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
+
     backend = AppleContainerBackend()
     unit_dir = tmp_path / "apple-container"
     unit_dir.mkdir()
@@ -913,10 +962,11 @@ def test_start_argv_forwards_secret_envs(tmp_path, monkeypatch):
         "cpus": "",
         "memory": "",
         "lifecycle": "interactive",
-        "secret_envs": ["API_KEY", "MISSING_KEY"],
+        "secret_envs": ["API_KEY"],
+        "secret_env_placeholders": {"API_KEY": "{{API_KEY}}"},
     }))
-    monkeypatch.setenv("API_KEY", "sk-real-1234")
-    monkeypatch.delenv("MISSING_KEY", raising=False)
+    # No pending_secrets.json. Host env IS set — must be ignored.
+    monkeypatch.setenv("API_KEY", "from-host-env-DO-NOT-USE")
 
     captured_argv = []
 
@@ -924,20 +974,24 @@ def test_start_argv_forwards_secret_envs(tmp_path, monkeypatch):
         captured_argv.append(list(argv))
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    logs_dir = tmp_path / "logs"
-
+    secrets_dir = tmp_path / "secrets"
     with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=logs_dir), \
+         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
+         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
          patch.object(ac_cli, "run", side_effect=fake_run):
         backend.start("demo", quiet=True)
 
     run_argv = next(a for a in captured_argv if a[0] == "run")
-    assert "-e" in run_argv
-    assert "API_KEY=sk-real-1234" in run_argv
-    # Missing env name MUST NOT appear (no `-e MISSING_KEY=` with empty value).
-    assert "MISSING_KEY=" not in " ".join(run_argv)
+    # Placeholder MUST NOT be present (no `-e API_KEY={{API_KEY}}`) because
+    # there's no real value to substitute — the proxy would otherwise pass
+    # the literal placeholder string through to upstream.
+    assert "API_KEY={{API_KEY}}" not in run_argv
+    # Host-env value MUST NOT leak anywhere.
+    assert "from-host-env-DO-NOT-USE" not in " ".join(run_argv)
+    # No secret file written.
+    assert not (secrets_dir / "API_KEY").exists()
 
 
 def test_nat_redirect_excludes_proxy_and_dns_not_only_uid_1000(tmp_path):
