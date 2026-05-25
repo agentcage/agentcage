@@ -206,6 +206,62 @@ def test_stage_build_context_includes_allowlist_addon(tmp_path):
     assert "403" in addon  # must respond with 403, not silently pass
 
 
+def test_supervisor_resolves_cage_user_dynamically(tmp_path):
+    """REGRESSION: capsh's `--user=` resolves by NAME, so a hard-coded
+    `--user=cage` blows up on images that already have a different uid-1000
+    user (ubuntu → `ubuntu`, node → `node`, claude-code → `claude`). The
+    supervisor must look up the uid-1000 name at runtime before exec'ing
+    capsh, otherwise stage 90 dies with `User [cage] not known` and the
+    whole container exits before any cage workload starts."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    sup = (tmp_path / "supervisor.sh").read_text()
+    # The name MUST be resolved from /etc/passwd at runtime.
+    assert "getent passwd 1000" in sup
+    # The capsh invocation that drops caps + switches to the cage user
+    # MUST reference the resolved variable, not the literal `cage`. We
+    # find the line by looking for the `--user=` argument that follows
+    # `--drop=all` (the capsh pattern unique to stage 90).
+    lines = sup.splitlines()
+    cage_user_idx = next(
+        (i for i, ln in enumerate(lines)
+         if ln.strip().startswith("--drop=all") and not ln.lstrip().startswith("#")),
+        None,
+    )
+    assert cage_user_idx is not None, (
+        "supervisor.sh has no executable `--drop=all` (stage 90 capsh)"
+    )
+    # The `--user=` argument follows on the next non-blank line.
+    follow = lines[cage_user_idx + 1].strip()
+    assert follow.startswith("--user="), (
+        f"expected --user= to follow --drop=all, got: {follow!r}"
+    )
+    assert "${CAGE_USER}" in follow, (
+        f"capsh --user= for the cage workload must reference $CAGE_USER, "
+        f"got: {follow!r}"
+    )
+
+
+def test_ubuntu_scaffold_ca_install_tolerates_eacces():
+    """REGRESSION: the ubuntu scaffold's `command` runs `cp` into a root-only
+    directory. On the container backend the cage runs as root so it works;
+    on apple-container the supervisor forces the cage workload to uid 1000,
+    which can't write to /usr/local/share/ca-certificates. Without the
+    `|| true` swallow the cp's EACCES would propagate, the cage CMD would
+    exit non-zero, and the container would stop before `sleep infinity` —
+    making `agentcage run ubuntu` look like an instant exit."""
+    from pathlib import Path
+    scaffold = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "scaffolds" / "ubuntu" / "cage.yaml.j2"
+    )
+    content = scaffold.read_text()
+    # The whole cp+update-ca-certificates pair must be guarded by `|| true`
+    # so a permission error doesn't kill the cage on apple-container.
+    assert "|| true" in content
+    # `exec sleep infinity` must still be reachable after the guard.
+    assert "exec sleep infinity" in content
+
+
 def test_user_cmd_missing_image_raises():
     with patch.object(ac_cli, "image_inspect", return_value=None):
         with pytest.raises(ValueError, match="cannot inspect"):

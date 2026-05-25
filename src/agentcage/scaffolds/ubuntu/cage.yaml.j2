@@ -31,10 +31,18 @@ container:
   # Install the agentcage MITM proxy CA into the system trust store at
   # startup so apt (and any other tool that doesn't read SSL_CERT_FILE)
   # can talk to the package mirrors over the intercepted TLS connection.
+  #
+  # The cp + update-ca-certificates pair is best-effort: it succeeds on the
+  # container backend (where the cage runs as root and /certs is bind-mounted)
+  # and is a harmless no-op on apple-container (the supervisor has already
+  # installed the CA at stage 60 and runs the cage workload as uid 1000,
+  # which can't write to /usr/local/share/ca-certificates). Without the
+  # `|| true` the apt-update-CA dance would crash the cage immediately on
+  # apple-container before `sleep infinity` ever runs.
   command:
     - "sh"
     - "-c"
-    - "cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/agentcage-proxy.crt && update-ca-certificates >/dev/null 2>&1 && exec sleep infinity"
+    - "{ cp /certs/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/agentcage-proxy.crt && update-ca-certificates >/dev/null 2>&1; } || true; exec sleep infinity"
 
   # Project directory — mount your repo here if you want to poke at it.
   volumes:
