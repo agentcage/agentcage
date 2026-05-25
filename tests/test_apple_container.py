@@ -206,6 +206,37 @@ def test_stage_build_context_includes_allowlist_addon(tmp_path):
     assert "403" in addon  # must respond with 403, not silently pass
 
 
+def test_nat_redirect_excludes_proxy_and_dns_not_only_uid_1000(tmp_path):
+    """REGRESSION: NAT REDIRECT for tcp/80 and tcp/443 must catch every
+    uid except the egress components (uid 200 = mitmproxy, uid 201 = dnsmasq),
+    not only the cage workload at uid 1000. `container exec` enters as the
+    image's default USER — root on every popular base — so an interactive
+    `agentcage cage exec ubuntu02 -- apt-get update` runs as uid 0. Before
+    this fix the REDIRECT only matched uid 1000, so root's port-80/443
+    egress skipped the proxy entirely and hit the default-DROP filter chain.
+    """
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    sup = (tmp_path / "supervisor.sh").read_text()
+    # The OLD (buggy) form was: `--uid-owner 1000 -j REDIRECT`. Forbid it.
+    assert "--uid-owner 1000 -j REDIRECT" not in sup
+    assert "--uid-owner 1000 \\\n    -j REDIRECT" not in sup
+    # The NEW form excludes uid 200 (mitmproxy) and uid 201 (dnsmasq) so
+    # their upstream connections aren't redirected back to themselves.
+    assert "! --uid-owner 200" in sup
+    assert "! --uid-owner 201" in sup
+
+
+def test_dnsmasq_strips_aaaa_records(tmp_path):
+    """REGRESSION: dnsmasq must `filter-AAAA` so clients don't waste time
+    trying IPv6 addresses they can never reach (IPv6 is killed at the
+    netfilter + sysctl level by supervisor.sh stage 80). Without this the
+    cage still gets AAAA records back, curl/apt try IPv6 first, fail
+    instantly with "Cannot assign requested address", then fall back to v4."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    conf = (tmp_path / "dnsmasq.conf").read_text()
+    assert "filter-AAAA" in conf
+
+
 def test_supervisor_resolves_cage_user_dynamically(tmp_path):
     """REGRESSION: capsh's `--user=` resolves by NAME, so a hard-coded
     `--user=cage` blows up on images that already have a different uid-1000
