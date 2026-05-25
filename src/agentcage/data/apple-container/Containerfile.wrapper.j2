@@ -111,6 +111,11 @@ ADD transforms.tar.gz /opt/agentcage/transforms/
 # ``from inspectors.base import ...`` both resolve from the same
 # import root the addon lives under.
 ADD relays.tar.gz /opt/agentcage/relays/
+# Inspectors registry, packaged identically to transforms above and for the
+# same reason — ``container build`` 0.5+ silently drops the contents of a
+# directory COPY. ADD'ing a .tar.gz triggers the BuildKit auto-extract path
+# that actually preserves the files. (The /opt/agentcage/inspectors dir is
+# already created by the mkdir above alongside transforms + relays.)
 ADD inspectors.tar.gz /opt/agentcage/inspectors/
 COPY cage-cmd.json /etc/agentcage/cage-cmd.json
 COPY allowlist.txt /etc/agentcage/allowlist.txt
@@ -118,6 +123,7 @@ COPY dnsmasq.conf /etc/agentcage/dnsmasq.conf
 COPY secret_injection.json /etc/agentcage/secret_injection.json
 COPY protocol_relays.json /etc/agentcage/protocol_relays.json
 COPY capture.json /etc/agentcage/capture.json
+COPY inspectors.json /etc/agentcage/inspectors.json
 RUN chmod 0755 /opt/agentcage/supervisor
 
 # Supervisor runs as PID 1.

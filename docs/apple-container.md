@@ -101,6 +101,7 @@ All cage subcommands work the same way they do on container / vm:
 | `cage update` | Rebuilds the wrapper image and restarts the cage |
 | `domain add / rm` | Auto-rebuilds the wrapper (allowlist is baked in at build time) and restarts the cage; change takes immediate effect |
 | `secret list / set / rm` | Exits with a clear message — secrets are env-passed on apple-container, not stored in a secret store (see [secrets model](#secrets-are-env-passed-not-stored)) |
+| `inspectors:` chain in cage.yaml | Runs end-to-end via the bundled `inspectors` registry; flagged/blocked entries land in `cage audit --inspector <name>` (see [Inspector chain — wired](#inspector-chain--wired)) |
 
 ## Security model
 
@@ -278,6 +279,37 @@ agentcage cage har <cage> -o /tmp/cage.har
 Open in Chrome DevTools → Network → Import HAR to inspect the payload exactly as the cage saw it.
 
 **Rebuild required.** Capture config is baked into the wrapper image at build time (same shape as `secret_injection`), so `cage update <cage>` is required after toggling `capture.enable_har` or changing `capture.domains` / `capture.max_body_size`. Hot-reload is not wired.
+
+### Inspector chain — wired
+
+**Status.** Fixed. The cage.yaml top-level `inspectors:` list now runs end-to-end on apple-container. The in-cage mitmproxy addon imports the same `data/proxy/inspectors` registry the container backend uses (`content-type`, `body-size`, `entropy`, `secrets`, `domain`), dispatches each configured entry through it, and runs the chain on every outbound HTTP(S) request — after the host-allowlist gate but BEFORE secret injection (so inspectors see placeholders, never real secret values).
+
+**Behavior.** Matches the container backend byte-for-byte:
+
+- **Block.** First inspector returning `action: "block"` short-circuits the chain. The proxy itself responds 403 with `{"blocked": true, "reason": ..., "host": ..., "by": "agentcage"}` — same JSON shape as the allowlist 403. No upstream connection is opened.
+- **Flag.** `action: "flag"` results travel through to the audit entry but the request is forwarded. Audit `decision` becomes `flagged` (instead of `allowed`) and `reason` carries the inspector's message.
+- **Audit shape.** Every audit entry includes `inspectors: [{"name", "action", "reason", "severity"}, ...]` so `cage audit --inspector <name>` and `--severity warning|error|critical` filters work identically across backends.
+
+**Example.**
+
+```yaml
+# cage.yaml
+inspectors:
+  - name: content-type
+    config:
+      action: block
+      entropy_ceiling: 6.5
+  - name: body-size
+    config:
+      max_bytes: 1048576
+```
+
+The `content-type` inspector flags requests whose body entropy is too high for the declared content type (a common exfil indicator); `body-size` rejects any request body over 1 MiB.
+
+**Limitations.**
+
+- Custom Python inspectors (`path: /etc/agentcage/my_inspector.py`) are NOT yet staged into the wrapper image — `validate_config` warns at parse time. Built-in inspectors only for now; tracked in #120.
+- Unknown built-in names (typos) also warn at parse time, so a misspelled inspector entry surfaces immediately instead of silently no-op'ing.
 
 ### `cage backup --include-secrets` rejected
 
