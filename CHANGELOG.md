@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.3] - 2026-05-25
+
+### Fixed
+- `agentcage cage exec` / `cage shell` / `cage logs` / `cage verify` / `cage show` / `cage start` / `cage restart` no longer crash with `FileNotFoundError: [Errno 2] No such file or directory: 'podman'` on apple-container cages on macOS hosts without podman installed (the common case on Mac). Every subcommand other than `create`/`update`/`list`/`destroy` had a `cfg.isolation == "vm"` branch followed by a fall-through that assumed host podman existed. The fall-through now also gates on apple-container: `exec`/`shell` route through Apple's `container exec` (with `-it` autodetect and `--service proxy|dns` rejected with a clear message — proxy and dnsmasq run as in-process supervisors inside the one microVM), `logs` execs `container logs [-f]`, `verify` keeps the backend-agnostic service-status checks and prints an INFO line noting that deeper probes (CA / egress / nested) aren't wired up, `show` replaces the host-podman-backed secret count with an "expected (status not tracked)" line, and `start`/`restart` skip `_ensure_patches(Podman())` + `resolve_and_populate` (no host-podman secret store on apple-container). `audit`/`har`/`backup`/`restore` exit non-zero with `not yet implemented for apple-container backend (see issue #120)` instead of crashing on the first podman call. `_ensure_dns_quadlet_current` and `_update_dns_quadlet` are also gated so `cage start`/`restart` and `domain add`/`rm` don't try to render a host DNS quadlet on macOS. Container and VM branches are unchanged. (#139)
+
 ## [0.20.2] - 2026-05-25
 
 ### Fixed
