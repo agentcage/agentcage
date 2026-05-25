@@ -39,6 +39,11 @@ from mitmproxy import ctx, http
 
 ALLOWLIST_PATH = "/etc/agentcage/allowlist.txt"
 SECRET_INJECTION_PATH = "/etc/agentcage/secret_injection.json"
+# Per-cage resolved-secret files; supervisor stage 35 re-stages from
+# the host-bind-mounted /run/agentcage/secrets to this acproxy-only path
+# (chown 200:200, mode 0400). The cage workload (uid 1000) cannot read
+# this dir.
+SECRETS_DIR = "/home/acproxy/secrets"
 AUDIT_LOG_PATH = os.environ.get(
     "AGENTCAGE_AUDIT_LOG", "/var/log/agentcage/audit.jsonl"
 )
@@ -127,7 +132,19 @@ class AllowlistAddon:
         self._resolved_secrets: list[dict] = []
         for rule in self.injection_rules:
             env_name = rule.get("env", "")
-            value = os.environ.get(env_name)
+            # Read the resolved value from /home/acproxy/secrets/<env>
+            # (re-staged by supervisor stage 35 from the host bind mount).
+            # Falls back to os.environ for backward compat with cages
+            # last started under 0.21.0 or earlier (which env-passed the
+            # cleartext value); on the file path, mitmproxy's own env
+            # never holds the raw secret.
+            value = ""
+            secret_file = os.path.join(SECRETS_DIR, env_name)
+            try:
+                with open(secret_file) as f:
+                    value = f.read()
+            except OSError:
+                value = os.environ.get(env_name, "")
             if not value:
                 continue
             transform_name = rule.get("transform", "") or ""
