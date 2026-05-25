@@ -19,6 +19,15 @@ from agentcage.data.proxy.relays._validate import (
 
 KNOWN_TRANSFORMS = frozenset({"google-jwt-bearer"})
 
+# Built-in inspector names recognized by both proxy backends. Source of
+# truth on the container side: ``data/proxy/addon.py _BUILTIN_INSPECTORS``.
+# We mirror it here so the apple-container validator can flag typos at
+# parse time instead of letting them silently no-op at runtime. Keep in
+# sync when adding a new built-in inspector.
+_BUILTIN_INSPECTOR_NAMES = frozenset({
+    "domain", "secrets", "body-size", "entropy", "content-type",
+})
+
 _VALID_SECRET_SCOPES = ("auto", "user", "system")
 
 
@@ -282,6 +291,13 @@ class Config:
     container: ContainerConfig = field(default_factory=ContainerConfig)
     secrets: SecretsConfig = field(default_factory=SecretsConfig)
     secret_injection: list[SecretInjectionRule] = field(default_factory=list)
+    # Inspector chain — same shape the proxy addon reads from cage.yaml's
+    # top-level ``inspectors:`` list. Each entry is ``{"name": str,
+    # "config": dict, "path": str?}``. Kept as raw dicts (not a typed
+    # dataclass) because the container backend's addon already reads YAML
+    # directly and we want byte-identical config flow across backends.
+    # See data/proxy/addon.py ``_load_custom_inspectors`` for the dispatch.
+    inspectors: list[dict] = field(default_factory=list)
     protocol_relays: list[ProtocolRelay] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
@@ -503,6 +519,14 @@ def load_config(path: str) -> Config:
     # expands ${VAR} references during quadlet generation).
     cc.podman_secrets = [s for s in cc.podman_secrets if s not in injected_names]
     cc.env = {k: v for k, v in cc.env.items() if k not in injected_names}
+
+    # Inspector chain — preserved as raw dicts so the proxy addon's
+    # dispatch logic stays the single source of truth for valid keys.
+    # We coerce non-list values (None, scalars) to an empty list to keep
+    # the field shape consistent for downstream consumers.
+    insp_raw = raw.get("inspectors") or []
+    if isinstance(insp_raw, list):
+        cfg.inspectors = [dict(e) for e in insp_raw if isinstance(e, dict)]
 
     # Protocol relays — non-HTTP secret injection (IMAP, etc.)
     pr_cfg = raw.get("protocol_relays") or []
@@ -982,6 +1006,34 @@ def validate_config(config: Config) -> list[str]:
                     f"={transform!r}: not in KNOWN_TRANSFORMS — the "
                     f"apple-container addon will skip the rule at "
                     f"startup. See issue #120."
+                )
+        # Inspector chain — built-in inspectors run end-to-end on
+        # apple-container as of this PR (the in-cage addon dispatches
+        # through the same data/proxy/inspectors registry the container
+        # backend uses). Built-in names are silently accepted. Entries
+        # with ``path:`` (custom Python files) are NOT yet staged into
+        # the wrapper image; warn so the operator doesn't expect those
+        # to run. Unknown built-in names also warn so a typo doesn't
+        # silently no-op.
+        for idx, entry in enumerate(config.inspectors or []):
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name", "")
+            path = entry.get("path")
+            if path:
+                warnings.append(
+                    f"inspectors[{idx}] {name!r}: custom Python file "
+                    f"inspectors (path: ...) are not yet staged into "
+                    f"the apple-container wrapper image — the in-cage "
+                    f"addon will skip this entry. Use a built-in "
+                    f"inspector or stay on the container backend."
+                )
+            elif name and name not in _BUILTIN_INSPECTOR_NAMES:
+                warnings.append(
+                    f"inspectors[{idx}] {name!r}: not a known built-in "
+                    f"inspector — the in-cage addon will skip this "
+                    f"entry. Valid names: "
+                    f"{', '.join(sorted(_BUILTIN_INSPECTOR_NAMES))}."
                 )
 
     # Warn when a tcp.passthrough port isn't explicitly listed in

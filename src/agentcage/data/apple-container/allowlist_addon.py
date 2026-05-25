@@ -42,6 +42,7 @@ ALLOWLIST_PATH = "/etc/agentcage/allowlist.txt"
 SECRET_INJECTION_PATH = "/etc/agentcage/secret_injection.json"
 PROTOCOL_RELAYS_PATH = "/etc/agentcage/protocol_relays.json"
 CAPTURE_CONFIG_PATH = "/etc/agentcage/capture.json"
+INSPECTORS_PATH = "/etc/agentcage/inspectors.json"
 # Per-cage resolved-secret files; supervisor stage 35 re-stages from
 # the host-bind-mounted /run/agentcage/secrets to this acproxy-only path
 # (chown 200:200, mode 0400). The cage workload (uid 1000) cannot read
@@ -151,6 +152,49 @@ def _build_transform_fn(name: str, secret: str, config: dict):
     return instance.get_value
 
 
+def _load_inspector_entries() -> list[dict]:
+    """Load the cage's inspector chain config (baked at build time).
+
+    Each entry is ``{"name": str, "config": dict}``. Missing file or
+    parse failure → empty list (allowlist-only mode, the legacy
+    behavior pre-this-PR).
+    """
+    try:
+        with open(INSPECTORS_PATH) as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+# Mirror the container backend's built-in inspector registry. Kept in this
+# module (rather than imported from a shared spot) so the cage image only
+# needs the inspectors package on sys.path — no extra Python deps to
+# stage. The container backend's addon.py is the source of truth for the
+# ordering rationale (cheap+high-reject inspectors first); we keep it
+# identical here so behavior is byte-for-byte the same across backends.
+def _builtin_inspectors_map():
+    """Lazy-imported registry of built-in inspectors by name.
+
+    Returns ``{name: Inspector_subclass}``. Kept lazy so addon import
+    doesn't fail when ``inspectors:`` is empty (the common case) and
+    the inspectors package happens to be unavailable for any reason.
+    Imports are cheap and only paid once per addon load.
+    """
+    from inspectors.body_size import BodySizeInspector
+    from inspectors.content_type import ContentTypeInspector
+    from inspectors.domain import DomainInspector
+    from inspectors.entropy import EntropyInspector
+    from inspectors.secrets import SecretsInspector
+    return {
+        "domain": DomainInspector,
+        "secrets": SecretsInspector,
+        "body-size": BodySizeInspector,
+        "entropy": EntropyInspector,
+        "content-type": ContentTypeInspector,
+    }
+
+
 class AllowlistAddon:
     def __init__(self) -> None:
         self.allowed = _load_allowlist()
@@ -219,6 +263,19 @@ class AllowlistAddon:
                     for r in self._resolved_secrets
                 )
             )
+        # Inspector chain — each entry is dispatched through the bundled
+        # ``inspectors`` registry (built-in by name, or a custom Python
+        # file via ``path``). Same shape as the container backend's
+        # addon.py ``_load_custom_inspectors``. A rule that fails to
+        # instantiate is dropped with a warning so a single bad config
+        # doesn't take down the whole proxy.
+        self.inspectors: list = []
+        self._load_inspectors()
+        if self.inspectors:
+            ctx.log.info(
+                "[agentcage] inspectors loaded: "
+                + ", ".join(i.name for i in self.inspectors)
+            )
         self._audit_fh = self._open_log(AUDIT_LOG_PATH)
         # HAR body capture — when enabled, the shared CaptureWriter writes
         # per-flow entries with inbound+outbound request/response snapshots
@@ -271,6 +328,117 @@ class AllowlistAddon:
         # ``self._relays`` so the ``done()`` hook can drain them.
         self._relay_entries: list[dict] = _load_protocol_relays()
         self._relays: list = []
+
+    def _load_inspectors(self) -> None:
+        """Instantiate the cage's inspector chain from inspectors.json.
+
+        Built-in name → look up in the bundled registry. Custom Python
+        file (``path:``) → load via the shared util that constrains the
+        path to /etc/agentcage/inspectors. Bad entries are skipped with
+        a warning rather than crashing the addon — the operator sees
+        the warning in ``cage logs`` and the cage keeps running.
+        """
+        entries = _load_inspector_entries()
+        if not entries:
+            return
+        try:
+            registry = _builtin_inspectors_map()
+        except Exception as exc:  # pragma: no cover — registry import is staged in CI
+            ctx.log.warn(
+                f"[agentcage] inspector registry import failed: {exc} — "
+                f"chain disabled"
+            )
+            return
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name", "")
+            cfg = entry.get("config") or {}
+            path = entry.get("path")
+            try:
+                if path:
+                    from inspectors.util import load_inspector_from_file
+                    inspector = load_inspector_from_file(path)
+                elif name in registry:
+                    inspector = registry[name]()
+                else:
+                    ctx.log.warn(
+                        f"[agentcage] unknown inspector {name!r} — skipping"
+                    )
+                    continue
+                inspector.configure(cfg)
+            except Exception as exc:
+                ctx.log.warn(
+                    f"[agentcage] inspector {name!r} failed to load: "
+                    f"{exc} — skipping"
+                )
+                continue
+            self.inspectors.append(inspector)
+
+    def _build_inspection_context(self, flow: http.HTTPFlow):
+        """Construct an ``InspectionContext`` for the inspector chain.
+
+        Mirrors ``Agentcage._build_context`` in the container backend so
+        inspector behavior is identical across backends. Body entropy is
+        computed once here (the container backend caches it on the
+        context for inspectors that need it).
+        """
+        from inspectors.base import InspectionContext
+        from inspectors.util import shannon_entropy
+
+        body_bytes = flow.request.content
+        try:
+            body_text = flow.request.get_text(strict=False)
+        except (UnicodeDecodeError, ValueError):
+            body_text = None
+        content_type = flow.request.headers.get("content-type", "")
+        body_size = len(body_bytes) if body_bytes else 0
+        body_ent = shannon_entropy(body_bytes) if body_bytes else None
+        return InspectionContext(
+            url=flow.request.pretty_url,
+            host=flow.request.pretty_host,
+            method=flow.request.method,
+            headers=list(flow.request.headers.items(multi=True)),
+            content_type=content_type,
+            body_bytes=body_bytes,
+            body_text=body_text,
+            body_size=body_size,
+            body_entropy=body_ent,
+        )
+
+    def _run_inspectors(self, flow: http.HTTPFlow) -> list:
+        """Run the inspector chain on *flow* and return the result list.
+
+        Each ``InspectionResult`` carries action ("block"|"flag"),
+        severity, reason, and inspector name. Short-circuits on the
+        first ``block`` so an expensive inspector after a cheap reject
+        never runs. Same semantics as the container backend's
+        ``request()`` hook.
+        """
+        if not self.inspectors:
+            return []
+        results: list = []
+        try:
+            ctx_obj = self._build_inspection_context(flow)
+        except Exception as exc:
+            ctx.log.warn(f"[agentcage] inspection context build failed: {exc}")
+            return []
+        for inspector in self.inspectors:
+            try:
+                result = inspector.inspect_request(ctx_obj)
+            except Exception as exc:
+                ctx.log.warn(
+                    f"[agentcage] inspector {inspector.name!r} raised: "
+                    f"{exc} — skipping"
+                )
+                continue
+            if result is None:
+                continue
+            results.append(result)
+            ctx_obj.prior_results.append(result)
+            if result.action == "block":
+                break
+        return results
 
     @staticmethod
     def _host_matches_inject_to(host: str, inject_to: list[str]) -> bool:
@@ -468,6 +636,49 @@ class AllowlistAddon:
                         f"[agentcage] capture inbound-request snapshot failed: {exc}"
                     )
 
+            # Run the inspector chain AFTER the host-allowlist gate but
+            # BEFORE secret injection — same ordering as the container
+            # backend's addon.py so inspectors see placeholders, not
+            # real secret values. The first ``block`` result short-
+            # circuits via _run_inspectors; flagged results travel
+            # through to the audit entry but don't 403 the request.
+            inspector_results = self._run_inspectors(flow)
+            inspector_entries = [
+                {
+                    "name": r.inspector,
+                    "action": r.action,
+                    "reason": r.reason,
+                    "severity": r.severity,
+                }
+                for r in inspector_results
+            ]
+            entry["inspectors"] = inspector_entries
+            blocked = next(
+                (r for r in inspector_results if r.action == "block"), None
+            )
+            if blocked is not None:
+                reason = blocked.reason
+                ctx.log.info(
+                    f"[agentcage] BLOCK (inspector {blocked.inspector}) "
+                    f"{flow.request.method} {host}"
+                )
+                entry["decision"] = "blocked"
+                entry["reason"] = reason
+                self._audit(entry)
+                flow.response = http.Response.make(
+                    403,
+                    json.dumps(
+                        {
+                            "blocked": True,
+                            "reason": reason,
+                            "host": host,
+                            "by": "agentcage",
+                        }
+                    ).encode(),
+                    {"Content-Type": "application/json"},
+                )
+                return
+
             # Apply secret injection BEFORE the upstream request goes out.
             # Substitutions happen in place; we record the env names in
             # the audit entry so the operator can see what was swapped.
@@ -477,8 +688,12 @@ class AllowlistAddon:
             # can distinguish raw-env substitution from derived-value
             # substitution at audit time.
             injected, transforms = self._maybe_inject(flow)
-            entry["decision"] = "allowed"
-            entry["reason"] = "domain-allowlist"
+            flagged = [r for r in inspector_results if r.action == "flag"]
+            entry["decision"] = "flagged" if flagged else "allowed"
+            if flagged:
+                entry["reason"] = "; ".join(r.reason for r in flagged)
+            else:
+                entry["reason"] = "domain-allowlist"
             entry["secrets_injected"] = injected
             if transforms:
                 entry["secret_transforms"] = transforms

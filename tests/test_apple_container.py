@@ -1616,6 +1616,8 @@ def test_response_redaction_skips_binary_body(tmp_path, monkeypatch):
     assert flow.response.headers["X-Trace"] == "echo {{AGENTCAGE_REDACT_SECRET}} back"
 
 
+
+
 # ---------------------------------------------------------------------------
 # protocol_relays (PR #160): SMTP/IMAP listeners on apple-container
 # ---------------------------------------------------------------------------
@@ -1686,7 +1688,7 @@ def test_stage_build_context_stages_relays_tarball(tmp_path):
     assert "_validate.py" in names
 
 
-def test_stage_build_context_stages_inspectors_tarball(tmp_path):
+def test_stage_build_context_stages_inspectors_tarball_for_relays(tmp_path):
     """The ``relays.smtp`` module imports ``inspectors.base`` at module
     load time — bundling the inspectors package satisfies that import
     even though the apple-container addon currently passes
@@ -2411,3 +2413,466 @@ def test_capture_warning_no_longer_fires_for_enable_har():
             "apple-container — should be removed now that HAR body "
             "capture works end-to-end."
         )
+# ---------------------------------------------------------------------------
+# inspector chain — wire the cage.yaml ``inspectors:`` list end-to-end
+# ---------------------------------------------------------------------------
+
+
+def test_stage_build_context_writes_inspectors_json(tmp_path):
+    """The cage's inspector chain (cage.yaml ``inspectors:`` list) flows
+    into the build context as ``inspectors.json``. The in-cage addon
+    reads this at startup and dispatches each entry through the
+    bundled registry."""
+    inspectors_cfg = [
+        {"name": "content-type", "config": {"action": "block"}},
+        {"name": "body-size", "config": {"max_bytes": 1024}},
+    ]
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"], allowlist=["a.com"], inspectors=inspectors_cfg,
+    )
+    assert (tmp_path / "inspectors.json").exists()
+    parsed = json.loads((tmp_path / "inspectors.json").read_text())
+    assert parsed == inspectors_cfg
+
+
+def test_stage_build_context_empty_inspectors_writes_empty_list(tmp_path):
+    """Missing ``inspectors:`` in cage.yaml → empty list on disk (not a
+    missing file). The addon's loader reads + parses unconditionally,
+    so the file must always exist."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    assert (tmp_path / "inspectors.json").exists()
+    assert json.loads((tmp_path / "inspectors.json").read_text()) == []
+
+
+def test_stage_build_context_stages_inspectors_tarball(tmp_path):
+    """The inspectors registry package must be staged into the build
+    context as a tarball (same ADD-extract trick as transforms — direct
+    directory COPY silently empties on Apple ``container build`` 0.5+)."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    archive = tmp_path / "inspectors.tar.gz"
+    assert archive.exists()
+    import tarfile as _tf
+    with _tf.open(archive) as tar:
+        names = sorted(tar.getnames())
+    # Sanity: real inspectors are inside.
+    assert "__init__.py" in names
+    assert "base.py" in names
+    assert "content_type.py" in names
+
+
+def test_stage_build_context_inspectors_tarball_excludes_pycache(
+    tmp_path, monkeypatch,
+):
+    """__pycache__ is host-local Python bytecode — packing it into the
+    image layer wastes space and ruins layer determinism. The tarball
+    must filter it out (same rule as the transforms tarball)."""
+    fake_src = tmp_path / "fake_inspectors_src"
+    fake_src.mkdir()
+    (fake_src / "__init__.py").write_text("# real")
+    (fake_src / "content_type.py").write_text("# real")
+    (fake_src / "__pycache__").mkdir()
+    (fake_src / "__pycache__" / "garbage.pyc").write_bytes(b"\x00\x00\x00")
+    monkeypatch.setattr(ac_wrapper, "_INSPECTORS_SRC", fake_src)
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    import tarfile as _tf
+    with _tf.open(tmp_path / "inspectors.tar.gz") as tar:
+        names = tar.getnames()
+    assert not any("__pycache__" in n for n in names), names
+
+
+def test_wrapper_containerfile_adds_inspectors_tarball():
+    """The Containerfile must ADD the inspectors tarball (auto-extracted
+    by OCI build) so ``from inspectors.base import Inspector`` resolves
+    at runtime. Plain directory COPY is broken on Apple ``container
+    build``; same fix as for transforms."""
+    out = ac_wrapper.render_wrapper_containerfile(
+        "docker.io/library/alpine:3.20",
+        user_cmd=["sh", "-c", "echo hi"],
+    )
+    assert "ADD inspectors.tar.gz /opt/agentcage/inspectors/" in out
+    # And NOT the broken directory-COPY form.
+    assert "COPY inspectors /opt/agentcage/inspectors" not in out
+    # The inspectors.json config file must also be wired in.
+    assert "COPY inspectors.json /etc/agentcage/inspectors.json" in out
+
+
+def test_backend_threads_inspectors_into_build_artifacts(tmp_path, monkeypatch):
+    """The apple-container backend must forward the cage's ``inspectors:``
+    list from the parsed Config through to wrapper.build_wrapper. Catches
+    the silent-drop regression that was the entire pre-PR state of this
+    backend: rule in cage.yaml, image built fine, but the cage saw an
+    empty inspectors list."""
+    captured: dict = {}
+
+    def fake_build_wrapper(_name, _image, **kwargs):
+        captured["inspectors"] = kwargs.get("inspectors")
+        return "localhost/agentcage-apple-test:latest"
+
+    from agentcage.backends import apple_container as backend_mod
+    monkeypatch.setattr(backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper)
+    monkeypatch.setattr(
+        ac_cli, "image_inspect",
+        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
+    )
+    monkeypatch.setattr(
+        ac_cli, "run",
+        lambda *_a, **_kw: type(
+            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
+        )(),
+    )
+
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/test:latest"
+    cfg.container.command = ["/bin/sh"]
+    cfg.inspectors = [
+        {"name": "content-type", "config": {"action": "block"}},
+    ]
+
+    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    inspectors = captured["inspectors"]
+    assert inspectors == [
+        {"name": "content-type", "config": {"action": "block"}}
+    ]
+
+
+def test_load_config_parses_inspectors(tmp_path):
+    """cage.yaml ``inspectors:`` list survives load_config as a list of
+    raw dicts on Config.inspectors. The container backend's addon
+    already reads YAML directly; we keep the same opaque-dict shape so
+    behavior is byte-for-byte identical across backends."""
+    from agentcage.config import load_config
+    p = tmp_path / "cage.yaml"
+    p.write_text(
+        "name: t\n"
+        "container:\n  image: localhost/test:latest\n"
+        "inspectors:\n"
+        "  - name: content-type\n"
+        "    config:\n"
+        "      action: block\n"
+    )
+    cfg = load_config(str(p))
+    assert cfg.inspectors == [
+        {"name": "content-type", "config": {"action": "block"}}
+    ]
+
+
+def test_validate_config_accepts_builtin_inspector_on_apple_container():
+    """A built-in inspector entry on apple-container must NOT trigger a
+    'silently has no effect' warning — the chain runs end-to-end now."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.inspectors = [{"name": "content-type", "config": {}}]
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="arm64"):
+        warnings = validate_config(cfg)
+    joined = " ".join(warnings)
+    # Built-in inspector → no warning at all.
+    assert "inspectors" not in joined or "content-type" not in joined
+
+
+def test_validate_config_warns_for_unknown_inspector_on_apple_container():
+    """An unknown built-in name is almost always a typo and would silently
+    no-op in the cage. Surface it at parse time."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.inspectors = [{"name": "nonexistent-inspector", "config": {}}]
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="arm64"):
+        warnings = validate_config(cfg)
+    assert any(
+        "nonexistent-inspector" in w and "not a known built-in" in w
+        for w in warnings
+    ), warnings
+
+
+def test_validate_config_warns_for_path_inspector_on_apple_container():
+    """Custom-Python-file inspectors (``path: /etc/...``) are not yet
+    staged into the wrapper image — warn so the operator knows it'll
+    silently no-op until that gap is closed."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.inspectors = [
+        {"name": "my-check", "path": "/etc/agentcage/my_inspector.py"}
+    ]
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="arm64"):
+        warnings = validate_config(cfg)
+    assert any(
+        "custom Python file inspectors" in w for w in warnings
+    ), warnings
+
+
+def _make_request_flow_for_inspector(*, host, method="POST",
+                                      headers=None, body=""):
+    """Build a minimal mock HTTPFlow for the inspector-chain request hook.
+
+    Different shape from _make_response_flow because the inspector chain
+    runs before the response hook fires; we need the request side fully
+    populated (body, content-type, etc.) so InspectionContext can be built.
+    """
+    flow = MagicMock()
+    flow.request.pretty_host = host
+    flow.request.pretty_url = f"https://{host}/api/x"
+    flow.request.path = "/api/x"
+    flow.request.port = 443
+    flow.request.method = method
+    flow.request.content = body.encode() if isinstance(body, str) else body
+    hdrs = dict(headers or {})
+
+    class _Headers(dict):
+        def items(self, multi=False):  # noqa: ARG002
+            return list(super().items())
+
+        def get(self, key, default=""):
+            for k, v in super().items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    flow.request.headers = _Headers(hdrs)
+    flow.request.get_text = lambda strict=False: (
+        body if isinstance(body, str) else body.decode("utf-8", "replace")
+    )
+    flow.response = None
+
+    def _make_response(status, content, resp_headers):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.content = content
+        resp.headers = resp_headers
+        return resp
+
+    # The addon does `http.Response.make(...)` to synthesize the 403.
+    # conftest.py stubs `mitmproxy.http` as a MagicMock so `Response.make`
+    # is already a MagicMock; we wire it to a real object so we can
+    # assert on the returned body/status.
+    return flow
+
+
+def test_inspector_chain_runs_at_request_time(monkeypatch, tmp_path):
+    """End-to-end: an inspector that returns a ``block`` result causes
+    the addon to emit a 403 from the proxy itself (no upstream traffic).
+    The audit entry includes the ``inspectors:`` list so ``cage audit
+    --inspector <name>`` filtering works.
+
+    Uses a fake inspector registered in-process so we don't depend on
+    any specific built-in's heuristics — keeps the test deterministic."""
+    rules_path = tmp_path / "secret_injection.json"
+    rules_path.write_text("[]")
+    inspectors_path = tmp_path / "inspectors.json"
+    inspectors_path.write_text(json.dumps([
+        {"name": "_test_blocker", "config": {"why": "test policy"}},
+    ]))
+    (tmp_path / "allowlist.txt").write_text("api.example.com\n")
+    monkeypatch.setenv("AGENTCAGE_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AGENTCAGE_CAPTURE", str(tmp_path / "capture.jsonl"))
+
+    import importlib
+    import sys
+    addon_dir = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container"
+    )
+    inspectors_src_parent = addon_dir.parent / "proxy"
+    monkeypatch.syspath_prepend(str(addon_dir))
+    monkeypatch.syspath_prepend(str(inspectors_src_parent))
+
+    # Pre-register a fake inspector by patching the registry the addon
+    # uses. We patch the lazy builder so the registry returns our fake
+    # under the configured name.
+    from inspectors.base import Inspector, InspectionResult
+
+    class _TestBlocker(Inspector):
+        name = "_test_blocker"
+
+        def configure(self, config):
+            self._why = config.get("why", "blocked by test")
+
+        def inspect_request(self, ctx_obj):
+            return InspectionResult(
+                inspector=self.name,
+                action="block",
+                reason=self._why,
+                severity="error",
+            )
+
+    sys.modules.pop("allowlist_addon", None)
+    allowlist_addon = importlib.import_module("allowlist_addon")
+    allowlist_addon.SECRET_INJECTION_PATH = str(rules_path)
+    allowlist_addon.INSPECTORS_PATH = str(inspectors_path)
+    allowlist_addon.ALLOWLIST_PATH = str(tmp_path / "allowlist.txt")
+    monkeypatch.setattr(
+        allowlist_addon, "_builtin_inspectors_map",
+        lambda: {"_test_blocker": _TestBlocker},
+    )
+
+    addon = allowlist_addon.AllowlistAddon()
+    assert len(addon.inspectors) == 1
+    assert addon.inspectors[0].name == "_test_blocker"
+
+    # Wire http.Response.make so the addon can synthesize a 403 — the
+    # mitmproxy.http stub in conftest is a MagicMock, so .make() returns
+    # a MagicMock by default which is fine for the audit assertions.
+    captured_resp = {}
+
+    def _fake_make(status, content, headers):
+        captured_resp["status"] = status
+        captured_resp["content"] = content
+        captured_resp["headers"] = headers
+        return MagicMock(status_code=status, content=content, headers=headers)
+
+    allowlist_addon.http.Response.make.side_effect = _fake_make
+
+    flow = _make_request_flow_for_inspector(
+        host="api.example.com",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body='{"hello": "world"}',
+    )
+    addon.request(flow)
+
+    # 403 synthesized, NOT a passthrough.
+    assert captured_resp["status"] == 403
+    body = json.loads(captured_resp["content"].decode())
+    assert body["blocked"] is True
+    assert body["by"] == "agentcage"
+    assert body["reason"] == "test policy"
+
+    # Audit entry has inspectors[].name == "_test_blocker" so the CLI's
+    # --inspector filter matches it.
+    audit_lines = (tmp_path / "audit.jsonl").read_text().splitlines()
+    blocked_lines = [
+        json.loads(line) for line in audit_lines
+        if json.loads(line).get("decision") == "blocked"
+    ]
+    assert blocked_lines, "expected a blocked audit entry"
+    entry = blocked_lines[0]
+    assert entry["inspectors"] == [
+        {
+            "name": "_test_blocker",
+            "action": "block",
+            "reason": "test policy",
+            "severity": "error",
+        }
+    ]
+    assert entry["reason"] == "test policy"
+    assert entry["host"] == "api.example.com"
+
+
+def test_inspector_chain_flag_does_not_block(monkeypatch, tmp_path):
+    """A ``flag`` result records the inspector hit in the audit entry
+    but does NOT 403 the request — same semantics as the container
+    backend. Decision becomes ``flagged`` instead of ``allowed``."""
+    rules_path = tmp_path / "secret_injection.json"
+    rules_path.write_text("[]")
+    inspectors_path = tmp_path / "inspectors.json"
+    inspectors_path.write_text(json.dumps([
+        {"name": "_test_flagger", "config": {}}
+    ]))
+    (tmp_path / "allowlist.txt").write_text("api.example.com\n")
+    monkeypatch.setenv("AGENTCAGE_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AGENTCAGE_CAPTURE", str(tmp_path / "capture.jsonl"))
+
+    import importlib
+    import sys
+    addon_dir = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container"
+    )
+    inspectors_src_parent = addon_dir.parent / "proxy"
+    monkeypatch.syspath_prepend(str(addon_dir))
+    monkeypatch.syspath_prepend(str(inspectors_src_parent))
+
+    from inspectors.base import Inspector, InspectionResult
+
+    class _TestFlagger(Inspector):
+        name = "_test_flagger"
+
+        def inspect_request(self, ctx_obj):
+            return InspectionResult(
+                inspector=self.name,
+                action="flag",
+                reason="suspicious but allowed",
+                severity="warning",
+            )
+
+    sys.modules.pop("allowlist_addon", None)
+    allowlist_addon = importlib.import_module("allowlist_addon")
+    allowlist_addon.SECRET_INJECTION_PATH = str(rules_path)
+    allowlist_addon.INSPECTORS_PATH = str(inspectors_path)
+    allowlist_addon.ALLOWLIST_PATH = str(tmp_path / "allowlist.txt")
+    monkeypatch.setattr(
+        allowlist_addon, "_builtin_inspectors_map",
+        lambda: {"_test_flagger": _TestFlagger},
+    )
+
+    addon = allowlist_addon.AllowlistAddon()
+
+    flow = _make_request_flow_for_inspector(
+        host="api.example.com",
+        method="GET",
+        headers={"Content-Type": "application/json"},
+        body="",
+    )
+    addon.request(flow)
+
+    # No 403 — flow.response stays None.
+    assert flow.response is None
+    audit_lines = (tmp_path / "audit.jsonl").read_text().splitlines()
+    entry = json.loads(audit_lines[-1])
+    assert entry["decision"] == "flagged"
+    assert entry["inspectors"] == [
+        {
+            "name": "_test_flagger",
+            "action": "flag",
+            "reason": "suspicious but allowed",
+            "severity": "warning",
+        }
+    ]
+
+
+def test_inspector_chain_empty_config_is_passthrough(monkeypatch, tmp_path):
+    """An empty inspectors.json (the common case for legacy cages) must
+    leave the request hook behaving exactly as it did pre-PR — no
+    chain runs, audit entry has empty ``inspectors:`` array."""
+    rules_path = tmp_path / "secret_injection.json"
+    rules_path.write_text("[]")
+    inspectors_path = tmp_path / "inspectors.json"
+    inspectors_path.write_text("[]")
+    (tmp_path / "allowlist.txt").write_text("api.example.com\n")
+    monkeypatch.setenv("AGENTCAGE_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AGENTCAGE_CAPTURE", str(tmp_path / "capture.jsonl"))
+
+    import importlib
+    import sys
+    addon_dir = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container"
+    )
+    inspectors_src_parent = addon_dir.parent / "proxy"
+    monkeypatch.syspath_prepend(str(addon_dir))
+    monkeypatch.syspath_prepend(str(inspectors_src_parent))
+
+    sys.modules.pop("allowlist_addon", None)
+    allowlist_addon = importlib.import_module("allowlist_addon")
+    allowlist_addon.SECRET_INJECTION_PATH = str(rules_path)
+    allowlist_addon.INSPECTORS_PATH = str(inspectors_path)
+    allowlist_addon.ALLOWLIST_PATH = str(tmp_path / "allowlist.txt")
+
+    addon = allowlist_addon.AllowlistAddon()
+    assert addon.inspectors == []
+
+    flow = _make_request_flow_for_inspector(
+        host="api.example.com",
+        method="GET",
+        headers={},
+        body="",
+    )
+    addon.request(flow)
+    assert flow.response is None
+    entry = json.loads(
+        (tmp_path / "audit.jsonl").read_text().splitlines()[-1]
+    )
+    assert entry["decision"] == "allowed"
+    assert entry["inspectors"] == []

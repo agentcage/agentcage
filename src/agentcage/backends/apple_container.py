@@ -345,6 +345,13 @@ class AppleContainerBackend:
                 "domains": list(cap.domains or []),
                 "exclude_domains": list(cap.exclude_domains or []),
             }
+        # Inspector chain — passed through verbatim. The cage.yaml
+        # ``inspectors:`` list is the same shape the container backend
+        # addon reads, so we keep the dicts opaque here and let the
+        # in-cage addon dispatch through the bundled ``inspectors``
+        # registry. An empty/missing list means allowlist-only mode,
+        # which is the legacy apple-container behavior.
+        inspectors = [dict(e) for e in (config.inspectors or [])]
         ac_wrapper.build_wrapper(
             deploy_name, user_image,
             user_cmd=user_cmd,
@@ -352,6 +359,7 @@ class AppleContainerBackend:
             secret_injection_rules=secret_rules,
             protocol_relays=relay_rules,
             capture_config=capture_dict,
+            inspectors=inspectors,
         )
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")

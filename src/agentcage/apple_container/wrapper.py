@@ -35,12 +35,13 @@ _TRANSFORMS_SRC = (
 _RELAYS_SRC = (
     Path(__file__).resolve().parent.parent / "data" / "proxy" / "relays"
 )
-# Inspector base classes that ``relays.smtp`` imports at module load
-# (``from inspectors.base import InspectionContext, ...``). Bundled
-# even though the apple-container addon currently passes
-# ``inspectors=None`` to relay constructors — without the package on
-# sys.path the relay module itself fails to import. Tracked as part
-# of the broader inspector-chain parity work in #120.
+# Inspectors registry — same package the container-backend addon imports from
+# (``from inspectors.base import Inspector`` etc.). We bundle the entire
+# package into the apple-container build context so the in-cage addon can
+# load + run the chain identically to the container backend. Same
+# ADD-tarball trick as transforms above to dodge Apple ``container build``'s
+# silent directory-COPY drop. Also required by the ``relays.smtp`` module
+# which does ``from inspectors.base import InspectionContext`` at import time.
 _INSPECTORS_SRC = (
     Path(__file__).resolve().parent.parent / "data" / "proxy" / "inspectors"
 )
@@ -144,6 +145,7 @@ def stage_build_context(
     secret_injection_rules: list[dict] | None = None,
     protocol_relays: list[dict] | None = None,
     capture_config: dict | None = None,
+    inspectors: list[dict] | None = None,
 ) -> None:
     """Stage supervisor + cage CMD + egress filter config into *dest*.
 
@@ -170,6 +172,12 @@ def stage_build_context(
                                  / disabled means the addon skips body capture
                                  entirely (legacy headers-only entries still
                                  record allow/block traffic in audit.jsonl).
+      - inspectors.json       -- list of ``{name, config}`` entries that the
+                                 in-cage addon dispatches through the
+                                 bundled ``inspectors`` registry — same
+                                 chain the container backend's addon runs.
+                                 Empty list (or missing key) means no
+                                 inspectors run; allowlist-only mode.
       - transforms.tar.gz     -- tarball of ``data/proxy/transforms`` so the
                                  in-cage addon can import the same transform
                                  implementations (google-jwt-bearer, ...)
@@ -179,13 +187,14 @@ def stage_build_context(
                                  in-cage addon can ``from relays import get``
                                  to spawn IMAP/SMTP listeners declared in
                                  cage.yaml ``protocol_relays:``.
-      - inspectors.tar.gz     -- tarball of ``data/proxy/inspectors`` —
-                                 the relays package imports
-                                 ``inspectors.base`` at module load even
-                                 when the apple-container addon passes
-                                 ``inspectors=None``; bundling satisfies
-                                 the import without dragging the full
-                                 mitmproxy inspector wiring in.
+      - inspectors.tar.gz     -- tarball of ``data/proxy/inspectors`` so the
+                                 in-cage addon can ``import inspectors``
+                                 identically to the container backend.
+                                 Also required by the ``relays.smtp``
+                                 module which imports ``inspectors.base``
+                                 at module load even when the
+                                 apple-container addon passes
+                                 ``inspectors=None`` to the relay.
       - protocol_relays.json  -- the cage's ``protocol_relays:`` list
                                  (passes through ``name/type/listen/
                                  upstream/auth/policy``). Credential
@@ -213,7 +222,10 @@ def stage_build_context(
     # Pack the transforms, relays, and inspectors packages into
     # deterministic tarballs (sorted entries, no __pycache__). Each is
     # a few KB; the COPY-drop bug forces us through ADD for every
-    # directory we want bundled.
+    # directory we want bundled. The inspectors tarball is unconditionally
+    # staged so adding ``inspectors:`` to cage.yaml after the image was
+    # last built doesn't silently no-op until a rebuild that happens to
+    # also touch the registry.
     _pack_tarball(_TRANSFORMS_SRC, dest / "transforms.tar.gz")
     _pack_tarball(_RELAYS_SRC, dest / "relays.tar.gz")
     _pack_tarball(_INSPECTORS_SRC, dest / "inspectors.tar.gz")
@@ -235,6 +247,7 @@ def stage_build_context(
     # cage.yaml; rebuild required (the file is baked in at image build
     # time, same shape as secret_injection.json).
     (dest / "capture.json").write_text(json.dumps(capture_config or {}))
+    (dest / "inspectors.json").write_text(json.dumps(inspectors or []))
 
 
 def wrapped_image_name(cage_name: str) -> str:
@@ -251,6 +264,7 @@ def build_wrapper(
     secret_injection_rules: list[dict] | None = None,
     protocol_relays: list[dict] | None = None,
     capture_config: dict | None = None,
+    inspectors: list[dict] | None = None,
 ) -> str:
     """Generate Containerfile, stage build context, run `container build`.
 
@@ -272,6 +286,7 @@ def build_wrapper(
             secret_injection_rules=secret_injection_rules,
             protocol_relays=protocol_relays,
             capture_config=capture_config,
+            inspectors=inspectors,
         )
         ac_cli.run(
             ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],
