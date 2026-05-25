@@ -262,18 +262,29 @@ class TestCageAuditHarAppleContainer:
         self, mock_state, mock_path, mock_popen, tmp_path,
     ):
         """Once the audit file exists, audit reads it via `tail -n 10000`
-        rather than journalctl; subprocess.Popen receives the right argv."""
+        rather than journalctl; subprocess.Popen receives the right argv.
+
+        The CLI dispatches through Backend.audit_argv (lifted onto the
+        protocol in PR-8) — for apple-container that returns
+        ``tail -n 10000 <host-audit.jsonl>``. We mock the backend's
+        logs_dir to point at tmp_path so audit_argv resolves to a path
+        we control."""
+        from agentcage.backends.apple_container import AppleContainerBackend
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         audit_path = tmp_path / "audit.jsonl"
         audit_path.touch()
+        # _apple_container_audit_path is the "does the file exist?" probe
+        # at the CLI layer; the actual argv is built by backend.audit_argv,
+        # which calls logs_dir(name) — patch THAT to control the path.
         mock_path.return_value = audit_path
 
         fake_proc = MagicMock()
         fake_proc.stdout = iter([])
         mock_popen.return_value = fake_proc
 
-        _runner().invoke(main, ["cage", "audit", "demo"])
+        with patch.object(AppleContainerBackend, "logs_dir", return_value=tmp_path):
+            _runner().invoke(main, ["cage", "audit", "demo"])
 
         # First Popen call is the tail of the host audit file.
         popen_argv = mock_popen.call_args.args[0]

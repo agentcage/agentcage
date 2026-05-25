@@ -1609,35 +1609,28 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
     if cmd[0] in cfg.exec_aliases:
         cmd = cfg.exec_aliases[cmd[0]] + cmd[1:]
 
-    if cfg.isolation == "vm":
-        inst = LimaInstance(name)
-        exec_flags = ["-it"] if sys.stdin.isatty() else []
-        os.execvp("limactl", ["limactl", "shell", inst.name, "--",
-                  "podman", "exec", *exec_flags, f"{name}-{service}", *cmd])
+    # Dispatch via Backend.exec_argv (lifted onto the protocol in PR-8).
+    # Each backend returns the argv that runs the command inside the
+    # cage's <service>; the CLI owns the process control.
+    from agentcage.backend import BackendUnsupported
+    backend = get_backend(cfg)
+    try:
+        argv = backend.exec_argv(
+            name, service, cmd, interactive=sys.stdin.isatty(),
+        )
+    except BackendUnsupported as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
 
-    if _is_apple_container(cfg):
-        _require_cage_service_on_apple_container(service, "exec")
-        from agentcage.apple_container import cli as ac_cli
-        binary = ac_cli.container_binary()
-        if binary is None:
-            click.echo(
-                "error: Apple `container` CLI not found; install from "
-                "https://github.com/apple/container/releases",
-                err=True,
-            )
-            sys.exit(1)
-        exec_flags = ["-it"] if sys.stdin.isatty() else []
-        # The cage is one Apple container named after the cage itself
-        # (see backends.apple_container — no -cage/-proxy/-dns suffix split).
-        os.execvp(binary, [binary, "exec", *exec_flags, name, *cmd])
-
-    container = f"{name}-{service}"
-    exec_flags = []
-    if sys.stdin.isatty():
-        exec_flags = ["-it"]
-    result = subprocess.run(
-        ["podman", "exec"] + exec_flags + [container] + cmd,
-    )
+    # vm and apple-container backends want exec semantics (replace the
+    # current process); container backend's `podman exec` we run as a
+    # subprocess and propagate the exit code. Distinguishing here keeps
+    # the existing UX for both shapes — limactl shell + container exec
+    # benefit from os.execvp's tty handling, while podman exec on Linux
+    # has historically been run via subprocess.run.
+    if cfg.isolation in ("vm", "apple-container"):
+        os.execvp(argv[0], argv)
+    result = subprocess.run(argv)
     sys.exit(result.returncode)
 
 
@@ -1750,49 +1743,19 @@ def _build_audit_journal_cmd(
 ) -> list[str]:
     """Build the command for reading audit entries.
 
-    Each backend stores audit data differently:
-      - container: systemd-user journal (``journalctl --user -u <cage>-proxy``)
-      - vm: same wrapped in ``limactl shell`` + ``sg systemd-journal``
-      - apple-container: plain JSONL file bind-mounted from the microVM
-        to ~/.config/agentcage/apple-container/<cage>/logs/audit.jsonl;
-        ``tail -n N`` (or ``tail -F`` for follow) it. ``--since`` has no
-        time index on this backend; the AuditFilter time pass happens
-        in Python after parsing.
+    Backend.audit_argv (lifted onto the protocol in PR-8) returns the
+    backend-specific argv: journalctl for container, journalctl wrapped
+    in `limactl shell` + `sg systemd-journal` for vm, `tail` of the
+    host-bind-mounted audit.jsonl for apple-container. This function is
+    now a thin wrapper that normalizes the `--since` value for the two
+    backends that accept time-based filtering (apple-container's tail
+    has no time index — filtering happens via AuditFilter post-parse).
     """
-    if _is_apple_container(cfg):
-        path = _apple_container_audit_path(name)
-        if follow:
-            return ["tail", "-n", "0", "-F", str(path)]
-        return ["tail", "-n", "10000", str(path)]
-    if cfg.isolation == "vm":
-        # In VM mode the proxy/dns are systemd --user services, but conmon
-        # routes their logs to the system journal — so the right filter is
-        # --user-unit, not "--user -u". And Lima's persistent SSH
-        # ControlMaster is established before provisioning runs `usermod
-        # -aG systemd-journal`, so the SSH session inherits stale groups
-        # and the user can't read system.journal directly. `sg
-        # systemd-journal -c '...'` adds the missing group for the
-        # journalctl process, which works for both existing and new VMs.
-        journal_cmd = ["journalctl", "--user-unit", f"{name}-proxy",
-                       "--user-unit", f"{name}-dns", "-o", "cat"]
-    else:
-        journal_cmd = ["journalctl", "--user", "-u", f"{name}-proxy",
-                       "-u", f"{name}-dns", "-o", "cat"]
-
-    if since:
-        journal_cmd += ["--since", _normalize_since(since)]
-
-    if follow:
-        journal_cmd.append("-f")
-    else:
-        # Over-read: many lines aren't audit entries
-        journal_cmd += ["-n", "10000"]
-
-    if cfg.isolation == "vm":
-        inst = LimaInstance(name)
-        return ["limactl", "shell", inst.name, "--",
-                "sg", "systemd-journal", "-c", shlex.join(journal_cmd)]
-    return journal_cmd
+    backend = get_backend(cfg)
+    normalized_since = _normalize_since(since) if since else None
+    return backend.audit_argv(
+        name, since=normalized_since, follow=follow,
+    )
 
 
 def _audit_batch(name, cfg, filt, lines, since, as_json, no_color):

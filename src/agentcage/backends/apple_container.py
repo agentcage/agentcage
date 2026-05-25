@@ -353,3 +353,86 @@ class AppleContainerBackend:
         # — once `exec`/`logs`/`audit` are lifted onto the Backend
         # protocol — for targeted component access.
         return ["cage", "proxy", "dns"]
+
+    # --- Backend protocol: process inspection / streaming --------------------
+
+    def exec_argv(
+        self,
+        name: str,
+        service: str,
+        cmd: list[str],
+        *,
+        interactive: bool = False,
+    ) -> list[str]:
+        """`container exec [-it] <name> <cmd>`.
+
+        proxy / dns run in-process inside the cage microVM (supervised),
+        not as separate Apple containers, so they aren't addressable by
+        targeted exec. Reject those service names with a clear message.
+        """
+        from agentcage.backend import BackendUnsupported
+        if service != "cage":
+            raise BackendUnsupported(
+                f"'cage exec --service {service}' is not yet supported on "
+                f"the apple-container backend; only --service cage is "
+                f"addressable (proxy and dnsmasq run inside the same microVM)"
+            )
+        binary = ac_cli.container_binary()
+        if binary is None:
+            raise BackendUnsupported(
+                "Apple `container` CLI not found; install from "
+                "https://github.com/apple/container/releases"
+            )
+        flags = ["-it"] if interactive else []
+        return [binary, "exec", *flags, name, *cmd]
+
+    def logs_argv(
+        self,
+        name: str,
+        services: list[str],  # noqa: ARG002 — single-microVM model
+        *,
+        follow: bool = False,
+        lines: int = 0,
+        min_level: str | None = None,  # noqa: ARG002 — Apple doesn't filter
+    ) -> list[str]:
+        """`container logs [-f] <name>` — combined supervisor stdout/stderr.
+
+        The supervisor multiplexes the cage workload + proxy + dnsmasq into
+        one stream; we can't filter per-service the way container/vm do
+        with their per-unit journal cursors. ``services`` is accepted for
+        protocol parity but ignored. ``lines`` is similarly ignored — Apple
+        ``container logs`` doesn't accept ``-n``; the CLI can post-trim if
+        it cares.
+        """
+        from agentcage.backend import BackendUnsupported
+        binary = ac_cli.container_binary()
+        if binary is None:
+            raise BackendUnsupported(
+                "Apple `container` CLI not found; install from "
+                "https://github.com/apple/container/releases"
+            )
+        argv = [binary, "logs"]
+        if follow:
+            argv.append("-f")
+        argv.append(name)
+        return argv
+
+    def audit_argv(
+        self,
+        name: str,
+        *,
+        since: str | None = None,  # noqa: ARG002 — no time index host-side
+        follow: bool = False,
+    ) -> list[str]:
+        """`tail` the host-side audit.jsonl bind-mounted from the microVM.
+
+        The mitmproxy addon writes one JSON line per request decision into
+        /var/log/agentcage/audit.jsonl, which `start()` bind-mounts to
+        `<state>/<cage>/logs/audit.jsonl` on the host. `since` is not yet
+        respected (the host JSONL has no journalctl-style time index);
+        the CLI's AuditFilter still applies time filtering post-parse.
+        """
+        path = self.logs_dir(name) / "audit.jsonl"
+        if follow:
+            return ["tail", "-n", "0", "-F", str(path)]
+        return ["tail", "-n", "10000", str(path)]

@@ -186,3 +186,63 @@ class ContainerBackend:
 
     def service_names(self, name: str) -> list[str]:
         return ["cage", "proxy", "dns"]
+
+    # --- Backend protocol: process inspection / streaming --------------------
+    #
+    # These return argv lists for the CLI to subprocess.Popen / os.execvp.
+    # See agentcage.backend.Backend for the contract.
+
+    def exec_argv(
+        self,
+        name: str,
+        service: str,
+        cmd: list[str],
+        *,
+        interactive: bool = False,
+    ) -> list[str]:
+        """``podman exec [-it] <name>-<service> <cmd>``."""
+        flags = ["-it"] if interactive else []
+        return ["podman", "exec", *flags, f"{name}-{service}", *cmd]
+
+    def logs_argv(
+        self,
+        name: str,
+        services: list[str],
+        *,
+        follow: bool = False,
+        lines: int = 0,
+        min_level: str | None = None,  # noqa: ARG002 — caller-side filter
+    ) -> list[str]:
+        """``journalctl --user -u <name>-<svc> -o cat`` for the requested
+        services. Container backend's services are systemd --user units
+        managed by Quadlet; this reads their combined output. ``min_level``
+        isn't passed through because journalctl's priority filter would
+        require numeric levels that don't map cleanly to our string set —
+        the CLI's per-line filter handles it post-parse."""
+        argv = ["journalctl", "--user", "-o", "cat"]
+        for svc in services:
+            argv += ["-u", f"{name}-{svc}"]
+        if follow:
+            argv.append("-f")
+        if lines:
+            argv += ["-n", str(lines)]
+        return argv
+
+    def audit_argv(
+        self,
+        name: str,
+        *,
+        since: str | None = None,
+        follow: bool = False,
+    ) -> list[str]:
+        """``journalctl`` for the proxy+dns units. Audit JSON lines are
+        emitted by the mitmproxy addon to stderr (= journal stream)."""
+        argv = ["journalctl", "--user",
+                "-u", f"{name}-proxy", "-u", f"{name}-dns", "-o", "cat"]
+        if since:
+            argv += ["--since", since]
+        if follow:
+            argv.append("-f")
+        else:
+            argv += ["-n", "10000"]  # over-read; many lines aren't audit
+        return argv
