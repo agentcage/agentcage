@@ -1646,10 +1646,39 @@ def _normalize_since(since: str) -> str:
     return since
 
 
+def _apple_container_audit_path(name: str) -> Path:
+    """Host-side path to a cage's audit.jsonl, written by the apple-container
+    supervisor's mitmproxy addon into /var/log/agentcage/audit.jsonl
+    (which is bind-mounted from the per-cage state dir's logs/ subdir)."""
+    from agentcage.backends.apple_container import AppleContainerBackend
+    return AppleContainerBackend().logs_dir(name) / "audit.jsonl"
+
+
+def _apple_container_capture_path(name: str) -> Path:
+    """Host-side path to a cage's capture.jsonl (mitmproxy addon output)."""
+    from agentcage.backends.apple_container import AppleContainerBackend
+    return AppleContainerBackend().logs_dir(name) / "capture.jsonl"
+
+
 def _build_audit_journal_cmd(
     name: str, cfg, *, since: str | None = None, follow: bool = False,
 ) -> list[str]:
-    """Build the journalctl command for reading audit entries."""
+    """Build the command for reading audit entries.
+
+    Each backend stores audit data differently:
+      - container: systemd-user journal (``journalctl --user -u <cage>-proxy``)
+      - vm: same wrapped in ``limactl shell`` + ``sg systemd-journal``
+      - apple-container: plain JSONL file bind-mounted from the microVM
+        to ~/.config/agentcage/apple-container/<cage>/logs/audit.jsonl;
+        ``tail -n N`` (or ``tail -F`` for follow) it. ``--since`` has no
+        time index on this backend; the AuditFilter time pass happens
+        in Python after parsing.
+    """
+    if _is_apple_container(cfg):
+        path = _apple_container_audit_path(name)
+        if follow:
+            return ["tail", "-n", "0", "-F", str(path)]
+        return ["tail", "-n", "10000", str(path)]
     if cfg.isolation == "vm":
         # In VM mode the proxy/dns are systemd --user services, but conmon
         # routes their logs to the system journal — so the right filter is
@@ -1805,12 +1834,22 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
 
     cfg = state.load_deployment_config(name)
 
-    # Audit on apple-container needs a different log path (mitmproxy
-    # writes /var/log/proxy.log inside the microVM, not the host
-    # journal). Not wired up yet — exit cleanly instead of running
-    # journalctl on a missing host.
+    # apple-container reads audit.jsonl from the per-cage logs dir
+    # (bind-mounted from the microVM by `start()`); _build_audit_journal_cmd
+    # below dispatches to a tail-based reader for this backend.
     if _is_apple_container(cfg):
-        _exit_apple_container_unsupported("audit")
+        path = _apple_container_audit_path(name)
+        if not path.is_file():
+            click.echo(
+                f"error: no audit log yet for cage '{name}'\n"
+                f"  Expected: {path}\n"
+                f"  Either the cage hasn't received any proxy traffic since "
+                f"start, or it was last started before 0.20.6 (the audit-bridge "
+                f"is wired only for cages created on 0.20.6+). Try:\n"
+                f"    agentcage cage update {name}    # rebuild + restart",
+                err=True,
+            )
+            sys.exit(1)
 
     filt = AuditFilter(
         decisions=list(decisions),
@@ -1881,15 +1920,15 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
-    # HAR export depends on the proxy's capture.jsonl being bind-mounted
-    # to a host path; that's not wired up for apple-container yet (the
-    # capture file lives inside the microVM).
-    if _is_apple_container(cfg):
-        _exit_apple_container_unsupported("har")
 
     from agentcage.har import CaptureFilter, capture_to_har, parse_since
 
-    capture_path = state.capture_file(name)
+    # apple-container's capture.jsonl is host-visible via the bind-mounted
+    # logs dir (0.20.6+); container/vm use the central state path.
+    if _is_apple_container(cfg):
+        capture_path = _apple_container_capture_path(name)
+    else:
+        capture_path = state.capture_file(name)
     if not capture_path.is_file():
         click.echo(f"error: no capture file found for cage '{name}'", err=True)
         click.echo(f"  Expected: {capture_path}", err=True)
