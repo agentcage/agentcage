@@ -26,7 +26,9 @@ Not yet shipped (follow-ups tracked in #120):
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -37,6 +39,39 @@ from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
+
+
+def _normalize_cpus(value: str) -> str:
+    """Apple's `container run --cpus` rejects fractional values; ceil to int.
+
+    Podman accepts "0.5" / "1.5"; Apple wants "1" / "2". Round up so the
+    cage gets at least the cap the user wrote. Returns the original
+    string if it's already an integer or doesn't parse as a float.
+    """
+    try:
+        f = float(value)
+    except ValueError:
+        return value
+    return str(math.ceil(f)) if f != int(f) else str(int(f))
+
+
+_MEMORY_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?$")
+
+
+def _normalize_memory(value: str) -> str:
+    """Apple's `container run --memory` requires UPPERCASE K/M/G/T/P.
+
+    Lowercase suffixes ("512m", "2g") that podman/docker accept are
+    rejected. Uppercase the suffix in place; pass through unchanged if
+    the value doesn't match the expected `<n><suffix>` shape so any
+    operator-supplied novelty (e.g. raw byte counts) still reaches Apple
+    for its own error reporting rather than being silently mangled.
+    """
+    m = _MEMORY_SUFFIX_RE.match(value.strip())
+    if not m:
+        return value
+    number, suffix = m.group(1), (m.group(2) or "")
+    return f"{number}{suffix.upper()}"
 
 
 class AppleContainerBackend:
@@ -139,12 +174,26 @@ class AppleContainerBackend:
         in v1; egress is locked to localhost via iptables in the
         supervisor).
         """
+        # Resource resolution precedence: cage.yaml's `container.cpus` /
+        # `container.memory` (the per-cage cap the user actually wrote)
+        # wins over `vm.vcpus` / `vm.mem_mb` (which exist primarily for
+        # the Lima backend's outer VM but used to be the only thing this
+        # backend respected — silently dropping `container.cpus/memory`
+        # was a real footgun on Mac, where users edit cage.yaml not a
+        # separate vm section). Empty / unset on both → no --cpus or
+        # --memory flag, letting Apple's defaults apply.
+        cpus = config.container.cpus or (
+            str(config.vm.vcpus) if getattr(config.vm, "vcpus", 0) else ""
+        )
+        memory = config.container.memory or (
+            f"{config.vm.mem_mb}m" if getattr(config.vm, "mem_mb", 0) else ""
+        )
         unit_json = json.dumps(
             {
                 "name": deploy_name,
                 "user_image": config.container.image,
-                "cpus": getattr(config.vm, "vcpus", 0) or 0,
-                "mem_mb": getattr(config.vm, "mem_mb", 0) or 0,
+                "cpus": cpus,
+                "memory": memory,
                 "lifecycle": config.lifecycle,
             },
             indent=2,
@@ -196,11 +245,25 @@ class AppleContainerBackend:
             "--cap-add", "CAP_SYS_ADMIN",
             "--cap-add", "CAP_NET_ADMIN",
         ]
-        if meta.get("cpus"):
-            argv += ["--cpus", str(meta["cpus"])]
-        if meta.get("mem_mb"):
-            # Apple `container` accepts e.g. "2g" or raw bytes.
-            argv += ["--memory", f"{meta['mem_mb']}m"]
+        # Apple's `container run --cpus / --memory` has stricter input
+        # acceptance than podman: --cpus requires an integer (fractional
+        # like "0.5" or "1.5" → "Help: --cpus <cpus> ..." rejection), and
+        # --memory requires an UPPERCASE suffix (`512m` → rejected,
+        # `512M` accepted). agentcage config historically uses podman's
+        # looser forms, so normalize on the way out: ceil fractional cpus
+        # to the next integer (give users at least the cap they asked
+        # for) and uppercase the memory suffix.
+        # Backward compat for unit JSON: 0.20.5 and earlier used integer
+        # `cpus` + integer `mem_mb` (mb-only); accept both so cages
+        # created before this change keep starting after upgrade.
+        cpus_raw = meta.get("cpus")
+        if cpus_raw not in (None, "", 0):
+            argv += ["--cpus", _normalize_cpus(str(cpus_raw))]
+        memory_raw = meta.get("memory")
+        if memory_raw:
+            argv += ["--memory", _normalize_memory(str(memory_raw))]
+        elif meta.get("mem_mb"):  # pre-0.20.6 unit JSON
+            argv += ["--memory", f"{meta['mem_mb']}M"]
         argv.append(image)
 
         result = ac_cli.run(argv, check=False, capture_output=False)

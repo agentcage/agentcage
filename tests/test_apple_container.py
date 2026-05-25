@@ -478,6 +478,135 @@ def test_build_artifacts_no_cmd_anywhere_raises_helpful_error():
             AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
 
 
+# ---------------------------------------------------------------------------
+# generate_units / start: container.cpus + container.memory precedence
+# ---------------------------------------------------------------------------
+
+
+def test_generate_units_prefers_container_cpus_memory_over_vm():
+    """REGRESSION: cage.yaml's `container.cpus` / `container.memory` (the
+    per-cage cap users actually write) must win over `vm.vcpus` /
+    `vm.mem_mb` on apple-container. Pre-fix, the backend read only the
+    vm.* fields and silently dropped container.* — meaning a Mac user
+    who wrote `container: { memory: 2g, cpus: 1.5 }` got Apple's default
+    resource allocation, not the cap they asked for."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.container.cpus = "1.5"
+    cfg.container.memory = "2g"
+    cfg.vm.vcpus = 8       # set but should be overridden
+    cfg.vm.mem_mb = 16384  # set but should be overridden
+
+    units = AppleContainerBackend().generate_units(
+        cfg, "/cfg", "/patches", "deploy",
+    )
+    meta = json.loads(units["deploy.json"])
+    assert meta["cpus"] == "1.5"
+    assert meta["memory"] == "2g"
+
+
+def test_generate_units_falls_back_to_vm_when_container_unset():
+    """vm.vcpus / vm.mem_mb are the fallback when cage.yaml doesn't set
+    container.*. Backward compatibility: existing cages that only had
+    the vm section keep working."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.container.cpus = ""
+    cfg.container.memory = ""
+    cfg.vm.vcpus = 4
+    cfg.vm.mem_mb = 4096
+
+    units = AppleContainerBackend().generate_units(
+        cfg, "/cfg", "/patches", "deploy",
+    )
+    meta = json.loads(units["deploy.json"])
+    assert meta["cpus"] == "4"
+    assert meta["memory"] == "4096m"
+
+
+def test_start_argv_includes_normalized_cpus_memory(tmp_path):
+    """`start()` reads the unit metadata and constructs the `container run`
+    argv with normalized --cpus (integer; Apple rejects fractions) and
+    --memory (uppercase suffix; Apple rejects lowercase). Original cage.yaml
+    value "1.5" → "2", "2g" → "2G"."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "user_image": "x",
+        "cpus": "1.5",   # fractional → ceil to 2
+        "memory": "2g",  # lowercase → uppercase to 2G
+        "lifecycle": "interactive",
+    }))
+    captured_argv = []
+
+    def fake_run(argv, **_kwargs):
+        captured_argv.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    run_argv = next(a for a in captured_argv if a[0] == "run")
+    assert run_argv[run_argv.index("--cpus") + 1] == "2"
+    assert run_argv[run_argv.index("--memory") + 1] == "2G"
+
+
+def test_normalize_cpus_ceils_fractions():
+    from agentcage.backends.apple_container import _normalize_cpus
+    assert _normalize_cpus("0.5") == "1"
+    assert _normalize_cpus("1.0") == "1"
+    assert _normalize_cpus("1.1") == "2"
+    assert _normalize_cpus("4") == "4"
+    assert _normalize_cpus("not-a-number") == "not-a-number"  # pass through
+
+
+def test_normalize_memory_uppercases_suffix():
+    from agentcage.backends.apple_container import _normalize_memory
+    assert _normalize_memory("512m") == "512M"
+    assert _normalize_memory("2g") == "2G"
+    assert _normalize_memory("1024M") == "1024M"  # already uppercase
+    assert _normalize_memory("2Gi") == "2GI"      # uppercase the i too
+    assert _normalize_memory("512") == "512"      # no suffix, pass through
+    assert _normalize_memory("garbage") == "garbage"  # doesn't match → pass through
+
+
+def test_start_argv_backward_compat_pre_0_20_6_mem_mb(tmp_path):
+    """Pre-0.20.6 unit JSON used integer `mem_mb` + `cpus` (no `memory`
+    string). Cages created before this PR must keep starting on a fresh
+    agentcage — so `start()` falls back to the old `mem_mb` field when
+    `memory` is absent. The fallback uses the uppercase M suffix Apple
+    requires."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "user_image": "x",
+        "cpus": 4,        # old integer form
+        "mem_mb": 4096,   # old field
+        "lifecycle": "interactive",
+    }))
+    captured_argv = []
+
+    def fake_run(argv, **_kwargs):
+        captured_argv.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    run_argv = next(a for a in captured_argv if a[0] == "run")
+    assert run_argv[run_argv.index("--memory") + 1] == "4096M"
+
+
 def test_run_streaming_pauses_active_spinner():
     """``ac_cli.run(capture_output=False)`` must wrap subprocess.run in
     ``output.pause_active_spinner()`` so Apple's CLI progress doesn't fight
