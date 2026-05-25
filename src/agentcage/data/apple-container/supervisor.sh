@@ -66,8 +66,16 @@ log "stage 20: cage CMD = ${CMD_LINE}"
 
 #-- 30. Start dnsmasq ------------------------------------------------------
 log "stage 30: starting dnsmasq (uid 201)"
+# /var/log/agentcage is bind-mounted from the host via virtiofs when the
+# backend is configured to expose logs (apple-container's `start()` always
+# passes --volume <host>:/var/log/agentcage). virtiofs preserves host
+# ownership inside the guest and rejects chown/chmod on the mountpoint
+# itself; we don't need (and can't have) per-component ownership of the
+# top-level dir. Permissions are set host-side to 1777 so any uid in the
+# microVM can create files. Plain `mkdir -p` is a no-op when the mount
+# is present (and falls back to a regular dir for pre-bindmount cages).
 mkdir -p /var/log/agentcage
-chown acdns:acdns /var/log/agentcage
+chown acdns:acdns /var/log/agentcage 2>/dev/null || true
 dnsmasq \
   --conf-file=/etc/agentcage/dnsmasq.conf \
   --user=acdns \
@@ -88,9 +96,11 @@ ss -lnu 2>/dev/null | grep -q '127.0.0.1:53' \
 log "stage 40: starting mitmproxy (uid 200)"
 # Chown the mitmproxy home + log dir BEFORE starting mitmproxy so the
 # ownership state is final before any file the proxy writes lands here.
+# See stage 30 for the virtiofs note on /var/log/agentcage (chown there
+# is best-effort).
 mkdir -p /home/acproxy/.mitmproxy /var/log/agentcage
 chown acproxy:acproxy /home/acproxy /home/acproxy/.mitmproxy
-chown acproxy:acproxy /var/log/agentcage
+chown acproxy:acproxy /var/log/agentcage 2>/dev/null || true
 
 # The mitmproxy addon (/opt/agentcage/allowlist_addon.py) reads
 # /etc/agentcage/allowlist.txt and 403s non-listed hosts from the proxy
