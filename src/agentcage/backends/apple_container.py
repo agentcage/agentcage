@@ -89,15 +89,23 @@ class AppleContainerBackend:
                 f"failed to pull user image {user_image!r} and it is not built locally"
             )
 
-        # Resolve original CMD before building (so we can fail early with a
-        # clear error if the user image has no CMD).
-        try:
-            user_cmd = ac_wrapper._user_cmd(user_image)
-        except ValueError as e:
-            raise RuntimeError(
-                f"cannot determine cage entrypoint: {e}; "
-                "set CMD in your Containerfile or use a scaffold that provides one"
-            ) from e
+        # Resolve the cage's CMD. Precedence: cage.yaml `container.command:`
+        # wins (it's the cage author's explicit intent and is portable across
+        # backends), and we fall back to the user image's OCI CMD only when
+        # the cage hasn't set one. Without this precedence the apple-container
+        # backend silently ignores cage.yaml `command:` and execs the base
+        # image's CMD instead (e.g. ubuntu → `/bin/bash`, which exits
+        # immediately under `run -d` with no TTY).
+        if config.container.command:
+            user_cmd = list(config.container.command)
+        else:
+            try:
+                user_cmd = ac_wrapper._user_cmd(user_image)
+            except ValueError as e:
+                raise RuntimeError(
+                    f"cannot determine cage entrypoint: {e}; "
+                    "set CMD in your Containerfile or use a scaffold that provides one"
+                ) from e
 
         if not quiet:
             click.echo(f"Building apple-container wrapper for {deploy_name}...")

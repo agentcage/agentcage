@@ -132,6 +132,11 @@ cp "${CA_PATH}" /usr/local/share/ca-certificates/agentcage-proxy.crt
 update-ca-certificates --fresh >/dev/null 2>&1 \
   || log "WARN: update-ca-certificates failed; HTTPS clients may not trust the proxy"
 
+# Mirror the proxy CA into /certs/ so backend-agnostic cage.yaml commands
+# (the container backend bind-mounts the certs volume there) Just Work.
+mkdir -p /certs
+cp "${CA_PATH}" /certs/mitmproxy-ca-cert.pem
+
 #-- 70. Cage DNS -----------------------------------------------------------
 log "stage 70: pointing /etc/resolv.conf at local dnsmasq"
 # This overrides whatever the user image set for /etc/resolv.conf. A user
