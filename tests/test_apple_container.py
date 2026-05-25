@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import platform
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +17,29 @@ from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.backends.apple_container import AppleContainerBackend
 from agentcage.config import Config, default_isolation, validate_config
+
+
+# ── allowlist_addon import helper ────────────────────────────
+# The addon file ships inside the wheel as a data file (it runs
+# *inside* the cage's mitmproxy process, not in the host Python).
+# To unit-test ``AllowlistAddon`` from the host, we load it by
+# absolute path; conftest.py already stubs ``mitmproxy`` so the
+# import succeeds without the real proxy bundle being installed.
+
+_ADDON_PATH = (
+    Path(__file__).parent.parent
+    / "src" / "agentcage" / "data" / "apple-container" / "allowlist_addon.py"
+)
+
+
+def _load_addon_module():
+    spec = importlib.util.spec_from_file_location(
+        "_test_allowlist_addon", _ADDON_PATH,
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -842,3 +868,174 @@ def test_run_capturing_does_not_pause_active_spinner():
         ac_cli.run(["inspect", "x"], check=False, capture_output=True)
 
     assert events == ["subprocess.run"]
+
+
+# ---------------------------------------------------------------------------
+# allowlist_addon: response-side {{SECRET}} redaction
+#
+# These exercise the addon's response() hook end-to-end with a mocked
+# mitmproxy HTTPFlow. The conftest.py stub of `mitmproxy` lets the addon
+# module import cleanly on the host; we never spin up real mitmproxy.
+# ---------------------------------------------------------------------------
+
+
+def _build_addon(monkeypatch, tmp_path, *, secret_value="redact-test-xyz",
+                 inject_to=("httpbin.org",), allowlist=("httpbin.org",)):
+    """Construct an AllowlistAddon wired to a one-rule config in tmp_path.
+
+    Returns ``(module, addon)``. Audit + capture logs are redirected
+    into tmp_path so tests can assert on the JSONL output.
+    """
+    addon_mod = _load_addon_module()
+    # Resolve secret via env so the addon's startup-time os.environ lookup
+    # picks it up (the same way `agentcage cage create -e ...` works in prod).
+    monkeypatch.setenv("AGENTCAGE_REDACT_SECRET", secret_value)
+    rules = [{
+        "env": "AGENTCAGE_REDACT_SECRET",
+        "placeholder": "{{AGENTCAGE_REDACT_SECRET}}",
+        "inject_to": list(inject_to),
+    }]
+    allow_path = tmp_path / "allowlist.txt"
+    allow_path.write_text("\n".join(allowlist) + "\n")
+    si_path = tmp_path / "secret_injection.json"
+    si_path.write_text(json.dumps(rules))
+    monkeypatch.setattr(addon_mod, "ALLOWLIST_PATH", str(allow_path))
+    monkeypatch.setattr(addon_mod, "SECRET_INJECTION_PATH", str(si_path))
+    monkeypatch.setattr(addon_mod, "AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setattr(addon_mod, "CAPTURE_PATH", str(tmp_path / "capture.jsonl"))
+    return addon_mod, addon_mod.AllowlistAddon()
+
+
+def _make_response_flow(*, host, body, status=200, resp_headers=None,
+                        method="GET", path="/headers"):
+    """Build a minimal mock mitmproxy HTTPFlow with a response attached.
+
+    ``body`` may be ``str`` (text body) or ``bytes`` (binary). For text
+    bodies we set ``flow.response.get_text`` to return it; the addon's
+    redactor calls ``set_text`` to mutate, which writes back into
+    ``flow.response.text``.
+    """
+    flow = MagicMock()
+    flow.request.pretty_host = host
+    flow.request.pretty_url = f"https://{host}{path}"
+    flow.request.path = path
+    flow.request.port = 443
+    flow.request.method = method
+    flow.request.headers = {}
+
+    flow.response = MagicMock()
+    flow.response.status_code = status
+    flow.response.reason = "OK"
+    flow.response.headers = dict(resp_headers or {})
+    flow.response.content = body.encode() if isinstance(body, str) else body
+
+    if isinstance(body, str):
+        # Stash text in a closure so set_text() updates what get_text()
+        # returns on subsequent calls — matches mitmproxy's behaviour.
+        state = {"text": body}
+        flow.response.get_text.side_effect = lambda strict=True: state["text"]
+        def _set_text(new):
+            state["text"] = new
+            flow.response.content = new.encode()
+        flow.response.set_text.side_effect = _set_text
+    else:
+        # Binary body — mimic mitmproxy raising on undecodable bytes.
+        flow.response.get_text.side_effect = UnicodeDecodeError(
+            "utf-8", body, 0, 1, "binary body",
+        )
+    return flow
+
+
+def test_response_redaction_happy_path(tmp_path, monkeypatch):
+    """End-to-end: a response body that echoes the real secret value gets
+    rewritten back to ``{{AGENTCAGE_REDACT_SECRET}}``. The audit JSONL
+    records the env name under ``secrets_redacted``.
+
+    Mirrors the live-Mac smoke test against httpbin/headers — the upstream
+    sees the real key, the cage sees the placeholder."""
+    addon_mod, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_response_flow(
+        host="httpbin.org",
+        # Shape mimics httpbin /headers JSON output.
+        body='{"headers": {"X-Echo": "redact-test-xyz"}}',
+    )
+
+    addon.response(flow)
+
+    # Body has the placeholder, not the real value.
+    assert "redact-test-xyz" not in flow.response.content.decode()
+    assert "{{AGENTCAGE_REDACT_SECRET}}" in flow.response.content.decode()
+
+    # Audit log records the redaction.
+    audit_lines = (tmp_path / "audit.jsonl").read_text().splitlines()
+    inbound = [json.loads(l) for l in audit_lines
+               if json.loads(l).get("direction") == "inbound"]
+    assert len(inbound) == 1
+    assert inbound[0]["secrets_redacted"] == ["AGENTCAGE_REDACT_SECRET"]
+    assert inbound[0]["host"] == "httpbin.org"
+    assert inbound[0]["reason"] == "secret-redaction"
+
+
+def test_response_redaction_in_response_headers(tmp_path, monkeypatch):
+    """Headers (not just body) get redacted. Some upstreams echo bearer
+    tokens into custom response headers; the cage must never see them."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_response_flow(
+        host="httpbin.org",
+        body="ok",
+        resp_headers={"X-Reflected-Auth": "Bearer redact-test-xyz"},
+    )
+
+    addon.response(flow)
+
+    assert flow.response.headers["X-Reflected-Auth"] == (
+        "Bearer {{AGENTCAGE_REDACT_SECRET}}"
+    )
+
+
+def test_response_redaction_scoped_to_inject_to_host(tmp_path, monkeypatch):
+    """Defense-in-depth: a response from a host NOT in ``inject_to`` is
+    NOT redacted even when its body coincidentally contains the secret
+    value as a substring. Otherwise unrelated allowlisted upstreams could
+    have legitimate text mangled (e.g. a UUID that happened to match)."""
+    addon_mod, addon = _build_addon(
+        monkeypatch, tmp_path,
+        inject_to=("httpbin.org",),
+        allowlist=("httpbin.org", "example.com"),
+    )
+    flow = _make_response_flow(
+        host="example.com",  # allowlisted but not in inject_to
+        body="here is a coincidence: redact-test-xyz appears in this body",
+    )
+
+    addon.response(flow)
+
+    # Real value still present — scope guard worked.
+    assert "redact-test-xyz" in flow.response.content.decode()
+    assert "{{AGENTCAGE_REDACT_SECRET}}" not in flow.response.content.decode()
+
+    # No inbound audit entry emitted (nothing was redacted).
+    audit_path = tmp_path / "audit.jsonl"
+    if audit_path.exists():
+        for line in audit_path.read_text().splitlines():
+            assert json.loads(line).get("direction") != "inbound"
+
+
+def test_response_redaction_skips_binary_body(tmp_path, monkeypatch):
+    """Binary responses (images, archives) pass through unchanged — the
+    addon catches ``UnicodeDecodeError`` from ``get_text(strict=False)``
+    and never touches the body bytes. Headers are still scanned."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    binary = bytes([0xff, 0xd8, 0xff]) + b"redact-test-xyz" + bytes([0x00, 0xfe])
+    flow = _make_response_flow(
+        host="httpbin.org",
+        body=binary,
+        resp_headers={"X-Trace": "echo redact-test-xyz back"},
+    )
+
+    addon.response(flow)
+
+    # Body untouched.
+    assert flow.response.content == binary
+    # Header still got redacted.
+    assert flow.response.headers["X-Trace"] == "echo {{AGENTCAGE_REDACT_SECRET}} back"
