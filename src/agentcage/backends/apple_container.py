@@ -82,6 +82,19 @@ class AppleContainerBackend:
     def _state_dir(self, name: str) -> Path:
         return Path(os.path.expanduser("~/.config/agentcage/apple-container")) / name
 
+    def logs_dir(self, name: str) -> Path:
+        """Per-cage logs dir on the host, bind-mounted into the microVM.
+
+        The supervisor writes proxy.log + capture.jsonl + dnsmasq.log to
+        /var/log/agentcage/ inside the microVM; we mount this host path
+        there so `agentcage cage audit` and `cage har` can read those
+        files from the host without having to exec into the microVM.
+
+        Created on demand (start), preserved on stop/restart, removed by
+        destroy_resources alongside the rest of the per-cage state.
+        """
+        return self._state_dir(name) / "logs"
+
     # --- Backend protocol -----------------------------------------------------
 
     def check_prerequisites(self, config: Config) -> list[str]:  # noqa: ARG002
@@ -236,6 +249,26 @@ class AppleContainerBackend:
             ac_cli.run(["stop", name], check=False)
             ac_cli.run(["delete", "-f", name], check=False)
 
+        # Per-cage logs dir on the host: bind-mounted into the microVM
+        # at /var/log/agentcage so `cage audit` / `cage har` can read
+        # proxy.log + capture.jsonl from the host without exec'ing in.
+        # Create as 0o755 owned by the current user; the supervisor's
+        # `chown acproxy:acproxy /var/log/agentcage` inside the cage
+        # adjusts ownership to the per-component uids — Apple's bind
+        # mount transparently maps host uid ↔ guest uid.
+        logs_dir = self.logs_dir(name)
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        # virtiofs locks ownership inside the cage to the host file's
+        # owner (currently the user running agentcage). uid 200
+        # (mitmproxy) and uid 201 (dnsmasq) in the guest can only write
+        # to this dir if the host-side permissions allow them — so set
+        # the dir 1777 (world-writable + sticky bit). Sticky means each
+        # file is owned (host-side) by `m1`, with all in-cage writes
+        # showing as root in the guest because of virtiofs uid mapping;
+        # that's fine — the supervisor's own chown attempts are now
+        # best-effort and tolerate EPERM.
+        os.chmod(logs_dir, 0o1777)
+
         # CAP_SYS_ADMIN: supervisor needs it to remount /proc with hidepid=2
         # and to mount the proxy's private tmpfs. CAP_NET_ADMIN: supervisor
         # needs it to apply the iptables egress lockdown. Both are dropped
@@ -244,6 +277,7 @@ class AppleContainerBackend:
             "run", "-d", "--name", name,
             "--cap-add", "CAP_SYS_ADMIN",
             "--cap-add", "CAP_NET_ADMIN",
+            "--volume", f"{logs_dir}:/var/log/agentcage",
         ]
         # Apple's `container run --cpus / --memory` has stricter input
         # acceptance than podman: --cpus requires an integer (fractional

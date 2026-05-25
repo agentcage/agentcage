@@ -575,6 +575,56 @@ def test_normalize_memory_uppercases_suffix():
     assert _normalize_memory("garbage") == "garbage"  # doesn't match → pass through
 
 
+def test_start_creates_logs_dir_and_bind_mounts_it(tmp_path):
+    """`start()` must create the per-cage logs dir on the host and pass
+    --volume <host_logs>:/var/log/agentcage to `container run` so the
+    supervisor's proxy.log / capture.jsonl / dnsmasq.log are visible to
+    the host. This unlocks `cage audit` and `cage har` on apple-container
+    (both gated unsupported pre-bind-mount because they had no host path
+    to read)."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "user_image": "x",
+        "cpus": "",
+        "memory": "",
+        "lifecycle": "interactive",
+    }))
+    captured_argv = []
+
+    def fake_run(argv, **_kwargs):
+        captured_argv.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    logs_dir = tmp_path / "logs"
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=logs_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    # Host logs dir created.
+    assert logs_dir.is_dir()
+    # --volume <logs_dir>:/var/log/agentcage in the run argv.
+    run_argv = next(a for a in captured_argv if a[0] == "run")
+    vol_idx = run_argv.index("--volume")
+    assert run_argv[vol_idx + 1] == f"{logs_dir}:/var/log/agentcage"
+
+
+def test_logs_dir_lives_under_per_cage_state_dir():
+    """logs_dir(name) is `<state-dir>/<name>/logs/` so destroy_resources's
+    recursive rmtree of _state_dir(name) sweeps it up automatically."""
+    backend = AppleContainerBackend()
+    logs = backend.logs_dir("demo")
+    state = backend._state_dir("demo")
+    assert logs.parent == state
+    assert logs.name == "logs"
+
+
 def test_start_argv_backward_compat_pre_0_20_6_mem_mb(tmp_path):
     """Pre-0.20.6 unit JSON used integer `mem_mb` + `cpus` (no `memory`
     string). Cages created before this PR must keep starting on a fresh
