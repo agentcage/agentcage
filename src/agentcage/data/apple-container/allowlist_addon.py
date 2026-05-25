@@ -132,17 +132,26 @@ class AllowlistAddon:
             return
 
         ctx.log.info(f"[agentcage] BLOCK {flow.request.method} {host}")
+        reason = "domain-allowlist: host not in cage allowlist"
         entry["decision"] = "blocked"
-        entry["reason"] = "domain-allowlist: host not in cage allowlist"
+        entry["reason"] = reason
         self._audit(entry)
+        # JSON body to match the container backend's 403 shape exactly
+        # (src/agentcage/data/proxy/addon.py — `{"blocked": true, "reason":
+        # ..., "host": ..., "by": "agentcage"}`). Same Content-Type
+        # (application/json) so CLI tools that switch on it work the same
+        # way across backends.
         flow.response = http.Response.make(
             403,
-            (
-                f"agentcage: host '{host}' is not on the cage allowlist.\n"
-                "Add the domain to cage.yaml under `domains.allow` and "
-                "rebuild the cage.\n"
+            json.dumps(
+                {
+                    "blocked": True,
+                    "reason": reason,
+                    "host": host,
+                    "by": "agentcage",
+                }
             ).encode(),
-            {"Content-Type": "text/plain"},
+            {"Content-Type": "application/json"},
         )
 
     def response(self, flow: http.HTTPFlow) -> None:
@@ -159,14 +168,13 @@ class AllowlistAddon:
         if self._capture_fh is None or flow.response is None:
             return
         # If we already 403ed in `request`, the response is one we
-        # constructed locally — no point re-capturing it.
+        # constructed locally — no point re-capturing it. Match on the
+        # unique `"by": "agentcage"` marker in our JSON body so the
+        # check stays robust against accidental Content-Type changes.
         if (
             flow.response.status_code == 403
-            and flow.response.headers.get("Content-Type", "").startswith(
-                "text/plain"
-            )
             and flow.response.content
-            and flow.response.content.startswith(b"agentcage: host '")
+            and b'"by": "agentcage"' in flow.response.content
         ):
             return
         host = flow.request.pretty_host
