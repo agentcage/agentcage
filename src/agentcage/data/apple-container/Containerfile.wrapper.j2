@@ -7,44 +7,51 @@ FROM {{ user_image }}
 
 # Switch to root for the install + user-add steps below. Many user images
 # (claude-code, codex, node:*, etc.) set a non-root USER which makes the
-# apt-get RUN fail with EACCES on /var/lib/apt/lists. The supervisor itself
-# runs as root (PID 1 of the microVM) until stage 90 where capsh setuid's
-# to the cage user — the final cage workload still runs unprivileged.
+# package install fail with EACCES. The supervisor itself runs as root
+# (PID 1 of the microVM) until stage 90 where capsh setuid's to the cage
+# user — the final cage workload still runs unprivileged.
 USER root
 
-# apple-container backend requires a glibc-based user image (debian, ubuntu,
-# distroless with package manager, etc.) because the bundled mitmproxy
-# binary is built against glibc. Alpine/musl bases fail at COPY-time below.
-RUN if ! command -v apt-get >/dev/null 2>&1; then \
-        echo "agentcage apple-container backend requires a debian/ubuntu user image" >&2; \
-        echo "(mitmproxy bundle is glibc-only; alpine support is a v2 follow-up)" >&2; \
+# apple-container backend supports glibc bases natively (debian, ubuntu,
+# distroless with package manager) by extracting mitmproxy's official
+# PyInstaller bundle. Alpine/musl support is detected and surfaces a
+# clear, actionable error explaining why it can't land yet (mitmproxy-rs
+# needs cargo edition2024 = rust 1.88+ which alpine doesn't ship even
+# in 3.22; a multi-stage builder + glibc-compat is the planned path,
+# tracked in #120).
+RUN if command -v apt-get >/dev/null 2>&1; then \
+        echo "[agentcage] detected debian/ubuntu (apt-get); installing supervisor deps + mitmproxy bundle" >&2; \
+        apt-get update -qq && apt-get install -y --no-install-recommends \
+            libcap2-bin util-linux jq iptables dnsmasq ca-certificates curl procps \
+            iproute2 \
+        && rm -rf /var/lib/apt/lists/* ; \
+    elif command -v apk >/dev/null 2>&1; then \
+        echo "agentcage apple-container does not yet support alpine/musl user images." >&2; \
+        echo "" >&2; \
+        echo "Status: the official mitmproxy PyInstaller bundle is glibc-only," >&2; \
+        echo "and the pip-install fallback fails because mitmproxy-rs requires" >&2; \
+        echo "cargo edition2024 (rustc >= 1.88) which alpine ships only in" >&2; \
+        echo "edge — too unstable for a per-cage build dependency." >&2; \
+        echo "" >&2; \
+        echo "Workarounds:" >&2; \
+        echo "  - Use a debian or ubuntu base image (works today)." >&2; \
+        echo "  - Use the 'vm' isolation backend (Lima), which has its own" >&2; \
+        echo "    proxy/dns containers and doesn't require glibc in your image." >&2; \
+        echo "" >&2; \
+        echo "Tracked in https://github.com/agentcage/agentcage/issues/120 ." >&2; \
+        exit 78; \
+    else \
+        echo "agentcage apple-container backend requires a debian/ubuntu (apt) user image" >&2; \
+        echo "(alpine/musl and other distros not yet wired; see #120)" >&2; \
         exit 78; \
     fi
 
-# Supervisor runtime deps:
-#   libcap2-bin -- capsh (cap drop + user switch)
-#   util-linux  -- unshare (mount-ns for proxy secrets)
-#   jq          -- argv parsing of /etc/agentcage/cage-cmd.json
-#   iptables    -- supervisor's egress filter setup
-#   dnsmasq     -- in-microVM DNS that rewrites real-world domains to localhost
-#   ca-certificates -- update-ca-certificates installs the mitmproxy CA into
-#                      the cage's trust store
-#   curl        -- mitmproxy bundle fetch
-RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-        libcap2-bin util-linux jq iptables dnsmasq ca-certificates curl procps \
-        iproute2 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Fetch the official mitmproxy PyInstaller bundle. It's self-contained: ships
-# its own Python interpreter + deps. ~107MB unpacked. Pinned to v12.2.3 with
-# SHA256 verification — without the pin, a compromised CDN / BGP hijack /
-# build-time MITM could swap in a malicious mitmproxy which then runs as PID
-# 1 of every cage with CAP_SYS_ADMIN. Bump the version + sha256 together.
-RUN curl -fsSL -o /tmp/mitmproxy.tar.gz \
+# mitmproxy install — glibc bundle path (musl path is rejected above).
+RUN mkdir -p /opt/agentcage/mitmproxy \
+    && curl -fsSL -o /tmp/mitmproxy.tar.gz \
         https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-aarch64.tar.gz \
     && echo "b358643a6c4f4b39e33d985350f660b724fece95687d7daa899ef0c4e211f681  /tmp/mitmproxy.tar.gz" \
         | sha256sum -c - \
-    && mkdir -p /opt/agentcage/mitmproxy \
     && tar xzf /tmp/mitmproxy.tar.gz -C /opt/agentcage/mitmproxy \
     && rm /tmp/mitmproxy.tar.gz
 
@@ -55,6 +62,11 @@ RUN curl -fsSL -o /tmp/mitmproxy.tar.gz \
 # leave mitmproxy running as uid 13 — invisible to our uid-200 iptables
 # rule, so all mitmproxy egress would be dropped). Bail loudly if the
 # uids we want are already taken by other users.
+#
+# `useradd` is the debian/ubuntu name; alpine ships busybox `adduser`
+# instead (and shadow's `useradd` from the shadow package). We installed
+# the shadow package in the apk branch above, so `useradd` is available
+# in both bases.
 RUN getent passwd 200 >/dev/null && { echo "uid 200 already taken" >&2; exit 79; } || true \
     && getent passwd 201 >/dev/null && { echo "uid 201 already taken" >&2; exit 79; } || true \
     && useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acproxy \
