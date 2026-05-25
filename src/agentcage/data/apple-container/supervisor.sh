@@ -193,7 +193,17 @@ iptables -A OUTPUT -m owner --uid-owner 200 -j ACCEPT
 iptables -A OUTPUT -m owner --uid-owner 201 -j ACCEPT
 
 #-- 90. Drop caps + exec cage workload ------------------------------------
-log "stage 90: dropping caps, switching to cage user (uid 1000)"
+# Resolve the name of the uid-1000 user in the image. The wrapper
+# Containerfile creates `cage` only when the user image doesn't already
+# have a uid-1000 entry — bases like ubuntu (`ubuntu`), node (`node`),
+# and claude-code (`claude`) keep their own name. capsh's `--user=` flag
+# resolves by NAME (it calls getpwnam internally to get uid/gid/home),
+# so a hard-coded `--user=cage` blows up on those images with
+# "User [cage] not known" and the cage exits before any workload runs.
+CAGE_USER=$(getent passwd 1000 | cut -d: -f1)
+[ -n "${CAGE_USER}" ] \
+  || die "no user at uid 1000 in cage image — wrapper Containerfile should have created one" 89
+log "stage 90: dropping caps, switching to cage user '${CAGE_USER}' (uid 1000)"
 # capsh argv (order matters — flags are processed left to right):
 #   --no-new-privs  → set NO_NEW_PRIVS prctl. Sticks across execve; blocks
 #                     cage's children from gaining caps via setuid/setcap
@@ -204,12 +214,12 @@ log "stage 90: dropping caps, switching to cage user (uid 1000)"
 #                     guarantees the cage cannot acquire any capability
 #                     even if NNP enforcement regresses or future code
 #                     adds a privileged path we haven't considered.
-#   --user=cage     → setuid+setgid+initgroups to cage (uid 1000). The
+#   --user=$CAGE_USER → setuid+setgid+initgroups to the uid-1000 user. The
 #                     uid 0→1000 transition clears CapEff/CapPrm/CapInh.
 #                     CapBnd is already empty from --drop=all above.
 exec capsh \
   --no-new-privs \
   --drop=all \
-  --user=cage \
+  --user="${CAGE_USER}" \
   --shell=/bin/sh \
   -- -c "exec ${CMD_LINE}"
