@@ -56,9 +56,17 @@ jobs:
 
       # Idempotent: skips with a clear log line if someone manually pre-created
       # the release (we used to do this by hand before this step existed).
+      #
+      # The release notes are passed via `env:` rather than inlined with
+      # `${{ ... }}`: a literal interpolation puts the markdown straight
+      # into the shell command line, where bash interprets backticks
+      # (`like this`) as command substitution and silently strips every
+      # code span from the release body (v0.20.2 shipped with this bug).
+      # Passing through `$NOTES` keeps the body literal.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ steps.changelog.outputs.notes }}
         run: |
           set -eu
           tag="${GITHUB_REF_NAME}"
@@ -69,4 +77,4 @@ jobs:
           gh release create "$tag" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$tag" \
-            --notes "${{ steps.changelog.outputs.notes }}"
+            --notes "$NOTES"
