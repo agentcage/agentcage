@@ -174,17 +174,6 @@ and dnsmasq run inside the same microVM)
 
 **Proper fix path (deferred).** Would need a routing layer in the supervisor that listens on a control socket and proxies exec requests to the right component's namespace. Architectural, not a small patch.
 
-### Response redaction for `{{SECRET}}` placeholders not implemented
-
-**Symptom.** A request body that includes `{{API_KEY}}` gets the real key substituted on the way out (works correctly). But if the upstream echoes that key back in the response body (most don't, but some do — webhook receivers, debug endpoints), the cage sees the real key, not the placeholder.
-
-**Why.** PR #151 shipped request-side substitution only. The container backend's `SecretInjector` also has response-side `redact_response` logic that finds the real value in incoming bodies and rewrites it back to `{{API_KEY}}`. That path isn't ported yet.
-
-**Workarounds.**
-
-- Trust your upstreams not to echo secrets in responses. For most APIs (Anthropic, OpenAI, Stripe, etc.) this is a safe assumption.
-- For upstreams you don't trust, list them in `domains.passthrough` rather than `domains.allow` — that bypasses TLS interception entirely so the cage talks directly to the upstream and never gets the secret-substituted version.
-
 ### `secret_injection.transform` accepted but not applied
 
 **Symptom.** Setting `transform: google-jwt-bearer` (or any other transform) on a `secret_injection` rule passes `validate_config` but the proxy substitutes the literal env-var value, not the transform output. `validate_config` emits a warning:
