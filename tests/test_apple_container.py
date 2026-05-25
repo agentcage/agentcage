@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import platform
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agentcage.apple_container import cli as ac_cli
 from agentcage.apple_container import prerequisites as ac_prereq
+from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
+from agentcage.backends.apple_container import AppleContainerBackend
 from agentcage.config import Config, default_isolation, validate_config
 
 
@@ -276,3 +278,114 @@ def test_inspect_returns_none_on_nonzero_exit():
     fake_cp = type("CP", (), {"returncode": 1, "stdout": ""})()
     with patch.object(ac_cli, "run", return_value=fake_cp):
         assert ac_cli.inspect("x") is None
+
+
+# ---------------------------------------------------------------------------
+# build_artifacts: cage.yaml command precedence + ordering
+# ---------------------------------------------------------------------------
+
+
+def _ok_run(*args, **kwargs):  # noqa: ARG001
+    """Fake subprocess.CompletedProcess-ish for ac_cli.run that always succeeds."""
+    return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+
+def test_build_artifacts_prefers_cage_yaml_command():
+    """cage.yaml `container.command:` wins over the user image's OCI CMD.
+
+    Regression test for the bug where the apple-container backend silently
+    ignored cage.yaml `command:` and exec'd the base image's CMD (e.g.
+    ubuntu → `/bin/bash`), causing `agentcage run ubuntu` to exit instantly.
+    """
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "docker.io/library/ubuntu:24.04"
+    cfg.container.command = ["sh", "-c", "exec sleep infinity"]
+
+    with patch.object(ac_cli, "run", side_effect=_ok_run) as run_mock, \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {"Cmd": ["/bin/bash"]}}), \
+         patch.object(ac_wrapper, "_user_cmd", return_value=["/bin/bash"]) as user_cmd_mock, \
+         patch.object(ac_wrapper, "build_wrapper", return_value="img") as build_mock:
+        AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    # When cage.yaml sets command, we must NOT fall through to image inspect.
+    user_cmd_mock.assert_not_called()
+    # And the wrapper build must receive the cage.yaml command verbatim.
+    assert build_mock.call_count == 1
+    kwargs = build_mock.call_args.kwargs
+    assert kwargs["user_cmd"] == ["sh", "-c", "exec sleep infinity"]
+    # `image pull` must still have run.
+    assert any(
+        call.args and call.args[0][:2] == ["image", "pull"]
+        for call in run_mock.call_args_list
+    )
+
+
+def test_build_artifacts_falls_back_to_user_cmd_when_unset():
+    """No cage.yaml command → inspect the user image's OCI CMD as before."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "docker.io/library/alpine:3.20"
+    # command is the default empty list — falsy.
+    assert cfg.container.command == []
+
+    with patch.object(ac_cli, "run", side_effect=_ok_run), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {"Cmd": ["/bin/sh"]}}), \
+         patch.object(ac_wrapper, "_user_cmd", return_value=["/bin/sh"]) as user_cmd_mock, \
+         patch.object(ac_wrapper, "build_wrapper", return_value="img") as build_mock:
+        AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    user_cmd_mock.assert_called_once_with("docker.io/library/alpine:3.20")
+    assert build_mock.call_args.kwargs["user_cmd"] == ["/bin/sh"]
+
+
+def test_build_artifacts_orders_scaffold_then_pull_then_wrapper():
+    """Scaffold images must build BEFORE pull, and pull BEFORE wrapper build.
+
+    The wrapper's `FROM <user_image>` references a scaffold-produced tag, so
+    flipping these would leave the wrapper build referencing a tag that
+    doesn't yet exist.
+    """
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/agentcage-ubuntu:latest"
+    cfg.scaffold = "ubuntu"
+
+    calls: list[str] = []
+
+    def scaffold_side_effect(scaffold, *, quiet=False):  # noqa: ARG001
+        calls.append("scaffold")
+
+    def run_side_effect(argv, **kwargs):  # noqa: ARG001
+        if argv[:2] == ["image", "pull"]:
+            calls.append("pull")
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def build_wrapper_side_effect(*args, **kwargs):  # noqa: ARG001
+        calls.append("wrapper")
+        return "img"
+
+    with patch.object(ac_scaffold, "build_scaffold_images", side_effect=scaffold_side_effect), \
+         patch.object(ac_cli, "run", side_effect=run_side_effect), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {"Cmd": ["/bin/bash"]}}), \
+         patch.object(ac_wrapper, "_user_cmd", return_value=["/bin/bash"]), \
+         patch.object(ac_wrapper, "build_wrapper", side_effect=build_wrapper_side_effect):
+        AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    # Only the first occurrence of each matters; pull can be called more than
+    # once depending on internal retries, but the ordering invariant is fixed.
+    first_idx = {step: calls.index(step) for step in ("scaffold", "pull", "wrapper")}
+    assert first_idx["scaffold"] < first_idx["pull"] < first_idx["wrapper"]
+
+
+def test_build_artifacts_no_cmd_anywhere_raises_helpful_error():
+    """If neither cage.yaml nor the image declare a CMD, fail with a clear hint."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "docker.io/library/scratch:latest"
+
+    with patch.object(ac_cli, "run", side_effect=_ok_run), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(
+             ac_wrapper, "_user_cmd",
+             side_effect=ValueError("image has neither ENTRYPOINT nor CMD"),
+         ), \
+         patch.object(ac_wrapper, "build_wrapper", new=MagicMock()):
+        with pytest.raises(RuntimeError, match="cannot determine cage entrypoint"):
+            AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
