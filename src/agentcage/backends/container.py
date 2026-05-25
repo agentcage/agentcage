@@ -199,8 +199,15 @@ class ContainerBackend:
         cmd: list[str],
         *,
         interactive: bool = False,
+        as_root: bool = False,  # noqa: ARG002 — container Quadlets already unprivileged
     ) -> list[str]:
-        """``podman exec [-it] <name>-<service> <cmd>``."""
+        """``podman exec [-it] <name>-<service> <cmd>``.
+
+        ``as_root`` is ignored — the per-service container is already
+        running as its configured unprivileged user via Quadlet, and
+        ``podman exec`` defaults to the container's USER. Operators who
+        need root use ``podman exec -u 0 ...`` directly.
+        """
         flags = ["-it"] if interactive else []
         return ["podman", "exec", *flags, f"{name}-{service}", *cmd]
 

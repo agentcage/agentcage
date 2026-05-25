@@ -42,19 +42,53 @@ class TestCageExecAppleContainer:
     @patch("agentcage.apple_container.cli.container_binary")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_exec_calls_container_exec(self, mock_state, mock_execvp, mock_binary):
-        """exec on apple-container goes through `container exec`, not podman."""
+    def test_exec_defaults_to_uid_1000(
+        self, mock_state, mock_execvp, mock_binary,
+    ):
+        """SECURITY: exec on apple-container defaults to `-u 1000` (the
+        cage workload's user) so an interactive `cage exec <cage> --
+        claude` runs claude with the workload's empty cap set — NOT
+        with the wrapper image's root + CAP_NET_ADMIN, which would
+        let claude `iptables -F` and bypass the egress filter, or
+        `cat /home/acproxy/secrets/*` via CAP_DAC_OVERRIDE.
+
+        Pre-this-fix the exec ran as root by default (Apple's
+        container exec respects the image USER which is `root` on
+        the wrapper). This regression test pins the secure default."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         mock_binary.return_value = "/usr/local/bin/container"
 
         _runner().invoke(main, ["cage", "exec", "demo", "--", "ls", "-la"])
 
-        # Routed through the apple `container` CLI on the resolved path.
+        # Routed through the apple `container` CLI WITH `-u 1000`.
         mock_execvp.assert_called_once_with(
             "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "demo", "ls", "-la"],
+            ["/usr/local/bin/container", "exec", "-u", "1000",
+             "demo", "ls", "-la"],
         )
+
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_exec_as_root_opts_back_to_root(
+        self, mock_state, mock_execvp, mock_binary,
+    ):
+        """`--as-root` preserves the operator-debug path: drops the
+        `-u 1000` override so the exec session inherits the wrapper's
+        USER (root). For one-off ops needs (`apt-get install`, etc.)."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        _runner().invoke(
+            main, ["cage", "exec", "demo", "--as-root", "--", "iptables", "-L"],
+        )
+
+        argv = mock_execvp.call_args.args[1]
+        assert "-u" not in argv
+        assert "1000" not in argv
+        assert "iptables" in argv
 
     @patch("agentcage.apple_container.cli.container_binary")
     @patch("agentcage.cli.os.execvp")
@@ -120,14 +154,14 @@ class TestCageShellAppleContainer:
         assert first_probe.args[0] == [
             "/usr/local/bin/container", "exec", "demo", "test", "-x", "/bin/bash",
         ]
-        # And the *first* execvp call is the bash that probed OK.
-        # (Without a real exec, control falls through to a host-podman
-        # fallback in container mode — but on apple-container we never
-        # reach that fallthrough; first call must already be /bin/bash.)
+        # And the *first* execvp call is the bash that probed OK,
+        # WITH `-u 1000` (default privilege drop — see cage_exec tests
+        # for the security rationale).
         first_exec = mock_execvp.call_args_list[0]
         assert first_exec.args == (
             "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "demo", "/bin/bash"],
+            ["/usr/local/bin/container", "exec", "-u", "1000",
+             "demo", "/bin/bash"],
         )
 
     @patch("agentcage.apple_container.cli.container_binary")
@@ -155,7 +189,8 @@ class TestCageShellAppleContainer:
         first_exec = mock_execvp.call_args_list[0]
         assert first_exec.args == (
             "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "demo", "/bin/sh"],
+            ["/usr/local/bin/container", "exec", "-u", "1000",
+             "demo", "/bin/sh"],
         )
 
 
