@@ -1,0 +1,52 @@
+name: Apple-container supervisor
+
+# Catches supervisor.sh regressions on every PR. The supervisor.sh in
+# src/agentcage/data/apple-container/ is the security-critical PID-1 of
+# every apple-container cage (sets up hidepid=2, per-component uids,
+# iptables egress filter, drops caps + setuid's the cage workload at
+# stage 90). Bugs here silently weaken isolation across every
+# apple-container cage, so we run two layers of validation in CI:
+#
+#   1. shellcheck — catches POSIX-sh portability bugs, common quoting
+#      errors, unset-variable references. The supervisor uses `set -eu`
+#      so an unset-variable bug bricks the cage at boot time; better to
+#      catch in CI than after deploy.
+#   2. stage-marker presence — asserts every documented `log "stage N:"`
+#      marker exists. Reordering or removing a stage without updating
+#      docs/apple-container.md is a noisy way to ship a regression;
+#      this catches it as a basic dead-code check.
+#
+# Full runtime testing (build wrapper image, run with CAP_SYS_ADMIN,
+# assert hidepid + caps + uid state) requires a multi-stage docker
+# setup that's tracked separately in issue #120. The shellcheck +
+# marker-presence layer is the minimum-viable safety net.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/agentcage/data/apple-container/**'
+      - '.github/workflows/supervisor.yml'
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+      - name: Lint supervisor.sh
+        run: shellcheck src/agentcage/data/apple-container/supervisor.sh
+      - name: Assert documented stage markers are all present
+        run: |
+          set -euo pipefail
+          sup=src/agentcage/data/apple-container/supervisor.sh
+          for stage in 10 20 30 40 50 60 70 80 90; do
+            if ! grep -q "stage ${stage}:" "$sup"; then
+              echo "::error file=$sup::missing 'stage ${stage}:' log marker" >&2
+              exit 1
+            fi
+          done
+          echo "All 9 stages present (10/20/30/40/50/60/70/80/90)"

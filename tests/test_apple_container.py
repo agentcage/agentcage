@@ -238,6 +238,68 @@ def test_stage_build_context_empty_secret_injection(tmp_path):
     assert json.loads((tmp_path / "secret_injection.json").read_text()) == []
 
 
+def test_generate_units_persists_autostart_flag():
+    """`apple_container_autostart: true` in cage.yaml flows into the unit
+    JSON's `autostart` field. `start()` reads this to decide whether to
+    install a launchd plist."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.apple_container_autostart = True
+
+    units = AppleContainerBackend().generate_units(
+        cfg, "/cfg", "/patches", "deploy",
+    )
+    meta = json.loads(units["deploy.json"])
+    assert meta["autostart"] is True
+
+
+def test_generate_units_autostart_default_false():
+    """Autostart is opt-in. Cages that don't set the flag get
+    `autostart: false` in the unit JSON; `start()` skips the plist."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    units = AppleContainerBackend().generate_units(
+        cfg, "/cfg", "/patches", "deploy",
+    )
+    meta = json.loads(units["deploy.json"])
+    assert meta["autostart"] is False
+
+
+def test_launchd_plist_path_is_under_user_launchagents():
+    """plist file goes under ~/Library/LaunchAgents — user-scope so no
+    sudo, runs at the user's login session."""
+    p = AppleContainerBackend()._launchd_plist_path("demo")
+    assert str(p).endswith("/Library/LaunchAgents/io.agentcage.demo.plist")
+
+
+def test_install_launchd_plist_writes_well_formed_xml(tmp_path, monkeypatch):
+    """`_install_launchd_plist` writes a valid Apple plist XML with the
+    expected ProgramArguments shape and the cage name in the Label."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(backend, "_launchd_plist_path",
+                        lambda name: tmp_path / f"io.agentcage.{name}.plist")
+    monkeypatch.setattr(backend, "_state_dir",
+                        lambda name: tmp_path / f"state-{name}")
+    with patch.object(ac_cli, "container_binary",
+                       return_value="/usr/local/bin/container"), \
+         patch("subprocess.run",
+               return_value=type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()):
+        backend._install_launchd_plist("demo")
+
+    plist_text = (tmp_path / "io.agentcage.demo.plist").read_text()
+    assert "<key>Label</key>" in plist_text
+    assert "<string>io.agentcage.demo</string>" in plist_text
+    assert "<string>/usr/local/bin/container</string>" in plist_text
+    assert "<string>start</string>" in plist_text
+    assert "<string>demo</string>" in plist_text
+    # Well-formedness: round-trip via plistlib.
+    import plistlib
+    parsed = plistlib.loads(plist_text.encode())
+    assert parsed["Label"] == "io.agentcage.demo"
+    assert parsed["RunAtLoad"] is True
+    assert parsed["ProgramArguments"][-1] == "demo"
+
+
 def test_start_argv_forwards_secret_envs(tmp_path, monkeypatch):
     """start() reads secret_envs from the unit metadata and forwards each
     via `-e NAME=value`. Missing env vars are skipped (with a warning)."""

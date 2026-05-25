@@ -95,6 +95,86 @@ class AppleContainerBackend:
         """
         return self._state_dir(name) / "logs"
 
+    def _launchd_plist_path(self, name: str) -> Path:
+        """Host path of the per-cage launchd plist.
+
+        We install into the user's LaunchAgents dir (no sudo needed; runs
+        as the user at every login). The plist label and filename follow
+        reverse-DNS form `io.agentcage.<cage>` so they don't collide with
+        non-agentcage daemons in launchctl listings.
+        """
+        return Path(
+            os.path.expanduser(f"~/Library/LaunchAgents/io.agentcage.{name}.plist")
+        )
+
+    def _install_launchd_plist(self, name: str) -> None:
+        """Write + load the per-cage launchd plist.
+
+        The plist re-execs `container start <cage>` at user login. Logs
+        go under the per-cage state dir so `cage logs` already finds
+        them. Idempotent: an existing plist is overwritten and reloaded.
+        """
+        binary = ac_cli.container_binary()
+        if binary is None:
+            click.echo(
+                "warning: cannot install launchd autostart — Apple "
+                "`container` CLI not found",
+                err=True,
+            )
+            return
+        plist = self._launchd_plist_path(name)
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        state_dir = self._state_dir(name)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        plist_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.agentcage.{name}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{binary}</string>
+        <string>start</string>
+        <string>{name}</string>
+    </array>
+    <key>StandardOutPath</key>
+    <string>{state_dir}/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>{state_dir}/launchd.err.log</string>
+</dict>
+</plist>
+"""
+        plist.write_text(plist_xml)
+        # bootstrap + load. `launchctl load` exits 0 even if already
+        # loaded; if it changes, run unload first so reload picks up
+        # the new ProgramArguments.
+        import subprocess as _sp
+        _sp.run(["launchctl", "unload", str(plist)],
+                check=False, capture_output=True)
+        result = _sp.run(["launchctl", "load", "-w", str(plist)],
+                         check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            click.echo(
+                f"warning: launchctl load failed for {plist}: "
+                f"{result.stderr.strip()}",
+                err=True,
+            )
+
+    def _uninstall_launchd_plist(self, name: str) -> None:
+        """Unload + remove the per-cage launchd plist. No-op if absent."""
+        plist = self._launchd_plist_path(name)
+        if not plist.exists():
+            return
+        import subprocess as _sp
+        _sp.run(["launchctl", "unload", str(plist)],
+                check=False, capture_output=True)
+        plist.unlink(missing_ok=True)
+
     # --- Backend protocol -----------------------------------------------------
 
     def check_prerequisites(self, config: Config) -> list[str]:  # noqa: ARG002
@@ -230,6 +310,7 @@ class AppleContainerBackend:
                 "memory": memory,
                 "lifecycle": config.lifecycle,
                 "secret_envs": secret_envs,
+                "autostart": bool(getattr(config, "apple_container_autostart", False)),
             },
             indent=2,
             sort_keys=True,
@@ -346,6 +427,13 @@ class AppleContainerBackend:
         result = ac_cli.run(argv, check=False, capture_output=False)
         if result.returncode != 0:
             raise RuntimeError(f"`container run` failed (exit {result.returncode})")
+        # Install (or refresh) the launchd plist if the cage opted in to
+        # autostart. Read from the unit metadata so plists stick across
+        # reloads — the user-visible cage.yaml may have been edited since
+        # but `cage create / update` is what propagates flags into the
+        # unit JSON, so we honor whatever was set at the last create/update.
+        if meta.get("autostart"):
+            self._install_launchd_plist(name)
         if not quiet:
             click.echo(f"Started {name} (apple-container)")
 
@@ -358,6 +446,11 @@ class AppleContainerBackend:
 
     def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:  # noqa: ARG002
         removed: list[str] = []
+        # launchd plist (best-effort; only present when autostart was enabled).
+        plist = self._launchd_plist_path(name)
+        if plist.exists():
+            self._uninstall_launchd_plist(name)
+            removed.append(f"launchd:{plist}")
         # Container
         if ac_cli.inspect(name) is not None:
             ac_cli.run(["stop", name], check=False)
