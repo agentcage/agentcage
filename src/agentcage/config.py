@@ -897,6 +897,73 @@ def validate_config(config: Config) -> list[str]:
 
     warnings = []
 
+    # Apple-container backend: surface config knobs that the backend doesn't
+    # respect today (silently dropped pre-this-warning). Tracked as the full
+    # parity work in #120. Plain `validate_config` warnings so the user sees
+    # them on cage create / update / show — they don't block the operation
+    # because several built-in scaffolds (ubuntu, etc.) set these fields
+    # unconditionally for the container backend. The right long-term fix is
+    # either to make the supervisor honor them or to make the scaffold
+    # cage.yaml.j2 templates omit them on apple-container; until then, this
+    # tells the operator their `tmpfs:` / `volumes:` / `add_capabilities:`
+    # entries are decorative on this backend.
+    if config.isolation == "apple-container":
+        # Each entry: (field-path, predicate-on-config-that-says-"non-default",
+        # human-readable summary of what the field's effect would be elsewhere).
+        _ac_silent_drops: list[tuple[str, bool, str]] = [
+            ("container.volumes", bool(config.container.volumes),
+             "host bind mounts (apple-container has no bind-mount support yet — "
+             "the cage gets no host paths)"),
+            ("container.named_volumes", bool(config.container.named_volumes),
+             "podman named volumes (no equivalent on apple-container)"),
+            ("container.tmpfs", bool(config.container.tmpfs),
+             "tmpfs mounts (apple-container's rootfs is RW; explicit tmpfs entries "
+             "are not wired)"),
+            ("container.podman_secrets", bool(config.container.podman_secrets),
+             "Podman secret refs (no host Podman secret store on apple-container; "
+             "use cage.yaml `secret_injection:` or env: instead)"),
+            ("container.nested_containers", bool(config.container.nested_containers),
+             "nested container runtime (no podman-in-podman shim available in "
+             "the Apple microVM)"),
+            ("container.userns", bool(config.container.userns),
+             "user namespace remap (the supervisor drops to a fixed uid 1000 — "
+             "no remap layer)"),
+            ("container.add_capabilities", bool(config.container.add_capabilities),
+             "extra capabilities — the supervisor hard-drops ALL capabilities "
+             "before exec'ing the cage workload at stage 90, so requested caps "
+             "are dropped too"),
+            ("container.drop_capabilities",
+             list(config.container.drop_capabilities) != ["ALL"],
+             "custom drop list — the supervisor unconditionally drops ALL caps; "
+             "your selective drop list has no effect"),
+            ("container.read_only", config.container.read_only is False,
+             "writable rootfs — apple-container's rootfs is always RW; "
+             "the False here matches behavior but is silently not enforced "
+             "as a config-driven choice"),
+            ("container.security_label_disable",
+             config.container.security_label_disable is False,
+             "SELinux label control — apple-container's microVM has no SELinux"),
+            ("capture.enable_har", bool(getattr(config, "capture", None) and
+                                         config.capture.enable_har),
+             "HAR capture (capture.jsonl lives inside the microVM; not exported "
+             "to the host yet — `cage har` exits unsupported)"),
+        ]
+        for field_path, non_default, summary in _ac_silent_drops:
+            if non_default:
+                warnings.append(
+                    f"{field_path}: silently has no effect on apple-container "
+                    f"({summary}). See issue #120 for the parity plan."
+                )
+        for rule in config.secret_injection:
+            if getattr(rule, "transform", ""):
+                warnings.append(
+                    f"secret_injection[{rule.env!r}].transform "
+                    f"={rule.transform!r}: silently has no effect on "
+                    f"apple-container (server-side {{{{SECRET:...}}}} placeholder "
+                    f"substitution is not wired yet — the cage sees the raw "
+                    f"env-passed value). See issue #120."
+                )
+
     # Warn when a tcp.passthrough port isn't explicitly listed in
     # tcp.allow — mirrors the domains.passthrough auto-merge warning.
     for p in config.ports.tcp.passthrough:
