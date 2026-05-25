@@ -161,17 +161,24 @@ def test_stage_build_context_writes_cmd_json(tmp_path):
     assert json.loads(cmd_json) == ["sh", "-c", "echo $FOO & wait"]
 
 
-def test_render_wrapper_requires_glibc_base():
-    """The wrapper template hard-errors at build time on non-apt bases.
-
-    mitmproxy's bundled binary is built against glibc; alpine/musl bases
-    can't run it. The Containerfile contains an explicit check.
-    """
+def test_render_wrapper_handles_apk_and_non_apt():
+    """The wrapper template detects apk (alpine) explicitly with a
+    pointer to the workaround, and falls through with a clear error
+    for unknown distros. Both still `exit 78` at build time — the
+    apple-container backend cannot run on non-glibc images today
+    (mitmproxy's PyInstaller bundle is glibc-only; the musl pip
+    install path needs rust 1.88+ which alpine doesn't ship even in
+    3.22). Tracked in #120 with the multi-stage builder design."""
     out = ac_wrapper.render_wrapper_containerfile(
         "alpine:3.20", user_cmd=["sh"],
     )
     assert "apt-get" in out
-    assert "requires a glibc-based user image" in out
+    assert "apk" in out
+    # Alpine path: actionable error with workaround.
+    assert "does not yet support alpine" in out
+    assert "vm" in out  # vm isolation listed as workaround
+    # Fallthrough for other distros (no apt + no apk).
+    assert "alpine/musl and other distros not yet wired" in out
     assert "exit 78" in out
 
 
