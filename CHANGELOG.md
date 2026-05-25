@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.20.4] - 2026-05-25
+## [0.20.5] - 2026-05-25
 
-This release bundles the remaining apple-container regressions blocking `agentcage run ubuntu` on macOS 26+ Apple Silicon, plus a CI-only fix to the release-notes pipeline. `v0.20.3` was tagged but never reached PyPI (cancelled mid-workflow before upload); 0.20.4 supersedes it and is the first apple-container release where the full init → create → exec → apt-get install path works without crashing.
+Re-release of 0.20.4 with the actual fixes built in. The 0.20.4 release-prep commit was made against a stale checkout that predated #140 / #141 / #18, then the tag push raced ahead of a force-push attempt — the publish workflow built and uploaded that stale commit (with `version = "0.20.4"` but the buggy code), and the remote tag was later updated to point at the correct commit only on GitHub, not on PyPI. PyPI 0.20.4 has been yanked. 0.20.5 contains the actually-merged code from `master` HEAD plus the version bump.
+
+## [0.20.4] - 2026-05-25 (yanked, see 0.20.5)
+
+Tag was force-updated to the post-#141 commit, but PyPI received the stale pre-#140 wheel from an earlier tag push. The PyPI release has been yanked; install 0.20.5 instead.
+
+The intended 0.20.4 content (now shipping verbatim in 0.20.5) bundled the remaining apple-container regressions blocking `agentcage run ubuntu` on macOS 26+ Apple Silicon, plus a CI-only fix to the release-notes pipeline. `v0.20.3` was tagged but never reached PyPI (cancelled mid-workflow before upload); 0.20.5 supersedes both and is the first apple-container release where the full init → create → exec → apt-get install path works without crashing.
 
 ### Fixed
 - `agentcage run ubuntu` (and any other apple-container cage on a base image with a built-in uid-1000 user) no longer exits immediately at supervisor stage 90 with `User [cage] not known`. `capsh --user=` resolves by name (via `getpwnam`), and the wrapper Containerfile reuses the image's existing uid-1000 user (`ubuntu` on ubuntu:24.04, `node` on node:*, `claude` on claude-code) without creating a `cage` alias. The supervisor now resolves the uid-1000 name at runtime (`getent passwd 1000 | cut -d: -f1`) and passes it to capsh, so every popular base works. The ubuntu scaffold's `cp /certs/mitmproxy-ca-cert.pem ... && update-ca-certificates` was a secondary blocker — that pair runs as uid 1000 on apple-container and fails with EACCES (the supervisor has already installed the CA at stage 60), so the cage CMD exited non-zero and the container stopped before `sleep infinity` ever ran. Now wrapped in `{ ... } || true; exec sleep infinity` so EACCES is harmless. (#140)
