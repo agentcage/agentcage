@@ -529,6 +529,11 @@ class AppleContainerBackend:
 
         # Secret-injection. For each env named in the cage's
         # `secret_injection:` rules:
+        #   - Resolve the real value from <deployment_dir>/pending_secrets.json,
+        #     written by `agentcage cage create -s KEY=VAL` and
+        #     `agentcage run -s KEY=VAL`. Values are NEVER read from the
+        #     host shell's environment — anything not passed via
+        #     --set-secret is treated as missing and a warning is emitted.
         #   - Write the real value to <secrets_dir>/<env-name> on the
         #     host (mode 0600). The dir gets bind-mounted at
         #     /run/agentcage/secrets:ro in the cage; supervisor stage 35
@@ -541,11 +546,6 @@ class AppleContainerBackend:
         #     value on the wire. This means the cleartext value is NOT
         #     visible via host `ps -ef`, NOT in `container inspect`,
         #     and NOT in the cage workload's `/proc/self/environ`.
-        # Missing env vars are skipped with a stderr warning — the cage
-        # may not need every secret on every host. Backward compat: if
-        # the unit JSON predates this PR (no secret_env_placeholders),
-        # fall back to the old `-e NAME=value` cleartext behavior so
-        # existing cages keep working after upgrade.
         placeholders = meta.get("secret_env_placeholders") or {}
         secret_envs = meta.get("secret_envs") or list(placeholders.keys())
         # Protocol-relay credential env names. Same secrets bind mount as
@@ -559,6 +559,23 @@ class AppleContainerBackend:
             v for v in relay_secret_envs if v not in secret_envs
         ]
         if all_secret_envs:
+            # Load --set-secret values staged by run.py / cli.py at the
+            # per-cage 0600 plaintext file. No host podman / Keychain on
+            # apple-container yet (#120); plaintext-at-0600 is the
+            # persistence mechanism. Missing file = no secrets provided.
+            from agentcage import state as _state
+            provided: dict[str, str] = {}
+            pending_path = _state.deployment_dir(name) / "pending_secrets.json"
+            if pending_path.is_file():
+                try:
+                    provided = {k: v for k, v in json.loads(pending_path.read_text())}
+                except Exception:
+                    click.echo(
+                        f"warning: failed to parse {pending_path}; treating "
+                        f"all secret_injection rules as unprovided",
+                        err=True,
+                    )
+
             secrets_dir = self.secrets_dir(name)
             secrets_dir.mkdir(parents=True, exist_ok=True)
             os.chmod(secrets_dir, 0o700)
@@ -568,20 +585,20 @@ class AppleContainerBackend:
                 stale.unlink()
             relay_only = set(relay_secret_envs) - set(secret_envs)
             for env_name in all_secret_envs:
-                value = os.environ.get(env_name)
+                value = provided.get(env_name)
                 if value is None:
                     if env_name in relay_only:
                         click.echo(
                             f"warning: protocol_relays env {env_name!r} "
-                            f"not set in host environment; the relay "
+                            f"not provided via --set-secret; the relay "
                             f"will fail to start with empty credentials",
                             err=True,
                         )
                     else:
                         click.echo(
                             f"warning: secret_injection env {env_name!r} "
-                            f"not set in host environment; placeholder will "
-                            f"NOT be substituted in cage requests",
+                            f"not provided via --set-secret; placeholder "
+                            f"will NOT be substituted in cage requests",
                             err=True,
                         )
                     continue
@@ -594,19 +611,28 @@ class AppleContainerBackend:
                     os.chmod(secret_file, 0o600)
                     continue
                 placeholder = placeholders.get(env_name)
-                if placeholder:
-                    secret_file = secrets_dir / env_name
-                    secret_file.write_text(value)
-                    os.chmod(secret_file, 0o600)
-                    argv += ["-e", f"{env_name}={placeholder}"]
-                else:
-                    # Pre-0.21.1 unit JSON: no placeholder map. Fall back
-                    # to cleartext-env delivery to preserve behavior for
-                    # cages last started under 0.21.0.
-                    argv += ["-e", f"{env_name}={value}"]
+                if not placeholder:
+                    # Unit JSON predates the placeholder map (pre-0.21.1).
+                    # Refuse to fall back to cleartext-env delivery — the
+                    # whole point of placeholders is to keep the raw value
+                    # off `container run`'s argv and out of the cage's
+                    # /proc/self/environ. Operator must `cage update` to
+                    # regenerate the unit JSON.
+                    click.echo(
+                        f"warning: secret_injection env {env_name!r} has "
+                        f"no placeholder in unit JSON (pre-0.21.1 cage); "
+                        f"run `agentcage cage update` to regenerate. "
+                        f"Skipping injection.",
+                        err=True,
+                    )
+                    continue
+                secret_file = secrets_dir / env_name
+                secret_file.write_text(value)
+                os.chmod(secret_file, 0o600)
+                argv += ["-e", f"{env_name}={placeholder}"]
             # Mount the per-cage secrets dir read-only into the microVM.
             # Only mount if any files were written (avoid mounting an empty
-            # dir when every secret env was missing host-side).
+            # dir when every secret env was unprovided).
             if any(secrets_dir.iterdir()):
                 argv += ["--volume", f"{secrets_dir}:/run/agentcage/secrets:ro"]
 

@@ -352,12 +352,14 @@ def _stage_set_secrets(
 
     if isolation in ("vm", "apple-container"):
         # Neither backend has access to host podman on macOS. Stage to a
-        # per-cage pending_secrets.json (0600) and let the backend pick it
-        # up at start time. v1 of apple-container reads the file but does
-        # not yet plumb secrets into the cage (Keychain integration is a
-        # follow-up — see #120) — the file's presence is enough to keep
-        # downstream code working; the secret values are effectively
-        # discarded until the Keychain path lands.
+        # per-cage pending_secrets.json (0600) and let the backend pick
+        # it up at start time. VM backend reads the file and creates
+        # podman secrets INSIDE the VM (then unlinks the file).
+        # apple-container backend reads the file at every start() to
+        # resolve `secret_injection` rules — the 0600 plaintext file IS
+        # the persistence mechanism (no host podman; Keychain is a
+        # follow-up, see #120). Values are NEVER read from the host
+        # shell's environment for the apple-container backend.
         if parsed:
             secrets_file = state.deployment_dir(cage_name) / "pending_secrets.json"
             # 0o600 — staged secret values must not be world-readable.
