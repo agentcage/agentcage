@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Release
 
 on:
   push:
@@ -10,11 +10,63 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write
+      id-token: write  # PyPI trusted publishing
+      contents: write  # gh release create
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv build
-      - uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
+
+      # Extract the CHANGELOG section for this tag. Format expected:
+      #
+      #   ## [Unreleased]
+      #
+      #   ## [0.20.1] - 2026-05-25
+      #   <body...>
+      #
+      #   ## [0.20.0] - 2026-05-24
+      #
+      # awk reads everything between the matching `## [VERSION]` heading and the
+      # next `## [` heading. Tag (`v0.20.1`) → version (`0.20.1`) via `${TAG#v}`.
+      - name: Extract CHANGELOG entry
+        id: changelog
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          notes=$(awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md | sed -E '/^[[:space:]]*$/{N;/^\n[[:space:]]*$/D;}')
+          if [ -z "${notes//[[:space:]]/}" ]; then
+            notes="No CHANGELOG entry for ${GITHUB_REF_NAME}. See commit history: https://github.com/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}"
+          fi
+          {
+            echo 'notes<<NOTES_EOF'
+            printf '%s\n' "$notes"
+            echo 'NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # Idempotent: skips with a clear log line if someone manually pre-created
+      # the release (we used to do this by hand before this step existed).
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists — skipping create"
+            exit 0
+          fi
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --notes "${{ steps.changelog.outputs.notes }}"
