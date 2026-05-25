@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -17,6 +17,7 @@ from agentcage.init import (
     list_scaffolds,
     load_scaffold_meta,
     resolve_scaffold,
+    run_scaffold_setup,
     scaffold_source,
 )
 
@@ -362,3 +363,111 @@ class TestScaffoldMetadataFields:
             assert "lifecycle" in meta, f"{name} missing lifecycle"
             assert meta["lifecycle"] in ("interactive", "service"), \
                 f"{name} has invalid lifecycle: {meta['lifecycle']}"
+
+
+# ── run_scaffold_setup isolation gating ─────────────────────────
+
+
+class TestRunScaffoldSetupIsolation:
+    """Verify host-podman build path is skipped on non-container isolation.
+
+    On macOS users have ``vm`` or ``apple-container`` isolation and host
+    podman is not installed; invoking it would crash with FileNotFoundError.
+    Both backends build images themselves at cage create time.
+    """
+
+    def _make_scaffold(self, tmp_path: Path) -> Path:
+        """Create a user scaffold with a build entry and a provision entry."""
+        user_dir = tmp_path / "scaffolds"
+        scaffold = user_dir / "test-iso"
+        scaffold.mkdir(parents=True)
+        (scaffold / "cage.yaml.j2").write_text("name: {{ name }}\n")
+        (scaffold / "Containerfile").write_text("FROM scratch\n")
+        provision_src = scaffold / "provision-file.txt"
+        provision_src.write_text("hello\n")
+        (scaffold / "scaffold.yaml").write_text(yaml.safe_dump({
+            "description": "test",
+            "lifecycle": "interactive",
+            "build": [{
+                "image": "localhost/agentcage-scaffold-test-iso:latest",
+                "containerfile": "Containerfile",
+            }],
+            "provision": [{
+                "src": "provision-file.txt",
+                "dest": str(tmp_path / "out" / "provision-file.txt"),
+            }],
+        }))
+        return user_dir
+
+    @patch("agentcage.init._project_scaffolds_dir", return_value=None)
+    def test_apple_container_isolation_skips_podman(self, _mock_proj, tmp_path):
+        user_dir = self._make_scaffold(tmp_path)
+
+        with patch("agentcage.init._USER_SCAFFOLDS_DIR", user_dir), \
+             patch("agentcage.podman.Podman") as mock_podman_cls:
+            # Any podman instantiation would raise — but we shouldn't get here
+            mock_podman_cls.side_effect = FileNotFoundError(
+                "[Errno 2] No such file or directory: 'podman'"
+            )
+            # Must not raise
+            run_scaffold_setup(
+                "test-iso", "cage1", str(tmp_path / "cage.yaml"),
+                isolation="apple-container",
+            )
+            assert mock_podman_cls.call_count == 0
+            # Provision still ran
+            assert (tmp_path / "out" / "provision-file.txt").is_file()
+
+    @patch("agentcage.init._project_scaffolds_dir", return_value=None)
+    def test_vm_isolation_skips_podman(self, _mock_proj, tmp_path):
+        user_dir = self._make_scaffold(tmp_path)
+
+        with patch("agentcage.init._USER_SCAFFOLDS_DIR", user_dir), \
+             patch("agentcage.podman.Podman") as mock_podman_cls:
+            mock_podman_cls.side_effect = FileNotFoundError(
+                "[Errno 2] No such file or directory: 'podman'"
+            )
+            run_scaffold_setup(
+                "test-iso", "cage1", str(tmp_path / "cage.yaml"),
+                isolation="vm",
+            )
+            assert mock_podman_cls.call_count == 0
+            assert (tmp_path / "out" / "provision-file.txt").is_file()
+
+    @patch("agentcage.init._project_scaffolds_dir", return_value=None)
+    def test_container_isolation_invokes_podman(self, _mock_proj, tmp_path):
+        user_dir = self._make_scaffold(tmp_path)
+
+        with patch("agentcage.init._USER_SCAFFOLDS_DIR", user_dir), \
+             patch("agentcage.podman.Podman") as mock_podman_cls:
+            mock_podman = MagicMock()
+            mock_podman.image_exists.return_value = False
+            mock_podman_cls.return_value = mock_podman
+
+            run_scaffold_setup(
+                "test-iso", "cage1", str(tmp_path / "cage.yaml"),
+                isolation="container",
+            )
+            mock_podman_cls.assert_called_once()
+            mock_podman.image_exists.assert_called_once_with(
+                "localhost/agentcage-scaffold-test-iso:latest"
+            )
+            mock_podman.build_image.assert_called_once()
+            assert (tmp_path / "out" / "provision-file.txt").is_file()
+
+    @patch("agentcage.init._project_scaffolds_dir", return_value=None)
+    def test_isolation_none_preserves_legacy_behavior(self, _mock_proj, tmp_path):
+        """Callers that don't pass isolation still hit the build loop."""
+        user_dir = self._make_scaffold(tmp_path)
+
+        with patch("agentcage.init._USER_SCAFFOLDS_DIR", user_dir), \
+             patch("agentcage.podman.Podman") as mock_podman_cls:
+            mock_podman = MagicMock()
+            mock_podman.image_exists.return_value = True  # short-circuit build
+            mock_podman_cls.return_value = mock_podman
+
+            run_scaffold_setup(
+                "test-iso", "cage1", str(tmp_path / "cage.yaml"),
+            )
+            mock_podman_cls.assert_called_once()
+            mock_podman.image_exists.assert_called_once()

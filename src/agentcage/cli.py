@@ -264,7 +264,7 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
 
     meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
-        run_scaffold_setup(scaffold, name, str(dest))
+        run_scaffold_setup(scaffold, name, str(dest), isolation=isolation)
         # Copy Containerfile and sibling build context files from scaffold
         scaffold_dir_path = resolve_scaffold(scaffold)
         if scaffold_dir_path is not None:

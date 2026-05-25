@@ -222,16 +222,21 @@ def load_scaffold_meta(scaffold: str) -> dict | None:
 
 def run_scaffold_setup(
     scaffold: str, name: str, dest: str, *, quiet: bool = False,
+    isolation: str | None = None,
 ) -> None:
-    """Execute build/provision steps from scaffold.yaml."""
+    """Execute build/provision steps from scaffold.yaml.
+
+    The host-podman build path is only meaningful for the ``container``
+    isolation backend. For ``vm`` and ``apple-container``, images are built
+    by the backend itself (inside the Lima VM or via Apple's ``container``
+    CLI) at cage create time, so we skip the host build loop entirely.
+    When *isolation* is ``None`` we preserve the legacy behavior (run the
+    build loop) for existing callers that don't pass isolation.
+    """
     meta = load_scaffold_meta(scaffold)
     if meta is None:
         return
 
-    from agentcage.podman import Podman
-    from agentcage.registry import resolve_build_args
-
-    podman = Podman()
     scaffold_dir = resolve_scaffold(scaffold)
     if scaffold_dir is None:
         return
@@ -240,43 +245,53 @@ def run_scaffold_setup(
         if not quiet:
             click.echo(msg)
 
-    # 1. Process build entries
-    for entry in meta.get("build", []):
-        image = entry["image"]
-        if podman.image_exists(image):
-            _echo(f"Image {image} already exists, skipping build.")
-            continue
+    # 1. Process build entries — host podman only relevant for container isolation
+    if isolation in (None, "container"):
+        from agentcage.podman import Podman
+        from agentcage.registry import resolve_build_args
 
-        # Resolve tags for scaffold-declared build args.
-        declared = entry.get("build_args") or {}
-        build_args, changes = resolve_build_args(declared, declared)
-        for key, _old, new in changes:
-            _echo(f"Build arg {key}: {new}")
+        podman = Podman()
+        for entry in meta.get("build", []):
+            image = entry["image"]
+            if podman.image_exists(image):
+                _echo(f"Image {image} already exists, skipping build.")
+                continue
 
-        if "containerfile" in entry:
-            containerfile = str(scaffold_dir / entry["containerfile"])
-            _echo(f"Building {image}...")
-            podman.build_image(
-                image, containerfile, str(scaffold_dir),
-                cap_add=entry.get("cap_add"), build_args=build_args,
-                quiet=quiet,
-            )
-        elif "git" in entry:
-            git_url = entry["git"]
-            depth = entry.get("depth", 1)
-            with tempfile.TemporaryDirectory() as tmpdir:
-                _echo(f"Cloning {git_url}...")
-                cmd = ["git", "clone", f"--depth={depth}", git_url, tmpdir]
-                if quiet:
-                    subprocess.run(cmd, check=True, capture_output=True)
-                else:
-                    subprocess.run(cmd, check=True)
+            # Resolve tags for scaffold-declared build args.
+            declared = entry.get("build_args") or {}
+            build_args, changes = resolve_build_args(declared, declared)
+            for key, _old, new in changes:
+                _echo(f"Build arg {key}: {new}")
+
+            if "containerfile" in entry:
+                containerfile = str(scaffold_dir / entry["containerfile"])
                 _echo(f"Building {image}...")
                 podman.build_image(
-                    image, None, tmpdir,
+                    image, containerfile, str(scaffold_dir),
                     cap_add=entry.get("cap_add"), build_args=build_args,
                     quiet=quiet,
                 )
+            elif "git" in entry:
+                git_url = entry["git"]
+                depth = entry.get("depth", 1)
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    _echo(f"Cloning {git_url}...")
+                    cmd = ["git", "clone", f"--depth={depth}", git_url, tmpdir]
+                    if quiet:
+                        subprocess.run(cmd, check=True, capture_output=True)
+                    else:
+                        subprocess.run(cmd, check=True)
+                    _echo(f"Building {image}...")
+                    podman.build_image(
+                        image, None, tmpdir,
+                        cap_add=entry.get("cap_add"), build_args=build_args,
+                        quiet=quiet,
+                    )
+    elif meta.get("build"):
+        _echo(
+            f"Skipping host image build for {isolation} isolation; "
+            f"images will be built by the backend at cage create."
+        )
 
     # 2. Process provision entries
     for entry in meta.get("provision", []):
