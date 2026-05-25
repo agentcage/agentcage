@@ -204,22 +204,26 @@ class TestCageLogsAppleContainer:
 
 
 class TestCageVerifyAppleContainer:
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.subprocess.run")
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_verify_short_circuits_with_notice(
-        self, mock_state, mock_get_backend,
+    def test_verify_runs_without_crashing(
+        self, mock_state, mock_get_backend, mock_run, mock_binary,
     ):
-        """verify on apple-container reports service status only and never
-        shells out to host podman."""
+        """Service-status checks pass and the deeper probes run via
+        `container exec` rather than host podman — confirms the basic
+        contract regardless of probe outcomes."""
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         backend = MagicMock()
         backend.service_names.return_value = ["cage", "proxy", "dns"]
         backend.is_running.return_value = True
         mock_get_backend.return_value = backend
+        mock_binary.return_value = "/usr/local/bin/container"
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
         result = _runner().invoke(main, ["cage", "verify", "demo"])
 
-        # No crash and the info banner mentions the limitation.
         assert "PASS" in result.output
         assert "apple-container" in result.output
 
@@ -275,6 +279,90 @@ class TestCageAuditHarAppleContainer:
         popen_argv = mock_popen.call_args.args[0]
         assert popen_argv[0] == "tail"
         assert str(audit_path) in popen_argv
+
+
+# ── cage verify: deeper probes on apple-container ──
+
+
+class TestCageVerifyAppleContainerProbes:
+    """`cage verify` on apple-container now runs the same shape of
+    deeper-than-service-status checks the container backend does:
+    CA cert, DNS routing, egress filtering. They exec into the cage
+    via Apple's `container exec` (not host podman) so they work on
+    macOS without podman."""
+
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_runs_deeper_probes_and_passes(
+        self, mock_state, mock_get_backend, mock_run, mock_binary,
+    ):
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        backend = MagicMock()
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.is_running.return_value = True
+        mock_get_backend.return_value = backend
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        def fake_run(argv, **_kwargs):
+            text = " ".join(argv)
+            if "test -f /certs/mitmproxy-ca-cert.pem" in text:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "cat /etc/resolv.conf" in text:
+                return MagicMock(returncode=0, stdout="nameserver 127.0.0.1\n", stderr="")
+            if "which curl" in text:
+                return MagicMock(returncode=0, stdout="/usr/bin/curl\n", stderr="")
+            if "curl" in text and "evil-exfil" in text:
+                return MagicMock(returncode=0, stdout="403", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        result = _runner().invoke(main, ["cage", "verify", "demo"])
+
+        assert "CA Certificate" in result.output
+        assert "DNS routing" in result.output
+        assert "Egress Filtering" in result.output
+        assert "[PASS] mitmproxy CA cert" in result.output
+        assert "[PASS] /etc/resolv.conf" in result.output
+        assert "Blocked domain" in result.output and "denied" in result.output
+        # Old INFO banner ("deeper checks not yet implemented") must be gone.
+        assert "not yet implemented" not in result.output
+
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_verify_fails_loudly_when_ca_missing(
+        self, mock_state, mock_get_backend, mock_run, mock_binary,
+    ):
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        backend = MagicMock()
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.is_running.return_value = True
+        mock_get_backend.return_value = backend
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        def fake_run(argv, **_kwargs):
+            text = " ".join(argv)
+            if "test -f /certs/mitmproxy-ca-cert.pem" in text:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if "cat /etc/resolv.conf" in text:
+                return MagicMock(returncode=0, stdout="nameserver 127.0.0.1\n", stderr="")
+            if "which curl" in text:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        result = _runner().invoke(main, ["cage", "verify", "demo"])
+
+        assert "[FAIL] mitmproxy CA cert NOT found" in result.output
+        # Egress check skipped when curl is missing — should WARN, not FAIL.
+        assert "[WARN]" in result.output
+        # Overall verify exits non-zero when any [FAIL].
+        assert result.exit_code != 0
 
 
 # ── cage backup / restore: still unsupported (Plan 3 PR-10) ──
