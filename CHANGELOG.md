@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-05-25
+
+### Fixed
+- `agentcage init <name> --scaffold <scaffold>` on macOS no longer crashes with `FileNotFoundError: [Errno 2] No such file or directory: 'podman'` when the host has no podman installed (the common case on Mac, where image builds happen inside Lima or via Apple's `container` CLI). `run_scaffold_setup` now takes the resolved isolation and only invokes host podman for `isolation: container`; for `vm`/`apple-container` it prints one explanation line and skips the host build loop (the backend still builds images at cage create time). Provision steps always run. Callers that don't pass `isolation` (none in tree) preserve the legacy behavior. (#138)
+- `agentcage run ubuntu` (and any other apple-container cage with a `container.command:` in cage.yaml) no longer exits immediately after start. The apple-container backend was resolving the cage's CMD by inspecting the user image's OCI config — for ubuntu that's `/bin/bash`, which exits instantly under `container run -d` with no TTY — completely ignoring cage.yaml's `command:`. cage.yaml now wins; the image's OCI CMD is the fallback only when the cage doesn't set one. Additionally, `supervisor.sh` stage 60 now mirrors the proxy CA into `/certs/mitmproxy-ca-cert.pem` (where the container backend bind-mounts it), so backend-agnostic cage.yaml commands that reference that path Just Work on apple-container without scaffold edits. (#136)
+- `agentcage cage create` on the apple-container backend no longer shows two spinners racing on the same terminal line (`⠼ Starting cage...⠹ [1/2] Fetching image [13s]`) during image pull. Apple's `container` CLI writes its own progress to stderr; agentcage's braille `Spinner` writes `\r <frame> <msg>` to the same line every 80 ms; the two writers overdrew each other and flickered. `Spinner` now exposes pause/resume; the streaming branch of `apple_container.cli.run` (capture_output=False) wraps the child `subprocess.run` in a `pause_active_spinner()` context manager, so Apple's CLI owns the terminal line for the duration of the call and our spinner resumes after. Same pattern would help Lima — filed as a separate follow-up. (#137)
+
 ## [0.20.1] - 2026-05-24
 
 ### Fixed
