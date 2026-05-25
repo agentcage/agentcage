@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-05-25
+
+Three follow-ups on the 0.21.0 apple-container secret-injection model. The big one is #158 — secrets are no longer cleartext in the cage's env. Together these close out the documented gaps from `docs/apple-container.md` post-0.21.0.
+
+### Added
+
+- **Response-side redaction for `{{SECRET}}` placeholders** on apple-container. The mitmproxy addon already substituted placeholders → real values on outbound requests (PR #151); now it also redacts real values → placeholders on inbound responses. Upstreams that echo secrets back (webhook receivers, debug endpoints) no longer leak them to the cage. Mirror of the container backend's `SecretInjector.redact_response`. Audit entries surface `secrets_redacted: [...]` for visibility. Sorting by descending value length avoids partial leaks when one secret is a substring of another. (#156)
+- **`secret_injection.transform` runs end-to-end on apple-container.** Previously `transform: google-jwt-bearer` validated at parse but the addon did direct string substitution only. The addon now loads the bundled `data/proxy/transforms` registry (same one the container backend uses), mints derived values at request time (e.g. fresh OAuth bearer from a service-account JWT), and substitutes those instead of the raw env-passed credential. Fail-closed: if the transform fails to mint, the placeholder is left in place (upstream gets `Bearer {{TOKEN}}` literally and 401s). The "silently has no effect on apple-container" warning no longer fires for known transforms. Per-request audit includes `secret_transforms: {<env>: <transform>}`. (#157)
+- **File-based secret delivery — secrets are no longer cleartext in the cage's env.** Pre-0.21.1, the backend env-passed the real secret value via `container run -e NAME=value`. The value was visible in three places: host `ps -ef` (CLI argv), `container inspect <cage>` env config, and the cage workload's `/proc/self/environ`. The cage code that read `os.environ["KEY"]` got the real value, defeating the point of the `{{KEY}}` placeholder. Now: the backend writes each resolved secret to `<state>/<cage>/secrets/<env>` (mode 0600 host-side), bind-mounts the dir into the cage `:ro`, and passes `-e <env>={{PLACEHOLDER}}` (the placeholder, not cleartext) so the cage workload's env carries only the placeholder. Supervisor stage 35 (in-cage, root) re-stages the files into `/home/acproxy/secrets/<env>` (chown 200:200 mode 0400) for mitmproxy, then `umount`s the host bind so the workload (uid 1000) cannot read the bind-mounted files (virtiofs maps file owner through identity; without the umount the workload could still `cat` them). `die` on umount failure — broken stage 35 fails closed rather than silently leaking. The addon reads each rule's value from `/home/acproxy/secrets/<env>` instead of `os.environ`. Backward-compatible: unit JSON without the new `secret_env_placeholders` field falls back to the old cleartext-env delivery so existing cages keep starting without `cage update`. (#158)
+
+### Documentation
+
+- Post-0.21.0 parity rewrite of `docs/apple-container.md`: three new sections covering known gaps with workarounds (6 items, each with symptom + reason + workaround + proper-fix path), quirks worth knowing (8 by-design surprises), and the secret-delivery model with comparison table + end-to-end flow. (#155, #156, #157, #158 — each follow-up updates the relevant section to reflect the fix.)
+
 ## [0.21.0] - 2026-05-25
 
 Apple-container backend reaches feature parity with container/vm on the things users actually exercise: init → create → exec → audit/har/verify → backup/restore → secret-injection → domain-management → autostart → config validation all match the other backends end-to-end. 13 PRs ship together; the remaining narrow gaps (alpine full support, `--service proxy|dns`, response redaction, transform functions, macOS Keychain integration, runtime supervisor CI) are documented as follow-ups in #120 with the technical blockers spelled out.
