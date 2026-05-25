@@ -89,6 +89,10 @@ RUN getent passwd 200 >/dev/null && { echo "uid 200 already taken" >&2; exit 79;
 # AppleContainerBackend.build_artifacts().
 COPY supervisor.sh /opt/agentcage/supervisor
 COPY allowlist_addon.py /opt/agentcage/allowlist_addon.py
+# Shared CaptureWriter (same source the container backend's addon imports).
+# Lives next to allowlist_addon.py so mitmproxy's script loader puts the
+# directory on sys.path and `from capture import CaptureWriter` resolves.
+COPY capture.py /opt/agentcage/capture.py
 # Transforms live next to the addon so mitmproxy's script loader puts the
 # script's dir on sys.path and `from transforms import get` resolves. Same
 # shape as src/agentcage/data/proxy/ on the container backend.
@@ -113,6 +117,7 @@ COPY allowlist.txt /etc/agentcage/allowlist.txt
 COPY dnsmasq.conf /etc/agentcage/dnsmasq.conf
 COPY secret_injection.json /etc/agentcage/secret_injection.json
 COPY protocol_relays.json /etc/agentcage/protocol_relays.json
+COPY capture.json /etc/agentcage/capture.json
 RUN chmod 0755 /opt/agentcage/supervisor
 
 # Supervisor runs as PID 1.

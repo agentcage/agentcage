@@ -95,7 +95,7 @@ All cage subcommands work the same way they do on container / vm:
 | `cage exec / shell` | `container exec [-it] -u 1000 <cage> <cmd>` — runs as the cage workload's uid 1000 user by default (matches the workload's capability set: no CAP_NET_ADMIN / CAP_DAC_OVERRIDE). Pass `--as-root` for the operator-debug path. See [`cage exec` default-drop](#cage-exec-defaults-to-uid-1000-not-root) below |
 | `cage logs` | `container logs [-f] <cage>` — combined supervisor / proxy / dns / workload stream |
 | `cage audit` | Tails `<state>/<cage>/logs/audit.jsonl` (bind-mounted from the microVM); same filter machinery as container / vm. `--since` is post-parse only (see [Quirks](#quirks-worth-knowing)) |
-| `cage har` | Reads `<state>/<cage>/logs/capture.jsonl` and renders HAR 1.2 JSON |
+| `cage har` | Reads `<state>/<cage>/logs/capture.jsonl` and renders HAR 1.2 JSON; full request/response bodies captured when `capture.enable_har: true` (see [HAR body capture](#har-body-capture--wired-was-a-gap-pre-0212)) |
 | `cage verify` | Service-status + CA / DNS routing / egress filtering probes via `container exec` |
 | `cage backup / restore` | Backup tarball with config + capture + audit; secrets NOT serialized (see [secret backup](#cage-backup---include-secrets-rejected)) |
 | `cage update` | Rebuilds the wrapper image and restarts the cage |
@@ -241,6 +241,43 @@ secret_injection:
 ```
 
 Cage agent sends `Authorization: Bearer {{GCP_BEARER}}`; the proxy substitutes a freshly minted (cached until expiry) `ya29.<...>` access token.
+
+### HAR body capture — wired (was a gap pre-0.21.2)
+
+**Status.** Fixed. `cage har <cage>` now exports request and response **bodies** alongside headers when `capture.enable_har: true` is set in `cage.yaml`. Pre-this-PR the apple-container mitmproxy addon wrote a headers-only capture record and HAR exports showed `content.size: 0` for every entry — debugging an actual payload meant exec'ing into the cage. Now the in-cage addon stages inbound + outbound snapshots through the same shared `CaptureWriter` the `container` backend uses, so both backends produce identical HAR 1.2 JSON.
+
+**Body-size cap + binary skip.** `capture.max_body_size` (default 10 MB) caps each captured body; oversized bodies record `bodySize` faithfully and set `bodyTruncated: true`. Binary bodies (anything that fails UTF-8 decode — images, archives, gzip) are base64-encoded with `bodyEncoding: "base64"`; the HAR consumer can render or skip them. Same encoder used by the `container` backend, no behavioral drift.
+
+**Filtering.** `capture.domains` and `capture.exclude_domains` (lists of hosts) gate which flows hit `capture.jsonl`, evaluated by `CaptureWriter.should_capture()`. Use `domains: [api.example.com]` to capture only one upstream's traffic when debugging.
+
+**Inbound vs outbound view.** `cage har --view inbound` (default) renders what the cage actually saw — secret placeholders intact, response bytes post-redaction. `--view outbound` renders the wire view — real injected secrets in the request, raw server response. The CLI prints a warning when you pick the outbound view because that JSON contains live credentials. Both perspectives are recorded in every entry; the flag chooses which one to materialize into HAR.
+
+**Example.**
+
+```yaml
+# cage.yaml
+capture:
+  enable_har: true
+  max_body_size: 10485760     # 10 MB; override per-cage if you expect larger payloads
+  domains:
+    - httpbin.org             # scope: only capture httpbin traffic
+```
+
+```bash
+# Inside the cage:
+curl -d 'name=test&value=hello' https://httpbin.org/post
+
+# On the host:
+agentcage cage har <cage> -o /tmp/cage.har
+# /tmp/cage.har now contains:
+#   .log.entries[0].request.postData.text  == "name=test&value=hello"
+#   .log.entries[0].response.content.text  == '{"form":{"name":"test","value":"hello"},...}'
+#   .log.entries[0].response.content.size  > 0
+```
+
+Open in Chrome DevTools → Network → Import HAR to inspect the payload exactly as the cage saw it.
+
+**Rebuild required.** Capture config is baked into the wrapper image at build time (same shape as `secret_injection`), so `cage update <cage>` is required after toggling `capture.enable_har` or changing `capture.domains` / `capture.max_body_size`. Hot-reload is not wired.
 
 ### `cage backup --include-secrets` rejected
 
