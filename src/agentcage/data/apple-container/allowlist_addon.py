@@ -41,6 +41,7 @@ from mitmproxy import ctx, http
 ALLOWLIST_PATH = "/etc/agentcage/allowlist.txt"
 SECRET_INJECTION_PATH = "/etc/agentcage/secret_injection.json"
 PROTOCOL_RELAYS_PATH = "/etc/agentcage/protocol_relays.json"
+CAPTURE_CONFIG_PATH = "/etc/agentcage/capture.json"
 # Per-cage resolved-secret files; supervisor stage 35 re-stages from
 # the host-bind-mounted /run/agentcage/secrets to this acproxy-only path
 # (chown 200:200, mode 0400). The cage workload (uid 1000) cannot read
@@ -74,6 +75,23 @@ def _host_allowed(host: str, allowed: set[str]) -> bool:
         if h == d or h.endswith("." + d):
             return True
     return False
+
+
+def _load_capture_config() -> dict:
+    """Load the cage's capture config baked in at build time.
+
+    Returns an empty dict (= disabled) on missing/malformed file. The
+    config shape mirrors ``agentcage.config.CaptureConfig``:
+    ``{enable_har, max_body_size, min_action, domains, exclude_domains}``.
+    Only ``enable_har`` gates body capture; the rest tune size limits and
+    domain filtering (same semantics as the container backend).
+    """
+    try:
+        with open(CAPTURE_CONFIG_PATH) as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _load_secret_injection_rules() -> list[dict]:
@@ -202,7 +220,48 @@ class AllowlistAddon:
                 )
             )
         self._audit_fh = self._open_log(AUDIT_LOG_PATH)
-        self._capture_fh = self._open_log(CAPTURE_PATH)
+        # HAR body capture — when enabled, the shared CaptureWriter writes
+        # per-flow entries with inbound+outbound request/response snapshots
+        # (subject to max_body_size + binary-skip). Disabled (default), the
+        # addon falls back to a lean headers-only capture record so
+        # ``cage har`` still works in the no-bodies mode that shipped pre-
+        # this PR. ``capture.py`` is staged next to this file by
+        # ``stage_build_context`` and lives at /opt/agentcage/capture.py —
+        # mitmproxy's script loader puts that dir on sys.path.
+        self._capture_cfg = _load_capture_config()
+        self._capture_writer = None
+        if self._capture_cfg.get("enable_har"):
+            try:
+                from capture import CaptureWriter  # type: ignore[import-not-found]
+                self._capture_writer = CaptureWriter(
+                    self._capture_cfg, CAPTURE_PATH,
+                )
+                ctx.log.info(
+                    "[agentcage] HAR body capture enabled "
+                    f"(max_body_size={self._capture_cfg.get('max_body_size')}, "
+                    f"domains={self._capture_cfg.get('domains') or '(any)'})"
+                )
+            except Exception as exc:  # pragma: no cover — import surprise
+                ctx.log.warn(
+                    f"[agentcage] CaptureWriter init failed: {exc} — "
+                    "falling back to headers-only capture"
+                )
+                self._capture_writer = None
+        # Headers-only fallback file handle. When the CaptureWriter is
+        # active it owns the capture.jsonl path; otherwise we keep the
+        # legacy lean entries so ``cage har`` doesn't regress for cages
+        # that haven't opted into body capture.
+        self._capture_fh = (
+            None if self._capture_writer is not None
+            else self._open_log(CAPTURE_PATH)
+        )
+        # Partial-snapshot staging for the request→response handoff.
+        # Mirrors the container backend's addon.py ``_cap_pending`` —
+        # the four perspectives (inbound/outbound × request/response) are
+        # captured at four different points in the flow lifecycle, then
+        # joined into a single capture.jsonl entry when the response
+        # completes. Keyed by flow.id; popped on response or on error.
+        self._cap_pending: dict[str, dict] = {}
 
         # Protocol relays (IMAP, SMTP, ...) — loaded here, instantiated
         # in the ``running()`` hook once the mitmproxy asyncio loop is
@@ -396,6 +455,19 @@ class AllowlistAddon:
         }
 
         if _host_allowed(host, self.allowed):
+            # HAR body capture: snap INBOUND request BEFORE injection (so
+            # the inbound view shows the placeholders the cage actually
+            # wrote on the wire, not the upstream-visible substituted
+            # value). This mirrors the container backend's pattern.
+            cap_inbound_req = None
+            if self._capture_writer is not None:
+                try:
+                    cap_inbound_req = self._capture_writer.snapshot_request(flow)
+                except Exception as exc:  # pragma: no cover
+                    ctx.log.warn(
+                        f"[agentcage] capture inbound-request snapshot failed: {exc}"
+                    )
+
             # Apply secret injection BEFORE the upstream request goes out.
             # Substitutions happen in place; we record the env names in
             # the audit entry so the operator can see what was swapped.
@@ -411,6 +483,28 @@ class AllowlistAddon:
             if transforms:
                 entry["secret_transforms"] = transforms
             self._audit(entry)
+
+            # Snap OUTBOUND request AFTER injection (the real bytes on
+            # the wire — secrets included). Stage both snapshots for the
+            # response hook to complete; the entry isn't written until
+            # we have all four perspectives.
+            if cap_inbound_req is not None and self._capture_writer is not None:
+                try:
+                    cap_outbound_req = self._capture_writer.snapshot_request(flow)
+                except Exception as exc:  # pragma: no cover
+                    ctx.log.warn(
+                        f"[agentcage] capture outbound-request snapshot failed: {exc}"
+                    )
+                    return
+                self._cap_pending[flow.id] = {
+                    "direction": "outbound",
+                    "decision": "allowed",
+                    "host": host,
+                    "method": flow.request.method,
+                    "path": flow.request.path,
+                    "inbound_req": cap_inbound_req,
+                    "outbound_req": cap_outbound_req,
+                }
             return
 
         ctx.log.info(f"[agentcage] BLOCK {flow.request.method} {host}")
@@ -470,9 +564,27 @@ class AllowlistAddon:
             and flow.response.content
             and b'"by": "agentcage"' in flow.response.content
         ):
+            # Drop any half-staged capture for a flow we 403'd in
+            # response (shouldn't happen — `request()` returns early on
+            # block — but defensive).
+            self._cap_pending.pop(flow.id, None)
             return
 
-        # Redact BEFORE capture so capture.jsonl never sees raw values.
+        # ── HAR body capture: snap OUTBOUND response BEFORE redaction ──
+        # Real upstream bytes; staged into pending so we can render the
+        # outbound (wire) view later. snapshot_response() handles size
+        # cap + binary-skip itself (matches container backend behavior).
+        cap_outbound_resp = None
+        pending = self._cap_pending.get(flow.id)
+        if self._capture_writer is not None and pending is not None:
+            try:
+                cap_outbound_resp = self._capture_writer.snapshot_response(flow)
+            except Exception as exc:  # pragma: no cover
+                ctx.log.warn(
+                    f"[agentcage] capture outbound-response snapshot failed: {exc}"
+                )
+
+        # Redact BEFORE inbound capture so the inbound view never sees raw values.
         redacted = self._maybe_redact(flow)
         if redacted:
             host_lc = flow.request.pretty_host
@@ -493,6 +605,48 @@ class AllowlistAddon:
                 "status": flow.response.status_code,
             })
 
+        # ── HAR body capture: write the joined entry ──
+        # We have all four perspectives now (inbound_req/outbound_req
+        # from request(); cap_outbound_resp pre-redaction; snap the
+        # inbound response after redaction). Apply domain + min_action
+        # filtering via the CaptureWriter's own gate so the same rules
+        # work across backends.
+        if (
+            self._capture_writer is not None
+            and pending is not None
+            and cap_outbound_resp is not None
+        ):
+            self._cap_pending.pop(flow.id, None)
+            try:
+                if self._capture_writer.should_capture(
+                    pending["decision"], pending["host"],
+                ):
+                    cap_inbound_resp = self._capture_writer.snapshot_response(flow)
+                    self._capture_writer.write_entry(
+                        flow_id=flow.id,
+                        direction=pending["direction"],
+                        decision=pending["decision"],
+                        host=pending["host"],
+                        method=pending["method"],
+                        path=pending["path"],
+                        inspectors=[],
+                        inbound_req=pending["inbound_req"],
+                        inbound_resp=cap_inbound_resp,
+                        outbound_req=pending["outbound_req"],
+                        outbound_resp=cap_outbound_resp,
+                    )
+            except Exception as exc:  # pragma: no cover
+                ctx.log.warn(
+                    f"[agentcage] capture write_entry failed: {exc}"
+                )
+            return
+
+        # Legacy headers-only capture (capture.enable_har: false). Same
+        # flat ``request``/``response`` shape that shipped pre-PR — no
+        # body bytes, just enough metadata for `cage audit`-style
+        # consumers; ``cage har`` will produce `content.size=0` entries
+        # against this file (documented in apple-container.md before
+        # this PR; cage.yaml opt-in moves us to the rich path above).
         if self._capture_fh is None:
             return
         host = flow.request.pretty_host

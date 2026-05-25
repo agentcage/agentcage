@@ -326,12 +326,32 @@ class AppleContainerBackend:
             }
             for r in (config.protocol_relays or [])
         ]
+        # Capture config — when ``capture.enable_har: true`` is set in
+        # cage.yaml, the in-cage mitmproxy addon stages request+response
+        # body snapshots (subject to ``max_body_size`` + binary-skip) and
+        # writes them as ``{inbound, outbound}``-keyed entries to
+        # capture.jsonl. ``cage har`` reads that file on the host (already
+        # bind-mounted out of the microVM since 0.20.6) and renders HAR
+        # 1.2 with non-zero ``content.size`` / ``request.postData.text``.
+        # Disabled / empty config preserves the legacy headers-only
+        # capture path (no body bytes ever written).
+        cap = getattr(config, "capture", None)
+        capture_dict: dict = {}
+        if cap is not None:
+            capture_dict = {
+                "enable_har": bool(cap.enable_har),
+                "max_body_size": int(cap.max_body_size),
+                "min_action": str(cap.min_action or "all"),
+                "domains": list(cap.domains or []),
+                "exclude_domains": list(cap.exclude_domains or []),
+            }
         ac_wrapper.build_wrapper(
             deploy_name, user_image,
             user_cmd=user_cmd,
             allowlist=allowlist,
             secret_injection_rules=secret_rules,
             protocol_relays=relay_rules,
+            capture_config=capture_dict,
         )
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")

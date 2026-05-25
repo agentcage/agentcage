@@ -2050,3 +2050,364 @@ def test_validate_config_protocol_relays_on_apple_container_no_warning():
         warnings = validate_config(cfg)
     relay_warnings = [w for w in warnings if "protocol_relays" in w]
     assert relay_warnings == []
+
+
+# ---------------------------------------------------------------------------
+# allowlist_addon: HAR body capture
+#
+# When ``capture.enable_har: true`` is set in cage.yaml, the addon stages
+# inbound + outbound request/response snapshots (request body + response
+# body, subject to ``max_body_size`` + binary-skip) and writes them as
+# nested ``{inbound, outbound}`` entries to capture.jsonl. ``cage har``
+# then renders these as HAR 1.2 with non-zero ``content.size`` and
+# ``request.postData.text``. Pre-this-PR the addon wrote a headers-only
+# capture record and HAR exports showed ``content.size=0`` everywhere.
+# ---------------------------------------------------------------------------
+
+
+def _build_addon_with_capture(monkeypatch, tmp_path, *, capture_cfg=None,
+                              allowlist=("httpbin.org",)):
+    """Like _build_addon but lets the test pass an explicit capture config.
+
+    Stages the shared CaptureWriter (data/proxy/capture.py) on sys.path so
+    the addon's lazy ``from capture import CaptureWriter`` import resolves.
+    Returns ``(module, addon)``.
+    """
+    capture_src = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "proxy"
+    )
+    monkeypatch.syspath_prepend(str(capture_src))
+
+    addon_mod = _load_addon_module()
+    # No secret_injection rules — keep the test focused on the capture
+    # path (the secret-injection path has its own tests above).
+    allow_path = tmp_path / "allowlist.txt"
+    allow_path.write_text("\n".join(allowlist) + "\n")
+    si_path = tmp_path / "secret_injection.json"
+    si_path.write_text("[]")
+    cap_path = tmp_path / "capture_config.json"
+    cap_path.write_text(json.dumps(capture_cfg or {}))
+    monkeypatch.setattr(addon_mod, "ALLOWLIST_PATH", str(allow_path))
+    monkeypatch.setattr(addon_mod, "SECRET_INJECTION_PATH", str(si_path))
+    monkeypatch.setattr(addon_mod, "CAPTURE_CONFIG_PATH", str(cap_path))
+    monkeypatch.setattr(addon_mod, "AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setattr(addon_mod, "CAPTURE_PATH", str(tmp_path / "capture.jsonl"))
+    return addon_mod, addon_mod.AllowlistAddon()
+
+
+class _FakeHeaders(dict):
+    """dict subclass with ``items(multi=...)`` to mimic mitmproxy.Headers.
+
+    The CaptureWriter snapshot helpers call ``headers.items(multi=True)``
+    to walk repeated header values, and ``headers.get("content-type")``
+    expects case-insensitive lookup. A plain dict gets neither right.
+    """
+
+    def items(self, multi=False):  # noqa: ARG002
+        return list(super().items())
+
+    def get(self, key, default=None):  # type: ignore[override]
+        # Case-insensitive lookup — mimics mitmproxy.Headers semantics.
+        kl = key.lower()
+        for k, v in super().items():
+            if k.lower() == kl:
+                return v
+        return default
+
+
+def _make_flow_with_bodies(*, host, req_body, resp_body, method="POST",
+                           path="/post", status=200,
+                           req_content_type="application/x-www-form-urlencoded",
+                           resp_content_type="application/json"):
+    """Mock HTTPFlow with both request AND response body bytes attached.
+
+    The CaptureWriter snapshot helpers read ``flow.request.content`` and
+    ``flow.response.content`` directly (not via get_text), so we just set
+    the bytes attribute.
+    """
+    flow = MagicMock()
+    flow.id = "test-flow-id"
+    flow.request.pretty_host = host
+    flow.request.pretty_url = f"https://{host}{path}"
+    flow.request.url = f"https://{host}{path}"
+    flow.request.path = path
+    flow.request.port = 443
+    flow.request.method = method
+    flow.request.http_version = "HTTP/1.1"
+    flow.request.headers = _FakeHeaders({"Content-Type": req_content_type})
+    flow.request.content = (
+        req_body.encode() if isinstance(req_body, str) else req_body
+    )
+
+    flow.response = MagicMock()
+    flow.response.status_code = status
+    flow.response.reason = "OK"
+    flow.response.http_version = "HTTP/1.1"
+    flow.response.headers = _FakeHeaders({"Content-Type": resp_content_type})
+    flow.response.content = (
+        resp_body.encode() if isinstance(resp_body, str) else resp_body
+    )
+    # Redaction path calls get_text(strict=False) — for the no-secret
+    # tests we return the body verbatim (no substring will match anything).
+    if isinstance(resp_body, bytes):
+        flow.response.get_text.side_effect = UnicodeDecodeError(
+            "utf-8", resp_body, 0, 1, "binary body",
+        )
+    else:
+        flow.response.get_text.side_effect = lambda strict=True: resp_body
+    return flow
+
+
+def test_stage_build_context_writes_capture_config(tmp_path):
+    """The capture config baked into the image at build time. Empty dict
+    means body capture stays disabled (legacy headers-only path)."""
+    cfg = {
+        "enable_har": True,
+        "max_body_size": 1024,
+        "min_action": "all",
+        "domains": ["httpbin.org"],
+        "exclude_domains": [],
+    }
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"], allowlist=["httpbin.org"], capture_config=cfg,
+    )
+    out = json.loads((tmp_path / "capture.json").read_text())
+    assert out == cfg
+    # The shared CaptureWriter module is staged next to the addon so
+    # ``from capture import CaptureWriter`` resolves at runtime.
+    assert (tmp_path / "capture.py").exists()
+    src = (tmp_path / "capture.py").read_text()
+    assert "class CaptureWriter" in src
+
+
+def test_stage_build_context_empty_capture_config_default(tmp_path):
+    """No capture config passed → empty {} on disk. The addon reads
+    ``enable_har: false`` (default) and skips body capture entirely."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    assert (tmp_path / "capture.json").exists()
+    assert json.loads((tmp_path / "capture.json").read_text()) == {}
+
+
+def test_containerfile_copies_capture_files():
+    """The wrapper Containerfile must COPY both capture.py (the writer
+    module) and capture.json (the per-cage config) into the image."""
+    out = ac_wrapper.render_wrapper_containerfile(
+        "docker.io/library/debian:12-slim", user_cmd=["sh"],
+    )
+    assert "COPY capture.py /opt/agentcage/capture.py" in out
+    assert "COPY capture.json /etc/agentcage/capture.json" in out
+
+
+def test_backend_threads_capture_into_build_artifacts(monkeypatch):
+    """``capture:`` from cage.yaml must flow from Config through the
+    backend into wrapper.build_wrapper as ``capture_config=`` — same
+    pattern the secret_injection rules use. Catches the silent-drop
+    regression: cage.yaml had ``capture.enable_har: true`` but the
+    rebuilt image carried ``{}``."""
+    from agentcage.backends import apple_container as backend_mod
+
+    captured: dict = {}
+
+    def fake_build_wrapper(_name, _image, **kwargs):
+        captured["capture_config"] = kwargs.get("capture_config")
+        return "localhost/agentcage-apple-test:latest"
+
+    monkeypatch.setattr(backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper)
+    monkeypatch.setattr(
+        ac_cli, "image_inspect",
+        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
+    )
+    monkeypatch.setattr(
+        ac_cli, "run",
+        lambda *_a, **_kw: type(
+            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
+        )(),
+    )
+
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/test:latest"
+    cfg.container.command = ["/bin/sh"]
+    cfg.capture.enable_har = True
+    cfg.capture.max_body_size = 2048
+    cfg.capture.domains = ["httpbin.org"]
+    cfg.domains.allow = ["httpbin.org"]
+
+    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    cap = captured["capture_config"]
+    assert cap["enable_har"] is True
+    assert cap["max_body_size"] == 2048
+    assert cap["domains"] == ["httpbin.org"]
+
+
+def test_addon_disabled_falls_back_to_headers_only(tmp_path, monkeypatch):
+    """``enable_har: false`` (or absent) → no CaptureWriter, no _cap_pending
+    use, and the legacy headers-only capture entry is what hits disk.
+    This is the pre-PR shape so existing cages keep working without an
+    opt-in.
+    """
+    _, addon = _build_addon_with_capture(
+        monkeypatch, tmp_path, capture_cfg={"enable_har": False},
+    )
+    assert addon._capture_writer is None
+    assert addon._capture_fh is not None
+
+    flow = _make_flow_with_bodies(
+        host="httpbin.org",
+        req_body="name=test&value=hello",
+        resp_body='{"form": {"name": "test", "value": "hello"}}',
+    )
+    addon.request(flow)
+    addon.response(flow)
+
+    cap_lines = (tmp_path / "capture.jsonl").read_text().splitlines()
+    assert len(cap_lines) == 1
+    entry = json.loads(cap_lines[0])
+    # Legacy flat shape — no `inbound`/`outbound` nesting, no body bytes.
+    assert "inbound" not in entry
+    assert "outbound" not in entry
+    assert "body" not in entry.get("request", {})
+
+
+def test_addon_text_body_captured_for_har_export(tmp_path, monkeypatch):
+    """End-to-end: when capture is enabled, the addon emits a nested
+    ``{inbound, outbound}`` entry whose request + response carry the full
+    body bytes. ``capture_to_har`` then produces a HAR with non-zero
+    ``content.size`` and ``request.postData.text`` — the exact gap this
+    PR closes."""
+    _, addon = _build_addon_with_capture(
+        monkeypatch, tmp_path,
+        capture_cfg={
+            "enable_har": True,
+            "max_body_size": 10485760,
+            "domains": ["httpbin.org"],
+        },
+    )
+    assert addon._capture_writer is not None
+
+    req_body = "name=test&value=hello"
+    resp_body = '{"form": {"name": "test", "value": "hello"}}'
+    flow = _make_flow_with_bodies(
+        host="httpbin.org", req_body=req_body, resp_body=resp_body,
+    )
+    addon.request(flow)
+    addon.response(flow)
+
+    cap_lines = (tmp_path / "capture.jsonl").read_text().splitlines()
+    assert len(cap_lines) == 1
+    entry = json.loads(cap_lines[0])
+
+    # Shape: nested perspectives, both with body bytes verbatim.
+    assert "inbound" in entry and "outbound" in entry
+    in_req = entry["inbound"]["request"]
+    in_resp = entry["inbound"]["response"]
+    assert in_req["body"] == req_body
+    assert in_req["bodySize"] == len(req_body.encode())
+    assert in_resp["body"] == resp_body
+    assert in_resp["bodySize"] == len(resp_body.encode())
+    assert in_resp["mimeType"] == "application/json"
+
+    # capture_to_har produces a HAR with non-zero content.size
+    from agentcage.har import capture_to_har
+    har = capture_to_har([entry], view="inbound")
+    har_entry = har["log"]["entries"][0]
+    assert har_entry["request"]["postData"]["text"] == req_body
+    assert har_entry["response"]["content"]["text"] == resp_body
+    assert har_entry["response"]["content"]["size"] == len(resp_body.encode())
+
+
+def test_addon_binary_response_records_size_but_no_text(tmp_path, monkeypatch):
+    """Binary bodies (images, archives) skip the body text but still
+    record ``bodySize`` so the HAR export shows the right transfer size.
+    The CaptureWriter base64-encodes binary; either way, the cage
+    operator sees the size and can tell what slipped through.
+    """
+    _, addon = _build_addon_with_capture(
+        monkeypatch, tmp_path,
+        capture_cfg={
+            "enable_har": True,
+            "max_body_size": 10485760,
+            "domains": ["httpbin.org"],
+        },
+    )
+
+    # JPEG-ish magic bytes + payload that can't be decoded as UTF-8.
+    binary = bytes([0xff, 0xd8, 0xff, 0xe0]) + b"\x00" * 100 + bytes([0xff])
+    flow = _make_flow_with_bodies(
+        host="httpbin.org",
+        req_body=b"\x89PNG\r\n",
+        resp_body=binary,
+        req_content_type="image/png",
+        resp_content_type="image/jpeg",
+    )
+    addon.request(flow)
+    addon.response(flow)
+
+    cap_lines = (tmp_path / "capture.jsonl").read_text().splitlines()
+    assert len(cap_lines) == 1
+    entry = json.loads(cap_lines[0])
+
+    in_resp = entry["inbound"]["response"]
+    # Size recorded faithfully — operator can see the JPEG was 105 bytes.
+    assert in_resp["bodySize"] == len(binary)
+    # Body field is the base64-encoded payload (NOT decoded text); the
+    # encoding marker tells HAR consumers how to render it.
+    assert in_resp["bodyEncoding"] == "base64"
+    # No raw bytes leaked as text — would have failed UTF-8 anyway.
+    import base64 as _b64
+    assert _b64.b64decode(in_resp["body"]) == binary
+
+
+def test_addon_capture_respects_domain_filter(tmp_path, monkeypatch):
+    """``capture.domains`` is an allow-list — a request to a host not in
+    the list is skipped at capture time even if the cage's outer
+    ``domains.allow`` permitted it. Lets operators audit a specific
+    upstream without flooding capture.jsonl with everything else."""
+    _, addon = _build_addon_with_capture(
+        monkeypatch, tmp_path,
+        capture_cfg={
+            "enable_har": True,
+            "max_body_size": 10485760,
+            "domains": ["httpbin.org"],
+        },
+        allowlist=("httpbin.org", "example.com"),
+    )
+
+    # Request to example.com — not in capture.domains.
+    flow = _make_flow_with_bodies(
+        host="example.com",
+        req_body="x=1",
+        resp_body="ok",
+        path="/probe",
+    )
+    addon.request(flow)
+    addon.response(flow)
+
+    cap_path = tmp_path / "capture.jsonl"
+    # Either the file doesn't exist yet or it's empty — the writer's
+    # should_capture() short-circuits before write_entry().
+    if cap_path.exists():
+        assert cap_path.read_text().strip() == ""
+
+
+def test_capture_warning_no_longer_fires_for_enable_har():
+    """Pre-this-PR: ``validate_config`` warned that ``capture.enable_har:
+    true`` was silently dropped on apple-container. Post-PR, body capture
+    actually works — the warning must NOT fire so operators aren't told
+    a working feature is broken.
+    """
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "docker.io/library/debian:12-slim"
+    cfg.capture.enable_har = True
+    # Patch the platform probes so validate_config's macOS-only guard
+    # doesn't reject the test on a Linux CI host.
+    with patch.object(platform, "system", return_value="Darwin"), \
+         patch.object(platform, "machine", return_value="arm64"):
+        warnings = validate_config(cfg)
+    for w in warnings:
+        assert "capture.enable_har" not in w, (
+            "validate_config still warns about capture.enable_har on "
+            "apple-container — should be removed now that HAR body "
+            "capture works end-to-end."
+        )

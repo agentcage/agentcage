@@ -44,6 +44,14 @@ _RELAYS_SRC = (
 _INSPECTORS_SRC = (
     Path(__file__).resolve().parent.parent / "data" / "proxy" / "inspectors"
 )
+# Shared CaptureWriter — same encoder/snapshot/should_capture logic the
+# container backend uses. Staged next to the addon so the in-cage script
+# can ``from capture import CaptureWriter`` (mitmproxy adds the script
+# directory to sys.path). Keeping a single source-of-truth avoids the
+# two-implementations-drift footgun that bit us with secret_injection.
+_CAPTURE_SRC = (
+    Path(__file__).resolve().parent.parent / "data" / "proxy" / "capture.py"
+)
 
 
 def _user_cmd(user_image: str) -> list[str]:
@@ -135,6 +143,7 @@ def stage_build_context(
     allowlist: list[str] | None = None,
     secret_injection_rules: list[dict] | None = None,
     protocol_relays: list[dict] | None = None,
+    capture_config: dict | None = None,
 ) -> None:
     """Stage supervisor + cage CMD + egress filter config into *dest*.
 
@@ -142,6 +151,11 @@ def stage_build_context(
       - supervisor.sh         -- PID 1 of the cage microVM (security-critical)
       - dnsmasq.conf          -- static catch-all DNS rewriter
       - allowlist_addon.py    -- mitmproxy addon (allowlist + audit + injection)
+      - capture.py            -- shared CaptureWriter (snapshot + size guard +
+                                 binary-skip + filter). Same source the
+                                 container backend's addon imports — staged
+                                 next to allowlist_addon.py so mitmproxy's
+                                 script loader puts it on sys.path.
       - cage-cmd.json         -- user image's original ENTRYPOINT+CMD
       - allowlist.txt         -- one host per line
       - secret_injection.json -- list of
@@ -151,6 +165,11 @@ def stage_build_context(
                                  values are env-passed at container run
                                  time so the build context stays free of
                                  secrets.
+      - capture.json          -- HAR capture config (enable_har, max_body_size,
+                                 domains, exclude_domains, min_action). Empty
+                                 / disabled means the addon skips body capture
+                                 entirely (legacy headers-only entries still
+                                 record allow/block traffic in audit.jsonl).
       - transforms.tar.gz     -- tarball of ``data/proxy/transforms`` so the
                                  in-cage addon can import the same transform
                                  implementations (google-jwt-bearer, ...)
@@ -187,6 +206,10 @@ def stage_build_context(
     shutil.copy2(_DATA_DIR / "supervisor.sh", dest / "supervisor.sh")
     shutil.copy2(_DATA_DIR / "dnsmasq.conf", dest / "dnsmasq.conf")
     shutil.copy2(_DATA_DIR / "allowlist_addon.py", dest / "allowlist_addon.py")
+    # Shared CaptureWriter from the container backend's proxy package. The
+    # addon imports it (``from capture import CaptureWriter``) so we have
+    # exactly one snapshot/encode/filter implementation across backends.
+    shutil.copy2(_CAPTURE_SRC, dest / "capture.py")
     # Pack the transforms, relays, and inspectors packages into
     # deterministic tarballs (sorted entries, no __pycache__). Each is
     # a few KB; the COPY-drop bug forces us through ADD for every
@@ -206,6 +229,12 @@ def stage_build_context(
     (dest / "protocol_relays.json").write_text(
         json.dumps(protocol_relays or [])
     )
+    # Capture config — empty dict / enable_har:false means the addon falls
+    # back to the legacy headers-only capture record (no body bytes).
+    # Operators turn this on by setting ``capture.enable_har: true`` in
+    # cage.yaml; rebuild required (the file is baked in at image build
+    # time, same shape as secret_injection.json).
+    (dest / "capture.json").write_text(json.dumps(capture_config or {}))
 
 
 def wrapped_image_name(cage_name: str) -> str:
@@ -221,6 +250,7 @@ def build_wrapper(
     allowlist: list[str] | None = None,
     secret_injection_rules: list[dict] | None = None,
     protocol_relays: list[dict] | None = None,
+    capture_config: dict | None = None,
 ) -> str:
     """Generate Containerfile, stage build context, run `container build`.
 
@@ -241,6 +271,7 @@ def build_wrapper(
             tmpdir, user_cmd, allowlist=allowlist,
             secret_injection_rules=secret_injection_rules,
             protocol_relays=protocol_relays,
+            capture_config=capture_config,
         )
         ac_cli.run(
             ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],

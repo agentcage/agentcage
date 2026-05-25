@@ -952,10 +952,12 @@ def validate_config(config: Config) -> list[str]:
             ("container.security_label_disable",
              config.container.security_label_disable is False,
              "SELinux label control — apple-container's microVM has no SELinux"),
-            ("capture.enable_har", bool(getattr(config, "capture", None) and
-                                         config.capture.enable_har),
-             "HAR capture (capture.jsonl lives inside the microVM; not exported "
-             "to the host yet — `cage har` exits unsupported)"),
+            # capture.enable_har is intentionally NOT in this list: HAR
+            # body capture now works end-to-end on apple-container — the
+            # in-cage mitmproxy addon stages inbound+outbound snapshots
+            # under the shared CaptureWriter and writes them to
+            # /var/log/agentcage/capture.jsonl (bind-mounted to the host).
+            # See docs/apple-container.md → "HAR body capture".
         ]
         for field_path, non_default, summary in _ac_silent_drops:
             if non_default:
