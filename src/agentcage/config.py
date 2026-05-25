@@ -292,6 +292,12 @@ class Config:
     help: str = ""
     exec_aliases: dict[str, list[str]] = field(default_factory=dict)
     scaffold: str = ""  # scaffold name, stored in metadata for cage ls
+    # apple-container only: when True, agentcage installs a per-cage
+    # launchd plist into ~/Library/LaunchAgents so the cage re-starts
+    # automatically at user login. Opt-in because most users prefer to
+    # control which cages come back after a reboot. Other isolation
+    # backends ignore this. See docs/apple-container.md.
+    apple_container_autostart: bool = False
 
 
 def default_isolation() -> str:
@@ -681,6 +687,9 @@ def load_config(path: str) -> Config:
         pt.udp.allow = list(raw_udp_allow)
 
     cfg.ports = pt
+
+    # apple-container only: opt-in launchd autostart at user login.
+    cfg.apple_container_autostart = bool(raw.get("apple_container_autostart", False))
 
     # Help text
     cfg.help = str(raw.get("help", "") or "")
