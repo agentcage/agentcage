@@ -89,6 +89,16 @@ RUN getent passwd 200 >/dev/null && { echo "uid 200 already taken" >&2; exit 79;
 # AppleContainerBackend.build_artifacts().
 COPY supervisor.sh /opt/agentcage/supervisor
 COPY allowlist_addon.py /opt/agentcage/allowlist_addon.py
+# Transforms live next to the addon so mitmproxy's script loader puts the
+# script's dir on sys.path and `from transforms import get` resolves. Same
+# shape as src/agentcage/data/proxy/ on the container backend.
+#
+# We ADD a tar.gz (auto-extracted) rather than COPY the directory because
+# Apple's `container build` 0.5+ silently drops the contents of a COPY'd
+# directory — the target dir exists but is empty. Confirmed on macOS 26
+# with `container --version` 0.5.x; tracked alongside #120 follow-ups.
+RUN mkdir -p /opt/agentcage/transforms
+ADD transforms.tar.gz /opt/agentcage/transforms/
 COPY cage-cmd.json /etc/agentcage/cage-cmd.json
 COPY allowlist.txt /etc/agentcage/allowlist.txt
 COPY dnsmasq.conf /etc/agentcage/dnsmasq.conf

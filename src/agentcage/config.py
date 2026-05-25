@@ -963,14 +963,23 @@ def validate_config(config: Config) -> list[str]:
                     f"{field_path}: silently has no effect on apple-container "
                     f"({summary}). See issue #120 for the parity plan."
                 )
+        # secret_injection.transform now runs end-to-end on apple-container
+        # — the in-cage mitmproxy addon loads the same data/proxy/transforms
+        # registry the container backend uses. KNOWN_TRANSFORMS is the
+        # source of truth for "what the addon can dispatch". Anything
+        # outside that set is rejected at parse time by validate_transform,
+        # so reaching this loop with an unknown transform is impossible.
+        # We keep the loop as a hard assert so a future divergence between
+        # the schema (KNOWN_TRANSFORMS) and the in-cage registry surfaces
+        # as a config-time warning instead of a silent runtime drop.
         for rule in config.secret_injection:
-            if getattr(rule, "transform", ""):
+            transform = getattr(rule, "transform", "") or ""
+            if transform and transform not in KNOWN_TRANSFORMS:
                 warnings.append(
                     f"secret_injection[{rule.env!r}].transform "
-                    f"={rule.transform!r}: silently has no effect on "
-                    f"apple-container (server-side {{{{SECRET:...}}}} placeholder "
-                    f"substitution is not wired yet — the cage sees the raw "
-                    f"env-passed value). See issue #120."
+                    f"={transform!r}: not in KNOWN_TRANSFORMS — the "
+                    f"apple-container addon will skip the rule at "
+                    f"startup. See issue #120."
                 )
 
     # Warn when a tcp.passthrough port isn't explicitly listed in

@@ -264,6 +264,374 @@ def test_stage_build_context_empty_secret_injection(tmp_path):
     assert json.loads((tmp_path / "secret_injection.json").read_text()) == []
 
 
+def test_stage_build_context_writes_transform_field(tmp_path):
+    """Rules with a ``transform`` field flow through the build context.
+
+    The in-cage addon dispatches on this string at startup to mint a
+    derived substitution value (e.g. a Google OAuth bearer) instead of
+    using the raw env-passed credential. ``transform_config`` rides
+    along so transforms like google-jwt-bearer can configure their
+    scopes/audience without leaking the SA key into the image layer.
+    """
+    rules = [
+        {
+            "env": "GCP_SA_KEY",
+            "placeholder": "{{GCP_BEARER}}",
+            "inject_to": ["googleapis.com"],
+            "transform": "google-jwt-bearer",
+            "transform_config": {
+                "scopes": ["https://www.googleapis.com/auth/calendar.readonly"],
+            },
+        },
+    ]
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"], allowlist=["googleapis.com"],
+        secret_injection_rules=rules,
+    )
+    si = json.loads((tmp_path / "secret_injection.json").read_text())
+    assert si == rules
+    # The transforms package must be staged as a tarball so the in-cage
+    # addon can ``import transforms`` after ADD-extraction. (Plain COPY
+    # of a directory silently empties the target on Apple's container
+    # build 0.5+; the tarball ADD path dodges that quirk.)
+    archive = tmp_path / "transforms.tar.gz"
+    assert archive.exists()
+    import tarfile as _tf
+    with _tf.open(archive) as tar:
+        names = sorted(tar.getnames())
+    assert "__init__.py" in names
+    assert "google_jwt_bearer.py" in names
+
+
+def test_stage_build_context_stages_transforms_even_without_rules(tmp_path):
+    """The transforms tarball is unconditionally staged — cheap, and
+    avoids a class of "transform added in cage.yaml after image build →
+    silent skip" bugs. The addon will still no-op on an empty rule list."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    assert (tmp_path / "transforms.tar.gz").exists()
+
+
+def test_stage_build_context_excludes_pycache_from_transforms(tmp_path, monkeypatch):
+    """__pycache__ is host-local Python bytecode — packing it into the
+    image layer wastes space and ruins layer determinism. The tarball
+    must filter it out."""
+    # Create a fake transforms src with a __pycache__ subdir so we can
+    # observe the filter without touching the real package on disk.
+    fake_src = tmp_path / "fake_src"
+    fake_src.mkdir()
+    (fake_src / "__init__.py").write_text("# real")
+    (fake_src / "google_jwt_bearer.py").write_text("# real")
+    (fake_src / "__pycache__").mkdir()
+    (fake_src / "__pycache__" / "garbage.pyc").write_bytes(b"\x00\x00\x00")
+
+    monkeypatch.setattr(ac_wrapper, "_TRANSFORMS_SRC", fake_src)
+
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+
+    import tarfile as _tf
+    with _tf.open(tmp_path / "transforms.tar.gz") as tar:
+        names = tar.getnames()
+    assert not any("__pycache__" in n for n in names), names
+
+
+def test_wrapper_containerfile_adds_transforms_tarball():
+    """The Containerfile must ADD the transforms tarball (auto-extracted
+    by OCI build) so ``from transforms import get`` resolves at runtime.
+    We deliberately don't `COPY transforms /opt/agentcage/transforms`
+    because Apple's container build silently drops the contents of a
+    directory COPY — the target dir exists but is empty."""
+    out = ac_wrapper.render_wrapper_containerfile(
+        "docker.io/library/alpine:3.20",
+        user_cmd=["sh", "-c", "echo hi"],
+    )
+    assert "ADD transforms.tar.gz /opt/agentcage/transforms/" in out
+    # And we must NOT regress to the broken directory-COPY form.
+    assert "COPY transforms /opt/agentcage/transforms" not in out
+
+
+def test_backend_threads_transform_into_build_artifacts(tmp_path, monkeypatch):
+    """The apple-container backend must forward ``transform`` and
+    ``transform_config`` from the parsed Config through to wrapper.
+    Catches the silent-drop regression: rule loaded fine, image built
+    fine, but the cage saw only ``env/placeholder/inject_to``."""
+    captured: dict = {}
+
+    def fake_build_wrapper(_name, _image, **kwargs):
+        captured["secret_injection_rules"] = kwargs.get("secret_injection_rules")
+        return "localhost/agentcage-apple-test:latest"
+
+    # Patch the wrapper as imported by the backend module — it does
+    # ``from agentcage.apple_container import wrapper as ac_wrapper`` so
+    # the backend's own binding is what we need to override.
+    from agentcage.backends import apple_container as backend_mod
+    monkeypatch.setattr(backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper)
+    monkeypatch.setattr(
+        ac_cli, "image_inspect",
+        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
+    )
+    # `build_artifacts` shells out to `container image pull`; fake it.
+    monkeypatch.setattr(
+        ac_cli, "run",
+        lambda *_a, **_kw: type(
+            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
+        )(),
+    )
+
+    from agentcage.config import SecretInjectionRule
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/test:latest"
+    # Set a command so _user_cmd isn't consulted.
+    cfg.container.command = ["/bin/sh"]
+    cfg.secret_injection = [
+        SecretInjectionRule(
+            env="GCP_SA_KEY",
+            placeholder="{{GCP_BEARER}}",
+            inject_to=["googleapis.com"],
+            transform="google-jwt-bearer",
+            transform_config={"scopes": ["a"]},
+        ),
+    ]
+    cfg.domains.allow = ["googleapis.com"]
+
+    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    rules = captured["secret_injection_rules"]
+    assert len(rules) == 1
+    assert rules[0]["transform"] == "google-jwt-bearer"
+    assert rules[0]["transform_config"] == {"scopes": ["a"]}
+
+
+def test_allowlist_addon_runs_transform_at_request_time(monkeypatch, tmp_path):
+    """End-to-end addon test: a rule with ``transform`` set must inject
+    the transform's return value into the outbound request — NOT the
+    raw env-passed credential. This is the load-bearing assertion for
+    the whole feature.
+
+    Uses a fake transform registered in-process so we don't need
+    cryptography or network access.
+    """
+    # Write a rule list with a transform; point the addon at it.
+    rules = [{
+        "env": "SECRET_INPUT",
+        "placeholder": "{{TOKEN}}",
+        "inject_to": ["api.example.com"],
+        "transform": "_test_marker",
+        "transform_config": {"marker": "transformed-output-marker"},
+    }]
+    rule_file = tmp_path / "secret_injection.json"
+    rule_file.write_text(json.dumps(rules))
+    (tmp_path / "allowlist.txt").write_text("api.example.com\n")
+
+    # Set the raw env input that the cage agent would normally send;
+    # the test asserts the upstream sees the TRANSFORMED value instead.
+    monkeypatch.setenv("SECRET_INPUT", "raw-input-value")
+    monkeypatch.setenv("AGENTCAGE_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AGENTCAGE_CAPTURE", str(tmp_path / "capture.jsonl"))
+
+    # Import the addon AFTER setting the env so module-level path constants
+    # resolve to tmp_path. The addon is read from data/apple-container/.
+    import importlib
+    import sys
+    addon_dir = (
+        # tests/  -> repo root -> src/agentcage/data/apple-container/
+        __import__("pathlib").Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container"
+    )
+    transforms_src = (
+        addon_dir.parent / "proxy" / "transforms"
+    )
+    monkeypatch.syspath_prepend(str(addon_dir))
+    monkeypatch.syspath_prepend(str(transforms_src.parent))
+
+    # Register a no-op transform that returns the configured marker so
+    # we don't need cryptography / network. This is the SAME registry the
+    # addon uses; the registration must happen before AllowlistAddon's
+    # __init__ runs (which is where transforms are bound).
+    import transforms as _t  # noqa: WPS433  (test-only)
+    importlib.reload(_t)
+
+    class _MarkerTransform:
+        def __init__(self, secret: str, config: dict) -> None:
+            self._marker = config["marker"]
+            self._secret = secret
+
+        def get_value(self) -> str:
+            return self._marker
+
+    _t.register("_test_marker", _MarkerTransform)
+
+    # Point the addon's module-level paths at our tmp files BEFORE import.
+    sys.modules.pop("allowlist_addon", None)
+    allowlist_addon = importlib.import_module("allowlist_addon")
+    allowlist_addon.SECRET_INJECTION_PATH = str(rule_file)
+    allowlist_addon.ALLOWLIST_PATH = str(tmp_path / "allowlist.txt")
+
+    addon = allowlist_addon.AllowlistAddon()
+
+    # Sanity: rule was resolved AND a transform_fn was bound.
+    assert len(addon._resolved_secrets) == 1
+    resolved = addon._resolved_secrets[0]
+    assert resolved["transform"] == "_test_marker"
+    assert resolved["transform_fn"] is not None
+    # The raw env value is still cached on the resolved rule (so the
+    # original injection path stays available for non-transform rules)
+    # — but it MUST NOT be the value sent on the wire.
+    assert resolved["value"] == "raw-input-value"
+
+    # Build a fake flow with the placeholder in the Authorization header.
+    fake_flow = MagicMock()
+    fake_flow.request.pretty_host = "api.example.com"
+    fake_flow.request.headers = {"Authorization": "Bearer {{TOKEN}}"}
+
+    # `headers` needs the in-place mutation pattern the real addon uses.
+    class _Headers(dict):
+        def items(self):
+            return list(super().items())
+
+    fake_flow.request.headers = _Headers(
+        {"Authorization": "Bearer {{TOKEN}}"}
+    )
+    fake_flow.request.get_text = lambda strict=False: ""
+    fake_flow.request.set_text = lambda _t: None
+
+    injected, transforms_map = addon._maybe_inject(fake_flow)
+
+    # The transform's marker — NOT the raw env value — landed in the header.
+    assert (
+        fake_flow.request.headers["Authorization"]
+        == "Bearer transformed-output-marker"
+    )
+    assert "raw-input-value" not in fake_flow.request.headers["Authorization"]
+    assert injected == ["SECRET_INPUT"]
+    assert transforms_map == {"SECRET_INPUT": "_test_marker"}
+
+
+def test_allowlist_addon_skips_rule_on_transform_init_failure(
+    monkeypatch, tmp_path,
+):
+    """A transform that raises during ``__init__`` must drop the rule at
+    startup (with a warning) — NOT crash the whole addon and NOT fall
+    back to substituting the raw env-passed credential. Failing closed
+    is the safety-critical contract."""
+    rules = [{
+        "env": "SECRET_INPUT",
+        "placeholder": "{{TOKEN}}",
+        "inject_to": ["api.example.com"],
+        "transform": "_test_broken_init",
+        "transform_config": {},
+    }]
+    rule_file = tmp_path / "secret_injection.json"
+    rule_file.write_text(json.dumps(rules))
+    (tmp_path / "allowlist.txt").write_text("api.example.com\n")
+    monkeypatch.setenv("SECRET_INPUT", "raw-input-value")
+    monkeypatch.setenv("AGENTCAGE_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AGENTCAGE_CAPTURE", str(tmp_path / "capture.jsonl"))
+
+    import importlib
+    import sys
+    addon_dir = (
+        __import__("pathlib").Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container"
+    )
+    transforms_src = addon_dir.parent / "proxy" / "transforms"
+    monkeypatch.syspath_prepend(str(addon_dir))
+    monkeypatch.syspath_prepend(str(transforms_src.parent))
+
+    import transforms as _t
+    importlib.reload(_t)
+
+    class _BrokenInit:
+        def __init__(self, *_a, **_kw):
+            raise RuntimeError("intentional test failure")
+
+        def get_value(self) -> str:  # pragma: no cover
+            return "unreachable"
+
+    _t.register("_test_broken_init", _BrokenInit)
+
+    sys.modules.pop("allowlist_addon", None)
+    allowlist_addon = importlib.import_module("allowlist_addon")
+    allowlist_addon.SECRET_INJECTION_PATH = str(rule_file)
+    allowlist_addon.ALLOWLIST_PATH = str(tmp_path / "allowlist.txt")
+    addon = allowlist_addon.AllowlistAddon()
+
+    # Rule dropped, NOT substituted with raw value.
+    assert addon._resolved_secrets == []
+
+
+def test_allowlist_addon_skips_request_on_transform_runtime_failure(
+    monkeypatch, tmp_path,
+):
+    """If the transform raises at substitution time, the placeholder is
+    left in place — the upstream request fails closed with an auth error
+    rather than smuggling the raw credential through. No fallback to the
+    raw env value (which is the point of having a transform in the first
+    place)."""
+    rules = [{
+        "env": "SECRET_INPUT",
+        "placeholder": "{{TOKEN}}",
+        "inject_to": ["api.example.com"],
+        "transform": "_test_runtime_fail",
+        "transform_config": {},
+    }]
+    rule_file = tmp_path / "secret_injection.json"
+    rule_file.write_text(json.dumps(rules))
+    (tmp_path / "allowlist.txt").write_text("api.example.com\n")
+    monkeypatch.setenv("SECRET_INPUT", "raw-input-value")
+    monkeypatch.setenv("AGENTCAGE_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AGENTCAGE_CAPTURE", str(tmp_path / "capture.jsonl"))
+
+    import importlib
+    import sys
+    addon_dir = (
+        __import__("pathlib").Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container"
+    )
+    transforms_src = addon_dir.parent / "proxy" / "transforms"
+    monkeypatch.syspath_prepend(str(addon_dir))
+    monkeypatch.syspath_prepend(str(transforms_src.parent))
+
+    import transforms as _t
+    importlib.reload(_t)
+
+    class _RuntimeFail:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def get_value(self) -> str:
+            raise RuntimeError("mint failed")
+
+    _t.register("_test_runtime_fail", _RuntimeFail)
+
+    sys.modules.pop("allowlist_addon", None)
+    allowlist_addon = importlib.import_module("allowlist_addon")
+    allowlist_addon.SECRET_INJECTION_PATH = str(rule_file)
+    allowlist_addon.ALLOWLIST_PATH = str(tmp_path / "allowlist.txt")
+    addon = allowlist_addon.AllowlistAddon()
+
+    class _Headers(dict):
+        def items(self):
+            return list(super().items())
+
+    fake_flow = MagicMock()
+    fake_flow.request.pretty_host = "api.example.com"
+    fake_flow.request.headers = _Headers(
+        {"Authorization": "Bearer {{TOKEN}}"}
+    )
+    fake_flow.request.get_text = lambda strict=False: ""
+    fake_flow.request.set_text = lambda _t: None
+
+    injected, transforms_map = addon._maybe_inject(fake_flow)
+
+    # Header UNCHANGED — placeholder stays, raw value never leaks.
+    assert (
+        fake_flow.request.headers["Authorization"] == "Bearer {{TOKEN}}"
+    )
+    assert "raw-input-value" not in fake_flow.request.headers["Authorization"]
+    assert injected == []
+    assert transforms_map == {}
+
+
 def test_generate_units_persists_autostart_flag():
     """`apple_container_autostart: true` in cage.yaml flows into the unit
     JSON's `autostart` field. `start()` reads this to decide whether to
