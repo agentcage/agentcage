@@ -181,6 +181,18 @@ class ContainerBackend:
 
         return removed
 
+    def has_resources(self, name: str) -> bool:
+        quadlet_dir = self.unit_dir()
+        quadlet_files = [
+            f"{name}-cage.container",
+            f"{name}-proxy.container",
+            f"{name}-dns.container",
+            f"{name}-net.network",
+            f"{name}-certs.volume",
+            f"{name}-podman-storage.volume",
+        ]
+        return any((quadlet_dir / f).exists() for f in quadlet_files)
+
     def is_running(self, name: str, service: str) -> bool:
         return self._podman.container_running(f"{name}-{service}")
 

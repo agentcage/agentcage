@@ -54,6 +54,19 @@ class Backend(Protocol):
         """Remove backend-specific resources. Return list of removed items."""
         ...
 
+    def has_resources(self, name: str) -> bool:
+        """Return True if this backend may own any artifacts for ``name``.
+
+        Used by :func:`agentcage.services.destroy_cage` to pick a backend
+        when the stored deployment config is missing — destroying then
+        falling back to the default backend would call podman on a Mac
+        that doesn't have it. Implementations should be cheap and must
+        not raise on missing tools (return ``False`` if uncertain). It is
+        fine to be conservative: false-positive triggers ``destroy_resources``
+        which is itself idempotent.
+        """
+        ...
+
     def is_running(self, name: str, service: str) -> bool:
         """Check if a specific service of a cage is running."""
         ...
