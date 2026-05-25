@@ -13,6 +13,8 @@ import shutil
 import subprocess
 from subprocess import CompletedProcess
 
+from agentcage import output
+
 
 _CANDIDATE_PATHS = (
     "/usr/local/bin/container",
@@ -46,13 +48,27 @@ def run(
             "Apple `container` CLI not found; install from "
             "https://github.com/apple/container/releases"
         )
-    return subprocess.run(
-        [binary, *args],
-        check=check,
-        capture_output=capture_output,
-        text=text,
-        input=input,
-    )
+    if capture_output:
+        return subprocess.run(
+            [binary, *args],
+            check=check,
+            capture_output=capture_output,
+            text=text,
+            input=input,
+        )
+    # Streaming case: Apple's `container` CLI writes its own progress
+    # (e.g. "[1/2] Fetching image [13s]") to stderr. If an agentcage
+    # Spinner is currently running it would fight for the same line,
+    # producing a flickering double-spinner. Pause our spinner for the
+    # duration of the child process so its output is unobstructed.
+    with output.pause_active_spinner():
+        return subprocess.run(
+            [binary, *args],
+            check=check,
+            capture_output=capture_output,
+            text=text,
+            input=input,
+        )
 
 
 def system_running() -> bool:

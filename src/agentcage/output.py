@@ -6,10 +6,12 @@ compact info lines, and a braille-dot spinner for in-progress steps.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import sys
 import threading
 import time
+from typing import Iterator
 
 import click
 
@@ -65,6 +67,14 @@ def red(text: str) -> str:
     return click.style(text, fg="red")
 
 
+# Module-level reference to the currently-active Spinner, if any.
+# Used by ``pause_active_spinner`` so subprocess wrappers that stream their
+# own progress to stderr (e.g. Apple's ``container`` CLI) can temporarily
+# silence our braille spinner to avoid two writers fighting for the same
+# terminal line.
+_active: "Spinner | None" = None
+
+
 class Spinner:
     """Context manager that shows a braille spinner on the current line.
 
@@ -79,6 +89,8 @@ class Spinner:
         self._thread: threading.Thread | None = None
 
     def __enter__(self) -> Spinner:
+        global _active
+        _active = self
         if not sys.stderr.isatty():
             click.echo(f"  \u2026 {self.msg}", err=True)
             return self
@@ -87,11 +99,43 @@ class Spinner:
         return self
 
     def __exit__(self, *exc: object) -> None:
+        global _active
         self._stop.set()
         if self._thread:
             self._thread.join()
+            self._thread = None
         if sys.stderr.isatty():
             click.echo("\r\033[K", nl=False, err=True)
+        # Defensive: only clear _active if it still points at us, so a
+        # hypothetical nested spinner can't accidentally unset its parent.
+        if _active is self:
+            _active = None
+
+    def pause(self) -> None:
+        """Stop the spin thread and clear the current line.
+
+        ``self.msg`` is preserved so ``resume()`` can restart cleanly.
+        No-op when stderr is not a TTY (the static "… msg" line stays).
+        """
+        if not sys.stderr.isatty():
+            return
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+            self._thread = None
+        click.echo("\r\033[K", nl=False, err=True)
+
+    def resume(self) -> None:
+        """Re-spawn the spin thread after a ``pause()``.
+
+        No-op when stderr is not a TTY.
+        """
+        if not sys.stderr.isatty():
+            return
+        # Recreate the stop event since the old one is already set.
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
 
     def _spin(self) -> None:
         for frame in itertools.cycle(self._FRAMES):
@@ -99,3 +143,22 @@ class Spinner:
                 break
             click.echo(f"\r  {frame} {self.msg}", nl=False, err=True)
             time.sleep(0.08)
+
+
+@contextlib.contextmanager
+def pause_active_spinner() -> Iterator[None]:
+    """Pause the active Spinner for the duration of the ``with`` block.
+
+    Use this around subprocess calls that stream their own progress to
+    stderr (e.g. Apple's ``container`` CLI), so two writers don't fight
+    over the same terminal line. No-op if no Spinner is currently active.
+    """
+    spinner = _active
+    if spinner is None:
+        yield
+        return
+    spinner.pause()
+    try:
+        yield
+    finally:
+        spinner.resume()
