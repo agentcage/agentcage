@@ -520,6 +520,7 @@ class VmBackend:
         cmd: list[str],
         *,
         interactive: bool = False,
+        as_root: bool = False,  # noqa: ARG002 — vm Quadlets already unprivileged
     ) -> list[str]:
         inst = self._instance(name)
         flags = ["-it"] if interactive else []

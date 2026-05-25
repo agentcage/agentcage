@@ -1586,8 +1586,12 @@ def _logs_apple_container(name, services, lines, no_follow, min_level=None):  # 
 @click.option("-s", "--service", default="cage",
               type=click.Choice(["cage", "proxy", "dns"]),
               help="Container service to exec into.", show_default=True)
+@click.option("--as-root", is_flag=True,
+              help="Run the command as root inside the cage (debug only — "
+                   "bypasses the cage's egress filter via CAP_NET_ADMIN). "
+                   "Default is the cage workload's uid 1000 user.")
 @click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
-def cage_exec(name: str, service: str, command: tuple[str, ...]):
+def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
     """Run a command inside a cage container.
 
     \b
@@ -1611,12 +1615,21 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
 
     # Dispatch via Backend.exec_argv (lifted onto the protocol in PR-8).
     # Each backend returns the argv that runs the command inside the
-    # cage's <service>; the CLI owns the process control.
+    # cage's <service>; the CLI owns the process control. The `as_root`
+    # kwarg is honored by backends that need to gate root vs unprivileged
+    # exec sessions (apple-container in particular — pre-this-fix every
+    # cage exec was root because Apple's runtime respects the wrapper
+    # image's USER directive, which is root so the supervisor can boot;
+    # without an explicit -u override, claude / agent code ran as root
+    # with CAP_NET_ADMIN). container / vm ignore the kwarg — their proxy
+    # / dns / cage units already drop privileges per Quadlet.
     from agentcage.backend import BackendUnsupported
     backend = get_backend(cfg)
     try:
         argv = backend.exec_argv(
-            name, service, cmd, interactive=sys.stdin.isatty(),
+            name, service, cmd,
+            interactive=sys.stdin.isatty(),
+            as_root=as_root,
         )
     except BackendUnsupported as e:
         click.echo(f"error: {e}", err=True)
@@ -1639,7 +1652,11 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
 @click.option("-s", "--service", default="cage",
               type=click.Choice(["cage", "proxy", "dns"]),
               help="Container service to shell into.", show_default=True)
-def cage_shell(name: str, service: str):
+@click.option("--as-root", is_flag=True,
+              help="Open the shell as root (debug only — bypasses the "
+                   "cage's egress filter via CAP_NET_ADMIN). Default is "
+                   "the cage workload's uid 1000 user.")
+def cage_shell(name: str, service: str, as_root: bool):
     """Open an interactive shell in a cage container."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
@@ -1676,7 +1693,14 @@ def cage_shell(name: str, service: str):
                 err=True,
             )
             sys.exit(1)
-        # Auto-detect bash, fall back to sh.
+        # Same privilege model as cage_exec: default to uid 1000 (the
+        # cage workload's user) so an operator shell can't bypass the
+        # egress filter or read /home/acproxy/secrets/. --as-root opts
+        # back into the root-shell debug path. The shell-detection probe
+        # below runs as root so it can `test -x` files the cage user
+        # might not have read on; the resulting shell exec uses the
+        # downgraded uid via `-u 1000`.
+        user_flags = [] if as_root else ["-u", "1000"]
         for shell in ("/bin/bash", "/bin/sh"):
             result = subprocess.run(
                 [binary, "exec", name, "test", "-x", shell],
@@ -1684,9 +1708,11 @@ def cage_shell(name: str, service: str):
             )
             if result.returncode == 0:
                 exec_flags = ["-it"] if sys.stdin.isatty() else []
-                os.execvp(binary, [binary, "exec", *exec_flags, name, shell])
+                os.execvp(binary, [binary, "exec", *user_flags, *exec_flags,
+                                   name, shell])
         exec_flags = ["-it"] if sys.stdin.isatty() else []
-        os.execvp(binary, [binary, "exec", *exec_flags, name, "/bin/sh"])
+        os.execvp(binary, [binary, "exec", *user_flags, *exec_flags,
+                           name, "/bin/sh"])
 
     container = f"{name}-{service}"
     # Auto-detect bash or fall back to sh

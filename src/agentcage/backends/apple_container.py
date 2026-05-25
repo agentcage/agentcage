@@ -570,12 +570,28 @@ class AppleContainerBackend:
         cmd: list[str],
         *,
         interactive: bool = False,
+        as_root: bool = False,
     ) -> list[str]:
-        """`container exec [-it] <name> <cmd>`.
+        """`container exec [-it] [-u <uid-1000-user>] <name> <cmd>`.
 
         proxy / dns run in-process inside the cage microVM (supervised),
         not as separate Apple containers, so they aren't addressable by
         targeted exec. Reject those service names with a clear message.
+
+        Privilege model — `as_root=False` (default) explicitly downgrades
+        the exec session to uid 1000 (the cage workload's user) so an
+        interactive `agentcage cage exec <cage> -- <cmd>` runs <cmd>
+        with the same caps the workload has: empty Eff/Prm/Inh/Bnd set,
+        NoNewPrivs already set on the container, and no CAP_NET_ADMIN /
+        CAP_DAC_OVERRIDE that would let the exec'd process flush
+        iptables or read /home/acproxy/secrets/. Apple's wrapper image
+        ends with `USER root` (so the supervisor can boot as PID 1 and
+        do stage-10..80 setup as root), which means without this `-u`
+        override, `container exec` would default to root. Pre-this-fix,
+        running ``claude`` via ``cage exec claude01 -- claude`` had
+        ``claude`` running as root with CAP_NET_ADMIN → could bypass
+        the entire egress filter. Operators who genuinely need the
+        root-shell debug path pass ``as_root=True`` (CLI: ``--as-root``).
         """
         from agentcage.backend import BackendUnsupported
         if service != "cage":
@@ -591,6 +607,14 @@ class AppleContainerBackend:
                 "https://github.com/apple/container/releases"
             )
         flags = ["-it"] if interactive else []
+        # Default: run as uid 1000 (numeric — the supervisor's
+        # CAGE_USER resolution at stage 90 has already created the
+        # right name/uid mapping inside the image). When `as_root=True`,
+        # let the image's USER directive apply, which on the wrapper
+        # is `root` so the operator gets a privileged shell — only for
+        # explicit debugging.
+        if not as_root:
+            flags += ["-u", "1000"]
         return [binary, "exec", *flags, name, *cmd]
 
     def logs_argv(

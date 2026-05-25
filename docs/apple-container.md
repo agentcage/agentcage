@@ -92,7 +92,7 @@ All cage subcommands work the same way they do on container / vm:
 | Command | Behavior on apple-container |
 |---|---|
 | `cage create / start / stop / restart / destroy` | Routes through `container` CLI; per-cage state in `~/.config/agentcage/apple-container/<cage>/` |
-| `cage exec / shell` | `container exec [-it] <cage> <cmd>` — see [`cage exec` runs as root](#cage-exec-runs-as-root-not-uid-1000) below |
+| `cage exec / shell` | `container exec [-it] -u 1000 <cage> <cmd>` — runs as the cage workload's uid 1000 user by default (matches the workload's capability set: no CAP_NET_ADMIN / CAP_DAC_OVERRIDE). Pass `--as-root` for the operator-debug path. See [`cage exec` default-drop](#cage-exec-defaults-to-uid-1000-not-root) below |
 | `cage logs` | `container logs [-f] <cage>` — combined supervisor / proxy / dns / workload stream |
 | `cage audit` | Tails `<state>/<cage>/logs/audit.jsonl` (bind-mounted from the microVM); same filter machinery as container / vm. `--since` is post-parse only (see [Quirks](#quirks-worth-knowing)) |
 | `cage har` | Reads `<state>/<cage>/logs/capture.jsonl` and renders HAR 1.2 JSON |
@@ -237,18 +237,25 @@ host environment before `cage start`:
 
 Behaviors that are correct-by-design but surprising the first time you hit them.
 
-### `cage exec` runs as root, not uid 1000
+### `cage exec` defaults to uid 1000, not root
 
 ```
 $ agentcage cage exec ubuntu02 -- id
-uid=0(root) gid=0(root) groups=0(root)
+uid=1000(ubuntu) gid=1000(ubuntu) groups=1000(ubuntu)
 ```
 
-The supervisor's `capsh --user=...` privilege drop applies to the **workload process tree** (PID 1 = your `cage.yaml` `command`). `container exec` enters via Apple's runtime, which respects the image's default `USER` (root on debian/ubuntu/node bases).
+The CLI passes `-u 1000` to `container exec` by default, so the exec session runs with the same uid as the cage workload (PID 1 after the supervisor's stage-90 privilege drop). The workload's empty cap set applies: no `CAP_NET_ADMIN` (can't `iptables -F` and bypass the egress filter), no `CAP_DAC_OVERRIDE` (can't read `/home/acproxy/secrets/*` past mode 0400).
 
-The egress filter accommodates this: the NAT REDIRECT rule excludes uid 200 (mitmproxy) and uid 201 (dnsmasq) instead of explicitly matching uid 1000, so root-from-`cage exec` ALSO flows through the proxy + allowlist. Allowlist behavior is identical regardless of which uid initiated the request.
+For operator-debug scenarios that genuinely need root (running `apt-get install` to add a package, inspecting iptables rules, reading dnsmasq's own log files owned by uid 201), use `--as-root`:
 
-Caveat: root via `cage exec` retains the container's CAP_NET_ADMIN. So `cage exec ... -- iptables -F` would work and bypass the egress filter. The threat model treats the operator's interactive sessions as trusted; only the workload is sandboxed.
+```
+$ agentcage cage exec ubuntu02 --as-root -- apt-get install -y htop
+$ agentcage cage shell ubuntu02 --as-root
+```
+
+Threat model: the cage workload (the AI agent code) is untrusted and runs as uid 1000 with empty caps + hidepid + NoNewPrivs. Interactive operator sessions are trusted, but the default-drop keeps the agent code from masquerading as root through a `cage exec` invocation — for example, a malicious cage workload that somehow tricks the operator into running `agentcage cage exec <cage> -- malicious-binary` no longer gets root + CAP_NET_ADMIN automatically; the operator must explicitly type `--as-root` for that.
+
+**Egress filter scope.** The NAT REDIRECT rule excludes uid 200 (mitmproxy) and uid 201 (dnsmasq) instead of explicitly matching uid 1000, so requests from BOTH the workload (uid 1000) AND root-via-`cage exec --as-root` flow through the proxy + allowlist. Allowlist behavior is identical regardless of which uid initiated the request — only the cap set (which lets you re-write rules) differs.
 
 ### virtiofs locks file ownership to the host user
 
@@ -363,5 +370,5 @@ The only places the cleartext value lives are: the host shell environment of who
 
 ### Caveats
 
-- **`cage exec` runs as root.** As documented in [Quirks worth knowing](#quirks-worth-knowing), `agentcage cage exec <cage>` enters the cage as the image's default USER (root on most bases). Root in the cage CAN read `/home/acproxy/secrets/*` regardless of mode (CAP_DAC_OVERRIDE). This is the operator-debug session and is by design trusted; the threat model treats only the workload as untrusted.
+- **`cage exec` defaults to uid 1000** (the cage workload's user) on 0.21.2+. The exec session inherits the workload's empty cap set so it cannot read `/home/acproxy/secrets/*` past mode 0400, nor flush the egress filter. For operator-debug needs that require root, pass `--as-root` explicitly. Pre-0.21.2, `cage exec` defaulted to root — that was the documented quirk and is now closed.
 - **Backward compat.** If you run a fresh agentcage 0.21.1+ against a cage last started under 0.21.0 (unit JSON predates `secret_env_placeholders`), `start()` falls back to the old `-e NAME=value` cleartext-env delivery so the cage keeps starting without a `cage update`. Run `cage update <name>` to migrate to the hardened model.

@@ -83,12 +83,21 @@ class Backend(Protocol):
         cmd: list[str],
         *,
         interactive: bool = False,
+        as_root: bool = False,
     ) -> list[str]:
         """Argv to exec a command inside the cage's ``service`` component.
 
         ``service`` is one of ``service_names(name)`` (typically ``cage`` /
         ``proxy`` / ``dns``). ``cmd`` is the user's command vector; the
         backend prepends its own runner (e.g. ``podman exec [-it] <c> <cmd>``).
+
+        ``as_root=False`` (default) tells the backend to drop the exec
+        session to the cage workload's unprivileged uid (1000) so an
+        interactive ``cage exec`` cannot bypass the egress filter or read
+        proxy-internal state. Implementations that already drop privileges
+        elsewhere (container / vm — their per-service Quadlets already run
+        unprivileged) may ignore the kwarg. ``as_root=True`` is the opt-in
+        operator-debug path (CLI: ``--as-root``).
         """
         ...
 
