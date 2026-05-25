@@ -167,11 +167,21 @@ iptables -P OUTPUT DROP
 # Allow established/related so responses come back in.
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# Cage's egress to tcp/80 and tcp/443 → REDIRECT to local mitmproxy on
-# 8080 (transparent mode handles both HTTP and HTTPS on one port).
-iptables -t nat -A OUTPUT -p tcp --dport 80 -m owner --uid-owner 1000 \
+# Egress to tcp/80 and tcp/443 → REDIRECT to local mitmproxy on 8080
+# (transparent mode handles both HTTP and HTTPS on one port). The match
+# excludes the proxy (uid 200) and dnsmasq (uid 201) so their upstream
+# connections aren't redirected back to themselves; every OTHER uid in
+# the container — the cage workload at uid 1000 AND root (uid 0), which
+# is what `container exec` enters as because the image's default USER on
+# most bases is root — gets redirected. Without root in the redirect,
+# `agentcage cage exec ubuntu02 -- apt-get update` skips the proxy and
+# falls straight to the default-DROP filter chain (timeouts on every
+# upstream connection).
+iptables -t nat -A OUTPUT -p tcp --dport 80 \
+    -m owner ! --uid-owner 200 -m owner ! --uid-owner 201 \
     -j REDIRECT --to-ports 8080
-iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner --uid-owner 1000 \
+iptables -t nat -A OUTPUT -p tcp --dport 443 \
+    -m owner ! --uid-owner 200 -m owner ! --uid-owner 201 \
     -j REDIRECT --to-ports 8080
 
 # Loopback access is allowed PER PORT, not blanket `-o lo -j ACCEPT`. The
