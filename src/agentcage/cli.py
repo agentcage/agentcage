@@ -2290,6 +2290,9 @@ def secret_list(name: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    cfg = state.load_deployment_config(name)
+    if _is_apple_container(cfg):
+        _exit_apple_container_unsupported("secret list")
     podman = _podman_for_cage(name)
     secrets = podman.secret_list(prefix=f"{name}.")
 
@@ -2337,6 +2340,9 @@ def secret_set(name: str, key: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist — create it first with 'cage create'", err=True)
         sys.exit(1)
+    cfg = state.load_deployment_config(name)
+    if _is_apple_container(cfg):
+        _exit_apple_container_unsupported("secret set")
     podman = _podman_for_cage(name)
     full_name = f"{name}.{key}"
 
@@ -2411,6 +2417,9 @@ def secret_rm(name: str, key: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    cfg = state.load_deployment_config(name)
+    if _is_apple_container(cfg):
+        _exit_apple_container_unsupported("secret rm")
     podman = _podman_for_cage(name)
     full_name = f"{name}.{key}"
 
