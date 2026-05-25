@@ -727,9 +727,20 @@ def execute(
 
     try:
         if is_apple:
-            from agentcage.apple_container import cli as ac_cli
-            container_bin = ac_cli.container_binary() or "container"
-            cmd = [container_bin, "exec"] + exec_flags + [container_name] + exec_cmd
+            # Route through AppleContainerBackend.exec_argv() so the
+            # interactive session is wrapped in capsh: NoNewPrivs + drop=all
+            # + --user=$CAGE_USER (uid 1000). A raw `container exec` would
+            # inherit the wrapper image's USER (root) because supervisor
+            # hardening only applies to the cage workload at stage 90, not
+            # to fresh `exec` sessions. See PR #163 for the cage-exec fix —
+            # this is the same fix applied to the `agentcage run` path.
+            from agentcage.backends.apple_container import AppleContainerBackend
+            backend = AppleContainerBackend()
+            cmd = backend.exec_argv(
+                container_name, "cage", exec_cmd,
+                interactive=bool(exec_flags),
+                as_root=False,
+            )
         else:
             cmd = (
                 podman_prefix + ["podman", "exec"]
