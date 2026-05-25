@@ -92,6 +92,46 @@ done
 ss -lnu 2>/dev/null | grep -q '127.0.0.1:53' \
   || die "dnsmasq did not bind 127.0.0.1:53; see /var/log/agentcage/dnsmasq.log" 30
 
+#-- 35. Re-stage proxy secrets for uid 200 --------------------------------
+# Apple-container's hardened secret model (0.21.x+): the backend writes
+# each secret_injection rule's resolved value to a host-side file and
+# bind-mounts the dir read-only at /run/agentcage/secrets. virtiofs
+# maps the host owner to root inside the cage, so /run/agentcage/secrets
+# is root-owned-mode-0600 here. mitmproxy runs as uid 200 and can't read
+# it directly — supervisor (PID 1, root) re-stages each file into
+# /home/acproxy/secrets/<env> with chown 200:200 mode 0400. The cage
+# workload (uid 1000) never sees either path: /run/agentcage/secrets is
+# root-only-readable (so uid 1000 can't even open it) and
+# /home/acproxy/secrets is acproxy-only-readable.
+#
+# Idempotent: if no secrets dir is bind-mounted (cage has no
+# secret_injection rules, or backend predates this), the loop is empty.
+if [ -d /run/agentcage/secrets ]; then
+  log "stage 35: re-staging proxy secrets for uid 200"
+  mkdir -p /home/acproxy/secrets
+  chown acproxy:acproxy /home/acproxy/secrets
+  chmod 0700 /home/acproxy/secrets
+  # Copy each file individually so we can chown/chmod each one. `cp -p`
+  # would preserve host-side perms which we don't want.
+  for f in /run/agentcage/secrets/*; do
+    [ -f "$f" ] || continue
+    dest="/home/acproxy/secrets/$(basename "$f")"
+    cp "$f" "$dest"
+    chown acproxy:acproxy "$dest"
+    chmod 0400 "$dest"
+  done
+  # Unmount the host bind mount so the cage workload (uid 1000) can't
+  # read it. virtiofs maps host file ownership through identity so the
+  # host-side mode 0600 file shows up readable to whatever uid the
+  # cage workload is running as. The only privilege-correct way to
+  # hide it from the workload is to remove the mount from the shared
+  # mount namespace before the workload starts. Requires CAP_SYS_ADMIN
+  # which the supervisor still has until stage 90.
+  umount /run/agentcage/secrets 2>/dev/null \
+    || die "could not unmount /run/agentcage/secrets after staging — would leak secrets to cage workload" 35
+  rmdir /run/agentcage/secrets 2>/dev/null || true
+fi
+
 #-- 40. Start mitmproxy ----------------------------------------------------
 log "stage 40: starting mitmproxy (uid 200)"
 # Chown the mitmproxy home + log dir BEFORE starting mitmproxy so the

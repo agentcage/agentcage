@@ -694,6 +694,213 @@ def test_install_launchd_plist_writes_well_formed_xml(tmp_path, monkeypatch):
     assert parsed["ProgramArguments"][-1] == "demo"
 
 
+def test_start_argv_uses_file_delivery_when_placeholders_known(
+    tmp_path, monkeypatch,
+):
+    """0.21.1+ hardened path: when the unit JSON carries
+    ``secret_env_placeholders``, start() writes the resolved value to
+    ``<secrets_dir>/<env-name>`` (mode 0600) and passes
+    ``-e <env>={{<env>}}`` (the placeholder, NOT the cleartext value) to
+    `container run`. This is the entire point — host `ps`, `container
+    inspect`, and `cage exec ... -- env` all see only the placeholder.
+    """
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "user_image": "x",
+        "cpus": "",
+        "memory": "",
+        "lifecycle": "interactive",
+        "secret_envs": ["API_KEY", "MISSING_KEY"],
+        "secret_env_placeholders": {
+            "API_KEY": "{{API_KEY}}",
+            "MISSING_KEY": "{{MISSING_KEY}}",
+        },
+    }))
+    monkeypatch.setenv("API_KEY", "sk-real-1234")
+    monkeypatch.delenv("MISSING_KEY", raising=False)
+
+    captured_argv = []
+
+    def fake_run(argv, **_kwargs):
+        captured_argv.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    logs_dir = tmp_path / "logs"
+    secrets_dir = tmp_path / "secrets"
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=logs_dir), \
+         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    run_argv = next(a for a in captured_argv if a[0] == "run")
+    # The cage env carries the placeholder, NEVER the raw value.
+    assert "API_KEY={{API_KEY}}" in run_argv
+    assert "sk-real-1234" not in " ".join(run_argv)
+    # The bind mount is present.
+    assert any(
+        a == f"{secrets_dir}:/run/agentcage/secrets:ro" for a in run_argv
+    )
+    # The secret file exists on the host, mode 0600, containing the real value.
+    secret_file = secrets_dir / "API_KEY"
+    assert secret_file.is_file()
+    assert secret_file.read_text() == "sk-real-1234"
+    assert oct(secret_file.stat().st_mode & 0o777) == "0o600"
+    # The missing env has NO file (skipped) and isn't in argv.
+    assert not (secrets_dir / "MISSING_KEY").exists()
+    assert "MISSING_KEY=" not in " ".join(run_argv)
+    # The secrets dir itself is mode 0700 (only host user can read).
+    assert oct(secrets_dir.stat().st_mode & 0o777) == "0o700"
+
+
+def test_start_argv_drops_stale_secrets_from_prior_starts(
+    tmp_path, monkeypatch,
+):
+    """start() removes pre-existing files in <secrets_dir> so a rule
+    that's been removed from cage.yaml doesn't linger in the bind mount
+    after `cage update`. Keeps the secrets dir an accurate reflection
+    of the current rule list."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "user_image": "x",
+        "cpus": "",
+        "memory": "",
+        "lifecycle": "interactive",
+        "secret_envs": ["NEW_KEY"],
+        "secret_env_placeholders": {"NEW_KEY": "{{NEW_KEY}}"},
+    }))
+    monkeypatch.setenv("NEW_KEY", "new-value")
+
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    # Stale leftover from a previous create where OLD_KEY was a rule.
+    (secrets_dir / "OLD_KEY").write_text("old-stale-value")
+
+    def fake_run(argv, **_kwargs):  # noqa: ARG001
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
+         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    # OLD_KEY removed; NEW_KEY present.
+    assert not (secrets_dir / "OLD_KEY").exists()
+    assert (secrets_dir / "NEW_KEY").read_text() == "new-value"
+
+
+def test_start_argv_backcompat_pre_021_1_cleartext(tmp_path, monkeypatch):
+    """Backward compat: unit JSON without ``secret_env_placeholders``
+    (cage last started under 0.21.0) falls back to the old
+    ``-e NAME=value`` cleartext path so existing cages keep starting
+    after upgrade without a `cage update`."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "user_image": "x",
+        "cpus": "",
+        "memory": "",
+        "lifecycle": "interactive",
+        "secret_envs": ["API_KEY"],
+        # no secret_env_placeholders — pre-0.21.1 shape
+    }))
+    monkeypatch.setenv("API_KEY", "sk-real-1234")
+
+    captured_argv = []
+
+    def fake_run(argv, **_kwargs):
+        captured_argv.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
+         patch.object(backend, "secrets_dir", return_value=tmp_path / "secrets"), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    run_argv = next(a for a in captured_argv if a[0] == "run")
+    # Backward-compat: cleartext value via -e, no bind mount.
+    assert "API_KEY=sk-real-1234" in run_argv
+    assert not any("secrets:ro" in a for a in run_argv)
+
+
+def test_generate_units_persists_secret_env_placeholders():
+    """generate_units writes the env→placeholder map for start() to use."""
+    from agentcage.config import SecretInjectionRule
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.secret_injection = [
+        SecretInjectionRule(env="API_KEY", placeholder="{{API_KEY}}"),
+        SecretInjectionRule(env="DB_URL", placeholder="{{DATABASE_URL}}"),
+    ]
+    units = AppleContainerBackend().generate_units(cfg, "/cfg", "/p", "deploy")
+    meta = json.loads(units["deploy.json"])
+    assert meta["secret_env_placeholders"] == {
+        "API_KEY": "{{API_KEY}}",
+        "DB_URL": "{{DATABASE_URL}}",
+    }
+    # secret_envs still present for backward compat.
+    assert meta["secret_envs"] == ["API_KEY", "DB_URL"]
+
+
+def test_supervisor_restages_secrets_for_uid_200(tmp_path):
+    """REGRESSION: supervisor.sh stage 35 must copy /run/agentcage/secrets/*
+    into /home/acproxy/secrets/* with chown 200:200 mode 0400, so mitmproxy
+    can read them but the cage workload (uid 1000) cannot.
+
+    Without stage 35, mitmproxy (uid 200) can't open the bind-mounted
+    files (virtiofs maps them to root-owned mode 0600), and the cage
+    workload (uid 1000) ALSO can't open them — secret_injection silently
+    no-ops."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    sup = (tmp_path / "supervisor.sh").read_text()
+    assert "stage 35" in sup
+    assert "/run/agentcage/secrets" in sup
+    assert "/home/acproxy/secrets" in sup
+    assert "chown acproxy:acproxy" in sup
+    assert "chmod 0400" in sup
+
+
+def test_supervisor_umounts_secrets_after_restaging(tmp_path):
+    """REGRESSION: supervisor must `umount /run/agentcage/secrets` after
+    re-staging to /home/acproxy/secrets. Without the unmount, virtiofs
+    keeps the host-side files visible at the bind-mount path, and the
+    cage workload (uid 1000 — but virtiofs maps host owner through
+    identity so the file shows as workload-owned) can `cat` them.
+
+    Mac e2e verification (with the umount):
+      $ cage exec ubuntu-sec -- su ubuntu -s /bin/sh -c \\
+            'cat /run/agentcage/secrets/AGENTCAGE_SECFILE_SECRET'
+      cat: /run/agentcage/secrets/AGENTCAGE_SECFILE_SECRET: No such
+      file or directory   ← pass
+
+    Without the umount, the same command returns the secret value
+    cleartext — a silent end-run around the file-based delivery model.
+    `die` on umount failure so a broken stage 35 fails closed rather
+    than booting a cage that leaks."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    sup = (tmp_path / "supervisor.sh").read_text()
+    assert "umount /run/agentcage/secrets" in sup
+    # Failure must abort the cage; otherwise the leak is silent.
+    assert 'die "could not unmount /run/agentcage/secrets' in sup
+
+
 def test_start_argv_forwards_secret_envs(tmp_path, monkeypatch):
     """start() reads secret_envs from the unit metadata and forwards each
     via `-e NAME=value`. Missing env vars are skipped (with a warning)."""

@@ -95,6 +95,27 @@ class AppleContainerBackend:
         """
         return self._state_dir(name) / "logs"
 
+    def secrets_dir(self, name: str) -> Path:
+        """Per-cage secrets dir on the host, bind-mounted into the microVM
+        read-only at /run/agentcage/secrets.
+
+        Each ``secret_injection`` rule's resolved value gets written to
+        ``<secrets_dir>/<env-name>`` (mode 0600, owned by the host user)
+        at ``start()`` time. The cage's ``container run`` argv carries
+        only the PLACEHOLDER (``-e API_KEY={{API_KEY}}``) — the raw value
+        is never on the command line (visible to host `ps`) nor in
+        ``container inspect`` output. Inside the cage, virtiofs preserves
+        the host's 0600 perms so only root in the microVM can read; the
+        supervisor (PID 1, root) re-stages each file into
+        /home/acproxy/secrets/<env-name> (mode 0400, owned by acproxy
+        uid 200) so mitmproxy can read them but the cage workload (uid
+        1000) cannot.
+
+        Created on demand (start), removed by destroy_resources alongside
+        the rest of the per-cage state.
+        """
+        return self._state_dir(name) / "secrets"
+
     def _launchd_plist_path(self, name: str) -> Path:
         """Host path of the per-cage launchd plist.
 
@@ -302,11 +323,19 @@ class AppleContainerBackend:
         memory = config.container.memory or (
             f"{config.vm.mem_mb}m" if getattr(config.vm, "mem_mb", 0) else ""
         )
-        # Persist the secret-injection rule list so `start()` knows which
-        # env vars to forward into the microVM at `container run` time.
-        # Only the env names are stored — the actual secret values come
-        # from the host environment (or, in future, a Keychain lookup).
+        # Persist the secret-injection env→placeholder map so `start()` knows
+        # which env vars to resolve from the host environment AND which
+        # placeholder string to pass to the cage in their place. The
+        # placeholder (not the real value) ends up in the cage's env via
+        # `-e ENV={{ENV}}` so cage code that reads `os.environ["KEY"]`
+        # gets the placeholder; the real value lives only in the
+        # bind-mounted secrets file and the mitmproxy addon substitutes
+        # it on the wire. ``secret_envs`` kept (list of env names) for
+        # backward compat with cages last started on 0.21.0 or earlier.
         secret_envs = [r.env for r in (config.secret_injection or [])]
+        secret_env_placeholders = {
+            r.env: r.placeholder for r in (config.secret_injection or [])
+        }
         unit_json = json.dumps(
             {
                 "name": deploy_name,
@@ -315,6 +344,7 @@ class AppleContainerBackend:
                 "memory": memory,
                 "lifecycle": config.lifecycle,
                 "secret_envs": secret_envs,
+                "secret_env_placeholders": secret_env_placeholders,
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
             },
             indent=2,
@@ -407,25 +437,61 @@ class AppleContainerBackend:
         elif meta.get("mem_mb"):  # pre-0.20.6 unit JSON
             argv += ["--memory", f"{meta['mem_mb']}M"]
 
-        # Secret-injection env-passing. For each env named in the cage's
-        # `secret_injection:` rules, look it up in the current host
-        # environment and forward via `-e NAME=value` to `container run`.
-        # The mitmproxy addon inside the cage reads these at startup and
-        # uses them to substitute `{{NAME}}` placeholders in outbound
-        # requests destined for the rule's inject_to allow-list.
-        # Missing env vars are skipped with a stderr warning rather than
-        # failing — the cage may not need every secret on every host.
-        for env_name in meta.get("secret_envs") or []:
-            value = os.environ.get(env_name)
-            if value is None:
-                click.echo(
-                    f"warning: secret_injection env {env_name!r} "
-                    f"not set in host environment; placeholder will "
-                    f"NOT be substituted in cage requests",
-                    err=True,
-                )
-                continue
-            argv += ["-e", f"{env_name}={value}"]
+        # Secret-injection. For each env named in the cage's
+        # `secret_injection:` rules:
+        #   - Write the real value to <secrets_dir>/<env-name> on the
+        #     host (mode 0600). The dir gets bind-mounted at
+        #     /run/agentcage/secrets:ro in the cage; supervisor stage 35
+        #     re-stages each file as /home/acproxy/secrets/<env-name>
+        #     (chown 200:200, mode 0400) for mitmproxy.
+        #   - Pass `-e <env>={{PLACEHOLDER}}` (the placeholder, NOT the
+        #     real value) to `container run`. The cage's env carries the
+        #     placeholder so cage code that reads `os.environ["API_KEY"]`
+        #     gets `{{API_KEY}}` and the proxy substitutes the real
+        #     value on the wire. This means the cleartext value is NOT
+        #     visible via host `ps -ef`, NOT in `container inspect`,
+        #     and NOT in the cage workload's `/proc/self/environ`.
+        # Missing env vars are skipped with a stderr warning — the cage
+        # may not need every secret on every host. Backward compat: if
+        # the unit JSON predates this PR (no secret_env_placeholders),
+        # fall back to the old `-e NAME=value` cleartext behavior so
+        # existing cages keep working after upgrade.
+        placeholders = meta.get("secret_env_placeholders") or {}
+        secret_envs = meta.get("secret_envs") or list(placeholders.keys())
+        if secret_envs:
+            secrets_dir = self.secrets_dir(name)
+            secrets_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(secrets_dir, 0o700)
+            # Drop any stale secret files from a prior start so removed
+            # rules don't linger in the bind mount.
+            for stale in secrets_dir.iterdir():
+                stale.unlink()
+            for env_name in secret_envs:
+                value = os.environ.get(env_name)
+                if value is None:
+                    click.echo(
+                        f"warning: secret_injection env {env_name!r} "
+                        f"not set in host environment; placeholder will "
+                        f"NOT be substituted in cage requests",
+                        err=True,
+                    )
+                    continue
+                placeholder = placeholders.get(env_name)
+                if placeholder:
+                    secret_file = secrets_dir / env_name
+                    secret_file.write_text(value)
+                    os.chmod(secret_file, 0o600)
+                    argv += ["-e", f"{env_name}={placeholder}"]
+                else:
+                    # Pre-0.21.1 unit JSON: no placeholder map. Fall back
+                    # to cleartext-env delivery to preserve behavior for
+                    # cages last started under 0.21.0.
+                    argv += ["-e", f"{env_name}={value}"]
+            # Mount the per-cage secrets dir read-only into the microVM.
+            # Only mount if any files were written (avoid mounting an empty
+            # dir when every secret env was missing host-side).
+            if any(secrets_dir.iterdir()):
+                argv += ["--volume", f"{secrets_dir}:/run/agentcage/secrets:ro"]
 
         argv.append(image)
 

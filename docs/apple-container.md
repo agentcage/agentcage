@@ -322,20 +322,46 @@ apt tries HTTP first; the upstream redirects to HTTPS; mitmproxy handles the TLS
 
 **`launchctl list io.agentcage.<cage>` says "Could not find service"** — on macOS 26 with autostart enabled, the plist is loaded into a domain `launchctl list <label>` doesn't always introspect. Check that the plist file exists at `~/Library/LaunchAgents/io.agentcage.<cage>.plist`; if it does, autostart is wired (the plist is reloaded at each login via the LaunchAgents directory's automatic discovery).
 
-## Secrets are env-passed, not stored
+## Secret delivery model
 
-| | container / vm | apple-container |
+| | container / vm | apple-container (0.21.1+) |
 |---|---|---|
-| Where secrets live at rest | host podman secret store | host environment (`os.environ`) |
+| Where secrets live at rest | host podman secret store | host environment (`os.environ`) at `cage start` time |
 | Set via | `agentcage secret set <cage> KEY` | `export KEY=value` in the shell that runs `cage start` |
 | Listed by | `agentcage secret list <cage>` | (none — exits unsupported) |
 | Persisted after host reboot | yes (podman secret store survives) | no (env vars are per-shell) |
-| Injected as | env vars on the cage container OR `{{SECRET:...}}` placeholder substitution by the proxy | env vars on the cage microVM + `{{ENV_NAME}}` placeholder substitution by the proxy addon (PR #151) |
+| How the real value reaches the proxy | mounted into proxy container at `/run/secrets/<name>` (podman secret bind) | host-side file at `<state>/<cage>/secrets/<env>` (mode 0600), bind-mounted into the microVM as `:ro`, re-staged by supervisor to `/home/acproxy/secrets/<env>` (chown 200:200 mode 0400) |
+| What the cage workload sees in its env | placeholder | placeholder (`-e API_KEY={{API_KEY}}`) |
+| What the cage workload sees on disk | nothing (proxy holds the secret) | nothing — host bind mount is `umount`ed by supervisor stage 35 after re-staging |
 
-On apple-container, `secret list / set / rm` exit with `not yet implemented` — they have no work to do. The flow is:
+### End-to-end flow
 
 1. `cage.yaml` declares the rule: `secret_injection: [{env: API_KEY, placeholder: "{{API_KEY}}", inject_to: [api.example.com]}]`
 2. Operator exports the value: `export API_KEY=sk-real-key`
-3. `agentcage cage start <cage>` reads `API_KEY` from `os.environ`, forwards via `container run -e API_KEY=sk-real-key`
-4. Inside the cage, the mitmproxy addon resolves the env var at startup and substitutes `{{API_KEY}}` → `sk-real-key` in outbound request headers/bodies whose host matches `inject_to`
-5. The cage workload only ever sees the placeholder, never the real value
+3. `agentcage cage start <cage>`:
+   - reads `API_KEY` from `os.environ`
+   - writes the value to `<state>/<cage>/secrets/API_KEY` (mode 0600 on host)
+   - passes `--volume <state>/<cage>/secrets:/run/agentcage/secrets:ro` and `-e API_KEY={{API_KEY}}` to `container run` (NOT the cleartext value)
+4. Supervisor stage 35 (in-cage, as root): copies `/run/agentcage/secrets/*` → `/home/acproxy/secrets/*` with chown 200:200 mode 0400, then `umount /run/agentcage/secrets` so the workload can't read the host-side bind mount
+5. Mitmproxy addon (uid 200) reads `/home/acproxy/secrets/API_KEY` at startup
+6. Cage workload (uid 1000) reads `os.environ["API_KEY"]` → gets `{{API_KEY}}` (the placeholder)
+7. Cage makes an outbound request to api.example.com with `Authorization: Bearer {{API_KEY}}`
+8. Mitmproxy intercepts, substitutes `{{API_KEY}}` → `sk-real-key` on the wire (PR #151) — `secrets_injected` audit entry records the env name
+9. On the response, mitmproxy redacts the real value back to `{{API_KEY}}` (PR #156) — `secrets_redacted` audit entry records it; the cage never sees the bytes even if the upstream echoes them
+
+### What's NOT exposed (verified)
+
+| Surface | What's visible | Why |
+|---|---|---|
+| Host `ps -ef` | placeholder, never the real value | the `container run` argv only carries `-e KEY={{KEY}}`; value goes via bind-mounted file |
+| `container inspect <cage>` | placeholder | container env config is `KEY={{KEY}}` |
+| Cage workload's `/proc/self/environ` | placeholder | cage workload's env is exactly what `-e` set: placeholder |
+| Cage workload reading `/run/agentcage/secrets/` | `No such file or directory` | supervisor umount'd after re-staging |
+| Cage workload reading `/home/acproxy/secrets/` | `Permission denied` | dir is acproxy-only-readable (mode 0700, owned uid 200), workload runs as uid 1000 |
+
+The only places the cleartext value lives are: the host shell environment of whoever ran `cage start` (the operator's responsibility), the per-cage secrets dir on the host (mode 0600 owned by the host user), and inside the mitmproxy process's memory while it's running.
+
+### Caveats
+
+- **`cage exec` runs as root.** As documented in [Quirks worth knowing](#quirks-worth-knowing), `agentcage cage exec <cage>` enters the cage as the image's default USER (root on most bases). Root in the cage CAN read `/home/acproxy/secrets/*` regardless of mode (CAP_DAC_OVERRIDE). This is the operator-debug session and is by design trusted; the threat model treats only the workload as untrusted.
+- **Backward compat.** If you run a fresh agentcage 0.21.1+ against a cage last started under 0.21.0 (unit JSON predates `secret_env_placeholders`), `start()` falls back to the old `-e NAME=value` cleartext-env delivery so the cage keeps starting without a `cage update`. Run `cage update <name>` to migrate to the hardened model.
