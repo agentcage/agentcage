@@ -389,3 +389,57 @@ def test_build_artifacts_no_cmd_anywhere_raises_helpful_error():
          patch.object(ac_wrapper, "build_wrapper", new=MagicMock()):
         with pytest.raises(RuntimeError, match="cannot determine cage entrypoint"):
             AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+
+def test_run_streaming_pauses_active_spinner():
+    """``ac_cli.run(capture_output=False)`` must wrap subprocess.run in
+    ``output.pause_active_spinner()`` so Apple's CLI progress doesn't fight
+    our braille spinner for the same terminal line.
+    """
+    from agentcage import output as ac_output
+
+    events: list[str] = []
+
+    fake_spinner = type(
+        "FakeSpinner", (), {
+            "pause": lambda self: events.append("pause"),
+            "resume": lambda self: events.append("resume"),
+        },
+    )()
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        events.append("subprocess.run")
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "container_binary", return_value="/usr/local/bin/container"), \
+         patch.object(ac_output, "_active", fake_spinner), \
+         patch("agentcage.apple_container.cli.subprocess.run", side_effect=fake_subprocess_run):
+        ac_cli.run(["image", "pull", "alpine"], check=False, capture_output=False)
+
+    # pause must happen before the subprocess starts, resume after it returns.
+    assert events == ["pause", "subprocess.run", "resume"]
+
+
+def test_run_capturing_does_not_pause_active_spinner():
+    """The capturing path is silent on stderr -- no need to pause the spinner."""
+    from agentcage import output as ac_output
+
+    events: list[str] = []
+
+    fake_spinner = type(
+        "FakeSpinner", (), {
+            "pause": lambda self: events.append("pause"),
+            "resume": lambda self: events.append("resume"),
+        },
+    )()
+
+    def fake_subprocess_run(*_args, **_kwargs):
+        events.append("subprocess.run")
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "container_binary", return_value="/usr/local/bin/container"), \
+         patch.object(ac_output, "_active", fake_spinner), \
+         patch("agentcage.apple_container.cli.subprocess.run", side_effect=fake_subprocess_run):
+        ac_cli.run(["inspect", "x"], check=False, capture_output=True)
+
+    assert events == ["subprocess.run"]
