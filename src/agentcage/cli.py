@@ -61,6 +61,45 @@ def _podman_for_cage(name: str) -> Podman:
     return Podman()
 
 
+def _is_apple_container(cfg) -> bool:
+    """True if the cage uses the apple-container isolation backend."""
+    return getattr(cfg, "isolation", None) == "apple-container"
+
+
+def _exit_apple_container_unsupported(command: str) -> None:
+    """Exit cleanly when a subcommand isn't implemented on apple-container.
+
+    The apple-container backend does not yet support every cage subcommand
+    that container/vm do. Rather than fall through to host podman (which
+    crashes on macOS without podman installed), we exit non-zero with a
+    helpful message. Tracked as a follow-up in issue #120.
+    """
+    click.echo(
+        f"error: 'cage {command}' is not yet implemented for the "
+        f"apple-container backend (see issue #120)",
+        err=True,
+    )
+    sys.exit(1)
+
+
+def _require_cage_service_on_apple_container(service: str, command: str) -> None:
+    """Reject --service proxy|dns on apple-container with a clear message.
+
+    On apple-container the cage is a single Apple microVM (one container)
+    with mitmproxy and dnsmasq running inside it as supervised processes,
+    not as separate Apple containers. Targeted proxy/dns exec/shell access
+    isn't wired up yet; the only addressable target today is `cage`.
+    """
+    if service != "cage":
+        click.echo(
+            f"error: 'cage {command} --service {service}' is not yet "
+            f"supported on the apple-container backend; only --service cage "
+            f"is addressable (proxy and dnsmasq run inside the same microVM)",
+            err=True,
+        )
+        sys.exit(1)
+
+
 def _build_container_image(cfg, config_dir: Path, podman: Podman,
                            no_cache: bool = False,
                            pull: bool = False) -> None:
@@ -957,6 +996,17 @@ def cage_verify(name: str):
 
     if cfg.isolation == "container":
         _verify_container(name, _pass, _fail, _warn)
+    elif _is_apple_container(cfg):
+        # The apple-container backend does service-level checks via
+        # `backend.is_running` (already run above). Deeper inside-the-cage
+        # probes (proxy CA, egress block, nested podman) aren't wired up
+        # yet on this backend — keep verify a no-crash one-liner rather
+        # than shelling out to host podman.
+        click.echo()
+        click.echo(
+            "  [INFO] deeper checks (CA / egress / nested) are not yet "
+            "implemented for apple-container; service-status checks only"
+        )
     else:
         _verify_vm(name, _pass, _fail)
 
@@ -1137,8 +1187,14 @@ def cage_restart(name: str):
 
     cfg = state.load_deployment_config(name)
 
-    # Re-copy patch files from package data to overwrite any tampering
-    _ensure_patches(Podman())
+    # Re-copy patch files from package data to overwrite any tampering.
+    # The apple-container backend doesn't use host-side nested-container
+    # patch files (the cage runs as a single Apple microVM with no
+    # bind-mounted podman shim), so skip this on apple-container —
+    # instantiating Podman() would crash later when its methods shell
+    # out to a missing host podman.
+    if not _is_apple_container(cfg):
+        _ensure_patches(Podman())
 
     _restart_cage(name, cfg)
     click.echo(f"Restarted cage '{name}'")
@@ -1167,20 +1223,26 @@ def cage_start(name: str):
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
-    podman = Podman()
-    _ensure_patches(podman)
 
-    # Refresh env:/cmd: secrets before starting (they may have changed)
-    from agentcage.secret_resolver import resolve_and_populate
-    resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
+    # Host-podman-backed steps are skipped on apple-container: there's
+    # no host podman to instantiate, no host-side patches to refresh,
+    # and no host podman secret store to (re)populate. Secrets for the
+    # apple-container backend are env-passed by `start` itself.
+    if not _is_apple_container(cfg):
+        podman = Podman()
+        _ensure_patches(podman)
 
-    # Regenerate derived files from cage.yaml so any edits made while
-    # the cage was stopped are applied on the next start. The dns
-    # allowlist is a sidecar file mounted into dnsmasq; the quadlet
-    # itself only needs rewriting on the (rare) migration case.
-    state.save_proxy_config(name)
-    state.save_dns_allowlist(name)
-    _ensure_dns_quadlet_current(cfg)
+        # Refresh env:/cmd: secrets before starting (they may have changed)
+        from agentcage.secret_resolver import resolve_and_populate
+        resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
+
+        # Regenerate derived files from cage.yaml so any edits made while
+        # the cage was stopped are applied on the next start. The dns
+        # allowlist is a sidecar file mounted into dnsmasq; the quadlet
+        # itself only needs rewriting on the (rare) migration case.
+        state.save_proxy_config(name)
+        state.save_dns_allowlist(name)
+        _ensure_dns_quadlet_current(cfg)
 
     backend = get_backend(cfg)
     backend.start(name)
@@ -1229,20 +1291,26 @@ def cage_show(name: str):
     except Exception:
         pass
 
-    # Secrets
-    podman = _podman_for_cage(name)
-    secrets = podman.secret_list(prefix=f"{name}.")
-    expected = _expected_secrets(cfg)
-    present_keys = {
-        s.get("Name", "").removeprefix(f"{name}.")
-        for s in secrets
-    }
-    missing = [k for k in expected if k not in present_keys]
-    if expected:
-        if missing:
-            click.echo(f"Secrets:    {len(present_keys)}/{len(expected)} ({len(missing)} missing)")
-        else:
-            click.echo(f"Secrets:    {len(expected)}/{len(expected)}")
+    # Secrets — host podman is the secret store, so skip the count on
+    # apple-container (which has no host podman) rather than crash.
+    if _is_apple_container(cfg):
+        expected = _expected_secrets(cfg)
+        if expected:
+            click.echo(f"Secrets:    {len(expected)} expected (status not tracked on apple-container)")
+    else:
+        podman = _podman_for_cage(name)
+        secrets = podman.secret_list(prefix=f"{name}.")
+        expected = _expected_secrets(cfg)
+        present_keys = {
+            s.get("Name", "").removeprefix(f"{name}.")
+            for s in secrets
+        }
+        missing = [k for k in expected if k not in present_keys]
+        if expected:
+            if missing:
+                click.echo(f"Secrets:    {len(present_keys)}/{len(expected)} ({len(missing)} missing)")
+            else:
+                click.echo(f"Secrets:    {len(expected)}/{len(expected)}")
 
 
 @cage.command("logs")
@@ -1269,6 +1337,8 @@ def cage_logs(name, services, lines, follow, no_follow, min_level):
 
     if cfg.isolation == "vm":
         _logs_vm(name, selected, lines, no_follow_effective, min_level)
+    elif _is_apple_container(cfg):
+        _logs_apple_container(name, selected, lines, no_follow_effective, min_level)
     else:
         _logs_container(name, selected, lines, no_follow_effective, min_level)
 
@@ -1400,6 +1470,32 @@ def _logs_vm(name, services, lines, no_follow, min_level=None):
             proc.terminate()
 
 
+def _logs_apple_container(name, services, lines, no_follow, min_level=None):  # noqa: ARG001
+    """Stream logs from the per-cage Apple container.
+
+    Apple's `container logs` reads the supervisor's stdout/stderr for the
+    one microVM that backs the cage. There are no separate proxy/dns
+    journal units to filter on — those run as processes inside the same
+    container — so the ``services`` and ``min_level`` arguments are
+    accepted for parity with the other backends but currently don't
+    sub-filter output. The user gets the full combined stream.
+    """
+    from agentcage.apple_container import cli as ac_cli
+    binary = ac_cli.container_binary()
+    if binary is None:
+        click.echo(
+            "error: Apple `container` CLI not found; install from "
+            "https://github.com/apple/container/releases",
+            err=True,
+        )
+        sys.exit(1)
+    argv = [binary, "logs"]
+    if not no_follow:
+        argv.append("-f")
+    argv.append(name)
+    os.execvp(binary, argv)
+
+
 @cage.command("exec", context_settings={"ignore_unknown_options": True})
 @click.argument("name")
 @click.option("-s", "--service", default="cage",
@@ -1433,6 +1529,22 @@ def cage_exec(name: str, service: str, command: tuple[str, ...]):
         exec_flags = ["-it"] if sys.stdin.isatty() else []
         os.execvp("limactl", ["limactl", "shell", inst.name, "--",
                   "podman", "exec", *exec_flags, f"{name}-{service}", *cmd])
+
+    if _is_apple_container(cfg):
+        _require_cage_service_on_apple_container(service, "exec")
+        from agentcage.apple_container import cli as ac_cli
+        binary = ac_cli.container_binary()
+        if binary is None:
+            click.echo(
+                "error: Apple `container` CLI not found; install from "
+                "https://github.com/apple/container/releases",
+                err=True,
+            )
+            sys.exit(1)
+        exec_flags = ["-it"] if sys.stdin.isatty() else []
+        # The cage is one Apple container named after the cage itself
+        # (see backends.apple_container — no -cage/-proxy/-dns suffix split).
+        os.execvp(binary, [binary, "exec", *exec_flags, name, *cmd])
 
     container = f"{name}-{service}"
     exec_flags = []
@@ -1474,6 +1586,29 @@ def cage_shell(name: str, service: str):
         exec_flags = ["-it"] if sys.stdin.isatty() else []
         os.execvp("limactl", ["limactl", "shell", inst.name, "--",
                   "podman", "exec", *exec_flags, container, "/bin/sh"])
+
+    if _is_apple_container(cfg):
+        _require_cage_service_on_apple_container(service, "shell")
+        from agentcage.apple_container import cli as ac_cli
+        binary = ac_cli.container_binary()
+        if binary is None:
+            click.echo(
+                "error: Apple `container` CLI not found; install from "
+                "https://github.com/apple/container/releases",
+                err=True,
+            )
+            sys.exit(1)
+        # Auto-detect bash, fall back to sh.
+        for shell in ("/bin/bash", "/bin/sh"):
+            result = subprocess.run(
+                [binary, "exec", name, "test", "-x", shell],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                exec_flags = ["-it"] if sys.stdin.isatty() else []
+                os.execvp(binary, [binary, "exec", *exec_flags, name, shell])
+        exec_flags = ["-it"] if sys.stdin.isatty() else []
+        os.execvp(binary, [binary, "exec", *exec_flags, name, "/bin/sh"])
 
     container = f"{name}-{service}"
     # Auto-detect bash or fall back to sh
@@ -1670,6 +1805,13 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
 
     cfg = state.load_deployment_config(name)
 
+    # Audit on apple-container needs a different log path (mitmproxy
+    # writes /var/log/proxy.log inside the microVM, not the host
+    # journal). Not wired up yet — exit cleanly instead of running
+    # journalctl on a missing host.
+    if _is_apple_container(cfg):
+        _exit_apple_container_unsupported("audit")
+
     filt = AuditFilter(
         decisions=list(decisions),
         directions=list(directions),
@@ -1737,6 +1879,13 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+
+    cfg = state.load_deployment_config(name)
+    # HAR export depends on the proxy's capture.jsonl being bind-mounted
+    # to a host path; that's not wired up for apple-container yet (the
+    # capture file lives inside the microVM).
+    if _is_apple_container(cfg):
+        _exit_apple_container_unsupported("har")
 
     from agentcage.har import CaptureFilter, capture_to_har, parse_since
 
@@ -1822,6 +1971,12 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
+    # Backup pulls secrets out of host podman's secret store and exports
+    # named volumes via `podman volume export` — neither is available on
+    # apple-container today. Exit cleanly rather than crash on the first
+    # podman call.
+    if _is_apple_container(cfg):
+        _exit_apple_container_unsupported("backup")
     podman = _podman_for_cage(name)
 
     # Determine output path
@@ -1954,6 +2109,12 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
             err=True,
         )
         sys.exit(1)
+
+    # The apple-container backend has no host-podman secret store /
+    # named volume export, which `restore` relies on. Exit cleanly
+    # rather than crash on the first podman call.
+    if manifest.get("isolation") == "apple-container":
+        _exit_apple_container_unsupported("restore")
 
     target_name = new_name or manifest["cage_name"]
 
@@ -2350,6 +2511,12 @@ def _ensure_dns_quadlet_current(cfg) -> bool:
     first run under the new code rewrites the unit and does one daemon-reload;
     every subsequent call is a no-op.
     """
+    # The apple-container backend has no per-cage DNS quadlet — dnsmasq
+    # runs as a process inside the single microVM, supervised in-band by
+    # the cage's PID 1. Nothing on the host to render or daemon-reload.
+    if _is_apple_container(cfg):
+        return False
+
     from agentcage.quadlets import render_dns_quadlet
 
     backend = get_backend(cfg)
@@ -2427,6 +2594,19 @@ def _update_dns_quadlet(cfg) -> None:
                           check=False)
             for svc in reversed(services):
                 inst.exec(["systemctl", "--user", "start", f"{name}-{svc}.service"])
+    elif _is_apple_container(cfg):
+        # On apple-container the proxy/dns allowlist is baked into the
+        # wrapper image at build time, so the new allowlist only takes
+        # effect after a `cage update`. Restart the cage so the user at
+        # least sees a fresh container; warn that a rebuild is required
+        # for the change to apply.
+        if backend.is_running(name, "cage"):
+            backend.restart(name)
+        click.echo(
+            "note: apple-container bakes the allowlist into the wrapper "
+            "image; run `agentcage cage update " + name + "` to apply.",
+            err=True,
+        )
     else:
         if backend.is_running(name, "dns"):
             # Stop most-dependent first, start dependencies first.
