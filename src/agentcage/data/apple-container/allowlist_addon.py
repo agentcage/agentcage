@@ -38,6 +38,7 @@ from mitmproxy import ctx, http
 
 
 ALLOWLIST_PATH = "/etc/agentcage/allowlist.txt"
+SECRET_INJECTION_PATH = "/etc/agentcage/secret_injection.json"
 AUDIT_LOG_PATH = os.environ.get(
     "AGENTCAGE_AUDIT_LOG", "/var/log/agentcage/audit.jsonl"
 )
@@ -68,14 +69,86 @@ def _host_allowed(host: str, allowed: set[str]) -> bool:
     return False
 
 
+def _load_secret_injection_rules() -> list[dict]:
+    """Load the cage's secret_injection rule list, baked in at build time.
+
+    Each rule is ``{"env": str, "placeholder": str, "inject_to": [str]}``.
+    The actual secret VALUE is read from ``os.environ[env]`` at request
+    time (forwarded by ``AppleContainerBackend.start()`` via ``-e``).
+    """
+    try:
+        with open(SECRET_INJECTION_PATH) as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
 class AllowlistAddon:
     def __init__(self) -> None:
         self.allowed = _load_allowlist()
         ctx.log.info(
             f"[agentcage] allowlist loaded: {sorted(self.allowed) or '(empty — block all)'}"
         )
+        self.injection_rules = _load_secret_injection_rules()
+        # Resolve secret values from the environment ONCE at startup —
+        # later os.environ changes won't propagate. Skip rules whose
+        # env var isn't set (the backend logs a warning at start, and
+        # the placeholder simply doesn't get substituted).
+        self._resolved_secrets: list[dict] = []
+        for rule in self.injection_rules:
+            value = os.environ.get(rule.get("env", ""))
+            if not value:
+                continue
+            self._resolved_secrets.append({
+                "env": rule["env"],
+                "placeholder": rule["placeholder"],
+                "value": value,
+                "inject_to": [d.lower() for d in (rule.get("inject_to") or [])],
+            })
+        if self._resolved_secrets:
+            ctx.log.info(
+                f"[agentcage] secret injection: "
+                f"{[r['env'] for r in self._resolved_secrets]}"
+            )
         self._audit_fh = self._open_log(AUDIT_LOG_PATH)
         self._capture_fh = self._open_log(CAPTURE_PATH)
+
+    def _maybe_inject(self, flow: http.HTTPFlow) -> list[str]:
+        """Substitute placeholders in request headers/body for matching hosts.
+
+        Returns the list of env names that had at least one substitution
+        performed; the audit entry surfaces this as `secrets_injected`.
+        """
+        host = flow.request.pretty_host.lower()
+        injected: list[str] = []
+        for rule in self._resolved_secrets:
+            inject_to = rule["inject_to"]
+            if inject_to and not any(
+                host == d or host.endswith("." + d) for d in inject_to
+            ):
+                continue
+            placeholder = rule["placeholder"]
+            value = rule["value"]
+            replaced_any = False
+            # Headers
+            for name, val in list(flow.request.headers.items()):
+                if placeholder in val:
+                    flow.request.headers[name] = val.replace(placeholder, value)
+                    replaced_any = True
+            # Body — only attempt if it's text-ish; binary bodies passed
+            # through unchanged. Skip if the placeholder isn't there to
+            # avoid round-tripping the body through .text.
+            try:
+                body_text = flow.request.get_text(strict=False)
+            except (UnicodeDecodeError, ValueError):
+                body_text = None
+            if body_text and placeholder in body_text:
+                flow.request.set_text(body_text.replace(placeholder, value))
+                replaced_any = True
+            if replaced_any:
+                injected.append(rule["env"])
+        return injected
 
     @staticmethod
     def _open_log(path: str):
@@ -126,8 +199,13 @@ class AllowlistAddon:
         }
 
         if _host_allowed(host, self.allowed):
+            # Apply secret injection BEFORE the upstream request goes out.
+            # Substitutions happen in place; we record the env names in
+            # the audit entry so the operator can see what was swapped.
+            injected = self._maybe_inject(flow)
             entry["decision"] = "allowed"
             entry["reason"] = "domain-allowlist"
+            entry["secrets_injected"] = injected
             self._audit(entry)
             return
 

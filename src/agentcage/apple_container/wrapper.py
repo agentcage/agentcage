@@ -85,20 +85,24 @@ def render_wrapper_containerfile(user_image: str, *, user_cmd: list[str] | None 
 
 
 def stage_build_context(
-    dest: Path, user_cmd: list[str], allowlist: list[str] | None = None
+    dest: Path,
+    user_cmd: list[str],
+    allowlist: list[str] | None = None,
+    secret_injection_rules: list[dict] | None = None,
 ) -> None:
     """Stage supervisor + cage CMD + egress filter config into *dest*.
 
     Files written:
-      - supervisor.sh    -- PID 1 of the cage microVM (security-critical)
-      - dnsmasq.conf     -- static catch-all that rewrites every DNS query
-                            to 127.0.0.1
-      - cage-cmd.json    -- user image's original ENTRYPOINT+CMD, exec'd by
-                            the supervisor after the egress filter is up
-      - allowlist.txt    -- one host per line; supervisor builds a single
-                            regex for mitmproxy's --allow-hosts. Empty
-                            allowlist means "block everything" (safer
-                            default than "allow everything").
+      - supervisor.sh         -- PID 1 of the cage microVM (security-critical)
+      - dnsmasq.conf          -- static catch-all DNS rewriter
+      - allowlist_addon.py    -- mitmproxy addon (allowlist + audit + injection)
+      - cage-cmd.json         -- user image's original ENTRYPOINT+CMD
+      - allowlist.txt         -- one host per line
+      - secret_injection.json -- list of {env, placeholder, inject_to} rules
+                                 read by the mitmproxy addon at startup;
+                                 actual secret values are env-passed at
+                                 container run time so the build context
+                                 stays free of secrets.
     """
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(_DATA_DIR / "supervisor.sh", dest / "supervisor.sh")
@@ -107,6 +111,9 @@ def stage_build_context(
     (dest / "cage-cmd.json").write_text(json.dumps(user_cmd))
     allow_lines = "\n".join(h.strip() for h in (allowlist or []) if h.strip())
     (dest / "allowlist.txt").write_text(allow_lines + ("\n" if allow_lines else ""))
+    (dest / "secret_injection.json").write_text(
+        json.dumps(secret_injection_rules or [])
+    )
 
 
 def wrapped_image_name(cage_name: str) -> str:
@@ -120,6 +127,7 @@ def build_wrapper(
     *,
     user_cmd: list[str] | None = None,
     allowlist: list[str] | None = None,
+    secret_injection_rules: list[dict] | None = None,
 ) -> str:
     """Generate Containerfile, stage build context, run `container build`.
 
@@ -136,7 +144,10 @@ def build_wrapper(
     with tempfile.TemporaryDirectory(prefix="agentcage-apple-build-") as tmp:
         tmpdir = Path(tmp)
         (tmpdir / "Containerfile").write_text(containerfile)
-        stage_build_context(tmpdir, user_cmd, allowlist=allowlist)
+        stage_build_context(
+            tmpdir, user_cmd, allowlist=allowlist,
+            secret_injection_rules=secret_injection_rules,
+        )
         ac_cli.run(
             ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],
             capture_output=False,  # stream output to user
