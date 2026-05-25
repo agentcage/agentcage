@@ -1687,3 +1687,222 @@ class TestPortsConfig:
         """))
         cfg = load_config(str(p))
         validate_config(cfg)
+class TestAppleContainerSilentDrops:
+    """Regression: cage.yaml fields that the apple-container backend
+    silently drops must emit a warning at validate_config so users
+    know their config isn't fully honored.
+
+    These warnings are non-fatal: several built-in scaffolds (ubuntu,
+    etc.) set these fields unconditionally for the container backend.
+    Hard-rejecting would require scaffold updates first. The warnings
+    surface the silent-drop issue at every cage create / update / show.
+    """
+
+    @pytest.fixture
+    def base_yaml(self, tmp_path):
+        # Apple-container validation requires Darwin + arm64. Stub
+        # platform.system / platform.machine in each test.
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+        """))
+        return str(p)
+
+    def _validate_under_apple(self, yaml_path):
+        """Run validate_config with platform stubbed to a macOS ASi host."""
+        from unittest.mock import patch
+        cfg = load_config(yaml_path)
+        with patch("agentcage.config.platform.system", return_value="Darwin"), \
+             patch("agentcage.config.platform.machine", return_value="arm64"):
+            return cfg, validate_config(cfg)
+
+    def test_volumes_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              volumes:
+                - "/host:/cage:rw"
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any(
+            "container.volumes" in w and "apple-container" in w and "#120" in w
+            for w in warnings
+        ), warnings
+
+    def test_named_volumes_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              named_volumes:
+                data: /var/data
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.named_volumes" in w for w in warnings), warnings
+
+    def test_tmpfs_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              tmpfs:
+                - "/tmp:rw,size=64M"
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.tmpfs" in w for w in warnings), warnings
+
+    def test_podman_secrets_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              podman_secrets:
+                - my-secret
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.podman_secrets" in w for w in warnings), warnings
+
+    def test_nested_containers_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              nested_containers: true
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.nested_containers" in w for w in warnings), warnings
+
+    def test_userns_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              userns: keep-id
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.userns" in w for w in warnings), warnings
+
+    def test_add_capabilities_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              add_capabilities:
+                - NET_ADMIN
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.add_capabilities" in w for w in warnings), warnings
+
+    def test_drop_capabilities_custom_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              drop_capabilities:
+                - SYS_ADMIN
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.drop_capabilities" in w for w in warnings), warnings
+
+    def test_drop_capabilities_default_does_not_warn(self, tmp_path):
+        """drop_capabilities=['ALL'] is the default and matches the supervisor's
+        all-drop behavior — must NOT trigger a warning, otherwise every
+        single cage.yaml with the default emits noise."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert not any(
+            "container.drop_capabilities" in w for w in warnings
+        ), warnings
+
+    def test_read_only_false_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              read_only: false
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.read_only" in w for w in warnings), warnings
+
+    def test_security_label_disable_false_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              security_label_disable: false
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any(
+            "container.security_label_disable" in w for w in warnings
+        ), warnings
+
+    def test_secret_injection_transform_warns(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+                transform: google-jwt-bearer
+                inject_to:
+                  - api.example.com
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any(
+            "secret_injection" in w and "transform" in w for w in warnings
+        ), warnings
+
+    def test_container_isolation_no_silent_drop_warnings(self, tmp_path):
+        """The whole batch of warnings is gated on isolation == apple-container.
+        Container backend honors all these fields, so no warnings emitted."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: container-demo
+            isolation: container
+            container:
+              image: localhost/test:latest
+              volumes:
+                - "/host:/cage:rw"
+              tmpfs:
+                - "/tmp:rw,size=64M"
+              add_capabilities:
+                - NET_ADMIN
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert not any(
+            "silently has no effect on apple-container" in w for w in warnings
+        ), warnings
