@@ -291,3 +291,60 @@ class TestCageStartRestartAppleContainer:
         mock_ensure_patches.assert_not_called()
         mock_restart.assert_called_once()
         assert result.exit_code == 0
+
+
+# ── secret list/set/rm: must not fall through to host podman ──
+
+
+class TestSecretCommandsAppleContainer:
+    """Regression: `agentcage secret list/set/rm <cage>` on apple-container
+    must exit cleanly with the unsupported message instead of crashing into
+    host podman (which doesn't exist on most macOS installs).
+
+    The proper apple-container secret store is tracked in #120 (heavy lift
+    for `cage backup/restore` brings the secret-store abstraction). Until
+    then `cage create` env-passes secrets directly via the supervisor's
+    config; users edit them by editing cage.yaml + `cage update`.
+    """
+
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_secret_list_exits_unsupported(self, mock_state, mock_podman):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+
+        result = _runner().invoke(main, ["secret", "list", "demo"])
+
+        assert result.exit_code != 0
+        assert "apple-container" in result.output
+        assert "not yet implemented" in result.output
+        # Host podman must NEVER be instantiated.
+        mock_podman.assert_not_called()
+
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_secret_set_exits_unsupported(self, mock_state, mock_podman):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+
+        result = _runner().invoke(
+            main, ["secret", "set", "demo", "MY_KEY"], input="value\n",
+        )
+
+        assert result.exit_code != 0
+        assert "apple-container" in result.output
+        assert "not yet implemented" in result.output
+        mock_podman.assert_not_called()
+
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_secret_rm_exits_unsupported(self, mock_state, mock_podman):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+
+        result = _runner().invoke(main, ["secret", "rm", "demo", "MY_KEY"])
+
+        assert result.exit_code != 0
+        assert "apple-container" in result.output
+        assert "not yet implemented" in result.output
+        mock_podman.assert_not_called()
