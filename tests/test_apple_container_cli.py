@@ -379,18 +379,24 @@ class TestCageVerifyAppleContainerProbes:
 # ── cage backup / restore: still unsupported (Plan 3 PR-10) ──
 
 
-class TestCageBackupRestoreStillUnsupported:
-    """Backup/restore stay unsupported on apple-container until the
-    secret-store abstraction lands (Plan 3 PR-10)."""
+class TestCageBackupRestoreAppleContainer:
+    """`cage backup` / `cage restore` are wired on apple-container (PR-10).
+    Secret VALUES are NOT serialized — the manifest records expected env
+    names; operator re-sets them host-side before restore."""
 
     @patch("agentcage.cli.state")
-    def test_backup_exits_unsupported(self, mock_state):
+    def test_backup_rejects_include_secrets(self, mock_state):
+        """--include-secrets has no meaning on apple-container; reject
+        with a clear message instead of silently succeeding with empty
+        values."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
-        result = _runner().invoke(main, ["cage", "backup", "demo"])
+        result = _runner().invoke(
+            main, ["cage", "backup", "demo", "--include-secrets"],
+        )
         assert result.exit_code != 0
         assert "apple-container" in result.output
-        assert "not yet implemented" in result.output
+        assert "env-passed" in result.output
 
 
 # ── cage start / restart: do not instantiate host Podman ──

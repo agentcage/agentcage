@@ -2045,6 +2045,236 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
 # ── cage backup / restore ─────────────────────────────────
 
 
+def _cage_backup_apple_container(
+    name: str, cfg, output: str | None, include_secrets: bool,
+) -> None:
+    """Backup an apple-container cage to a tarball.
+
+    Apple-container backup is a different shape than container/vm:
+      - No host-podman secret store. Secrets are env-passed at start
+        from os.environ. We CANNOT serialize their values (we don't
+        know them after start). Manifest records the secret env names
+        so the operator knows what to re-set on the restore host;
+        --include-secrets is rejected with a clear message.
+      - No podman named_volumes. Apple-container has no equivalent yet
+        (it's in the silently-dropped knobs list, validated in PR-4).
+        Backup manifest's `named_volumes` is always empty.
+      - capture.jsonl + audit.jsonl live in the per-cage logs dir
+        (host-bind-mounted from the microVM by PR-5). Include both
+        when present.
+
+    The resulting tarball restores via the unchanged cage_restore code
+    path's apple-container branch (which also skips podman calls).
+    """
+    if include_secrets:
+        click.echo(
+            "error: --include-secrets is not supported on apple-container "
+            "(secrets are env-passed at start from the host environment, "
+            "not stored in a secret store; the backup manifest records the "
+            "expected env names so you can re-set them on the restore host)",
+            err=True,
+        )
+        sys.exit(1)
+
+    from agentcage.backends.apple_container import AppleContainerBackend
+    backend = AppleContainerBackend()
+    logs_dir = backend.logs_dir(name)
+
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if output is None:
+        output = f"{name}-backup-{ts}.tar.gz"
+
+    with tempfile.TemporaryDirectory() as staging:
+        staging_path = Path(staging)
+
+        # ── Config ──
+        config_dir = staging_path / "config"
+        config_dir.mkdir()
+        src_dir = Path(state.stored_config_path(name)).parent
+        for fname in ("cage.yaml", "metadata.json", "proxy-config.yaml"):
+            src = src_dir / fname
+            if src.is_file():
+                shutil.copy2(str(src), str(config_dir / fname))
+
+        # ── Secret env names (no values) ──
+        secret_envs = [r.env for r in (cfg.secret_injection or [])]
+        if secret_envs:
+            click.echo(
+                f"Secrets not included (apple-container env-pass model). "
+                f"After restore, re-set these on the host environment: "
+                f"{', '.join(secret_envs)}",
+            )
+
+        # ── Capture ──
+        has_capture = False
+        capture_src = logs_dir / "capture.jsonl"
+        if capture_src.is_file() and capture_src.stat().st_size > 0:
+            cap_dir = staging_path / "capture"
+            cap_dir.mkdir()
+            shutil.copy2(str(capture_src), str(cap_dir / "capture.jsonl"))
+            has_capture = True
+
+        # ── Audit log ──
+        has_audit = False
+        audit_src = logs_dir / "audit.jsonl"
+        if audit_src.is_file() and audit_src.stat().st_size > 0:
+            audit_dir = staging_path / "audit"
+            audit_dir.mkdir()
+            shutil.copy2(str(audit_src), str(audit_dir / "audit.jsonl"))
+            has_audit = True
+
+        # ── Manifest ──
+        manifest = {
+            "format_version": 1,
+            "agentcage_version": version("agentcage"),
+            "cage_name": name,
+            "isolation": "apple-container",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "has_secrets": bool(secret_envs),
+            "has_capture": has_capture,
+            "has_audit": has_audit,
+            "named_volumes": [],  # not supported on apple-container
+            "secret_keys": secret_envs,
+            "secrets_included": False,
+        }
+        (staging_path / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n"
+        )
+
+        with tarfile.open(output, "w:gz") as tar:
+            for item in staging_path.iterdir():
+                tar.add(str(item), arcname=f"agentcage-backup/{item.name}")
+
+    click.echo(f"Backup saved to {output}")
+    click.echo(f"  Secrets: {len(secret_envs)} env names (values not stored — re-set on restore host)")
+    click.echo(f"  Volumes: 0 (not supported on apple-container)")
+    click.echo(f"  Capture: {'yes' if has_capture else 'no'}")
+    click.echo(f"  Audit:   {'yes' if has_audit else 'no'}")
+
+
+def _cage_restore_apple_container(
+    tarball: str,
+    manifest: dict,
+    *,
+    new_name: str | None,
+    force: bool,
+    no_start: bool,
+) -> None:
+    """Restore an apple-container cage from a backup tarball.
+
+    Mirror of `_cage_backup_apple_container`: skip every host-podman
+    code path (secret store, named volume import), copy capture.jsonl
+    and audit.jsonl back into the per-cage logs dir, run `cage update`
+    style build + start.
+    """
+    from agentcage.backends.apple_container import AppleContainerBackend
+
+    target_name = new_name or manifest["cage_name"]
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', target_name):
+        click.echo(
+            "error: name must be 1-63 lowercase alphanumeric characters or "
+            f"hyphens, starting with a letter or digit (got: {target_name!r})",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Handle existing cage
+    if state.deployment_exists(target_name):
+        if not force:
+            click.echo(
+                f"error: cage '{target_name}' already exists "
+                f"(use --force to overwrite)",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo(f"Destroying existing cage '{target_name}'...")
+        try:
+            cfg = state.load_deployment_config(target_name)
+            backend = get_backend(cfg)
+            backend.stop(target_name)
+            backend.destroy_resources(target_name)
+        except Exception:
+            backend = AppleContainerBackend()
+            backend.stop(target_name)
+            backend.destroy_resources(target_name)
+        if state.deployment_exists(target_name):
+            state.remove_deployment(target_name)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with tarfile.open(tarball, "r:gz") as tar:
+            tar.extractall(tmpdir, filter="data")
+        backup_dir = Path(tmpdir) / "agentcage-backup"
+
+        # Warn about secrets the operator needs to re-set host-side.
+        expected_keys = manifest.get("secret_keys", [])
+        if expected_keys:
+            click.echo(
+                "Secrets are env-passed at start on apple-container — set "
+                "these on the host environment before `cage start`:",
+                err=True,
+            )
+            for k in expected_keys:
+                click.echo(f"  export {k}=<value>", err=True)
+
+        # Restore config
+        config_src = backup_dir / "config"
+        cage_yaml_src = config_src / "cage.yaml"
+        if not cage_yaml_src.is_file():
+            click.echo(
+                "error: invalid backup — missing config/cage.yaml",
+                err=True,
+            )
+            sys.exit(1)
+        if new_name:
+            with open(cage_yaml_src) as f:
+                import yaml
+                raw = yaml.safe_load(f)
+            raw["name"] = new_name
+            with open(cage_yaml_src, "w") as f:
+                yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
+        state.save_deployment(target_name, str(cage_yaml_src))
+
+        meta_src = config_src / "metadata.json"
+        if meta_src.is_file():
+            deploy_dir = Path(state.stored_config_path(target_name)).parent
+            shutil.copy2(str(meta_src), str(deploy_dir / "metadata.json"))
+
+        # Regenerate derived files
+        state.save_proxy_config(target_name)
+        state.save_dns_allowlist(target_name)
+
+        # Restore capture / audit into the per-cage logs dir BEFORE the
+        # backend's start() recreates the dir (start chmods to 1777 but
+        # preserves existing files).
+        ac_backend = AppleContainerBackend()
+        logs_dir = ac_backend.logs_dir(target_name)
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        for sub in ("capture", "audit"):
+            src = backup_dir / sub / f"{sub}.jsonl"
+            if src.is_file():
+                shutil.copy2(str(src), str(logs_dir / f"{sub}.jsonl"))
+
+        if no_start:
+            click.echo(
+                f"Cage state restored. "
+                f"Run: agentcage cage update {target_name} to build and start."
+            )
+            return
+
+        cfg = state.load_deployment_config(target_name)
+        # Build the wrapper image + start. We don't call `_build_and_deploy`
+        # (container/vm path with host podman + quadlets); just exercise
+        # the backend's own build + start directly.
+        ac_backend.build_artifacts(cfg, target_name)
+        ac_backend.generate_units(cfg, "", "", target_name)
+        ac_backend.install_units(
+            ac_backend.generate_units(cfg, "", "", target_name)
+        )
+        ac_backend.start(target_name)
+
+    click.echo(f"Cage '{target_name}' restored from {tarball}")
+
+
 @cage.command("backup")
 @click.argument("name")
 @click.option("-o", "--output", default=None, type=click.Path(),
@@ -2058,12 +2288,9 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         sys.exit(1)
 
     cfg = state.load_deployment_config(name)
-    # Backup pulls secrets out of host podman's secret store and exports
-    # named volumes via `podman volume export` — neither is available on
-    # apple-container today. Exit cleanly rather than crash on the first
-    # podman call.
     if _is_apple_container(cfg):
-        _exit_apple_container_unsupported("backup")
+        _cage_backup_apple_container(name, cfg, output, include_secrets)
+        return
     podman = _podman_for_cage(name)
 
     # Determine output path
@@ -2197,11 +2424,11 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
         )
         sys.exit(1)
 
-    # The apple-container backend has no host-podman secret store /
-    # named volume export, which `restore` relies on. Exit cleanly
-    # rather than crash on the first podman call.
     if manifest.get("isolation") == "apple-container":
-        _exit_apple_container_unsupported("restore")
+        _cage_restore_apple_container(
+            tarball, manifest, new_name=new_name, force=force, no_start=no_start,
+        )
+        return
 
     target_name = new_name or manifest["cage_name"]
 
