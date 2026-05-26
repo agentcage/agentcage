@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.8] - 2026-05-26
+
 ### Added
 
 - **apple-container honors `container.volumes:`.** Pre-fix the validator emitted `container.volumes: silently has no effect on apple-container (host bind mounts ... — the cage gets no host paths)` and the backend never passed the entries through. Apple's `container run` actually supports `--volume host:cage[:mode]` (we already use it for `/var/log/agentcage` and `/run/agentcage/secrets`), so the fix is to iterate `cfg.container.volumes` in `AppleContainerBackend.start()` and emit one `--volume` per entry. Volume entries are persisted in the per-cage unit JSON at `cage create` time (a `cage update` is the rebuild boundary, matching how the rest of the runtime config flows). Host-path safety mirrors the container backend's quadlet generator: `~` and `$VAR` are expanded; entries with unresolved variables, missing `:`, or whose host path resolves outside `$HOME` are skipped with a warning. This unblocks `agentcage run --project DIR` on apple-container — `${PROJECT_DIR}:/workspace:rw` from the scaffold j2 template now actually lands in the cage.
