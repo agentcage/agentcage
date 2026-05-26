@@ -593,6 +593,35 @@ class TestLoadConfigEdgeCases:
         cfg = load_config(str(p))
         assert cfg.container.drop_capabilities == ["NET_RAW"]
 
+    def test_invalid_yaml_raises_valueerror_not_traceback(self, tmp_path):
+        """Malformed cage.yaml must surface as ValueError with file:line:col,
+        not a raw yaml.scanner.ScannerError Python traceback. The CLI
+        catches ValueError and prints a clean `error: ...` message; a
+        raw ScannerError would dump a 20-line stack trace at the user
+        (the failure mode operators hit in the torture-session-findings
+        PR before the fix)."""
+        import pytest
+        p = tmp_path / "broken.yaml"
+        p.write_text("this: is: not: valid: yaml:")
+        with pytest.raises(ValueError) as excinfo:
+            load_config(str(p))
+        msg = str(excinfo.value)
+        assert "broken.yaml" in msg
+        assert "is not valid YAML" in msg
+        # Location info (line N, column N) must be embedded so the user
+        # knows where to look — yaml.YAMLError exposes problem_mark.
+        assert "line" in msg and "column" in msg
+
+    def test_unreadable_file_raises_valueerror(self, tmp_path):
+        """Same friendly-error contract for OSError (missing file,
+        permission denied, etc.)."""
+        import pytest
+        missing = tmp_path / "does-not-exist.yaml"
+        with pytest.raises(ValueError) as excinfo:
+            load_config(str(missing))
+        assert "could not read" in str(excinfo.value)
+        assert str(missing) in str(excinfo.value)
+
 
 class TestValidateConfig:
     def test_valid_config(self, minimal_yaml):

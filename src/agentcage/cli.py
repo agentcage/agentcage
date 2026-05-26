@@ -403,7 +403,11 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool,
     if show_timing:
         os.environ["AGENTCAGE_TIMING"] = "1"
 
-    cfg = load_config(config_path)
+    try:
+        cfg = load_config(config_path)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
     try:
         warnings = validate_config(cfg)
     except ValueError as e:
@@ -621,7 +625,11 @@ def cage_update(name: str | None, config_path: str | None,
         sys.exit(1)
 
     if config_path:
-        cfg = load_config(config_path)
+        try:
+            cfg = load_config(config_path)
+        except ValueError as e:
+            click.echo(f"error: {e}", err=True)
+            sys.exit(1)
         try:
             warnings = validate_config(cfg)
         except ValueError as e:
@@ -1577,7 +1585,11 @@ def _logs_vm(name, services, lines, no_follow, min_level=None):
     if not no_follow:
         inner.append("-f")
 
-    full_cmd = ["limactl", "shell", inst.name, "--",
+    # --workdir / suppresses the spurious "cd: <host-cwd>: No such file or
+    # directory" warning when the host's cwd isn't mounted in the VM. The
+    # LimaInstance.exec helper does this already but this code path bypasses
+    # it (uses os.execvp), so the flag has to be inlined here too.
+    full_cmd = ["limactl", "shell", "--workdir", "/", inst.name, "--",
                 "sg", "systemd-journal", "-c", shlex.join(inner)]
     if min_level is None:
         os.execvp("limactl", full_cmd)
@@ -1657,6 +1669,26 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
         click.echo("error: no command specified", err=True)
         sys.exit(1)
 
+    # Pre-flight: refuse to exec into a stopped cage. Without this the user
+    # got a raw downstream error — `no container with name or ID "<name>-
+    # cage" found` (podman, exit 125) or `instance "<name>" is stopped`
+    # (limactl, exit 1) — which buries the actual problem (cage isn't
+    # running). For VM cages also requires the Lima VM itself to be up;
+    # `is_running` returns false when the VM is shut down (the cage service
+    # check goes via systemctl which needs the VM running).
+    backend = get_backend(cfg)
+    try:
+        cage_active = backend.is_running(name, "cage")
+    except Exception:
+        cage_active = False
+    if not cage_active:
+        click.echo(
+            f"error: cage '{name}' is not running — "
+            f"start it with 'agentcage cage start {name}' first",
+            err=True,
+        )
+        sys.exit(1)
+
     # Alias expansion: if the first word matches an exec_alias, expand it
     if cmd[0] in cfg.exec_aliases:
         cmd = cfg.exec_aliases[cmd[0]] + cmd[1:]
@@ -1715,19 +1747,24 @@ def cage_shell(name: str, service: str, as_root: bool):
     if cfg.isolation == "vm":
         inst = LimaInstance(name)
         container = f"{name}-{service}"
+        # --workdir / on every `limactl shell` for the same reason as
+        # _logs_vm and vm.exec_argv — host cwd isn't mounted, default cd
+        # spews a "No such file or directory" before our command runs.
         # Auto-detect bash or fall back to sh inside the VM
         for shell in ("/bin/bash", "/bin/sh"):
             result = subprocess.run(
-                ["limactl", "shell", inst.name, "--",
+                ["limactl", "shell", "--workdir", "/", inst.name, "--",
                  "podman", "exec", container, "test", "-x", shell],
                 capture_output=True,
             )
             if result.returncode == 0:
                 exec_flags = ["-it"] if sys.stdin.isatty() else []
-                os.execvp("limactl", ["limactl", "shell", inst.name, "--",
+                os.execvp("limactl", ["limactl", "shell", "--workdir", "/",
+                          inst.name, "--",
                           "podman", "exec", *exec_flags, container, shell])
         exec_flags = ["-it"] if sys.stdin.isatty() else []
-        os.execvp("limactl", ["limactl", "shell", inst.name, "--",
+        os.execvp("limactl", ["limactl", "shell", "--workdir", "/",
+                  inst.name, "--",
                   "podman", "exec", *exec_flags, container, "/bin/sh"])
 
     if _is_apple_container(cfg):

@@ -632,7 +632,13 @@ class VmBackend:
     ) -> list[str]:
         inst = self._instance(name)
         flags = ["-it"] if interactive else []
-        return ["limactl", "shell", inst.name, "--",
+        # --workdir / suppresses the spurious "cd: <host-cwd>: No such file
+        # or directory" warning when the host's cwd isn't mounted in the VM
+        # (only ~/.config/agentcage and ~/.local/share/agentcage are). The
+        # v0.21.13 fix lives in LimaInstance.exec; this argv builder bypasses
+        # the helper (caller uses os.execvp), so the flag has to be inlined
+        # here too. Same for logs_argv / audit_argv below.
+        return ["limactl", "shell", "--workdir", "/", inst.name, "--",
                 "podman", "exec", *flags, f"{name}-{service}", *cmd]
 
     def logs_argv(
@@ -656,7 +662,7 @@ class VmBackend:
             journal_argv.append("-f")
         if lines:
             journal_argv += ["-n", str(lines)]
-        return ["limactl", "shell", inst.name, "--",
+        return ["limactl", "shell", "--workdir", "/", inst.name, "--",
                 "sg", "systemd-journal", "-c", shlex.join(journal_argv)]
 
     def audit_argv(
@@ -676,5 +682,5 @@ class VmBackend:
             journal_argv.append("-f")
         else:
             journal_argv += ["-n", "10000"]
-        return ["limactl", "shell", inst.name, "--",
+        return ["limactl", "shell", "--workdir", "/", inst.name, "--",
                 "sg", "systemd-journal", "-c", shlex.join(journal_argv)]
