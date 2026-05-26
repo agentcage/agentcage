@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.16] - 2026-05-26
+
+A torture session against v0.21.15's `agentcage run -i` exposed that the
+interactive-domains prompt had been dead since #56 in v0.10.0 — matcher
+mismatch, dedup bug, and ultimately a TTY-ownership conflict between
+`podman exec -it` and the monitor's `/dev/tty` read that can't be fixed
+without a pty forwarder refactor. Following the thread surfaced a deeper
+issue: `domain add` / `domain rm` were restarting the entire cage stack
+to apply changes (killing any interactive session), and on the VM
+backend the restart didn't even pick up the new bytes because Lima's
+reverse-sshfs mount caches host writes. Cleaning that up paid for the
+cycle: container and VM cages now live-reload domain edits without
+restarting the cage, the broken `-i` flag is gone, and `cage edit` is
+back with validation, atomic-write, backup, and auto-reload.
+
 ### Added
 
 - **`agentcage cage edit NAME` — restored, with teeth.** Opens the stored
