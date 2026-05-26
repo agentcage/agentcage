@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.15] - 2026-05-26
+
+Two apple-container parity fixes surfaced by the torture-mac plan against v0.21.13.
+
 ### Fixed
 
 - **apple-container honors `container.env:`.** The container backend wires `cc.env` to systemd Quadlet `Environment=` entries via `quadlets.py:338`, but the apple-container backend's `start()` never read `cfg.container.env` — every entry was silently dropped, and `validate_config`'s `_ac_silent_drops` list didn't include it either, so the operator got no warning. A cage.yaml with `container.env: {FOO: bar}` had `FOO` set on Linux/container and unset on apple-container. `generate_units` now persists `container.env` (with `$VAR` already expanded host-side, matching the quadlets behavior) into the per-cage unit JSON; `start()` reads it back and emits one `-e KEY=VAL` per entry to `container run`, sequenced before the `secret_injection` placeholder `-e` so the two never collide. Surfaced by torture-mac F1 against v0.21.13.
