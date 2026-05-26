@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.10] - 2026-05-26
+
+Two cross-backend exfil-channel hotfixes surfaced by cross-model CTF runs (Claude + GPT + Grok) against 0.21.9. **Upgrade recommended for any deployment with `secret_injection:` configured OR any deployment relying on `cage audit` traces for compliance evidence.** Both the container and apple-container backends are affected; both are fixed in the same release.
+
+### Security
+
+- **`security(dns)`: scope dnsmasq recursion to allowlisted zones — close non-A-record exfil channel.** Pre-this-release, the DNS sidecars on both backends only sinkholed A and AAAA queries: `--address=/#/198.51.100.1` (container backend) catches address records, but TXT / MX / NS / SRV / CNAME queries to the same arbitrary names recursed to the configured upstream resolvers. An attacker who owns a delegated subdomain could encode data in DNS labels and exfiltrate via non-A queries fully out-of-band — never touching mitmproxy. The apple-container backend was worse: `data/apple-container/dnsmasq.conf` had `server=1.1.1.1` / `server=8.8.8.8` with no `local=` / `address=` filters at all, so every query of every type forwarded upstream. Now: in allowlist mode, both backends emit per-allowlisted-apex `server=/<apex>/<upstream>` lines instead of a blanket default forwarder, so non-A queries to non-allowed zones return REFUSED at dnsmasq rather than recursing. `--no-resolv` and the `--address=/#/198.51.100.1` A/AAAA catch-all remain as defense-in-depth. The apple-container `dnsmasq.conf` was templated (new `dnsmasq.conf.j2` + `render_dnsmasq_conf()` in `apple_container/wrapper.py`) so the allowlist threads through at cage-build time. Blocklist / open-DNS mode (container backend) intentionally keeps the blanket forwarders. 10 new regression tests pin the bypass shape (regex on `--server <ip>` / `server=[^/]`) so future refactors can't silently regress. (#176)
+- **`security(proxy)`: block non-HTTP TCP bypass of L7 policy hooks.** Pre-this-release, the mitmproxy addons on both backends only defined `request` / `response` / `websocket_message` hooks. mitmproxy in transparent mode falls back to `TCPLayer` for traffic it can't parse as HTTP — including raw TCP and non-HTTP-inside-TLS — and `TCPLayer` bridges bytes unmodified to the upstream destination. The cage workload could open a raw socket to any inspected port (80, 443) on any IP, write arbitrary bytes, and have them delivered to the original destination, bypassing the allowlist gate, the inspector chain (`secrets`, `entropy`, `content-type`, `body-size`), and secret injection. Confirmed across both backends in CTF runs: raw `CANARY-<ts>\r\n` bytes to `1.1.1.1:443` elicited a Cloudflare 400 — proving the payload reached upstream. Now: both addons add a `tcp_start(flow)` hook that sets `flow.server_conn.error = "..."` (mitmproxy's `open_connection` in `proxy/server.py:196` checks this after `server_connect` and aborts before opening the upstream socket — load-bearing belt, no bytes leave the cage) AND calls `flow.kill()` for the audit pipeline (with a `flow.killable` guard against double-kill). `tcp_start` covers both raw TCP and non-HTTP-inside-TLS in one hook because `next_layer` falls back to `TCPLayer` for either case. Legitimate HTTP/HTTPS flows go through `HttpLayer` and never produce a `TCPFlow`, so they're untouched. `connection_strategy=lazy` is preserved (smaller diff, no upstream socket wasted on flows that will be killed). 12 new regression tests cover raw TCP to IP, non-HTTP TLS with SNI, unknown-destination defensive path, already-killed flow guard, and a structural assertion that the supervisor keeps `connection_strategy=lazy`. (#177)
+
+### Notes for operators
+
+- Cages must be recreated (`cage destroy` + recreate) or updated (`cage update`) to pick up the new DNS template and the new addon hooks. Existing running cages are unaffected until they restart.
+- The `cage audit` JSONL now records killed non-HTTP TCP flows. If you have downstream tooling that strict-mode parses audit entries, verify it tolerates the additive fields introduced in 0.21.9 (`authoritative_host`, `host_mismatch`) and 0.21.10 (TCP-kill entries).
+- The apple-container `data/apple-container/dnsmasq.conf` (previously a static file) is now `dnsmasq.conf.j2`. If you forked or patched the static file, port your changes to the template.
+
+### Not addressed in this release
+
+Still queued from prior CTF rounds:
+
+- [#170](https://github.com/agentcage/agentcage/issues/170) — `.git/hooks/` in `/workspace` is a cage→host pivot vector
+- [#173](https://github.com/agentcage/agentcage/issues/173) — `.claude/settings.json` is a cage→cage hooks-injection vector
+- Apple-container F3 — `/var/log/agentcage` 1777 permissions inherited from virtiofs bind allow audit-log forgery
+- Apple-container F4 — virtiofs `/workspace` and `/var/log/agentcage` mounted without `noexec,nosuid,nodev`
+- Container backend F6 — secret injector `inject_to: ["anthropic.com"]` matches zone-suffix, not host-exact — key would leak to `www.anthropic.com` if a request hit there
+
 ## [0.21.9] - 2026-05-26
 
 Critical hotfix for the apple-container backend. **Upgrade immediately for any apple-container deployment that uses `secret_injection:` (the default for the `claude-code` / `codex` / `pi` scaffolds).** The container backend on Linux is unaffected — its MITM setup does not use `keep_host_header`.
