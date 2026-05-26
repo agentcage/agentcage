@@ -1999,6 +1999,288 @@ def test_response_redaction_skips_binary_body(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# allowlist_addon: REQUEST-side redaction (capture-leak fix)
+#
+# ``_maybe_inject`` substitutes the real secret value into both request
+# headers and request body so the upstream sees a working key. Without
+# a symmetric ``_maybe_redact_request`` running BEFORE the capture
+# writer serializes the flow, those real-value bytes land on disk in
+# ``capture.jsonl`` — which is bind-mounted into the cage rootfs at
+# mode 0644 (cage-readable). A cage workload can ``grep sk- /var/log/
+# agentcage/capture.jsonl`` and recover the live ``ANTHROPIC_API_KEY``,
+# defeating the whole placeholder-injection trust model. The proxy held
+# the raw key precisely so the cage wouldn't see it; capture brought it
+# right back.
+#
+# These tests cover the addon's new ``_maybe_redact_request`` method
+# directly and end-to-end through the request→response capture pipeline.
+# ---------------------------------------------------------------------------
+
+
+def _make_request_redact_flow(*, host, headers=None, body=""):
+    """Mock flow shaped for ``_maybe_redact_request``.
+
+    Provides the get_text/set_text pair that backs body editing, and a
+    headers dict whose ``items()`` returns a list (the addon calls it
+    with no kwargs — matching the inject path).
+    """
+    flow = MagicMock()
+    flow.request.pretty_host = host
+    flow.client_conn.sni = host
+
+    class _Headers(dict):
+        def items(self, multi=False):  # noqa: ARG002
+            return list(super().items())
+
+    flow.request.headers = _Headers(dict(headers or {}))
+
+    state = {"text": body}
+    flow.request.get_text.side_effect = lambda strict=True: state["text"]
+
+    def _set_text(new):
+        state["text"] = new
+        flow.request.content = new.encode()
+
+    flow.request.set_text.side_effect = _set_text
+    flow.request.content = body.encode() if isinstance(body, str) else body
+    return flow
+
+
+def test_maybe_redact_request_replaces_value_in_headers(tmp_path, monkeypatch):
+    """The new request-side redactor scrubs the raw secret out of the
+    Authorization header before the capture writer reads it."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_request_redact_flow(
+        host="httpbin.org",
+        headers={"Authorization": "Bearer redact-test-xyz"},
+    )
+
+    redacted = addon._maybe_redact_request(flow)
+
+    assert redacted == ["AGENTCAGE_REDACT_SECRET"]
+    assert flow.request.headers["Authorization"] == (
+        "Bearer {{AGENTCAGE_REDACT_SECRET}}"
+    )
+
+
+def test_maybe_redact_request_replaces_value_in_body(tmp_path, monkeypatch):
+    """Body-bearing requests (POST JSON, etc) also get the real value
+    swapped back to the placeholder."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_request_redact_flow(
+        host="httpbin.org",
+        body='{"x-api-key": "redact-test-xyz"}',
+    )
+
+    redacted = addon._maybe_redact_request(flow)
+
+    assert redacted == ["AGENTCAGE_REDACT_SECRET"]
+    assert flow.request.content == (
+        b'{"x-api-key": "{{AGENTCAGE_REDACT_SECRET}}"}'
+    )
+
+
+def test_maybe_redact_request_scoped_to_inject_to_host(tmp_path, monkeypatch):
+    """Mirror of response-side scoping: a request to a host outside the
+    rule's ``inject_to`` is NOT scanned. Otherwise unrelated allowlisted
+    upstreams would have legitimate text mangled (e.g. UUIDs that
+    happen to match a secret value as substring). This also matches the
+    inject path's host gate — symmetry is the whole point."""
+    _, addon = _build_addon(
+        monkeypatch, tmp_path,
+        inject_to=("httpbin.org",),
+        allowlist=("httpbin.org", "example.com"),
+    )
+    flow = _make_request_redact_flow(
+        host="example.com",  # allowlisted but NOT in inject_to
+        body="coincidence: redact-test-xyz appears here",
+    )
+
+    redacted = addon._maybe_redact_request(flow)
+
+    assert redacted == []
+    assert b"redact-test-xyz" in flow.request.content
+
+
+def test_maybe_redact_request_skips_binary_body(tmp_path, monkeypatch):
+    """Binary request bodies (uploads, etc) pass through unchanged —
+    same defensive try/except shape as ``_maybe_inject`` and
+    ``_maybe_redact``. Headers still scanned."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    binary = bytes([0xff, 0xd8]) + b"redact-test-xyz" + bytes([0x00])
+    flow = _make_request_redact_flow(
+        host="httpbin.org",
+        headers={"X-Trace": "Bearer redact-test-xyz"},
+    )
+    # Override get_text to raise — mimics mitmproxy on undecodable bytes.
+    flow.request.get_text.side_effect = UnicodeDecodeError(
+        "utf-8", binary, 0, 1, "binary body",
+    )
+    flow.request.content = binary
+
+    redacted = addon._maybe_redact_request(flow)
+
+    # Body untouched (binary skip), but header still got scrubbed.
+    assert flow.request.content == binary
+    assert flow.request.headers["X-Trace"] == (
+        "Bearer {{AGENTCAGE_REDACT_SECRET}}"
+    )
+    assert redacted == ["AGENTCAGE_REDACT_SECRET"]
+
+
+def test_maybe_redact_request_keyed_on_authoritative_host(tmp_path, monkeypatch):
+    """Symmetric to the inject path: the host used for ``inject_to``
+    matching is the SNI (authoritative), NOT the attacker-controlled
+    Host header. A spoof that sneaks past the addon's request hook
+    shouldn't be able to trick the request-side redactor either."""
+    _, addon = _build_addon(
+        monkeypatch, tmp_path,
+        inject_to=("httpbin.org",),
+        allowlist=("httpbin.org",),
+    )
+    flow = _make_request_redact_flow(
+        host="example.com",  # cage-claimed Host header
+        body="value: redact-test-xyz",
+    )
+    # SNI says the bytes actually went to httpbin.org — the authoritative
+    # host. Redaction should fire (matches inject_to=httpbin.org).
+    flow.client_conn.sni = "httpbin.org"
+
+    redacted = addon._maybe_redact_request(flow)
+
+    assert redacted == ["AGENTCAGE_REDACT_SECRET"]
+    assert flow.request.content == b"value: {{AGENTCAGE_REDACT_SECRET}}"
+
+
+def test_capture_jsonl_never_contains_real_secret_value(tmp_path, monkeypatch):
+    """End-to-end: the load-bearing assertion. Run the addon's full
+    request→response pipeline with capture enabled and a body that
+    contains the placeholder. The upstream will see the substituted
+    real value (inject_request worked), but the on-disk capture.jsonl
+    must NOT contain the real value — only the placeholder.
+
+    Uses a clearly-synthetic ``sk-ant-api03-FAKE-...`` value so no
+    real-key shape can possibly leak into the test fixture."""
+    fake_real = "sk-ant-api03-FAKE-TEST-VALUE-FOR-REDACTION-1234567890"
+    _, addon = _build_addon_with_capture(
+        monkeypatch, tmp_path,
+        capture_cfg={
+            "enable_har": True,
+            "max_body_size": 10485760,
+            "domains": ["api.anthropic.com"],
+        },
+        allowlist=("api.anthropic.com",),
+    )
+    # Wire a rule so _maybe_inject substitutes on outbound and
+    # _maybe_redact_request restores placeholder pre-capture.
+    monkeypatch.setenv("AGENTCAGE_LEAK_SECRET", fake_real)
+    addon._resolved_secrets = [{
+        "env": "AGENTCAGE_LEAK_SECRET",
+        "placeholder": "{{AGENTCAGE_LEAK_SECRET}}",
+        "value": fake_real,
+        "inject_to": ["api.anthropic.com"],
+        "transform": "",
+        "transform_fn": None,
+    }]
+
+    req_body = (
+        '{"model": "claude", "x-api-key": "{{AGENTCAGE_LEAK_SECRET}}"}'
+    )
+    flow = _make_flow_with_bodies(
+        host="api.anthropic.com",
+        req_body=req_body,
+        resp_body='{"ok": true}',
+        path="/v1/messages",
+        req_content_type="application/json",
+    )
+    # Mock get_text/set_text on the request side so _maybe_inject and
+    # _maybe_redact_request can mutate the body in place.
+    req_state = {"text": req_body}
+    flow.request.get_text.side_effect = lambda strict=True: req_state["text"]
+
+    def _set_req_text(new):
+        req_state["text"] = new
+        flow.request.content = new.encode()
+
+    flow.request.set_text.side_effect = _set_req_text
+    # SNI matches authoritative host so the addon's inject + redact
+    # both fire for this rule.
+    flow.client_conn.sni = "api.anthropic.com"
+
+    addon.request(flow)
+    # Sanity: the upstream actually received the substituted value —
+    # this is what the existing inject path was designed for. We only
+    # care that the capture file below does NOT carry these bytes.
+    assert fake_real in flow.request.content.decode()
+
+    addon.response(flow)
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert fake_real not in cap_text, (
+        f"real-key bytes leaked into capture.jsonl: {cap_text!r}"
+    )
+    # Both the inbound (cage-visible) and outbound (wire) snapshots
+    # should now show the placeholder.
+    cap_entry = json.loads(cap_text.splitlines()[0])
+    assert "{{AGENTCAGE_LEAK_SECRET}}" in cap_entry["inbound"]["request"]["body"]
+    assert "{{AGENTCAGE_LEAK_SECRET}}" in cap_entry["outbound"]["request"]["body"]
+
+
+def test_capture_jsonl_legacy_path_never_contains_real_value(
+    tmp_path, monkeypatch,
+):
+    """The legacy headers-only capture path (capture.enable_har: false,
+    or no capture config) is the fallback that ships pre-this-PR. It
+    serializes ``flow.request.headers.items()`` AFTER ``_maybe_inject``
+    has run. Without the new ``_maybe_redact_request`` running first,
+    real secret bytes from injected headers land in the legacy
+    capture.jsonl too. Symmetric coverage to the rich HAR path above."""
+    fake_real = "sk-ant-api03-FAKE-TEST-VALUE-FOR-REDACTION-1234567890"
+    _, addon = _build_addon(
+        monkeypatch, tmp_path,
+        secret_value=fake_real,
+        inject_to=("api.anthropic.com",),
+        allowlist=("api.anthropic.com",),
+    )
+    # legacy path: no CaptureWriter — addon writes lean entries via
+    # self._capture_fh. Confirm we're on that path.
+    assert addon._capture_writer is None
+    assert addon._capture_fh is not None
+
+    # Build a request flow that carries the placeholder in the header.
+    flow = _make_request_flow(
+        pretty_host="api.anthropic.com",
+        sni="api.anthropic.com",
+        method="POST",
+        path="/v1/messages",
+        headers={
+            "x-api-key": "{{AGENTCAGE_REDACT_SECRET}}",
+            "Content-Type": "application/json",
+        },
+    )
+    addon.request(flow)
+    # Sanity: inject worked — header now has the real bytes on the wire.
+    assert flow.request.headers["x-api-key"] == fake_real
+
+    # Attach a response so the legacy capture path fires.
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.reason = "OK"
+    resp.headers = {}
+    resp.content = b'{"ok": true}'
+    resp.get_text.side_effect = lambda strict=True: '{"ok": true}'
+    flow.response = resp
+
+    addon.response(flow)
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert fake_real not in cap_text, (
+        f"real-key bytes leaked into legacy capture.jsonl: {cap_text!r}"
+    )
+    assert "{{AGENTCAGE_REDACT_SECRET}}" in cap_text
+
+
+# ---------------------------------------------------------------------------
 # allowlist_addon: Host-header spoofing bypass (CTF F1)
 #
 # Regression coverage for the CTF finding: with mitmproxy running in

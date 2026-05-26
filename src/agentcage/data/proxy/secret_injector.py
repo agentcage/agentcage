@@ -301,6 +301,73 @@ class SecretInjector:
                 names.append(rule.name)
         return names
 
+    def redact_request(self, flow: http.HTTPFlow) -> list[str]:
+        """Replace real secret values with placeholders in the outbound
+        REQUEST after it has been forwarded upstream — so the capture
+        writer never serializes raw secret bytes to ``capture.jsonl``.
+
+        This is the request-side mirror of ``redact_response``. It must
+        run AFTER ``inject_request`` has put the real secrets on the wire
+        (mitmproxy forwards on ``request`` hook return) and BEFORE any
+        capture serialization reads ``flow.request.url`` /
+        ``flow.request.headers`` / ``flow.request.content``. The capture
+        file is bind-mounted into the cage at mode 0644; without this
+        step the OUTBOUND request snapshot (by design "what went out
+        on the wire") would land the raw ``ANTHROPIC_API_KEY`` on disk
+        where the cage workload can read it.
+
+        Distinct from the ``redact_to`` path: ``_redact_request`` runs
+        at injection time for explicitly tagged ``redact_to`` domains
+        (the cage agent shouldn't see its own secret echoed back from
+        a non-trusted upstream). ``redact_request`` runs for EVERY rule
+        on EVERY domain after the upstream send, purely to scrub the
+        in-memory flow before disk serialization. Rules are processed
+        longest real-value first to avoid partial-match issues.
+
+        Returns the list of secret names that were redacted.
+        """
+        if not self.rules:
+            return []
+
+        sorted_rules = sorted(
+            self.rules, key=lambda r: len(r.real_value), reverse=True
+        )
+
+        names: list[str] = []
+        for rule in sorted_rules:
+            real = rule.real_value
+            real_bytes = real.encode()
+            ph = rule.placeholder
+            ph_bytes = ph.encode()
+
+            found = False
+
+            # Redact URL (rules that injected into query strings).
+            if real in flow.request.url:
+                flow.request.url = flow.request.url.replace(real, ph)
+                found = True
+
+            # Redact headers.
+            for k in list(flow.request.headers.keys()):
+                v = flow.request.headers[k]
+                if real in v:
+                    flow.request.headers[k] = v.replace(real, ph)
+                    found = True
+
+            # Redact body — only when the bytes are actually present;
+            # avoid touching ``flow.request.content`` otherwise so we
+            # don't churn binary bodies that legitimately contain no
+            # secret material.
+            if flow.request.content and real_bytes in flow.request.content:
+                flow.request.content = flow.request.content.replace(
+                    real_bytes, ph_bytes
+                )
+                found = True
+
+            if found:
+                names.append(rule.name)
+        return names
+
     def redact_response(self, flow: http.HTTPFlow) -> list[str]:
         """Replace real secret values with placeholders in the response.
 

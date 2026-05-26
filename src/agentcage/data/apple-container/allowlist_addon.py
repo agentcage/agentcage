@@ -602,6 +602,68 @@ class AllowlistAddon:
                     transforms[rule["env"]] = rule["transform"]
         return injected, transforms
 
+    def _maybe_redact_request(self, flow: http.HTTPFlow) -> list[str]:
+        """Replace real secret values with placeholders on the (already-sent)
+        outbound REQUEST, so the capture writer never serializes raw
+        secret bytes to ``capture.jsonl``.
+
+        Mirror of ``_maybe_inject`` for the request path, but RUN AFTER
+        the proxy has already forwarded the mutated request upstream —
+        we are restoring the placeholder form on the in-memory flow
+        object before ``CaptureWriter.snapshot_request`` / the legacy
+        headers-only fallback reads ``flow.request.headers`` and
+        ``flow.request.content`` for disk serialization.
+
+        Why this exists: ``capture.jsonl`` is bind-mounted into the cage
+        rootfs (mode 0644, world-readable so ``agentcage cage har`` can
+        read it from the host). Without this redaction, the OUTBOUND
+        capture snapshot — by design "what went out on the wire" —
+        would land real ``ANTHROPIC_API_KEY`` (or whichever rule's value)
+        on disk where the cage workload can ``cat`` it. That defeats
+        the placeholder-injection trust model: the proxy held the raw
+        key precisely so the cage wouldn't see it; capture brings it
+        right back.
+
+        Host scope, sort order, binary-skip and ``inject_to`` semantics
+        match ``_maybe_redact`` (the response-side redactor) for
+        symmetry. Returns the list of env names that had at least one
+        substitution performed.
+        """
+        auth_host = _authoritative_host(flow)
+        host = (auth_host or flow.request.pretty_host).lower()
+        redacted: list[str] = []
+        # Sort longest value first so a secret that is a substring of
+        # another secret doesn't leave a partial leak behind.
+        sorted_rules = sorted(
+            self._resolved_secrets,
+            key=lambda r: len(r["value"]),
+            reverse=True,
+        )
+        for rule in sorted_rules:
+            value = rule["value"]
+            if not value:  # defensive — _resolved_secrets already filters
+                continue
+            if not self._host_matches_inject_to(host, rule["inject_to"]):
+                continue
+            placeholder = rule["placeholder"]
+            replaced_any = False
+            # Request headers
+            for name, val in list(flow.request.headers.items()):
+                if value in val:
+                    flow.request.headers[name] = val.replace(value, placeholder)
+                    replaced_any = True
+            # Request body — text only; binary bodies pass through.
+            try:
+                body_text = flow.request.get_text(strict=False)
+            except (UnicodeDecodeError, ValueError):
+                body_text = None
+            if body_text and value in body_text:
+                flow.request.set_text(body_text.replace(value, placeholder))
+                replaced_any = True
+            if replaced_any:
+                redacted.append(rule["env"])
+        return redacted
+
     def _maybe_redact(self, flow: http.HTTPFlow) -> list[str]:
         """Replace real secret values with placeholders on inbound responses.
 
@@ -947,6 +1009,39 @@ class AllowlistAddon:
             except Exception as exc:  # pragma: no cover
                 ctx.log.warn(
                     f"[agentcage] capture outbound-response snapshot failed: {exc}"
+                )
+
+        # ── REQUEST-side redaction (CRITICAL) ──────────────────
+        # At this point the upstream has already received the
+        # secret-substituted bytes (mitmproxy forwards the request after
+        # the ``request`` hook returns). Now we restore placeholder form
+        # on ``flow.request.headers`` / ``flow.request.content`` so the
+        # capture serialization that follows — both the legacy headers-
+        # only path and the rich CaptureWriter ``snapshot_request`` /
+        # the stashed ``pending["outbound_req"]`` — does NOT land raw
+        # secret bytes in ``capture.jsonl``. capture.jsonl is bind-
+        # mounted into the cage rootfs (mode 0644) so anything serialized
+        # post-inject is readable by the cage workload. The injected
+        # request is already on the wire to the upstream, so mutating
+        # ``flow.request`` here is purely cosmetic for downstream
+        # serializers — no traffic effect.
+        self._maybe_redact_request(flow)
+        # Refresh the stashed outbound-request snapshot with the redacted
+        # form, overwriting the post-inject snapshot the ``request()``
+        # hook stashed (which still held the raw secret bytes — that
+        # snapshot was the leak point).
+        if (
+            self._capture_writer is not None
+            and pending is not None
+        ):
+            try:
+                pending["outbound_req"] = (
+                    self._capture_writer.snapshot_request(flow)
+                )
+            except Exception as exc:  # pragma: no cover
+                ctx.log.warn(
+                    f"[agentcage] capture outbound-request re-snapshot "
+                    f"failed: {exc}"
                 )
 
         # Redact BEFORE inbound capture so the inbound view never sees raw values.

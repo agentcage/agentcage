@@ -433,6 +433,208 @@ class TestRedactRequest:
         assert names == ["KEY"]
 
 
+# ── Post-upstream request redaction (capture-leak fix) ──
+#
+# ``inject_request`` mutates ``flow.request`` in place, substituting the
+# real secret value into headers, URL, and body so the upstream sees the
+# real key. Without a symmetric ``redact_request`` running BEFORE the
+# capture writer serializes the flow, those real-value bytes land on
+# disk in ``capture.jsonl`` — which is bind-mounted into the cage
+# rootfs at mode 0644 (cage-readable). A cage workload can then
+# ``grep sk- /var/log/agentcage/capture.jsonl`` and recover the live
+# ``ANTHROPIC_API_KEY``, defeating the entire placeholder-injection
+# trust model.
+#
+# ``redact_request`` is the inverse of ``inject_request``: AFTER the
+# proxy has forwarded the mutated request upstream, it restores
+# placeholder form on the in-memory flow so subsequent serialization
+# (capture writer, addon logging) never sees the raw secret bytes.
+
+
+class TestRedactRequestPostUpstream:
+    def test_redacts_real_value_in_request_body(self):
+        """Symmetric to ``inject_request``: a real value injected into
+        the body is replaced with the placeholder."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "sk-real-secret",
+                          inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(content="payload with sk-real-secret here")
+        names = inj.redact_request(flow)
+        assert flow.request.content == b"payload with {{KEY}} here"
+        assert names == ["KEY"]
+
+    def test_redacts_real_value_in_request_headers(self):
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "sk-real-secret",
+                          inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(headers={"Authorization": "Bearer sk-real-secret"})
+        names = inj.redact_request(flow)
+        assert flow.request.headers["Authorization"] == "Bearer {{KEY}}"
+        assert names == ["KEY"]
+
+    def test_redacts_real_value_in_request_url(self):
+        """URL-injected secrets (query string) are also redacted."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "sk-real-secret",
+                          inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://api.anthropic.com/v1?key=sk-real-secret",
+        )
+        names = inj.redact_request(flow)
+        assert flow.request.url == (
+            "https://api.anthropic.com/v1?key={{KEY}}"
+        )
+        assert names == ["KEY"]
+
+    def test_redacts_regardless_of_domain(self):
+        """Post-upstream redaction applies to all destinations, not just
+        ``inject_to``. The flow object is about to be serialized to disk
+        — any real-value byte that made it there for any reason has to
+        be scrubbed before the cage can read the file."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "sk-real-secret",
+                          inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://other.com/api",
+            host="other.com",
+            content="leaked: sk-real-secret",
+        )
+        names = inj.redact_request(flow)
+        assert flow.request.content == b"leaked: {{KEY}}"
+        assert names == ["KEY"]
+
+    def test_longest_first_ordering(self):
+        """When one real value is a substring of another, the longer one
+        is replaced first — same defensive ordering as ``redact_response``."""
+        inj = _injector_with_rules([
+            InjectionRule("SHORT", "{{SHORT}}", "secret", inject_to=[]),
+            InjectionRule("LONG", "{{LONG}}", "secret-long-value",
+                          inject_to=[]),
+        ])
+        flow = _make_flow(content="the value is secret-long-value here")
+        names = inj.redact_request(flow)
+        assert flow.request.content == b"the value is {{LONG}} here"
+        assert "LONG" in names
+
+    def test_noop_when_no_rules(self):
+        inj = SecretInjector()
+        flow = _make_flow(content="clean body")
+        names = inj.redact_request(flow)
+        assert flow.request.content == b"clean body"
+        assert names == []
+
+    def test_noop_when_no_real_value_present(self):
+        """Body that doesn't contain any rule's real value isn't mutated."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "sk-real-secret",
+                          inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(content="no secret in here")
+        names = inj.redact_request(flow)
+        assert flow.request.content == b"no secret in here"
+        assert names == []
+
+    def test_inject_then_redact_round_trip(self):
+        """Full round-trip: inject_request mutates → redact_request
+        restores. After the pair, the flow looks placeholder-form again
+        — exactly what the capture writer needs to see before serializing.
+        """
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "sk-real-secret",
+                          inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://api.anthropic.com/v1?k={{KEY}}",
+            headers={"Authorization": "Bearer {{KEY}}"},
+            content="{{KEY}} in body",
+        )
+        # Inject — real value substituted in all three places.
+        injected = inj.inject_request(flow)
+        assert injected == ["KEY"]
+        assert "sk-real-secret" in flow.request.url
+        assert flow.request.headers["Authorization"] == (
+            "Bearer sk-real-secret"
+        )
+        assert flow.request.content == b"sk-real-secret in body"
+
+        # Redact — placeholder restored everywhere.
+        redacted = inj.redact_request(flow)
+        assert redacted == ["KEY"]
+        assert "sk-real-secret" not in flow.request.url
+        assert "sk-real-secret" not in flow.request.headers["Authorization"]
+        assert b"sk-real-secret" not in flow.request.content
+        assert flow.request.url == "https://api.anthropic.com/v1?k={{KEY}}"
+        assert flow.request.headers["Authorization"] == "Bearer {{KEY}}"
+        assert flow.request.content == b"{{KEY}} in body"
+
+    def test_capture_serializes_only_placeholders_after_redact(self, tmp_path):
+        """End-to-end: snapshot_request AFTER inject+redact must contain
+        only placeholders, never the real value. This is the load-bearing
+        assertion — what actually lands in ``capture.jsonl``."""
+        import json
+        import sys
+        from pathlib import Path
+        # Stage the proxy/ dir on sys.path so ``from capture import
+        # CaptureWriter`` resolves at runtime — same trick the addon
+        # uses inside the cage.
+        capture_src = (
+            Path(__file__).resolve().parent.parent
+            / "src" / "agentcage" / "data" / "proxy"
+        )
+        if str(capture_src) not in sys.path:
+            sys.path.insert(0, str(capture_src))
+        from capture import CaptureWriter  # type: ignore
+
+        inj = _injector_with_rules([
+            InjectionRule(
+                "ANTHROPIC_API_KEY",
+                "{{ANTHROPIC_API_KEY}}",
+                "sk-ant-api03-FAKE-TEST-VALUE-FOR-REDACTION-1234567890",
+                inject_to=["anthropic.com"],
+            ),
+        ])
+
+        class _Headers(dict):
+            # CaptureWriter.snapshot_request calls items(multi=True);
+            # a plain dict's items() doesn't accept the kwarg.
+            def items(self, multi=False):  # noqa: ARG002
+                return list(super().items())
+
+        flow = _make_flow(
+            url="https://api.anthropic.com/v1/messages",
+            content='{"key": "{{ANTHROPIC_API_KEY}}"}',
+        )
+        flow.request.headers = _Headers(
+            {"x-api-key": "{{ANTHROPIC_API_KEY}}"},
+        )
+
+        # Wire shape: inject (real value goes out), THEN redact (in-memory
+        # flow restored to placeholder form), THEN serialize.
+        injected = inj.inject_request(flow)
+        assert injected == ["ANTHROPIC_API_KEY"]
+
+        redacted = inj.redact_request(flow)
+        assert redacted == ["ANTHROPIC_API_KEY"]
+
+        # Need an http_version attribute for snapshot_request — it reads
+        # it directly. Real mitmproxy flows always have it; mock doesn't
+        # autovalue meaningfully.
+        flow.request.http_version = "HTTP/1.1"
+        writer = CaptureWriter(
+            {"max_body_size": 0}, str(tmp_path / "capture.jsonl"),
+        )
+        snap = writer.snapshot_request(flow)
+        line = json.dumps(snap)
+        assert "sk-ant-api03-FAKE-TEST-VALUE-FOR-REDACTION" not in line, (
+            f"real-key bytes leaked into capture snapshot: {line!r}"
+        )
+        assert "{{ANTHROPIC_API_KEY}}" in line
+
+
 # ── Config format (dict vs list) ────────────────────────
 
 
