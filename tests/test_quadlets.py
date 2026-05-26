@@ -778,9 +778,51 @@ class TestCageQuadlet:
         assert 'NODE_OPTIONS' not in content
         assert 'Environment="AGENTCAGE_VERSION=' in content
         assert "Volume=test-certs.volume:/certs:ro,Z" in content
-        assert "Volume=/home/patches:/agentcage:ro,Z" in content
+        # The broad `<patches_host_dir>:/agentcage` bind was removed — it
+        # leaked every sibling cage's resolv-<name>.conf to this cage.
+        assert "Volume=/home/patches:/agentcage:ro,Z" not in content
         assert "nsenter" in content
         assert f"ip route replace default via {addrs['ip_proxy']}" in content
+
+    def test_cage_no_broad_patches_mount(self, minimal_yaml):
+        """Regression guard for the resolv-leak finding: the cage quadlet
+        must NOT bind-mount the entire patches_host_dir at /agentcage.
+        That directory holds per-cage resolv-<name>.conf for every cage
+        on the host, so a broad RO mount let any cage enumerate its
+        siblings' names + DNS sidecar IPs."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/home/patches")
+        content = files["test-cage.container"]
+
+        # No volume directive may map `<patches_host_dir>` (or its expansion)
+        # to a bare `/agentcage` target. The narrower per-file mounts under
+        # `/agentcage/<...>` (e.g. nested/docker → /usr/local/bin/docker)
+        # are fine — only the top-level directory bind is forbidden.
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("Volume="):
+                continue
+            spec = stripped[len("Volume="):]
+            # Parse `source:target[:opts]` — the target is the second field.
+            parts = spec.split(":")
+            if len(parts) < 2:
+                continue
+            target = parts[1]
+            assert target != "/agentcage", (
+                f"broad /agentcage mount reintroduced: {line!r}"
+            )
+
+    def test_cage_resolv_conf_still_mounted(self, minimal_yaml):
+        """The cage's own resolv.conf must still arrive via a direct
+        bind at /etc/resolv.conf — independent of the broad /agentcage
+        mount that we removed."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/home/patches")
+        content = files["test-cage.container"]
+        assert (
+            "Volume=/home/patches/resolv-test.conf:/etc/resolv.conf:ro,Z"
+            in content
+        )
 
     def test_cage_defaults_hardening(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
