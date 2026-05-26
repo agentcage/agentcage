@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-05-26
+
+Bug fix follow-up to 0.21.3 — surfaced during the fresh-Mac verification of last release's security fixes.
+
 ### Fixed
 
-- **`agentcage cage destroy` no longer crashes with `FileNotFoundError: 'podman'` on Mac** when the stored deployment config is missing. Pre-fix, `destroy_cage` caught the load failure and fell back unconditionally to `ContainerBackend`, which calls `podman network rm ...` — failing on macOS where podman isn't installed even though the cage is an apple-container artifact. Two real triggers: (a) destroying a name that doesn't exist (e.g. typo); (b) destroying after `agentcage run` exits, since ephemeral mode wipes the deployment dir on the way out. Now each backend exposes `has_resources(name)` (filesystem-based, tool-free) and the destroy path probes apple-container / vm / container in order, dispatches to the one that claims the name, or no-ops cleanly with "Nothing to remove" when nothing exists. An orphaned state dir is still cleaned up.
+- **`agentcage cage destroy` no longer crashes with `FileNotFoundError: 'podman'` on Mac** when the stored deployment config is missing. Pre-fix, `destroy_cage` caught the load failure and fell back unconditionally to `ContainerBackend`, which calls `podman network rm ...` — failing on macOS where podman isn't installed even though the cage is an apple-container artifact. Two real triggers: (a) destroying a name that doesn't exist (e.g. typo); (b) destroying after `agentcage run` exits, since ephemeral mode wipes the deployment dir on the way out. Now each backend exposes `has_resources(name)` (filesystem-based, tool-free) and the destroy path probes apple-container / vm / container in order, dispatches to the one that claims the name, or no-ops cleanly with "Nothing to remove" when nothing exists. An orphaned state dir is still cleaned up. (#166)
 
 ## [0.21.3] - 2026-05-25
 
