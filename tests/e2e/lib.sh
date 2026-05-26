@@ -388,8 +388,15 @@ _patch_proxy_hosts() {
     block="${block}${mock_ip} ${domain}\n"
   done
   block="${block}# e2e-mock-end"
+  # podman bind-mounts /etc/hosts from a host-managed file, so `sed -i` —
+  # which writes a temp file and renames over the target — fails silently
+  # at the rename across the bind-mount boundary. Pre-#187 the proxy
+  # container restart on every domain add wiped /etc/hosts, masking it;
+  # now stale e2e-mock blocks accumulate and the proxy's resolver picks
+  # the first (dead) mock IP it finds. Use awk + cat-overwrite, which
+  # truncates the existing inode in place rather than renaming.
   podman exec --user root "${cage}-proxy" \
-    sh -c "sed -i '/# e2e-mock-start/,/# e2e-mock-end/d' /etc/hosts 2>/dev/null; printf '${block}\n' >> /etc/hosts" 2>/dev/null
+    sh -c "awk '/# e2e-mock-start/{skip=1; next} /# e2e-mock-end/{skip=0; next} !skip{print}' /etc/hosts > /tmp/.e2e-hosts.new && cat /tmp/.e2e-hosts.new > /etc/hosts && rm -f /tmp/.e2e-hosts.new; printf '${block}\n' >> /etc/hosts" 2>/dev/null
 }
 
 start_mock() {
