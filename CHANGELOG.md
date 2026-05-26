@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.11] - 2026-05-26
+
+CRITICAL hotfix for both backends. **Upgrade immediately for any deployment with `secret_injection:` configured.** Real injected secrets were landing in `capture.jsonl` (mode 0644, cage-readable) — defeats the entire placeholder-injection trust model. Confirmed via real-format key bytes on disk in a local e2e test capture.
+
+### Security
+
+- **`security(proxy)`: redact injected secrets from capture before disk write.** Pre-this-release, `_maybe_inject` (apple-container `allowlist_addon.py`) and `SecretInjector.inject_request` (container backend) mutated `flow.request.headers` AND `flow.request.body` in place, substituting the placeholder with the real secret value. The capture writer then serialized the post-injection flow to `capture.jsonl` with no symmetric request-side redaction. Result: a request to any allowlisted `inject_to` host wrote the real `ANTHROPIC_API_KEY` (or any injected secret) to disk in a file the cage workload could `cat` (0644 owned by the cage uid via virtiofs identity mapping on apple-container; readable from inside the cage's mount namespace on container backend). The entire point of the proxy holding the real key was so the cage wouldn't see it; capture brought it right back. Real-format `sk-ant-api03-...` (89 chars) bytes were observed in `inbound.request.body` / `outbound.request.body` fields of an existing local e2e test capture during verification. Both backends are fixed in the same release. (#178)
+  - **Apple-container** (`src/agentcage/data/apple-container/allowlist_addon.py`): new `_maybe_redact_request(flow)` mirroring `_maybe_redact` but for the request side — same authoritative-host scope (TLS SNI per #175), longest-value-first replacement order, header + body coverage, defensive binary-body skip. Called at the start of `response()`; the `pending["outbound_req"]` capture snapshot is re-taken via `snapshot_request()` after redaction so it overwrites the leaky pre-redaction snapshot. The legacy headers-only capture fallback at the end of `response()` benefits automatically (reads `flow.request.headers` after redaction).
+  - **Container backend** (`src/agentcage/data/proxy/secret_injector.py`, `addon.py`): new `SecretInjector.redact_request(flow)` distinct from the existing inject-time `_redact_request` private helper (which is the `redact_to`-tagged no-trust-domain path). The new method runs unconditionally for every rule on every domain post-upstream, purely to scrub the in-memory flow before disk serialization. Wired into `Agentcage.response()` at the very start; `_cap_pending[flow.id]["outbound_req"]` is re-snapshotted with the redacted form.
+  - WebSocket path needed no fix — `websocket_message` buffers content BEFORE `inject_ws_content` runs, so the capture buffer already holds placeholder form.
+  - 19 new regression tests across `tests/test_secret_injector.py` (9), `tests/test_apple_container.py` (7), and a new `tests/test_addon_capture_redaction.py` (3 end-to-end). The end-to-end tests grep the actual on-disk `capture.jsonl` for the real value and assert it is absent — load-bearing belt against future regressions.
+
+### Operator action required
+
+- **Upgrade and recreate cages** (`cage destroy` + recreate, or `cage update`) to pick up the new addon code.
+- **Audit existing `capture.jsonl` files** for previously-captured real secrets. Files are at:
+  - Apple-container: `/var/log/agentcage/capture.jsonl` (inside the cage) and the corresponding host-side virtiofs path
+  - Container backend: `~/.local/share/agentcage/<cage>/capture/capture.jsonl` on the host
+  - Suggested check: `grep -rE 'sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{30,}|sk-or-v1-[a-f0-9]{30,}' ~/.local/share/agentcage/*/capture/capture.jsonl`
+- **If real keys are found in capture, rotate the key.** The capture file may have been read by the cage workload or by anything with filesystem access.
+
+### Not addressed in this release
+
+Still queued from prior CTF rounds:
+
+- [#170](https://github.com/agentcage/agentcage/issues/170) — `.git/hooks/` in `/workspace` is a cage→host pivot vector
+- [#173](https://github.com/agentcage/agentcage/issues/173) — `.claude/settings.json` is a cage→cage hooks-injection vector
+- Apple-container F1/F3/F5 (CTF 0.21.10) — `/var/log/agentcage` 1777 permissions inherited from virtiofs bind allow audit-log forgery and capture-file reads
+- Apple-container F6 (CTF 0.21.10) — upstream cert/IP not pinned against dnsmasq resolution; cage can pick attacker-chosen IP if attacker has a valid cert for an allowlisted SNI (high bar)
+- DNS subdomain-of-allowlisted-zone forwarding — residual exfil channel for operators who allowlist zones with attacker-controlled delegations (documented limitation, not a code bug)
+
 ## [0.21.10] - 2026-05-26
 
 Two cross-backend exfil-channel hotfixes surfaced by cross-model CTF runs (Claude + GPT + Grok) against 0.21.9. **Upgrade recommended for any deployment with `secret_injection:` configured OR any deployment relying on `cage audit` traces for compliance evidence.** Both the container and apple-container backends are affected; both are fixed in the same release.
