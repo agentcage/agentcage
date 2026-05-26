@@ -225,9 +225,106 @@ def test_stage_build_context_empty_allowlist_means_block_all(tmp_path):
 def test_stage_build_context_includes_dnsmasq_conf(tmp_path):
     ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
     assert (tmp_path / "dnsmasq.conf").exists()
+    conf = (tmp_path / "dnsmasq.conf").read_text()
     # dnsmasq must forward to a real upstream so cage gets real IPs
-    # (transparent mitmproxy needs SO_ORIGINAL_DST = real IP, not 127.0.0.1)
-    assert "server=1.1.1.1" in (tmp_path / "dnsmasq.conf").read_text()
+    # (transparent mitmproxy needs SO_ORIGINAL_DST = real IP, not 127.0.0.1).
+    # The fix for the non-A-record DNS exfil channel scopes recursion to the
+    # allowlisted apex: per-zone `server=/<apex>/<upstream>` rather than a
+    # blanket `server=<upstream>` that would forward ALL query types to
+    # upstream regardless of zone.
+    assert "server=/a.com/1.1.1.1" in conf
+    # Defense-in-depth A/AAAA sinkhole for zones not in the allowlist.
+    assert "address=/#/198.51.100.1" in conf
+
+
+# ── DNS non-A-record exfil regression (CTF-derived) ──────────────────
+# CTF discovery on 0.21.x: dnsmasq's `address=/#/<sinkhole>` only
+# intercepts A and AAAA. Any other RR type (TXT/MX/NS/SRV/CNAME) for
+# any hostname falls through to the default upstream (`server=<ip>`
+# without a domain prefix) and reaches a real recursive resolver — an
+# attacker who owns a delegated subdomain can encode bytes in DNS labels
+# and exfil fully out-of-band, never touching mitmproxy. These tests
+# pin the bypass SHAPE, not just the absence of a substring.
+
+def test_apple_dnsmasq_no_blanket_default_upstream(tmp_path):
+    """No `server=<ip>` line without a domain scope. A blanket default
+    upstream lets dnsmasq recursively answer ANY non-A query — TXT, MX,
+    NS, SRV, CNAME — for ANY hostname, regardless of allowlist."""
+    import re
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"], allowlist=["a.com", "b.org"],
+        dns_servers=["1.1.1.1", "8.8.8.8"],
+    )
+    conf = (tmp_path / "dnsmasq.conf").read_text()
+    for line in conf.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            continue
+        # The bypass shape is `server=<ip>` (NO leading slash after `=`)
+        # which means "default upstream for everything not otherwise
+        # answered". Per-zone forwarders are `server=/<domain>/<ip>` and
+        # ARE allowed — they restrict recursion to the allowlisted apex.
+        assert not re.match(r"^\s*server=[^/]", stripped), (
+            f"blanket default-upstream `server=<ip>` line leaks non-A "
+            f"queries to upstream: {stripped!r}"
+        )
+
+
+def test_apple_dnsmasq_recursion_scoped_to_allowlist(tmp_path):
+    """Recursion must be scoped per-allowlisted-apex × per-upstream.
+    Otherwise dnsmasq has no way to answer non-A queries for allowed
+    zones (legitimate MX/SRV/TXT for, e.g., api.anthropic.com)."""
+    ac_wrapper.stage_build_context(
+        tmp_path, ["sh"], allowlist=["api.anthropic.com", "github.com"],
+        dns_servers=["1.1.1.1", "8.8.8.8"],
+    )
+    conf = (tmp_path / "dnsmasq.conf").read_text()
+    for domain in ("api.anthropic.com", "github.com"):
+        for upstream in ("1.1.1.1", "8.8.8.8"):
+            assert f"server=/{domain}/{upstream}" in conf, (
+                f"missing per-zone forwarder server=/{domain}/{upstream}"
+            )
+
+
+def test_apple_dnsmasq_empty_allowlist_has_no_upstream(tmp_path):
+    """Empty allowlist → no upstream forwarders at all. Every DNS
+    query returns either the A/AAAA sinkhole or REFUSED for other
+    record types. The cage cannot resolve OR exfil via DNS."""
+    import re
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=[])
+    conf = (tmp_path / "dnsmasq.conf").read_text()
+    # No `server=` directives at all (neither blanket nor per-zone).
+    for line in conf.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            continue
+        assert not re.match(r"^\s*server=", stripped), (
+            f"empty allowlist should yield no upstream forwarders, got: "
+            f"{stripped!r}"
+        )
+    # Sinkhole still present (defense in depth).
+    assert "address=/#/198.51.100.1" in conf
+
+
+def test_apple_dnsmasq_sinkhole_present_with_allowlist(tmp_path):
+    """The `address=/#/<sinkhole>` line must remain even when the
+    allowlist is populated — it sinks A/AAAA for non-allowlisted zones
+    (defense-in-depth alongside the per-zone forwarder scoping)."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    conf = (tmp_path / "dnsmasq.conf").read_text()
+    assert "address=/#/198.51.100.1" in conf
+
+
+def test_apple_dnsmasq_no_resolv_preserved(tmp_path):
+    """`no-resolv` MUST be set so dnsmasq never reads /etc/resolv.conf
+    as an implicit default upstream. Without `no-resolv` the bypass
+    closure depends on resolv.conf being empty — fragile."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
+    conf = (tmp_path / "dnsmasq.conf").read_text()
+    assert any(
+        ln.strip() == "no-resolv"
+        for ln in conf.splitlines()
+    ), "no-resolv missing — dnsmasq would silently fall back to /etc/resolv.conf"
 
 
 def test_stage_build_context_includes_allowlist_addon(tmp_path):

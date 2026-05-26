@@ -249,6 +249,139 @@ class TestDnsQuadlet:
         assert "dns-audit.sh" not in content
         assert "Exec=dnsmasq --no-daemon" in content
 
+    # ── DNS non-A-record exfil regression (CTF-derived) ──────────────
+    # On 0.21.x dnsmasq was passed both `--server <ip>` (blanket
+    # default upstream) AND `--address=/#/<sinkhole>` (catch-all). The
+    # `--address` rule only intercepts A and AAAA queries — any other
+    # RR type (TXT/MX/NS/SRV/CNAME) fell through to the blanket
+    # `--server` upstream and reached a real recursive resolver. An
+    # attacker who owns a delegated subdomain encoded bytes in the
+    # query labels and exfilled out-of-band, never touching mitmproxy.
+    # These tests pin the bypass SHAPE so the fix can't silently regress.
+
+    def test_dns_allowlist_no_blanket_default_upstream(self, tmp_path):
+        """In allowlist mode the quadlet must NOT pass a blanket
+        `--server <ip>` (no domain scope). That argument tells dnsmasq
+        "use this upstream for any query you don't otherwise handle",
+        which is exactly the non-A-record bypass — TXT/MX/NS/SRV/CNAME
+        for any hostname recurses to upstream regardless of the
+        allowlist. Per-zone forwarders live in dns-allowlist.conf as
+        `server=/<apex>/<upstream>` and are still allowed (they scope
+        recursion to the allowlist)."""
+        import re
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - api.anthropic.com
+                - github.com
+            dns_servers:
+              - 1.1.1.1
+              - 8.8.8.8
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        # The bypass shape: `--server <ip>` with NO leading `=/...` after
+        # `--server`. Per-zone forwarders are `--server=/<apex>/<ip>` —
+        # those are exactly what closes the bypass and stay allowed.
+        # `--servers-file=...` is also legitimate (it points at the per-
+        # zone allowlist file).
+        assert not re.search(r"--server\s+\d", content), (
+            "blanket `--server <ip>` upstream present in DNS quadlet — "
+            "non-A queries will bypass the allowlist via DNS tunneling. "
+            f"quadlet:\n{content}"
+        )
+
+    def test_dns_allowlist_sinkhole_present(self, tmp_path):
+        """Defense in depth: even with per-zone forwarder scoping, the
+        A/AAAA catch-all sinkhole stays. A regression here would let
+        A/AAAA queries for non-allowlisted zones leak out."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - api.anthropic.com
+            dns_servers:
+              - 1.1.1.1
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        assert "--address=/#/198.51.100.1" in files["test-dns.container"]
+
+    def test_dns_allowlist_servers_file_present(self, tmp_path):
+        """The per-zone forwarder allowlist lives in dns-allowlist.conf
+        and is loaded via `--servers-file`. Without it dnsmasq has no
+        way to recurse for allowlisted zones — the cage couldn't
+        resolve `api.anthropic.com` at all."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - api.anthropic.com
+            dns_servers:
+              - 1.1.1.1
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        assert "--servers-file=/etc/dnsmasq-allow.conf" in content
+        # And the file is bind-mounted in read-only.
+        assert "/etc/dnsmasq-allow.conf:ro,Z" in content
+
+    def test_dns_allowlist_no_resolv_preserved(self, tmp_path):
+        """`--no-resolv` must stay. Without it dnsmasq silently reads
+        /etc/resolv.conf as an implicit default upstream, reopening
+        the bypass via a different path."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - api.anthropic.com
+            dns_servers:
+              - 1.1.1.1
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        assert "--no-resolv" in files["test-dns.container"]
+
+    def test_dns_blocklist_mode_keeps_open_resolver(self, tmp_path):
+        """The fix is scoped to allowlist mode. In blocklist / open-DNS
+        mode the cage explicitly wants open resolution — dnsmasq must
+        keep its blanket forwarders. (HTTP egress is still filtered by
+        mitmproxy; DNS is not the gate.)"""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              block:
+                - evil.com
+            dns_servers:
+              - 1.1.1.1
+              - 8.8.8.8
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-dns.container"]
+        # Blanket forwarders intentional here.
+        assert "--server 1.1.1.1 --server 8.8.8.8" in content
+        # No allowlist sidecar mount in blocklist mode.
+        assert "--servers-file=/etc/dnsmasq-allow.conf" not in content
+
     def test_dns_no_allowlist_filtering_in_blocklist_mode(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
