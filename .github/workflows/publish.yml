@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - "v*"
+  # Manual fallback: GitHub Actions occasionally drops the tag-push event
+  # when a tag is pushed atomically with the commit it points to (we hit
+  # this with v0.21.6 — tag landed on origin, no Release run fired). The
+  # dispatch lets us re-fire the publish for an existing tag without
+  # delete+re-push gymnastics. Pick the tag in the "Run workflow" UI or
+  # via `gh workflow run publish.yml --ref v0.21.6`.
+  workflow_dispatch:
 
 jobs:
   publish:
