@@ -17,7 +17,50 @@ from agentcage.config import Config
 from agentcage.lima import prerequisites as lima_prerequisites
 from agentcage.lima.instance import LimaInstance
 from agentcage.lima.provisioning import generate_lima_config
-from agentcage.quadlets import generate_quadlets
+from agentcage.quadlets import (
+    generate_quadlets,
+    vm_local_config_dir,
+    vm_local_dns_allowlist_path,
+    vm_local_proxy_config_path,
+)
+
+
+def push_config_files(name: str, inst: LimaInstance) -> None:
+    """Mirror the host's proxy-config.yaml + dns-allowlist.conf into the VM.
+
+    The proxy and dns sidecar containers bind-mount these files. On the VM
+    backend the source can't be the host path under
+    ``~/.config/agentcage/cages/<name>/`` because Lima's reverse-sshfs mount
+    caches host writes — dnsmasq SIGHUP and the mitmproxy mtime-poll would
+    re-read the same stale bytes forever. So we keep the host file as the
+    authoritative state (preserved for ``cage backup``, audit tooling, etc.)
+    and additionally push a copy to a VM-local path that the quadlets
+    actually mount.
+
+    Idempotent. Safe to call on every deploy / start / restart / domain
+    edit; the cost is two ``inst.exec`` round-trips per file.
+    """
+    from agentcage import state
+    vm_dir = vm_local_config_dir(name)
+    inst.exec(["bash", "-c", f"mkdir -p {shlex.quote(vm_dir)}"])
+
+    proxy_cfg = state.deployment_dir(name) / "proxy-config.yaml"
+    if proxy_cfg.is_file():
+        encoded = base64.b64encode(proxy_cfg.read_bytes()).decode()
+        inst.exec([
+            "bash", "-c",
+            f"echo '{encoded}' | base64 -d > "
+            f"{shlex.quote(vm_local_proxy_config_path(name))}",
+        ])
+
+    dns_allow = state.dns_allowlist_path(name)
+    if dns_allow.is_file():
+        encoded = base64.b64encode(dns_allow.read_bytes()).decode()
+        inst.exec([
+            "bash", "-c",
+            f"echo '{encoded}' | base64 -d > "
+            f"{shlex.quote(vm_local_dns_allowlist_path(name))}",
+        ])
 
 
 VM_SERVICE_STARTUP_DELAY_S = 5
@@ -334,6 +377,14 @@ class VmBackend:
                         "bash", "-c",
                         f"echo '{encoded}' | base64 -d > {shlex.quote(vm_quadlet_dir)}/{shlex.quote(qfile.name)}",
                     ])
+
+        # Mirror proxy-config.yaml + dns-allowlist.conf into a VM-local
+        # path. Quadlets bind-mount this VM-local copy (NOT the host path
+        # under ~/.config/agentcage) so SIGHUP / mtime-poll live-reload
+        # actually sees ``domain add``/``domain rm`` rewrites — see
+        # ``push_config_files`` and ``cli._update_dns_quadlet``.
+        with Phase("deploy.vm_local_config", cage=name):
+            push_config_files(name, inst)
 
         # Bridge secrets from host Podman into VM's Podman
         with Phase("deploy.bridge_secrets", cage=name):

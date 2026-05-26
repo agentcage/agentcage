@@ -399,6 +399,88 @@ class TestDnsQuadlet:
         assert "--address=/#/198.51.100.1" not in content
 
 
+class TestVmLocalConfigPaths:
+    """VM backend: proxy + dns quadlets must bind-mount a VM-local copy
+    of proxy-config.yaml and dns-allowlist.conf — NOT the host path
+    under ``~/.config/agentcage`` that Lima's reverse-sshfs caches past
+    the point where dnsmasq SIGHUP / proxy mtime-poll would re-read it."""
+
+    def test_dns_quadlet_uses_vm_local_allowlist_path(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        content = files["test-dns.container"]
+        # VM-local path is the bind source — NOT the host
+        # ~/.config/agentcage cache path.
+        assert "~/.config/agentcage-vm/cages/test/dns-allowlist.conf" in content
+        assert "~/.config/agentcage/cages/test/dns-allowlist.conf" not in content
+
+    def test_proxy_quadlet_uses_vm_local_config_path(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        content = files["test-proxy.container"]
+        # The proxy config bind source is VM-local; the host path passed
+        # to generate_quadlets is ignored for the volume mount.
+        assert "~/.config/agentcage-vm/cages/test/proxy-config.yaml:/etc/agentcage/config.yaml" in content
+        assert "/host/c.yaml:/etc/agentcage/config.yaml" not in content
+
+    def test_container_backend_still_uses_host_path(self, tmp_path):
+        """Regression guard: the container backend (no Lima sshfs) must
+        keep mounting the authoritative host paths directly. We only
+        sidestep the cache for VM cages."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        # Host paths used directly — NOT the agentcage-vm tree.
+        assert "/host/c.yaml:/etc/agentcage/config.yaml" in files["test-proxy.container"]
+        assert "agentcage-vm" not in files["test-proxy.container"]
+        assert "agentcage-vm" not in files["test-dns.container"]
+
+    def test_render_dns_quadlet_vm_uses_vm_local_path(self, tmp_path):
+        """``render_dns_quadlet`` is the entry point used by
+        ``_ensure_dns_quadlet_current`` — it must also produce the
+        VM-local bind source for vm cages so the migration check
+        rewrites pre-upgrade quadlets to the new shape."""
+        from agentcage.quadlets import render_dns_quadlet
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+        """))
+        cfg = load_config(str(p))
+        rendered = render_dns_quadlet(cfg)
+        assert "~/.config/agentcage-vm/cages/test/dns-allowlist.conf" in rendered
+
+
 class TestProxyQuadlet:
     def test_proxy_basics(self, minimal_yaml):
         cfg = load_config(minimal_yaml)

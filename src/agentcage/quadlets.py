@@ -201,6 +201,36 @@ def _make_env() -> SandboxedEnvironment:
     return env
 
 
+def vm_local_config_dir(name: str) -> str:
+    """VM-local path where the cage's proxy + DNS config files live.
+
+    The host's ``~/.config/agentcage/cages/<name>/`` is exposed inside the
+    Lima VM as a reverse-sshfs mount that caches file contents aggressively
+    — so a host-side rewrite of ``proxy-config.yaml`` or
+    ``dns-allowlist.conf`` is invisible to processes running inside the VM
+    until the mount itself is reset. We sidestep that by writing a VM-local
+    copy of those two files into a parallel directory tree
+    (``~/.config/agentcage-vm/...``) that is *not* a Lima mount, and
+    bind-mounting the VM-local copy into the proxy/dns containers.
+
+    Returned as a POSIX-style string (``~/.config/agentcage-vm/cages/<name>``)
+    suitable for use both as a quadlet ``Volume=`` source and as a shell
+    argument inside the VM (``~`` is expanded by the guest's shell, not by
+    Python).
+    """
+    return f"~/.config/agentcage-vm/cages/{name}"
+
+
+def vm_local_dns_allowlist_path(name: str) -> str:
+    """VM-local path of the dnsmasq allowlist file. See ``vm_local_config_dir``."""
+    return f"{vm_local_config_dir(name)}/dns-allowlist.conf"
+
+
+def vm_local_proxy_config_path(name: str) -> str:
+    """VM-local path of the proxy config file. See ``vm_local_config_dir``."""
+    return f"{vm_local_config_dir(name)}/proxy-config.yaml"
+
+
 def render_dns_quadlet(
     config: Config,
     used_octets: set[int] | None = None,
@@ -215,20 +245,29 @@ def render_dns_quadlet(
     from that octet, bypassing the hash-based allocation (and the
     *used_octets* parameter is ignored).  This is the correct path for
     updates to an already-deployed cage whose subnet must not change.
+
+    VM backend: the bind-mount source points at a VM-local path (see
+    ``vm_local_dns_allowlist_path``) rather than the host-side allowlist
+    file, because Lima's reverse-sshfs mount caches host writes past the
+    point where dnsmasq would re-read them.
     """
     env = _make_env()
     name = config.name
     addrs = cage_network_addrs(
         name, used_octets=used_octets, network_octet=network_octet,
     )
-    from agentcage.state import dns_allowlist_path
+    if config.isolation == "vm":
+        allowlist_path = vm_local_dns_allowlist_path(name)
+    else:
+        from agentcage.state import dns_allowlist_path
+        allowlist_path = str(dns_allowlist_path(name))
     return env.get_template("dns.container.j2").render(
         name=name,
         **addrs,
         dns_servers=config.dns_servers,
         log_dns_queries=config.logging.dns_queries,
         dns_allowlist_enabled=(config.domains.mode == "allowlist"),
-        dns_allowlist_host_path=str(dns_allowlist_path(name)),
+        dns_allowlist_host_path=allowlist_path,
     )
 
 
@@ -418,13 +457,24 @@ def generate_quadlets(
     # DNS container — allowlist comes from a sidecar file mounted in
     # (state.dns_allowlist_path). The quadlet only encodes whether allowlist
     # mode is on; the contents change without touching the systemd unit.
-    from agentcage.state import dns_allowlist_path
+    #
+    # VM backend: the bind mount source is a VM-local path, NOT the host
+    # path under ~/.config/agentcage. Lima's reverse-sshfs mount caches
+    # host writes, so a host-side rewrite of dns-allowlist.conf would not
+    # propagate into the dnsmasq container; the VM-local copy is rewritten
+    # by ``_update_dns_quadlet`` via ``inst.exec`` and dnsmasq SIGHUPs to
+    # pick it up.
+    if config.isolation == "vm":
+        dns_allowlist_path_str = vm_local_dns_allowlist_path(deploy_name or name)
+    else:
+        from agentcage.state import dns_allowlist_path
+        dns_allowlist_path_str = str(dns_allowlist_path(deploy_name or name))
     files[f"{name}-dns.container"] = env.get_template("dns.container.j2").render(
         **common,
         dns_servers=config.dns_servers,
         log_dns_queries=config.logging.dns_queries,
         dns_allowlist_enabled=(config.domains.mode == "allowlist"),
-        dns_allowlist_host_path=str(dns_allowlist_path(deploy_name or name)),
+        dns_allowlist_host_path=dns_allowlist_path_str,
     )
 
     # Capture volume — host path for capture JSONL
@@ -457,9 +507,18 @@ def generate_quadlets(
         if _scope == "user":
             creds_scope_flag = "--user "
 
+    # VM backend: rewrite proxy-config.yaml mount source to a VM-local
+    # path for the same reason as dns-allowlist.conf above — Lima's
+    # reverse-sshfs caching would otherwise hide host-side rewrites from
+    # mitmproxy's mtime-poll hot-reload.
+    if config.isolation == "vm":
+        proxy_config_path = vm_local_proxy_config_path(deploy_name or name)
+    else:
+        proxy_config_path = config_host_path
+
     files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
         **common,
-        config_host_path=config_host_path,
+        config_host_path=proxy_config_path,
         proxy_secrets=proxy_secrets,
         deploy_name=deploy_name,
         creds_secrets=creds_secrets,

@@ -51,6 +51,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`fix(cli)`: `domain add` / `domain rm` are now live-reload on the
+  VM (Lima) backend too — closes the VM half of #187.** Container cages
+  shipped live-reload in #187, but the VM path still hit a hard wall:
+  Lima's reverse-sshfs mount of `~/.config/agentcage` caches host writes,
+  so a host-side rewrite of `proxy-config.yaml` / `dns-allowlist.conf`
+  was invisible to processes inside the VM and dnsmasq SIGHUP would
+  re-read the same stale cached bytes. (The legacy restart-all path had
+  the same root cause and was also silently broken on VM — operators
+  worked around it by destroying and recreating the cage.) Fix: the
+  proxy and dns quadlets now bind-mount a VM-local copy of those files
+  at `~/.config/agentcage-vm/cages/<name>/...` (outside any Lima mount).
+  `cage create` / `start` / `restart` / `domain add` / `domain rm` all
+  push the latest host bytes into the VM-local path via `inst.exec`
+  (base64 over the limactl ssh channel — no sshfs in the loop), then
+  SIGHUP dnsmasq the same way the container backend does. Mitmproxy's
+  mtime poll picks up the proxy-config rewrite on the next request. Net
+  effect: VM domain changes are roughly instant and any interactive
+  session inside the cage survives the edit. Pre-upgrade cages whose
+  on-disk quadlet still bind-mounts the cached host path are migrated
+  automatically by `_ensure_dns_quadlet_current` on the first edit (one
+  `daemon-reload` + `systemctl --user restart <name>-dns.service` — every
+  subsequent edit on that cage takes the SIGHUP fast path). The
+  authoritative state still lives at the host path, so `cage backup` and
+  audit tooling are unchanged. The apple-container path is unchanged
+  (tracked in #120).
 - **`fix(cli)`: `domain add` / `domain rm` no longer restart the cage on
   the container backend.** They now write the updated allowlist files
   and `pkill -HUP dnsmasq` inside the dns sidecar — the mitmproxy addon
@@ -60,10 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. `agentcage run`) survives the update. Why `pkill` instead of
   `podman kill --signal HUP`: PID 1 in the dns container is the
   `dns-audit.sh` wrapper, not dnsmasq itself, so the signal would be
-  eaten by the wrapper. The VM and apple-container paths are unchanged
-  (Lima reverse-sshfs caches host file content past the SIGHUP, and the
-  apple-container allowlist is baked into the wrapper image — both still
-  require the restart cycle to pick up changes).
+  eaten by the wrapper. The apple-container path is unchanged (the
+  allowlist is baked into the wrapper image at build time — needs the
+  larger #120 change to add a bind-mounted allowlist).
 
 ## [0.21.15] - 2026-05-26
 

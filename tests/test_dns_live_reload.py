@@ -116,21 +116,21 @@ class TestContainerBackendLiveReload:
         mock_state.save_dns_allowlist.assert_called_once_with("demo")
 
 
-class TestVmBackendKeepsLegacyRestart:
-    """On VM (Lima), live-reload via SIGHUP would not actually take effect:
-    Lima's reverse-sshfs mount caches host file contents, so dnsmasq inside
-    the VM would re-read the same stale bytes regardless of signal. The
-    legacy restart-all behavior had the same limitation but is documented
-    and what existing users expect, so we keep it. Regression guard: a
-    domain add on a running VM cage still issues a stop/start cycle of
-    all infra services."""
+class TestVmBackendLiveReload:
+    """On VM (Lima), live-reload works the same way as container backend:
+    SIGHUP dnsmasq, let mtime-poll handle proxy hot-reload, never touch
+    the cage container. The historical Lima reverse-sshfs caching problem
+    is sidestepped by writing the config files to a VM-local path (NOT
+    under the cached ``~/.config/agentcage`` mount) via ``inst.exec``."""
 
+    @patch("agentcage.backends.vm.push_config_files")
     @patch("agentcage.cli.LimaInstance")
-    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.cli._ensure_dns_quadlet_current", return_value=False)
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_vm_restarts_all_services(
+    def test_vm_signals_dnsmasq_via_pkill(
         self, mock_state, mock_get_backend, _mock_ensure, mock_lima_cls,
+        mock_push,
     ):
         from agentcage.cli import _update_dns_quadlet
         cfg = _mock_cfg("vm")
@@ -139,37 +139,192 @@ class TestVmBackendKeepsLegacyRestart:
         backend.service_names.return_value = ["cage", "proxy", "dns"]
         mock_get_backend.return_value = backend
         inst = mock_lima_cls.return_value
+        inst.is_running.return_value = True
 
         _update_dns_quadlet(cfg)
 
-        # Stops cage, proxy, dns (in that order); starts dns, proxy, cage.
-        argv_list = [c.args[0] for c in inst.exec.call_args_list]
-        stops = [a for a in argv_list if "stop" in a]
-        starts = [a for a in argv_list if "start" in a]
-        assert ["systemctl", "--user", "stop", "demo-cage.service"] in stops
-        assert ["systemctl", "--user", "stop", "demo-proxy.service"] in stops
-        assert ["systemctl", "--user", "stop", "demo-dns.service"] in stops
-        assert ["systemctl", "--user", "start", "demo-dns.service"] in starts
-        assert ["systemctl", "--user", "start", "demo-proxy.service"] in starts
-        assert ["systemctl", "--user", "start", "demo-cage.service"] in starts
+        # Exactly one podman-exec pkill call to the dns sidecar.
+        pkill_calls = [
+            c for c in inst.exec.call_args_list
+            if len(c.args) > 0
+            and isinstance(c.args[0], list)
+            and c.args[0][:2] == ["podman", "exec"]
+            and "pkill" in c.args[0]
+        ]
+        assert len(pkill_calls) == 1
+        assert pkill_calls[0].args[0] == [
+            "podman", "exec", "demo-dns", "pkill", "-HUP", "dnsmasq",
+        ]
 
+    @patch("agentcage.backends.vm.push_config_files")
     @patch("agentcage.cli.LimaInstance")
-    @patch("agentcage.cli._ensure_dns_quadlet_current")
+    @patch("agentcage.cli._ensure_dns_quadlet_current", return_value=False)
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_vm_skips_restart_when_dns_not_running(
+    def test_vm_does_not_stop_or_start_any_unit(
         self, mock_state, mock_get_backend, _mock_ensure, mock_lima_cls,
+        mock_push,
     ):
+        """Cage interactive sessions inside the VM must survive a domain
+        add — i.e. NO ``systemctl stop/start`` of any cage service."""
+        from agentcage.cli import _update_dns_quadlet
+        cfg = _mock_cfg("vm")
+        backend = MagicMock()
+        backend.is_running.return_value = True
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        mock_get_backend.return_value = backend
+        inst = mock_lima_cls.return_value
+        inst.is_running.return_value = True
+
+        _update_dns_quadlet(cfg)
+
+        for call in inst.exec.call_args_list:
+            argv = call.args[0] if call.args else []
+            if not isinstance(argv, list):
+                continue
+            # No systemctl stop / start anywhere in the live-reload path.
+            assert not (argv[:1] == ["systemctl"] and "stop" in argv), (
+                f"unexpected systemctl stop call: {argv}"
+            )
+            assert not (argv[:1] == ["systemctl"] and "start" in argv), (
+                f"unexpected systemctl start call: {argv}"
+            )
+
+    @patch("agentcage.backends.vm.push_config_files")
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli._ensure_dns_quadlet_current", return_value=False)
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_vm_pushes_files_to_vm_local_path(
+        self, mock_state, mock_get_backend, _mock_ensure, mock_lima_cls,
+        mock_push,
+    ):
+        """Domain edit must write the rewritten host files into the VM-local
+        path the proxy/dns containers actually bind-mount, bypassing the
+        Lima reverse-sshfs cache."""
+        from agentcage.cli import _update_dns_quadlet
+        cfg = _mock_cfg("vm")
+        backend = MagicMock()
+        backend.is_running.return_value = True
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        mock_get_backend.return_value = backend
+        inst = mock_lima_cls.return_value
+        inst.is_running.return_value = True
+
+        _update_dns_quadlet(cfg)
+
+        # Allowlist file rewritten host-side AND pushed VM-local.
+        mock_state.save_dns_allowlist.assert_called_once_with("demo")
+        mock_push.assert_called_once_with("demo", inst)
+
+    @patch("agentcage.backends.vm.push_config_files")
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli._ensure_dns_quadlet_current", return_value=False)
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_vm_skips_signal_when_dns_not_running(
+        self, mock_state, mock_get_backend, _mock_ensure, mock_lima_cls,
+        mock_push,
+    ):
+        """VM running but dns service stopped: still push files (so the
+        next start picks them up) but skip the SIGHUP."""
+        from agentcage.cli import _update_dns_quadlet
+        cfg = _mock_cfg("vm")
+        backend = MagicMock()
+        backend.is_running.return_value = False  # dns not running
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        mock_get_backend.return_value = backend
+        inst = mock_lima_cls.return_value
+        inst.is_running.return_value = True
+
+        _update_dns_quadlet(cfg)
+
+        # File push happened
+        mock_push.assert_called_once_with("demo", inst)
+        # No pkill — dnsmasq isn't running
+        pkill_calls = [
+            c for c in inst.exec.call_args_list
+            if len(c.args) > 0
+            and isinstance(c.args[0], list)
+            and "pkill" in c.args[0]
+        ]
+        assert pkill_calls == []
+
+    @patch("agentcage.backends.vm.push_config_files")
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli._ensure_dns_quadlet_current", return_value=False)
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_vm_skips_everything_when_vm_not_running(
+        self, mock_state, mock_get_backend, _mock_ensure, mock_lima_cls,
+        mock_push,
+    ):
+        """VM stopped entirely: host file rewrite is enough — ``cage
+        start`` will push and mount on next boot. Don't try to ``inst.exec``
+        into a non-running VM."""
         from agentcage.cli import _update_dns_quadlet
         cfg = _mock_cfg("vm")
         backend = MagicMock()
         backend.is_running.return_value = False
         mock_get_backend.return_value = backend
+        inst = mock_lima_cls.return_value
+        inst.is_running.return_value = False
 
         _update_dns_quadlet(cfg)
 
-        mock_lima_cls.assert_not_called()
+        # Allowlist file IS rewritten host-side
         mock_state.save_dns_allowlist.assert_called_once_with("demo")
+        # But no VM operations
+        mock_push.assert_not_called()
+        inst.exec.assert_not_called()
+
+    @patch("agentcage.backends.vm.push_config_files")
+    @patch("agentcage.cli.LimaInstance")
+    @patch("agentcage.cli._ensure_dns_quadlet_current", return_value=True)
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_vm_migration_restarts_dns_when_quadlet_rewritten(
+        self, mock_state, mock_get_backend, _mock_ensure, mock_lima_cls,
+        mock_push,
+    ):
+        """One-shot migration: on a pre-upgrade VM cage the on-disk
+        quadlet still bind-mounts the cached host path. After
+        ``_ensure_dns_quadlet_current`` rewrites the unit to the new
+        VM-local shape, the *running* dnsmasq container is still mounting
+        the old path — SIGHUP would re-read the stale cache. Restart the
+        dns sidecar so it picks up the new mount; every subsequent edit
+        on this cage takes the fast SIGHUP path."""
+        from agentcage.cli import _update_dns_quadlet
+        cfg = _mock_cfg("vm")
+        backend = MagicMock()
+        backend.is_running.return_value = True
+        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        mock_get_backend.return_value = backend
+        inst = mock_lima_cls.return_value
+        inst.is_running.return_value = True
+
+        _update_dns_quadlet(cfg)
+
+        # systemctl restart of ONLY the dns service — not proxy, not cage.
+        restart_calls = [
+            c for c in inst.exec.call_args_list
+            if len(c.args) > 0
+            and isinstance(c.args[0], list)
+            and c.args[0][:3] == ["systemctl", "--user", "restart"]
+        ]
+        assert len(restart_calls) == 1
+        assert restart_calls[0].args[0] == [
+            "systemctl", "--user", "restart", "demo-dns.service",
+        ]
+        # And no SIGHUP — the restart supersedes it on the migration
+        # path (the new container picks up the new mount on the way up).
+        pkill_calls = [
+            c for c in inst.exec.call_args_list
+            if len(c.args) > 0
+            and isinstance(c.args[0], list)
+            and "pkill" in c.args[0]
+        ]
+        assert pkill_calls == []
 
 
 class TestAppleContainerBackendStillRebuilds:

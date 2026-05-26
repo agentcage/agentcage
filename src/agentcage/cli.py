@@ -3236,18 +3236,28 @@ def _update_dns_quadlet(cfg) -> None:
         session inside it (e.g. ``agentcage run``) survives a domain
         add/rm.
 
-    VM backend (Lima):
-      - Lima's reverse-sshfs mount (the default on Linux+QEMU) caches host
-        file content aggressively — a host-side rewrite of the allowlist
-        files is NOT visible inside the VM until the Lima mount itself is
-        reset. SIGHUP'ing dnsmasq inside the VM would just have it re-read
-        the same stale data. The legacy restart-all behavior had the same
-        underlying limitation (the bind mount source is the same cached
-        sshfs path), so we leave it in place rather than silently doing
-        nothing. Users wanting to reliably apply a VM domain change today
-        must restart the cage (``agentcage cage restart NAME``). Tracking
-        the proper fix (write into a VM-local path via ``inst.exec``) as
-        follow-up.
+    VM backend (Lima, live-reload, no cage restart):
+      - Lima's reverse-sshfs mount of ``~/.config/agentcage`` caches host
+        writes — a host-side rewrite of ``proxy-config.yaml`` /
+        ``dns-allowlist.conf`` is invisible to processes inside the VM
+        until the mount itself is reset. We sidestep that entirely: the
+        proxy / dns quadlets bind-mount a *VM-local* copy of those files
+        (``~/.config/agentcage-vm/cages/<name>/...`` — outside any Lima
+        mount). On a domain edit we push the new file bytes into that
+        VM-local path via ``inst.exec`` (base64 over the limactl ssh
+        channel, no sshfs in the loop), then SIGHUP dnsmasq the same way
+        the container backend does — ``podman exec <name>-dns pkill -HUP
+        dnsmasq``. The mitmproxy addon's mtime poll picks up the
+        proxy-config rewrite on the next request.
+      - For cages created before this change the on-disk quadlet still
+        bind-mounts the cached host path; ``_ensure_dns_quadlet_current``
+        regenerates the unit (and ``daemon-reload``s) the first time a
+        domain edit runs against an upgraded install. The running dns
+        sidecar is still mounting the old path, so on this one-shot
+        migration we restart it (``systemctl --user restart``) instead
+        of SIGHUP — the new container picks up the new bind mount on the
+        way up, and every subsequent edit on this cage takes the SIGHUP
+        fast path.
 
     Apple-container backend:
       - Allowlist is baked into the wrapper image at build time, so a
@@ -3261,23 +3271,39 @@ def _update_dns_quadlet(cfg) -> None:
     pre-upgrade install.
     """
     state.save_dns_allowlist(cfg.name)
-    _ensure_dns_quadlet_current(cfg)
+    quadlet_changed = _ensure_dns_quadlet_current(cfg)
 
     backend = get_backend(cfg)
     name = cfg.name
 
     if cfg.isolation == "vm":
-        # See docstring — Lima reverse-sshfs caching makes live-reload
-        # unreliable; keep the legacy restart-all path until the bind
-        # source moves to a VM-local file.
+        # Push the rewritten host-side files into the VM-local path the
+        # proxy/dns containers actually bind-mount, then SIGHUP dnsmasq.
+        # The mitmproxy addon's mtime-poll hot-reload handles the
+        # proxy-config side on its own.
+        inst = LimaInstance(name)
+        if not inst.is_running():
+            return
+        from agentcage.backends.vm import push_config_files
+        push_config_files(name, inst)
         if backend.is_running(name, "dns"):
-            inst = LimaInstance(name)
-            services = backend.service_names(name)
-            for svc in services:
-                inst.exec(["systemctl", "--user", "stop", f"{name}-{svc}.service"],
-                          check=False)
-            for svc in reversed(services):
-                inst.exec(["systemctl", "--user", "start", f"{name}-{svc}.service"])
+            if quadlet_changed:
+                # One-shot migration: the on-disk quadlet was just rewritten
+                # to point its bind-mount at the new VM-local path, but the
+                # running dnsmasq container is still mounting the old host
+                # (sshfs-cached) path. SIGHUP would re-read the stale cache;
+                # restart the dns sidecar so it picks up the new mount.
+                inst.exec(
+                    ["systemctl", "--user", "restart",
+                     f"{name}-dns.service"],
+                    check=False,
+                )
+            else:
+                inst.exec(
+                    ["podman", "exec", f"{name}-dns",
+                     "pkill", "-HUP", "dnsmasq"],
+                    check=False,
+                )
     elif _is_apple_container(cfg):
         was_running = backend.is_running(name, "cage")
         if was_running:
