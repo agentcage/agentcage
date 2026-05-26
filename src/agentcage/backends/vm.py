@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -488,6 +489,14 @@ class VmBackend:
             removed.append(f"quadlets:{quadlets_dir}")
 
         return removed
+
+    def has_resources(self, name: str) -> bool:
+        if shutil.which("limactl") is None:
+            return False
+        try:
+            return self._instance(name).exists()
+        except (FileNotFoundError, OSError):
+            return False
 
     def is_running(self, name: str, service: str) -> bool:
         inst = self._instance(name)

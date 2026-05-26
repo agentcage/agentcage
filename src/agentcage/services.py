@@ -288,6 +288,25 @@ def restart_cage(name: str, cfg=None):
     backend.restart(name)
 
 
+def _find_owning_backend(name: str):
+    """Return the backend that owns artifacts for ``name``, or None.
+
+    Used by :func:`destroy_cage` when the stored deployment config can't
+    be loaded — see comment there.
+    """
+    from agentcage.backends.apple_container import AppleContainerBackend
+    from agentcage.backends.container import ContainerBackend
+    from agentcage.backends.vm import VmBackend
+
+    for backend in (AppleContainerBackend(), VmBackend(), ContainerBackend()):
+        try:
+            if backend.has_resources(name):
+                return backend
+        except Exception:
+            continue
+    return None
+
+
 def destroy_cage(
     name: str,
     *,
@@ -304,8 +323,20 @@ def destroy_cage(
         cfg = state.load_deployment_config(name)
         backend = get_backend(cfg)
     except Exception:
-        from agentcage.backends.container import ContainerBackend
-        backend = ContainerBackend()
+        # No stored config — ask each backend whether it owns artifacts for
+        # ``name`` and dispatch to the one that does. Without this probe the
+        # default fell back to ContainerBackend, which calls ``podman`` —
+        # crashing on macOS where podman isn't installed even when the cage
+        # is an apple-container artifact (e.g. cleanup after ``agentcage run``
+        # which wipes the deployment dir on exit).
+        backend = _find_owning_backend(name)
+        if backend is None:
+            _echo(f"Nothing to remove for '{name}' "
+                  "(no stored config and no backend resources).")
+            if state.deployment_exists(name):
+                state.remove_deployment(name)
+                return [f"state:{name}"]
+            return []
 
     _echo("Stopping services...")
     backend.stop(name)

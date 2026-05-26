@@ -688,6 +688,13 @@ class AppleContainerBackend:
             removed.append(f"state:{state}")
         return removed
 
+    def has_resources(self, name: str) -> bool:
+        if (self.unit_dir() / f"{name}.json").exists():
+            return True
+        if self._state_dir(name).exists():
+            return True
+        return False
+
     def is_running(self, name: str, service: str) -> bool:  # noqa: ARG002
         data = ac_cli.inspect(name)
         if not data:
