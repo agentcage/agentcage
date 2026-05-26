@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`agentcage run -i / --interactive-domains` flag.** The feature has
+  been dead since #56 landed in v0.10.0: the matcher compared
+  `entry["reason"] == "domain"` against what the proxy actually emits
+  (`"domain not in allowlist: <host>"`), so the prompt never fired in
+  production. Fixing the matcher then surfaced two more issues — the
+  dedup set added the host BEFORE deriving the parent (so 2-label hosts
+  like `foo.com` deduped against themselves and were silently skipped),
+  and ultimately `podman exec -it` puts the host TTY in raw mode and
+  forwards every keystroke into the cage shell before the monitor's
+  `select()` on `/dev/tty` can read it. The `y` response goes to the
+  cage shell as a command (`sh: y: not found`), not the prompt. Fixing
+  the input race requires reparenting the cage shell behind our own pty
+  forwarder and intercepting keystrokes — a substantial refactor for a
+  feature that no one was successfully using. Removed instead.
+  Blocked-domain notifications still print on the host terminal as
+  before. To allowlist a domain mid-session: run
+  `agentcage domain add NAME DOMAIN` from another terminal — after the
+  companion change in this release, that's instant and doesn't restart
+  the cage.
+
 ### Changed
 
 - **`fix(cli)`: `domain add` / `domain rm` no longer restart the cage on
@@ -15,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already hot-reloads its config via mtime polling, and dnsmasq re-reads
   `--servers-file` on SIGHUP. Net effect on container cages: a domain
   change is roughly instant, and any interactive session inside the cage
-  (e.g. `agentcage run -i`) survives the update. Why `pkill` instead of
+  (e.g. `agentcage run`) survives the update. Why `pkill` instead of
   `podman kill --signal HUP`: PID 1 in the dns container is the
   `dns-audit.sh` wrapper, not dnsmasq itself, so the signal would be
   eaten by the wrapper. The VM and apple-container paths are unchanged
