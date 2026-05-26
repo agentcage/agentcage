@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.13] - 2026-05-26
+
+Follow-up to 0.21.12 that closes the next layer of VM-backend UX
+problems: silent systemd failures, a flaky first-attempt cage start,
+and a default `TimeoutStartSec` that's too tight for slow VMs.
+Confirmed end-to-end on a Linux host running a Lima VM with the pi
+scaffold — `pi-ctf-vm` went from "degraded (2/3), cage timing out
+at 60s" to "running (3/3), cage active in <300s" after `cage update`.
+
+### Fixed
+
+- **`fix(vm)`: `cage update` / `cage create` no longer silently
+  succeed when the cage fails to start.** `_deploy_cage` now verifies
+  the cage reaches `active` after the start attempt; a failure
+  raises `RuntimeError` and the CLI exits non-zero. Previously the
+  CLI printed `Updated cage <name>` while `cage verify` reported
+  the cage was dead.
+- **`fix(vm)`: stop swallowing stderr on systemctl start failures
+  inside the VM.** Operator now sees `systemctl status` + the
+  unit's last 40 `journalctl` lines on failure, surfaced through
+  the new `_systemctl_start` + `_dump_service_failure` helpers.
+  Previously the operator got `Command '[...]' returned non-zero
+  exit status 1` and had to `limactl shell` in to find out why.
+- **`fix(vm)`: kill the spurious first-attempt cage start failure.**
+  The cage was started in the same loop as proxy/dns, before the
+  wait-for-proxy block. Its `ExecStartPre` (which polls for
+  mitmproxy's CA cert for up to 30s) raced mitmproxy startup and
+  reliably emitted a scary "failed to start <name>-cage" warning.
+  The cage now only starts AFTER proxy is confirmed active; if
+  proxy never reaches active, `cage update` aborts with the
+  proxy's failure log instead of pretending to start the cage.
+- **`fix(vm)`: floor `TimeoutStartSec` to 300s for VM-mode cages.**
+  The pi scaffold sets `timeout_start_sec: 60`, which is fine on
+  bare metal but reliably times out inside a Lima VM where qemu
+  boot + fuse-overlayfs layer extraction + per-cage podman
+  network add 30-120s of overhead. `generate_units` now mutates
+  the in-memory `cfg.container.timeout_start_sec` to `max(value,
+  300)` for VM cages; on-disk `cage.yaml` is untouched. Floor
+  applies on the next `cage update` (which regenerates quadlets);
+  `cage restart` reuses the on-disk quadlet so the floor takes
+  effect after a real update, not a restart.
+
+### Tests
+
+- `tests/test_vm_backend.py`: 4 new regression tests across
+  `TestSystemctlStart` (stderr surfaced on failure, silent on
+  success, restart verb wired correctly), `TestDeployCageStartOrder`
+  (cage never appears before infra in the first start loop), and
+  `TestGenerateUnits` (`test_floors_timeout_start_sec_for_vm`,
+  `test_preserves_timeout_start_sec_above_floor`).
+
 ## [0.21.12] - 2026-05-26
 
 Bugfix release for the VM backend and `cage update` ergonomics. No security
