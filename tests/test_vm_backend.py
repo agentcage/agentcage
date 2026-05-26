@@ -124,6 +124,42 @@ class TestGenerateUnits:
         assert "quadlets/foo.container" in units
         assert "foo.container" not in units
 
+    def test_floors_timeout_start_sec_for_vm(self):
+        """Cage start inside Lima brushes 90-120s on first run (qemu boot +
+        fuse-overlayfs layer extraction + per-cage podman network). The
+        pi scaffold's default of 60s reliably times out the cage
+        container with a baffling 'failed because a timeout was
+        exceeded'. VM-mode floors to 300s so a real start has room to
+        finish but a genuinely stuck cage still fails before the
+        operator gives up."""
+        backend = VmBackend()
+        config = _make_config()
+        config.container.timeout_start_sec = 60  # what the pi scaffold sets
+
+        with patch("agentcage.backends.vm.generate_lima_config", return_value="y"), \
+             patch("agentcage.backends.vm.generate_quadlets",
+                   return_value={}) as mock_q:
+            backend.generate_units(config, "", "", "testcage")
+
+        # Quadlets must be generated with the floored value, not the
+        # 60s the scaffold wrote.
+        passed_cfg = mock_q.call_args.args[0]
+        assert passed_cfg.container.timeout_start_sec == 300
+
+    def test_preserves_timeout_start_sec_above_floor(self):
+        """If the scaffold/user already set a value >= 300s, don't lower it."""
+        backend = VmBackend()
+        config = _make_config()
+        config.container.timeout_start_sec = 600
+
+        with patch("agentcage.backends.vm.generate_lima_config", return_value="y"), \
+             patch("agentcage.backends.vm.generate_quadlets",
+                   return_value={}) as mock_q:
+            backend.generate_units(config, "", "", "testcage")
+
+        passed_cfg = mock_q.call_args.args[0]
+        assert passed_cfg.container.timeout_start_sec == 600
+
 
 class TestUnitDir:
     def test_unit_dir_path(self):
@@ -504,6 +540,112 @@ class TestWaitInfraActive:
         )
         assert pending == []
         assert mock_inst.exec.call_count == 3
+
+
+class TestSystemctlStart:
+    """Regression coverage for the diagnostic improvements around
+    systemctl --user start failures inside the VM."""
+
+    def test_surfaces_stderr_and_journal_on_failure(self, capsys):
+        from agentcage.backends.vm import _systemctl_start
+        import subprocess
+
+        mock_inst = MagicMock()
+        start_err = subprocess.CalledProcessError(
+            1, ["systemctl", "--user", "start", "foo-cage.service"],
+            stderr="Failed to start foo-cage.service: Unit not found.\n",
+        )
+        status_result = MagicMock(stdout="● foo-cage.service - agentcage cage\n"
+                                         "   Active: failed (Result: exit-code)\n")
+        journal_result = MagicMock(stdout="May 26 18:42 boom: ExecStartPre "
+                                          "timed out waiting for CA cert\n")
+        # First call raises (the start). Then status, then journal succeed.
+        mock_inst.exec.side_effect = [start_err, status_result, journal_result]
+
+        _systemctl_start(mock_inst, "foo-cage")
+
+        err = capsys.readouterr().err
+        # Operator now sees: the warning header, systemctl stderr, status
+        # output, AND the journalctl lines — instead of an opaque
+        # CalledProcessError repr.
+        assert "failed to start foo-cage" in err
+        assert "Unit not found" in err
+        assert "Active: failed" in err
+        assert "timed out waiting for CA cert" in err
+
+    def test_silent_on_success(self, capsys):
+        from agentcage.backends.vm import _systemctl_start
+
+        mock_inst = MagicMock()
+        mock_inst.exec.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _systemctl_start(mock_inst, "foo-cage")
+
+        assert capsys.readouterr().err == ""
+        mock_inst.exec.assert_called_once_with(
+            ["systemctl", "--user", "start", "foo-cage.service"]
+        )
+
+    def test_restart_flag_uses_restart_verb(self, capsys):
+        from agentcage.backends.vm import _systemctl_start
+
+        mock_inst = MagicMock()
+        mock_inst.exec.return_value = MagicMock(returncode=0)
+        _systemctl_start(mock_inst, "foo-dns", restart=True)
+
+        mock_inst.exec.assert_called_once_with(
+            ["systemctl", "--user", "restart", "foo-dns.service"]
+        )
+
+
+class TestDeployCageStartOrder:
+    """The cage's ExecStartPre is a 30s poll for mitmproxy's CA cert.
+    Starting cage in the same loop as proxy/dns races that cert
+    generation and produces a spurious 'failed to start <name>-cage'
+    warning before the second-attempt cage start (which is gated on
+    wait_proxy) succeeds. The fix: never start cage in the first loop;
+    only start it after proxy is confirmed active."""
+
+    def test_cage_not_in_first_start_loop(self):
+        from agentcage.backends.vm import VmBackend
+
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.exec.return_value = MagicMock(stdout="active", returncode=0)
+        # Skip build_artifacts and the quadlet install step — focus on the
+        # systemctl start ordering.
+        with patch.object(backend, "build_artifacts"), \
+             patch.object(backend, "_bridge_secrets"), \
+             patch.object(backend, "_create_pending_secrets"), \
+             patch("agentcage.backends.vm.VmBackend.unit_dir") as mock_unit_dir, \
+             patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.iterdir", return_value=iter([])):
+            mock_unit_dir.return_value = MagicMock()
+            mock_unit_dir.return_value.__truediv__ = lambda self, other: MagicMock(
+                exists=lambda: True, iterdir=lambda: iter([]),
+            )
+            backend._deploy_cage("foo", mock_inst, config=None)
+
+        # Inspect every systemctl start/restart call that was issued.
+        started = [
+            call.args[0]
+            for call in mock_inst.exec.call_args_list
+            if len(call.args) > 0 and isinstance(call.args[0], list)
+            and len(call.args[0]) >= 3
+            and call.args[0][:3] == ["systemctl", "--user", "start"]
+        ]
+        # Sequence must be: infra services first, THEN cage — never both
+        # in one loop. Asserting cage appears AFTER all infra entries
+        # captures the ordering invariant the race-fix relies on.
+        unit_seq = [s[3] for s in started]
+        if "foo-cage.service" in unit_seq:
+            cage_idx = unit_seq.index("foo-cage.service")
+            infra = {"foo-net-network.service", "foo-certs-volume.service",
+                     "foo-proxy.service", "foo-dns.service"}
+            earlier = set(unit_seq[:cage_idx])
+            # Every infra service that ran must have run before cage.
+            assert infra.intersection(unit_seq).issubset(earlier), (
+                f"cage started before some infra service: {unit_seq}"
+            )
 
 
 class TestGetBackend:

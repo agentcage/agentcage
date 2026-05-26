@@ -26,6 +26,59 @@ PROXY_READINESS_TIMEOUT_S = 30
 PROXY_READINESS_POLL_INTERVAL_S = 0.25
 
 
+def _dump_service_failure(inst: LimaInstance, svc: str) -> None:
+    """Print ``systemctl status`` + last ``journalctl`` lines for ``svc``.
+
+    Used when a service fails to start so the operator sees WHY instead of
+    just an opaque ``returned non-zero exit status 1``. Best-effort: if
+    the diagnostic calls themselves fail, swallow them — we are already
+    on the error path and the original failure is what matters.
+    """
+    try:
+        status = inst.exec(
+            ["systemctl", "--user", "status", f"{svc}.service",
+             "--no-pager", "-l"],
+            check=False,
+        )
+        if status.stdout:
+            click.echo(status.stdout.rstrip(), err=True)
+    except Exception:
+        pass
+    try:
+        journal = inst.exec(
+            ["journalctl", "--user", "-u", f"{svc}.service",
+             "--no-pager", "-n", "40"],
+            check=False,
+        )
+        if journal.stdout:
+            click.echo(journal.stdout.rstrip(), err=True)
+    except Exception:
+        pass
+
+
+def _systemctl_start(
+    inst: LimaInstance, svc: str, *, restart: bool = False,
+) -> None:
+    """Run ``systemctl --user start`` (or ``restart``) for *svc*.
+
+    On failure, surface stderr + the service's recent journal lines. The
+    previous behavior was ``click.echo(f"warning: ... {e}", err=True)`` —
+    ``e`` was the CalledProcessError repr (command + exit code), which
+    told the operator nothing about *why* the unit failed. Now they see
+    systemctl's actual diagnostic plus the unit's last journal entries.
+    """
+    action = "restart" if restart else "start"
+    try:
+        inst.exec(["systemctl", "--user", action, f"{svc}.service"])
+    except subprocess.CalledProcessError as e:
+        click.echo(f"warning: failed to {action} {svc}", err=True)
+        if e.stderr:
+            click.echo(e.stderr.rstrip(), err=True)
+        _dump_service_failure(inst, svc)
+    except Exception as e:
+        click.echo(f"warning: failed to {action} {svc}: {e}", err=True)
+
+
 def _wait_infra_active(
     inst: LimaInstance,
     services: list[str],
@@ -133,6 +186,19 @@ class VmBackend:
         # Cleanup
         inst.exec(["rm", "-rf", vm_build_dir], check=False)
 
+    # Cage start inside a Lima VM has to spin up the qemu virtual disk,
+    # extract image layers through fuse-overlayfs (the rootless storage
+    # driver provisioned by agentcage), wire up the per-cage podman
+    # network, and bind-mount user volumes that virtiofs forwards from
+    # the host. Anything that fits comfortably in 60s on bare metal
+    # routinely brushes 90-120s in the VM; the pi scaffold's default of
+    # 60s reliably times out the cage container on first start, which
+    # surfaces to the operator as a baffling "failed because a timeout
+    # was exceeded" with no obvious knob to turn. Floor every VM-mode
+    # cage to 300s — generous enough for slow hosts, still tight enough
+    # that a genuinely stuck cage fails before the operator gives up.
+    VM_MIN_TIMEOUT_START_SEC = 300
+
     def generate_units(
         self,
         config: Config,
@@ -144,6 +210,10 @@ class VmBackend:
     ) -> dict[str, str]:
         """Generate Lima YAML as the primary 'unit', plus quadlet files for inside the VM."""
         lima_yaml = generate_lima_config(config)
+        # Floor the cage's TimeoutStartSec for VM-mode cages. Mutates the
+        # in-memory config; the on-disk cage.yaml is untouched.
+        if config.container.timeout_start_sec < self.VM_MIN_TIMEOUT_START_SEC:
+            config.container.timeout_start_sec = self.VM_MIN_TIMEOUT_START_SEC
         # Also generate quadlets (these will be installed inside the VM)
         quadlets = generate_quadlets(
             config,
@@ -279,21 +349,27 @@ class VmBackend:
         # Reload systemd and start services in dependency order
         inst.exec(["systemctl", "--user", "daemon-reload"])
 
-        services = [
+        # Infrastructure services start FIRST and complete before we touch
+        # the cage. The cage's ExecStartPre is a 30-attempt 1s poll for
+        # mitmproxy's CA cert (generated on first proxy run); racing it
+        # against proxy startup turns the first cage start into a near-
+        # certain failure that surfaces as a scary
+        #   "warning: failed to start <name>-cage: ... non-zero exit status 1"
+        # right before the wait-for-proxy block — the actual second attempt
+        # below would succeed, but the user has already pressed Ctrl-C
+        # convinced something is wrong. Starting the cage strictly after
+        # the proxy is "active" eliminates that spurious failure path.
+        infra_services = [
             f"{name}-net-network",
             f"{name}-certs-volume",
             f"{name}-proxy",
             f"{name}-dns",
-            f"{name}-cage",
         ]
 
         with Phase("systemd.start", cage=name):
             # First attempt
-            for svc in services:
-                try:
-                    inst.exec(["systemctl", "--user", "start", f"{svc}.service"])
-                except Exception as e:
-                    click.echo(f"warning: failed to start {svc}: {e}", err=True)
+            for svc in infra_services:
+                _systemctl_start(inst, svc)
 
             # Wait for infrastructure services to come up, polling every 100ms
             # instead of sleeping the full delay. On warm restarts the services
@@ -301,17 +377,13 @@ class VmBackend:
             # 5s sleep was pure idle time. The deadline is the same as before
             # (handles race conditions like virtiofs targeted mounts not being
             # ready), so cold runs are unaffected.
-            infra = services[:-1]  # everything except cage
-            not_yet_active = _wait_infra_active(inst, infra)
+            not_yet_active = _wait_infra_active(inst, infra_services)
             inst.exec(["systemctl", "--user", "reset-failed"], check=False)
 
             # Retry whatever did not come up within the deadline.
             for svc in not_yet_active:
-                try:
-                    click.echo(f"Retrying {svc}...")
-                    inst.exec(["systemctl", "--user", "restart", f"{svc}.service"])
-                except Exception as e:
-                    click.echo(f"warning: retry failed for {svc}: {e}", err=True)
+                click.echo(f"Retrying {svc}...")
+                _systemctl_start(inst, svc, restart=True)
 
         # Wait for proxy to be ready (CA cert generated) before starting cage.
         # Time-based deadline (not iteration count) so the poll interval can
@@ -320,28 +392,56 @@ class VmBackend:
         click.echo("Waiting for proxy to be ready...")
         with Phase("systemd.wait_proxy", cage=name):
             proxy_deadline = time.monotonic() + PROXY_READINESS_TIMEOUT_S
+            proxy_active = False
             while time.monotonic() < proxy_deadline:
                 result = inst.exec(
                     ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
                     check=False,
                 )
                 if result.stdout.strip() == "active":
+                    proxy_active = True
                     break
                 time.sleep(PROXY_READINESS_POLL_INTERVAL_S)
+
+        if not proxy_active:
+            # Don't pretend to start the cage when proxy never came up —
+            # the cage's ExecStartPre will just spin for 30s and then fail
+            # on the same root cause. Surface the proxy's actual failure
+            # reason instead.
+            _dump_service_failure(inst, f"{name}-proxy")
+            raise RuntimeError(
+                f"proxy {name}-proxy did not become active within "
+                f"{PROXY_READINESS_TIMEOUT_S}s; cage not started"
+            )
 
         # Now start the cage
         cage_svc = f"{name}-cage"
         with Phase("systemd.start_cage", cage=name):
-            try:
-                result = inst.exec(
+            result = inst.exec(
+                ["systemctl", "--user", "is-active", f"{cage_svc}.service"],
+                check=False,
+            )
+            if result.stdout.strip() != "active":
+                inst.exec(["systemctl", "--user", "reset-failed"], check=False)
+                _systemctl_start(inst, cage_svc)
+                # Confirm cage actually came up — _systemctl_start surfaces
+                # stderr + journalctl on failure but doesn't raise (so the
+                # infra-services loop can continue past a single dead unit).
+                # For the cage itself the deploy is meaningless without it,
+                # so verify is-active and fail the whole `cage update` /
+                # `cage create` loudly. Previously this path silently
+                # returned and the CLI printed "Updated cage X" while the
+                # cage's status was failed.
+                final = inst.exec(
                     ["systemctl", "--user", "is-active", f"{cage_svc}.service"],
                     check=False,
                 )
-                if result.stdout.strip() != "active":
-                    inst.exec(["systemctl", "--user", "reset-failed"], check=False)
-                    inst.exec(["systemctl", "--user", "start", f"{cage_svc}.service"])
-            except Exception as e:
-                click.echo(f"warning: failed to start {cage_svc}: {e}", err=True)
+                if final.stdout.strip() != "active":
+                    raise RuntimeError(
+                        f"cage {cage_svc} failed to start "
+                        f"(state={final.stdout.strip() or 'unknown'}); see "
+                        f"diagnostic output above"
+                    )
 
     def _create_pending_secrets(self, name: str, inst: LimaInstance) -> None:
         """Create secrets from cage create --set-secret inside the VM."""
