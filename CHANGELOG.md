@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.14] - 2026-05-26
+
+UX hardening pass driven by a live torture session against v0.21.13 on
+Linux (container + Lima VM). Four operator-visible papercuts closed,
+zero behavior changes for working setups.
+
+### Fixed
+
+- **`fix(vm)`: `--workdir /` on every `limactl shell` argv, not just
+  `LimaInstance.exec`.** v0.21.13 fixed the `cd: <host-cwd>: No such
+  file or directory` warning for one helper but the argv builders for
+  `cage exec` / `cage shell` / `cage logs` / `cage audit` on VM cages
+  built their own argv with `os.execvp` and bypassed the helper. The
+  warning was back on every VM exec. `vm.exec_argv`, `vm.logs_argv`,
+  `vm.audit_argv`, and the inline `limactl shell` invocations in
+  `cli.py:_logs_vm` + `cli.py:cage_shell` now all pin `--workdir /`.
+- **`fix(cli)`: `cage exec` on a stopped cage now exits with a friendly
+  "cage is not running — start it with 'agentcage cage start <name>'
+  first" instead of letting the raw downstream error surface.**
+  Pre-fix the operator got `Error: no container with name or ID
+  "<name>-cage" found` (container, exit 125) or `instance "<name>" is
+  stopped` (vm, exit 1) — both buried the actual problem. Pre-flight
+  checks `backend.is_running(name, "cage")` before dispatching to
+  `exec_argv`.
+- **`fix(cli)`: `cage restart` waits up to 30s for the cage to reach
+  `active` before returning.** Pre-fix, `cage restart` returned the
+  moment systemd had kicked off the unit; `cage ls` right after showed
+  `degraded (2/3)` for a few seconds until the cage container finished
+  starting, scaring the operator. `services.restart_cage` now polls
+  `backend.is_running` post-restart so the command only returns once
+  the cage is actually up.
+- **`fix(config)`: invalid YAML in `cage.yaml` now surfaces as a clean
+  one-line error with file:line:column instead of a raw
+  `yaml.scanner.ScannerError` Python traceback.** `load_config`
+  catches `yaml.YAMLError` and re-raises `ValueError` with the
+  problem mark; the CLI catches `ValueError` and prints
+  `error: <path> is not valid YAML at line N, column N: <message>`
+  before exiting 1. Same friendly treatment for OSError.
+
+### Tests
+
+- `tests/test_cage_cli.py::TestCageExec::test_exec_refuses_stopped_cage`
+  — proves the friendly stopped-cage error path.
+- `test_exec_vm_uses_limactl` updated for `--workdir /` and the
+  pre-flight (mocks both `LimaInstance` import sites).
+- `test_logs_vm_default` updated for `--workdir /`.
+- `tests/test_apple_container_cli.py::TestCageExecAppleContainer` three
+  tests updated to mock `ac_cli.inspect` so the new is_running
+  pre-flight passes.
+- `tests/test_config.py::TestLoadConfigEdgeCases::test_invalid_yaml_*`
+  + `test_unreadable_file_raises_valueerror` — clean-error contract
+  for YAML and OSError paths.
+
 ## [0.21.13] - 2026-05-26
 
 Follow-up to 0.21.12 that closes the next layer of VM-backend UX
