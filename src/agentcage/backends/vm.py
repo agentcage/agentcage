@@ -362,10 +362,11 @@ class VmBackend:
             for key, value in pending:
                 full = f"{name}.{key}"
                 inst.exec(["podman", "secret", "rm", full], check=False)
-                subprocess.run(
-                    ["limactl", "shell", inst.name, "--",
-                     "podman", "secret", "create", full, "-"],
-                    input=value, text=True, check=True,
+                # Pipe stdin via inst.exec so we get --tty=false (no PTY
+                # cooking) and --workdir / (no spurious cd warnings).
+                inst.exec(
+                    ["podman", "secret", "create", full, "-"],
+                    input=value,
                 )
                 click.echo(f"  Secret '{full}' set in VM.")
         finally:
@@ -400,10 +401,9 @@ class VmBackend:
                         ["podman", "secret", "rm", secret_name],
                         check=False,
                     )
-                    subprocess.run(
-                        ["limactl", "shell", inst.name, "--",
-                         "podman", "secret", "create", secret_name, "-"],
-                        input=value, text=True, check=True,
+                    inst.exec(
+                        ["podman", "secret", "create", secret_name, "-"],
+                        input=value,
                     )
                     click.echo(f"  Bridged secret (decrypted): {secret_name}")
                 except Exception as e:
@@ -443,10 +443,9 @@ class VmBackend:
                     check=False,
                 )
                 # Pipe value via stdin to avoid shell injection
-                subprocess.run(
-                    ["limactl", "shell", inst.name, "--",
-                     "podman", "secret", "create", secret_name, "-"],
-                    input=value, text=True, check=True,
+                inst.exec(
+                    ["podman", "secret", "create", secret_name, "-"],
+                    input=value,
                 )
                 click.echo(f"  Bridged secret: {secret_name}")
             except Exception as e:

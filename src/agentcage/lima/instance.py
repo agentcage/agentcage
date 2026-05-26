@@ -67,13 +67,32 @@ class LimaInstance:
         check: bool = True,
         capture_output: bool = True,
         text: bool = True,
+        input: str | bytes | None = None,
     ) -> CompletedProcess:
-        """Run a command inside the Lima VM."""
+        """Run a command inside the Lima VM.
+
+        ``--workdir /`` pins the guest cwd to ``/`` so the SSH shell does
+        not try to ``cd`` into the host's current directory. By default
+        ``limactl shell`` mirrors the host cwd inside the VM, which only
+        the explicitly-mounted ``~/.config/agentcage`` /
+        ``~/.local/share/agentcage`` paths can satisfy — every other
+        invocation prints a spurious ``cd: <path>: No such file or
+        directory`` and runs from $HOME anyway.
+
+        ``--tty=false`` (``-y``) keeps SSH from allocating a PTY. Without
+        it, piping ``input=`` while stdout is attached to a terminal
+        causes Lima to default to a PTY and the kernel line discipline
+        cooks the stream (CR↔LF translation, control-char handling),
+        which silently mangles secret values fed to ``podman secret
+        create -``.
+        """
         return subprocess.run(
-            ["limactl", "shell", self.name, "--"] + cmd,
+            ["limactl", "shell", "--workdir", "/", "--tty=false",
+             self.name, "--"] + cmd,
             check=check,
             capture_output=capture_output,
             text=text,
+            input=input,
         )
 
     def _list_json(self) -> dict:

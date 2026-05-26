@@ -90,12 +90,14 @@ class TestExec:
         inst = LimaInstance("mycage")
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="output", stderr="")
-            result = inst.exec(["echo", "hello"])
+            inst.exec(["echo", "hello"])
             mock_run.assert_called_once_with(
-                ["limactl", "shell", "agentcage-mycage", "--", "echo", "hello"],
+                ["limactl", "shell", "--workdir", "/", "--tty=false",
+                 "agentcage-mycage", "--", "echo", "hello"],
                 check=True,
                 capture_output=True,
                 text=True,
+                input=None,
             )
 
     def test_exec_default_flags(self):
@@ -121,9 +123,36 @@ class TestExec:
         fake_result = MagicMock()
         fake_result.returncode = 0
         fake_result.stdout = "hello\n"
-        with patch("subprocess.run", return_value=fake_result) as mock_run:
+        with patch("subprocess.run", return_value=fake_result):
             result = inst.exec(["echo", "hello"])
             assert result is fake_result
+
+    def test_exec_pins_workdir_and_disables_tty(self):
+        """Without --workdir / --tty=false, limactl shell mirrors the host
+        cwd (often unmounted in the VM → 'cd: No such file or directory')
+        and allocates a PTY when stdout is a terminal, whose line
+        discipline cooks piped stdin (mangles secret values fed to
+        `podman secret create -`)."""
+        inst = LimaInstance("mycage")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            inst.exec(["ls"])
+            args, _ = mock_run.call_args
+            argv = args[0]
+            assert "--workdir" in argv
+            assert argv[argv.index("--workdir") + 1] == "/"
+            assert "--tty=false" in argv
+
+    def test_exec_pipes_stdin_via_input(self):
+        inst = LimaInstance("mycage")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            inst.exec(
+                ["podman", "secret", "create", "name", "-"],
+                input="secret-value\n",
+            )
+            _, kwargs = mock_run.call_args
+            assert kwargs["input"] == "secret-value\n"
 
 
 class TestIsRunning:
