@@ -495,6 +495,21 @@ class AppleContainerBackend:
                 # start) so a `cage update` controls the surface, matching
                 # how the rest of the runtime config flows.
                 "volumes": list(config.container.volumes),
+                # User-defined ``container.env:`` entries. Apple's
+                # `container run` accepts `-e KEY=VAL` like podman. The
+                # container backend wires these via quadlets.py:338;
+                # pre-this-fix apple-container ignored them silently (the
+                # cage workload's environ was just missing the keys, no
+                # warning). Expand $VAR in values to match the container
+                # backend's behavior. Placeholder-style values from
+                # ``secret_injection:`` go through a separate `-e KEY={{PH}}`
+                # path that lives in ``start()`` (using
+                # ``secret_env_placeholders`` above); the two never overlap
+                # because validate_config rejects a key listed in BOTH.
+                "env": {
+                    k: os.path.expandvars(str(v))
+                    for k, v in (config.container.env or {}).items()
+                },
             },
             indent=2,
             sort_keys=True,
@@ -593,6 +608,17 @@ class AppleContainerBackend:
             argv += ["--memory", _normalize_memory(str(memory_raw))]
         elif meta.get("mem_mb"):  # pre-0.20.6 unit JSON
             argv += ["--memory", f"{meta['mem_mb']}M"]
+
+        # User-defined ``container.env:`` entries — passed verbatim to
+        # ``container run`` as ``-e KEY=VAL``. Container backend wires
+        # the same shape via quadlets.py:338; apple-container ignored
+        # these silently pre-this-fix. Persisted under the ``env`` key
+        # in the unit JSON by ``generate_units`` (with $VAR already
+        # expanded host-side at unit-write time). secret_injection
+        # placeholders flow through ``secret_env_placeholders`` below
+        # and never collide (validate_config rejects shared keys).
+        for env_k, env_v in (meta.get("env") or {}).items():
+            argv += ["-e", f"{env_k}={env_v}"]
 
         # Secret-injection. For each env named in the cage's
         # `secret_injection:` rules:
