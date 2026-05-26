@@ -220,6 +220,30 @@ def load_scaffold_meta(scaffold: str) -> dict | None:
         return yaml.safe_load(f) or {}
 
 
+def scaffold_aliases() -> dict[str, str]:
+    """Return ``alias → scaffold-name`` for every scaffold declaring ``aliases``.
+
+    Read from each scaffold's ``scaffold.yaml`` so the alias list is
+    extensible — agentcage core has no hardcoded knowledge of which
+    scaffolds exist or how they prefer to be invoked.
+    """
+    out: dict[str, str] = {}
+    for name in list_scaffolds():
+        meta = load_scaffold_meta(name) or {}
+        for alias in meta.get("aliases") or []:
+            out[str(alias)] = name
+    return out
+
+
+def scaffold_name_prefix(scaffold: str) -> str:
+    """Return the cage-name prefix declared in a scaffold's ``scaffold.yaml``.
+
+    Falls back to the scaffold's own name when no prefix is declared.
+    """
+    meta = load_scaffold_meta(scaffold) or {}
+    return str(meta.get("name_prefix") or scaffold)
+
+
 def run_scaffold_setup(
     scaffold: str, name: str, dest: str, *, quiet: bool = False,
     isolation: str | None = None,

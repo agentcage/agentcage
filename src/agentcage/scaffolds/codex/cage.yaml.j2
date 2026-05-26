@@ -34,9 +34,12 @@ container:
   # Project directory — mount your repo here
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
-    # Auth & settings — mount host ~/.codex so login persists across sessions.
-    # Remove this line to isolate cage state from the host.
-    - "~/.codex:/home/node/.codex:rw"
+    # Auth & settings — uncomment to mount host ~/.codex so login persists
+    # across sessions. Disabled by default: the host ~/.codex tree contains
+    # credentials, session history, and config that the cage shouldn't see
+    # or be able to mutate. Prefer in-cage `codex login` (volume-backed)
+    # or an injected API key.
+    #- "~/.codex:/home/node/.codex:rw"
   #  # Git config (uncomment to enable)
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"
   #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"

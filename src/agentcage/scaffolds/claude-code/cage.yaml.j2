@@ -10,7 +10,9 @@
 # Authentication — pick one:
 #   A — Subscription, log in inside the cage:
 #     agentcage cage exec {{ name }} -- claude login
-#     (follow the URL; the token is saved in the ~/.claude volume)
+#     (follow the URL; the token is saved under /home/node/.claude in the
+#     cage's writable layer. To persist it across image rebuilds, uncomment
+#     the ~/.claude host mount in `volumes` below — see security note there.)
 #
 #   B — Subscription, reuse your host login (no in-cage login):
 #     claude setup-token                  # on the host — mints a long-lived token
@@ -44,13 +46,18 @@ container:
   # Project directory — mount your repo here
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
-    # Auth & settings — mount host ~/.claude so login persists across sessions.
-    # Remove this line to isolate cage state from the host.
-    - "~/.claude:/home/node/.claude:rw"
+    # Auth & settings — uncomment to mount host ~/.claude so login persists
+    # across sessions. Disabled by default: the host ~/.claude tree contains
+    # credentials, OAuth tokens, transcripts, MCP configs, and project
+    # memory that the cage shouldn't see or be able to mutate. Prefer
+    # in-cage `claude login` (volume-backed) or CLAUDE_CODE_OAUTH_TOKEN.
+    #- "~/.claude:/home/node/.claude:rw"
     # ~/.claude.json (Claude Code's global UX config) is intentionally NOT
     # mounted by default. Uncomment if you want your host preferences (model
-    # choice, theme, etc.) to follow you into the cage. Auth tokens live in
-    # ~/.claude/.credentials.json and are already covered by the mount above.
+    # choice, theme, etc.) to follow you into the cage. Only enable this
+    # together with the ~/.claude mount above — without ~/.claude, the
+    # paths referenced in ~/.claude.json (projects, MCP servers, history)
+    # won't exist inside the cage.
     # Note: the VM backend stages a one-way copy (cage edits don't flow back).
     #- "~/.claude.json:/home/node/.claude.json:rw"
   #  # Git config (uncomment to enable)

@@ -151,12 +151,6 @@ class TestCodingAgentScaffolds:
         cfg = load_config(str(p))
         validate_config(cfg)
 
-    def test_claude_code_mounts_host_claude_dir(self):
-        cfg_text = render_config("test-cc", scaffold="claude-code")
-        parsed = yaml.safe_load(cfg_text)
-        volumes = parsed.get("container", {}).get("volumes", [])
-        assert any(".claude:" in v for v in volumes)
-
     def test_claude_code_has_secret_injection(self):
         cfg_text = render_config("test-cc", scaffold="claude-code")
         parsed = yaml.safe_load(cfg_text)

@@ -11,7 +11,9 @@
 #   A — Interactive login inside the cage (subscription providers):
 #     agentcage cage exec {{ name }} -- pi
 #     # then type /login at the prompt
-#     # credentials are saved in the ~/.pi volume
+#     # credentials are saved under /home/node/.pi in the cage's writable
+#     # layer. To persist them across image rebuilds, uncomment the ~/.pi
+#     # host mount in `volumes` below — see security note there.
 #
 #   B — API key (Anthropic):
 #     agentcage secret set {{ name }} ANTHROPIC_API_KEY
@@ -45,11 +47,11 @@ container:
   # Project directory — mount your repo here
   volumes:
     - "${PROJECT_DIR}:/workspace:rw"
-    # Auth & settings — mount host ~/.pi so /login persists across sessions.
-    # Pi stores global config at ~/.pi/agent/settings.json and per-session
-    # state under ~/.pi/ as well. Remove this line to isolate cage state
-    # from the host.
-    - "~/.pi:/home/node/.pi:rw"
+    # Auth & settings — uncomment to mount host ~/.pi so /login persists
+    # across sessions. Disabled by default: the host ~/.pi tree contains
+    # credentials and per-session state that the cage shouldn't see or be
+    # able to mutate. Prefer in-cage `/login` (volume-backed).
+    #- "~/.pi:/home/node/.pi:rw"
   #  # Git config (uncomment to enable)
   #  - "~/.gitconfig:/home/node/.gitconfig:ro"
   #  - "~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro"

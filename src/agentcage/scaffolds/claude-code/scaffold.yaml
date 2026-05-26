@@ -1,6 +1,15 @@
 description: "Anthropic Claude Code CLI agent"
 lifecycle: interactive
 
+# Short aliases — `agentcage run claude` resolves to this scaffold.
+aliases:
+  - claude
+
+# Prefix used by `agentcage run` when auto-generating a cage name.
+# Without this, cages are named `<scaffold>-<adj>-<noun>` (e.g.
+# `claude-code-bold-fox`); with it, they are `claude-bold-fox`.
+name_prefix: claude
+
 build:
   - image: "localhost/agentcage-scaffold-claude-code:latest"
     containerfile: "Containerfile"

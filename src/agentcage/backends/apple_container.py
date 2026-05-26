@@ -787,13 +787,12 @@ class AppleContainerBackend:
         #
         # capsh's `--user=` resolves by NAME via getpwnam (it does NOT
         # accept a numeric uid — `--user=1000` errors with "User [1000]
-        # not known"). The uid-1000 user's name varies by base image:
-        # `ubuntu` on ubuntu:24.04, `node` on node:*, `claude` on
-        # claude-code, `cage` on bases without a uid-1000 user (the
-        # Containerfile.wrapper.j2 useradd fallback). Resolve at
-        # exec time via a shell `getent` so we don't have to teach the
-        # CLI about every base image's user name. Same trick the
-        # supervisor uses at stage 90 (PR #140).
+        # not known"). The uid-1000 user's name varies by base image
+        # (e.g. `ubuntu` on ubuntu:24.04, `node` on node:*, `cage` on
+        # bases without a uid-1000 user via the Containerfile.wrapper.j2
+        # useradd fallback). Resolve at exec time via a shell `getent`
+        # so we don't have to teach the CLI about every base image's
+        # user name. Same trick the supervisor uses at stage 90 (PR #140).
         inner = (
             "CAGE_USER=$(getent passwd 1000 | cut -d: -f1) && "
             "exec capsh --no-new-privs --drop=all "
