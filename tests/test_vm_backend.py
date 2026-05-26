@@ -648,6 +648,89 @@ class TestDeployCageStartOrder:
             )
 
 
+class TestPushConfigFiles:
+    """``push_config_files`` mirrors proxy-config.yaml + dns-allowlist.conf
+    into a VM-local path the cage quadlets bind-mount (bypassing the Lima
+    reverse-sshfs cache). Called from ``_deploy_cage`` on every start /
+    restart / deploy AND from ``_update_dns_quadlet`` on every domain edit."""
+
+    def test_creates_vm_local_directory(self, tmp_path, monkeypatch):
+        # state._DEPLOYMENTS_DIR is computed at import time from env, so
+        # monkeypatching the env var doesn't move the path — patch the
+        # state.deployment_dir helper directly.
+        d = tmp_path / "cages" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(
+            "agentcage.state.deployment_dir", lambda _name: d,
+        )
+        monkeypatch.setattr(
+            "agentcage.state.dns_allowlist_path",
+            lambda _name: d / "dns-allowlist.conf",
+        )
+
+        from agentcage.backends.vm import push_config_files
+        inst = MagicMock()
+        push_config_files("demo", inst)
+
+        # First call must `mkdir -p` the VM-local config dir.
+        first = inst.exec.call_args_list[0]
+        assert first.args[0][0:2] == ["bash", "-c"]
+        assert "mkdir -p" in first.args[0][2]
+        assert "~/.config/agentcage-vm/cages/demo" in first.args[0][2]
+
+    def test_pushes_both_files_when_present(self, tmp_path, monkeypatch):
+        d = tmp_path / "cages" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "proxy-config.yaml").write_text("domains: {allow: [example.com]}")
+        (d / "dns-allowlist.conf").write_text("server=/example.com/1.1.1.1\n")
+        monkeypatch.setattr(
+            "agentcage.state.deployment_dir", lambda _name: d,
+        )
+        monkeypatch.setattr(
+            "agentcage.state.dns_allowlist_path",
+            lambda _name: d / "dns-allowlist.conf",
+        )
+
+        from agentcage.backends.vm import push_config_files
+        inst = MagicMock()
+        push_config_files("demo", inst)
+
+        # Three calls: mkdir, push proxy-config, push dns-allowlist.
+        scripts = [
+            c.args[0][2] for c in inst.exec.call_args_list
+            if c.args[0][:2] == ["bash", "-c"]
+        ]
+        assert any(
+            "~/.config/agentcage-vm/cages/demo/proxy-config.yaml" in s
+            for s in scripts
+        )
+        assert any(
+            "~/.config/agentcage-vm/cages/demo/dns-allowlist.conf" in s
+            for s in scripts
+        )
+
+    def test_skips_missing_files(self, tmp_path, monkeypatch):
+        """A cage in blocklist mode may have an empty/missing allowlist
+        file; missing file = skip push, never crash."""
+        d = tmp_path / "cages" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        # No proxy-config.yaml, no dns-allowlist.conf
+        monkeypatch.setattr(
+            "agentcage.state.deployment_dir", lambda _name: d,
+        )
+        monkeypatch.setattr(
+            "agentcage.state.dns_allowlist_path",
+            lambda _name: d / "dns-allowlist.conf",
+        )
+
+        from agentcage.backends.vm import push_config_files
+        inst = MagicMock()
+        push_config_files("demo", inst)
+
+        # Only the mkdir runs.
+        assert inst.exec.call_count == 1
+
+
 class TestGetBackend:
     def test_returns_vm_backend_for_vm_isolation(self):
         from agentcage.backends import get_backend
