@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **apple-container honors `container.volumes:`.** Pre-fix the validator emitted `container.volumes: silently has no effect on apple-container (host bind mounts ... — the cage gets no host paths)` and the backend never passed the entries through. Apple's `container run` actually supports `--volume host:cage[:mode]` (we already use it for `/var/log/agentcage` and `/run/agentcage/secrets`), so the fix is to iterate `cfg.container.volumes` in `AppleContainerBackend.start()` and emit one `--volume` per entry. Volume entries are persisted in the per-cage unit JSON at `cage create` time (a `cage update` is the rebuild boundary, matching how the rest of the runtime config flows). Host-path safety mirrors the container backend's quadlet generator: `~` and `$VAR` are expanded; entries with unresolved variables, missing `:`, or whose host path resolves outside `$HOME` are skipped with a warning. This unblocks `agentcage run --project DIR` on apple-container — `${PROJECT_DIR}:/workspace:rw` from the scaffold j2 template now actually lands in the cage.
+
 ## [0.21.7] - 2026-05-26
 
 Re-release of 0.21.6 — GitHub Actions silently dropped the tag-push event for the v0.21.6 tag (twice; even after delete + re-push), so the wheel never reached PyPI. No code changes between 0.21.6 and 0.21.7; the only diff is a `workflow_dispatch:` fallback added to the Release workflow so future dropped events can be re-fired by hand. Use 0.21.7 instead of 0.21.6.

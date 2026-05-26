@@ -1719,7 +1719,10 @@ class TestAppleContainerSilentDrops:
              patch("agentcage.config.platform.machine", return_value="arm64"):
             return cfg, validate_config(cfg)
 
-    def test_volumes_warns(self, tmp_path):
+    def test_volumes_no_longer_warns(self, tmp_path):
+        """`container.volumes` is wired through `AppleContainerBackend.start()`
+        as of feat/apple-volume-mounts — no longer in the silent-drops list.
+        Regression test against any future reintroduction of the warning."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
@@ -1727,12 +1730,11 @@ class TestAppleContainerSilentDrops:
             container:
               image: localhost/test:latest
               volumes:
-                - "/host:/cage:rw"
+                - "~/some-path:/cage:rw"
         """))
         _, warnings = self._validate_under_apple(str(p))
-        assert any(
-            "container.volumes" in w and "apple-container" in w and "#120" in w
-            for w in warnings
+        assert not any(
+            "container.volumes" in w for w in warnings
         ), warnings
 
     def test_named_volumes_warns(self, tmp_path):
