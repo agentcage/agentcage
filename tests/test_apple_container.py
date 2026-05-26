@@ -3414,3 +3414,171 @@ def test_inspector_chain_empty_config_is_passthrough(monkeypatch, tmp_path):
     )
     assert entry["decision"] == "allowed"
     assert entry["inspectors"] == []
+
+
+# ---------------------------------------------------------------------------
+# allowlist_addon: Non-HTTP TCP bypass guard
+#
+# Regression coverage for the CTF finding that mitmproxy in transparent
+# mode bridges raw TCP (and non-HTTP TLS) through unmodified — bypassing
+# the ``request``/``response`` hooks that enforce the allowlist and
+# secret-injection policy. The fix adds a ``tcp_start`` hook that kills
+# any flow reaching the TCP layer.
+#
+# The container backend has the same class of bug and is covered in
+# ``tests/test_addon_tcp_bypass.py``. Both backends share the same
+# threat model and must fail closed on identical attack shapes.
+# ---------------------------------------------------------------------------
+
+
+def _make_tcp_flow(*, sni=None, server_address=None, server_peername=None):
+    """Build a mock TCP flow for the apple-container addon's ``tcp_start``.
+
+    ``sni`` is the TLS SNI the cage committed to (None for plain TCP).
+    ``server_address`` is what mitmproxy resolves from SO_ORIGINAL_DST
+    in transparent mode (the cage's TCP destination IP:port).
+    """
+    flow = MagicMock()
+    flow.client_conn.sni = sni
+    flow.server_conn.address = server_address
+    flow.server_conn.peername = server_peername
+    flow.server_conn.error = None
+    flow.killable = True
+    flow.live = True
+    return flow
+
+
+def test_tcp_start_blocks_raw_tcp_to_ip(tmp_path, monkeypatch):
+    """The exact CTF case: cage opens a raw TCP socket to ``1.1.1.1:443``
+    and writes non-HTTP bytes. mitmproxy's ``next_layer`` falls back to
+    ``TCPLayer`` (rawtcp=True by default); without ``tcp_start`` the
+    bytes bridge straight to upstream. The addon must kill the flow
+    before any byte leaves the cage."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_tcp_flow(
+        sni=None,
+        server_address=("1.1.1.1", 443),
+    )
+
+    addon.tcp_start(flow)
+
+    # Belt 1: server_conn.error → mitmproxy's open_connection aborts
+    # before the upstream socket is opened.
+    assert flow.server_conn.error
+    assert "non-http TCP bypass" in flow.server_conn.error
+
+    # Belt 2: flow.kill() called for canonical killed state.
+    flow.kill.assert_called_once_with()
+
+    # Audit line landed in audit.jsonl with the right shape.
+    lines = (tmp_path / "audit.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["kind"] == "tcp_bypass_blocked"
+    assert entry["decision"] == "blocked"
+    assert entry["direction"] == "outbound"
+    assert entry["source"] == "apple-container"
+    assert "1.1.1.1:443" in entry["host"]
+    assert "non-http TCP bypass" in entry["reason"]
+
+
+def test_tcp_start_blocks_non_http_tls_with_sni(tmp_path, monkeypatch):
+    """TLS variant: cage opens TLS with a real SNI (e.g. SMTPS at
+    smtp.example.com) but the inner bytes are not HTTP. mitmproxy
+    decrypts then falls back to ``TCPLayer``; the addon must still
+    kill the flow because the L7 hooks would never run on those bytes.
+    The audit entry records SNI (more useful than the original-dst IP)
+    so operators know which destination the cage tried to reach."""
+    _, addon = _build_addon(
+        monkeypatch, tmp_path,
+        # SNI happens to be allowlisted at the HTTP layer — irrelevant
+        # to the TCP guard, which is HTTP-only-policy by design.
+        allowlist=("smtp.example.com",),
+        inject_to=("smtp.example.com",),
+    )
+    flow = _make_tcp_flow(
+        sni="smtp.example.com",
+        server_address=("203.0.113.5", 465),  # SMTPS
+    )
+
+    addon.tcp_start(flow)
+
+    assert flow.server_conn.error
+    flow.kill.assert_called_once_with()
+    entry = json.loads(
+        (tmp_path / "audit.jsonl").read_text().splitlines()[0]
+    )
+    # SNI wins over original-dst IP for the audit host field.
+    assert entry["host"] == "smtp.example.com"
+
+
+def test_tcp_start_handles_unknown_destination(tmp_path, monkeypatch):
+    """Defensive: a flow with neither SNI nor a server address must
+    still be killed and audited — the addon must never raise out of a
+    mitmproxy hook (would tear down the proxy and fail the cage open)."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_tcp_flow(
+        sni=None,
+        server_address=None,
+        server_peername=None,
+    )
+
+    addon.tcp_start(flow)  # must not raise
+
+    assert flow.server_conn.error
+    flow.kill.assert_called_once_with()
+    entry = json.loads(
+        (tmp_path / "audit.jsonl").read_text().splitlines()[0]
+    )
+    assert entry["host"] == "<unknown>"
+
+
+def test_tcp_start_already_killed_flow_does_not_double_kill(
+    tmp_path, monkeypatch,
+):
+    """If a higher-priority addon already killed the flow,
+    ``flow.kill()`` would raise ``ControlException``. The addon must
+    gate on ``flow.killable`` (and tolerate kill() raising regardless)
+    so a kill race doesn't tear down the proxy."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_tcp_flow(server_address=("1.2.3.4", 443))
+    flow.killable = False  # already killed by something else
+
+    addon.tcp_start(flow)  # must not raise
+
+    flow.kill.assert_not_called()
+    # The audit line still lands so the operator sees the attempt.
+    assert (tmp_path / "audit.jsonl").read_text().strip()
+
+
+def test_tcp_start_accepts_bytes_sni(tmp_path, monkeypatch):
+    """mitmproxy types ``sni`` as ``str | None``, but historically some
+    paths handed back ``bytes``. The TCP-guard helper must normalize the
+    same way ``_authoritative_host`` does so a bytes SNI doesn't fall
+    through to the original-dst IP."""
+    _, addon = _build_addon(monkeypatch, tmp_path)
+    flow = _make_tcp_flow(
+        sni=b"smtp.example.com",
+        server_address=("203.0.113.5", 465),
+    )
+
+    addon.tcp_start(flow)
+
+    entry = json.loads(
+        (tmp_path / "audit.jsonl").read_text().splitlines()[0]
+    )
+    assert entry["host"] == "smtp.example.com"
+
+
+def test_supervisor_mitmdump_keeps_lazy_connection_strategy():
+    """The supervisor must still launch mitmdump with
+    ``--set connection_strategy=lazy``. The TCP-bypass fix uses
+    ``tcp_start`` (which fires under both lazy and eager strategies) and
+    intentionally keeps ``lazy`` so we don't open upstream sockets for
+    flows the addon will immediately block — same wire-touch profile as
+    before the fix."""
+    supervisor = (
+        Path(__file__).parent.parent
+        / "src" / "agentcage" / "data" / "apple-container" / "supervisor.sh"
+    ).read_text()
+    assert "--set connection_strategy=lazy" in supervisor

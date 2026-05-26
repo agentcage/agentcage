@@ -644,6 +644,132 @@ class Agentcage:
                         ws_messages=ws_msgs or None,
                     )
 
+    # ── Non-HTTP TCP bypass guard ────────────────────────
+    #
+    # Background: mitmproxy in transparent mode handles TCP/80 + TCP/443
+    # via the iptables REDIRECT installed in ``proxy.container.j2``. For
+    # bytes that look like HTTP, mitmproxy dispatches to ``HttpLayer`` and
+    # the ``request``/``response``/``websocket_message`` hooks above
+    # enforce policy. For everything else — raw bytes after the TCP
+    # handshake, or TLS that does not carry HTTP inside — mitmproxy's
+    # ``next_layer`` (with the default ``rawtcp=True``) falls back to
+    # ``TCPLayer``, which simply BRIDGES bytes between the cage and the
+    # original destination. NO request/response/websocket hook fires for
+    # those flows, so the allowlist, inspector chain, and secret-injection
+    # policy never run. A cage workload that opens a socket to (e.g.)
+    # ``1.1.1.1:443`` and writes raw bytes can exfiltrate freely.
+    #
+    # We restore the L7 invariant by killing every TCP flow that reaches
+    # this hook. ``HttpLayer``-handled flows never produce a ``TCPFlow``,
+    # so this hook only fires for the bypass path. Killing here uses two
+    # belts:
+    #
+    #   1. ``flow.server_conn.error = ...`` — checked by mitmproxy's
+    #      ``open_connection`` (see ``proxy/server.py``) after the
+    #      ``server_connect`` hook. The upstream TCP connection is never
+    #      opened, so no bytes leave the cage.
+    #   2. ``flow.kill()`` — sets ``flow.live = False`` and ``flow.error``
+    #      so downstream addons and the audit pipeline see the canonical
+    #      killed state.
+    #
+    # Audit entries land in the same ``audit.jsonl`` as HTTP decisions
+    # (kind=tcp_bypass_blocked, decision=blocked) so existing forensic
+    # tooling shows the kill.
+    #
+    # Protocol relays (IMAP/SMTP) listen on cage-author-chosen loopback
+    # ports inside this same mitmproxy process. The cage reaches them via
+    # 127.0.0.1; those sockets are served by the relay's own asyncio
+    # accept loop and never pass through mitmproxy's transparent
+    # intercept (the iptables REDIRECT only rewrites tcp/80 and the
+    # configured ``inspected_tcp_ports``, not loopback). So this hook
+    # firing always means a non-HTTP cage egress on an intercepted port.
+
+    def _tcp_flow_target(self, flow) -> str:
+        """Best-effort dest descriptor for a non-HTTP TCP bypass.
+
+        Picks the most-trustworthy identifier available:
+          * TLS SNI (``flow.client_conn.sni``) — the cage chose it but
+            we mint a forged cert against it, so it commits the cage to
+            this name.
+          * ``flow.server_conn.peername`` — the actual peer IP after
+            connect (rarely populated under ``connection_strategy=lazy``).
+          * ``flow.server_conn.address`` — the SO_ORIGINAL_DST address
+            iptables preserved (the cage's TCP destination IP:port).
+
+        Returns a printable ``host:port`` style string for audit logs.
+        Never raises — defensive against MagicMock-typed attrs in tests.
+        """
+        sni = getattr(getattr(flow, "client_conn", None), "sni", None)
+        if isinstance(sni, bytes):
+            try:
+                sni = sni.decode("idna")
+            except UnicodeError:
+                sni = sni.decode("utf-8", "replace")
+        if isinstance(sni, str) and sni:
+            return sni
+        server = getattr(flow, "server_conn", None)
+        for attr in ("peername", "address"):
+            value = getattr(server, attr, None)
+            if isinstance(value, tuple) and value:
+                host = value[0]
+                port = value[1] if len(value) > 1 else None
+                if isinstance(host, str) and host:
+                    return f"{host}:{port}" if port is not None else host
+        return "<unknown>"
+
+    def tcp_start(self, flow) -> None:
+        """Block raw TCP / non-HTTP flows that bypass the L7 hooks.
+
+        See the section comment above for why this is a security fix.
+        """
+        target = self._tcp_flow_target(flow)
+        reason = (
+            f"non-http TCP bypass: cage opened a raw TCP/TLS flow to "
+            f"{target} that does not speak HTTP; the L7 allowlist, "
+            f"inspectors, and secret-injection policy do not apply to "
+            f"raw byte streams"
+        )
+        # Belt 1: refuse the upstream connect. ``open_connection`` in
+        # mitmproxy/proxy/server.py reads ``command.connection.error``
+        # after the ``server_connect`` hook and aborts before opening a
+        # socket; ``tcp_start`` fires BEFORE ``OpenConnection`` is
+        # yielded by ``TCPLayer.start`` (with ``connection_strategy=
+        # lazy``), so setting it here wins the race.
+        server = getattr(flow, "server_conn", None)
+        if server is not None:
+            try:
+                server.error = reason
+            except Exception:
+                # Defensive: in tests the server_conn may be a MagicMock
+                # whose attribute assignment can be intercepted. Setting
+                # it is best-effort — flow.kill() below is the
+                # always-available backstop.
+                pass
+        # Belt 2: canonical killed state for any downstream addons.
+        try:
+            if getattr(flow, "killable", True):
+                flow.kill()
+        except Exception:
+            pass
+
+        entry: dict = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "kind": "tcp_bypass_blocked",
+            "direction": "outbound",
+            "decision": "blocked",
+            "reason": reason,
+            "host": target,
+        }
+        # Match the regular _log() audit sink: stderr + audit.jsonl.
+        line = json.dumps(entry)
+        print(line, file=sys.stderr, flush=True)
+        if self._audit_file:
+            try:
+                self._audit_file.write(line + "\n")
+                self._audit_file.flush()
+            except OSError:
+                pass
+
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         """Inspect, inject, and redact WebSocket frame payloads."""
         assert flow.websocket is not None

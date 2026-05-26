@@ -1041,6 +1041,115 @@ class AllowlistAddon:
         }
         self._write(self._capture_fh, capture)
 
+    # ── Non-HTTP TCP bypass guard ──────────────────────────
+    #
+    # Background: mitmproxy in transparent mode handles TCP/80 + TCP/443
+    # via the iptables REDIRECT installed in supervisor.sh stage 80. For
+    # bytes that look like HTTP, mitmproxy dispatches to ``HttpLayer``
+    # and ``request``/``response`` above enforce policy. For everything
+    # else — raw bytes after the TCP handshake, or TLS that does not
+    # carry HTTP inside — mitmproxy's ``next_layer`` (with the default
+    # ``rawtcp=True``) falls back to ``TCPLayer``, which BRIDGES bytes
+    # between the cage and the original destination. NO request /
+    # response / websocket hook fires for those flows, so the allowlist
+    # and secret-injection policy never run. A cage workload that opens
+    # a socket to (e.g.) ``1.1.1.1:443`` and writes raw bytes can
+    # exfiltrate freely.
+    #
+    # We restore the L7 invariant by killing every TCP flow that
+    # reaches this hook. ``HttpLayer``-handled flows never produce a
+    # ``TCPFlow``, so this hook only fires for the bypass path. Killing
+    # uses two belts: (1) ``flow.server_conn.error = ...`` (checked by
+    # mitmproxy's ``open_connection`` after ``server_connect`` — the
+    # upstream is never opened, no bytes leave the cage); (2)
+    # ``flow.kill()`` (canonical killed state for the audit pipeline).
+    #
+    # Protocol relays (IMAP/SMTP) listen on cage-author-chosen loopback
+    # ports inside this same mitmproxy process. The cage reaches them
+    # via 127.0.0.1; those sockets are served by the relay's own
+    # asyncio accept loop and never pass through mitmproxy's
+    # transparent intercept (supervisor.sh's iptables REDIRECT only
+    # rewrites tcp/80 and tcp/443, not loopback). So this hook firing
+    # always means a non-HTTP cage egress on an intercepted port.
+
+    @staticmethod
+    def _tcp_flow_target(flow) -> str:
+        """Best-effort dest descriptor for a non-HTTP TCP bypass.
+
+        Picks the most-trustworthy identifier available: TLS SNI
+        (``flow.client_conn.sni``) → ``flow.server_conn.peername`` →
+        ``flow.server_conn.address`` (the SO_ORIGINAL_DST IP:port the
+        iptables REDIRECT preserved). Returns a printable ``host`` or
+        ``host:port`` string for audit logs. Never raises — defensive
+        against MagicMock-typed attrs in tests.
+        """
+        sni = getattr(getattr(flow, "client_conn", None), "sni", None)
+        if isinstance(sni, bytes):
+            try:
+                sni = sni.decode("idna")
+            except UnicodeError:
+                sni = sni.decode("utf-8", "replace")
+        if isinstance(sni, str) and sni:
+            return sni
+        server = getattr(flow, "server_conn", None)
+        for attr in ("peername", "address"):
+            value = getattr(server, attr, None)
+            if isinstance(value, tuple) and value:
+                host = value[0]
+                port = value[1] if len(value) > 1 else None
+                if isinstance(host, str) and host:
+                    return f"{host}:{port}" if port is not None else host
+        return "<unknown>"
+
+    def tcp_start(self, flow) -> None:
+        """Block raw TCP / non-HTTP flows that bypass the L7 hooks.
+
+        Mirrors the container backend's ``Agentcage.tcp_start`` so both
+        backends fail closed on the same bypass shape. The audit entry
+        shape matches existing apple-container audit lines
+        (``source: "apple-container"``, ISO ``ts``, ``decision``,
+        ``reason``) so ``agentcage cage audit`` shows the kill alongside
+        HTTP blocks.
+        """
+        target = self._tcp_flow_target(flow)
+        reason = (
+            f"non-http TCP bypass: cage opened a raw TCP/TLS flow to "
+            f"{target} that does not speak HTTP; the L7 allowlist and "
+            f"secret-injection policy do not apply to raw byte streams"
+        )
+        # Belt 1: refuse the upstream connect. ``open_connection`` in
+        # mitmproxy/proxy/server.py reads ``command.connection.error``
+        # after the ``server_connect`` hook and aborts before opening a
+        # socket; ``tcp_start`` fires BEFORE ``OpenConnection`` is
+        # yielded by ``TCPLayer.start`` (with ``connection_strategy=
+        # lazy``, which supervisor.sh sets), so setting it here wins
+        # the race.
+        server = getattr(flow, "server_conn", None)
+        if server is not None:
+            try:
+                server.error = reason
+            except Exception:
+                pass
+        # Belt 2: canonical killed state.
+        try:
+            if getattr(flow, "killable", True):
+                flow.kill()
+        except Exception:
+            pass
+
+        ctx.log.warn(
+            f"[agentcage] BLOCK (tcp-bypass) raw TCP flow to {target}"
+        )
+        self._audit({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "kind": "tcp_bypass_blocked",
+            "direction": "outbound",
+            "decision": "blocked",
+            "reason": reason,
+            "host": target,
+            "source": "apple-container",
+        })
+
     # ── Protocol relays (IMAP, SMTP, ...) ──────────────────
 
     def _seed_relay_secrets_env(self, entry: dict) -> None:
