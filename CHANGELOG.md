@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.7] - 2026-05-26
+
+Re-release of 0.21.6 — GitHub Actions silently dropped the tag-push event for the v0.21.6 tag (twice; even after delete + re-push), so the wheel never reached PyPI. No code changes between 0.21.6 and 0.21.7; the only diff is a `workflow_dispatch:` fallback added to the Release workflow so future dropped events can be re-fired by hand. Use 0.21.7 instead of 0.21.6.
+
 ## [0.21.6] - 2026-05-26
+
+(Never published to PyPI — see 0.21.7 for the actual ship.)
 
 Two apple-container fixes surfaced while running the agentcage-ctf prompt unattended via `agentcage run claude-code`. **Upgrade recommended for any apple-container user — pre-0.21.6 the `agentcage run` flow on apple-container effectively could not pass a prompt to claude code: the cage was raced and the prompt was mangled, producing a misleading "Invalid API key" error.**
 
