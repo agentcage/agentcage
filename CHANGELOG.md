@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.5] - 2026-05-26
+
+Two cage-isolation fixes surfaced by an in-cage CTF red-team run on `claude-code` and `pi` scaffolds. **Upgrade recommended for any host that runs more than one cage, or that has ever logged in with Claude Code / Codex / pi-style agents on the host machine.** Existing cages need `cage update` (or recreate) to pick up the template changes.
+
+### Security
+
+- **Scaffolds no longer bind-mount host `~/.<agent>` by default.** Pre-this-release, the `claude-code`, `codex`, and `pi` scaffolds shipped `cage.yaml.j2` files with active `~/.claude:/home/node/.claude:rw`, `~/.codex:/home/node/.codex:rw`, and `~/.pi:/home/node/.pi:rw` mounts. The host tree carries credentials, OAuth tokens, conversation transcripts, MCP configs, and project memory — surfaces the cage is supposed to be sealed off from. Worse, the egress proxy allowlist necessarily includes the agent's API host (e.g. `api.anthropic.com`), and inspectors are off by default, so any in-cage code with read access to `.credentials.json` can exfiltrate the OAuth token in a request URL/header/body to the allowlisted host and the proxy passes it. Mount lines are now commented out in all three scaffolds with opt-in framing; in-cage `claude login` (or equivalent) is the recommended persistence path, with a podman named volume as the safe alternative for cross-session token storage. The opt-out → opt-in switch also surfaced a chain of claude-code-specific branches in agentcage core (`_preflight_claude_code_auth`, hard-coded `_SCAFFOLD_ALIASES` / `_NAME_PREFIXES`) which are now replaced with generic `scaffold_aliases()` / `scaffold_name_prefix()` helpers reading from each scaffold's `scaffold.yaml`. (#167)
+- **Drop the broad `/agentcage` bind-mount from the cage quadlet.** Pre-this-release, `cage.container.j2` mounted `~/.local/share/agentcage/patches/` read-only into every cage at `/agentcage/`. That directory contains a `resolv-<name>.conf` for every cage the operator has ever created on the host — so any cage could `ls /agentcage/` and enumerate the names + DNS sidecar IPs of every sibling cage. (It also contained vestigial `proxy-fetch.mjs` / `node_modules/` / `package.json` left over from the pre-0.6.3 Node fetch monkey-patch.) The current runtime has no operative consumer of `/agentcage/` — `proxy-fetch.mjs` was removed from active use in 0.6.3, the per-cage `resolv-<name>.conf` is bind-mounted directly at `/etc/resolv.conf` on the next line, and the `nested/*` config files are bind-mounted individually at `/etc/containers/*` and `/usr/local/bin/docker` later in the same template. Broad mount removed; two regression tests added (`test_cage_no_broad_patches_mount`, `test_cage_resolv_conf_still_mounted`). The leftover proxy-fetch / npm artifacts in the operator's host `~/.local/share/agentcage/patches/` are now harmless (no longer mounted into cages); a manual `rm -rf` is sufficient to clean them up. (#169)
+
 ## [0.21.4] - 2026-05-26
 
 Bug fix follow-up to 0.21.3 — surfaced during the fresh-Mac verification of last release's security fixes.
