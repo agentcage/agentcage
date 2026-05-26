@@ -343,14 +343,12 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
               type=click.Choice(["container", "vm", "apple-container"]),
               default=None,
               help="Isolation backend (default: auto-detect from platform).")
-@click.option("-i", "--interactive-domains", is_flag=True,
-              help="Prompt to add blocked domains to the allowlist in real-time.")
 @click.option("--time", "show_timing", is_flag=True,
               help="Echo per-phase wall times and print a summary on completion.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
         secrets: tuple[str, ...], verbose: bool, isolation: str | None,
-        interactive_domains: bool, show_timing: bool,
+        show_timing: bool,
         extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
 
@@ -361,7 +359,6 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
       agentcage run codex -s OPENAI_API_KEY=sk-...
       agentcage run claude-code --isolation vm
       agentcage run codex --name my-session -- codex --help
-      agentcage run claude-code -i
     """
     from agentcage.run import execute
     if show_timing:
@@ -369,7 +366,7 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
     exit_code = execute(
         scaffold, project_dir=project_dir, name=name,
         secrets=secrets, extra_args=extra_args, verbose=verbose,
-        isolation=isolation, interactive_domains=interactive_domains,
+        isolation=isolation,
         show_timing=show_timing,
     )
     sys.exit(exit_code)
