@@ -944,9 +944,12 @@ def validate_config(config: Config) -> list[str]:
         # Each entry: (field-path, predicate-on-config-that-says-"non-default",
         # human-readable summary of what the field's effect would be elsewhere).
         _ac_silent_drops: list[tuple[str, bool, str]] = [
-            ("container.volumes", bool(config.container.volumes),
-             "host bind mounts (apple-container has no bind-mount support yet — "
-             "the cage gets no host paths)"),
+            # container.volumes is no longer silently dropped — it now
+            # flows through `AppleContainerBackend.start()` as per-entry
+            # `--volume host:cage[:mode]` argv, with the same containment
+            # rule the container backend's quadlet enforces (host path
+            # must live under $HOME). See backends/apple_container.py
+            # `_user_volume_argv`.
             ("container.named_volumes", bool(config.container.named_volumes),
              "podman named volumes (no equivalent on apple-container)"),
             ("container.tmpfs", bool(config.container.tmpfs),

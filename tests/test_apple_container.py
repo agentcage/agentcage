@@ -1584,6 +1584,98 @@ def test_supervisor_touches_ready_marker_before_capsh():
         f"no stages may run between ready-touch and capsh; found {later_stages}"
 
 
+def test_start_passes_user_volumes_as_container_run_args(tmp_path, monkeypatch):
+    """`container.volumes` entries flow through `start()` as
+    `--volume host:cage[:mode]` argv. Was silently dropped pre-this-PR
+    (config.py used to warn via _ac_silent_drops). Verifies the unit
+    JSON persists them and start() reads them back."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    # Two volumes — one rw, one ro — to ensure mode strings pass through.
+    rw_host = tmp_path / "rw-src"
+    rw_host.mkdir()
+    ro_host = tmp_path / "ro-src"
+    ro_host.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo", "user_image": "x", "cpus": 1,
+        "memory": "1G", "lifecycle": "interactive",
+        "volumes": [f"{rw_host}:/workspace:rw", f"{ro_host}:/readonly:ro"],
+    }))
+    captured_argv: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        captured_argv.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
+         patch.object(backend, "secrets_dir", return_value=tmp_path / "secrets"), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
+        backend.start("demo", quiet=True)
+
+    run_argv = next(a for a in captured_argv if a and a[0] == "run")
+    # Both volumes are present, in order, with their modes preserved.
+    assert f"{rw_host}:/workspace:rw" in run_argv
+    assert f"{ro_host}:/readonly:ro" in run_argv
+    # Each --volume arg is paired with a flag (smoke check for argv shape).
+    vol_positions = [i for i, a in enumerate(run_argv) if a == "--volume"]
+    for pos in vol_positions:
+        assert pos + 1 < len(run_argv), \
+            "stray --volume with no value in argv"
+
+
+def test_user_volume_argv_skips_unresolved_var():
+    """`$VAR` that didn't expand → skip + warn, not crash. Mirrors quadlets.py."""
+    out = AppleContainerBackend._user_volume_argv(["$UNSET_VAR/foo:/cage:rw"])
+    assert out == []
+
+
+def test_user_volume_argv_skips_path_outside_home(tmp_path, monkeypatch):
+    """Host path outside $HOME → skip + warn. Prevents `/etc:/...` style bind-ins."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    out = AppleContainerBackend._user_volume_argv(["/etc:/cage:rw"])
+    assert out == []
+
+
+def test_user_volume_argv_skips_missing_separator():
+    """Entry without `:` (no cage path) → skip + warn, not silently pass through."""
+    out = AppleContainerBackend._user_volume_argv(["/just/a/path"])
+    assert out == []
+
+
+def test_user_volume_argv_accepts_home_relative_paths(tmp_path, monkeypatch):
+    """`~/path:/cage` expands to an absolute host path under $HOME and is accepted."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    target = tmp_path / "work"
+    target.mkdir()
+    out = AppleContainerBackend._user_volume_argv(["~/work:/cage:rw"])
+    assert out == [f"{target}:/cage:rw"]
+
+
+def test_unit_json_persists_user_volumes(tmp_path, monkeypatch):
+    """`generate_units` must include `volumes` in the unit JSON so a
+    subsequent `start()` (which only reads the unit JSON, not the
+    cage.yaml) can re-emit them as --volume args. Was missing pre-fix."""
+    from agentcage.config import Config, ContainerConfig
+    cfg = Config(
+        name="demo",
+        isolation="apple-container",
+        container=ContainerConfig(
+            image="localhost/test:latest",
+            volumes=["~/foo:/workspace:rw"],
+        ),
+    )
+    backend = AppleContainerBackend()
+    out = backend.generate_units(cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo")
+    parsed = json.loads(out["demo.json"])
+    assert parsed["volumes"] == ["~/foo:/workspace:rw"]
+
+
 def test_run_streaming_pauses_active_spinner():
     """``ac_cli.run(capture_output=False)`` must wrap subprocess.run in
     ``output.pause_active_spinner()`` so Apple's CLI progress doesn't fight

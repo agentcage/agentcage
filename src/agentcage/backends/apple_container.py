@@ -116,6 +116,53 @@ class AppleContainerBackend:
         """
         return self._state_dir(name) / "secrets"
 
+    @staticmethod
+    def _user_volume_argv(raw_entries: list[str]) -> list[str]:
+        """Expand and validate user-supplied ``container.volumes`` entries.
+
+        Returns a list of ``host:cage[:mode]`` strings ready to splice
+        into ``container run --volume <entry>``. Mirrors the quadlet
+        backend's safety rules so behavior is identical across backends:
+
+        - Expand ``~`` and ``$VAR`` in the host portion.
+        - Skip (with a warning) entries whose host path still contains an
+          unresolved ``$``.
+        - Reject (with a warning + skip) entries whose host path resolves
+          outside the operator's home directory — prevents bind-ing
+          ``/etc``, ``/var``, ``/root``, etc. by accident.
+        - Reject (warning + skip) entries with no ``:`` separator (no
+          target path).
+        """
+        out: list[str] = []
+        home = os.path.realpath(os.path.expanduser("~"))
+        for v in raw_entries:
+            if ":" not in v:
+                click.echo(
+                    f"warning: skipping volume {v!r} on apple-container "
+                    "(missing ':<cage-path>')",
+                    err=True,
+                )
+                continue
+            parts = v.split(":", 1)
+            host_part = os.path.expandvars(os.path.expanduser(parts[0]))
+            if "$" in host_part:
+                click.echo(
+                    f"warning: skipping volume {host_part!r} on apple-container "
+                    "(unresolved variable in host path)",
+                    err=True,
+                )
+                continue
+            real = os.path.realpath(host_part)
+            if not (real == home or real.startswith(home + os.sep)):
+                click.echo(
+                    f"warning: skipping volume {host_part!r} on apple-container "
+                    f"(host path resolves outside {home!r})",
+                    err=True,
+                )
+                continue
+            out.append(f"{real}:{parts[1]}")
+        return out
+
     def _launchd_plist_path(self, name: str) -> Path:
         """Host path of the per-cage launchd plist.
 
@@ -436,6 +483,13 @@ class AppleContainerBackend:
                 "secret_env_placeholders": secret_env_placeholders,
                 "relay_secret_envs": relay_secret_envs,
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
+                # User-defined host bind mounts. Apple's `container run`
+                # accepts `--volume host:cage[:mode]` just like podman, so
+                # we pass each through verbatim at start() time. Persisted
+                # in the unit JSON (rather than re-read from cage.yaml at
+                # start) so a `cage update` controls the surface, matching
+                # how the rest of the runtime config flows.
+                "volumes": list(config.container.volumes),
             },
             indent=2,
             sort_keys=True,
@@ -507,6 +561,14 @@ class AppleContainerBackend:
             "--cap-add", "CAP_NET_ADMIN",
             "--volume", f"{logs_dir}:/var/log/agentcage",
         ]
+        # User-defined bind mounts. Each entry is `host:cage[:mode]`; we
+        # expand ~ / $VAR in the host path, validate it lives under $HOME
+        # (same containment rule the container backend's quadlet template
+        # enforces — prevents accidental /etc, /var, /root bind-ins), and
+        # pass through verbatim. Unresolved $VAR yields a warning + skip
+        # to match quadlets.py's behavior for parity.
+        for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
+            argv += ["--volume", vol_entry]
         # Apple's `container run --cpus / --memory` has stricter input
         # acceptance than podman: --cpus requires an integer (fractional
         # like "0.5" or "1.5" → "Help: --cpus <cpus> ..." rejection), and
