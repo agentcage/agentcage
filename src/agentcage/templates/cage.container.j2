@@ -15,7 +15,14 @@ Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
 Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
 Volume={{ name }}-certs.volume:/certs:ro,Z
-Volume={{ patches_host_dir }}:/agentcage:ro,Z
+{# NOTE: do NOT reintroduce a broad `Volume={{ patches_host_dir }}:/agentcage`
+   bind here. That mount used to expose every sibling cage's resolv-<name>.conf
+   inside this cage (cage name + DNS sidecar IP — any cage could `ls /agentcage/`
+   to enumerate its host neighbours). The runtime only needs the cage's own
+   resolv.conf (mounted at /etc/resolv.conf on the next line) and, in
+   nested-containers mode, the specific files under <patches_host_dir>/nested/
+   mounted at fixed cage paths below (/etc/containers, /usr/local/bin/docker).
+   No cage-side /agentcage/ directory is required. #}
 Volume={{ patches_host_dir }}/resolv-{{ name }}.conf:/etc/resolv.conf:ro,Z
 {% for vol in volumes %}
 Volume={{ vol }}
