@@ -1901,6 +1901,259 @@ def test_response_redaction_skips_binary_body(tmp_path, monkeypatch):
     assert flow.response.headers["X-Trace"] == "echo {{AGENTCAGE_REDACT_SECRET}} back"
 
 
+# ---------------------------------------------------------------------------
+# allowlist_addon: Host-header spoofing bypass (CTF F1)
+#
+# Regression coverage for the CTF finding: with mitmproxy running in
+# transparent mode and ``--set keep_host_header=true`` on, the addon
+# previously gated the allowlist + secret injection on
+# ``flow.request.pretty_host`` — which reads the (attacker-controlled)
+# HTTP Host header. A cage could open a TCP connection to any IP, send
+# ``Host: api.anthropic.com``, and the addon would (a) allowlist the
+# request and (b) inject the real ``ANTHROPIC_API_KEY`` into a request
+# bound for the attacker's IP. These tests assert the addon now blocks
+# any Host-header spoof and refuses to inject secrets on the spoof.
+# ---------------------------------------------------------------------------
+
+
+def _make_request_flow(
+    *,
+    pretty_host,
+    sni=None,
+    original_dst_host=None,
+    method="GET",
+    path="/",
+    port=443,
+    headers=None,
+):
+    """Build a mock HTTPFlow for the addon's ``request()`` hook.
+
+    Sets ``flow.client_conn.sni`` and ``flow.request.host`` explicitly
+    so the addon's authoritative-host resolution sees real strings (not
+    MagicMock children). ``pretty_host`` is what the addon reads via
+    ``flow.request.pretty_host`` — i.e. the HTTP Host header the cage
+    sent. The mismatch case (pretty_host=api.anthropic.com but
+    sni=example.com) is the exact CTF attack signature.
+    """
+    flow = MagicMock()
+    flow.request.pretty_host = pretty_host
+    flow.request.pretty_url = f"https://{pretty_host}{path}"
+    flow.request.path = path
+    flow.request.port = port
+    flow.request.method = method
+    flow.request.host = original_dst_host if original_dst_host else ""
+    flow.request.content = b""
+    flow.request.get_text = lambda strict=False: ""
+
+    class _Headers(dict):
+        def items(self, multi=False):  # noqa: ARG002
+            return list(super().items())
+
+        def get(self, key, default=""):
+            for k, v in super().items():
+                if k.lower() == key.lower():
+                    return v
+            return default
+
+    flow.request.headers = _Headers(dict(headers or {}))
+    flow.request.set_text = lambda _t: None
+
+    # Critical: set sni to a real str (or None), not a MagicMock auto-attr.
+    flow.client_conn.sni = sni
+    flow.response = None
+    return flow
+
+
+def test_request_blocks_host_header_spoof_against_sni(tmp_path, monkeypatch):
+    """CTF F1 regression — the exact CTF scenario.
+
+    Cage opens a TLS connection with SNI ``example.com`` (the real
+    destination — example.com's IP responds to the TCP/TLS handshake)
+    but sends ``Host: api.anthropic.com`` in the HTTP request hoping to
+    smuggle the API key out. The addon must:
+
+      1. 403 the request with reason ``host-header-spoof`` from the
+         proxy itself (no upstream traffic).
+      2. Emit an audit entry with ``decision=blocked``,
+         ``host_mismatch=true``, and ``authoritative_host`` recording
+         the SNI we actually gated on.
+      3. Refuse to inject any secret_injection rule's value even if
+         the spoofed Host matches a rule's ``inject_to``.
+    """
+    # Allowlist BOTH so we prove the block is on Host/SNI mismatch,
+    # not on a missing allowlist entry.
+    addon_mod, addon = _build_addon(
+        monkeypatch, tmp_path,
+        secret_value="sk-real-ANTHROPIC-key",
+        inject_to=("api.anthropic.com",),
+        allowlist=("api.anthropic.com", "example.com"),
+    )
+
+    flow = _make_request_flow(
+        pretty_host="api.anthropic.com",  # spoofed Host header
+        sni="example.com",                # authoritative — real dst
+        headers={
+            "Host": "api.anthropic.com",
+            "Authorization": "Bearer {{AGENTCAGE_REDACT_SECRET}}",
+        },
+    )
+
+    addon.request(flow)
+
+    # 1. Addon synthesized a 403 (the mitmproxy.http stub records the
+    #    Response.make call; we assert via flow.response being set).
+    assert flow.response is not None
+    # The conftest stubs mitmproxy.http as a MagicMock, so flow.response
+    # is the MagicMock-returned object from Response.make. The audit log
+    # is the source of truth for the decision.
+
+    # 2. Audit log has a blocked entry with host_mismatch.
+    audit_lines = [
+        json.loads(l)
+        for l in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    blocks = [e for e in audit_lines if e.get("decision") == "blocked"]
+    assert len(blocks) == 1
+    blocked = blocks[0]
+    assert blocked["host_mismatch"] is True
+    assert blocked["authoritative_host"] == "example.com"
+    assert "host-header-spoof" in blocked["reason"]
+    assert "api.anthropic.com" in blocked["reason"]
+
+    # 3. The Authorization header was NOT rewritten — the real secret
+    #    never landed on the wire. (The addon must short-circuit before
+    #    _maybe_inject runs.)
+    assert (
+        flow.request.headers["Authorization"]
+        == "Bearer {{AGENTCAGE_REDACT_SECRET}}"
+    )
+    assert "sk-real-ANTHROPIC-key" not in flow.request.headers["Authorization"]
+    assert blocked.get("secrets_injected", []) == []
+
+
+def test_request_blocks_host_spoof_with_no_sni_uses_original_dst(
+    tmp_path, monkeypatch,
+):
+    """Plain-HTTP variant: no TLS, no SNI — authoritative host falls
+    back to the SO_ORIGINAL_DST IP (``flow.request.host`` in transparent
+    mode). A Host header claiming a real domain over a TCP connection
+    bound for an attacker IP is still blocked because IP != domain."""
+    addon_mod, addon = _build_addon(
+        monkeypatch, tmp_path,
+        secret_value="sk-real",
+        inject_to=("api.anthropic.com",),
+        allowlist=("api.anthropic.com",),
+    )
+
+    flow = _make_request_flow(
+        pretty_host="api.anthropic.com",
+        sni=None,                       # plain HTTP
+        original_dst_host="93.184.216.34",  # example.com's IP
+        headers={"Host": "api.anthropic.com"},
+    )
+
+    addon.request(flow)
+
+    blocks = [
+        json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()
+        if json.loads(l).get("decision") == "blocked"
+    ]
+    assert len(blocks) == 1
+    assert blocks[0]["host_mismatch"] is True
+    assert blocks[0]["authoritative_host"] == "93.184.216.34"
+
+
+def test_request_allows_when_host_header_matches_sni(tmp_path, monkeypatch):
+    """Happy path: a well-behaved cage that sets ``Host`` to match SNI
+    is allowed through and gets the secret injected normally. Verifies
+    the spoof gate doesn't break legitimate traffic."""
+    addon_mod, addon = _build_addon(
+        monkeypatch, tmp_path,
+        secret_value="sk-real-value",
+        inject_to=("api.anthropic.com",),
+        allowlist=("api.anthropic.com",),
+    )
+
+    flow = _make_request_flow(
+        pretty_host="api.anthropic.com",
+        sni="api.anthropic.com",
+        headers={
+            "Host": "api.anthropic.com",
+            "Authorization": "Bearer {{AGENTCAGE_REDACT_SECRET}}",
+        },
+    )
+
+    addon.request(flow)
+
+    entries = [
+        json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    assert any(e.get("decision") == "allowed" for e in entries)
+    allowed = [e for e in entries if e.get("decision") == "allowed"][0]
+    assert allowed["secrets_injected"] == ["AGENTCAGE_REDACT_SECRET"]
+    # Secret landed on the outbound request.
+    assert (
+        flow.request.headers["Authorization"] == "Bearer sk-real-value"
+    )
+
+
+def test_request_allows_subdomain_host_under_wildcard_sni(
+    tmp_path, monkeypatch,
+):
+    """Some real upstreams route to a subdomain via virtual host while
+    the TLS handshake uses the apex domain (wildcard cert). Allow Host
+    to be a subdomain of the SNI so we don't break that pattern."""
+    addon_mod, addon = _build_addon(
+        monkeypatch, tmp_path,
+        secret_value="sk-real",
+        inject_to=("anthropic.com",),
+        allowlist=("anthropic.com",),
+    )
+
+    flow = _make_request_flow(
+        pretty_host="api.anthropic.com",
+        sni="anthropic.com",
+        headers={"Host": "api.anthropic.com"},
+    )
+
+    addon.request(flow)
+
+    entries = [
+        json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()
+    ]
+    assert any(e.get("decision") == "allowed" for e in entries)
+    assert not any(e.get("decision") == "blocked" for e in entries)
+
+
+def test_maybe_inject_keyed_on_authoritative_host_not_header(
+    tmp_path, monkeypatch,
+):
+    """Defense-in-depth: even if a caller bypasses ``request()`` and
+    calls ``_maybe_inject`` directly with a spoofed Host header,
+    injection is keyed on the authoritative host (SNI / original-dst).
+    The spoofed Host claiming ``api.anthropic.com`` over an
+    SNI=``example.com`` connection MUST NOT cause the Anthropic key to
+    be substituted."""
+    addon_mod, addon = _build_addon(
+        monkeypatch, tmp_path,
+        secret_value="sk-real-ANTHROPIC-key",
+        inject_to=("api.anthropic.com",),
+        allowlist=("api.anthropic.com", "example.com"),
+    )
+
+    flow = _make_request_flow(
+        pretty_host="api.anthropic.com",
+        sni="example.com",
+        headers={"Authorization": "Bearer {{AGENTCAGE_REDACT_SECRET}}"},
+    )
+
+    injected, _ = addon._maybe_inject(flow)
+
+    assert injected == []
+    assert (
+        flow.request.headers["Authorization"]
+        == "Bearer {{AGENTCAGE_REDACT_SECRET}}"
+    )
 
 
 # ---------------------------------------------------------------------------

