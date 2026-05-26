@@ -638,9 +638,31 @@ class AppleContainerBackend:
 
         argv.append(image)
 
+        # Clear any stale readiness marker from a prior run BEFORE we kick
+        # `container run -d`. The supervisor will touch this file again as
+        # its final action of stage 90; we poll for it below.
+        ready_marker = self.logs_dir(name) / "ready"
+        try:
+            ready_marker.unlink()
+        except FileNotFoundError:
+            pass
+
         result = ac_cli.run(argv, check=False, capture_output=False)
         if result.returncode != 0:
             raise RuntimeError(f"`container run` failed (exit {result.returncode})")
+
+        # Wait for the supervisor to finish booting before returning. Apple's
+        # `container run -d` returns when the microVM is up — NOT when the
+        # user CMD (supervisor.sh) has progressed past stage 90. Without
+        # this poll, the next operator action (`cage exec`, `agentcage run`'s
+        # integrated claude exec, etc.) races the supervisor and may hit the
+        # cage before dnsmasq binds, mitmproxy listens, iptables NAT applies,
+        # or secrets are re-staged into /home/acproxy/secrets/. The supervisor
+        # `touch`es /var/log/agentcage/ready right before its `exec capsh`,
+        # which lands on the host-side virtiofs bind at logs_dir(name)/ready.
+        # See issue #168.
+        self._wait_supervisor_ready(name, ready_marker)
+
         # Install (or refresh) the launchd plist if the cage opted in to
         # autostart. Read from the unit metadata so plists stick across
         # reloads — the user-visible cage.yaml may have been edited since
@@ -650,6 +672,41 @@ class AppleContainerBackend:
             self._install_launchd_plist(name)
         if not quiet:
             click.echo(f"Started {name} (apple-container)")
+
+    # Polling interval and total timeout for the supervisor readiness wait.
+    # Module-level so tests can monkeypatch them to ~0 without subclassing.
+    _READY_POLL_INTERVAL_S = 0.1
+    _READY_TIMEOUT_S = 30.0
+
+    def _wait_supervisor_ready(self, name: str, marker: Path) -> None:
+        """Block until ``marker`` exists or the cage exits.
+
+        Raises ``RuntimeError`` if the cage exits before signaling ready
+        (so the operator sees a real error, not a successful return that
+        then 401s on the first request).
+        """
+        import time as _time
+
+        deadline = _time.monotonic() + self._READY_TIMEOUT_S
+        while _time.monotonic() < deadline:
+            if marker.exists():
+                return
+            # If the cage exited (supervisor `die`d at some stage, or the
+            # workload itself crashed before we got a chance to wait), we'd
+            # otherwise loop until timeout. Detect it and surface the error.
+            data = ac_cli.inspect(name)
+            status = (data or {}).get("status") or (data or {}).get("Status")
+            if data is not None and status not in ("running", None):
+                raise RuntimeError(
+                    f"cage {name!r} exited before becoming ready "
+                    f"(status={status!r}); see `container logs {name}`"
+                )
+            _time.sleep(self._READY_POLL_INTERVAL_S)
+        raise RuntimeError(
+            f"cage {name!r} did not signal ready within "
+            f"{self._READY_TIMEOUT_S:.0f}s; see `container logs {name}` "
+            f"for the supervisor's last stage"
+        )
 
     def stop(self, name: str) -> None:
         ac_cli.run(["stop", name], check=False)

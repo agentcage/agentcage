@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agentcage cage create` / `agentcage run` on apple-container no longer return before the supervisor has finished booting** — race that caused the cage's next operator action to hit it before mitmproxy bound `127.0.0.1:8080`, iptables NAT applied, or secrets were re-staged into `/home/acproxy/secrets/`. Symptom: claude / curl gets "Invalid API key" or HTTP 401 going to `api.anthropic.com` because the literal `{{PLACEHOLDER}}` reaches upstream (the proxy that would substitute it isn't up yet). Apple's `container run -d` returns when the microVM boots — not when the user CMD (`supervisor.sh`) has progressed past its final stage. `AppleContainerBackend.start()` now polls a host-side virtiofs marker (`<logs_dir>/ready`) that supervisor.sh touches as the very last action before `exec capsh`. Stale markers from prior cage lifetimes are cleared before `container run -d`. If the cage exits before signaling ready (supervisor `die`d at some stage), `start()` raises immediately pointing at `container logs <name>` — no more silent "running but broken" cages. (#168)
+
 ## [0.21.5] - 2026-05-26
 
 Two cage-isolation fixes surfaced by an in-cage CTF red-team run on `claude-code` and `pi` scaffolds. **Upgrade recommended for any host that runs more than one cage, or that has ever logged in with Claude Code / Codex / pi-style agents on the host machine.** Existing cages need `cage update` (or recreate) to pick up the template changes.
