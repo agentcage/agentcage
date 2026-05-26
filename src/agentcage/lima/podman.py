@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
-
 from agentcage.lima.instance import LimaInstance
 from agentcage.podman import filter_secrets_by_prefix
 
@@ -13,53 +11,47 @@ class VmPodman:
 
     Mirrors the subset of agentcage.podman.Podman methods used by the
     CLI for secret management, so the CLI can use either host Podman
-    or VM Podman transparently.
+    or VM Podman transparently. All ``limactl shell`` invocations go
+    through ``LimaInstance.exec`` so they share the ``--tty=false``
+    (no PTY cooking of piped secret values) and ``--workdir /`` (no
+    spurious ``cd: No such file or directory`` warnings) flags.
     """
 
     def __init__(self, cage_name: str) -> None:
         self._inst = LimaInstance(cage_name)
 
-    def _run(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-        """Run a podman command inside the VM."""
-        return subprocess.run(
-            ["limactl", "shell", self._inst.name, "--", *cmd],
-            **kwargs,
-        )
-
     def secret_list(self, prefix: str = "") -> list[dict]:
-        r = self._run(
+        r = self._inst.exec(
             ["podman", "secret", "ls", "--noheading", "--format", "{{.Name}}"],
-            capture_output=True, text=True,
+            check=False,
         )
         if r.returncode != 0 or not r.stdout.strip():
             return []
         return filter_secrets_by_prefix(r.stdout.strip().splitlines(), prefix)
 
     def secret_exists(self, name: str) -> bool:
-        r = self._run(
+        r = self._inst.exec(
             ["podman", "secret", "inspect", name],
-            capture_output=True,
+            check=False,
         )
         return r.returncode == 0
 
     def secret_create(self, name: str, value: str) -> None:
-        self._run(
+        self._inst.exec(
             ["podman", "secret", "create", name, "-"],
-            input=value, text=True, check=True,
-            stdout=subprocess.DEVNULL,
+            input=value,
         )
 
     def secret_read(self, name: str) -> str:
-        r = self._run(
+        r = self._inst.exec(
             ["podman", "secret", "inspect", "--showsecret",
              "--format", "{{.SecretData}}", name],
-            capture_output=True, text=True, check=True,
         )
         return r.stdout.strip()
 
     def secret_remove(self, name: str) -> bool:
-        r = self._run(
+        r = self._inst.exec(
             ["podman", "secret", "rm", name],
-            capture_output=True,
+            check=False,
         )
         return r.returncode == 0

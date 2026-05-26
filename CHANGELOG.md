@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.12] - 2026-05-26
+
+Bugfix release for the VM backend and `cage update` ergonomics. No security
+impact, no breaking changes. Affects every operator who has ever run a
+VM-mode cage on Linux with secrets or seen "cd: No such file or directory"
+chatter at start.
+
+### Fixed
+
+- **`fix(vm)`: `cage create -s KEY=VALUE` now delivers the secret verbatim
+  on the VM backend.** `limactl shell` defaults `--tty` to true when the
+  host's stdout is a terminal, and the resulting PTY's line discipline
+  cooks piped stdin (CR↔LF translation, control-character handling)
+  before `podman secret create -` reads it. The secret stored inside the
+  VM no longer matched what the operator typed; cages saw a mangled
+  value and 401d. `LimaInstance.exec` now pins `--tty=false` (alias `-y`)
+  so SSH stays in pipe mode, and adds an `input=` passthrough so every
+  caller benefits.
+- **`fix(vm)`: stop printing `bash: line 1: cd: <path>: No such file or
+  directory` on every VM operation.** `limactl shell` mirrors the host's
+  `$PWD` inside the VM, and only `~/.config/agentcage` /
+  `~/.local/share/agentcage` are mounted — every other cwd hit the cd
+  warning. `LimaInstance.exec` now pins `--workdir /`; commands run from
+  a known-mounted directory and the noise is gone. `VmPodman` and the
+  three remaining inline `subprocess.run(["limactl", "shell", ...],
+  input=...)` sites in `backends/vm.py` were refactored onto the helper
+  so the flags apply everywhere.
+- **`fix(cage update)`: `NAME` is now optional when `-c cage.yaml` is
+  given.** Mirrors `cage create`, which has never required a positional
+  `NAME` because the config's `name:` field is authoritative. Passing
+  both still works; mismatch still errors. Passing neither prints a
+  clear error.
+- **`fix(cage update)`: the pre-deploy secrets check is now backend-aware.**
+  Previously, on a Linux host with `podman` installed, every `cage update`
+  on a VM or apple-container cage with `secret_injection:` rules queried
+  host Podman, found nothing, and aborted with "missing secrets" — even
+  when the secrets were correctly stored inside the VM (via
+  `_create_pending_secrets`) or in `pending_secrets.json`
+  (apple-container). The check now routes through `VmPodman` when the
+  VM is running, reads `pending_secrets.json` for apple-container, and
+  skips for a stopped VM (where `backend.start()` will recreate from
+  the pending file before services come up).
+
+### Tests
+
+- `tests/test_lima_instance.py`: regression coverage that `exec` always
+  passes `--workdir /` + `--tty=false` and forwards `input=`.
+- `tests/test_cage_cli.py`: regression coverage that `cage update` works
+  with `-c` alone (no `NAME`), errors cleanly when neither is given, and
+  does not query host Podman for VM cages.
+
 ## [0.21.11] - 2026-05-26
 
 CRITICAL hotfix for both backends. **Upgrade immediately for any deployment with `secret_injection:` configured.** Real injected secrets were landing in `capture.jsonl` (mode 0644, cage-readable) — defeats the entire placeholder-injection trust model. Confirmed via real-format key bytes on disk in a local e2e test capture.

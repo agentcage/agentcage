@@ -594,7 +594,7 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool,
 
 
 @cage.command("update")
-@click.argument("name")
+@click.argument("name", required=False)
 @click.option("-c", "--config", "config_path", type=click.Path(exists=True))
 @click.option("--no-cache", is_flag=True,
               help="Force a full image rebuild (ignore podman's layer cache). "
@@ -604,10 +604,20 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool,
               help="Force re-pull of the base image from the registry "
                    "(--pull=always). Combine with --no-cache for a fully "
                    "clean rebuild.")
-def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
-    """Rebuild and restart an existing cage."""
-    if not state.deployment_exists(name):
-        click.echo(f"error: cage '{name}' does not exist", err=True)
+def cage_update(name: str | None, config_path: str | None,
+                no_cache: bool, pull: bool):
+    """Rebuild and restart an existing cage.
+
+    NAME is optional when ``-c`` is given — the cage to update is taken
+    from the config's ``name:`` field. Mirrors ``cage create``, which
+    has never required a positional NAME for the same reason.
+    """
+    if name is None and config_path is None:
+        click.echo(
+            "error: either NAME or -c/--config is required (the cage to "
+            "update must be identifiable)",
+            err=True,
+        )
         sys.exit(1)
 
     if config_path:
@@ -619,11 +629,16 @@ def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
             sys.exit(1)
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
-        if cfg.name != name:
+        if name is None:
+            name = cfg.name
+        elif cfg.name != name:
             click.echo(
                 f"error: config name '{cfg.name}' does not match cage '{name}'",
                 err=True,
             )
+            sys.exit(1)
+        if not state.deployment_exists(name):
+            click.echo(f"error: cage '{name}' does not exist", err=True)
             sys.exit(1)
         state.save_deployment(name, config_path)
         # Copy the Containerfile and its sibling build inputs into the state
@@ -634,6 +649,9 @@ def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
             if src_cf.is_file():
                 _stage_build_context(src_cf.parent, state.deployment_dir(name))
     else:
+        if not state.deployment_exists(name):
+            click.echo(f"error: cage '{name}' does not exist", err=True)
+            sys.exit(1)
         # Auto-resolve latest image tags for stored configs
         from agentcage.init import (
             infer_scaffold_from_image,
@@ -762,8 +780,38 @@ def cage_update(name: str, config_path: str | None, no_cache: bool, pull: bool):
 
     podman = Podman()
 
-    # Check secrets (requires host Podman — skip for VM mode if unavailable)
-    missing = _check_secrets(podman, name, cfg) if cfg.isolation == "container" or shutil.which("podman") else []
+    # Check secrets against the store that actually backs this cage.
+    # The container backend keeps secrets on host Podman. The VM backend
+    # keeps them inside the VM's Podman — querying host Podman there
+    # always reports "missing" and blocks every cage update on Linux
+    # hosts that have podman installed. The apple-container backend
+    # reads pending_secrets.json at start(), so existence on disk is
+    # what counts; check_secrets's host-Podman path can't see that.
+    missing: list[str] = []
+    if cfg.isolation == "container":
+        missing = _check_secrets(podman, name, cfg)
+    elif cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        if inst.is_running():
+            from agentcage.lima.podman import VmPodman
+            missing = _check_secrets(VmPodman(name), name, cfg)
+        # VM is stopped: backend.start() will recreate any pending
+        # secrets from pending_secrets.json before services come up,
+        # so a stopped VM is not a "missing secrets" condition.
+    elif cfg.isolation == "apple-container":
+        from agentcage import state as _state
+        pending = _state.deployment_dir(name) / "pending_secrets.json"
+        if pending.is_file():
+            try:
+                provided = {
+                    k for k, _ in json.loads(pending.read_text())
+                }
+            except Exception:
+                provided = set()
+        else:
+            provided = set()
+        from agentcage.services import expected_secrets
+        missing = [k for k in expected_secrets(cfg) if k not in provided]
     if missing:
         click.echo(f"error: missing secrets for cage '{name}':", err=True)
         for key in missing:
