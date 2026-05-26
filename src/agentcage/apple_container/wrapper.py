@@ -138,6 +138,35 @@ def _pack_tarball(src: Path, archive: Path) -> None:
             tar.add(entry, arcname=entry.name)
 
 
+_DEFAULT_DNS_SERVERS: list[str] = ["1.1.1.1", "8.8.8.8"]
+
+
+def render_dnsmasq_conf(
+    allowlist: list[str] | None,
+    dns_servers: list[str] | None = None,
+) -> str:
+    """Render the per-cage dnsmasq.conf with allowlist-scoped recursion.
+
+    Recursion is permitted ONLY for hostnames within an explicitly
+    allowlisted apex domain — every other zone returns REFUSED regardless
+    of record type. Without this scoping a blanket ``server=<upstream>``
+    line would forward TXT/MX/NS/SRV/CNAME queries to upstream for any
+    hostname an attacker chose, which is a fully out-of-band DNS-tunnel
+    exfil channel (mitmproxy never sees DNS).
+    """
+    env = SandboxedEnvironment(
+        loader=FileSystemLoader(str(_DATA_DIR)),
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    tmpl = env.get_template("dnsmasq.conf.j2")
+    return tmpl.render(
+        allowlist=[h.strip() for h in (allowlist or []) if h.strip()],
+        dns_servers=list(dns_servers or _DEFAULT_DNS_SERVERS),
+    )
+
+
 def stage_build_context(
     dest: Path,
     user_cmd: list[str],
@@ -146,12 +175,18 @@ def stage_build_context(
     protocol_relays: list[dict] | None = None,
     capture_config: dict | None = None,
     inspectors: list[dict] | None = None,
+    dns_servers: list[str] | None = None,
 ) -> None:
     """Stage supervisor + cage CMD + egress filter config into *dest*.
 
     Files written:
       - supervisor.sh         -- PID 1 of the cage microVM (security-critical)
-      - dnsmasq.conf          -- static catch-all DNS rewriter
+      - dnsmasq.conf          -- per-cage DNS resolver config, rendered from
+                                 dnsmasq.conf.j2 with the cage's allowlist so
+                                 upstream recursion is scoped to allowlisted
+                                 apex domains. Non-allowlisted zones get
+                                 REFUSED for every record type — closes the
+                                 non-A-record DNS-tunnel exfil channel.
       - allowlist_addon.py    -- mitmproxy addon (allowlist + audit + injection)
       - capture.py            -- shared CaptureWriter (snapshot + size guard +
                                  binary-skip + filter). Same source the
@@ -213,7 +248,9 @@ def stage_build_context(
     """
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(_DATA_DIR / "supervisor.sh", dest / "supervisor.sh")
-    shutil.copy2(_DATA_DIR / "dnsmasq.conf", dest / "dnsmasq.conf")
+    (dest / "dnsmasq.conf").write_text(
+        render_dnsmasq_conf(allowlist, dns_servers=dns_servers)
+    )
     shutil.copy2(_DATA_DIR / "allowlist_addon.py", dest / "allowlist_addon.py")
     # Shared CaptureWriter from the container backend's proxy package. The
     # addon imports it (``from capture import CaptureWriter``) so we have
@@ -265,6 +302,7 @@ def build_wrapper(
     protocol_relays: list[dict] | None = None,
     capture_config: dict | None = None,
     inspectors: list[dict] | None = None,
+    dns_servers: list[str] | None = None,
 ) -> str:
     """Generate Containerfile, stage build context, run `container build`.
 
@@ -287,6 +325,7 @@ def build_wrapper(
             protocol_relays=protocol_relays,
             capture_config=capture_config,
             inspectors=inspectors,
+            dns_servers=dns_servers,
         )
         ac_cli.run(
             ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],

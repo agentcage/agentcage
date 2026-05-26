@@ -1,0 +1,58 @@
+# dnsmasq config baked into the per-cage wrapper image.
+#
+# Strategy: dnsmasq is a *real* recursive resolver from the cage's
+# perspective — it forwards queries to upstream (1.1.1.1 / 8.8.8.8) so
+# the cage gets real IPs back. The cage then connects to those real IPs;
+# iptables REDIRECTs the connection to mitmproxy, which discovers the
+# original destination via SO_ORIGINAL_DST and MITMs the traffic while
+# enforcing the allowlist.
+#
+# An earlier design rewrote every query to 127.0.0.1 — that fails because
+# mitmproxy in transparent mode then sees SO_ORIGINAL_DST = 127.0.0.1
+# and tries to connect to itself instead of the real host.
+#
+# DNS upstream traffic (uid 201) is permitted by the supervisor's
+# iptables rules; the cage user (uid 1000) is locked to loopback only,
+# so the cage can't bypass dnsmasq to query upstream directly.
+#
+# Non-A-record exfil hardening (CTF-derived): dnsmasq's `address=/#/<ip>`
+# directive only sinks A and AAAA queries. Without scoping, TXT/MX/NS/
+# SRV/CNAME queries fall through to the default upstream (`server=...`
+# without a domain prefix) — a fully out-of-band exfil channel that
+# never touches mitmproxy. The fix: drop blanket `server=<ip>` and emit
+# one `server=/<allowed-apex>/<upstream>` per (allowed-domain × upstream)
+# pair so recursion is allowed only for explicitly-listed zones. Every
+# other zone returns REFUSED regardless of record type because there is
+# no default upstream to fall back to. The `address=/#/<sinkhole>` line
+# remains as defense in depth for A/AAAA inside non-allowed zones.
+listen-address=127.0.0.1
+bind-interfaces
+no-resolv
+no-hosts
+port=53
+{% if allowlist %}
+# Per-zone recursion (allowlist mode). One line per (allowed-apex × upstream).
+{% for domain in allowlist %}
+{% for srv in dns_servers %}
+server=/{{ domain }}/{{ srv }}
+{% endfor %}
+{% endfor %}
+# Sinkhole A/AAAA for any zone NOT explicitly allowed above. dnsmasq's
+# `address=` rules win over `server=` rules for matching record types,
+# so the allowlisted zones still resolve through their per-zone forwarder.
+address=/#/198.51.100.1
+{% else %}
+# Empty allowlist — no upstream forwarders, only the A/AAAA sinkhole.
+# Every DNS query returns either 198.51.100.1 (A/AAAA) or REFUSED
+# (every other record type). The cage cannot resolve anything.
+address=/#/198.51.100.1
+{% endif %}
+# Strip AAAA records from upstream responses. IPv6 is disabled at the
+# netfilter + sysctl level (supervisor.sh stage 80), but if dnsmasq still
+# returns AAAA records the cage's resolvers happily try IPv6 first; the
+# attempts fail instantly ("Cannot assign requested address") and fall
+# back to IPv4 — correct but slow, and noisy in client logs. Dropping
+# AAAA at the resolver keeps everything single-stack.
+filter-AAAA
+log-queries=extra
+log-facility=/var/log/agentcage/dnsmasq.log

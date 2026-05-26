@@ -8,7 +8,16 @@ Network={{ name }}-net.network:ip={{ ip_dns }}
 Network=podman
 AddCapability=NET_BIND_SERVICE
 {% if dns_allowlist_enabled %}Volume={{ dns_allowlist_host_path }}:/etc/dnsmasq-allow.conf:ro,Z
-Exec=/usr/local/bin/dns-audit.sh{% if log_dns_queries %} --log-allowed{% endif %} -- dnsmasq --no-daemon --log-queries --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %} --address=/proxy.cage.local/{{ ip_proxy }} --address=/#/198.51.100.1 --servers-file=/etc/dnsmasq-allow.conf{% else %}Exec=dnsmasq --no-daemon{% if log_dns_queries %} --log-queries{% endif %} --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %} --address=/proxy.cage.local/{{ ip_proxy }}{% endif %}
+{# Allowlist mode: NO blanket `--server <ip>` upstream. dnsmasq's
+   `--address=/#/<ip>` only intercepts A/AAAA queries — TXT/MX/NS/SRV/CNAME
+   for arbitrary hostnames would otherwise fall through to the default
+   upstream and become a DNS-tunnel exfil channel that never touches the
+   HTTP proxy. With `--no-resolv` and no `--server <ip>` default,
+   recursion is allowed ONLY for the per-domain
+   `server=/<allowed-apex>/<upstream>` lines in
+   /etc/dnsmasq-allow.conf — every other zone returns REFUSED regardless
+   of record type. CTF-derived fix. #}
+Exec=/usr/local/bin/dns-audit.sh{% if log_dns_queries %} --log-allowed{% endif %} -- dnsmasq --no-daemon --log-queries --no-resolv --address=/proxy.cage.local/{{ ip_proxy }} --address=/#/198.51.100.1 --servers-file=/etc/dnsmasq-allow.conf{% else %}Exec=dnsmasq --no-daemon{% if log_dns_queries %} --log-queries{% endif %} --no-resolv{% for srv in dns_servers %} --server {{ srv }}{% endfor %} --address=/proxy.cage.local/{{ ip_proxy }}{% endif %}
 
 
 [Service]

@@ -399,6 +399,10 @@ class AppleContainerBackend:
         # registry. An empty/missing list means allowlist-only mode,
         # which is the legacy apple-container behavior.
         inspectors = [dict(e) for e in (config.inspectors or [])]
+        # dns_servers is threaded into the dnsmasq.conf.j2 template as the
+        # per-allowlisted-zone upstream forwarder set. With the DNS bypass
+        # fix (no blanket `server=<ip>`), these are the ONLY upstreams
+        # recursion is ever sent to — and only for allowlisted zones.
         ac_wrapper.build_wrapper(
             deploy_name, user_image,
             user_cmd=user_cmd,
@@ -407,6 +411,7 @@ class AppleContainerBackend:
             protocol_relays=relay_rules,
             capture_config=capture_dict,
             inspectors=inspectors,
+            dns_servers=list(config.dns_servers or []),
         )
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")
