@@ -300,6 +300,16 @@ log "stage 90: dropping caps, switching to cage user '${CAGE_USER}' (uid 1000)"
 #   --user=$CAGE_USER → setuid+setgid+initgroups to the uid-1000 user. The
 #                     uid 0→1000 transition clears CapEff/CapPrm/CapInh.
 #                     CapBnd is already empty from --drop=all above.
+# Readiness marker — the LAST thing supervisor does before handoff. The
+# host-side `AppleContainerBackend.start()` polls for this file on the
+# virtiofs-shared /var/log/agentcage mount, so it can return only after
+# every stage (proxy listening, iptables NAT, secrets staged) has
+# completed. Without this, the next `container exec` (or `agentcage run`
+# claude-code) races the supervisor and sees missing /home/acproxy/secrets,
+# no proxy on 127.0.0.1:8080, or no iptables NAT — leading to "Invalid
+# API key" / placeholder-leaks-to-upstream symptoms. See issue #168.
+touch /var/log/agentcage/ready
+
 exec capsh \
   --no-new-privs \
   --drop=all \

@@ -751,7 +751,8 @@ def test_start_argv_uses_file_delivery_when_placeholders_known(
          patch.object(backend, "secrets_dir", return_value=secrets_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
         backend.start("demo", quiet=True)
 
     run_argv = next(a for a in captured_argv if a[0] == "run")
@@ -817,7 +818,8 @@ def test_start_argv_drops_stale_secrets_from_prior_starts(
          patch.object(backend, "secrets_dir", return_value=secrets_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
         backend.start("demo", quiet=True)
 
     # OLD_KEY removed; NEW_KEY present.
@@ -870,7 +872,8 @@ def test_start_argv_pre_021_1_unit_json_refuses_cleartext_fallback(
          patch.object(backend, "secrets_dir", return_value=secrets_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
         backend.start("demo", quiet=True)
 
     run_argv = next(a for a in captured_argv if a[0] == "run")
@@ -980,7 +983,8 @@ def test_start_argv_ignores_host_env_when_pending_secrets_missing(
          patch.object(backend, "secrets_dir", return_value=secrets_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
         backend.start("demo", quiet=True)
 
     run_argv = next(a for a in captured_argv if a[0] == "run")
@@ -1336,7 +1340,8 @@ def test_start_argv_includes_normalized_cpus_memory(tmp_path):
     with patch.object(backend, "unit_dir", return_value=unit_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
         backend.start("demo", quiet=True)
 
     run_argv = next(a for a in captured_argv if a[0] == "run")
@@ -1392,7 +1397,8 @@ def test_start_creates_logs_dir_and_bind_mounts_it(tmp_path):
          patch.object(backend, "logs_dir", return_value=logs_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
         backend.start("demo", quiet=True)
 
     # Host logs dir created.
@@ -1438,11 +1444,144 @@ def test_start_argv_backward_compat_pre_0_20_6_mem_mb(tmp_path):
     with patch.object(backend, "unit_dir", return_value=unit_dir), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
          patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
         backend.start("demo", quiet=True)
 
     run_argv = next(a for a in captured_argv if a[0] == "run")
     assert run_argv[run_argv.index("--memory") + 1] == "4096M"
+
+
+def test_start_waits_for_supervisor_ready_marker(tmp_path, monkeypatch):
+    """`start()` must block until supervisor.sh signals readiness via
+    ``logs_dir(name)/ready`` — the host-side virtiofs view of the
+    in-cage ``touch /var/log/agentcage/ready`` at the end of stage 90.
+    Without this wait the operator's next action races the supervisor
+    and sees missing /home/acproxy/secrets, no proxy, etc. (issue #168)."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo", "user_image": "x", "cpus": 1,
+        "memory": "1G", "lifecycle": "interactive",
+    }))
+    logs_dir = tmp_path / "logs"
+
+    # Speed up the poll so a missed signal would fail fast in CI.
+    monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 1.0)
+
+    def fake_run(argv, **_kwargs):
+        # Mirror real supervisor.sh: touch the marker as the LAST thing
+        # before the cage workload starts. The marker file is the contract
+        # between supervisor and backend.
+        if argv and argv[0] == "run":
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            (logs_dir / "ready").touch()
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=logs_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value={"status": "running"}), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        # Returns cleanly when the marker is present.
+        backend.start("demo", quiet=True)
+
+
+def test_start_clears_stale_ready_marker_before_run(tmp_path, monkeypatch):
+    """A leftover marker from a prior cage lifetime must NOT be honored:
+    `start()` deletes it BEFORE `container run -d`, then re-polls. Otherwise
+    a restart would return instantly while the new supervisor was still
+    booting — the original race."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo", "user_image": "x", "cpus": 1,
+        "memory": "1G", "lifecycle": "interactive",
+    }))
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    # Stale marker from a previous run.
+    stale = logs_dir / "ready"
+    stale.touch()
+
+    monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 0.5)
+
+    deleted = {"happened": False}
+
+    def fake_run(argv, **_kwargs):
+        if argv and argv[0] == "run":
+            # At this point, start() should already have unlinked the stale
+            # marker (mirroring real cage start). Record + re-create.
+            deleted["happened"] = not stale.exists()
+            stale.touch()
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=logs_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value={"status": "running"}), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.start("demo", quiet=True)
+
+    assert deleted["happened"], \
+        "start() must unlink stale ready marker BEFORE container run"
+
+
+def test_start_raises_when_supervisor_dies_before_ready(tmp_path, monkeypatch):
+    """If the cage exits before signaling ready (supervisor `die`d at some
+    stage), `start()` must raise immediately with a pointer to
+    `container logs` — not silently return so the operator hits a confusing
+    "Invalid API key" / "connection refused" later."""
+    backend = AppleContainerBackend()
+    unit_dir = tmp_path / "apple-container"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo", "user_image": "x", "cpus": 1,
+        "memory": "1G", "lifecycle": "interactive",
+    }))
+    logs_dir = tmp_path / "logs"
+
+    monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 1.0)
+
+    def fake_run(argv, **_kwargs):
+        # No marker touched; cage will be reported as exited.
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "unit_dir", return_value=unit_dir), \
+         patch.object(backend, "logs_dir", return_value=logs_dir), \
+         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
+         patch.object(ac_cli, "inspect", return_value={"status": "exited"}), \
+         patch.object(ac_cli, "run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="exited before becoming ready"):
+            backend.start("demo", quiet=True)
+
+
+def test_supervisor_touches_ready_marker_before_capsh():
+    """supervisor.sh must touch ``/var/log/agentcage/ready`` as its LAST
+    action before `exec capsh`. Mis-placement (before iptables / before
+    proxy listening) would re-introduce the race. Static check of the
+    supervisor source."""
+    import re
+    sup_path = (Path(__file__).resolve().parent.parent
+                / "src/agentcage/data/apple-container/supervisor.sh")
+    text = sup_path.read_text()
+    touch_idx = text.find("touch /var/log/agentcage/ready")
+    capsh_idx = text.rfind("exec capsh")
+    assert touch_idx != -1, "supervisor.sh must touch the readiness marker"
+    assert capsh_idx != -1, "supervisor.sh must end with `exec capsh`"
+    assert touch_idx < capsh_idx, \
+        "touch /var/log/agentcage/ready must come BEFORE exec capsh"
+    # Make sure no other stage marker (`stage NN:`) comes between the touch
+    # and the capsh — i.e. it really is the last thing.
+    between = text[touch_idx:capsh_idx]
+    later_stages = re.findall(r'^log "stage \d+:', between, re.MULTILINE)
+    assert not later_stages, \
+        f"no stages may run between ready-touch and capsh; found {later_stages}"
 
 
 def test_run_streaming_pauses_active_spinner():
