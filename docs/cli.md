@@ -99,6 +99,7 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 |---|---|
 | `cage create -c CONFIG` | Build images, generate quadlets, install, and start a new cage |
 | `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
+| `cage edit NAME` | Edit a cage's stored config in `$EDITOR` with validation, backup, and live-reload |
 | `cage list` | List all cages with status |
 | `cage destroy NAME [-y] [--keep-secrets]` | Stop containers, remove quadlets, state, and scoped secrets |
 | `cage prune [-y]` | Remove all exited interactive and ephemeral cages |
@@ -114,7 +115,7 @@ Subdomains are collapsed to their parent domain (e.g. `api.stripe.com` prompts f
 | `cage backup NAME [OPTIONS]` | Create a backup tarball of a cage |
 | `cage restore TARBALL [OPTIONS]` | Restore a cage from a backup tarball |
 
-**Aliases:** `ls` → `list`, `ps` → `list`, `status` → `list`, `rm` → `destroy`, `delete` → `destroy`, `reload` → `restart`, `describe` → `show`, `inspect` → `show`
+**Aliases:** `ls` → `list`, `ps` → `list`, `status` → `list`, `rm` → `destroy`, `delete` → `destroy`, `reload` → `restart`, `describe` → `show`, `inspect` → `show`, `config` → `edit`
 
 ## `secret` -- Manage cage-scoped secrets
 
@@ -191,6 +192,27 @@ Stops the running services before rebuilding, then starts them again.
 |---|---|
 | `--no-cache` | Force a full image rebuild, ignoring podman's layer cache. Use after pulling a fresh agentcage release that changed the `Containerfile` or its build context. |
 | `--pull` | Force a re-pull of the base image from the registry (`--pull=always`). Invalidates the base-image cache, independent of `--no-cache`. Combine both for a fully clean rebuild. |
+
+## `cage edit`
+
+```
+agentcage cage edit <name>
+```
+
+Opens the cage's stored `cage.yaml` in your `$EDITOR` (falls back to `vi`). On save:
+
+1. Parses the edited YAML and runs the same `validate_config` checks that `cage create` runs. If parsing or validation fails, the edits are written to `cage.yaml.rejected` and the original `cage.yaml` is left untouched — exits non-zero.
+2. Backs up the prior good config to `cage.yaml.bak`.
+3. Writes the new config atomically (temp file + `rename`) so a crash mid-edit cannot corrupt cage state.
+4. Shows a unified diff of what changed.
+5. **Live-applies domain changes** by re-rendering the dnsmasq allowlist and `pkill -HUP dnsmasq` inside the dns sidecar — no cage restart, any interactive session inside the cage survives.
+6. For changes the proxy can hot-reload (`inspectors`, `rate_limit`, `logging`, etc.), rewrites `proxy-config.yaml` — the mitmproxy addon picks it up on the next request via mtime polling.
+7. For changes that need a service restart (`container.*`, `secrets`, etc.), tells you to run `agentcage cage restart NAME`.
+8. For changes that need a full rebuild (`isolation`, `vm.*`), tells you to run `agentcage cage update NAME`.
+
+This is safer than `$EDITOR ~/.config/agentcage/cages/NAME/cage.yaml` because a malformed YAML or invalid field there silently breaks the cage at the next `cage start` / `cage update`. With `cage edit`, the validation runs *before* the file is written.
+
+Aliased as `cage config`.
 
 ## `cage list`
 
