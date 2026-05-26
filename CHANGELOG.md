@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`fix(cli)`: `domain add` / `domain rm` no longer restart the cage on
+  the container backend.** They now write the updated allowlist files
+  and `pkill -HUP dnsmasq` inside the dns sidecar — the mitmproxy addon
+  already hot-reloads its config via mtime polling, and dnsmasq re-reads
+  `--servers-file` on SIGHUP. Net effect on container cages: a domain
+  change is roughly instant, and any interactive session inside the cage
+  (e.g. `agentcage run -i`) survives the update. Why `pkill` instead of
+  `podman kill --signal HUP`: PID 1 in the dns container is the
+  `dns-audit.sh` wrapper, not dnsmasq itself, so the signal would be
+  eaten by the wrapper. The VM and apple-container paths are unchanged
+  (Lima reverse-sshfs caches host file content past the SIGHUP, and the
+  apple-container allowlist is baked into the wrapper image — both still
+  require the restart cycle to pick up changes).
+
 ## [0.21.15] - 2026-05-26
 
 Two apple-container parity fixes surfaced by the torture-mac plan against v0.21.13.

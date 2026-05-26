@@ -3016,18 +3016,45 @@ def _ensure_dns_quadlet_current(cfg) -> bool:
 def _update_dns_quadlet(cfg) -> None:
     """Apply a domain-allowlist change to the dnsmasq sidecar.
 
-    Writes the allowlist sidecar file from cage.yaml and, if the cage is
-    running, restarts the dns/proxy/cage services in dependency order so
-    dnsmasq picks up the new file. The DNS quadlet itself almost never
-    needs rewriting — the allowlist isn't baked into it any more — so the
-    common path skips daemon-reload entirely. The migration safety check
-    in :func:`_ensure_dns_quadlet_current` covers cages whose on-disk
-    quadlet still has the old shape from a pre-upgrade install.
+    Rewrites the dns-allowlist sidecar and proxy-config files, then signals
+    the running daemons to pick them up.
 
-    Note on the cascade: a DNS-only restart cascades via the ``Requires=``
-    dependency chain (proxy Requires dns, cage Requires proxy) and would
-    leave proxy/cage stopped.  We stop all three explicitly, then start in
-    dependency order so everything comes back up cleanly.
+    Container backend (live-reload, no cage restart):
+      - dnsmasq runs with ``--servers-file=/etc/dnsmasq-allow.conf`` and
+        re-reads it on SIGHUP. We ``podman exec ... pkill -HUP dnsmasq``
+        rather than ``podman kill --signal HUP`` because PID 1 in the dns
+        container is the ``dns-audit.sh`` wrapper, not dnsmasq — a signal
+        to PID 1 would be eaten by the wrapper.
+      - The mitmproxy addon polls ``/etc/agentcage/config.yaml`` mtime on
+        every request and hot-reloads inspectors in-place (see
+        ``data/proxy/addon.py:_maybe_reload``). No signal needed.
+      - Net effect: the cage container is untouched. Any interactive
+        session inside it (e.g. ``agentcage run``) survives a domain
+        add/rm.
+
+    VM backend (Lima):
+      - Lima's reverse-sshfs mount (the default on Linux+QEMU) caches host
+        file content aggressively — a host-side rewrite of the allowlist
+        files is NOT visible inside the VM until the Lima mount itself is
+        reset. SIGHUP'ing dnsmasq inside the VM would just have it re-read
+        the same stale data. The legacy restart-all behavior had the same
+        underlying limitation (the bind mount source is the same cached
+        sshfs path), so we leave it in place rather than silently doing
+        nothing. Users wanting to reliably apply a VM domain change today
+        must restart the cage (``agentcage cage restart NAME``). Tracking
+        the proper fix (write into a VM-local path via ``inst.exec``) as
+        follow-up.
+
+    Apple-container backend:
+      - Allowlist is baked into the wrapper image at build time, so a
+        domain change requires rebuilding the image and restarting the
+        cage. The observability bridge (see #120) is expected to add a
+        bind-mounted allowlist path on apple-container, at which point
+        this branch can collapse.
+
+    The migration safety check in :func:`_ensure_dns_quadlet_current`
+    still covers cages whose on-disk quadlet has the old shape from a
+    pre-upgrade install.
     """
     state.save_dns_allowlist(cfg.name)
     _ensure_dns_quadlet_current(cfg)
@@ -3036,8 +3063,11 @@ def _update_dns_quadlet(cfg) -> None:
     name = cfg.name
 
     if cfg.isolation == "vm":
-        inst = LimaInstance(name)
+        # See docstring — Lima reverse-sshfs caching makes live-reload
+        # unreliable; keep the legacy restart-all path until the bind
+        # source moves to a VM-local file.
         if backend.is_running(name, "dns"):
+            inst = LimaInstance(name)
             services = backend.service_names(name)
             for svc in services:
                 inst.exec(["systemctl", "--user", "stop", f"{name}-{svc}.service"],
@@ -3045,18 +3075,6 @@ def _update_dns_quadlet(cfg) -> None:
             for svc in reversed(services):
                 inst.exec(["systemctl", "--user", "start", f"{name}-{svc}.service"])
     elif _is_apple_container(cfg):
-        # On apple-container the dnsmasq + mitmproxy allowlists are baked
-        # into the wrapper image at build_artifacts() time — there's no
-        # bind-mounted allowlist file the running supervisor can re-read
-        # yet (that infra lands with the observability bridge in #120).
-        # A plain restart would re-execute the OLD allowlist; the change
-        # the user just saved to cage.yaml would silently not apply.
-        #
-        # Trigger the same build path `cage update` uses: rebuild the
-        # wrapper image (Apple's layer cache makes this ~1–2s on warm
-        # systems), then restart so the cage runs against the new image.
-        # Users no longer have to remember "now run cage update" — domain
-        # add/rm behaves like container/vm: change saved → effect applied.
         was_running = backend.is_running(name, "cage")
         if was_running:
             backend.stop(name)
@@ -3065,15 +3083,8 @@ def _update_dns_quadlet(cfg) -> None:
             backend.start(name, quiet=True)
     else:
         if backend.is_running(name, "dns"):
-            # Stop most-dependent first, start dependencies first.
-            services = backend.service_names(name)
-            for svc in services:
-                try:
-                    systemd.stop_unit(f"{name}-{svc}.service")
-                except Exception:
-                    pass
-            for svc in reversed(services):
-                systemd.start_unit(f"{name}-{svc}.service")
+            Podman().container_exec(f"{name}-dns",
+                                    ["pkill", "-HUP", "dnsmasq"])
 
 
 @domain.command("add")
