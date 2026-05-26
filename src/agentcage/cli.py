@@ -358,9 +358,9 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
     Examples:
       agentcage run claude-code
       agentcage run codex --project /path/to/repo
-      agentcage run claude-code -s ANTHROPIC_API_KEY=sk-...
+      agentcage run codex -s OPENAI_API_KEY=sk-...
       agentcage run claude-code --isolation vm
-      agentcage run claude-code --name my-session -- claude --help
+      agentcage run codex --name my-session -- codex --help
       agentcage run claude-code -i
     """
     from agentcage.run import execute

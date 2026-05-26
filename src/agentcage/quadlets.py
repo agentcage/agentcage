@@ -236,8 +236,9 @@ def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
     """Stage a single-file volume source so the VM backend can mount it.
 
     Lima's virtiofs shares directories, not single files, so a volume
-    whose host source is a regular file (e.g. the claude-code scaffold's
-    ``~/.claude.json``) cannot be handed to the VM directly. Copy it into
+    whose host source is a regular file (e.g. a scaffold mounting a
+    single dotfile from the host) cannot be handed to the VM directly.
+    Copy it into
     ``~/.local/share/agentcage/<cage>/seed/`` instead — that directory is
     already virtiofs-mounted into the VM — and return the staged path for
     the cage quadlet to bind-mount.
@@ -322,10 +323,11 @@ def generate_quadlets(
             continue
 
         # VM backend: Lima's virtiofs shares directories, not single
-        # files, so a file-source volume (e.g. ~/.claude.json) cannot be
-        # mounted into the VM directly. Stage a copy into the cage's data
-        # dir — which is virtiofs-mounted — and bind-mount the staged
-        # path instead. Container mode bind-mounts files directly.
+        # files, so a file-source volume (a scaffold mounting a single
+        # host dotfile) cannot be mounted into the VM directly. Stage
+        # a copy into the cage's data dir — which is virtiofs-mounted —
+        # and bind-mount the staged path instead. Container mode
+        # bind-mounts files directly.
         if config.isolation == "vm" and not os.path.isdir(real):
             staged = _stage_vm_file_volume(real, deploy_name or name)
             container_part = expanded.split(":", 1)[1]

@@ -104,11 +104,11 @@ def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
             continue
 
         # Lima only virtiofs-shares directories, so a file-source volume
-        # (e.g. the claude-code scaffold's ~/.claude.json) cannot be a
-        # Lima mount — `limactl create` would fail fatally with "refers
-        # to a non-directory path". Skip it here: it is not lost, the
-        # quadlet layer stages a copy into ~/.local/share/agentcage
-        # (already mounted) and bind-mounts that.
+        # (a scaffold mounting a single host dotfile) cannot be a Lima
+        # mount — `limactl create` would fail fatally with "refers to a
+        # non-directory path". Skip it here: it is not lost, the quadlet
+        # layer stages a copy into ~/.local/share/agentcage (already
+        # mounted) and bind-mounts that.
         if not os.path.isdir(host_path):
             continue
 

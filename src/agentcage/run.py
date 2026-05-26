@@ -34,13 +34,15 @@ import click
 
 from agentcage import state
 from agentcage.backends import get_backend
-from agentcage.config import (
-    Config,
-    SecretInjectionRule,
-    load_config,
-    validate_config,
+from agentcage.config import load_config, validate_config
+from agentcage.init import (
+    list_scaffolds,
+    render_config,
+    resolve_scaffold,
+    run_scaffold_setup,
+    scaffold_aliases,
+    scaffold_name_prefix,
 )
-from agentcage.init import list_scaffolds, load_scaffold_meta, render_config, resolve_scaffold, run_scaffold_setup
 from agentcage.podman import Podman
 from agentcage.services import build_and_deploy, check_port_availability, destroy_cage
 
@@ -55,16 +57,6 @@ _ADJECTIVES = [
     "true", "vast",
 ]
 
-# Short aliases for scaffold names
-_SCAFFOLD_ALIASES: dict[str, str] = {
-    "claude": "claude-code",
-}
-
-# Short prefixes for auto-generated cage names
-_NAME_PREFIXES: dict[str, str] = {
-    "claude-code": "claude",
-}
-
 _NOUNS = [
     "ant", "bay", "bee", "cod", "cow", "dew", "doe", "elm",
     "elk", "emu", "ewe", "fig", "fox", "gem", "gnu", "hog",
@@ -77,8 +69,12 @@ _NOUNS = [
 
 
 def generate_name(scaffold: str) -> str:
-    """Generate a unique cage name like ``claude-bold-fox``."""
-    prefix = _NAME_PREFIXES.get(scaffold, scaffold)
+    """Generate a unique cage name like ``claude-bold-fox``.
+
+    The prefix comes from the scaffold's ``scaffold.yaml`` (``name_prefix``
+    field) and falls back to the scaffold name itself when not declared.
+    """
+    prefix = scaffold_name_prefix(scaffold)
     existing = set(state.list_deployments())
     for _ in range(100):
         adj = random.choice(_ADJECTIVES)
@@ -302,12 +298,11 @@ def _detect_isolation() -> str:
 def _ensure_volume_dirs(volumes: list[str]) -> None:
     """Create missing host directories for a cage's bind-mount volumes.
 
-    Scaffolds declare volumes for state persistence — the claude-code
-    scaffold mounts ``~/.claude`` so the agent's login survives across
-    sessions. On a fresh machine that directory does not exist yet;
-    podman cannot bind-mount a missing source, and the Lima/quadlet
-    layers would skip it (so a login inside the cage never round-trips
-    to the host). Create it up front instead.
+    Scaffolds may declare host bind-mounts for state persistence. On a
+    fresh machine the source directory may not exist yet; podman cannot
+    bind-mount a missing source, and the Lima/quadlet layers would skip
+    it (so a login inside the cage never round-trips to the host).
+    Create it up front instead.
 
     Only *directory* sources inside the home directory are created. A
     spec whose host path looks like a file (has an extension) or still
@@ -392,70 +387,6 @@ def _vm_podman_prefix(isolation: str, cage_name: str) -> list[str]:
     return []
 
 
-_CLAUDE_CODE_AUTH_HELP = """\
-No Claude Code authentication found.
-
-Claude Code inside a cage can't read the macOS Keychain, so the host's
-`claude login` doesn't carry over. Set up auth, then re-run:
-
-  Subscription — mint a token on the host (recommended):
-      claude setup-token
-      export CLAUDE_CODE_OAUTH_TOKEN=<token>
-      agentcage run claude-code
-
-  API key:
-      agentcage run claude-code -s ANTHROPIC_API_KEY\
-"""
-
-
-def _preflight_claude_code_auth(
-    cfg: Config, secrets: tuple[str, ...],
-) -> tuple[str, ...] | None:
-    """Verify a ``run`` claude-code cage will have working auth.
-
-    ``agentcage run claude-code`` drops the user straight into Claude
-    Code, so a cage with no credentials means a confusing in-session
-    failure. Check up front instead.
-
-    When ``CLAUDE_CODE_OAUTH_TOKEN`` is set in the environment it is wired
-    in automatically — the injection rule is added to *cfg* and the token
-    appended to *secrets* for staging. (The scaffold ships that rule
-    commented out: an active rule would make ``cage create`` demand the
-    secret.) Returns the possibly-extended *secrets* tuple. When no auth
-    path exists at all, prints setup guidance and returns ``None``.
-    """
-    secret_keys = {s.split("=", 1)[0] for s in secrets}
-    env_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-
-    have_oauth = bool(env_token) or "CLAUDE_CODE_OAUTH_TOKEN" in secret_keys
-    have_api_key = "ANTHROPIC_API_KEY" in secret_keys
-    # A prior in-cage `claude login` persists here via the ~/.claude mount.
-    have_login = os.path.isfile(
-        os.path.expanduser("~/.claude/.credentials.json")
-    )
-
-    if not (have_oauth or have_api_key or have_login):
-        click.echo(_CLAUDE_CODE_AUTH_HELP, err=True)
-        return None
-
-    if have_oauth and not any(
-        r.env == "CLAUDE_CODE_OAUTH_TOKEN" for r in cfg.secret_injection
-    ):
-        # `run` strips injection rules whose secret was not provided, so
-        # adding the rule here is only effective alongside the staged
-        # secret below (or an explicit `-s CLAUDE_CODE_OAUTH_TOKEN`).
-        cfg.secret_injection.append(SecretInjectionRule(
-            env="CLAUDE_CODE_OAUTH_TOKEN",
-            placeholder="{{CLAUDE_CODE_OAUTH_TOKEN}}",
-            inject_to=["anthropic.com"],
-        ))
-    if env_token and "CLAUDE_CODE_OAUTH_TOKEN" not in secret_keys:
-        click.echo("Using CLAUDE_CODE_OAUTH_TOKEN from your environment.")
-        secrets = secrets + (f"CLAUDE_CODE_OAUTH_TOKEN={env_token}",)
-
-    return secrets
-
-
 def execute(
     scaffold: str,
     *,
@@ -474,8 +405,8 @@ def execute(
     """
     from agentcage import output
 
-    # Resolve scaffold aliases
-    scaffold = _SCAFFOLD_ALIASES.get(scaffold, scaffold)
+    # Resolve scaffold aliases declared in each scaffold's scaffold.yaml.
+    scaffold = scaffold_aliases().get(scaffold, scaffold)
 
     # Validate scaffold exists
     available = list_scaffolds()
@@ -533,18 +464,10 @@ def execute(
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
 
-    # Claude Code drops the user straight into a session — make sure the
-    # cage will actually be authenticated before building it.
-    if scaffold == "claude-code":
-        checked = _preflight_claude_code_auth(cfg, secrets)
-        if checked is None:
-            shutil.rmtree(str(config_dir), ignore_errors=True)
-            return 1
-        secrets = checked
-
-    # Create missing bind-mount directories so state persists (e.g. the
-    # claude-code scaffold's ~/.claude — without this, a login inside the
-    # cage never round-trips to the host).
+    # Create missing bind-mount directories so state persists for any
+    # scaffold whose user has opted into host bind-mounts (e.g. a
+    # commented-out ~/.<agent> mount the user has chosen to enable).
+    # Without this, a login inside the cage never round-trips to the host.
     _ensure_volume_dirs(cfg.container.volumes)
 
     # Check port availability

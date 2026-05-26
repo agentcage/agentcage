@@ -6,10 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentcage.config import Config
 from agentcage.run import (
     _ensure_volume_dirs,
-    _preflight_claude_code_auth,
     _stage_set_secrets,
     _vm_podman_prefix,
     generate_name,
@@ -100,58 +98,6 @@ class TestStageSetSecrets:
             dd.return_value = __import__("pathlib").Path(tempfile.mkdtemp())
             _stage_set_secrets("c", ("K=V",), "vm", podman)
         podman.secret_create.assert_not_called()
-
-
-class TestPreflightClaudeCodeAuth:
-    """`agentcage run claude-code` checks auth before building the cage."""
-
-    def _isolate(self, monkeypatch, tmp_path):
-        """No env token, no persisted login — a blank slate."""
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
-
-    def test_no_auth_returns_none(self, monkeypatch, tmp_path, capsys):
-        self._isolate(monkeypatch, tmp_path)
-        result = _preflight_claude_code_auth(Config(), ())
-        assert result is None
-        assert "claude setup-token" in capsys.readouterr().err
-
-    def test_env_token_is_staged_and_rule_added(self, monkeypatch, tmp_path):
-        self._isolate(monkeypatch, tmp_path)
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-abc")
-        cfg = Config()
-        result = _preflight_claude_code_auth(cfg, ())
-        assert result == ("CLAUDE_CODE_OAUTH_TOKEN=tok-abc",)
-        assert [r.env for r in cfg.secret_injection] == ["CLAUDE_CODE_OAUTH_TOKEN"]
-        assert cfg.secret_injection[0].inject_to == ["anthropic.com"]
-
-    def test_explicit_oauth_secret_adds_rule_without_restaging(
-        self, monkeypatch, tmp_path,
-    ):
-        self._isolate(monkeypatch, tmp_path)
-        cfg = Config()
-        secrets = ("CLAUDE_CODE_OAUTH_TOKEN=tok-xyz",)
-        result = _preflight_claude_code_auth(cfg, secrets)
-        # `-s` value is kept as-is, not duplicated from the (absent) env.
-        assert result == secrets
-        assert [r.env for r in cfg.secret_injection] == ["CLAUDE_CODE_OAUTH_TOKEN"]
-
-    def test_api_key_secret_passes_without_oauth_rule(self, monkeypatch, tmp_path):
-        self._isolate(monkeypatch, tmp_path)
-        cfg = Config()
-        result = _preflight_claude_code_auth(cfg, ("ANTHROPIC_API_KEY=k",))
-        assert result == ("ANTHROPIC_API_KEY=k",)
-        assert cfg.secret_injection == []
-
-    def test_persisted_in_cage_login_passes(self, monkeypatch, tmp_path):
-        self._isolate(monkeypatch, tmp_path)
-        creds = tmp_path / ".claude" / ".credentials.json"
-        creds.parent.mkdir(parents=True)
-        creds.write_text("{}")
-        cfg = Config()
-        result = _preflight_claude_code_auth(cfg, ())
-        assert result == ()
-        assert cfg.secret_injection == []
 
 
 class TestGenerateName:
