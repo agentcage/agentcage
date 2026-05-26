@@ -866,6 +866,239 @@ class TestCageRestart:
         mock_ensure_dns.assert_called_once_with(cfg)
 
 
+class TestCageEdit:
+    """`cage edit` opens the stored cage.yaml in $EDITOR, validates the
+    result, writes atomically with a backup, and surfaces what just
+    changed. These tests exercise the rationale that justifies the
+    command's existence over a bare `$EDITOR <path>` shell call."""
+
+    @staticmethod
+    def _setup_cage(tmp_path, yaml_text):
+        """Lay down a fake state dir with a cage.yaml and wire state mocks."""
+        cage_dir = tmp_path / "cages" / "test"
+        cage_dir.mkdir(parents=True)
+        (cage_dir / "cage.yaml").write_text(yaml_text)
+        return cage_dir
+
+    _GOOD_YAML = (
+        "name: test\n"
+        "container:\n"
+        "  image: node:22-slim\n"
+        "  command: [node, /app/agent.js]\n"
+        "domains:\n"
+        "  allow:\n"
+        "  - anthropic.com\n"
+        "  - github.com\n"
+    )
+
+    @patch("agentcage.cli.state")
+    def test_edit_nonexistent_cage(self, mock_state):
+        mock_state.deployment_exists.return_value = False
+        result = _runner().invoke(main, ["cage", "edit", "nope"])
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_no_changes_returns_none(self, mock_state, mock_click_edit, tmp_path):
+        """click.edit returns None when the user exits without saving."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        mock_state.load_raw_config.return_value = {"name": "test"}
+        mock_click_edit.return_value = None
+
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code == 0
+        assert "No changes" in result.output
+        # Nothing should have been written.
+        assert not (cage_dir / "cage.yaml.bak").exists()
+        mock_state.save_proxy_config.assert_not_called()
+
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_no_changes_identical_text(self, mock_state, mock_click_edit, tmp_path):
+        """click.edit returns same text — still a no-op, no backup written."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        mock_state.load_raw_config.return_value = {"name": "test"}
+        mock_click_edit.return_value = self._GOOD_YAML
+
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code == 0
+        assert "No changes" in result.output
+        assert not (cage_dir / "cage.yaml.bak").exists()
+        mock_state.save_proxy_config.assert_not_called()
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_domain_change_live_reloads_dnsmasq(self, mock_state,
+                                                     mock_click_edit,
+                                                     mock_update_dns, tmp_path):
+        """Adding a domain triggers _update_dns_quadlet — no cage restart."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        # Pre-edit raw config (the in-memory before-image)
+        import yaml as _yaml
+        mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
+
+        edited = self._GOOD_YAML.replace(
+            "  - github.com\n",
+            "  - github.com\n  - httpbin.org\n",
+        )
+        mock_click_edit.return_value = edited
+
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code == 0, result.output
+        assert "Live-applied" in result.output
+        assert "domains" in result.output
+        mock_update_dns.assert_called_once()
+        # save_proxy_config is always called on a real edit so proxy and
+        # cage.yaml stay in lockstep.
+        mock_state.save_proxy_config.assert_called_once_with("test")
+        # Backup written.
+        assert (cage_dir / "cage.yaml.bak").exists()
+        # The new on-disk cage.yaml contains the added domain.
+        written = (cage_dir / "cage.yaml").read_text()
+        assert "httpbin.org" in written
+        # Backup preserves the prior contents (no httpbin.org yet).
+        backup = (cage_dir / "cage.yaml.bak").read_text()
+        assert "httpbin.org" not in backup
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_non_domain_change_prints_restart_hint(self, mock_state,
+                                                       mock_click_edit,
+                                                       mock_update_dns, tmp_path):
+        """Editing container.image needs `cage restart` — no DNS reload."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        import yaml as _yaml
+        mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
+
+        edited = self._GOOD_YAML.replace("node:22-slim", "node:24-slim")
+        mock_click_edit.return_value = edited
+
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code == 0, result.output
+        assert "cage restart test" in result.output
+        mock_update_dns.assert_not_called()
+        mock_state.save_proxy_config.assert_called_once_with("test")
+
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_invalid_yaml_writes_rejected(self, mock_state, mock_click_edit,
+                                               tmp_path):
+        """Bad YAML lands in cage.yaml.rejected; the original is untouched."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        import yaml as _yaml
+        mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
+
+        # Unterminated string — yaml.safe_load raises.
+        mock_click_edit.return_value = self._GOOD_YAML + "broken: 'unterminated\n"
+
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code != 0
+        assert "not valid YAML" in result.output
+        assert "cage.yaml.rejected" in result.output
+        # Rejected file was created with the bad edits.
+        assert (cage_dir / "cage.yaml.rejected").exists()
+        # The original cage.yaml on disk is byte-for-byte unchanged.
+        assert (cage_dir / "cage.yaml").read_text() == self._GOOD_YAML
+        # No backup since we never wrote a new good config.
+        assert not (cage_dir / "cage.yaml.bak").exists()
+        mock_state.save_proxy_config.assert_not_called()
+
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_validation_failure_writes_rejected(self, mock_state,
+                                                     mock_click_edit, tmp_path):
+        """load_config raising ValueError → reject, preserve original."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        import yaml as _yaml
+        mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
+
+        # The edited YAML is parseable but semantically rejected by the real
+        # loader. Patch load_config so the test doesn't depend on the real
+        # schema rules (which can drift).
+        with patch("agentcage.cli.load_config",
+                   side_effect=ValueError("inspector 'nope' not found")):
+            edited = self._GOOD_YAML.replace(
+                "domains:\n", "inspectors:\n  - nope\ndomains:\n"
+            )
+            mock_click_edit.return_value = edited
+            result = _runner().invoke(main, ["cage", "edit", "test"])
+
+        assert result.exit_code != 0
+        assert "failed validation" in result.output
+        assert "inspector 'nope' not found" in result.output
+        assert (cage_dir / "cage.yaml.rejected").exists()
+        # Original untouched.
+        assert (cage_dir / "cage.yaml").read_text() == self._GOOD_YAML
+        assert not (cage_dir / "cage.yaml.bak").exists()
+
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_rename_attempt_rejected(self, mock_state, mock_click_edit,
+                                          tmp_path):
+        """Changing top-level `name:` is outside this command's contract."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        import yaml as _yaml
+        mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
+
+        mock_click_edit.return_value = self._GOOD_YAML.replace(
+            "name: test\n", "name: renamed\n"
+        )
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code != 0
+        assert "renaming a cage" in result.output
+        assert (cage_dir / "cage.yaml.rejected").exists()
+        assert (cage_dir / "cage.yaml").read_text() == self._GOOD_YAML
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_shows_unified_diff(self, mock_state, mock_click_edit,
+                                     _mock_update_dns, tmp_path):
+        """The diff of the change is printed before the success line."""
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        import yaml as _yaml
+        mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
+
+        edited = self._GOOD_YAML.replace(
+            "  - github.com\n", "  - github.com\n  - httpbin.org\n"
+        )
+        mock_click_edit.return_value = edited
+
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code == 0, result.output
+        # Unified-diff signature: ---/+++ headers and the added domain on
+        # a +-prefixed line.
+        assert "--- " in result.output
+        assert "+++ " in result.output
+        assert "+" in result.output and "httpbin.org" in result.output
+        # The unified-diff block precedes the "Updated cage" summary.
+        assert result.output.index("---") < result.output.index("Updated cage")
+
+    def test_edit_alias_config_routes_to_edit(self):
+        """`cage config` is an alias for `cage edit` (registered on AliasGroup)."""
+        from agentcage.cli import cage as cage_group
+        assert cage_group.get_command(None, "config").name == "edit"
+
+
 class TestCageStart:
     @patch("agentcage.cli._ensure_dns_quadlet_current")
     @patch("agentcage.secret_resolver.resolve_and_populate")

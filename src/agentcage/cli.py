@@ -375,7 +375,7 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
 # ── cage group ────────────────────────────────────────────
 
 
-@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list", "reload": "restart", "delete": "destroy", "describe": "show", "inspect": "show"})
+@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list", "reload": "restart", "delete": "destroy", "describe": "show", "inspect": "show", "config": "edit"})
 def cage():
     """Manage cages."""
 
@@ -1336,6 +1336,213 @@ def cage_restart(name: str):
 
     _restart_cage(name, cfg)
     click.echo(f"Restarted cage '{name}'")
+
+
+# Fields the proxy hot-reloads via mtime polling on proxy-config.yaml.
+# A change here only needs `save_proxy_config()` — no cage restart.
+_PROXY_HOT_RELOAD_KEYS = frozenset({
+    "max_request_body", "entropy", "content_type", "inspectors",
+    "rate_limit", "logging", "secret_injection", "capture", "protocol_relays",
+})
+
+# Fields that need a destroy + recreate (image rebuild, network changes, etc).
+_REBUILD_KEYS = frozenset({"isolation", "vm"})
+
+
+def _yaml_dump(raw: dict) -> str:
+    """Render a raw config dict as YAML with the project's conventions."""
+    import yaml
+    return yaml.safe_dump(raw, default_flow_style=False, sort_keys=False)
+
+
+def _classify_changes(before: dict, after: dict) -> tuple[set[str], set[str], set[str]]:
+    """Bucket top-level config-key changes into (live, restart, rebuild) sets.
+
+    - live: applied in-place without a cage restart (domains via SIGHUP,
+      proxy keys via mtime polling).
+    - restart: needs `agentcage cage restart NAME` to take effect.
+    - rebuild: needs `agentcage cage destroy + create` (image, isolation).
+    """
+    changed = {
+        k for k in set(before) | set(after)
+        if before.get(k) != after.get(k)
+    }
+    live: set[str] = set()
+    restart: set[str] = set()
+    rebuild: set[str] = set()
+    for k in changed:
+        if k == "domains":
+            live.add(k)
+        elif k in _PROXY_HOT_RELOAD_KEYS:
+            live.add(k)
+        elif k in _REBUILD_KEYS:
+            rebuild.add(k)
+        else:
+            restart.add(k)
+    return live, restart, rebuild
+
+
+@cage.command("edit")
+@click.argument("name")
+def cage_edit(name: str):
+    """Edit a cage's stored config in $EDITOR, with validation and safe save.
+
+    Unlike `$EDITOR ~/.config/agentcage/cages/NAME/cage.yaml`, this command:
+
+      - Validates the edited YAML before saving (rejected edits are written
+        to cage.yaml.rejected so you don't lose them).
+      - Writes atomically (temp file + rename) so a crash mid-edit cannot
+        corrupt your cage state.
+      - Backs up the previous good config to cage.yaml.bak.
+      - Shows a unified diff of what changed.
+      - Auto-applies domain changes via dnsmasq SIGHUP (no cage restart).
+      - Tells you exactly which next command will pick up other changes.
+    """
+    import difflib
+    import yaml
+
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    state_dir = state.deployment_dir(name)
+    config_path = state_dir / "cage.yaml"
+    rejected_path = state_dir / "cage.yaml.rejected"
+    backup_path = state_dir / "cage.yaml.bak"
+
+    original_text = config_path.read_text()
+    original_raw = state.load_raw_config(name)
+
+    # click.edit returns the edited text when given `text=`, or None if the
+    # user exited without saving / made no changes. We pass the text so we
+    # can detect "no change" without depending on editor mtime semantics.
+    edited_text = click.edit(text=original_text, extension=".yaml",
+                             require_save=True)
+
+    if edited_text is None or edited_text == original_text:
+        click.echo(f"No changes to cage '{name}'.")
+        return
+
+    # Parse edited content. Any YAML error → reject, preserve original.
+    try:
+        edited_raw = yaml.safe_load(edited_text)
+    except yaml.YAMLError as e:
+        rejected_path.write_text(edited_text)
+        loc = getattr(e, "problem_mark", None)
+        where = f" at line {loc.line + 1}, column {loc.column + 1}" if loc else ""
+        problem = getattr(e, "problem", None) or str(e)
+        click.echo(f"error: edited config is not valid YAML{where}: {problem}",
+                   err=True)
+        click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
+        click.echo(f"  Original config at {config_path} is unchanged.", err=True)
+        sys.exit(1)
+
+    if not isinstance(edited_raw, dict):
+        rejected_path.write_text(edited_text)
+        click.echo("error: edited config must be a YAML mapping at the top level",
+                   err=True)
+        click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
+        click.echo(f"  Original config at {config_path} is unchanged.", err=True)
+        sys.exit(1)
+
+    # Don't allow renaming a cage via `cage edit` — that requires state
+    # directory moves, podman secret renames, quadlet rewrites, and is
+    # outside this command's contract.
+    orig_name = original_raw.get("name")
+    new_name = edited_raw.get("name")
+    if orig_name != new_name:
+        rejected_path.write_text(edited_text)
+        click.echo(
+            f"error: renaming a cage via 'cage edit' is not supported "
+            f"(cage.yaml 'name' changed from '{orig_name}' to '{new_name}')",
+            err=True)
+        click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
+        click.echo(f"  Original config at {config_path} is unchanged.", err=True)
+        sys.exit(1)
+
+    # Re-render so we can validate via the real loader (writes to a tempfile
+    # because load_config takes a path, not a dict).
+    rendered = _yaml_dump(edited_raw)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False, dir=str(state_dir)
+    ) as tf:
+        tmp_validate_path = Path(tf.name)
+        tf.write(rendered)
+    try:
+        try:
+            cfg = load_config(str(tmp_validate_path))
+            warnings = validate_config(cfg)
+        except ValueError as e:
+            rejected_path.write_text(edited_text)
+            click.echo(f"error: edited config failed validation: {e}", err=True)
+            click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
+            click.echo(f"  Original config at {config_path} is unchanged.",
+                       err=True)
+            sys.exit(1)
+    finally:
+        tmp_validate_path.unlink(missing_ok=True)
+
+    for w in warnings:
+        click.echo(f"warning: {w}", err=True)
+
+    # Show a unified diff of the change before writing.
+    diff = "".join(difflib.unified_diff(
+        original_text.splitlines(keepends=True),
+        rendered.splitlines(keepends=True),
+        fromfile=f"{name}/cage.yaml (before)",
+        tofile=f"{name}/cage.yaml (after)",
+    ))
+    if diff:
+        click.echo(diff, nl=False)
+
+    # Clear any stale rejected file from a prior failed edit — we now have
+    # a good edit superseding it.
+    rejected_path.unlink(missing_ok=True)
+
+    # Atomic write: temp + fsync + rename. Backup the previous good file
+    # first so a crash between rename and "all done" still leaves the
+    # operator able to recover.
+    shutil.copy2(config_path, backup_path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(state_dir), prefix=".cage.yaml.",
+                                    suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(rendered)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+    # Persist the proxy-side subset (always — even if nothing in
+    # _PROXY_KEYS changed, this is cheap and keeps proxy-config.yaml in
+    # lockstep with cage.yaml).
+    state.save_proxy_config(name)
+
+    live, restart_keys, rebuild_keys = _classify_changes(original_raw, edited_raw)
+
+    if "domains" in live:
+        _update_dns_quadlet(cfg)
+
+    # Tell the operator what just happened and what (if anything) they
+    # still need to do. Be specific about which fields fall into which
+    # bucket so the next command is obvious.
+    click.echo(f"Updated cage '{name}'. Backup at {backup_path}.")
+    if live:
+        applied = sorted(live)
+        click.echo(f"  Live-applied: {', '.join(applied)}")
+    if restart_keys:
+        keys = sorted(restart_keys)
+        click.echo(f"  Needs restart ({', '.join(keys)}): "
+                   f"agentcage cage restart {name}")
+    if rebuild_keys:
+        keys = sorted(rebuild_keys)
+        click.echo(f"  Needs rebuild ({', '.join(keys)}): "
+                   f"agentcage cage update {name} (or destroy + create)")
 
 
 @cage.command("stop")

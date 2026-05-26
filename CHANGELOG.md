@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`agentcage cage edit NAME` — restored, with teeth.** Opens the stored
+  `cage.yaml` in `$EDITOR`, then on save (1) validates the edited YAML
+  through the same `validate_config` path that `cage create` runs —
+  rejected edits land in `cage.yaml.rejected` so they aren't lost, and the
+  original `cage.yaml` is untouched on failure; (2) backs up the previous
+  good config to `cage.yaml.bak`; (3) writes the new config atomically
+  (temp file + `rename`) so a crash mid-edit cannot corrupt cage state;
+  (4) shows a unified diff of what changed; (5) live-applies domain
+  changes via the dnsmasq SIGHUP path landed in #187 — no cage restart,
+  any interactive session inside the cage survives; (6) refreshes
+  `proxy-config.yaml` so the mitmproxy addon's mtime poller hot-reloads
+  inspector / rate-limit / logging changes; (7) prints the exact next
+  command (`cage restart` vs. `cage update`) for changes that need one.
+  Aliased as `cage config`. Removed in #74 on the grounds it was a
+  "trivial `click.edit` wrapper"; the restored version earns its keep by
+  doing validation + atomic-write + auto-reload that a bare
+  `$EDITOR ~/.config/agentcage/cages/NAME/cage.yaml` can't.
+
 ### Removed
 
 - **`agentcage run -i / --interactive-domains` flag.** The feature has
