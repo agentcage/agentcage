@@ -791,6 +791,100 @@ def test_install_launchd_plist_writes_well_formed_xml(tmp_path, monkeypatch):
     assert parsed["ProgramArguments"][-1] == "demo"
 
 
+def test_install_launchd_plist_calls_bootstrap_in_gui_domain(tmp_path, monkeypatch):
+    """The whole point of this fix: `launchctl bootstrap gui/<uid>` is
+    the modern API. Pre-fix the install path called `launchctl load -w`
+    which is deprecated since macOS 10.10 and silently no-ops in many
+    contexts — the symptom was the plist file existing but
+    `launchctl list` showing nothing. Issue: F2 in torture-mac findings."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(backend, "_launchd_plist_path",
+                        lambda name: tmp_path / f"io.agentcage.{name}.plist")
+    monkeypatch.setattr(backend, "_state_dir",
+                        lambda name: tmp_path / f"state-{name}")
+    monkeypatch.setattr("os.getuid", lambda: 501)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "container_binary",
+                       return_value="/usr/local/bin/container"), \
+         patch("subprocess.run", side_effect=fake_run):
+        backend._install_launchd_plist("demo")
+
+    # bootout (pre-bootstrap) targets the modern domain/label form.
+    bootouts = [c for c in calls if c[:2] == ["launchctl", "bootout"]]
+    assert any("gui/501/io.agentcage.demo" in " ".join(c) for c in bootouts), \
+        f"expected `bootout gui/501/io.agentcage.demo`, got {bootouts}"
+    # bootstrap is the post-write load step.
+    bootstraps = [c for c in calls if c[:2] == ["launchctl", "bootstrap"]]
+    assert len(bootstraps) == 1, f"expected exactly 1 bootstrap call, got {bootstraps}"
+    assert "gui/501" in bootstraps[0], f"expected gui/501 domain in {bootstraps[0]}"
+    assert str(tmp_path / "io.agentcage.demo.plist") in bootstraps[0]
+
+
+def test_install_launchd_plist_falls_back_to_load_when_bootstrap_fails(
+    tmp_path, monkeypatch,
+):
+    """If `launchctl bootstrap` fails (very old macOS, no GUI session,
+    permissions oddity), fall back to the legacy `launchctl load -w`
+    path so the operator never gets worse behavior than before the fix.
+    Only when BOTH fail do we warn loudly."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(backend, "_launchd_plist_path",
+                        lambda name: tmp_path / f"io.agentcage.{name}.plist")
+    monkeypatch.setattr(backend, "_state_dir",
+                        lambda name: tmp_path / f"state-{name}")
+    monkeypatch.setattr("os.getuid", lambda: 501)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        # bootstrap fails; subsequent unload+load succeed.
+        if argv[:2] == ["launchctl", "bootstrap"]:
+            return type("CP", (), {"returncode": 1, "stdout": "",
+                                   "stderr": "Bootstrap failed: 5: Input/output error"})()
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "container_binary",
+                       return_value="/usr/local/bin/container"), \
+         patch("subprocess.run", side_effect=fake_run):
+        backend._install_launchd_plist("demo")
+
+    # bootstrap was tried...
+    assert any(c[:2] == ["launchctl", "bootstrap"] for c in calls)
+    # ...and then `load -w` ran as fallback.
+    loads = [c for c in calls if c[:3] == ["launchctl", "load", "-w"]]
+    assert len(loads) == 1, f"expected exactly 1 fallback load -w, got {loads}"
+
+
+def test_uninstall_launchd_plist_calls_bootout(tmp_path, monkeypatch):
+    """Mirror of install: uninstall must use `launchctl bootout
+    gui/<uid>/<label>` for services we installed via bootstrap. Legacy
+    `unload` also tried as a belt for any plists from the fallback path."""
+    backend = AppleContainerBackend()
+    plist_path = tmp_path / "io.agentcage.demo.plist"
+    plist_path.write_text("<plist/>")
+    monkeypatch.setattr(backend, "_launchd_plist_path", lambda name: plist_path)
+    monkeypatch.setattr("os.getuid", lambda: 501)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        backend._uninstall_launchd_plist("demo")
+
+    assert any(c[:2] == ["launchctl", "bootout"]
+               and "gui/501/io.agentcage.demo" in " ".join(c)
+               for c in calls), f"missing bootout in {calls}"
+    # plist file removed.
+    assert not plist_path.exists()
+
+
 def test_start_argv_uses_file_delivery_when_placeholders_known(
     tmp_path, monkeypatch,
 ):

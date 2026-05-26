@@ -218,20 +218,41 @@ class AppleContainerBackend:
 </plist>
 """
         plist.write_text(plist_xml)
-        # bootstrap + load. `launchctl load` exits 0 even if already
-        # loaded; if it changes, run unload first so reload picks up
-        # the new ProgramArguments.
+        # bootstrap into the GUI user's domain (the modern macOS API).
+        # `launchctl load -w` is deprecated since 10.10 and frequently
+        # silently no-ops in non-TTY contexts — the symptom we hit was
+        # the plist file existing but `launchctl list` showing nothing,
+        # so autostart never actually ran. `bootstrap gui/<uid>` is the
+        # documented replacement and the form Apple recommends for
+        # ~/Library/LaunchAgents/ plists. Fall back to `load -w` if
+        # `bootstrap` fails for any reason (e.g. very old macOS, no GUI
+        # session) so we never get worse than the prior behavior.
         import subprocess as _sp
-        _sp.run(["launchctl", "unload", str(plist)],
+        label = f"io.agentcage.{name}"
+        uid = os.getuid()
+        domain = f"gui/{uid}"
+        # bootout any prior version of the service so bootstrap doesn't
+        # fail with "service is already loaded". `bootout` errors are
+        # benign — they just mean the service wasn't loaded.
+        _sp.run(["launchctl", "bootout", f"{domain}/{label}"],
                 check=False, capture_output=True)
-        result = _sp.run(["launchctl", "load", "-w", str(plist)],
+        result = _sp.run(["launchctl", "bootstrap", domain, str(plist)],
                          check=False, capture_output=True, text=True)
         if result.returncode != 0:
-            click.echo(
-                f"warning: launchctl load failed for {plist}: "
-                f"{result.stderr.strip()}",
-                err=True,
-            )
+            # Fallback to legacy load -w. Worst case: same outcome as
+            # before this fix.
+            _sp.run(["launchctl", "unload", str(plist)],
+                    check=False, capture_output=True)
+            fallback = _sp.run(["launchctl", "load", "-w", str(plist)],
+                               check=False, capture_output=True, text=True)
+            if fallback.returncode != 0:
+                click.echo(
+                    f"warning: launchctl bootstrap+load both failed for "
+                    f"{plist}: bootstrap='{result.stderr.strip()}' "
+                    f"load='{fallback.stderr.strip()}' — autostart will "
+                    f"NOT trigger at next login until resolved",
+                    err=True,
+                )
 
     def _uninstall_launchd_plist(self, name: str) -> None:
         """Unload + remove the per-cage launchd plist. No-op if absent."""
@@ -239,6 +260,14 @@ class AppleContainerBackend:
         if not plist.exists():
             return
         import subprocess as _sp
+        label = f"io.agentcage.{name}"
+        domain = f"gui/{os.getuid()}"
+        # bootout for plists installed via the new path; unload for the
+        # legacy fallback path. Both are best-effort: if neither
+        # succeeds, the plist file is still removed and launchctl will
+        # forget the service at next login.
+        _sp.run(["launchctl", "bootout", f"{domain}/{label}"],
+                check=False, capture_output=True)
         _sp.run(["launchctl", "unload", str(plist)],
                 check=False, capture_output=True)
         plist.unlink(missing_ok=True)
