@@ -81,6 +81,103 @@ class TestCageUpdate:
         assert result.exit_code != 0
         assert "does not match" in result.output
 
+    def test_update_requires_name_or_config(self):
+        """Either positional NAME or -c must be supplied — without one of
+        them there is no way to identify which cage to update."""
+        result = _runner().invoke(main, ["cage", "update"])
+        assert result.exit_code != 0
+        assert "NAME or -c/--config is required" in result.output
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._build_container_image")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_update_infers_name_from_config(
+        self, mock_state, MockPodman, mock_systemd, mock_build, mock_backend,
+        _check_secrets, _check_ports, _build_deploy, tmp_path,
+    ):
+        """`cage update -c cage.yaml` must work without a positional NAME —
+        cfg.name is authoritative when -c is given (matches cage create)."""
+        from agentcage.config import Config, ContainerConfig, BuildConfig
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: inferred-from-config
+            container:
+              image: test:latest
+        """))
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = tmp_path
+        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
+        mock_state.load_metadata.return_value = {}
+        mock_state.load_deployment_config.return_value = Config(
+            name="inferred-from-config",
+            isolation="container",
+            container=ContainerConfig(
+                image="test:latest",
+                build=BuildConfig(containerfile=None, args={}),
+            ),
+        )
+        result = _runner().invoke(main, ["cage", "update", "-c", str(p)])
+        assert result.exit_code == 0, result.output
+        # state.save_deployment should be called with the inferred name.
+        save_calls = [c for c in mock_state.save_deployment.call_args_list]
+        assert save_calls, "save_deployment was not called"
+        assert save_calls[0].args[0] == "inferred-from-config"
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_update_vm_does_not_query_host_podman_for_secrets(
+        self, mock_state, MockPodman, mock_systemd, mock_backend,
+        _check_ports, _build_deploy, tmp_path,
+    ):
+        """For VM cages, secrets live in the VM's podman, not on the host.
+        Querying host podman (the historical bug) always reported the
+        secret as missing and blocked every `cage update` on a Linux host
+        that happened to have podman installed. The fix routes the check
+        through VmPodman (when the VM is running) or skips it (when the
+        VM is stopped — backend.start() will re-create from
+        pending_secrets.json before services come up)."""
+        from agentcage.config import (
+            Config, ContainerConfig, BuildConfig, SecretInjectionRule,
+        )
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = tmp_path
+        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
+        mock_state.load_metadata.return_value = {}
+        mock_state.load_raw_config.return_value = {
+            "name": "test",
+            "container": {"image": "test:latest", "build": {"args": {}}},
+        }
+        mock_state.load_deployment_config.return_value = Config(
+            name="test",
+            isolation="vm",
+            container=ContainerConfig(
+                image="test:latest",
+                build=BuildConfig(containerfile=None, args={}),
+            ),
+            secret_injection=[
+                SecretInjectionRule(env="OPENAI_API_KEY", placeholder="X"),
+            ],
+        )
+        # Host Podman returns "no secret" for everything — the historical
+        # blocker. The fix must NOT consult it for VM cages.
+        host_podman = MockPodman.return_value
+        host_podman.secret_exists.return_value = False
+        # VM is stopped → no VmPodman to query → check is skipped.
+        with patch("agentcage.cli.LimaInstance") as MockLima:
+            MockLima.return_value.is_running.return_value = False
+            result = _runner().invoke(main, ["cage", "update", "test"])
+        assert result.exit_code == 0, result.output
+        assert "missing secrets" not in result.output
+
 
 class TestCageUpdateNoCache:
     """`agentcage cage update --no-cache` must propagate the flag down to
