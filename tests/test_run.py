@@ -8,10 +8,68 @@ import pytest
 
 from agentcage.run import (
     _ensure_volume_dirs,
+    _resolve_exec_cmd,
     _stage_set_secrets,
     _vm_podman_prefix,
     generate_name,
 )
+
+
+class _FakeCfg:
+    def __init__(self, exec_aliases):
+        self.exec_aliases = exec_aliases
+
+
+class TestResolveExecCmd:
+    """`agentcage run -- <extras>` must use extras AS-IS as the cage command.
+
+    Pre-fix the code prepended the scaffold's first exec_alias to extras,
+    so ``-- claude --dangerously-skip-permissions -p "<prompt>"`` became
+    ``["claude", "claude", "--dangerously-skip-permissions", "-p", ...]``.
+    Claude consumed the second positional ``claude`` as its prompt and
+    silently ignored ``-p`` — the agent responded to the binary name
+    instead of the operator's actual prompt.
+    """
+
+    def test_extras_replace_alias_no_prepend(self):
+        cfg = _FakeCfg({"claude": ["claude"]})
+        result = _resolve_exec_cmd(
+            cfg,
+            ("claude", "--dangerously-skip-permissions", "-p", "hi"),
+        )
+        # The leading `claude` from extras stays; the alias is NOT prepended.
+        assert result == ["claude", "--dangerously-skip-permissions", "-p", "hi"]
+        # Count to spell out the bug: there must be exactly ONE `claude`.
+        assert result.count("claude") == 1
+
+    def test_extras_without_binary_name_still_works(self):
+        """The recommended invocation is `agentcage run claude-code --
+        --dangerously-skip-permissions -p X` (no leading `claude` because
+        the scaffold supplies it). But pre-fix that branch ran the bare
+        flags directly as a command — now it still does, because extras
+        are taken AS-IS."""
+        cfg = _FakeCfg({"claude": ["claude"]})
+        result = _resolve_exec_cmd(
+            cfg, ("--dangerously-skip-permissions", "-p", "hi"),
+        )
+        assert result == ["--dangerously-skip-permissions", "-p", "hi"]
+
+    def test_no_extras_uses_first_alias(self):
+        cfg = _FakeCfg({"claude": ["claude", "--print"]})
+        result = _resolve_exec_cmd(cfg, ())
+        assert result == ["claude", "--print"]
+
+    def test_no_extras_no_aliases_falls_back_to_bash(self):
+        cfg = _FakeCfg({})
+        result = _resolve_exec_cmd(cfg, ())
+        assert result == ["/bin/bash"]
+
+    def test_extras_win_over_aliases_even_for_unrelated_binary(self):
+        """`agentcage run claude-code -- python /tmp/foo.py` must run
+        python, not claude. Extras take precedence."""
+        cfg = _FakeCfg({"claude": ["claude"]})
+        result = _resolve_exec_cmd(cfg, ("python", "/tmp/foo.py"))
+        assert result == ["python", "/tmp/foo.py"]
 
 
 class TestVmPodmanPrefix:

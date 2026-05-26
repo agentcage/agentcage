@@ -387,6 +387,30 @@ def _vm_podman_prefix(isolation: str, cage_name: str) -> list[str]:
     return []
 
 
+def _resolve_exec_cmd(cfg, extra_args: tuple[str, ...]) -> list[str]:
+    """Build the cage's session command from extras + scaffold aliases.
+
+    When the user passes ``--`` extras, they are a COMPLETE command (binary
+    + args) — matching the docs example ``agentcage run codex --name X --
+    codex --help``. Without extras, default to the first ``exec_alias``
+    (the scaffold's primary binary, e.g. ``["claude"]``). Fall back to
+    ``/bin/bash`` if neither.
+
+    Pre-fix the code prepended the alias EVEN WHEN extras were given, so
+    ``agentcage run claude-code -- claude --dangerously-skip-permissions
+    -p "<prompt>"`` became ``claude claude --dangerously-skip-permissions
+    -p "<prompt>"``. Claude consumed the second ``claude`` as its
+    positional prompt and silently ignored ``-p`` — the agent responded
+    to "claude" instead of the user's actual prompt.
+    """
+    if extra_args:
+        return list(extra_args)
+    if cfg.exec_aliases:
+        first_alias = next(iter(cfg.exec_aliases.values()))
+        return list(first_alias)
+    return ["/bin/bash"]
+
+
 def execute(
     scaffold: str,
     *,
@@ -603,14 +627,7 @@ def execute(
     click.echo()
     output.separator()
 
-    # Determine the exec command: agent binary + any extra args
-    if cfg.exec_aliases:
-        first_alias = next(iter(cfg.exec_aliases.values()))
-        exec_cmd = list(first_alias) + list(extra_args)
-    elif extra_args:
-        exec_cmd = list(extra_args)
-    else:
-        exec_cmd = ["/bin/bash"]
+    exec_cmd = _resolve_exec_cmd(cfg, extra_args)
 
     # Run interactive session
     exit_code = 0
