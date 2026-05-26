@@ -281,11 +281,34 @@ def build_and_deploy(
 
 
 def restart_cage(name: str, cfg=None):
-    """Restart all services for a cage using the appropriate backend."""
+    """Restart all services for a cage using the appropriate backend.
+
+    Polls the cage service's ``is_running`` for up to 30 seconds after the
+    backend's ``restart`` returns. Without this, ``cage restart`` returns
+    while the cage container is still in podman's "starting" phase, the
+    operator runs ``cage ls`` immediately after and sees ``degraded
+    (2/3)``, and concludes the restart failed. Returns silently once the
+    cage is active; logs a one-line warning if it's still not active at
+    the deadline (the unit may genuinely be slow to start, or
+    ``backend.restart`` may have surfaced its own failure already).
+    """
+    import time
+
     if cfg is None:
         cfg = state.load_deployment_config(name)
     backend = get_backend(cfg)
     backend.restart(name)
+
+    # 30s deadline matches the cage quadlet's ExecStartPre CA-cert poll plus
+    # a few extra seconds for podman to register the container as running.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            if backend.is_running(name, "cage"):
+                return
+        except Exception:
+            pass
+        time.sleep(0.5)
 
 
 def _find_owning_backend(name: str):

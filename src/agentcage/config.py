@@ -403,9 +403,29 @@ def _host_dns_servers() -> list[str]:
 
 
 def load_config(path: str) -> Config:
-    """Load and parse a agentcage YAML config file."""
-    with open(path) as f:
-        raw = yaml.safe_load(f)
+    """Load and parse a agentcage YAML config file.
+
+    Raises ``ValueError`` with a friendly message on YAML syntax errors or
+    file-read errors. Previously a malformed cage.yaml surfaced as a raw
+    ``yaml.scanner.ScannerError`` Python traceback at the CLI user; click
+    catches ValueError via the cli wrapper and prints a clean error
+    instead.
+    """
+    try:
+        with open(path) as f:
+            raw = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        # mark + problem_mark give the operator file:line:column. Stripping
+        # the traceback noise leaves "<file>:<line>:<col>: <message>"-ish
+        # output that mirrors how compilers report syntax errors.
+        loc = getattr(e, "problem_mark", None)
+        where = f" at line {loc.line + 1}, column {loc.column + 1}" if loc else ""
+        msg = getattr(e, "problem", None) or str(e)
+        raise ValueError(
+            f"{path} is not valid YAML{where}: {msg}"
+        ) from e
+    except OSError as e:
+        raise ValueError(f"could not read {path}: {e}") from e
 
     if not raw or not isinstance(raw, dict):
         return Config()

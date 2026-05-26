@@ -1139,8 +1139,10 @@ class TestCageLogs:
         mock_state.load_deployment_config.return_value = _mock_config("vm")
         MockLimaInstance.return_value.name = "agentcage-basic"
         result = _runner().invoke(main, ["cage", "logs", "basic"])
+        # --workdir / suppresses the spurious cd warning when host cwd
+        # isn't mounted in the VM (PR-bundle "torture-session-findings").
         mock_execvp.assert_called_once_with("limactl", [
-            "limactl", "shell", "agentcage-basic", "--",
+            "limactl", "shell", "--workdir", "/", "agentcage-basic", "--",
             "sg", "systemd-journal", "-c",
             "journalctl --user-unit basic-cage --user-unit basic-proxy --user-unit basic-dns -n 50 -o cat",
         ])
@@ -1354,6 +1356,12 @@ class TestCageExec:
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
+    # Test helper: `cage exec` now pre-flights backend.is_running before
+    # invoking podman/limactl exec, so the test mocks must report the cage
+    # as `running` (subprocess.run returning `stdout="running"` for the
+    # container_running probe) AND we now assert on the LAST run call (the
+    # actual exec) rather than asserting it's the only call.
+
     @patch("agentcage.cli.subprocess.run")
     @patch("agentcage.cli.state")
     def test_exec_simple_command(self, mock_state, mock_run):
@@ -1361,10 +1369,10 @@ class TestCageExec:
         cfg = _mock_config("container")
         cfg.exec_aliases = {}
         mock_state.load_deployment_config.return_value = cfg
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="running")
 
         result = _runner().invoke(main, ["cage", "exec", "myapp", "--", "ls", "-la"])
-        mock_run.assert_called_once_with(["podman", "exec", "myapp-cage", "ls", "-la"])
+        mock_run.assert_called_with(["podman", "exec", "myapp-cage", "ls", "-la"])
 
     @patch("agentcage.cli.subprocess.run")
     @patch("agentcage.cli.state")
@@ -1373,12 +1381,12 @@ class TestCageExec:
         cfg = _mock_config("container")
         cfg.exec_aliases = {"openclaw": ["node", "openclaw.mjs"]}
         mock_state.load_deployment_config.return_value = cfg
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="running")
 
         result = _runner().invoke(main, [
             "cage", "exec", "myapp", "--", "openclaw", "devices", "list",
         ])
-        mock_run.assert_called_once_with(
+        mock_run.assert_called_with(
             ["podman", "exec", "myapp-cage", "node", "openclaw.mjs", "devices", "list"]
         )
 
@@ -1389,27 +1397,44 @@ class TestCageExec:
         cfg = _mock_config("container")
         cfg.exec_aliases = {}
         mock_state.load_deployment_config.return_value = cfg
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="running")
 
         result = _runner().invoke(main, [
             "cage", "exec", "myapp", "-s", "proxy", "--", "ls",
         ])
-        mock_run.assert_called_once_with(["podman", "exec", "myapp-proxy", "ls"])
+        mock_run.assert_called_with(["podman", "exec", "myapp-proxy", "ls"])
 
+    @patch("agentcage.backends.vm.LimaInstance")
     @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_exec_vm_uses_limactl(self, mock_state, mock_execvp, MockLimaInstance):
+    def test_exec_vm_uses_limactl(self, mock_state, mock_execvp,
+                                   MockCliLima, MockBackendLima):
+        """`cage exec` on a vm-mode cage execs through limactl shell.
+
+        The is_running pre-flight goes through VmBackend (which imports
+        LimaInstance from agentcage.lima.instance), then exec_argv is
+        invoked and os.execvp runs the resulting argv. Both LimaInstance
+        import sites must be mocked: cli.py imports it directly,
+        backends/vm.py imports it for is_running's systemctl probe.
+        """
         mock_state.deployment_exists.return_value = True
         cfg = _mock_config("vm")
         cfg.exec_aliases = {}
         mock_state.load_deployment_config.return_value = cfg
-        MockLimaInstance.return_value.name = "agentcage-myvm"
+        for M in (MockCliLima, MockBackendLima):
+            M.return_value.name = "agentcage-myvm"
+            M.return_value.is_running.return_value = True
+            M.return_value.exec.return_value = MagicMock(
+                stdout="active\n", returncode=0,
+            )
 
         result = _runner().invoke(main, ["cage", "exec", "myvm", "--", "ls"])
-        # No -it in test because stdin is not a TTY
+        # No -it in test because stdin is not a TTY. --workdir / suppresses
+        # the spurious "cd: <host-cwd>: No such file or directory" warning
+        # that defaulted in (see PR-bundle "torture-session-findings").
         mock_execvp.assert_called_once_with("limactl", [
-            "limactl", "shell", "agentcage-myvm", "--",
+            "limactl", "shell", "--workdir", "/", "agentcage-myvm", "--",
             "podman", "exec", "myvm-cage", "ls",
         ])
 
@@ -1421,14 +1446,39 @@ class TestCageExec:
         cfg = _mock_config("container")
         cfg.exec_aliases = {"openclaw": ["node", "openclaw.mjs"]}
         mock_state.load_deployment_config.return_value = cfg
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.return_value = MagicMock(returncode=0, stdout="running")
 
         result = _runner().invoke(main, [
             "cage", "exec", "myapp", "--", "cat", "/etc/hostname",
         ])
-        mock_run.assert_called_once_with(
+        mock_run.assert_called_with(
             ["podman", "exec", "myapp-cage", "cat", "/etc/hostname"]
         )
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.state")
+    def test_exec_refuses_stopped_cage(self, mock_state, mock_run):
+        """`cage exec` on a stopped cage must error with a friendly message
+        instead of letting the raw downstream podman/limactl error surface.
+        Without this pre-flight the operator saw
+        `no container with name or ID "<name>-cage" found` (container,
+        exit 125) or `instance "<name>" is stopped` (vm, exit 1) — both of
+        which buried the actual problem."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        cfg.exec_aliases = {}
+        mock_state.load_deployment_config.return_value = cfg
+        # is_running probe returns "exited" (or anything other than
+        # "running") → cage is stopped, exec must refuse.
+        mock_run.return_value = MagicMock(returncode=0, stdout="exited")
+
+        result = _runner().invoke(main, ["cage", "exec", "myapp", "--", "ls"])
+        assert result.exit_code != 0
+        assert "is not running" in result.output
+        assert "cage start" in result.output
+        # No exec call must have fired.
+        for call in mock_run.call_args_list:
+            assert "exec" not in call.args[0], f"unexpected exec: {call.args[0]}"
 
 
 class TestStageBuildContext:
