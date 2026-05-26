@@ -562,6 +562,35 @@ class Agentcage:
             self._cap_pending.pop(flow.id, None)
             return
 
+        # ── REQUEST-side secret redaction (CRITICAL) ──────────
+        # The upstream has already received the secret-substituted
+        # request bytes (mitmproxy forwarded after the ``request`` hook
+        # returned). Now we restore placeholder form on
+        # ``flow.request.url`` / ``.headers`` / ``.content`` so the
+        # capture serialization below — both the staged
+        # ``pending["outbound_req"]`` snapshot from the ``request()``
+        # hook AND any fresh snapshot taken here — does NOT write raw
+        # secret bytes to ``capture.jsonl``. The capture file is
+        # bind-mounted into the cage rootfs (mode 0644, world-readable)
+        # so anything serialized post-inject is readable by the cage
+        # workload — defeating the whole placeholder-injection trust
+        # model. The redaction is purely cosmetic for downstream
+        # serializers; the real request is already on the wire.
+        self.injector.redact_request(flow)
+        # Refresh the staged outbound-request snapshot with the redacted
+        # form, overwriting the post-inject snapshot the ``request()``
+        # hook stashed (which still held the raw secret bytes — that
+        # snapshot was the leak point).
+        if self._capture and flow.id in self._cap_pending:
+            try:
+                self._cap_pending[flow.id]["outbound_req"] = (
+                    self._capture.snapshot_request(flow)
+                )
+            except Exception as e:  # pragma: no cover
+                ctx.log.warn(
+                    f"agentcage: outbound-request re-snapshot failed: {e}"
+                )
+
         is_reverse = isinstance(
             getattr(flow.client_conn, "proxy_mode", None), ReverseMode
         )
