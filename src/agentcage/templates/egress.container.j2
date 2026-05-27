@@ -31,6 +31,16 @@ Sysctl=net.ipv4.ip_forward=1
 {% for fwd in inbound_forwards %}
 PublishPort={{ fwd.publish_spec }}
 {% endfor %}
+{% if inbound_forwards %}
+# Pass inbound-forward info to the egress supervisor so it adds
+# `--mode reverse:http://<ip_cage>:<port>@0.0.0.0:<port>` per forward
+# (the legacy proxy.container.j2 did this in its Exec= line). Without
+# these env vars the supervisor skips reverse-mode entirely — PublishPort
+# exposes the egress's port to the host but nothing listens, breaking
+# inbound traffic to the cage.
+Environment="AGENTCAGE_INBOUND_PORTS={% for fwd in inbound_forwards %}{{ fwd.container_port }}{% if not loop.last %} {% endif %}{% endfor %}"
+Environment="AGENTCAGE_CAGE_IP={{ ip_cage }}"
+{% endif %}
 {% for secret in proxy_secrets %}
 {% if deploy_name %}
 Secret={{ deploy_name }}.{{ secret }},type=env,target={{ secret }}
