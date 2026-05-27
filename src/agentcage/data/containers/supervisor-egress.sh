@@ -147,7 +147,7 @@ if [ -f /etc/agentcage/config.yaml ]; then
     setpriv --reuid=acproxy --regid=acproxy --clear-groups \
             --no-new-privs --bounding-set=-all --inh-caps=-all -- \
     env HOME=/home/acproxy AGENTCAGE_CONFIG=/etc/agentcage/config.yaml \
-    /opt/agentcage/mitmproxy/mitmdump \
+    mitmdump \
       -s /opt/agentcage/addon.py \
       --mode regular@:8080 \
       --mode transparent@8443 \
@@ -163,7 +163,7 @@ else
     setpriv --reuid=acproxy --regid=acproxy --clear-groups \
             --no-new-privs --bounding-set=-all --inh-caps=-all -- \
     env HOME=/home/acproxy \
-    /opt/agentcage/mitmproxy/mitmdump \
+    mitmdump \
       --mode regular@:8080 \
       --mode transparent@8443 \
       --set connection_strategy=lazy \
