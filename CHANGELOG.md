@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-05-27
+
+### Security
+
+- **apple-container `cage exec` no longer arrives with NoNewPrivs=0 +
+  CapBnd=0xa80435fb** (CTF F3). Previously every `container exec`
+  session arrived at the cage workload with the container's full
+  --cap-add set (CAP_NET_ADMIN among them) and NoNewPrivs unset, so a
+  uid-1000 process could exploit any setuid-root binary in the base
+  image (ubuntu:24.04 ships `/usr/bin/su` as mode-4755) to regrant
+  CapEff = CapBnd and chain to the F2 route-replace bypass without
+  --as-root. Wrap the exec in `setpriv --reuid=1000 --regid=1000
+  --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all`;
+  initial USER is image-root so setpriv has CAP_SETPCAP to clear the
+  bounding set. New posture matches cage-init.sh stage D's capsh-drop
+  exactly (Uid=1000, CapBnd=0, NoNewPrivs=1).
+- **apple-container `cage exec --as-root` drops CAP_NET_ADMIN**
+  (CTF F2). The cage VM is started with `--cap-add CAP_NET_ADMIN`
+  because cage-init.sh stage B needs it to install the default route
+  via the egress sibling. Apple's runtime reconstructs that cap in
+  CapEff on every `container exec --user 0`, so before this fix an
+  operator with `--as-root` could `ip route replace default via
+  <apple-gw>` and reach the open internet without mitmproxy
+  interposition — a full egress bypass via the operator-debug door.
+  Wrap `--as-root` in `setpriv --bounding-set=-net_admin
+  --inh-caps=-net_admin`; uid stays 0 (operator's debug intent) but
+  NET_ADMIN is cleared from CapBnd, so route replace returns EPERM.
+  CHOWN/FOWNER/SETUID/SETGID/SETPCAP/etc. survive so apt-get install
+  and similar debug ops still work.
+
+### Added
+
+- **`cage create` warns when an apple-container cage has rw host bind
+  mounts** (CTF F4). apple-container uses Apple's identity uid_map
+  (`0 0 4294967295` — no user-namespace shift). Any rw host bind
+  mount lets the cage workload write to anything readable by the
+  macOS user via the virtiofs lower layer. Container/VM backends
+  shift uids via rootless podman's user namespace so they don't have
+  this property. Doc-only — doesn't block create; named volumes and
+  `:ro` binds are exempted.
+
+### Known residuals
+
+- **DNS-tunnel exfil via Apple's vmnet gateway** (CTF F1) is still
+  open on apple-container. Cage's `/etc/resolv.conf` points at
+  `192.168.65.1` (Apple's container vmnet gateway, real public DNS)
+  rather than the egress sibling's dnsmasq. Rewriting it to the
+  egress was attempted and confirmed to break apt-get update entirely
+  — Apple's container network plugin silently drops UDP/53 between
+  sibling containers (verified via `/proc/net/udp` drop-counter on
+  the dnsmasq socket: zero packets delivered despite TCP-handshake
+  reachability). Closing this requires either moving dnsmasq into the
+  cage VM or a different cross-VM transport. Tracked for v0.23.
+
 ## [0.22.1] - 2026-05-27
 
 ### Fixed
