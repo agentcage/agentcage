@@ -34,6 +34,29 @@ die() { log "FATAL: $1"; exit "${2:-99}"; }
 # without restarting the egress container.
 DNSMASQ_PID_FILE=/home/acdns/dnsmasq.pid
 
+# dnsmasq listen IP. We need to bind to a SPECIFIC IP rather than 0.0.0.0
+# in this two-network shape. Empirically `--listen-address=0.0.0.0` does
+# not respond to queries from the cage in rootless podman containers
+# with two network interfaces — the listener opens (visible in ss) but
+# dnsmasq refuses to answer queries arriving from interfaces other than
+# the one it thinks is "primary". Binding to the cage-net IP explicitly
+# fixes it (and is also defense-in-depth: only the cage should reach
+# dnsmasq, never anything on the default podman network).
+#
+# AGENTCAGE_REGULAR_BIND has the shape ``<ip>:8080``; strip the port for
+# the DNS bind. AGENTCAGE_DNS_LISTEN is an explicit override knob if a
+# caller wants something else.
+if [ -n "${AGENTCAGE_DNS_LISTEN:-}" ]; then
+  DNS_LISTEN_IP="${AGENTCAGE_DNS_LISTEN}"
+elif [ -n "${AGENTCAGE_REGULAR_BIND:-}" ]; then
+  DNS_LISTEN_IP="${AGENTCAGE_REGULAR_BIND%:*}"
+else
+  # Smoke-test path: no env vars staged. Fall back to wildcard — works
+  # on the single-network smoke test where the container has only one
+  # interface and dnsmasq's auto-detection is unambiguous.
+  DNS_LISTEN_IP="0.0.0.0"
+fi
+
 #-- Step A. iptables setup -------------------------------------------------
 # The egress container acts as a ROUTER between the cage netns and the
 # internet (NOT an in-netns OUTPUT filter — that's the apple-container
@@ -199,7 +222,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
       /usr/sbin/dnsmasq -k \
         --pid-file="$DNSMASQ_PID_FILE" \
         --no-resolv \
-        --listen-address=0.0.0.0 \
+        --listen-address="$DNS_LISTEN_IP" \
         --port=53 \
         --address=/#/198.51.100.1 \
         --servers-file=/etc/agentcage/dns-allowlist.conf \
@@ -215,7 +238,7 @@ else
     /usr/sbin/dnsmasq -k \
       --pid-file="$DNSMASQ_PID_FILE" \
       --no-resolv --no-hosts \
-      --listen-address=0.0.0.0 --port=53 \
+      --listen-address="$DNS_LISTEN_IP" --port=53 \
       --domain-needed --bogus-priv \
     &
 fi

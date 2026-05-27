@@ -399,6 +399,16 @@ _patch_egress_hosts() {
       sh -c "echo '${mock_ip} ${domain}' >> /etc/hosts" 2>/dev/null \
       || return 1
   done
+  # dnsmasq does not auto-reload /etc/hosts at runtime (entries are
+  # read at startup, and ``server=`` upstream-forwarding for allowlisted
+  # zones wins until /etc/hosts is re-read). Force a reload via SIGHUP
+  # on the supervisor-managed pidfile. Best-effort: on the first patch
+  # attempt the supervisor's step B may not have finished writing the
+  # pidfile yet — the start_mock loop retries up to 15s and the next
+  # patch will succeed.
+  podman exec --user root "${cage}-egress" sh -c \
+    'pid="$(cat /home/acdns/dnsmasq.pid 2>/dev/null)" && [ -n "$pid" ] && kill -HUP "$pid"' \
+    2>/dev/null || true
   return 0
 }
 
