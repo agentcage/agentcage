@@ -387,18 +387,39 @@ MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
 #   Replaces any existing block so entries don't accumulate.
 _patch_egress_hosts() {
   local cage="$1" mock_ip="$2"; shift 2
-  # Simplest possible patch: append the mock IP for each domain to
-  # /etc/hosts. We do NOT strip prior blocks here; the start_mock
-  # caller waits for the patch to apply (grep -q the mock_ip) before
-  # proceeding, and the calling test always destroys the cage between
-  # phases so stale entries don't accumulate across phases.
+  # Strip our previous marker block, then append a fresh one. Repatch
+  # is called every retry inside wait_data_path and across phases that
+  # reuse the same cage (phase 4 keeps the basic cage from phase 1),
+  # so without a strip step /etc/hosts accumulates stale entries —
+  # e.g. ``10.89.152.3 example.com`` from an earlier phase's mock,
+  # plus ``10.89.152.4 example.com`` from the new mock. NSS returns
+  # the FIRST match, so mitmproxy resolves example.com to the dead
+  # 10.89.152.3 (old mock long gone) and returns 502 Bad Gateway.
+  #
+  # Block writes via `cat > /etc/hosts` (NOT a temp file + rename —
+  # podman bind-mounts /etc/hosts and the rename fails silently across
+  # the bind boundary, leaving the file untouched).
+  local block
+  block="# e2e-mock-start"
   for domain in "$@"; do
-    # `podman exec -i --user root ... sh -c "echo X >> /etc/hosts"`
-    # — the inner sh's > is parsed correctly inside the container.
-    podman exec --user root "${cage}-egress" \
-      sh -c "echo '${mock_ip} ${domain}' >> /etc/hosts" 2>/dev/null \
-      || return 1
+    block="${block}
+${mock_ip} ${domain}"
   done
+  block="${block}
+# e2e-mock-end"
+  printf '%s\n' "$block" | podman exec --user root -i "${cage}-egress" \
+    sh -c '
+      new_block=$(cat) || exit 1
+      kept=$(awk "/^# e2e-mock-start/{s=1;next} /^# e2e-mock-end/{s=0;next} !s{print}" /etc/hosts) || exit 1
+      printf "%s\n%s\n" "$kept" "$new_block" > /etc/hosts
+    ' 2>/dev/null || return 1
+  # Note: we do not SIGHUP dnsmasq after the patch. Doing so would
+  # surface the mock IP via DNS resolution, the cage would connect to
+  # a same-subnet host directly, and the outbound flow would bypass
+  # mitmproxy entirely (no audit, no inspection). Instead, dnsmasq
+  # keeps forwarding to the real upstream and mitmproxy's
+  # keep_host_header=true mode reads /etc/hosts at the egress side
+  # to route to the mock.
   # NB: we deliberately do NOT SIGHUP dnsmasq after the patch. If
   # dnsmasq picked up /etc/hosts → mock-IP, the cage's DNS would
   # resolve httpbin.org directly to the mock's cage-net IP, the cage
