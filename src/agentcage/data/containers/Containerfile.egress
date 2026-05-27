@@ -39,6 +39,8 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         tini \
         util-linux \
         iproute2 \
+        python3-yaml \
+        python3-cryptography \
     && rm -rf /var/lib/apt/lists/*
 
 # Per-component users. uids match the apple-container backend's wrapper
@@ -83,6 +85,17 @@ RUN mkdir -p /opt/agentcage/mitmproxy \
     && echo "$sha  /tmp/mitmproxy.tar.gz" | sha256sum -c - \
     && tar xzf /tmp/mitmproxy.tar.gz -C /opt/agentcage/mitmproxy \
     && rm /tmp/mitmproxy.tar.gz
+
+# mitmproxy addon + helpers. Same source-of-truth as today's
+# Containerfile.proxy at src/agentcage/data/proxy/. mitmproxy's script
+# loader puts the addon's dir on sys.path, so all sibling packages
+# (inspectors, transforms, relays) resolve relative to /opt/agentcage/.
+COPY proxy/addon.py /opt/agentcage/addon.py
+COPY proxy/capture.py /opt/agentcage/capture.py
+COPY proxy/secret_injector.py /opt/agentcage/secret_injector.py
+COPY proxy/inspectors/ /opt/agentcage/inspectors/
+COPY proxy/transforms/ /opt/agentcage/transforms/
+COPY proxy/relays/ /opt/agentcage/relays/
 
 # Supervisor + DNS audit wrapper. dns-audit.sh is also referenced by the
 # legacy Containerfile.dns; both images keep a copy during the

@@ -131,26 +131,34 @@ ss -lnup 2>/dev/null | grep -q ':53 ' \
 
 #-- Step D. Start mitmproxy (uid 200, CapBnd-stripped) ---------------------
 # Same CapBnd-drop flags as dnsmasq above — see step B for rationale.
+# Addon code is static and lives in the image at /opt/agentcage/addon.py
+# (with sibling packages inspectors/, transforms/, relays/, capture.py,
+# secret_injector.py — mitmproxy's script loader puts the addon's dir on
+# sys.path so they resolve relative to /opt/agentcage/). Per-cage config
+# (allowlist, secret_injection rules, capture settings) is at
+# /etc/agentcage/config.yaml via bind-mount.
 #
 # TODO(measurement): --as=2G for mitmproxy covers PyInstaller's ~700MB
 # mmap overhead plus runtime working set with headroom. Provisional —
 # tune after measurement in a follow-up PR.
 log "step D: starting mitmproxy (uid 200, CapBnd=0, prlimit --as=2G)"
-if [ -f /etc/agentcage/addon.py ]; then
+if [ -f /etc/agentcage/config.yaml ]; then
   prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
     setpriv --reuid=acproxy --regid=acproxy --clear-groups \
             --no-new-privs --bounding-set=-all --inh-caps=-all -- \
-    env HOME=/home/acproxy \
+    env HOME=/home/acproxy AGENTCAGE_CONFIG=/etc/agentcage/config.yaml \
     /opt/agentcage/mitmproxy/mitmdump \
-      -s /etc/agentcage/addon.py \
+      -s /opt/agentcage/addon.py \
       --mode regular@:8080 \
       --mode transparent@8443 \
       --set connection_strategy=lazy \
     &
 else
-  # Smoke-test path: no addon staged. Run mitmproxy with default
-  # behavior so the listener and CA generation paths can be exercised.
-  log "step D: no /etc/agentcage/addon.py — skipping -s addon"
+  # Smoke-test path: no config staged. Run mitmproxy WITHOUT the addon so
+  # the smoke test can exercise listener + CA generation without needing
+  # a valid AGENTCAGE_CONFIG file. Production never hits this path —
+  # backends always stage config.yaml.
+  log "step D: no /etc/agentcage/config.yaml — running without addon (smoke-test mode)"
   prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
     setpriv --reuid=acproxy --regid=acproxy --clear-groups \
             --no-new-privs --bounding-set=-all --inh-caps=-all -- \
