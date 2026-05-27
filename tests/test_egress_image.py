@@ -251,7 +251,28 @@ def test_iptables_rules_applied(egress_container: str) -> None:
 
 
 def test_dnsmasq_uid_and_capbnd(egress_container: str) -> None:
-    """dnsmasq runs as uid 201 with CapBnd cleared (== 0000000000000000)."""
+    """dnsmasq runs as uid 201 with CapBnd = {net_bind_service} only.
+
+    The bounding set isn't fully cleared because dnsmasq needs to bind :53
+    via the file cap (cap_net_bind_service=+ep set in the Containerfile).
+    Per capabilities(7), file caps require the cap to be in the process's
+    bounding set at execve. The supervisor uses
+    `setpriv --bounding-set=-all,+net_bind_service` — strictly stronger
+    than the Docker default cap set (which leaves SETUID, CHOWN, etc).
+    cap_net_bind_service is bit 10 → 0x400.
+    """
+    # dnsmasq may take a moment to write its pidfile after exec; the
+    # supervisor's step-C readiness check (poll :53) doesn't strictly
+    # require the pidfile to exist.
+    for _ in range(10):
+        check = _podman(
+            "exec", egress_container,
+            "test", "-s", "/run/dnsmasq.pid",
+            check=False,
+        )
+        if check.returncode == 0:
+            break
+        time.sleep(0.5)
     status = _podman(
         "exec", egress_container,
         "sh", "-c", 'cat /proc/$(cat /run/dnsmasq.pid)/status | grep -E "^(Uid|CapBnd):"',
@@ -277,12 +298,14 @@ def test_dnsmasq_uid_and_capbnd(egress_container: str) -> None:
         pytest.fail(
             f"dnsmasq ruid != 201 (got line: {uid_line!r}).\nlogs:\n{logs}"
         )
-    # CapBnd: format is `CapBnd:\t<hex>`; setpriv --bounding-set=-all → 0.
+    # CapBnd: dnsmasq retains cap_net_bind_service (bit 10 = 0x400) only.
+    # Any other bit set means the supervisor's bounding-set filter is broken.
     capbnd_parts = capbnd_line.split()
-    if len(capbnd_parts) < 2 or capbnd_parts[1] != "0000000000000000":
+    if len(capbnd_parts) < 2 or capbnd_parts[1] != "0000000000000400":
         logs = _podman_logs(egress_container)
         pytest.fail(
-            f"dnsmasq CapBnd != 0 (got line: {capbnd_line!r}).\nlogs:\n{logs}"
+            f"dnsmasq CapBnd != cap_net_bind_service-only (got: {capbnd_line!r}; "
+            f"expected 0000000000000400).\nlogs:\n{logs}"
         )
 
 
