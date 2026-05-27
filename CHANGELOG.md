@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.19] - 2026-05-27
+
+### Added
+
+- `agentcage run --as-root` flag is now wired up end-to-end. It was
+  silently swallowed before: `execute()` had an `as_root: bool` parameter
+  but the Click command never registered the option. The flag now reaches
+  the backend and runs the session as uid 0 when set.
+
+### Changed
+
+- **container + vm exec sessions now drop to uid 1000 by default**
+  (matching apple-container's existing capsh-hardened behaviour). The
+  cage Quadlet's `User=` may be empty (the ubuntu scaffold uses
+  `user: ""` because uid 1000 has no named user in a minimal ubuntu
+  base), so `podman exec` was inheriting the image's `USER` directive —
+  which is `root` on `ubuntu:latest`. Result: `agentcage run ubuntu`
+  on Linux container or VM landed at uid 0 while the apple-container
+  path correctly ran as uid 1000. Fixed by passing explicit `-u
+  1000:1000` (or `-u 0:0` with `--as-root`) to `podman exec` in both
+  `ContainerBackend.exec_argv` and `VmBackend.exec_argv`, and aligning
+  `cage shell` to do the same. Anything relying on the previous
+  accidental-root behaviour will need `--as-root`.
+- `run.py` routes all backends through `backend.exec_argv()` instead of
+  branching on isolation type, so the three backends now share the same
+  exec abstraction.
+
 ## [0.21.18] - 2026-05-27
 
 ### Fixed
