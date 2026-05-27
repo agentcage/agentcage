@@ -59,10 +59,22 @@ done
 # still preferable to silent forwarding so we keep it best-effort here.
 ip6tables -P FORWARD DROP 2>/dev/null || log "warn: ip6tables FORWARD DROP unavailable (no v6 stack?)"
 
-sysctl -w net.ipv4.ip_forward=1 >/dev/null \
-  || die "sysctl net.ipv4.ip_forward=1 failed (need NET_ADMIN cap?)" 16
-sysctl -w net.ipv4.ip_unprivileged_port_start=80 >/dev/null \
-  || die "sysctl net.ipv4.ip_unprivileged_port_start=80 failed" 17
+# Both sysctls below are also settable at container-creation time via
+# the Quadlet's `Sysctl=` directive (the container/vm backends do this
+# because rootless podman doesn't grant CAP_SYS_ADMIN even with
+# `--cap-add net_admin`, so `sysctl -w` from inside fails). We attempt
+# them anyway so apple-container (which doesn't have a Quadlet
+# pre-stage) gets them, but tolerate EPERM/etc. — at runtime we verify
+# the values via /proc/sys/ reads instead.
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+sysctl -w net.ipv4.ip_unprivileged_port_start=80 >/dev/null 2>&1 || true
+
+# Verify ip_forward is on — if neither Quadlet nor in-container sysctl
+# succeeded, this is fatal because the FORWARD chain becomes
+# unreachable (packets blackhole at the IP layer before reaching it).
+if [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)" != "1" ]; then
+  die "net.ipv4.ip_forward=1 not set; the Quadlet must set Sysctl=net.ipv4.ip_forward=1 OR the container must have CAP_SYS_ADMIN" 16
+fi
 
 #-- Step B. Start dnsmasq (uid 201, CapBnd=cap_net_bind_service only) -----
 # dnsmasq must bind :53 (privileged port). It carries the file cap
