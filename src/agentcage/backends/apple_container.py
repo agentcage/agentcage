@@ -767,12 +767,22 @@ class AppleContainerBackend:
         self._wait_supervisor_ready(name, ready_marker)
 
         # 4. Read the egress sibling's allocated IP. The cage uses it as
-        # default-route gateway via cage-init.sh.
-        egress_ip = self._container_ip(f"{name}-egress")
+        # default-route gateway via cage-init.sh. Apple's runtime populates
+        # `networks[].address` asynchronously — even after the supervisor's
+        # ready marker, the inspect output can briefly show `networks: []`.
+        # Poll with a short timeout to absorb this race.
+        egress_ip = None
+        ip_deadline = time.monotonic() + 10.0
+        while time.monotonic() < ip_deadline:
+            egress_ip = self._container_ip(f"{name}-egress")
+            if egress_ip:
+                break
+            time.sleep(0.2)
         if not egress_ip:
             raise RuntimeError(
-                f"could not resolve IP of {name}-egress — `container inspect` "
-                f"returned no address. Check `container logs {name}-egress`."
+                f"could not resolve IP of {name}-egress within 10s — "
+                f"`container inspect` returned no address. Check "
+                f"`container logs {name}-egress`."
             )
 
         # 5. Cage VM. CAP_NET_ADMIN is needed for cage-init's `ip route
@@ -921,26 +931,32 @@ class AppleContainerBackend:
     def _container_ip(self, name: str) -> str | None:
         """Return the IPv4 address Apple's network plugin assigned to *name*.
 
-        Apple's `container inspect` returns a list (one entry per
-        container). The IP lives under ``networks[].address`` (CIDR-form,
-        e.g. ``192.168.64.5/24``); we strip the mask. Falls back to None
-        if no address is present (still booting, or non-standard schema).
+        Apple's `container inspect` (CLI v0.12.x) returns a list (one
+        entry per container). The IP lives under
+        ``networks[].ipv4Address`` (CIDR-form, e.g. ``192.168.64.5/24``);
+        we strip the mask. Returns None if no address is populated yet
+        (still booting — caller should poll briefly).
         """
         data = ac_cli.inspect(name)
         if not data:
             return None
-        # Apple inspect schema (0.5+): top-level `networks` is a list of
-        # {network, address, gateway, ...}. Older schemas vary; defensively
-        # check both.
         networks = data.get("networks") or data.get("Networks") or []
         if isinstance(networks, list):
             for net in networks:
-                addr = (net.get("address") or net.get("Address") or "").strip()
+                # Apple's schema (verified empirically against v0.12.3):
+                # `ipv4Address` is the populated field. Defensively also
+                # check `address`/`Address` for older/newer schema variants.
+                addr = (
+                    net.get("ipv4Address")
+                    or net.get("address")
+                    or net.get("Address")
+                    or ""
+                ).strip()
                 if addr:
                     return addr.split("/", 1)[0]
         # Fallback: some schemas put the IP at `network.address`.
         n = data.get("network") or {}
-        addr = (n.get("address") or n.get("Address") or "").strip()
+        addr = (n.get("ipv4Address") or n.get("address") or n.get("Address") or "").strip()
         if addr:
             return addr.split("/", 1)[0]
         return None
