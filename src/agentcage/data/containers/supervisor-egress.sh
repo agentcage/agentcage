@@ -64,7 +64,20 @@ fi
 log "step A: iptables setup (inspected=[$INSPECTED_TCP_PORTS] passthrough=[$PASSTHROUGH_TCP_PORTS] udp=[$ALLOW_UDP_PORTS])"
 
 for port in $INSPECTED_TCP_PORTS; do
-  iptables -t nat -A PREROUTING -i eth0 -p tcp --dport "$port" -j REDIRECT --to-ports 8443 \
+  # No ``-i <iface>`` selector: podman's CNI does NOT deterministically
+  # map the per-cage network to ``eth0`` — on the GitHub runner the
+  # default ``podman`` network came in on eth0 and the cage-net on
+  # eth1, so an ``-i eth0`` filter REDIRECTed nothing and the cage's
+  # HTTP got TCP RST from the egress because port 80 wasn't actually
+  # listening. The legacy proxy.container.j2 also had no -i filter.
+  # Without it, traffic arriving on the podman-net interface also
+  # matches — but that's not an exploitable path: mitmproxy in
+  # transparent mode reads SO_ORIGINAL_DST to know where to forward,
+  # and a non-REDIRECTed foreign connection would put the egress's own
+  # IP there, so mitmproxy would attempt to connect to itself. The
+  # regular forward proxy on :8080 is independently scoped via
+  # AGENTCAGE_REGULAR_BIND={ip_egress}:8080 (see Quadlet).
+  iptables -t nat -A PREROUTING -p tcp --dport "$port" -j REDIRECT --to-ports 8443 \
     || die "iptables PREROUTING REDIRECT failed (port $port)" 10
 done
 
