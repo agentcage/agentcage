@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.17] - 2026-05-27
+
+### Fixed
+
+- `agentcage run --isolation vm` failed with `mkdir: cannot create directory
+  '~': Permission denied` after the v0.21.16 dnsmasq live-reload changes.
+  `push_config_files` wrapped tilde-prefixed paths in `shlex.quote()`, which
+  suppressed shell expansion so `~` reached the guest as a literal directory
+  name. Fix resolves `$HOME` in the guest once and rewrites the paths to
+  absolute form before quoting. New regression test scans every shell argv
+  for unexpanded tildes so the next time this slips in, it gets caught at
+  unit-test time instead of at the user's first VM cage launch.
+
 ## [0.21.16] - 2026-05-26
 
 A torture session against v0.21.15's `agentcage run -i` exposed that the

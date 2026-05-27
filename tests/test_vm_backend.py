@@ -654,6 +654,18 @@ class TestPushConfigFiles:
     reverse-sshfs cache). Called from ``_deploy_cage`` on every start /
     restart / deploy AND from ``_update_dns_quadlet`` on every domain edit."""
 
+    @staticmethod
+    def _mock_inst(home: str = "/home/lima") -> MagicMock:
+        """Build a MagicMock LimaInstance that returns *home* for ``echo ~``.
+
+        ``push_config_files`` resolves ``$HOME`` once in the guest before
+        building any further shell commands; the mock must answer that
+        probe so the later calls receive a real absolute path.
+        """
+        inst = MagicMock()
+        inst.exec.return_value = MagicMock(stdout=f"{home}\n")
+        return inst
+
     def test_creates_vm_local_directory(self, tmp_path, monkeypatch):
         # state._DEPLOYMENTS_DIR is computed at import time from env, so
         # monkeypatching the env var doesn't move the path — patch the
@@ -669,14 +681,17 @@ class TestPushConfigFiles:
         )
 
         from agentcage.backends.vm import push_config_files
-        inst = MagicMock()
+        inst = self._mock_inst(home="/home/lima")
         push_config_files("demo", inst)
 
-        # First call must `mkdir -p` the VM-local config dir.
-        first = inst.exec.call_args_list[0]
-        assert first.args[0][0:2] == ["bash", "-c"]
-        assert "mkdir -p" in first.args[0][2]
-        assert "~/.config/agentcage-vm/cages/demo" in first.args[0][2]
+        calls = inst.exec.call_args_list
+        # First call resolves $HOME in the guest.
+        assert calls[0].args[0] == ["bash", "-c", "echo ~"]
+        # Second call must `mkdir -p` the VM-local config dir as an
+        # absolute path — no `~` left for the shell to expand.
+        assert calls[1].args[0] == [
+            "mkdir", "-p", "/home/lima/.config/agentcage-vm/cages/demo",
+        ]
 
     def test_pushes_both_files_when_present(self, tmp_path, monkeypatch):
         d = tmp_path / "cages" / "demo"
@@ -692,22 +707,50 @@ class TestPushConfigFiles:
         )
 
         from agentcage.backends.vm import push_config_files
-        inst = MagicMock()
+        inst = self._mock_inst(home="/home/lima")
         push_config_files("demo", inst)
 
-        # Three calls: mkdir, push proxy-config, push dns-allowlist.
         scripts = [
             c.args[0][2] for c in inst.exec.call_args_list
             if c.args[0][:2] == ["bash", "-c"]
         ]
         assert any(
-            "~/.config/agentcage-vm/cages/demo/proxy-config.yaml" in s
-            for s in scripts
+            "/home/lima/.config/agentcage-vm/cages/demo/proxy-config.yaml"
+            in s for s in scripts
         )
         assert any(
-            "~/.config/agentcage-vm/cages/demo/dns-allowlist.conf" in s
-            for s in scripts
+            "/home/lima/.config/agentcage-vm/cages/demo/dns-allowlist.conf"
+            in s for s in scripts
         )
+
+    def test_no_unexpanded_tilde_in_shell_args(self, tmp_path, monkeypatch):
+        """Regression: ``vm_local_*`` returns ``~/...`` strings; if they
+        reach ``shlex.quote`` (or any single-quoted shell context) the
+        ``~`` becomes a literal directory name and ``mkdir`` fails with
+        ``cannot create directory '~'``. Assert every shell argument is
+        free of unexpanded tildes."""
+        d = tmp_path / "cages" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "proxy-config.yaml").write_text("x")
+        (d / "dns-allowlist.conf").write_text("y")
+        monkeypatch.setattr("agentcage.state.deployment_dir", lambda _n: d)
+        monkeypatch.setattr(
+            "agentcage.state.dns_allowlist_path",
+            lambda _n: d / "dns-allowlist.conf",
+        )
+
+        from agentcage.backends.vm import push_config_files
+        inst = self._mock_inst(home="/home/lima")
+        push_config_files("demo", inst)
+
+        # Skip the first call (``echo ~`` — the one legitimate tilde).
+        for call in inst.exec.call_args_list[1:]:
+            argv = call.args[0]
+            for arg in argv:
+                assert "~" not in arg, (
+                    f"unexpanded ~ leaked into shell argument: {arg!r} "
+                    f"(full argv: {argv!r})"
+                )
 
     def test_skips_missing_files(self, tmp_path, monkeypatch):
         """A cage in blocklist mode may have an empty/missing allowlist
@@ -724,11 +767,11 @@ class TestPushConfigFiles:
         )
 
         from agentcage.backends.vm import push_config_files
-        inst = MagicMock()
+        inst = self._mock_inst(home="/home/lima")
         push_config_files("demo", inst)
 
-        # Only the mkdir runs.
-        assert inst.exec.call_count == 1
+        # Two calls: resolve $HOME, then the mkdir. No file pushes.
+        assert inst.exec.call_count == 2
 
 
 class TestGetBackend:
