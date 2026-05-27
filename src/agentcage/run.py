@@ -30,6 +30,8 @@ from pathlib import Path
 
 import click
 
+from importlib.metadata import version
+
 from agentcage import state
 from agentcage.backends import get_backend
 from agentcage.config import load_config, validate_config
@@ -379,6 +381,13 @@ def execute(
     meta = state.load_metadata(cage_name)
     meta["scaffold"] = scaffold
     meta["lifecycle"] = cfg.lifecycle
+    # Record the agentcage version that created this cage. Without it
+    # the v0.22 legacy-cage detector treats every newly-created cage as
+    # pre-v0.22 — _ensure_v022_cage falls through to "0.0.0" and
+    # `cage list` annotates EVERY cage as "legacy v0.21 — destroy +
+    # recreate", even ones just spun up via `agentcage run`. cli.py's
+    # `cage create` path already wrote this; run.py was missing it.
+    meta["agentcage_version"] = version("agentcage")
     state.save_metadata(cage_name, meta)
 
     # Copy scaffold Containerfile and sibling files to state dir so cage
