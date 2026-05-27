@@ -22,6 +22,12 @@ Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 AddCapability=NET_ADMIN
 AddCapability=NET_BIND_SERVICE
 Sysctl=net.ipv4.ip_unprivileged_port_start=80
+# ip_forward enabled at create time — rootless podman doesn't grant
+# CAP_SYS_ADMIN even with --cap-add net_admin, so the supervisor cannot
+# `sysctl -w` it from inside. The egress is a router between the cage
+# netns and the host bridge: without ip_forward the FORWARD chain is
+# unreachable for passthrough_tcp_ports / allow_udp_ports.
+Sysctl=net.ipv4.ip_forward=1
 {% for fwd in inbound_forwards %}
 PublishPort={{ fwd.publish_spec }}
 {% endfor %}
