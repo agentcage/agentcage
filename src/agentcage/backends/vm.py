@@ -41,13 +41,15 @@ def push_config_files(name: str, inst: LimaInstance) -> None:
     edit; the cost is two ``inst.exec`` round-trips per file.
     """
     from agentcage import state
-    # vm_local_*() return ``~/...`` paths; the ~ is meant to be expanded
-    # by the guest shell, but ``shlex.quote`` below would suppress that.
-    # Resolve $HOME in the guest once and rewrite to absolute form.
+    # vm_local_*() return ``%h/...`` paths so podman-quadlet can bind-mount
+    # them (systemd expands ``%h`` to the user's home before podman parses
+    # the unit). Bash does NOT expand systemd specifiers, so for shell-
+    # context use here we must resolve ``$HOME`` in the guest ourselves
+    # and substitute before invocation.
     home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
 
     def _abs(p: str) -> str:
-        return home + p[1:] if p.startswith("~") else p
+        return home + p[2:] if p.startswith("%h") else p
 
     vm_dir = _abs(vm_local_config_dir(name))
     inst.exec(["mkdir", "-p", vm_dir])

@@ -688,7 +688,7 @@ class TestPushConfigFiles:
         # First call resolves $HOME in the guest.
         assert calls[0].args[0] == ["bash", "-c", "echo ~"]
         # Second call must `mkdir -p` the VM-local config dir as an
-        # absolute path — no `~` left for the shell to expand.
+        # absolute path — no `%h` (or `~`) left for the shell.
         assert calls[1].args[0] == [
             "mkdir", "-p", "/home/lima/.config/agentcage-vm/cages/demo",
         ]
@@ -723,12 +723,16 @@ class TestPushConfigFiles:
             in s for s in scripts
         )
 
-    def test_no_unexpanded_tilde_in_shell_args(self, tmp_path, monkeypatch):
-        """Regression: ``vm_local_*`` returns ``~/...`` strings; if they
-        reach ``shlex.quote`` (or any single-quoted shell context) the
-        ``~`` becomes a literal directory name and ``mkdir`` fails with
-        ``cannot create directory '~'``. Assert every shell argument is
-        free of unexpanded tildes."""
+    def test_no_unexpanded_home_marker_in_shell_args(
+        self, tmp_path, monkeypatch,
+    ):
+        """Regression: ``vm_local_*`` paths use ``%h`` (the systemd
+        home-directory specifier) so quadlet ``Volume=`` lines work.
+        Bash does NOT expand ``%h``, and ``shlex.quote`` would suppress
+        ``~`` expansion too — so every shell argument we hand to the
+        guest must already be absolute. Assert no ``%h`` or ``~`` leaks
+        through. Without this, ``mkdir`` (or ``podman volume create``)
+        sees a literal marker and fails."""
         d = tmp_path / "cages" / "demo"
         d.mkdir(parents=True, exist_ok=True)
         (d / "proxy-config.yaml").write_text("x")
@@ -743,10 +747,14 @@ class TestPushConfigFiles:
         inst = self._mock_inst(home="/home/lima")
         push_config_files("demo", inst)
 
-        # Skip the first call (``echo ~`` — the one legitimate tilde).
+        # Skip the first call (``echo ~`` — the legitimate home probe).
         for call in inst.exec.call_args_list[1:]:
             argv = call.args[0]
             for arg in argv:
+                assert "%h" not in arg, (
+                    f"unexpanded %h leaked into shell argument: {arg!r} "
+                    f"(full argv: {argv!r})"
+                )
                 assert "~" not in arg, (
                     f"unexpanded ~ leaked into shell argument: {arg!r} "
                     f"(full argv: {argv!r})"

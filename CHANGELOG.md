@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.18] - 2026-05-27
+
+### Fixed
+
+- VM cages still couldn't start after v0.21.17: the proxy + dns quadlets
+  emitted `Volume=~/.config/agentcage-vm/cages/<name>/...` and
+  podman-quadlet doesn't expand `~`. Podman then treated the path as a
+  named-volume reference, which failed the `[a-zA-Z0-9_.-]*` name
+  validator with `creating named volume "~/...": names must match ...:
+  invalid argument`. Switched `vm_local_config_dir()` to the systemd
+  specifier `%h`, which systemd-quadlet expands to the user's home
+  before podman parses the unit. Updated the shell-context substitution
+  in `push_config_files` to swap `%h` for the real `$HOME` (bash does
+  not expand systemd specifiers). New `test_quadlets_do_not_emit_unexpanded_tilde_volume`
+  regression scans every generated quadlet for `Volume=~` so this can't
+  recur.
+- End-to-end validated: `agentcage run ubuntu --isolation vm` builds and
+  starts the cage cleanly, `domain add` / `domain rm` live-reload
+  dnsmasq via SIGHUP without restarting the container, and
+  `getent hosts example.com` from inside the cage resolves through the
+  updated allowlist.
+
 ## [0.21.17] - 2026-05-27
 
 ### Fixed
