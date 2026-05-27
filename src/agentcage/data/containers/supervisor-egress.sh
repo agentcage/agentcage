@@ -189,7 +189,23 @@ ss -lnup 2>/dev/null | grep -q ':53 ' \
 # mmap overhead plus runtime working set with headroom. Provisional —
 # tune after measurement in a follow-up PR.
 log "step D: starting mitmproxy (uid 200, CapBnd=0, prlimit --as=2G)"
+
+# Build reverse-mode flags for inbound port forwards (legacy proxy's
+# `--mode reverse:http://<ip_cage>:<port>@0.0.0.0:<port>`). The backend
+# stages this via two env vars:
+#   AGENTCAGE_INBOUND_PORTS  — space-separated container ports
+#   AGENTCAGE_CAGE_IP        — cage container's IP on the cage-net
+# If unset, no reverse-mode flags are emitted (no inbound forwarding).
+EXTRA_MODES=""
+if [ -n "${AGENTCAGE_INBOUND_PORTS:-}" ] && [ -n "${AGENTCAGE_CAGE_IP:-}" ]; then
+  for p in $AGENTCAGE_INBOUND_PORTS; do
+    EXTRA_MODES="$EXTRA_MODES --mode reverse:http://$AGENTCAGE_CAGE_IP:$p@0.0.0.0:$p"
+  done
+  log "step D: inbound forwards: $AGENTCAGE_INBOUND_PORTS via cage=$AGENTCAGE_CAGE_IP"
+fi
+
 if [ -f /etc/agentcage/config.yaml ]; then
+  # shellcheck disable=SC2086  # EXTRA_MODES is intentionally word-split
   prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
     setpriv --reuid=acproxy --regid=acproxy --clear-groups \
             --no-new-privs --bounding-set=-all --inh-caps=-all -- \
@@ -198,6 +214,7 @@ if [ -f /etc/agentcage/config.yaml ]; then
       -s /opt/agentcage/addon.py \
       --mode regular@:8080 \
       --mode transparent@8443 \
+      $EXTRA_MODES \
       --set connection_strategy=lazy \
     &
 else
