@@ -266,6 +266,15 @@ fi
 
 if [ -f /etc/agentcage/config.yaml ]; then
   # shellcheck disable=SC2086  # EXTRA_MODES is intentionally word-split
+  # ``keep_host_header=true`` (legacy proxy.container.j2 mitmdump flag,
+  # dropped in the first v0.22 cut and restored here): mitmproxy uses
+  # the original Host header to determine the upstream URL instead of
+  # SO_ORIGINAL_DST. This is what lets the e2e harness redirect
+  # specific upstream domains (e.g. httpbin.org → mock IP) via the
+  # egress's /etc/hosts — without it, mitmproxy connects to whatever
+  # IP the cage's DNS already resolved to (the real httpbin.org if
+  # dnsmasq forwarded upstream), and the mock IP patch is invisible.
+  # Equivalent for real workloads where Host header == real DNS target.
   prlimit --as=$((2 * 1024 * 1024 * 1024)) -- \
     setpriv --reuid=acproxy --regid=acproxy --clear-groups \
             --no-new-privs --bounding-set=-all --inh-caps=-all -- \
@@ -276,6 +285,7 @@ if [ -f /etc/agentcage/config.yaml ]; then
       --mode transparent@8443 \
       $EXTRA_MODES \
       --set connection_strategy=lazy \
+      --set keep_host_header=true \
     &
 else
   # Smoke-test path: no config staged. Run mitmproxy WITHOUT the addon so
@@ -291,6 +301,7 @@ else
       --mode "regular@${AGENTCAGE_REGULAR_BIND:-:8080}" \
       --mode transparent@8443 \
       --set connection_strategy=lazy \
+      --set keep_host_header=true \
     &
 fi
 MITMPROXY_PID=$!
