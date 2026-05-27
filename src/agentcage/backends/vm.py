@@ -41,8 +41,16 @@ def push_config_files(name: str, inst: LimaInstance) -> None:
     edit; the cost is two ``inst.exec`` round-trips per file.
     """
     from agentcage import state
-    vm_dir = vm_local_config_dir(name)
-    inst.exec(["bash", "-c", f"mkdir -p {shlex.quote(vm_dir)}"])
+    # vm_local_*() return ``~/...`` paths; the ~ is meant to be expanded
+    # by the guest shell, but ``shlex.quote`` below would suppress that.
+    # Resolve $HOME in the guest once and rewrite to absolute form.
+    home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
+
+    def _abs(p: str) -> str:
+        return home + p[1:] if p.startswith("~") else p
+
+    vm_dir = _abs(vm_local_config_dir(name))
+    inst.exec(["mkdir", "-p", vm_dir])
 
     proxy_cfg = state.deployment_dir(name) / "proxy-config.yaml"
     if proxy_cfg.is_file():
@@ -50,7 +58,7 @@ def push_config_files(name: str, inst: LimaInstance) -> None:
         inst.exec([
             "bash", "-c",
             f"echo '{encoded}' | base64 -d > "
-            f"{shlex.quote(vm_local_proxy_config_path(name))}",
+            f"{shlex.quote(_abs(vm_local_proxy_config_path(name)))}",
         ])
 
     dns_allow = state.dns_allowlist_path(name)
@@ -59,7 +67,7 @@ def push_config_files(name: str, inst: LimaInstance) -> None:
         inst.exec([
             "bash", "-c",
             f"echo '{encoded}' | base64 -d > "
-            f"{shlex.quote(vm_local_dns_allowlist_path(name))}",
+            f"{shlex.quote(_abs(vm_local_dns_allowlist_path(name)))}",
         ])
 
 
