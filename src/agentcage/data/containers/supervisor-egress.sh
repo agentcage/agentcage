@@ -64,23 +64,33 @@ sysctl -w net.ipv4.ip_forward=1 >/dev/null \
 sysctl -w net.ipv4.ip_unprivileged_port_start=80 >/dev/null \
   || die "sysctl net.ipv4.ip_unprivileged_port_start=80 failed" 17
 
-#-- Step B. Start dnsmasq (uid 201, CapBnd-stripped) -----------------------
-# CRITICAL: `setpriv --reuid` does NOT clear CapBnd by itself. Without
-# `--bounding-set=-all`, a compromised dnsmasq could exec a setuid-root
-# binary and reacquire NET_ADMIN. The flags below close that path:
-#   --no-new-privs   → set NO_NEW_PRIVS prctl. Persists across execve.
-#   --bounding-set=-all → empty the capability bounding set BEFORE exec.
-#   --inh-caps=-all  → empty the inheritable set too (defense-in-depth).
-# This is the B3 fix from the eng review.
+#-- Step B. Start dnsmasq (uid 201, CapBnd=cap_net_bind_service only) -----
+# dnsmasq must bind :53 (privileged port). It carries the file cap
+# `cap_net_bind_service=+ep` set in the Containerfile. For that file cap
+# to take effect on execve(), TWO conditions must hold:
+#   1. The process's bounding set MUST contain cap_net_bind_service
+#      (otherwise the kernel silently drops it).
+#   2. NoNewPrivs MUST NOT be set (per capabilities(7): "If the
+#      no_new_privs bit is set then file capabilities are silently
+#      not granted on execve(2)").
+# So we keep --bounding-set=-all,+cap_net_bind_service (drops EVERYTHING
+# except the one cap dnsmasq needs) and we CANNOT use --no-new-privs.
+#
+# This is still safe against the B3-eng-review concern (compromised
+# dnsmasq exec'ing setuid-root to reacquire NET_ADMIN): the bounding
+# set ⊇ CapBnd of any child process, and we've reduced it to just
+# cap_net_bind_service. A setuid-root child becomes uid 0 with CapBnd =
+# {cap_net_bind_service} — it can bind privileged ports but cannot
+# iptables -F, cannot mount, cannot iptables anything.
 #
 # TODO(measurement): --as=256M for dnsmasq covers a 10k-entry allowlist
 # with headroom (eyeballed from the apple-container supervisor's working
 # set). Provisional — tune after measurement in a follow-up PR.
-log "step B: starting dnsmasq (uid 201, CapBnd=0, prlimit --as=256M)"
+log "step B: starting dnsmasq (uid 201, CapBnd={net_bind_service}, prlimit --as=256M)"
 if [ -f /etc/agentcage/dnsmasq.conf ]; then
   prlimit --as=$((256 * 1024 * 1024)) -- \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
-            --no-new-privs --bounding-set=-all --inh-caps=-all -- \
+            --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /opt/agentcage/dns-audit.sh \
       /usr/sbin/dnsmasq -k \
         --pid-file=/run/dnsmasq.pid \
@@ -94,7 +104,7 @@ else
   log "step B: no /etc/agentcage/dnsmasq.conf — using inline smoke-test defaults"
   prlimit --as=$((256 * 1024 * 1024)) -- \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
-            --no-new-privs --bounding-set=-all --inh-caps=-all -- \
+            --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /usr/sbin/dnsmasq -k \
       --pid-file=/run/dnsmasq.pid \
       --no-resolv --no-hosts \
