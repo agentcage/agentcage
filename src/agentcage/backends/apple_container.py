@@ -1166,8 +1166,68 @@ class AppleContainerBackend:
                 "https://github.com/apple/container/releases"
             )
         flags = ["-it"] if interactive else []
-        spec = "0:0" if as_root else "1000:1000"
-        return [binary, "exec", "-u", spec, *flags, target, *cmd]
+
+        # F3 from the CTF: every previous ``cage exec`` session arrived
+        # at the cage workload with NoNewPrivs=0 and CapBnd=0xa80435fb
+        # (the container's full --cap-add set, including NET_ADMIN,
+        # SETUID, SETGID, SYS_CHROOT). cage-init.sh stage D capsh-drops
+        # all of that for the WORKLOAD's PID 1, but each ``container
+        # exec`` enters via Apple's runtime as a fresh process whose
+        # caps are derived directly from the container's --cap-add set
+        # — no inheritance from the capsh-dropped PID 1. The result was
+        # that a uid-1000 process inside the cage could exploit any
+        # setuid-root binary in the base image (ubuntu:24.04 ships
+        # /usr/bin/su, /usr/bin/mount, /usr/bin/passwd, etc. as
+        # mode-4755) to regrant CapEff = CapBnd, then F2's
+        # NET_ADMIN-route-bypass chain works without --as-root.
+        #
+        # Wrap the exec via setpriv, running initially as the image's
+        # default USER (root, set in Containerfile.wrapper.j2). setpriv
+        # uses CAP_SETPCAP to clear the bounding + inheritable sets,
+        # sets PR_SET_NO_NEW_PRIVS, then setresuid/setresgid to
+        # 1000:1000. Once uid changes from 0 the kernel zeroes CapEff/
+        # CapPrm, leaving the exec'd cmd with empty caps + NNP=1 —
+        # matching the workload PID 1's posture exactly.
+        #
+        # ``--as-root`` keeps the previous setpriv shape but only drops
+        # NET_ADMIN (so the operator still has CHOWN/SETUID/etc. for
+        # debug ops like apt-get install). The egress service is left
+        # untouched — egress operations may legitimately need NET_ADMIN
+        # for iptables debugging.
+        wrap: list[str] = []
+        if service in ("cage", ""):
+            if as_root:
+                # uid 0:0 + NET_ADMIN-only drop (F2).
+                spec = "0:0"
+                wrap = [
+                    "setpriv",
+                    "--bounding-set=-net_admin",
+                    "--inh-caps=-net_admin",
+                    "--",
+                ]
+            else:
+                # No -u flag — enter as image USER (root), let setpriv
+                # do the uid drop + cap clear in one step. ``--reuid``
+                # and ``--regid`` are numeric so we don't need to look
+                # up the cage user's name (varies: ubuntu / node /
+                # claude / cage).
+                spec = None
+                wrap = [
+                    "setpriv",
+                    "--reuid=1000",
+                    "--regid=1000",
+                    "--clear-groups",
+                    "--no-new-privs",
+                    "--bounding-set=-all",
+                    "--inh-caps=-all",
+                    "--",
+                ]
+        else:
+            spec = "0:0" if as_root else "1000:1000"
+
+        if spec is not None:
+            return [binary, "exec", "-u", spec, *flags, target, *wrap, *cmd]
+        return [binary, "exec", *flags, target, *wrap, *cmd]
 
     def logs_argv(
         self,
