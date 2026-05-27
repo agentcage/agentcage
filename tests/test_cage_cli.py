@@ -1606,7 +1606,7 @@ class TestCageExec:
 
         result = _runner().invoke(main, ["cage", "exec", "myapp", "--", "ls", "-la"])
         mock_run.assert_called_with(
-            ["podman", "exec", "-u", "1000", "myapp-cage", "ls", "-la"]
+            ["podman", "exec", "-u", "1000:1000", "myapp-cage", "ls", "-la"]
         )
 
     @patch("agentcage.cli.subprocess.run")
@@ -1622,7 +1622,7 @@ class TestCageExec:
             "cage", "exec", "myapp", "--", "openclaw", "devices", "list",
         ])
         mock_run.assert_called_with(
-            ["podman", "exec", "-u", "1000", "myapp-cage",
+            ["podman", "exec", "-u", "1000:1000", "myapp-cage",
              "node", "openclaw.mjs", "devices", "list"]
         )
 
@@ -1639,7 +1639,7 @@ class TestCageExec:
             "cage", "exec", "myapp", "-s", "proxy", "--", "ls",
         ])
         mock_run.assert_called_with(
-            ["podman", "exec", "-u", "1000", "myapp-proxy", "ls"]
+            ["podman", "exec", "-u", "1000:1000", "myapp-proxy", "ls"]
         )
 
     @patch("agentcage.backends.vm.LimaInstance")
@@ -1673,7 +1673,7 @@ class TestCageExec:
         # that defaulted in (see PR-bundle "torture-session-findings").
         mock_execvp.assert_called_once_with("limactl", [
             "limactl", "shell", "--workdir", "/", "agentcage-myvm", "--",
-            "podman", "exec", "-u", "1000", "myvm-cage", "ls",
+            "podman", "exec", "-u", "1000:1000", "myvm-cage", "ls",
         ])
 
     @patch("agentcage.cli.subprocess.run")
@@ -1690,7 +1690,7 @@ class TestCageExec:
             "cage", "exec", "myapp", "--", "cat", "/etc/hostname",
         ])
         mock_run.assert_called_with(
-            ["podman", "exec", "-u", "1000", "myapp-cage", "cat", "/etc/hostname"]
+            ["podman", "exec", "-u", "1000:1000", "myapp-cage", "cat", "/etc/hostname"]
         )
 
     @patch("agentcage.cli.subprocess.run")

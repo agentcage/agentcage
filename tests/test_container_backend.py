@@ -286,28 +286,28 @@ class TestExecArgv:
     def test_default_drops_to_uid_1000(self):
         backend = ContainerBackend()
         argv = backend.exec_argv("myapp", "cage", ["bash"])
-        assert argv == ["podman", "exec", "-u", "1000", "myapp-cage", "bash"]
+        assert argv == ["podman", "exec", "-u", "1000:1000", "myapp-cage", "bash"]
 
     def test_as_root_uses_uid_0(self):
         backend = ContainerBackend()
         argv = backend.exec_argv("myapp", "cage", ["bash"], as_root=True)
-        assert argv == ["podman", "exec", "-u", "0", "myapp-cage", "bash"]
+        assert argv == ["podman", "exec", "-u", "0:0", "myapp-cage", "bash"]
 
     def test_interactive_adds_it_flag(self):
         backend = ContainerBackend()
         argv = backend.exec_argv("myapp", "cage", ["bash"], interactive=True)
-        assert argv == ["podman", "exec", "-u", "1000", "-it", "myapp-cage", "bash"]
+        assert argv == ["podman", "exec", "-u", "1000:1000", "-it", "myapp-cage", "bash"]
 
     def test_as_root_with_interactive(self):
         backend = ContainerBackend()
         argv = backend.exec_argv(
             "myapp", "proxy", ["sh"], interactive=True, as_root=True,
         )
-        assert argv == ["podman", "exec", "-u", "0", "-it", "myapp-proxy", "sh"]
+        assert argv == ["podman", "exec", "-u", "0:0", "-it", "myapp-proxy", "sh"]
 
     def test_service_suffix_applied(self):
         backend = ContainerBackend()
         argv = backend.exec_argv("foo", "dns", ["cat", "/etc/hosts"])
         assert argv == [
-            "podman", "exec", "-u", "1000", "foo-dns", "cat", "/etc/hosts",
+            "podman", "exec", "-u", "1000:1000", "foo-dns", "cat", "/etc/hosts",
         ]

@@ -213,7 +213,7 @@ class ContainerBackend:
         interactive: bool = False,
         as_root: bool = False,
     ) -> list[str]:
-        """``podman exec [-it] -u <uid> <name>-<service> <cmd>``.
+        """``podman exec [-it] -u <uid:gid> <name>-<service> <cmd>``.
 
         We pass ``-u`` explicitly because the Quadlet ``User=`` directive
         may be empty (the ubuntu scaffold sets ``user: ""`` because a
@@ -223,15 +223,21 @@ class ContainerBackend:
         ``agentcage run ubuntu`` land at uid 0 on linux/podman while the
         apple-container path correctly dropped to uid 1000.
 
-        ``as_root=False`` → ``-u 1000`` (the cage workload's user).
-        ``as_root=True``  → ``-u 0`` (operator debug — re-acquires the
-        container's full cap set). NoNewPrivs=1 + dropped CapBnd from
-        the cage's Quadlet are inherited by the exec session, so a
-        capsh wrap (apple-container's primitive) isn't required here.
+        ``as_root=False`` → ``-u 1000:1000`` (the cage workload's user).
+        ``as_root=True``  → ``-u 0:0`` (operator debug — re-acquires
+        the container's full cap set). NoNewPrivs=1 + dropped CapBnd
+        from the cage's Quadlet are inherited by the exec session, so
+        a capsh wrap (apple-container's primitive) isn't required here.
+
+        Both uid and gid are pinned. ``-u 1000`` alone leaves the gid
+        at the container default — for images without a uid 1000 in
+        ``/etc/passwd`` (busybox, scratch-based) that default is gid 0
+        (root group), which can read group-readable root files. Setting
+        ``-u 1000:1000`` closes that minor leak.
         """
         flags = ["-it"] if interactive else []
-        uid = "0" if as_root else "1000"
-        return ["podman", "exec", "-u", uid, *flags, f"{name}-{service}", *cmd]
+        spec = "0:0" if as_root else "1000:1000"
+        return ["podman", "exec", "-u", spec, *flags, f"{name}-{service}", *cmd]
 
     def logs_argv(
         self,

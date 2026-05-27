@@ -705,10 +705,12 @@ class VmBackend:
         # ``user: ""``), so ``podman exec`` would inherit the image's USER
         # (root on ubuntu:latest). NoNewPrivs=1 + dropped CapBnd from the
         # Quadlet are inherited by the exec session inside the VM, so no
-        # capsh wrap is needed — ``-u 1000`` is sufficient.
-        uid = "0" if as_root else "1000"
+        # capsh wrap is needed — ``-u 1000:1000`` is sufficient. Pinning
+        # gid avoids a minor leak on busybox/scratch images that lack a
+        # uid 1000 entry in /etc/passwd (default gid would be 0).
+        spec = "0:0" if as_root else "1000:1000"
         return ["limactl", "shell", "--workdir", "/", inst.name, "--",
-                "podman", "exec", "-u", uid, *flags, f"{name}-{service}", *cmd]
+                "podman", "exec", "-u", spec, *flags, f"{name}-{service}", *cmd]
 
     def logs_argv(
         self,

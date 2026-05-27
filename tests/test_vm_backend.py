@@ -499,7 +499,7 @@ class TestExecArgv:
         argv = backend.exec_argv("myapp", "cage", ["bash"])
         assert argv == [
             "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
-            "podman", "exec", "-u", "1000", "myapp-cage", "bash",
+            "podman", "exec", "-u", "1000:1000", "myapp-cage", "bash",
         ]
 
     def test_as_root_uses_uid_0(self):
@@ -507,7 +507,7 @@ class TestExecArgv:
         argv = backend.exec_argv("myapp", "cage", ["bash"], as_root=True)
         assert argv == [
             "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
-            "podman", "exec", "-u", "0", "myapp-cage", "bash",
+            "podman", "exec", "-u", "0:0", "myapp-cage", "bash",
         ]
 
     def test_interactive_adds_it_flag(self):
@@ -515,7 +515,7 @@ class TestExecArgv:
         argv = backend.exec_argv("myapp", "cage", ["bash"], interactive=True)
         assert argv == [
             "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
-            "podman", "exec", "-u", "1000", "-it", "myapp-cage", "bash",
+            "podman", "exec", "-u", "1000:1000", "-it", "myapp-cage", "bash",
         ]
 
     def test_as_root_with_interactive(self):
@@ -525,7 +525,7 @@ class TestExecArgv:
         )
         assert argv == [
             "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
-            "podman", "exec", "-u", "0", "-it", "myapp-proxy", "sh",
+            "podman", "exec", "-u", "0:0", "-it", "myapp-proxy", "sh",
         ]
 
 
