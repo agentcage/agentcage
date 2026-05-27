@@ -387,22 +387,19 @@ MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
 #   Replaces any existing block so entries don't accumulate.
 _patch_egress_hosts() {
   local cage="$1" mock_ip="$2"; shift 2
-  local block="# e2e-mock-start"$'\n'
+  # Simplest possible patch: append the mock IP for each domain to
+  # /etc/hosts. We do NOT strip prior blocks here; the start_mock
+  # caller waits for the patch to apply (grep -q the mock_ip) before
+  # proceeding, and the calling test always destroys the cage between
+  # phases so stale entries don't accumulate across phases.
   for domain in "$@"; do
-    block="${block}${mock_ip} ${domain}"$'\n'
+    # `podman exec -i --user root ... sh -c "echo X >> /etc/hosts"`
+    # — the inner sh's > is parsed correctly inside the container.
+    podman exec --user root "${cage}-egress" \
+      sh -c "echo '${mock_ip} ${domain}' >> /etc/hosts" 2>/dev/null \
+      || return 1
   done
-  block="${block}# e2e-mock-end"$'\n'
-  # Read current /etc/hosts, strip any existing e2e-mock block, append
-  # new block, write back. Using `tee` instead of `>` redirection because
-  # the latter is processed by the OUTER shell (the bash running this
-  # function) NOT the inner sh inside `podman exec`, so > /etc/hosts
-  # would try to write the host's /etc/hosts which fails silently.
-  local current
-  current=$(podman exec "${cage}-egress" cat /etc/hosts 2>/dev/null) || return 1
-  local stripped
-  stripped=$(printf '%s\n' "$current" | awk '/# e2e-mock-start/{skip=1; next} /# e2e-mock-end/{skip=0; next} !skip{print}')
-  printf '%s\n%s' "$stripped" "$block" | \
-    podman exec -i --user root "${cage}-egress" tee /etc/hosts >/dev/null 2>&1
+  return 0
 }
 
 start_mock() {
