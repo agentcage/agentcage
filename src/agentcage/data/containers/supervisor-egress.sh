@@ -117,7 +117,7 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /opt/agentcage/dns-audit.sh \
       /usr/sbin/dnsmasq -k \
-        --pid-file=/run/agentcage/dnsmasq.pid \
+        --pid-file="$DNSMASQ_PID_FILE" \
         --conf-file=/etc/agentcage/dnsmasq.conf \
         --servers-file=/etc/agentcage/dns-allowlist.conf \
     &
@@ -136,7 +136,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /opt/agentcage/dns-audit.sh \
       /usr/sbin/dnsmasq -k \
-        --pid-file=/run/agentcage/dnsmasq.pid \
+        --pid-file="$DNSMASQ_PID_FILE" \
         --no-resolv \
         --no-hosts \
         --listen-address=0.0.0.0 \
@@ -153,7 +153,7 @@ else
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /usr/sbin/dnsmasq -k \
-      --pid-file=/run/agentcage/dnsmasq.pid \
+      --pid-file="$DNSMASQ_PID_FILE" \
       --no-resolv --no-hosts \
       --listen-address=0.0.0.0 --port=53 \
       --domain-needed --bogus-priv \
