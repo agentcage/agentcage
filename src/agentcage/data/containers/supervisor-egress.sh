@@ -100,6 +100,8 @@ fi
 # set). Provisional — tune after measurement in a follow-up PR.
 log "step B: starting dnsmasq (uid 201, CapBnd={net_bind_service}, prlimit --as=256M)"
 if [ -f /etc/agentcage/dnsmasq.conf ]; then
+  # apple-container path: per-cage dnsmasq.conf bind-mounted by the
+  # backend (handles allowlist scoping + sinkhole + filter-AAAA).
   prlimit --as=$((256 * 1024 * 1024)) -- \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
@@ -107,6 +109,29 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
       /usr/sbin/dnsmasq -k \
         --pid-file=/run/dnsmasq.pid \
         --conf-file=/etc/agentcage/dnsmasq.conf \
+        --servers-file=/etc/agentcage/dns-allowlist.conf \
+    &
+elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
+  # container/vm path: no per-cage dnsmasq.conf is rendered (the Quadlet
+  # template bind-mounts only dns-allowlist.conf). Match legacy
+  # dns.container.j2's command-line shape: --no-resolv (no default
+  # upstream — non-allowlisted zones return REFUSED), --address=/#/...
+  # sinkhole for A/AAAA inside non-allowed zones, --servers-file for the
+  # per-cage allowlist (one `server=/<allowed-apex>/<upstream>` per
+  # allowed domain × upstream pair). This closes the same non-A-record
+  # exfil channel that the apple-container dnsmasq.conf.j2 closes.
+  log "step B: container/vm path — applying allowlist flags inline"
+  prlimit --as=$((256 * 1024 * 1024)) -- \
+    setpriv --reuid=acdns --regid=acdns --clear-groups \
+            --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
+    /opt/agentcage/dns-audit.sh \
+      /usr/sbin/dnsmasq -k \
+        --pid-file=/run/dnsmasq.pid \
+        --no-resolv \
+        --no-hosts \
+        --listen-address=0.0.0.0 \
+        --port=53 \
+        --address=/#/198.51.100.1 \
         --servers-file=/etc/agentcage/dns-allowlist.conf \
     &
 else
