@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-05-27
+
+### Fixed
+
+- `agentcage cage list` no longer tags every newly-created cage as
+  `(legacy v0.21 — destroy + recreate)`. `agentcage run` was writing
+  `metadata.json` with only `scaffold` and `lifecycle`; the v0.22
+  legacy-cage detector reads `agentcage_version` and defaults missing
+  values to `0.0.0`, which parses as `(0, 0) < (0, 22)`. `agentcage
+  cage create` already wrote the version. `agentcage run` now does
+  too. Cages created on v0.22.0 via `agentcage run` keep showing as
+  legacy until you destroy + recreate them, or hand-edit
+  `~/.config/agentcage/cages/<name>/metadata.json` to add
+  `"agentcage_version": "0.22.1"`.
+
 ## [0.22.0] - 2026-05-27
 
 ### Changed
