@@ -184,6 +184,14 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # allowed domain × upstream pair). This closes the same non-A-record
   # exfil channel that the apple-container dnsmasq.conf.j2 closes.
   log "step B: container/vm path — applying allowlist flags inline"
+  # NB: we do NOT pass --no-hosts. dnsmasq reads /etc/hosts inside the
+  # egress container by default, which the e2e harness uses to redirect
+  # specific upstream domains (e.g. httpbin.org → the mock container's
+  # cage-net IP) for testing the proxy chain end-to-end without external
+  # DNS. The legacy dns.container.j2 didn't pass --no-hosts either —
+  # the additional hardening it would provide is minimal (only the
+  # egress container's own hostname and 127.0.0.1 are in /etc/hosts by
+  # default; operators who care can mount an empty /etc/hosts).
   prlimit --as=$((256 * 1024 * 1024)) -- \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
@@ -191,7 +199,6 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
       /usr/sbin/dnsmasq -k \
         --pid-file="$DNSMASQ_PID_FILE" \
         --no-resolv \
-        --no-hosts \
         --listen-address=0.0.0.0 \
         --port=53 \
         --address=/#/198.51.100.1 \
