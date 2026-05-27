@@ -1,0 +1,47 @@
+[Unit]
+Description=agentcage egress (mitmproxy + dnsmasq)
+
+[Container]
+ContainerName={{ name }}-egress
+Image=localhost/agentcage-egress:{{ agentcage_version }}
+Network={{ name }}-net.network:ip={{ ip_egress }}
+Network=podman
+{% for srv in dns_servers %}
+DNS={{ srv }}
+{% endfor %}
+Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
+{% if dns_allowlist_enabled %}
+Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z
+{% endif %}
+Environment="PYTHONUNBUFFERED=1"
+Volume={{ name }}-certs.volume:/home/acproxy/.mitmproxy:Z
+{% if capture_enabled %}
+Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
+Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
+{% endif %}
+AddCapability=NET_ADMIN
+AddCapability=NET_BIND_SERVICE
+Sysctl=net.ipv4.ip_unprivileged_port_start=80
+{% for fwd in inbound_forwards %}
+PublishPort={{ fwd.publish_spec }}
+{% endfor %}
+{% for secret in proxy_secrets %}
+{% if deploy_name %}
+Secret={{ deploy_name }}.{{ secret }},type=env,target={{ secret }}
+{% else %}
+Secret={{ secret }},type=env
+{% endif %}
+{% endfor %}
+
+[Service]
+{% for cred in creds_secrets %}
+ExecStartPre=/bin/bash -o pipefail -c 'podman secret rm "{{ deploy_name }}.{{ cred }}" 2>/dev/null || true; systemd-creds {{ creds_scope_flag }}decrypt --name "{{ cred }}" "{{ creds_dir }}/{{ cred }}.cred" - | podman secret create "{{ deploy_name }}.{{ cred }}" -'
+{% endfor %}
+ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 200:200 "$mp"'
+{% if capture_enabled %}
+ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 200:200 "{{ capture_host_dir }}"{% endif %}'
+{% endif %}
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

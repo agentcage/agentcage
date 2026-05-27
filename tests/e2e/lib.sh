@@ -187,14 +187,17 @@ wait_http_code() {
 }
 
 # dump_cage_diagnostics CAGE [TAG]
-#   Dump systemd unit state, podman container state, and proxy logs for a
+#   Dump systemd unit state, podman container state, and egress logs for a
 #   cage. Used on test failure to understand what went wrong on the CI
 #   runner where we don't have an interactive shell.
+#
+#   v0.22: the proxy + dns sidecars are now unified into a single
+#   <cage>-egress container; the diagnostic dumps reflect that shape.
 dump_cage_diagnostics() {
   local cage="$1" tag="${2:-diagnostics}"
   echo "        ── $tag for cage '$cage' ──" >&2
   echo "        [systemd units]" >&2
-  for svc in cage proxy dns; do
+  for svc in cage egress; do
     local active sub
     active=$(systemctl --user is-active "${cage}-${svc}.service" 2>&1 || true)
     sub=$(systemctl --user show -p SubState --value "${cage}-${svc}.service" 2>&1 || true)
@@ -204,20 +207,20 @@ dump_cage_diagnostics() {
   done
   echo "        [podman containers]" >&2
   podman ps -a --filter "name=${cage}-" --format "          {{.Names}} {{.Status}} {{.Ports}}" >&2 || true
-  echo "        [proxy container logs (last 25 lines)]" >&2
-  podman logs --tail 25 "${cage}-proxy" 2>&1 | sed 's/^/          /' >&2 || true
-  echo "        [proxy systemd journal (last 25 lines)]" >&2
-  journalctl --user -u "${cage}-proxy.service" -n 25 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
-  echo "        [proxy /etc/hosts]" >&2
-  podman exec "${cage}-proxy" cat /etc/hosts 2>&1 | sed 's/^/          /' >&2 || true
-  echo "        [proxy resolved httpbin.org]" >&2
-  podman exec "${cage}-proxy" getent hosts httpbin.org 2>&1 | sed 's/^/          /' >&2 || true
-  echo "        [proxy network interfaces]" >&2
-  podman exec "${cage}-proxy" ip -4 -o addr show 2>&1 | sed 's/^/          /' >&2 || true
-  echo "        [proxy iptables nat (PREROUTING)]" >&2
-  podman exec --user root "${cage}-proxy" iptables -t nat -L PREROUTING -n -v 2>&1 | sed 's/^/          /' >&2 || true
-  echo "        [proxy listening sockets]" >&2
-  podman exec "${cage}-proxy" ss -tlnp 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [egress container logs (last 25 lines)]" >&2
+  podman logs --tail 25 "${cage}-egress" 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [egress systemd journal (last 25 lines)]" >&2
+  journalctl --user -u "${cage}-egress.service" -n 25 --no-pager 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [egress /etc/hosts]" >&2
+  podman exec "${cage}-egress" cat /etc/hosts 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [egress resolved httpbin.org]" >&2
+  podman exec "${cage}-egress" getent hosts httpbin.org 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [egress network interfaces]" >&2
+  podman exec "${cage}-egress" ip -4 -o addr show 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [egress iptables nat (PREROUTING)]" >&2
+  podman exec --user root "${cage}-egress" iptables -t nat -L PREROUTING -n -v 2>&1 | sed 's/^/          /' >&2 || true
+  echo "        [egress listening sockets]" >&2
+  podman exec "${cage}-egress" ss -tlnp 2>&1 | sed 's/^/          /' >&2 || true
   echo "        [mock container]" >&2
   podman ps -a --filter "name=${cage}-mock" --format "          {{.Names}} {{.Status}}" >&2 || true
   echo "        [cage container logs (last 25 lines)]" >&2
@@ -229,16 +232,16 @@ dump_cage_diagnostics() {
   _cage_pid=$(podman inspect --format '{{.State.Pid}}' "${cage}-cage" 2>/dev/null || echo "")
   if [ -n "$_cage_pid" ] && [ "$_cage_pid" != "0" ]; then
     nsenter -t "$_cage_pid" -U -n -- ip route 2>&1 | sed 's/^/          /' >&2 || echo "          (nsenter failed)" >&2
-    # Pick the proxy IP that lives on the same /24 as the cage (the cage-net interface).
-    local _proxy_cage_ip
-    _proxy_cage_ip=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-proxy" 2>/dev/null)
-    echo "        [cage → proxy IP ping (target=$_proxy_cage_ip, 3 probes)]" >&2
-    if [ -n "$_proxy_cage_ip" ]; then
-      nsenter -t "$_cage_pid" -U -n -- ping -c 3 -W 2 -q "$_proxy_cage_ip" 2>&1 | sed 's/^/          /' >&2 || true
-      echo "        [cage → proxy:80 TCP connect]" >&2
-      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_proxy_cage_ip/80" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
-      echo "        [cage → proxy:8443 TCP connect]" >&2
-      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_proxy_cage_ip/8443" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
+    # Pick the egress IP that lives on the same /24 as the cage (the cage-net interface).
+    local _egress_cage_ip
+    _egress_cage_ip=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-egress" 2>/dev/null)
+    echo "        [cage → egress IP ping (target=$_egress_cage_ip, 3 probes)]" >&2
+    if [ -n "$_egress_cage_ip" ]; then
+      nsenter -t "$_cage_pid" -U -n -- ping -c 3 -W 2 -q "$_egress_cage_ip" 2>&1 | sed 's/^/          /' >&2 || true
+      echo "        [cage → egress:80 TCP connect]" >&2
+      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_egress_cage_ip/80" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
+      echo "        [cage → egress:8443 TCP connect]" >&2
+      nsenter -t "$_cage_pid" -U -n -- timeout 3 bash -c "</dev/tcp/$_egress_cage_ip/8443" 2>&1 && echo "          OK" >&2 || echo "          FAILED ($?)" >&2
     fi
   else
     echo "          (cage container has no valid PID)" >&2
@@ -377,11 +380,12 @@ MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
 
 # start_mock CAGE DOMAIN [DOMAIN...]
 #   Starts a mock HTTP server on the cage's network and patches the
-#   proxy container's /etc/hosts so the given domains resolve to it.
-# _patch_proxy_hosts CAGE MOCK_IP DOMAIN [DOMAIN...]
-#   Writes a marker-delimited block to the proxy's /etc/hosts.
+#   egress container's /etc/hosts so the given domains resolve to it.
+#   v0.22: the egress container replaces the legacy proxy + dns pair.
+# _patch_egress_hosts CAGE MOCK_IP DOMAIN [DOMAIN...]
+#   Writes a marker-delimited block to the egress container's /etc/hosts.
 #   Replaces any existing block so entries don't accumulate.
-_patch_proxy_hosts() {
+_patch_egress_hosts() {
   local cage="$1" mock_ip="$2"; shift 2
   local block="# e2e-mock-start\n"
   for domain in "$@"; do
@@ -392,10 +396,11 @@ _patch_proxy_hosts() {
   # which writes a temp file and renames over the target — fails silently
   # at the rename across the bind-mount boundary. Pre-#187 the proxy
   # container restart on every domain add wiped /etc/hosts, masking it;
-  # now stale e2e-mock blocks accumulate and the proxy's resolver picks
-  # the first (dead) mock IP it finds. Use awk + cat-overwrite, which
-  # truncates the existing inode in place rather than renaming.
-  podman exec --user root "${cage}-proxy" \
+  # now stale e2e-mock blocks accumulate and the egress container's
+  # resolver picks the first (dead) mock IP it finds. Use awk +
+  # cat-overwrite, which truncates the existing inode in place rather
+  # than renaming.
+  podman exec --user root "${cage}-egress" \
     sh -c "awk '/# e2e-mock-start/{skip=1; next} /# e2e-mock-end/{skip=0; next} !skip{print}' /etc/hosts > /tmp/.e2e-hosts.new && cat /tmp/.e2e-hosts.new > /etc/hosts && rm -f /tmp/.e2e-hosts.new; printf '${block}\n' >> /etc/hosts" 2>/dev/null
 }
 
@@ -405,18 +410,32 @@ start_mock() {
   # Remove stale mock container if any
   podman rm -f "${cage}-mock" >/dev/null 2>&1 || true
 
-  # Start mock container (reuses the already-built agentcage-proxy image which has Python)
-  # --user root: the image defaults to uid 1000, which can't bind to port 80
+  # Pick the agentcage-egress image tag for the running agentcage version
+  # — build_artifacts() tags as ``agentcage-egress:<pkg-version>``. The
+  # mock just needs an image with python3 inside; egress has it (debian
+  # bookworm-slim + the mitmproxy bundle which ships its own python).
+  local mock_image
+  mock_image=$(podman images --format '{{.Repository}}:{{.Tag}}' \
+    | grep -E '^localhost/agentcage-egress:' | head -n 1)
+  if [ -z "$mock_image" ]; then
+    # Fall back to the unversioned name in case the test runner pre-built
+    # one without a version tag.
+    mock_image=localhost/agentcage-egress
+  fi
+
+  # Start mock container (reuses the already-built agentcage-egress image
+  # which ships python3)
+  # --user root: the image defaults to uid 200 (acproxy), which can't
+  #   bind to port 80 without the sysctl below.
   # --sysctl ip_unprivileged_port_start=80: required on hosts where the
-  #   default unprivileged port range starts at 1024 (e.g. Arch). Without
-  #   this, even root in the container's user namespace can't bind :80.
-  #   The proxy quadlet sets the same sysctl (proxy.container.j2).
+  #   default unprivileged port range starts at 1024 (e.g. Arch). The
+  #   egress quadlet sets the same sysctl (egress.container.j2).
   if ! podman run -d --name "${cage}-mock" \
     --user root \
     --network "${cage}-net" \
     --sysctl net.ipv4.ip_unprivileged_port_start=80 \
     -v "${MOCK_SCRIPT}:/mock.py:ro" \
-    localhost/agentcage-proxy python3 /mock.py >/dev/null 2>&1; then
+    "$mock_image" python3 /mock.py >/dev/null 2>&1; then
     echo "WARNING: failed to start mock container for $cage" >&2
     return 1
   fi
@@ -450,12 +469,12 @@ import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',80)); 
     sleep 0.5
   done
 
-  # Patch proxy's /etc/hosts with marker block.
-  # Retry — the proxy container may still be starting after cage create.
+  # Patch egress's /etc/hosts with marker block.
+  # Retry — the egress container may still be starting after cage create.
   local _patched=false
   for i in $(seq 1 15); do
-    if _patch_proxy_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
-       podman exec "${cage}-proxy" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
+    if _patch_egress_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
+       podman exec "${cage}-egress" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
       _patched=true
       break
     fi
@@ -472,10 +491,11 @@ import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',80)); 
 }
 
 # repatch_mock CAGE DOMAIN [DOMAIN...]
-#   Re-applies /etc/hosts after a proxy container restart (domain add/rm,
-#   cage restart, etc. recreate the container, losing the patch).
-#   Verifies the patch landed before returning, since the proxy container
-#   can be restarted by Restart=on-failure between patch and verification.
+#   Re-applies /etc/hosts after an egress container restart (domain
+#   add/rm, cage restart, etc. recreate the container, losing the patch).
+#   Verifies the patch landed before returning, since the egress
+#   container can be restarted by Restart=on-failure between patch and
+#   verification.
 repatch_mock() {
   local cage="$1"; shift
   local mock_ip
@@ -484,8 +504,8 @@ repatch_mock() {
   [ -z "$mock_ip" ] && return 1
   local i
   for i in $(seq 1 15); do
-    if _patch_proxy_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
-       podman exec "${cage}-proxy" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
+    if _patch_egress_hosts "$cage" "$mock_ip" "$@" 2>/dev/null &&
+       podman exec "${cage}-egress" grep -q "$mock_ip" /etc/hosts 2>/dev/null; then
       return 0
     fi
     sleep 1

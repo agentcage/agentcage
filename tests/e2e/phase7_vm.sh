@@ -39,7 +39,7 @@ limactl shell "$VM_NAME" -- systemctl --user start "${CAGE}-cage.service" 2>/dev
 echo "Waiting for VM cage readiness (up to 240s)..."
 if ! wait_ready "$BASE" 240; then
   e2e_fail "7.0" "VM cage readiness" "not ready within 240s"
-  agentcage cage logs "$CAGE" -s proxy -n 20 2>/dev/null || true
+  agentcage cage logs "$CAGE" -s egress -n 20 2>/dev/null || true
   print_results; exit 1
 fi
 
@@ -78,8 +78,7 @@ assert_http 200 "$BASE/check-secret" "7.9" "Clean POST allowed" \
 
 # ── VM Observability ────────────────────────────────────────────────
 assert_cmd_ok "7.10" "Logs: cage" agentcage cage logs "$CAGE" -s cage -n 5
-assert_cmd_ok "7.11" "Logs: proxy" agentcage cage logs "$CAGE" -s proxy -n 5
-assert_cmd_ok "7.12" "Logs: dns" agentcage cage logs "$CAGE" -s dns -n 5
+assert_cmd_ok "7.11" "Logs: egress" agentcage cage logs "$CAGE" -s egress -n 5
 
 assert_output_contains "7.13" "Audit entries" '"decision"' \
   agentcage cage audit "$CAGE" --json-lines -n 5
@@ -177,8 +176,8 @@ fi
 assert_output_contains "7.38" "Exec in VM cage" "hello" \
   agentcage cage exec "$CAGE" -s cage -- echo hello
 
-assert_output_contains "7.39" "Exec in VM proxy" "hello" \
-  agentcage cage exec "$CAGE" -s proxy -- echo hello
+assert_output_contains "7.39" "Exec in VM egress" "hello" \
+  agentcage cage exec "$CAGE" -s egress -- echo hello
 
 # ── VM Destroy ──────────────────────────────────────────────────────
 e2e_timer_start

@@ -82,6 +82,50 @@ def _exit_apple_container_unsupported(command: str) -> None:
     sys.exit(1)
 
 
+def _parse_version(ver: str) -> tuple[int, int]:
+    """Parse 'X.Y[.Z…]' → (X, Y); return (0, 0) on garbage."""
+    try:
+        parts = ver.split(".")
+        return int(parts[0]), int(parts[1])
+    except (ValueError, TypeError, IndexError):
+        return 0, 0
+
+
+def _ensure_v022_cage(name: str) -> None:
+    """Refuse to operate on a v0.21 cage (legacy 3-service shape).
+
+    v0.22 collapsed the per-cage container shape from 3 services (cage /
+    proxy / dns) into 2 (cage / egress). The new CLI commands are wired
+    to the 2-service shape — running ``cage exec``, ``cage logs``, etc.
+    against a v0.21 cage's leftover containers would either fail with
+    confusing podman errors (``no container named '<name>-egress'``) or,
+    worse, silently target the wrong workload. We detect the legacy shape
+    from the version recorded in the cage's metadata and exit with a clear
+    cleanup procedure.
+
+    ``cage destroy`` deliberately does NOT call this — destroy is the
+    documented escape hatch and its filename enumeration in
+    ``ContainerBackend.destroy_resources()`` covers both shapes. ``cage
+    list`` similarly skips this check and annotates legacy entries
+    inline so the operator can see them without --force or special flags.
+    """
+    meta = state.load_metadata(name)
+    ver = meta.get("agentcage_version") or "0.0.0"
+    if _parse_version(ver) < (0, 22):
+        click.echo(
+            f"error: cage '{name}' was created with agentcage v{ver}, which used the\n"
+            f"  legacy 3-service layout (cage / proxy / dns). v0.22 unified these into a\n"
+            f"  single 'egress' service. The cage cannot be addressed by v0.22 commands.\n"
+            f"\n"
+            f"  To migrate, run:\n"
+            f"    systemctl --user stop {name}-cage {name}-proxy {name}-dns\n"
+            f"    agentcage cage destroy {name}\n"
+            f"    agentcage cage create -c <your cage.yaml>\n",
+            err=True,
+        )
+        sys.exit(2)
+
+
 def _require_cage_service_on_apple_container(service: str, command: str) -> None:
     """Reject --service proxy|dns on apple-container with a clear message.
 
@@ -655,6 +699,7 @@ def cage_update(name: str | None, config_path: str | None,
         if not state.deployment_exists(name):
             click.echo(f"error: cage '{name}' does not exist", err=True)
             sys.exit(1)
+        _ensure_v022_cage(name)
         state.save_deployment(name, config_path)
         # Copy the Containerfile and its sibling build inputs into the state
         # dir so future updates can rebuild (Containerfiles may COPY files
@@ -667,6 +712,7 @@ def cage_update(name: str | None, config_path: str | None,
         if not state.deployment_exists(name):
             click.echo(f"error: cage '{name}' does not exist", err=True)
             sys.exit(1)
+        _ensure_v022_cage(name)
         # Auto-resolve latest image tags for stored configs
         from agentcage.init import (
             infer_scaffold_from_image,
@@ -926,6 +972,18 @@ def cage_list():
         meta = state.load_metadata(name)
         lifecycle = meta.get("lifecycle", cfg.lifecycle)
         scaffold_name = meta.get("scaffold", cfg.scaffold) or "-"
+
+        # Don't run is_running against a v0.21 cage — its containers have
+        # the legacy {name}-proxy / {name}-dns names which the v0.22
+        # backend's service_names() no longer knows about, so the check
+        # would mislabel a still-running v0.21 cage as "stopped (0/2)".
+        ver = meta.get("agentcage_version") or "0.0.0"
+        if _parse_version(ver) < (0, 22):
+            status = "(legacy v0.21 — destroy + recreate)"
+            click.echo(f"{name:<25} {lifecycle:<14} {isolation:<12} "
+                       f"{scaffold_name:<15} {status}")
+            continue
+
         services = backend.service_names(name)
         total = len(services)
         running = sum(
@@ -989,6 +1047,13 @@ def cage_prune(yes: bool):
         lifecycle = meta.get("lifecycle", cfg.lifecycle)
         if lifecycle not in ("interactive", "ephemeral"):
             continue
+        # Skip v0.21 cages — `is_running` would query against the new
+        # 2-service shape and mislabel still-running legacy cages as
+        # prune candidates. The operator must `cage destroy` them
+        # explicitly (see `_ensure_v022_cage`).
+        ver = meta.get("agentcage_version") or "0.0.0"
+        if _parse_version(ver) < (0, 22):
+            continue
         services = backend.service_names(name)
         running = sum(1 for svc in services if backend.is_running(name, svc))
         if running == 0:
@@ -1025,6 +1090,7 @@ def cage_verify(name: str):
     except Exception:
         click.echo(f"error: cage '{name}' does not exist or has invalid config", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     passed = 0
     failed = 0
@@ -1311,7 +1377,7 @@ def _verify_vm(name: str, _pass, _fail):
     # Check services inside VM
     click.echo()
     click.echo("-- VM Services --")
-    for svc in ["cage", "proxy", "dns"]:
+    for svc in ["cage", "egress"]:
         try:
             result = inst.exec(
                 ["systemctl", "--user", "is-active", f"{name}-{svc}.service"],
@@ -1332,6 +1398,7 @@ def cage_restart(name: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
 
@@ -1414,6 +1481,7 @@ def cage_edit(name: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     state_dir = state.deployment_dir(name)
     config_path = state_dir / "cage.yaml"
@@ -1562,6 +1630,7 @@ def cage_stop(name: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
     backend = get_backend(cfg)
@@ -1576,6 +1645,7 @@ def cage_start(name: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
 
@@ -1611,6 +1681,7 @@ def cage_show(name: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
     meta = state.load_metadata(name)
@@ -1671,7 +1742,7 @@ def cage_show(name: str):
 @cage.command("logs")
 @click.argument("name")
 @click.option("-s", "--service", "services", multiple=True,
-              type=click.Choice(["cage", "proxy", "dns"]))
+              type=click.Choice(["cage", "egress"]))
 @click.option("-n", "--lines", default=50, show_default=True,
               help="Number of lines to show.")
 @click.option("-f", "--follow", is_flag=True, help="Stream logs in real time.")
@@ -1684,9 +1755,10 @@ def cage_logs(name, services, lines, follow, no_follow, min_level):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
-    selected = services or ("cage", "proxy", "dns")
+    selected = services or ("cage", "egress")
 
     no_follow_effective = not follow
 
@@ -1699,21 +1771,15 @@ def cage_logs(name, services, lines, follow, no_follow, min_level):
 
 
 def _classify_line(service: str, line: str) -> str:
-    """Classify a log line's severity for container-mode filtering."""
-    if service == "dns":
-        if '"decision":"blocked"' in line or '"decision": "blocked"' in line:
-            return "warning"
-        if '"decision":"allowed"' in line or '"decision": "allowed"' in line:
-            return "info"
-        low = line.lower()
-        for pat in ("query[", "reply", "cached", "forwarded"):
-            if pat in low:
-                return "debug"
-        for pat in ("error", "refused", "servfail"):
-            if pat in low:
-                return "error"
-        return "info"
-    if service == "proxy":
+    """Classify a log line's severity for container-mode filtering.
+
+    The ``egress`` service is the combined mitmproxy + dnsmasq container
+    (v0.22 unified shape) — its log stream carries both inspector decision
+    JSON (from mitmproxy) and dnsmasq query/reply lines. The classifier
+    is the union of the two pre-unification severity heuristics; falling
+    through to "info" matches the legacy ``dns`` branch's default.
+    """
+    if service == "egress":
         if '"decision":"blocked"' in line or '"decision": "blocked"' in line:
             return "warning"
         if '"decision":"flagged"' in line or '"decision": "flagged"' in line:
@@ -1723,7 +1789,13 @@ def _classify_line(service: str, line: str) -> str:
         low = line.lower()
         if "error" in low or "traceback" in low:
             return "error"
-        return "debug"
+        for pat in ("refused", "servfail"):
+            if pat in low:
+                return "error"
+        for pat in ("query[", "reply", "cached", "forwarded"):
+            if pat in low:
+                return "debug"
+        return "info"
     # cage
     low = line.lower()
     for pat in ("error", "traceback", "fatal", "exit code"):
@@ -1858,7 +1930,7 @@ def _logs_apple_container(name, services, lines, no_follow, min_level=None):  # 
 @cage.command("exec", context_settings={"ignore_unknown_options": True})
 @click.argument("name")
 @click.option("-s", "--service", default="cage",
-              type=click.Choice(["cage", "proxy", "dns"]),
+              type=click.Choice(["cage", "egress"]),
               help="Container service to exec into.", show_default=True)
 @click.option("--as-root", is_flag=True,
               help="Run the command as root inside the cage (debug only — "
@@ -1879,6 +1951,7 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
 
@@ -1948,7 +2021,7 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
 @cage.command("shell")
 @click.argument("name")
 @click.option("-s", "--service", default="cage",
-              type=click.Choice(["cage", "proxy", "dns"]),
+              type=click.Choice(["cage", "egress"]),
               help="Container service to shell into.", show_default=True)
 @click.option("--as-root", is_flag=True,
               help="Open the shell as root (debug only — bypasses the "
@@ -1963,6 +2036,7 @@ def cage_shell(name: str, service: str, as_root: bool):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
 
@@ -2236,6 +2310,7 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     if summary and follow:
         click.echo("error: --summary and --follow are incompatible", err=True)
@@ -2327,6 +2402,7 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
 
@@ -2647,6 +2723,7 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
     if _is_apple_container(cfg):
@@ -2965,6 +3042,7 @@ def secret_list(name: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
     cfg = state.load_deployment_config(name)
     if _is_apple_container(cfg):
         _exit_apple_container_unsupported("secret list")
@@ -3015,6 +3093,7 @@ def secret_set(name: str, key: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist — create it first with 'cage create'", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
     cfg = state.load_deployment_config(name)
     if _is_apple_container(cfg):
         _exit_apple_container_unsupported("secret set")
@@ -3092,6 +3171,7 @@ def secret_rm(name: str, key: str):
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
     cfg = state.load_deployment_config(name)
     if _is_apple_container(cfg):
         _exit_apple_container_unsupported("secret rm")
@@ -3166,6 +3246,7 @@ def domain_list(name: str):
     except FileNotFoundError:
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     mode, domain_entries, passthrough = _read_domain_config(raw)
     pt_set = set(passthrough)
@@ -3181,113 +3262,57 @@ def domain_list(name: str):
 
 
 def _ensure_dns_quadlet_current(cfg) -> bool:
-    """Make sure the on-disk DNS quadlet matches what the current template
-    renders for *cfg*. Returns True if the quadlet had to be rewritten (and
-    daemon-reload was issued), False if it was already up-to-date.
+    """No-op in the v0.22 2-service shape.
 
-    The DNS quadlet's content is now stable across domain-allowlist changes —
-    the allowlist lives in a sidecar file mounted into dnsmasq, not on the
-    quadlet's command line. So in steady state this function is a cheap
-    string-compare and returns False without touching systemd.
+    Kept as a callable so the cage-restart path's invocation site doesn't
+    need a conditional. In the legacy 3-service shape this helper rendered
+    a fresh ``<name>-dns.container`` quadlet and ``daemon-reload``-ed when
+    the rendered content drifted from disk (e.g. after a pre-allowlist-
+    sidecar upgrade). In the v0.22 shape the egress quadlet is the only
+    DNS-bearing unit, its content is stable across domain edits (the
+    allowlist lives in a bind-mounted sidecar file), and the file rewrite
+    + SIGHUP fast path handled by :func:`_update_dns_quadlet` is sufficient.
 
-    A True return is the migration path: an older agentcage may have written
-    a quadlet that bakes the allowlist into ``--server=/...`` flags. The
-    first run under the new code rewrites the unit and does one daemon-reload;
-    every subsequent call is a no-op.
+    Always returns ``False`` so existing call sites that branch on a
+    "quadlet was rewritten" return value (e.g. tests pinning the
+    legacy-migration ``systemctl restart`` path) take the no-op branch.
     """
-    # The apple-container backend has no per-cage DNS quadlet — dnsmasq
-    # runs as a process inside the single microVM, supervised in-band by
-    # the cage's PID 1. Nothing on the host to render or daemon-reload.
-    if _is_apple_container(cfg):
-        return False
-
-    from agentcage.quadlets import render_dns_quadlet
-
-    backend = get_backend(cfg)
-    name = cfg.name
-
-    # Use the actual deployed network octet from metadata so we don't
-    # accidentally shift the subnet on already-deployed cages.
-    meta = state.load_metadata(name)
-    octet = meta.get("network_octet")
-    desired = render_dns_quadlet(cfg, network_octet=octet)
-
-    if cfg.isolation == "vm":
-        inst = LimaInstance(name)
-        # The DNS quadlet lives inside the VM. If the VM is not running we
-        # cannot — and need not — touch it now: the VM backend reinstalls
-        # every quadlet from the host config dir when the VM next starts.
-        # Without this guard, `cage start` / `cage restart` / domain edits
-        # on a stopped VM cage crash with an unhandled `limactl shell` error.
-        if not inst.is_running():
-            return False
-        # Read the current quadlet from inside the VM and compare.
-        result = inst.exec(
-            ["bash", "-c",
-             f"cat ~/.config/containers/systemd/{shlex.quote(name)}-dns.container 2>/dev/null || true"],
-            check=False,
-        )
-        current = (result.stdout or "")
-        if current == desired:
-            return False
-        import base64
-        encoded = base64.b64encode(desired.encode()).decode()
-        inst.exec(["bash", "-c",
-                   f"mkdir -p ~/.config/containers/systemd && "
-                   f"echo '{encoded}' | base64 -d > ~/.config/containers/systemd/{shlex.quote(name)}-dns.container"])
-        inst.exec(["systemctl", "--user", "daemon-reload"])
-        return True
-    else:
-        quadlet_path = backend.unit_dir() / f"{name}-dns.container"
-        current = quadlet_path.read_text() if quadlet_path.is_file() else ""
-        if current == desired:
-            return False
-        quadlet_path.write_text(desired)
-        systemd.daemon_reload()
-        return True
+    return False
 
 
 def _update_dns_quadlet(cfg) -> None:
-    """Apply a domain-allowlist change to the dnsmasq sidecar.
+    """Apply a domain-allowlist change to the egress container's dnsmasq.
 
     Rewrites the dns-allowlist sidecar and proxy-config files, then signals
     the running daemons to pick them up.
 
-    Container backend (live-reload, no cage restart):
-      - dnsmasq runs with ``--servers-file=/etc/dnsmasq-allow.conf`` and
-        re-reads it on SIGHUP. We ``podman exec ... pkill -HUP dnsmasq``
-        rather than ``podman kill --signal HUP`` because PID 1 in the dns
-        container is the ``dns-audit.sh`` wrapper, not dnsmasq — a signal
-        to PID 1 would be eaten by the wrapper.
+    Container + VM backend (live-reload, no cage restart):
+      - dnsmasq runs inside the egress container with
+        ``--servers-file=/etc/agentcage/dns-allowlist.conf`` and re-reads
+        it on SIGHUP. We signal the dnsmasq PID directly via
+        ``<runtime> exec <name>-egress kill -HUP "$(cat /run/dnsmasq.pid)"``
+        (the supervisor writes the pid to ``/run/dnsmasq.pid`` — see
+        ``supervisor-egress.sh`` step B). ``kill -HUP <pid>`` rather than
+        ``pkill -HUP dnsmasq`` because the supervisor uses ``setpriv
+        --reuid=acdns`` so pkill from the supervisor's process tree finds
+        nothing — the pidfile is the reliable handle.
       - The mitmproxy addon polls ``/etc/agentcage/config.yaml`` mtime on
         every request and hot-reloads inspectors in-place (see
         ``data/proxy/addon.py:_maybe_reload``). No signal needed.
       - Net effect: the cage container is untouched. Any interactive
         session inside it (e.g. ``agentcage run``) survives a domain
         add/rm.
+      - The ``<runtime>`` is ``podman`` for the container backend and
+        ``limactl shell -- podman`` for the VM backend; same SIGHUP shape
+        either way, only the wrapper differs.
 
-    VM backend (Lima, live-reload, no cage restart):
-      - Lima's reverse-sshfs mount of ``~/.config/agentcage`` caches host
-        writes — a host-side rewrite of ``proxy-config.yaml`` /
-        ``dns-allowlist.conf`` is invisible to processes inside the VM
-        until the mount itself is reset. We sidestep that entirely: the
-        proxy / dns quadlets bind-mount a *VM-local* copy of those files
-        (``~/.config/agentcage-vm/cages/<name>/...`` — outside any Lima
-        mount). On a domain edit we push the new file bytes into that
-        VM-local path via ``inst.exec`` (base64 over the limactl ssh
-        channel, no sshfs in the loop), then SIGHUP dnsmasq the same way
-        the container backend does — ``podman exec <name>-dns pkill -HUP
-        dnsmasq``. The mitmproxy addon's mtime poll picks up the
-        proxy-config rewrite on the next request.
-      - For cages created before this change the on-disk quadlet still
-        bind-mounts the cached host path; ``_ensure_dns_quadlet_current``
-        regenerates the unit (and ``daemon-reload``s) the first time a
-        domain edit runs against an upgraded install. The running dns
-        sidecar is still mounting the old path, so on this one-shot
-        migration we restart it (``systemctl --user restart``) instead
-        of SIGHUP — the new container picks up the new bind mount on the
-        way up, and every subsequent edit on this cage takes the SIGHUP
-        fast path.
+    VM backend extra: Lima's reverse-sshfs mount of ``~/.config/agentcage``
+    caches host writes, so the egress quadlet bind-mounts a *VM-local*
+    copy of the allowlist file (``~/.config/agentcage-vm/cages/<name>/``
+    — outside any Lima mount). The host file is rewritten as the
+    authoritative source-of-truth, then pushed into the VM-local path
+    via ``inst.exec`` (base64 over the limactl ssh channel) before the
+    SIGHUP.
 
     Apple-container backend:
       - Allowlist is baked into the wrapper image at build time, so a
@@ -3296,55 +3321,87 @@ def _update_dns_quadlet(cfg) -> None:
         bind-mounted allowlist path on apple-container, at which point
         this branch can collapse.
 
-    The migration safety check in :func:`_ensure_dns_quadlet_current`
-    still covers cages whose on-disk quadlet has the old shape from a
-    pre-upgrade install.
+    Pre-flight validation: before publishing the rewritten allowlist we
+    run ``dnsmasq --test --servers-file=<allowlist>`` inside the egress
+    container; if it exits non-zero we revert the file to its previous
+    contents and surface the parse error. This prevents a malformed
+    user-supplied allowlist from breaking DNS resolution on the next
+    SIGHUP (dnsmasq's re-read is best-effort and a parse error leaves
+    the daemon serving the previous config silently).
     """
-    state.save_dns_allowlist(cfg.name)
-    quadlet_changed = _ensure_dns_quadlet_current(cfg)
-
     backend = get_backend(cfg)
     name = cfg.name
 
-    if cfg.isolation == "vm":
-        # Push the rewritten host-side files into the VM-local path the
-        # proxy/dns containers actually bind-mount, then SIGHUP dnsmasq.
-        # The mitmproxy addon's mtime-poll hot-reload handles the
-        # proxy-config side on its own.
-        inst = LimaInstance(name)
-        if not inst.is_running():
-            return
-        from agentcage.backends.vm import push_config_files
-        push_config_files(name, inst)
-        if backend.is_running(name, "dns"):
-            if quadlet_changed:
-                # One-shot migration: the on-disk quadlet was just rewritten
-                # to point its bind-mount at the new VM-local path, but the
-                # running dnsmasq container is still mounting the old host
-                # (sshfs-cached) path. SIGHUP would re-read the stale cache;
-                # restart the dns sidecar so it picks up the new mount.
-                inst.exec(
-                    ["systemctl", "--user", "restart",
-                     f"{name}-dns.service"],
-                    check=False,
-                )
-            else:
-                inst.exec(
-                    ["podman", "exec", f"{name}-dns",
-                     "pkill", "-HUP", "dnsmasq"],
-                    check=False,
-                )
-    elif _is_apple_container(cfg):
+    if _is_apple_container(cfg):
+        # Image-bake path — keep the rebuild semantics.
+        state.save_dns_allowlist(name)
         was_running = backend.is_running(name, "cage")
         if was_running:
             backend.stop(name)
         backend.build_artifacts(cfg, name, quiet=True)
         if was_running:
             backend.start(name, quiet=True)
-    else:
-        if backend.is_running(name, "dns"):
-            Podman().container_exec(f"{name}-dns",
-                                    ["pkill", "-HUP", "dnsmasq"])
+        return
+
+    # Container + VM: write the new file, validate inside the egress
+    # container, SIGHUP dnsmasq. Backup the old contents in case
+    # validation rejects the new ones.
+    allow_path = state.dns_allowlist_path(name)
+    previous = allow_path.read_text() if allow_path.is_file() else ""
+    state.save_dns_allowlist(name)
+
+    container = f"{name}-egress"
+
+    def _runtime_exec(argv: list[str]):
+        """Run *argv* inside the egress container via the right runtime
+        wrapper. Returns a CompletedProcess (.returncode/.stdout/.stderr)."""
+        if cfg.isolation == "vm":
+            inst = LimaInstance(name)
+            return inst.exec(["podman", "exec", container, *argv], check=False)
+        return subprocess.run(
+            ["podman", "exec", container, *argv],
+            capture_output=True, text=True,
+        )
+
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        if not inst.is_running():
+            return
+        from agentcage.backends.vm import push_config_files
+        push_config_files(name, inst)
+
+    if not backend.is_running(name, "egress"):
+        # File rewrite is enough — the next start picks it up.
+        return
+
+    # Validate inside the egress container against the mounted path.
+    result = _runtime_exec([
+        "dnsmasq", "--test",
+        "--servers-file=/etc/agentcage/dns-allowlist.conf",
+    ])
+    if result.returncode != 0:
+        # Revert and surface the parse error.
+        allow_path.write_text(previous)
+        if cfg.isolation == "vm":
+            # Restore the VM-local copy too — push_config_files reads
+            # the host file, so re-pushing aligns the VM-local cache.
+            from agentcage.backends.vm import push_config_files
+            push_config_files(name, LimaInstance(name))
+        click.echo(
+            f"error: dnsmasq rejected the updated allowlist for cage "
+            f"'{name}'; the previous configuration has been restored:",
+            err=True,
+        )
+        err = (result.stderr or result.stdout or "").rstrip()
+        if err:
+            click.echo(err, err=True)
+        sys.exit(1)
+
+    # SIGHUP dnsmasq via the pidfile the supervisor writes.
+    _runtime_exec([
+        "sh", "-c",
+        'kill -HUP "$(cat /run/dnsmasq.pid)"',
+    ])
 
 
 @domain.command("add")
@@ -3362,6 +3419,7 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
     except FileNotFoundError:
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     _ensure_domain_section(raw)
     dom = raw["domains"]
@@ -3418,6 +3476,7 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
     except FileNotFoundError:
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    _ensure_v022_cage(name)
 
     _ensure_domain_section(raw)
     dom = raw["domains"]

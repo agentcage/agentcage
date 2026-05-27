@@ -58,11 +58,8 @@ assert_output_contains "2.4" "Audit: summary" "allowed" \
 assert_cmd_ok "2.5" "Logs: cage service" \
   agentcage cage logs "$CAGE" -s cage -n 5
 
-assert_cmd_ok "2.6" "Logs: proxy service" \
-  agentcage cage logs "$CAGE" -s proxy -n 5
-
-assert_cmd_ok "2.7" "Logs: dns service" \
-  agentcage cage logs "$CAGE" -s dns -n 5
+assert_cmd_ok "2.6" "Logs: egress service" \
+  agentcage cage logs "$CAGE" -s egress -n 5
 
 # HAR capture tests
 e2e_timer_start
