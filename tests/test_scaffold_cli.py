@@ -108,7 +108,11 @@ class TestCageListColumns:
         cfg.scaffold = "claude-code"
         cfg.container.nested_containers = False
         mock_state.load_deployment_config.return_value = cfg
-        mock_state.load_metadata.return_value = {"lifecycle": "interactive", "scaffold": "claude-code"}
+        mock_state.load_metadata.return_value = {
+            "lifecycle": "interactive",
+            "scaffold": "claude-code",
+            "agentcage_version": "0.22.0",
+        }
         backend = mock_get_backend.return_value
         backend.service_names.return_value = ["cage"]
         backend.is_running.return_value = False
@@ -180,12 +184,12 @@ class TestCagePrune:
             "cc-bold-fox": cc_cfg, "my-openclaw": oc_cfg
         }[n]
         mock_state.load_metadata.side_effect = lambda n: {
-            "cc-bold-fox": {"lifecycle": "interactive"},
-            "my-openclaw": {"lifecycle": "service"},
+            "cc-bold-fox": {"lifecycle": "interactive", "agentcage_version": "0.22.0"},
+            "my-openclaw": {"lifecycle": "service", "agentcage_version": "0.22.0"},
         }[n]
 
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.service_names.return_value = ["cage", "egress"]
         # cc-bold-fox stopped, my-openclaw running
         def is_running(name, svc):
             return name == "my-openclaw"
@@ -205,9 +209,12 @@ class TestCagePrune:
         cfg = MagicMock()
         cfg.lifecycle = "interactive"
         mock_state.load_deployment_config.return_value = cfg
-        mock_state.load_metadata.return_value = {"lifecycle": "interactive"}
+        mock_state.load_metadata.return_value = {
+            "lifecycle": "interactive",
+            "agentcage_version": "0.22.0",
+        }
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.service_names.return_value = ["cage", "egress"]
         backend.is_running.return_value = True  # all running
         result = _runner().invoke(main, ["cage", "prune"])
         assert "Nothing to prune" in result.output

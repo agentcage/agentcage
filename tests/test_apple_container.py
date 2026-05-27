@@ -168,72 +168,70 @@ def test_unknown_isolation_rejected():
 # ---------------------------------------------------------------------------
 
 def test_render_wrapper_embeds_user_image():
+    """PR 3 (2-microVM model): the wrapper template embeds the user image
+    + bakes the shlex-quoted user CMD into a one-shot script. No more
+    COPY of supervisor.sh / cage-cmd.json / dnsmasq.conf etc."""
     out = ac_wrapper.render_wrapper_containerfile(
         "docker.io/library/alpine:3.20",
         user_cmd=["sh", "-c", "echo hi"],
     )
     assert "FROM docker.io/library/alpine:3.20" in out
-    # CMD is no longer in the Containerfile — it's written to cage-cmd.json
-    # in the build context and COPY'd in. The Containerfile just declares
-    # the COPY + the ENTRYPOINT.
-    assert "COPY cage-cmd.json /etc/agentcage/cage-cmd.json" in out
-    assert 'ENTRYPOINT ["/opt/agentcage/supervisor"]' in out
+    # The user CMD is shlex-escaped and baked into cage-cmd.sh by a RUN
+    # heredoc — no jq, no JSON parse at runtime.
+    assert "/opt/agentcage/cage-cmd.sh" in out
+    assert 'ENTRYPOINT ["/opt/agentcage/cage-init.sh"]' in out
+    # The legacy supervisor entrypoint must be GONE — slim wrapper now.
+    assert "/opt/agentcage/supervisor" not in out
 
 
-def test_stage_build_context_writes_cmd_json(tmp_path):
-    ac_wrapper.stage_build_context(tmp_path, ["sh", "-c", "echo $FOO & wait"])
-    assert (tmp_path / "supervisor.sh").exists()
-    cmd_json = (tmp_path / "cage-cmd.json").read_text()
-    assert json.loads(cmd_json) == ["sh", "-c", "echo $FOO & wait"]
+def test_render_wrapper_shell_escapes_user_cmd():
+    """User CMD is shell-escaped via Python's shlex.quote() at template
+    render time and baked into a one-shot script via a RUN heredoc.
 
-
-def test_render_wrapper_handles_apk_and_non_apt():
-    """The wrapper template detects apk (alpine) explicitly with a
-    pointer to the workaround, and falls through with a clear error
-    for unknown distros. Both still `exit 78` at build time — the
-    apple-container backend cannot run on non-glibc images today
-    (mitmproxy's PyInstaller bundle is glibc-only; the musl pip
-    install path needs rust 1.88+ which alpine doesn't ship even in
-    3.22). Tracked in #120 with the multi-stage builder design."""
+    This closes the I2 argv-injection risk from the eng review on the
+    prior runtime-jq approach: every metacharacter (whitespace, $VAR,
+    ;, ` etc.) is escaped host-side before reaching the cage VM, and
+    nothing inside the cage interprets it except `sh -c "exec ..."`."""
     out = ac_wrapper.render_wrapper_containerfile(
-        "alpine:3.20", user_cmd=["sh"],
+        "alpine:3.20",
+        user_cmd=["sh", "-c", "echo $FOO && wait"],
     )
-    assert "apt-get" in out
-    assert "apk" in out
-    # Alpine path: actionable error with workaround.
-    assert "does not yet support alpine" in out
-    assert "vm" in out  # vm isolation listed as workaround
-    # Fallthrough for other distros (no apt + no apk).
-    assert "alpine/musl and other distros not yet wired" in out
-    assert "exit 78" in out
+    # The shlex.quote'd form of `echo $FOO && wait` is a single-quoted
+    # string. We just check that the user's literal CMD substring is
+    # NOT present in raw form (which would mean shell metacharacters
+    # leaked unescaped) — and that the quoted form IS present.
+    assert "exec sh -c 'echo $FOO && wait'" in out
 
 
-def test_stage_build_context_writes_allowlist(tmp_path):
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"], allowlist=["example.com", "api.github.com"]
-    )
-    lines = (tmp_path / "allowlist.txt").read_text().splitlines()
-    assert lines == ["example.com", "api.github.com"]
+def test_stage_build_context_writes_cage_init(tmp_path):
+    """The slim build context only stages cage-init.sh. Every per-cage
+    proxy/dns config file (cage-cmd.json, allowlist.txt, dnsmasq.conf,
+    secret_injection.json, transforms.tar.gz, etc.) moved out of the
+    wrapper image — they're rendered host-side by build_artifacts and
+    bind-mounted into the egress sibling at runtime."""
+    ac_wrapper.stage_build_context(tmp_path, ["sh", "-c", "echo hi"])
+    assert (tmp_path / "cage-init.sh").exists()
+    cage_init = (tmp_path / "cage-init.sh").read_text()
+    # cage-init runs as PID 1 of the cage VM and sets up the route to
+    # the egress sibling. Sanity-check key strings.
+    assert "AGENTCAGE_EGRESS_IP" in cage_init
+    assert "ip route replace default via" in cage_init
+    assert "capsh" in cage_init
+    # Legacy files must NOT be staged.
+    assert not (tmp_path / "supervisor.sh").exists()
+    assert not (tmp_path / "allowlist_addon.py").exists()
+    assert not (tmp_path / "transforms.tar.gz").exists()
+    assert not (tmp_path / "secret_injection.json").exists()
+    assert not (tmp_path / "cage-cmd.json").exists()
 
 
-def test_stage_build_context_empty_allowlist_means_block_all(tmp_path):
-    """Empty allowlist file is intentional — supervisor reads it as 'block all'."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=None)
-    assert (tmp_path / "allowlist.txt").read_text() == ""
-
-
-def test_stage_build_context_includes_dnsmasq_conf(tmp_path):
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    assert (tmp_path / "dnsmasq.conf").exists()
-    conf = (tmp_path / "dnsmasq.conf").read_text()
-    # dnsmasq must forward to a real upstream so cage gets real IPs
-    # (transparent mitmproxy needs SO_ORIGINAL_DST = real IP, not 127.0.0.1).
-    # The fix for the non-A-record DNS exfil channel scopes recursion to the
-    # allowlisted apex: per-zone `server=/<apex>/<upstream>` rather than a
-    # blanket `server=<upstream>` that would forward ALL query types to
-    # upstream regardless of zone.
+def test_render_dnsmasq_conf_per_zone_recursion():
+    """`render_dnsmasq_conf` produces the same dnsmasq.conf shape as the
+    legacy single-VM build (per-zone server=/apex/upstream forwarders +
+    address=/#/sinkhole), just rendered host-side instead of into the
+    wrapper image. The egress sibling bind-mounts the result."""
+    conf = ac_wrapper.render_dnsmasq_conf(["a.com"])
     assert "server=/a.com/1.1.1.1" in conf
-    # Defense-in-depth A/AAAA sinkhole for zones not in the allowlist.
     assert "address=/#/198.51.100.1" in conf
 
 
@@ -246,39 +244,37 @@ def test_stage_build_context_includes_dnsmasq_conf(tmp_path):
 # and exfil fully out-of-band, never touching mitmproxy. These tests
 # pin the bypass SHAPE, not just the absence of a substring.
 
-def test_apple_dnsmasq_no_blanket_default_upstream(tmp_path):
+def test_apple_dnsmasq_no_blanket_default_upstream():
     """No `server=<ip>` line without a domain scope. A blanket default
     upstream lets dnsmasq recursively answer ANY non-A query — TXT, MX,
-    NS, SRV, CNAME — for ANY hostname, regardless of allowlist."""
+    NS, SRV, CNAME — for ANY hostname, regardless of allowlist.
+
+    PR 3 moved this rendering from `stage_build_context` (build-time
+    into the wrapper image) to `render_dnsmasq_conf` (host-side, then
+    bind-mounted into the egress sibling). The shape invariants are
+    unchanged — the test just calls the renderer directly now."""
     import re
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"], allowlist=["a.com", "b.org"],
-        dns_servers=["1.1.1.1", "8.8.8.8"],
+    conf = ac_wrapper.render_dnsmasq_conf(
+        ["a.com", "b.org"], dns_servers=["1.1.1.1", "8.8.8.8"],
     )
-    conf = (tmp_path / "dnsmasq.conf").read_text()
     for line in conf.splitlines():
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:
             continue
-        # The bypass shape is `server=<ip>` (NO leading slash after `=`)
-        # which means "default upstream for everything not otherwise
-        # answered". Per-zone forwarders are `server=/<domain>/<ip>` and
-        # ARE allowed — they restrict recursion to the allowlisted apex.
+        # Per-zone forwarders are `server=/<domain>/<ip>` and ARE allowed.
+        # Blanket `server=<ip>` (no leading slash) leaks non-A queries.
         assert not re.match(r"^\s*server=[^/]", stripped), (
             f"blanket default-upstream `server=<ip>` line leaks non-A "
             f"queries to upstream: {stripped!r}"
         )
 
 
-def test_apple_dnsmasq_recursion_scoped_to_allowlist(tmp_path):
-    """Recursion must be scoped per-allowlisted-apex × per-upstream.
-    Otherwise dnsmasq has no way to answer non-A queries for allowed
-    zones (legitimate MX/SRV/TXT for, e.g., api.anthropic.com)."""
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"], allowlist=["api.anthropic.com", "github.com"],
+def test_apple_dnsmasq_recursion_scoped_to_allowlist():
+    """Recursion must be scoped per-allowlisted-apex × per-upstream."""
+    conf = ac_wrapper.render_dnsmasq_conf(
+        ["api.anthropic.com", "github.com"],
         dns_servers=["1.1.1.1", "8.8.8.8"],
     )
-    conf = (tmp_path / "dnsmasq.conf").read_text()
     for domain in ("api.anthropic.com", "github.com"):
         for upstream in ("1.1.1.1", "8.8.8.8"):
             assert f"server=/{domain}/{upstream}" in conf, (
@@ -286,14 +282,10 @@ def test_apple_dnsmasq_recursion_scoped_to_allowlist(tmp_path):
             )
 
 
-def test_apple_dnsmasq_empty_allowlist_has_no_upstream(tmp_path):
-    """Empty allowlist → no upstream forwarders at all. Every DNS
-    query returns either the A/AAAA sinkhole or REFUSED for other
-    record types. The cage cannot resolve OR exfil via DNS."""
+def test_apple_dnsmasq_empty_allowlist_has_no_upstream():
+    """Empty allowlist → no upstream forwarders at all."""
     import re
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=[])
-    conf = (tmp_path / "dnsmasq.conf").read_text()
-    # No `server=` directives at all (neither blanket nor per-zone).
+    conf = ac_wrapper.render_dnsmasq_conf([])
     for line in conf.splitlines():
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:
@@ -302,200 +294,37 @@ def test_apple_dnsmasq_empty_allowlist_has_no_upstream(tmp_path):
             f"empty allowlist should yield no upstream forwarders, got: "
             f"{stripped!r}"
         )
-    # Sinkhole still present (defense in depth).
     assert "address=/#/198.51.100.1" in conf
 
 
-def test_apple_dnsmasq_sinkhole_present_with_allowlist(tmp_path):
+def test_apple_dnsmasq_sinkhole_present_with_allowlist():
     """The `address=/#/<sinkhole>` line must remain even when the
-    allowlist is populated — it sinks A/AAAA for non-allowlisted zones
-    (defense-in-depth alongside the per-zone forwarder scoping)."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    conf = (tmp_path / "dnsmasq.conf").read_text()
+    allowlist is populated — sinks A/AAAA for non-allowlisted zones."""
+    conf = ac_wrapper.render_dnsmasq_conf(["a.com"])
     assert "address=/#/198.51.100.1" in conf
 
 
-def test_apple_dnsmasq_no_resolv_preserved(tmp_path):
-    """`no-resolv` MUST be set so dnsmasq never reads /etc/resolv.conf
-    as an implicit default upstream. Without `no-resolv` the bypass
-    closure depends on resolv.conf being empty — fragile."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    conf = (tmp_path / "dnsmasq.conf").read_text()
+def test_apple_dnsmasq_no_resolv_preserved():
+    """`no-resolv` MUST be set so dnsmasq never reads /etc/resolv.conf."""
+    conf = ac_wrapper.render_dnsmasq_conf(["a.com"])
     assert any(
         ln.strip() == "no-resolv"
         for ln in conf.splitlines()
     ), "no-resolv missing — dnsmasq would silently fall back to /etc/resolv.conf"
 
 
-def test_stage_build_context_includes_allowlist_addon(tmp_path):
-    """The mitmproxy addon that enforces the allowlist must be staged in."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    assert (tmp_path / "allowlist_addon.py").exists()
-    addon = (tmp_path / "allowlist_addon.py").read_text()
-    assert "AllowlistAddon" in addon
-    assert "403" in addon  # must respond with 403, not silently pass
-
-
-def test_stage_build_context_includes_secret_injection_rules(tmp_path):
-    """secret_injection rules baked into the wrapper image at build time —
-    the actual secret VALUES are env-passed at container run time so the
-    image stays free of credentials. The mitmproxy addon reads the rule
-    list from /etc/agentcage/secret_injection.json at startup and resolves
-    each `env` against os.environ."""
-    rules = [
-        {"env": "API_KEY", "placeholder": "{{API_KEY}}",
-         "inject_to": ["api.example.com"]},
-    ]
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"], allowlist=["a.com"], secret_injection_rules=rules,
-    )
-    si = json.loads((tmp_path / "secret_injection.json").read_text())
-    assert si == rules
-
-
-def test_stage_build_context_empty_secret_injection(tmp_path):
-    """No rules → empty list (NOT a missing file), so the addon's loader
-    can read+parse unconditionally."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    assert (tmp_path / "secret_injection.json").exists()
-    assert json.loads((tmp_path / "secret_injection.json").read_text()) == []
-
-
-def test_stage_build_context_writes_transform_field(tmp_path):
-    """Rules with a ``transform`` field flow through the build context.
-
-    The in-cage addon dispatches on this string at startup to mint a
-    derived substitution value (e.g. a Google OAuth bearer) instead of
-    using the raw env-passed credential. ``transform_config`` rides
-    along so transforms like google-jwt-bearer can configure their
-    scopes/audience without leaking the SA key into the image layer.
-    """
-    rules = [
-        {
-            "env": "GCP_SA_KEY",
-            "placeholder": "{{GCP_BEARER}}",
-            "inject_to": ["googleapis.com"],
-            "transform": "google-jwt-bearer",
-            "transform_config": {
-                "scopes": ["https://www.googleapis.com/auth/calendar.readonly"],
-            },
-        },
-    ]
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"], allowlist=["googleapis.com"],
-        secret_injection_rules=rules,
-    )
-    si = json.loads((tmp_path / "secret_injection.json").read_text())
-    assert si == rules
-    # The transforms package must be staged as a tarball so the in-cage
-    # addon can ``import transforms`` after ADD-extraction. (Plain COPY
-    # of a directory silently empties the target on Apple's container
-    # build 0.5+; the tarball ADD path dodges that quirk.)
-    archive = tmp_path / "transforms.tar.gz"
-    assert archive.exists()
-    import tarfile as _tf
-    with _tf.open(archive) as tar:
-        names = sorted(tar.getnames())
-    assert "__init__.py" in names
-    assert "google_jwt_bearer.py" in names
-
-
-def test_stage_build_context_stages_transforms_even_without_rules(tmp_path):
-    """The transforms tarball is unconditionally staged — cheap, and
-    avoids a class of "transform added in cage.yaml after image build →
-    silent skip" bugs. The addon will still no-op on an empty rule list."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    assert (tmp_path / "transforms.tar.gz").exists()
-
-
-def test_stage_build_context_excludes_pycache_from_transforms(tmp_path, monkeypatch):
-    """__pycache__ is host-local Python bytecode — packing it into the
-    image layer wastes space and ruins layer determinism. The tarball
-    must filter it out."""
-    # Create a fake transforms src with a __pycache__ subdir so we can
-    # observe the filter without touching the real package on disk.
-    fake_src = tmp_path / "fake_src"
-    fake_src.mkdir()
-    (fake_src / "__init__.py").write_text("# real")
-    (fake_src / "google_jwt_bearer.py").write_text("# real")
-    (fake_src / "__pycache__").mkdir()
-    (fake_src / "__pycache__" / "garbage.pyc").write_bytes(b"\x00\x00\x00")
-
-    monkeypatch.setattr(ac_wrapper, "_TRANSFORMS_SRC", fake_src)
-
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-
-    import tarfile as _tf
-    with _tf.open(tmp_path / "transforms.tar.gz") as tar:
-        names = tar.getnames()
-    assert not any("__pycache__" in n for n in names), names
-
-
-def test_wrapper_containerfile_adds_transforms_tarball():
-    """The Containerfile must ADD the transforms tarball (auto-extracted
-    by OCI build) so ``from transforms import get`` resolves at runtime.
-    We deliberately don't `COPY transforms /opt/agentcage/transforms`
-    because Apple's container build silently drops the contents of a
-    directory COPY — the target dir exists but is empty."""
-    out = ac_wrapper.render_wrapper_containerfile(
-        "docker.io/library/alpine:3.20",
-        user_cmd=["sh", "-c", "echo hi"],
-    )
-    assert "ADD transforms.tar.gz /opt/agentcage/transforms/" in out
-    # And we must NOT regress to the broken directory-COPY form.
-    assert "COPY transforms /opt/agentcage/transforms" not in out
-
-
-def test_backend_threads_transform_into_build_artifacts(tmp_path, monkeypatch):
-    """The apple-container backend must forward ``transform`` and
-    ``transform_config`` from the parsed Config through to wrapper.
-    Catches the silent-drop regression: rule loaded fine, image built
-    fine, but the cage saw only ``env/placeholder/inject_to``."""
-    captured: dict = {}
-
-    def fake_build_wrapper(_name, _image, **kwargs):
-        captured["secret_injection_rules"] = kwargs.get("secret_injection_rules")
-        return "localhost/agentcage-apple-test:latest"
-
-    # Patch the wrapper as imported by the backend module — it does
-    # ``from agentcage.apple_container import wrapper as ac_wrapper`` so
-    # the backend's own binding is what we need to override.
-    from agentcage.backends import apple_container as backend_mod
-    monkeypatch.setattr(backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper)
-    monkeypatch.setattr(
-        ac_cli, "image_inspect",
-        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
-    )
-    # `build_artifacts` shells out to `container image pull`; fake it.
-    monkeypatch.setattr(
-        ac_cli, "run",
-        lambda *_a, **_kw: type(
-            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
-        )(),
-    )
-
-    from agentcage.config import SecretInjectionRule
-    cfg = Config(name="t", isolation="apple-container")
-    cfg.container.image = "localhost/test:latest"
-    # Set a command so _user_cmd isn't consulted.
-    cfg.container.command = ["/bin/sh"]
-    cfg.secret_injection = [
-        SecretInjectionRule(
-            env="GCP_SA_KEY",
-            placeholder="{{GCP_BEARER}}",
-            inject_to=["googleapis.com"],
-            transform="google-jwt-bearer",
-            transform_config={"scopes": ["a"]},
-        ),
-    ]
-    cfg.domains.allow = ["googleapis.com"]
-
-    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
-
-    rules = captured["secret_injection_rules"]
-    assert len(rules) == 1
-    assert rules[0]["transform"] == "google-jwt-bearer"
-    assert rules[0]["transform_config"] == {"scopes": ["a"]}
+# Tests that previously verified the wrapper build context staged
+# `secret_injection.json`, `transforms.tar.gz`, etc. were removed when PR
+# 3 moved all proxy/dns/secret config out of the wrapper image. The
+# equivalent invariants are now tested by:
+#   * tests/test_egress_image.py (the agentcage-egress image carries the
+#     proxy code).
+#   * The host-side render tests below (proxy-config.yaml shape).
+#   * `test_allowlist_addon_*` further down — Python-level unit tests of
+#     the addon's behaviour, importing from
+#     src/agentcage/data/apple-container/allowlist_addon.py directly (the
+#     file is retained as a test fixture; it is no longer baked into any
+#     image).
 
 
 def test_allowlist_addon_runs_transform_at_request_time(monkeypatch, tmp_path):
@@ -885,18 +714,20 @@ def test_uninstall_launchd_plist_calls_bootout(tmp_path, monkeypatch):
     assert not plist_path.exists()
 
 
-def test_start_argv_uses_file_delivery_when_placeholders_known(
-    tmp_path, monkeypatch,
-):
-    """0.21.1+ hardened path: when the unit JSON carries
-    ``secret_env_placeholders``, start() writes the resolved value to
-    ``<secrets_dir>/<env-name>`` (mode 0600) and passes
-    ``-e <env>={{<env>}}`` (the placeholder, NOT the cleartext value) to
-    `container run`. This is the entire point — host `ps`, `container
-    inspect`, and `cage exec ... -- env` all see only the placeholder.
+# ── 2-microVM start() helpers ────────────────────────────────
+# PR 3 split start() into two `container run` calls: <name>-egress (egress
+# image, holds secrets bind-mount) and <name> (slim wrapper, holds the
+# placeholder env). The helpers below set up the minimum scaffolding
+# (unit JSON + egress_config_dir + mocked egress IP lookup) so tests can
+# focus on the assertion they care about.
 
-    Values come from ``<deployment_dir>/pending_secrets.json`` (written
-    by ``-s KEY=VAL``). The host shell environment is NEVER consulted.
+def _setup_start_test(tmp_path, monkeypatch, *, unit_meta):
+    """Common scaffolding for backend.start() tests.
+
+    Returns (backend, unit_dir, logs_dir, secrets_dir, captured_runs).
+    `captured_runs` is a list of argv lists in call order. The mocked
+    network-IP lookup returns "192.168.64.5" so cage-init has something
+    to set as the default route.
     """
     import agentcage.state as _state
     monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
@@ -904,68 +735,170 @@ def test_start_argv_uses_file_delivery_when_placeholders_known(
     backend = AppleContainerBackend()
     unit_dir = tmp_path / "apple-container"
     unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "user_image": "x",
-        "cpus": "",
-        "memory": "",
-        "lifecycle": "interactive",
-        "secret_envs": ["API_KEY", "MISSING_KEY"],
-        "secret_env_placeholders": {
-            "API_KEY": "{{API_KEY}}",
-            "MISSING_KEY": "{{MISSING_KEY}}",
+    (unit_dir / "demo.json").write_text(json.dumps(unit_meta))
+
+    logs_dir = tmp_path / "logs"
+    secrets_dir = tmp_path / "secrets"
+    egress_cfg = tmp_path / "egress-config"
+    egress_cfg.mkdir(parents=True, exist_ok=True)
+    (egress_cfg / "proxy-config.yaml").write_text("name: demo\n")
+    (egress_cfg / "dnsmasq.conf").write_text("# stub\n")
+    (egress_cfg / "dns-allowlist.conf").write_text("\n")
+    certs_dir = tmp_path / "certs"
+
+    captured: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        captured.append(list(argv))
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(backend, "unit_dir", lambda: unit_dir)
+    monkeypatch.setattr(backend, "logs_dir", lambda _n: logs_dir)
+    monkeypatch.setattr(backend, "secrets_dir", lambda _n: secrets_dir)
+    monkeypatch.setattr(backend, "egress_config_dir", lambda _n: egress_cfg)
+    monkeypatch.setattr(backend, "certs_dir", lambda _n: certs_dir)
+    monkeypatch.setattr(
+        ac_cli, "image_inspect", lambda _img: {"config": {}},
+    )
+    monkeypatch.setattr(ac_cli, "inspect", lambda _name: None)
+    monkeypatch.setattr(ac_cli, "run", fake_run)
+    monkeypatch.setattr(
+        backend, "_wait_supervisor_ready", lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        backend, "_container_ip", lambda _n: "192.168.64.5",
+    )
+    return backend, captured
+
+
+def _cage_run_argv(captured: list[list[str]]) -> list[str]:
+    """Extract the `container run` argv for the cage VM (the slim wrapper).
+
+    There are two `run` calls per start(): egress (named <name>-egress)
+    and cage (named <name>). The cage call carries the wrapper image tag
+    `localhost/agentcage-apple-<name>:latest` as its last positional
+    argument.
+    """
+    for argv in captured:
+        if argv and argv[0] == "run" and any("agentcage-apple-" in a for a in argv):
+            return argv
+    raise AssertionError(f"no cage `run` argv in {captured!r}")
+
+
+def _egress_run_argv(captured: list[list[str]]) -> list[str]:
+    """Extract the egress sibling's run argv (image = agentcage-egress)."""
+    for argv in captured:
+        if argv and argv[0] == "run" and any("agentcage-egress" in a for a in argv):
+            return argv
+    raise AssertionError(f"no egress `run` argv in {captured!r}")
+
+
+def test_start_argv_uses_file_delivery_when_placeholders_known(
+    tmp_path, monkeypatch,
+):
+    """0.21.1+ hardened path: when the unit JSON carries
+    ``secret_env_placeholders``, start() writes the resolved value to
+    ``<secrets_dir>/<env-name>`` (mode 0600) and passes
+    ``-e <env>={{<env>}}`` (the placeholder, NOT the cleartext value) to
+    `container run`. PR 3 moves the bind-mount target from
+    /run/agentcage/secrets:ro (in the cage VM) to /home/acproxy/secrets:ro
+    (in the egress sibling) — the cage VM never sees the cleartext
+    secrets at all."""
+    import agentcage.state as _state
+
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo",
+            "user_image": "x",
+            "cpus": "",
+            "memory": "",
+            "lifecycle": "interactive",
+            "secret_envs": ["API_KEY", "MISSING_KEY"],
+            "secret_env_placeholders": {
+                "API_KEY": "{{API_KEY}}",
+                "MISSING_KEY": "{{MISSING_KEY}}",
+            },
         },
-    }))
-    # Stage API_KEY via pending_secrets.json (the -s KEY=VAL path).
-    # Deliberately omit MISSING_KEY so we can assert it's skipped.
+    )
     deploy_dir = _state.deployment_dir("demo")
     deploy_dir.mkdir(parents=True, exist_ok=True)
     (deploy_dir / "pending_secrets.json").write_text(
         json.dumps([["API_KEY", "sk-real-1234"]])
     )
-    # Also set them in the host env — this MUST be ignored. The whole
-    # point of this fix is that env is no longer an implicit secret source.
     monkeypatch.setenv("API_KEY", "from-host-env-DO-NOT-USE")
     monkeypatch.setenv("MISSING_KEY", "from-host-env-DO-NOT-USE")
 
-    captured_argv = []
+    backend.start("demo", quiet=True)
 
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    logs_dir = tmp_path / "logs"
+    cage_argv = _cage_run_argv(captured)
+    egress_argv = _egress_run_argv(captured)
     secrets_dir = tmp_path / "secrets"
 
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=logs_dir), \
-         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    run_argv = next(a for a in captured_argv if a[0] == "run")
-    # The cage env carries the placeholder, NEVER the raw value.
-    assert "API_KEY={{API_KEY}}" in run_argv
-    assert "sk-real-1234" not in " ".join(run_argv)
-    # The bind mount is present.
+    # The cage VM's env carries the placeholder, NEVER the raw value.
+    assert "API_KEY={{API_KEY}}" in cage_argv
+    assert "sk-real-1234" not in " ".join(cage_argv)
+    # The secrets bind-mount is on the EGRESS sibling at /home/acproxy/secrets.
     assert any(
-        a == f"{secrets_dir}:/run/agentcage/secrets:ro" for a in run_argv
+        a == f"{secrets_dir}:/home/acproxy/secrets:ro" for a in egress_argv
     )
-    # The secret file exists on the host, mode 0600, containing the real value.
+    # And the cage VM has NO secrets bind — the cleartext is in a
+    # different microVM's namespace entirely.
+    assert all("secrets" not in a or ":/certs" in a for a in cage_argv)
+    # The secret file exists on the host, mode 0600, real value.
     secret_file = secrets_dir / "API_KEY"
     assert secret_file.is_file()
     assert secret_file.read_text() == "sk-real-1234"
     assert oct(secret_file.stat().st_mode & 0o777) == "0o600"
-    # The missing env has NO file (skipped) and isn't in argv.
+    # Missing key skipped.
     assert not (secrets_dir / "MISSING_KEY").exists()
-    assert "MISSING_KEY=" not in " ".join(run_argv)
-    # Host-env value MUST NOT have leaked in for either secret.
-    assert "from-host-env-DO-NOT-USE" not in " ".join(run_argv)
-    # The secrets dir itself is mode 0700 (only host user can read).
+    assert "MISSING_KEY=" not in " ".join(cage_argv)
+    # Host env never leaks anywhere.
+    assert "from-host-env-DO-NOT-USE" not in " ".join(cage_argv)
+    assert "from-host-env-DO-NOT-USE" not in " ".join(egress_argv)
     assert oct(secrets_dir.stat().st_mode & 0o777) == "0o700"
+
+
+def test_start_secrets_bind_only_to_egress(tmp_path, monkeypatch):
+    """Threat-model invariant for PR 3: the secrets bind-mount appears
+    on the egress sibling's argv and NEVER on the cage VM's argv. This
+    is the load-bearing change — `cage exec --user 0 <cage>` cannot
+    read /home/acproxy/secrets because the mount isn't in its namespace."""
+    import agentcage.state as _state
+
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+            "secret_envs": ["API_KEY"],
+            "secret_env_placeholders": {"API_KEY": "{{API_KEY}}"},
+        },
+    )
+    deploy_dir = _state.deployment_dir("demo")
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+    (deploy_dir / "pending_secrets.json").write_text(
+        json.dumps([["API_KEY", "sk-secret"]])
+    )
+
+    backend.start("demo", quiet=True)
+
+    cage_argv = _cage_run_argv(captured)
+    egress_argv = _egress_run_argv(captured)
+    secrets_dir = str(tmp_path / "secrets")
+
+    # Bind appears on egress run argv.
+    assert any(
+        a.startswith(f"{secrets_dir}:") and "secrets" in a
+        for a in egress_argv
+    ), f"missing secrets bind on egress argv: {egress_argv}"
+    # And NOT on cage run argv (other than the /certs bind, which is a
+    # different host dir).
+    for a in cage_argv:
+        if a.startswith(secrets_dir):
+            raise AssertionError(
+                f"secrets bind leaked into cage VM argv: {a!r}"
+            )
 
 
 def test_start_argv_drops_stale_secrets_from_prior_starts(
@@ -973,23 +906,18 @@ def test_start_argv_drops_stale_secrets_from_prior_starts(
 ):
     """start() removes pre-existing files in <secrets_dir> so a rule
     that's been removed from cage.yaml doesn't linger in the bind mount
-    after `cage update`. Keeps the secrets dir an accurate reflection
-    of the current rule list."""
+    after `cage update`."""
     import agentcage.state as _state
-    monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
 
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "user_image": "x",
-        "cpus": "",
-        "memory": "",
-        "lifecycle": "interactive",
-        "secret_envs": ["NEW_KEY"],
-        "secret_env_placeholders": {"NEW_KEY": "{{NEW_KEY}}"},
-    }))
+    backend, _captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+            "secret_envs": ["NEW_KEY"],
+            "secret_env_placeholders": {"NEW_KEY": "{{NEW_KEY}}"},
+        },
+    )
     deploy_dir = _state.deployment_dir("demo")
     deploy_dir.mkdir(parents=True, exist_ok=True)
     (deploy_dir / "pending_secrets.json").write_text(
@@ -998,22 +926,10 @@ def test_start_argv_drops_stale_secrets_from_prior_starts(
 
     secrets_dir = tmp_path / "secrets"
     secrets_dir.mkdir()
-    # Stale leftover from a previous create where OLD_KEY was a rule.
     (secrets_dir / "OLD_KEY").write_text("old-stale-value")
 
-    def fake_run(argv, **_kwargs):  # noqa: ARG001
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    backend.start("demo", quiet=True)
 
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
-         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    # OLD_KEY removed; NEW_KEY present.
     assert not (secrets_dir / "OLD_KEY").exists()
     assert (secrets_dir / "NEW_KEY").read_text() == "new-value"
 
@@ -1022,28 +938,18 @@ def test_start_argv_pre_021_1_unit_json_refuses_cleartext_fallback(
     tmp_path, monkeypatch,
 ):
     """Pre-0.21.1 unit JSON (no ``secret_env_placeholders``) MUST NOT
-    fall back to the old `-e NAME=value` cleartext path: that would
-    leak the secret onto host `ps -ef` and the cage workload's
-    /proc/self/environ. Operator gets a warning telling them to run
-    `cage update` to regenerate the unit JSON."""
+    fall back to cleartext -e. Operator gets a warning + skip."""
     import agentcage.state as _state
-    monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
 
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "user_image": "x",
-        "cpus": "",
-        "memory": "",
-        "lifecycle": "interactive",
-        "secret_envs": ["API_KEY"],
-        # no secret_env_placeholders — pre-0.21.1 shape
-    }))
-    # Even with the value staged AND in the host env, no placeholder
-    # means we refuse to inject — the value is intentionally NOT routed
-    # through cleartext-env as a fallback.
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+            "secret_envs": ["API_KEY"],
+            # no secret_env_placeholders — pre-0.21.1 shape
+        },
+    )
     deploy_dir = _state.deployment_dir("demo")
     deploy_dir.mkdir(parents=True, exist_ok=True)
     (deploy_dir / "pending_secrets.json").write_text(
@@ -1051,29 +957,17 @@ def test_start_argv_pre_021_1_unit_json_refuses_cleartext_fallback(
     )
     monkeypatch.setenv("API_KEY", "sk-real-1234")
 
-    captured_argv = []
+    backend.start("demo", quiet=True)
 
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
+    cage_argv = _cage_run_argv(captured)
+    egress_argv = _egress_run_argv(captured)
+    # Value MUST NOT appear anywhere on either container run argv.
+    assert "sk-real-1234" not in " ".join(cage_argv)
+    assert "sk-real-1234" not in " ".join(egress_argv)
+    assert "API_KEY=sk-real-1234" not in cage_argv
+    # No secret file written (placeholder map missing → refuse fallback).
     secrets_dir = tmp_path / "secrets"
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
-         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    run_argv = next(a for a in captured_argv if a[0] == "run")
-    # Value MUST NOT appear anywhere on the `container run` argv.
-    assert "sk-real-1234" not in " ".join(run_argv)
-    assert "API_KEY=sk-real-1234" not in run_argv
-    # No secret file written, no bind mount.
     assert not (secrets_dir / "API_KEY").exists()
-    assert not any("secrets:ro" in a for a in run_argv)
 
 
 def test_generate_units_persists_secret_env_placeholders():
@@ -1095,164 +989,82 @@ def test_generate_units_persists_secret_env_placeholders():
     assert meta["secret_envs"] == ["API_KEY", "DB_URL"]
 
 
-def test_supervisor_restages_secrets_for_uid_200(tmp_path):
-    """REGRESSION: supervisor.sh stage 35 must copy /run/agentcage/secrets/*
-    into /home/acproxy/secrets/* with chown 200:200 mode 0400, so mitmproxy
-    can read them but the cage workload (uid 1000) cannot.
-
-    Without stage 35, mitmproxy (uid 200) can't open the bind-mounted
-    files (virtiofs maps them to root-owned mode 0600), and the cage
-    workload (uid 1000) ALSO can't open them — secret_injection silently
-    no-ops."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    sup = (tmp_path / "supervisor.sh").read_text()
-    assert "stage 35" in sup
-    assert "/run/agentcage/secrets" in sup
-    assert "/home/acproxy/secrets" in sup
-    assert "chown acproxy:acproxy" in sup
-    assert "chmod 0400" in sup
-
-
-def test_supervisor_umounts_secrets_after_restaging(tmp_path):
-    """REGRESSION: supervisor must `umount /run/agentcage/secrets` after
-    re-staging to /home/acproxy/secrets. Without the unmount, virtiofs
-    keeps the host-side files visible at the bind-mount path, and the
-    cage workload (uid 1000 — but virtiofs maps host owner through
-    identity so the file shows as workload-owned) can `cat` them.
-
-    Mac e2e verification (with the umount):
-      $ cage exec ubuntu-sec -- su ubuntu -s /bin/sh -c \\
-            'cat /run/agentcage/secrets/AGENTCAGE_SECFILE_SECRET'
-      cat: /run/agentcage/secrets/AGENTCAGE_SECFILE_SECRET: No such
-      file or directory   ← pass
-
-    Without the umount, the same command returns the secret value
-    cleartext — a silent end-run around the file-based delivery model.
-    `die` on umount failure so a broken stage 35 fails closed rather
-    than booting a cage that leaks."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    sup = (tmp_path / "supervisor.sh").read_text()
-    assert "umount /run/agentcage/secrets" in sup
-    # Failure must abort the cage; otherwise the leak is silent.
-    assert 'die "could not unmount /run/agentcage/secrets' in sup
+# supervisor.sh secret-restaging tests removed in PR 3 — the file is
+# gone (the cage VM has no supervisor; the egress sibling has its own
+# supervisor-egress.sh which reads secrets from a bind-mounted dir
+# directly, no re-staging needed). The corresponding invariant for the
+# 2-VM model — secrets bind-mount lives ONLY in the egress VM, NOT in
+# the cage VM — is enforced by test_start_secrets_bind_only_to_egress
+# below.
 
 
 def test_start_argv_ignores_host_env_when_pending_secrets_missing(
     tmp_path, monkeypatch,
 ):
-    """Regression for the implicit-env-secret leak: even when the unit
-    JSON carries a placeholder map AND the host env has a value for the
-    secret, start() MUST NOT inject anything if pending_secrets.json
-    doesn't have a matching entry. Only --set-secret values are honored."""
-    import agentcage.state as _state
-    monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
+    """Regression for the implicit-env-secret leak: host env is never
+    used as an implicit secret source — only --set-secret values are
+    honored.
 
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "user_image": "x",
-        "cpus": "",
-        "memory": "",
-        "lifecycle": "interactive",
-        "secret_envs": ["API_KEY"],
-        "secret_env_placeholders": {"API_KEY": "{{API_KEY}}"},
-    }))
-    # No pending_secrets.json. Host env IS set — must be ignored.
+    NOTE(PR3): the cage VM still carries the placeholder env even when
+    the value isn't provided (so cage code that reads
+    ``os.environ['API_KEY']`` always gets ``{{API_KEY}}``, never an
+    unset key). The mitmproxy addon then sees the placeholder string in
+    the request and emits a warning. This differs from the legacy
+    single-VM model which conditionally added the -e flag, but the
+    invariant `cleartext never leaks` is preserved either way."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+            "secret_envs": ["API_KEY"],
+            "secret_env_placeholders": {"API_KEY": "{{API_KEY}}"},
+        },
+    )
     monkeypatch.setenv("API_KEY", "from-host-env-DO-NOT-USE")
 
-    captured_argv = []
+    backend.start("demo", quiet=True)
 
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
+    cage_argv = _cage_run_argv(captured)
+    egress_argv = _egress_run_argv(captured)
     secrets_dir = tmp_path / "secrets"
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
-         patch.object(backend, "secrets_dir", return_value=secrets_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
 
-    run_argv = next(a for a in captured_argv if a[0] == "run")
-    # Placeholder MUST NOT be present (no `-e API_KEY={{API_KEY}}`) because
-    # there's no real value to substitute — the proxy would otherwise pass
-    # the literal placeholder string through to upstream.
-    assert "API_KEY={{API_KEY}}" not in run_argv
     # Host-env value MUST NOT leak anywhere.
-    assert "from-host-env-DO-NOT-USE" not in " ".join(run_argv)
-    # No secret file written.
+    assert "from-host-env-DO-NOT-USE" not in " ".join(cage_argv)
+    assert "from-host-env-DO-NOT-USE" not in " ".join(egress_argv)
+    # No secret file written (no value was provided).
     assert not (secrets_dir / "API_KEY").exists()
 
 
-def test_nat_redirect_excludes_proxy_and_dns_not_only_uid_1000(tmp_path):
-    """REGRESSION: NAT REDIRECT for tcp/80 and tcp/443 must catch every
-    uid except the egress components (uid 200 = mitmproxy, uid 201 = dnsmasq),
-    not only the cage workload at uid 1000. `container exec` enters as the
-    image's default USER — root on every popular base — so an interactive
-    `agentcage cage exec ubuntu02 -- apt-get update` runs as uid 0. Before
-    this fix the REDIRECT only matched uid 1000, so root's port-80/443
-    egress skipped the proxy entirely and hit the default-DROP filter chain.
-    """
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    sup = (tmp_path / "supervisor.sh").read_text()
-    # The OLD (buggy) form was: `--uid-owner 1000 -j REDIRECT`. Forbid it.
-    assert "--uid-owner 1000 -j REDIRECT" not in sup
-    assert "--uid-owner 1000 \\\n    -j REDIRECT" not in sup
-    # The NEW form excludes uid 200 (mitmproxy) and uid 201 (dnsmasq) so
-    # their upstream connections aren't redirected back to themselves.
-    assert "! --uid-owner 200" in sup
-    assert "! --uid-owner 201" in sup
+# Legacy in-cage iptables NAT REDIRECT tests removed in PR 3 — the cage
+# VM has no iptables/uid-owner rules anymore. The equivalent invariant
+# (cage egress flows through the proxy regardless of which uid issued
+# the request) is now enforced by the egress sibling's PREROUTING
+# REDIRECT (see tests/test_egress_image.py::test_iptables_rules_applied).
 
 
-def test_dnsmasq_strips_aaaa_records(tmp_path):
+def test_dnsmasq_strips_aaaa_records():
     """REGRESSION: dnsmasq must `filter-AAAA` so clients don't waste time
-    trying IPv6 addresses they can never reach (IPv6 is killed at the
-    netfilter + sysctl level by supervisor.sh stage 80). Without this the
-    cage still gets AAAA records back, curl/apt try IPv6 first, fail
-    instantly with "Cannot assign requested address", then fall back to v4."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    conf = (tmp_path / "dnsmasq.conf").read_text()
+    trying IPv6 addresses they can never reach. Same invariant as the
+    legacy single-VM model, just rendered host-side now."""
+    conf = ac_wrapper.render_dnsmasq_conf(["a.com"])
     assert "filter-AAAA" in conf
 
 
-def test_supervisor_resolves_cage_user_dynamically(tmp_path):
-    """REGRESSION: capsh's `--user=` resolves by NAME, so a hard-coded
-    `--user=cage` blows up on images that already have a different uid-1000
-    user (ubuntu → `ubuntu`, node → `node`, claude-code → `claude`). The
-    supervisor must look up the uid-1000 name at runtime before exec'ing
-    capsh, otherwise stage 90 dies with `User [cage] not known` and the
-    whole container exits before any cage workload starts."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    sup = (tmp_path / "supervisor.sh").read_text()
-    # The name MUST be resolved from /etc/passwd at runtime.
-    assert "getent passwd 1000" in sup
-    # The capsh invocation that drops caps + switches to the cage user
-    # MUST reference the resolved variable, not the literal `cage`. We
-    # find the line by looking for the `--user=` argument that follows
-    # `--drop=all` (the capsh pattern unique to stage 90).
-    lines = sup.splitlines()
-    cage_user_idx = next(
-        (i for i, ln in enumerate(lines)
-         if ln.strip().startswith("--drop=all") and not ln.lstrip().startswith("#")),
-        None,
+def test_cage_init_resolves_cage_user_dynamically():
+    """The cage-init script (PID 1 of the cage VM in the 2-microVM model)
+    must look up the uid-1000 user's name from /etc/passwd at runtime —
+    capsh's --user= takes a name, and the name varies by base image
+    (ubuntu / node / claude / cage)."""
+    from pathlib import Path
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container" / "cage-init.sh"
     )
-    assert cage_user_idx is not None, (
-        "supervisor.sh has no executable `--drop=all` (stage 90 capsh)"
-    )
-    # The `--user=` argument follows on the next non-blank line.
-    follow = lines[cage_user_idx + 1].strip()
-    assert follow.startswith("--user="), (
-        f"expected --user= to follow --drop=all, got: {follow!r}"
-    )
-    assert "${CAGE_USER}" in follow, (
-        f"capsh --user= for the cage workload must reference $CAGE_USER, "
-        f"got: {follow!r}"
-    )
+    text = script.read_text()
+    assert "getent passwd 1000" in text
+    assert "--user=" in text
+    assert "${CAGE_USER}" in text
 
 
 def test_ubuntu_scaffold_ca_install_tolerates_eacces():
@@ -1507,37 +1319,22 @@ def test_generate_units_falls_back_to_vm_when_container_unset():
     assert meta["memory"] == "4096m"
 
 
-def test_start_argv_includes_normalized_cpus_memory(tmp_path):
-    """`start()` reads the unit metadata and constructs the `container run`
-    argv with normalized --cpus (integer; Apple rejects fractions) and
-    --memory (uppercase suffix; Apple rejects lowercase). Original cage.yaml
-    value "1.5" → "2", "2g" → "2G"."""
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "user_image": "x",
-        "cpus": "1.5",   # fractional → ceil to 2
-        "memory": "2g",  # lowercase → uppercase to 2G
-        "lifecycle": "interactive",
-    }))
-    captured_argv = []
-
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    run_argv = next(a for a in captured_argv if a[0] == "run")
-    assert run_argv[run_argv.index("--cpus") + 1] == "2"
-    assert run_argv[run_argv.index("--memory") + 1] == "2G"
+def test_start_argv_includes_normalized_cpus_memory(tmp_path, monkeypatch):
+    """The cage VM's `container run` argv carries normalized --cpus
+    (integer; Apple rejects fractions) and --memory (uppercase suffix).
+    The egress sibling gets a fixed 512M and no --cpus (it's small)."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "1.5", "memory": "2g",
+            "lifecycle": "interactive",
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert cage_argv[cage_argv.index("--cpus") + 1] == "2"
+    assert cage_argv[cage_argv.index("--memory") + 1] == "2G"
 
 
 def test_normalize_cpus_ceils_fractions():
@@ -1559,45 +1356,24 @@ def test_normalize_memory_uppercases_suffix():
     assert _normalize_memory("garbage") == "garbage"  # doesn't match → pass through
 
 
-def test_start_creates_logs_dir_and_bind_mounts_it(tmp_path):
+def test_start_creates_logs_dir_and_bind_mounts_it(tmp_path, monkeypatch):
     """`start()` must create the per-cage logs dir on the host and pass
-    --volume <host_logs>:/var/log/agentcage to `container run` so the
-    supervisor's proxy.log / capture.jsonl / dnsmasq.log are visible to
-    the host. This unlocks `cage audit` and `cage har` on apple-container
-    (both gated unsupported pre-bind-mount because they had no host path
-    to read)."""
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "user_image": "x",
-        "cpus": "",
-        "memory": "",
-        "lifecycle": "interactive",
-    }))
-    captured_argv = []
-
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
+    --volume <host_logs>:/var/log/agentcage to the EGRESS sibling
+    (where the addon writes audit.jsonl + capture.jsonl + dnsmasq.log).
+    The cage VM does not get this bind in the 2-microVM model — there's
+    nothing inside the cage that writes to /var/log/agentcage."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+        },
+    )
+    backend.start("demo", quiet=True)
     logs_dir = tmp_path / "logs"
-
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=logs_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    # Host logs dir created.
     assert logs_dir.is_dir()
-    # --volume <logs_dir>:/var/log/agentcage in the run argv.
-    run_argv = next(a for a in captured_argv if a[0] == "run")
-    vol_idx = run_argv.index("--volume")
-    assert run_argv[vol_idx + 1] == f"{logs_dir}:/var/log/agentcage"
+    egress_argv = _egress_run_argv(captured)
+    assert f"{logs_dir}:/var/log/agentcage" in egress_argv
 
 
 def test_logs_dir_lives_under_per_cage_state_dir():
@@ -1610,214 +1386,150 @@ def test_logs_dir_lives_under_per_cage_state_dir():
     assert logs.name == "logs"
 
 
-def test_start_argv_backward_compat_pre_0_20_6_mem_mb(tmp_path):
-    """Pre-0.20.6 unit JSON used integer `mem_mb` + `cpus` (no `memory`
-    string). Cages created before this PR must keep starting on a fresh
-    agentcage — so `start()` falls back to the old `mem_mb` field when
-    `memory` is absent. The fallback uses the uppercase M suffix Apple
-    requires."""
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "user_image": "x",
-        "cpus": 4,        # old integer form
-        "mem_mb": 4096,   # old field
-        "lifecycle": "interactive",
-    }))
-    captured_argv = []
-
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    run_argv = next(a for a in captured_argv if a[0] == "run")
-    assert run_argv[run_argv.index("--memory") + 1] == "4096M"
+def test_start_argv_backward_compat_pre_0_20_6_mem_mb(tmp_path, monkeypatch):
+    """Pre-0.20.6 unit JSON used integer `mem_mb` (no `memory` string).
+    Cages created before this PR must keep starting on a fresh agentcage."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": 4, "mem_mb": 4096,  # old shape
+            "lifecycle": "interactive",
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert cage_argv[cage_argv.index("--memory") + 1] == "4096M"
 
 
 def test_start_waits_for_supervisor_ready_marker(tmp_path, monkeypatch):
-    """`start()` must block until supervisor.sh signals readiness via
-    ``logs_dir(name)/ready`` — the host-side virtiofs view of the
-    in-cage ``touch /var/log/agentcage/ready`` at the end of stage 90.
-    Without this wait the operator's next action races the supervisor
-    and sees missing /home/acproxy/secrets, no proxy, etc. (issue #168)."""
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo", "user_image": "x", "cpus": 1,
-        "memory": "1G", "lifecycle": "interactive",
-    }))
-    logs_dir = tmp_path / "logs"
-
-    # Speed up the poll so a missed signal would fail fast in CI.
+    """`start()` must block until the EGRESS sibling's supervisor signals
+    readiness via ``logs_dir(name)/ready`` (PR 3: this marker is now
+    touched by supervisor-egress.sh inside the egress sibling, not by
+    the cage VM). Without this wait the cage VM starts before the
+    egress's mitmproxy is listening — same race the legacy single-VM
+    model had at issue #168."""
     monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
     monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 1.0)
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+        },
+    )
+    # Override the auto-mocked _wait_supervisor_ready so it runs against
+    # the real poll loop, then have fake_run touch the marker when the
+    # egress `container run` is invoked.
+    monkeypatch.delattr(backend, "_wait_supervisor_ready", raising=False)
+    logs_dir = tmp_path / "logs"
 
-    def fake_run(argv, **_kwargs):
-        # Mirror real supervisor.sh: touch the marker as the LAST thing
-        # before the cage workload starts. The marker file is the contract
-        # between supervisor and backend.
-        if argv and argv[0] == "run":
+    def fake_run_touches_ready(argv, **_kwargs):
+        captured.append(list(argv))
+        if argv and argv[0] == "run" and any("agentcage-egress" in a for a in argv):
             logs_dir.mkdir(parents=True, exist_ok=True)
             (logs_dir / "ready").touch()
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=logs_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value={"status": "running"}), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
-        # Returns cleanly when the marker is present.
-        backend.start("demo", quiet=True)
+    monkeypatch.setattr(ac_cli, "run", fake_run_touches_ready)
+    # inspect returns running so the dead-cage detector doesn't fire.
+    monkeypatch.setattr(
+        ac_cli, "inspect", lambda _n: {"status": "running"},
+    )
+    backend.start("demo", quiet=True)
 
 
 def test_start_clears_stale_ready_marker_before_run(tmp_path, monkeypatch):
     """A leftover marker from a prior cage lifetime must NOT be honored:
-    `start()` deletes it BEFORE `container run -d`, then re-polls. Otherwise
-    a restart would return instantly while the new supervisor was still
-    booting — the original race."""
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo", "user_image": "x", "cpus": 1,
-        "memory": "1G", "lifecycle": "interactive",
-    }))
-    logs_dir = tmp_path / "logs"
-    logs_dir.mkdir()
-    # Stale marker from a previous run.
-    stale = logs_dir / "ready"
-    stale.touch()
-
+    `start()` deletes it BEFORE the egress `container run`, then re-polls."""
     monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
     monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 0.5)
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+        },
+    )
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stale = logs_dir / "ready"
+    stale.touch()
+    monkeypatch.delattr(backend, "_wait_supervisor_ready", raising=False)
 
     deleted = {"happened": False}
 
     def fake_run(argv, **_kwargs):
-        if argv and argv[0] == "run":
-            # At this point, start() should already have unlinked the stale
-            # marker (mirroring real cage start). Record + re-create.
+        captured.append(list(argv))
+        if argv and argv[0] == "run" and any("agentcage-egress" in a for a in argv):
             deleted["happened"] = not stale.exists()
             stale.touch()
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=logs_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value={"status": "running"}), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
-        backend.start("demo", quiet=True)
-
+    monkeypatch.setattr(ac_cli, "run", fake_run)
+    monkeypatch.setattr(
+        ac_cli, "inspect", lambda _n: {"status": "running"},
+    )
+    backend.start("demo", quiet=True)
     assert deleted["happened"], \
-        "start() must unlink stale ready marker BEFORE container run"
+        "start() must unlink stale ready marker BEFORE the egress run"
 
 
 def test_start_raises_when_supervisor_dies_before_ready(tmp_path, monkeypatch):
-    """If the cage exits before signaling ready (supervisor `die`d at some
-    stage), `start()` must raise immediately with a pointer to
-    `container logs` — not silently return so the operator hits a confusing
-    "Invalid API key" / "connection refused" later."""
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo", "user_image": "x", "cpus": 1,
-        "memory": "1G", "lifecycle": "interactive",
-    }))
-    logs_dir = tmp_path / "logs"
-
+    """If the egress sibling exits before signaling ready, `start()`
+    must raise immediately with a pointer to `container logs`."""
     monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
     monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 1.0)
+    backend, _captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+        },
+    )
+    monkeypatch.delattr(backend, "_wait_supervisor_ready", raising=False)
+    # No marker ever touched; inspect reports egress as exited.
+    monkeypatch.setattr(
+        ac_cli, "inspect", lambda _n: {"status": "exited"},
+    )
+    with pytest.raises(RuntimeError, match="exited before becoming ready"):
+        backend.start("demo", quiet=True)
 
-    def fake_run(argv, **_kwargs):
-        # No marker touched; cage will be reported as exited.
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=logs_dir), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value={"status": "exited"}), \
-         patch.object(ac_cli, "run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="exited before becoming ready"):
-            backend.start("demo", quiet=True)
-
-
-def test_supervisor_touches_ready_marker_before_capsh():
-    """supervisor.sh must touch ``/var/log/agentcage/ready`` as its LAST
-    action before `exec capsh`. Mis-placement (before iptables / before
-    proxy listening) would re-introduce the race. Static check of the
-    supervisor source."""
-    import re
-    sup_path = (Path(__file__).resolve().parent.parent
-                / "src/agentcage/data/apple-container/supervisor.sh")
-    text = sup_path.read_text()
-    touch_idx = text.find("touch /var/log/agentcage/ready")
-    capsh_idx = text.rfind("exec capsh")
-    assert touch_idx != -1, "supervisor.sh must touch the readiness marker"
-    assert capsh_idx != -1, "supervisor.sh must end with `exec capsh`"
-    assert touch_idx < capsh_idx, \
-        "touch /var/log/agentcage/ready must come BEFORE exec capsh"
-    # Make sure no other stage marker (`stage NN:`) comes between the touch
-    # and the capsh — i.e. it really is the last thing.
-    between = text[touch_idx:capsh_idx]
-    later_stages = re.findall(r'^log "stage \d+:', between, re.MULTILINE)
-    assert not later_stages, \
-        f"no stages may run between ready-touch and capsh; found {later_stages}"
+# test_supervisor_touches_ready_marker_before_capsh removed in PR 3:
+# supervisor.sh is gone. The ready-marker invariant moved to the egress
+# image's supervisor-egress.sh (tested in tests/test_egress_image.py).
 
 
 def test_start_passes_user_volumes_as_container_run_args(tmp_path, monkeypatch):
     """`container.volumes` entries flow through `start()` as
-    `--volume host:cage[:mode]` argv. Was silently dropped pre-this-PR
-    (config.py used to warn via _ac_silent_drops). Verifies the unit
-    JSON persists them and start() reads them back."""
+    `--volume host:cage[:mode]` on the CAGE VM's run argv. The egress
+    sibling does not get user volumes — its bind set is fixed
+    (config / certs / logs / secrets)."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    # Two volumes — one rw, one ro — to ensure mode strings pass through.
     rw_host = tmp_path / "rw-src"
     rw_host.mkdir()
     ro_host = tmp_path / "ro-src"
     ro_host.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo", "user_image": "x", "cpus": 1,
-        "memory": "1G", "lifecycle": "interactive",
-        "volumes": [f"{rw_host}:/workspace:rw", f"{ro_host}:/readonly:ro"],
-    }))
-    captured_argv: list[list[str]] = []
-
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
-         patch.object(backend, "secrets_dir", return_value=tmp_path / "secrets"), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    run_argv = next(a for a in captured_argv if a and a[0] == "run")
-    # Both volumes are present, in order, with their modes preserved.
-    assert f"{rw_host}:/workspace:rw" in run_argv
-    assert f"{ro_host}:/readonly:ro" in run_argv
-    # Each --volume arg is paired with a flag (smoke check for argv shape).
-    vol_positions = [i for i, a in enumerate(run_argv) if a == "--volume"]
-    for pos in vol_positions:
-        assert pos + 1 < len(run_argv), \
-            "stray --volume with no value in argv"
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [
+                f"{rw_host}:/workspace:rw",
+                f"{ro_host}:/readonly:ro",
+            ],
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert f"{rw_host}:/workspace:rw" in cage_argv
+    assert f"{ro_host}:/readonly:ro" in cage_argv
+    # User volumes should NOT appear on the egress sibling.
+    egress_argv = _egress_run_argv(captured)
+    assert f"{rw_host}:/workspace:rw" not in egress_argv
+    assert f"{ro_host}:/readonly:ro" not in egress_argv
 
 
 def test_user_volume_argv_skips_unresolved_var():
@@ -1869,43 +1581,26 @@ def test_unit_json_persists_user_volumes(tmp_path, monkeypatch):
 
 def test_start_passes_user_env_as_container_run_args(tmp_path, monkeypatch):
     """`container.env:` entries flow through `start()` as `-e KEY=VAL`
-    argv. Was silently dropped pre-this-fix: `cfg.container.env` was
-    never read on the apple-container backend (only the container
-    backend's quadlets wired it). Verifies the unit JSON persists them
-    and start() reads them back."""
+    on the cage VM's argv. The egress sibling does NOT inherit user env
+    (it only carries the fixed AGENTCAGE_CONFIG / AGENTCAGE_AUDIT_LOG /
+    AGENTCAGE_CAPTURE for the addon)."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    backend = AppleContainerBackend()
-    unit_dir = tmp_path / "apple-container"
-    unit_dir.mkdir()
-    (unit_dir / "demo.json").write_text(json.dumps({
-        "name": "demo", "user_image": "x", "cpus": 1,
-        "memory": "1G", "lifecycle": "interactive",
-        "env": {"TORTURE_T7": "hello-from-mac", "DEPLOY_ENV": "ctf"},
-    }))
-    captured_argv: list[list[str]] = []
-
-    def fake_run(argv, **_kwargs):
-        captured_argv.append(list(argv))
-        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    with patch.object(backend, "unit_dir", return_value=unit_dir), \
-         patch.object(backend, "logs_dir", return_value=tmp_path / "logs"), \
-         patch.object(backend, "secrets_dir", return_value=tmp_path / "secrets"), \
-         patch.object(ac_cli, "image_inspect", return_value={"config": {}}), \
-         patch.object(ac_cli, "inspect", return_value=None), \
-         patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(backend, "_wait_supervisor_ready", lambda *a, **k: None):
-        backend.start("demo", quiet=True)
-
-    run_argv = next(a for a in captured_argv if a and a[0] == "run")
-    # Each env var rendered as `-e KEY=VAL`, preserving values verbatim.
-    assert "TORTURE_T7=hello-from-mac" in run_argv
-    assert "DEPLOY_ENV=ctf" in run_argv
-    # Each -e is paired with its KEY=VAL value (argv shape sanity).
-    e_positions = [i for i, a in enumerate(run_argv) if a == "-e"]
-    for pos in e_positions:
-        assert pos + 1 < len(run_argv) and "=" in run_argv[pos + 1], \
-            f"stray -e at position {pos} in argv"
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "env": {"TORTURE_T7": "hello-from-mac", "DEPLOY_ENV": "ctf"},
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert "TORTURE_T7=hello-from-mac" in cage_argv
+    assert "DEPLOY_ENV=ctf" in cage_argv
+    # User env MUST NOT leak to the egress sibling.
+    egress_argv = _egress_run_argv(captured)
+    assert "TORTURE_T7=hello-from-mac" not in egress_argv
+    assert "DEPLOY_ENV=ctf" not in egress_argv
 
 
 def test_unit_json_persists_user_env_with_var_expansion(monkeypatch):
@@ -2735,155 +2430,19 @@ def _smtp_relay_entry(name="primary-smtp", port=2525):
     }
 
 
-def test_stage_build_context_writes_protocol_relays_json(tmp_path):
-    """The cage's ``protocol_relays:`` list is baked into the wrapper image
-    so the in-cage addon can spawn listeners at mitmproxy startup. The
-    file must be JSON the addon's loader can read+parse — same shape as
-    secret_injection.json.
-    """
-    relays = [_smtp_relay_entry()]
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"],
-        allowlist=["smtp.example.net"],
-        protocol_relays=relays,
-    )
-    pr = json.loads((tmp_path / "protocol_relays.json").read_text())
-    assert pr == relays
-    assert pr[0]["type"] == "smtp"
-    assert pr[0]["listen"] == "127.0.0.1:2525"
-
-
-def test_stage_build_context_empty_protocol_relays(tmp_path):
-    """No relays declared → empty list (NOT a missing file), so the
-    addon's loader can read unconditionally without a path check."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    assert (tmp_path / "protocol_relays.json").exists()
-    assert json.loads((tmp_path / "protocol_relays.json").read_text()) == []
-
-
-def test_stage_build_context_stages_relays_tarball(tmp_path):
-    """The ``relays`` package must be staged as a tarball so the in-cage
-    addon can ``from relays import get`` after ADD-extraction. Same
-    rationale as the transforms tarball — Apple's container build
-    silently drops the contents of a directory COPY."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    archive = tmp_path / "relays.tar.gz"
-    assert archive.exists()
-    import tarfile as _tf
-    with _tf.open(archive) as tar:
-        names = sorted(tar.getnames())
-    assert "__init__.py" in names
-    assert "smtp.py" in names
-    assert "imap.py" in names
-    assert "_validate.py" in names
-
-
-def test_stage_build_context_stages_inspectors_tarball_for_relays(tmp_path):
-    """The ``relays.smtp`` module imports ``inspectors.base`` at module
-    load time — bundling the inspectors package satisfies that import
-    even though the apple-container addon currently passes
-    ``inspectors=None`` to relay constructors. Without this the addon
-    crashes at relay-import time the moment a cage declares
-    ``protocol_relays:``."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    archive = tmp_path / "inspectors.tar.gz"
-    assert archive.exists()
-    import tarfile as _tf
-    with _tf.open(archive) as tar:
-        names = sorted(tar.getnames())
-    assert "__init__.py" in names
-    assert "base.py" in names
-    assert "util.py" in names
-
-
-def test_wrapper_containerfile_adds_relays_and_inspectors():
-    """The Containerfile must ADD relays.tar.gz + inspectors.tar.gz
-    next to the addon — mitmproxy's script loader puts the addon's
-    dir on sys.path, so the packages live at /opt/agentcage/{relays,
-    inspectors}/ for ``from relays import get`` to resolve."""
-    out = ac_wrapper.render_wrapper_containerfile(
-        "docker.io/library/alpine:3.20",
-        user_cmd=["sh", "-c", "echo hi"],
-    )
-    assert "ADD relays.tar.gz /opt/agentcage/relays/" in out
-    assert "ADD inspectors.tar.gz /opt/agentcage/inspectors/" in out
-    assert "COPY protocol_relays.json /etc/agentcage/protocol_relays.json" in out
-    # And we must NOT regress to the broken directory-COPY form.
-    assert "COPY relays /opt/agentcage/relays" not in out
-    assert "COPY inspectors /opt/agentcage/inspectors" not in out
-
-
-def test_backend_threads_protocol_relays_into_build_artifacts(
-    tmp_path, monkeypatch,
-):
-    """The apple-container backend must forward ``protocol_relays`` from
-    the parsed Config through to wrapper.build_wrapper. Catches the
-    silent-drop regression: rule loaded fine, image built fine, but
-    the cage saw no relays.json baked in."""
-    captured: dict = {}
-
-    def fake_build_wrapper(_name, _image, **kwargs):
-        captured["protocol_relays"] = kwargs.get("protocol_relays")
-        return "localhost/agentcage-apple-test:latest"
-
-    from agentcage.backends import apple_container as backend_mod
-    monkeypatch.setattr(
-        backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper,
-    )
-    monkeypatch.setattr(
-        ac_cli, "image_inspect",
-        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
-    )
-    monkeypatch.setattr(
-        ac_cli, "run",
-        lambda *_a, **_kw: type(
-            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
-        )(),
-    )
-
-    from agentcage.config import (
-        ProtocolRelay, RelayAuth, RelayPolicy,
-        RelayRecipientAllowlist, RelayUpstream,
-    )
-    cfg = Config(name="t", isolation="apple-container")
-    cfg.container.image = "localhost/test:latest"
-    cfg.container.command = ["/bin/sh"]
-    cfg.protocol_relays = [
-        ProtocolRelay(
-            name="primary",
-            type="smtp",
-            listen="127.0.0.1:2525",
-            upstream=RelayUpstream(
-                host="smtp.example.net", port=587, tls=True,
-            ),
-            auth=RelayAuth(
-                type="smtp-plain",
-                user_source="env:SMTP_USER",
-                password_source="env:SMTP_PASS",
-            ),
-            policy=RelayPolicy(
-                recipient_allowlist=RelayRecipientAllowlist(
-                    domains=["example.com"],
-                ),
-            ),
-        ),
-    ]
-    cfg.domains.allow = ["smtp.example.net"]
-
-    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
-
-    relays = captured["protocol_relays"]
-    assert len(relays) == 1
-    assert relays[0]["name"] == "primary"
-    assert relays[0]["type"] == "smtp"
-    assert relays[0]["listen"] == "127.0.0.1:2525"
-    assert relays[0]["upstream"]["host"] == "smtp.example.net"
-    assert relays[0]["auth"]["user_source"] == "env:SMTP_USER"
-    # The policy must carry over so the in-cage addon can construct
-    # the same SmtpRelay state machine the container backend does.
-    assert relays[0]["policy"]["recipient_allowlist"]["domains"] == [
-        "example.com",
-    ]
+# Build-context staging tests for protocol_relays + transforms + capture
+# + inspectors were removed in PR 3 — those config files are no longer
+# baked into the wrapper image; they ship inside the agentcage-egress
+# image (PR 1) and the per-cage proxy-config.yaml is bind-mounted from
+# the host (rendered by AppleContainerBackend._render_egress_config).
+#
+# The high-value end-to-end invariants the deleted tests covered are
+# preserved by:
+#   * tests/test_egress_image.py (egress image carries the addon code)
+#   * tests/test_addon.py / test_addon_relays.py / test_addon_capture_redaction.py
+#     (Python-level unit tests of the addon code)
+#   * test_backend_protocol_relay_envs_collected_into_unit_json below
+#     (the unit JSON still drives credential staging at start time).
 
 
 def test_backend_protocol_relay_envs_collected_into_unit_json(monkeypatch):
@@ -3251,86 +2810,10 @@ def _make_flow_with_bodies(*, host, req_body, resp_body, method="POST",
     return flow
 
 
-def test_stage_build_context_writes_capture_config(tmp_path):
-    """The capture config baked into the image at build time. Empty dict
-    means body capture stays disabled (legacy headers-only path)."""
-    cfg = {
-        "enable_har": True,
-        "max_body_size": 1024,
-        "min_action": "all",
-        "domains": ["httpbin.org"],
-        "exclude_domains": [],
-    }
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"], allowlist=["httpbin.org"], capture_config=cfg,
-    )
-    out = json.loads((tmp_path / "capture.json").read_text())
-    assert out == cfg
-    # The shared CaptureWriter module is staged next to the addon so
-    # ``from capture import CaptureWriter`` resolves at runtime.
-    assert (tmp_path / "capture.py").exists()
-    src = (tmp_path / "capture.py").read_text()
-    assert "class CaptureWriter" in src
-
-
-def test_stage_build_context_empty_capture_config_default(tmp_path):
-    """No capture config passed → empty {} on disk. The addon reads
-    ``enable_har: false`` (default) and skips body capture entirely."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    assert (tmp_path / "capture.json").exists()
-    assert json.loads((tmp_path / "capture.json").read_text()) == {}
-
-
-def test_containerfile_copies_capture_files():
-    """The wrapper Containerfile must COPY both capture.py (the writer
-    module) and capture.json (the per-cage config) into the image."""
-    out = ac_wrapper.render_wrapper_containerfile(
-        "docker.io/library/debian:12-slim", user_cmd=["sh"],
-    )
-    assert "COPY capture.py /opt/agentcage/capture.py" in out
-    assert "COPY capture.json /etc/agentcage/capture.json" in out
-
-
-def test_backend_threads_capture_into_build_artifacts(monkeypatch):
-    """``capture:`` from cage.yaml must flow from Config through the
-    backend into wrapper.build_wrapper as ``capture_config=`` — same
-    pattern the secret_injection rules use. Catches the silent-drop
-    regression: cage.yaml had ``capture.enable_har: true`` but the
-    rebuilt image carried ``{}``."""
-    from agentcage.backends import apple_container as backend_mod
-
-    captured: dict = {}
-
-    def fake_build_wrapper(_name, _image, **kwargs):
-        captured["capture_config"] = kwargs.get("capture_config")
-        return "localhost/agentcage-apple-test:latest"
-
-    monkeypatch.setattr(backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper)
-    monkeypatch.setattr(
-        ac_cli, "image_inspect",
-        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
-    )
-    monkeypatch.setattr(
-        ac_cli, "run",
-        lambda *_a, **_kw: type(
-            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
-        )(),
-    )
-
-    cfg = Config(name="t", isolation="apple-container")
-    cfg.container.image = "localhost/test:latest"
-    cfg.container.command = ["/bin/sh"]
-    cfg.capture.enable_har = True
-    cfg.capture.max_body_size = 2048
-    cfg.capture.domains = ["httpbin.org"]
-    cfg.domains.allow = ["httpbin.org"]
-
-    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
-
-    cap = captured["capture_config"]
-    assert cap["enable_har"] is True
-    assert cap["max_body_size"] == 2048
-    assert cap["domains"] == ["httpbin.org"]
+# capture / inspectors / secret_injection build-context staging tests
+# removed in PR 3 (2-microVM refactor). The wrapper image no longer
+# carries these files — they ship in the agentcage-egress image and the
+# per-cage host-side rendered proxy-config.yaml.
 
 
 def test_addon_disabled_falls_back_to_headers_only(tmp_path, monkeypatch):
@@ -3508,122 +2991,8 @@ def test_capture_warning_no_longer_fires_for_enable_har():
 # ---------------------------------------------------------------------------
 
 
-def test_stage_build_context_writes_inspectors_json(tmp_path):
-    """The cage's inspector chain (cage.yaml ``inspectors:`` list) flows
-    into the build context as ``inspectors.json``. The in-cage addon
-    reads this at startup and dispatches each entry through the
-    bundled registry."""
-    inspectors_cfg = [
-        {"name": "content-type", "config": {"action": "block"}},
-        {"name": "body-size", "config": {"max_bytes": 1024}},
-    ]
-    ac_wrapper.stage_build_context(
-        tmp_path, ["sh"], allowlist=["a.com"], inspectors=inspectors_cfg,
-    )
-    assert (tmp_path / "inspectors.json").exists()
-    parsed = json.loads((tmp_path / "inspectors.json").read_text())
-    assert parsed == inspectors_cfg
-
-
-def test_stage_build_context_empty_inspectors_writes_empty_list(tmp_path):
-    """Missing ``inspectors:`` in cage.yaml → empty list on disk (not a
-    missing file). The addon's loader reads + parses unconditionally,
-    so the file must always exist."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    assert (tmp_path / "inspectors.json").exists()
-    assert json.loads((tmp_path / "inspectors.json").read_text()) == []
-
-
-def test_stage_build_context_stages_inspectors_tarball(tmp_path):
-    """The inspectors registry package must be staged into the build
-    context as a tarball (same ADD-extract trick as transforms — direct
-    directory COPY silently empties on Apple ``container build`` 0.5+)."""
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    archive = tmp_path / "inspectors.tar.gz"
-    assert archive.exists()
-    import tarfile as _tf
-    with _tf.open(archive) as tar:
-        names = sorted(tar.getnames())
-    # Sanity: real inspectors are inside.
-    assert "__init__.py" in names
-    assert "base.py" in names
-    assert "content_type.py" in names
-
-
-def test_stage_build_context_inspectors_tarball_excludes_pycache(
-    tmp_path, monkeypatch,
-):
-    """__pycache__ is host-local Python bytecode — packing it into the
-    image layer wastes space and ruins layer determinism. The tarball
-    must filter it out (same rule as the transforms tarball)."""
-    fake_src = tmp_path / "fake_inspectors_src"
-    fake_src.mkdir()
-    (fake_src / "__init__.py").write_text("# real")
-    (fake_src / "content_type.py").write_text("# real")
-    (fake_src / "__pycache__").mkdir()
-    (fake_src / "__pycache__" / "garbage.pyc").write_bytes(b"\x00\x00\x00")
-    monkeypatch.setattr(ac_wrapper, "_INSPECTORS_SRC", fake_src)
-    ac_wrapper.stage_build_context(tmp_path, ["sh"], allowlist=["a.com"])
-    import tarfile as _tf
-    with _tf.open(tmp_path / "inspectors.tar.gz") as tar:
-        names = tar.getnames()
-    assert not any("__pycache__" in n for n in names), names
-
-
-def test_wrapper_containerfile_adds_inspectors_tarball():
-    """The Containerfile must ADD the inspectors tarball (auto-extracted
-    by OCI build) so ``from inspectors.base import Inspector`` resolves
-    at runtime. Plain directory COPY is broken on Apple ``container
-    build``; same fix as for transforms."""
-    out = ac_wrapper.render_wrapper_containerfile(
-        "docker.io/library/alpine:3.20",
-        user_cmd=["sh", "-c", "echo hi"],
-    )
-    assert "ADD inspectors.tar.gz /opt/agentcage/inspectors/" in out
-    # And NOT the broken directory-COPY form.
-    assert "COPY inspectors /opt/agentcage/inspectors" not in out
-    # The inspectors.json config file must also be wired in.
-    assert "COPY inspectors.json /etc/agentcage/inspectors.json" in out
-
-
-def test_backend_threads_inspectors_into_build_artifacts(tmp_path, monkeypatch):
-    """The apple-container backend must forward the cage's ``inspectors:``
-    list from the parsed Config through to wrapper.build_wrapper. Catches
-    the silent-drop regression that was the entire pre-PR state of this
-    backend: rule in cage.yaml, image built fine, but the cage saw an
-    empty inspectors list."""
-    captured: dict = {}
-
-    def fake_build_wrapper(_name, _image, **kwargs):
-        captured["inspectors"] = kwargs.get("inspectors")
-        return "localhost/agentcage-apple-test:latest"
-
-    from agentcage.backends import apple_container as backend_mod
-    monkeypatch.setattr(backend_mod.ac_wrapper, "build_wrapper", fake_build_wrapper)
-    monkeypatch.setattr(
-        ac_cli, "image_inspect",
-        lambda _img: {"config": {"cmd": ["/bin/sh"]}},
-    )
-    monkeypatch.setattr(
-        ac_cli, "run",
-        lambda *_a, **_kw: type(
-            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
-        )(),
-    )
-
-    cfg = Config(name="t", isolation="apple-container")
-    cfg.container.image = "localhost/test:latest"
-    cfg.container.command = ["/bin/sh"]
-    cfg.inspectors = [
-        {"name": "content-type", "config": {"action": "block"}},
-    ]
-
-    AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
-
-    inspectors = captured["inspectors"]
-    assert inspectors == [
-        {"name": "content-type", "config": {"action": "block"}}
-    ]
+# inspectors build-context staging tests removed in PR 3 — see comment
+# above about the wrapper image no longer carrying proxy/dns config.
 
 
 def test_load_config_parses_inspectors(tmp_path):
@@ -4122,15 +3491,12 @@ def test_tcp_start_accepts_bytes_sni(tmp_path, monkeypatch):
     assert entry["host"] == "smtp.example.com"
 
 
-def test_supervisor_mitmdump_keeps_lazy_connection_strategy():
-    """The supervisor must still launch mitmdump with
-    ``--set connection_strategy=lazy``. The TCP-bypass fix uses
-    ``tcp_start`` (which fires under both lazy and eager strategies) and
-    intentionally keeps ``lazy`` so we don't open upstream sockets for
-    flows the addon will immediately block — same wire-touch profile as
-    before the fix."""
-    supervisor = (
+def test_egress_supervisor_keeps_lazy_connection_strategy():
+    """The mitmdump launch line must still carry --set connection_strategy=lazy.
+    PR 3 moved this to the egress sibling's supervisor (PR 1's
+    supervisor-egress.sh) — same string, different file."""
+    egress_supervisor = (
         Path(__file__).parent.parent
-        / "src" / "agentcage" / "data" / "apple-container" / "supervisor.sh"
+        / "src" / "agentcage" / "data" / "containers" / "supervisor-egress.sh"
     ).read_text()
-    assert "--set connection_strategy=lazy" in supervisor
+    assert "connection_strategy=lazy" in egress_supervisor

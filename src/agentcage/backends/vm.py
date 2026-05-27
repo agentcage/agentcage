@@ -176,12 +176,14 @@ class VmBackend:
         return lima_prerequisites.check_prerequisites()
 
     def build_artifacts(self, config: Config, deploy_name: str, *, quiet: bool = False) -> None:
-        """Build proxy and DNS images inside the VM.
+        """Build the egress image inside the VM.
 
         The build context (package data directory) is copied into the VM
         via ``limactl copy`` since the home directory is not mounted
         (only specific directories are exposed via virtiofs for security).
         """
+        from importlib.metadata import version as _pkg_version
+
         inst = self._instance(deploy_name)
         if not inst.is_running():
             click.echo("VM is not running — skipping image build (will build on start)")
@@ -204,24 +206,16 @@ class VmBackend:
                 check=True,
             )
 
-        click.echo("Building proxy image inside VM...")
-        with Phase("build.proxy", cage=deploy_name):
+        version = _pkg_version("agentcage")
+        click.echo(f"Building egress image inside VM (agentcage-egress:{version})...")
+        with Phase("build.egress", cage=deploy_name):
             inst.exec([
                 "podman", "build",
                 "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
                 "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
-                "--cap-add=CAP_DAC_OVERRIDE",
-                "-t", "agentcage-proxy",
-                "-f", f"{vm_build_dir}/containers/Containerfile.proxy",
-                vm_build_dir,
-            ])
-        click.echo("Building DNS image inside VM...")
-        with Phase("build.dns", cage=deploy_name):
-            inst.exec([
-                "podman", "build",
-                "--cap-add=CAP_SETFCAP",
-                "-t", "agentcage-dns",
-                "-f", f"{vm_build_dir}/containers/Containerfile.dns",
+                "--cap-add=CAP_DAC_OVERRIDE", "--cap-add=CAP_SETFCAP",
+                "-t", f"agentcage-egress:{version}",
+                "-f", f"{vm_build_dir}/containers/Containerfile.egress",
                 vm_build_dir,
             ])
 
@@ -412,19 +406,18 @@ class VmBackend:
 
         # Infrastructure services start FIRST and complete before we touch
         # the cage. The cage's ExecStartPre is a 30-attempt 1s poll for
-        # mitmproxy's CA cert (generated on first proxy run); racing it
-        # against proxy startup turns the first cage start into a near-
+        # mitmproxy's CA cert (generated on first egress run); racing it
+        # against egress startup turns the first cage start into a near-
         # certain failure that surfaces as a scary
         #   "warning: failed to start <name>-cage: ... non-zero exit status 1"
         # right before the wait-for-proxy block — the actual second attempt
         # below would succeed, but the user has already pressed Ctrl-C
         # convinced something is wrong. Starting the cage strictly after
-        # the proxy is "active" eliminates that spurious failure path.
+        # the egress is "active" eliminates that spurious failure path.
         infra_services = [
             f"{name}-net-network",
             f"{name}-certs-volume",
-            f"{name}-proxy",
-            f"{name}-dns",
+            f"{name}-egress",
         ]
 
         with Phase("systemd.start", cage=name):
@@ -446,32 +439,33 @@ class VmBackend:
                 click.echo(f"Retrying {svc}...")
                 _systemctl_start(inst, svc, restart=True)
 
-        # Wait for proxy to be ready (CA cert generated) before starting cage.
-        # Time-based deadline (not iteration count) so the poll interval can
-        # be tightened without shrinking the timeout — mitmproxy is usually
-        # ready in 2-6s, so a sub-second interval shaves time off the median.
-        click.echo("Waiting for proxy to be ready...")
-        with Phase("systemd.wait_proxy", cage=name):
-            proxy_deadline = time.monotonic() + PROXY_READINESS_TIMEOUT_S
-            proxy_active = False
-            while time.monotonic() < proxy_deadline:
+        # Wait for the egress container to be ready (CA cert generated)
+        # before starting cage. Time-based deadline (not iteration count)
+        # so the poll interval can be tightened without shrinking the
+        # timeout — mitmproxy is usually ready in 2-6s, so a sub-second
+        # interval shaves time off the median.
+        click.echo("Waiting for egress to be ready...")
+        with Phase("systemd.wait_egress", cage=name):
+            egress_deadline = time.monotonic() + PROXY_READINESS_TIMEOUT_S
+            egress_active = False
+            while time.monotonic() < egress_deadline:
                 result = inst.exec(
-                    ["systemctl", "--user", "is-active", f"{name}-proxy.service"],
+                    ["systemctl", "--user", "is-active", f"{name}-egress.service"],
                     check=False,
                 )
                 if result.stdout.strip() == "active":
-                    proxy_active = True
+                    egress_active = True
                     break
                 time.sleep(PROXY_READINESS_POLL_INTERVAL_S)
 
-        if not proxy_active:
-            # Don't pretend to start the cage when proxy never came up —
+        if not egress_active:
+            # Don't pretend to start the cage when egress never came up —
             # the cage's ExecStartPre will just spin for 30s and then fail
-            # on the same root cause. Surface the proxy's actual failure
+            # on the same root cause. Surface the egress's actual failure
             # reason instead.
-            _dump_service_failure(inst, f"{name}-proxy")
+            _dump_service_failure(inst, f"{name}-egress")
             raise RuntimeError(
-                f"proxy {name}-proxy did not become active within "
+                f"egress {name}-egress did not become active within "
                 f"{PROXY_READINESS_TIMEOUT_S}s; cage not started"
             )
 
@@ -673,7 +667,7 @@ class VmBackend:
             return False
 
     def service_names(self, name: str) -> list[str]:
-        return ["cage", "proxy", "dns"]
+        return ["cage", "egress"]
 
     # --- Backend protocol: process inspection / streaming --------------------
     #
@@ -723,9 +717,9 @@ class VmBackend:
     ) -> list[str]:
         import shlex
         inst = self._instance(name)
-        # conmon routes proxy/dns logs to the system journal even when the
-        # service unit is a `--user` one, so the right filter is
-        # `--user-unit` rather than `--user -u`.
+        # conmon routes the egress container's logs to the system journal
+        # even when the service unit is a `--user` one, so the right filter
+        # is `--user-unit` rather than `--user -u`.
         journal_argv = ["journalctl", "-o", "cat"]
         for svc in services:
             journal_argv += ["--user-unit", f"{name}-{svc}"]
@@ -745,8 +739,11 @@ class VmBackend:
     ) -> list[str]:
         import shlex
         inst = self._instance(name)
-        journal_argv = ["journalctl", "--user-unit", f"{name}-proxy",
-                        "--user-unit", f"{name}-dns", "-o", "cat"]
+        # mitmproxy + dnsmasq audit lines both flow through the egress
+        # container's stderr → conmon → journal; a single --user-unit
+        # filter catches both.
+        journal_argv = ["journalctl", "--user-unit", f"{name}-egress",
+                        "-o", "cat"]
         if since:
             journal_argv += ["--since", since]
         if follow:

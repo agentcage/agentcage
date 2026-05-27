@@ -36,7 +36,7 @@ def cage_network_addrs(
     This is the correct path for updates to an already-deployed cage
     whose podman network is pinned to the previously-allocated subnet —
     re-allocating would produce IPs that fall outside the existing
-    ``<name>-net`` subnet and the DNS/proxy containers would refuse to
+    ``<name>-net`` subnet and the egress container would refuse to
     start with ``requested static ip not in any subnet on network``.
     *used_octets* is ignored when *network_octet* is set.
     """
@@ -45,8 +45,7 @@ def cage_network_addrs(
         return {
             "subnet": f"{prefix}.0/24",
             "ip_cage": f"{prefix}.2",
-            "ip_dns": f"{prefix}.10",
-            "ip_proxy": f"{prefix}.11",
+            "ip_egress": f"{prefix}.10",
         }
     h = hashlib.md5(name.encode()).hexdigest()
     octet = (int(h[:8], 16) % 254) + 1
@@ -63,8 +62,7 @@ def cage_network_addrs(
     return {
         "subnet": f"{prefix}.0/24",
         "ip_cage": f"{prefix}.2",
-        "ip_dns": f"{prefix}.10",
-        "ip_proxy": f"{prefix}.11",
+        "ip_egress": f"{prefix}.10",
     }
 
 
@@ -202,7 +200,7 @@ def _make_env() -> SandboxedEnvironment:
 
 
 def vm_local_config_dir(name: str) -> str:
-    """VM-local path where the cage's proxy + DNS config files live.
+    """VM-local path where the cage's egress config files live.
 
     The host's ``~/.config/agentcage/cages/<name>/`` is exposed inside the
     Lima VM as a reverse-sshfs mount that caches file contents aggressively
@@ -211,7 +209,7 @@ def vm_local_config_dir(name: str) -> str:
     until the mount itself is reset. We sidestep that by writing a VM-local
     copy of those two files into a parallel directory tree under the user's
     home that is *not* a Lima mount, and bind-mounting the VM-local copy
-    into the proxy/dns containers.
+    into the egress container.
 
     Returned with the systemd ``%h`` home-directory specifier instead of
     ``~``: systemd-quadlet expands ``%h`` to the user's absolute home before
@@ -236,44 +234,14 @@ def vm_local_proxy_config_path(name: str) -> str:
     return f"{vm_local_config_dir(name)}/proxy-config.yaml"
 
 
-def render_dns_quadlet(
-    config: Config,
-    used_octets: set[int] | None = None,
-    network_octet: int | None = None,
-) -> str:
-    """Render just the DNS container quadlet for a given config.
-
-    Used by ``domain add``/``domain rm`` to update DNS forwarding rules
-    without a full rebuild.
-
-    When *network_octet* is provided the addresses are derived directly
-    from that octet, bypassing the hash-based allocation (and the
-    *used_octets* parameter is ignored).  This is the correct path for
-    updates to an already-deployed cage whose subnet must not change.
-
-    VM backend: the bind-mount source points at a VM-local path (see
-    ``vm_local_dns_allowlist_path``) rather than the host-side allowlist
-    file, because Lima's reverse-sshfs mount caches host writes past the
-    point where dnsmasq would re-read them.
-    """
-    env = _make_env()
-    name = config.name
-    addrs = cage_network_addrs(
-        name, used_octets=used_octets, network_octet=network_octet,
-    )
-    if config.isolation == "vm":
-        allowlist_path = vm_local_dns_allowlist_path(name)
-    else:
-        from agentcage.state import dns_allowlist_path
-        allowlist_path = str(dns_allowlist_path(name))
-    return env.get_template("dns.container.j2").render(
-        name=name,
-        **addrs,
-        dns_servers=config.dns_servers,
-        log_dns_queries=config.logging.dns_queries,
-        dns_allowlist_enabled=(config.domains.mode == "allowlist"),
-        dns_allowlist_host_path=allowlist_path,
-    )
+# Note: a render_dns_quadlet() helper used to live here for the 3-service
+# shape so ``domain add`` / ``domain rm`` could regenerate just the dns
+# sidecar's quadlet when its --servers-file shape changed. In the 2-
+# service (cage + egress) shape the dnsmasq allowlist is mounted into the
+# egress container at /etc/agentcage/dns-allowlist.conf and re-read on
+# SIGHUP — the quadlet itself is stable across allowlist edits, so the
+# fast path is a uniform ``<runtime> exec <name>-egress kill -HUP $(cat
+# /home/acdns/dnsmasq.pid)``. See cli.py:_update_dns_quadlet.
 
 
 def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
@@ -459,14 +427,15 @@ def generate_quadlets(
         volume_name=f"agentcage-certs-{name}",
     )
 
-    # DNS container — allowlist comes from a sidecar file mounted in
-    # (state.dns_allowlist_path). The quadlet only encodes whether allowlist
-    # mode is on; the contents change without touching the systemd unit.
+    # DNS allowlist sidecar file path — bind-mounted into the egress
+    # container at /etc/agentcage/dns-allowlist.conf. The quadlet only
+    # encodes whether allowlist mode is on; the contents change without
+    # touching the systemd unit.
     #
     # VM backend: the bind mount source is a VM-local path, NOT the host
     # path under ~/.config/agentcage. Lima's reverse-sshfs mount caches
     # host writes, so a host-side rewrite of dns-allowlist.conf would not
-    # propagate into the dnsmasq container; the VM-local copy is rewritten
+    # propagate into the egress container; the VM-local copy is rewritten
     # by ``_update_dns_quadlet`` via ``inst.exec`` and dnsmasq SIGHUPs to
     # pick it up.
     if config.isolation == "vm":
@@ -474,13 +443,6 @@ def generate_quadlets(
     else:
         from agentcage.state import dns_allowlist_path
         dns_allowlist_path_str = str(dns_allowlist_path(deploy_name or name))
-    files[f"{name}-dns.container"] = env.get_template("dns.container.j2").render(
-        **common,
-        dns_servers=config.dns_servers,
-        log_dns_queries=config.logging.dns_queries,
-        dns_allowlist_enabled=(config.domains.mode == "allowlist"),
-        dns_allowlist_host_path=dns_allowlist_path_str,
-    )
 
     # Capture volume — host path for capture JSONL
     capture_enabled = config.capture.enable_har
@@ -490,7 +452,11 @@ def generate_quadlets(
     else:
         capture_host_dir = ""
 
-    # Proxy container — published ports are served here via reverse proxy mode
+    # Egress container (combined mitmproxy + dnsmasq) — published ports
+    # are served here via reverse proxy mode; the supervisor inside the
+    # image applies the iptables FORWARD-chain shape and starts both
+    # daemons under stripped CapBnd. See data/containers/Containerfile.egress
+    # and data/containers/supervisor-egress.sh.
     pt_regex = (
         _passthrough_regex(config.domains.passthrough)
         if config.domains.passthrough else ""
@@ -499,7 +465,7 @@ def generate_quadlets(
     _inspected_tcp, _passthrough_tcp, _allow_udp = _effective_port_policy(config)
 
     # Resolve secrets.scope (auto/user/system) into the concrete flag passed
-    # to systemd-creds decrypt in the proxy quadlet's ExecStartPre. The
+    # to systemd-creds decrypt in the egress quadlet's ExecStartPre. The
     # quadlet runs under `systemctl --user`, so --user picks the per-user
     # decryption key — no polkit prompt at start time.
     creds_scope_flag = ""
@@ -521,14 +487,18 @@ def generate_quadlets(
     else:
         proxy_config_path = config_host_path
 
-    files[f"{name}-proxy.container"] = env.get_template("proxy.container.j2").render(
+    files[f"{name}-egress.container"] = env.get_template("egress.container.j2").render(
         **common,
+        agentcage_version=_pkg_version("agentcage"),
         config_host_path=proxy_config_path,
+        dns_allowlist_enabled=(config.domains.mode == "allowlist"),
+        dns_allowlist_host_path=dns_allowlist_path_str,
         proxy_secrets=proxy_secrets,
         deploy_name=deploy_name,
         creds_secrets=creds_secrets,
         creds_dir=creds_dir,
         creds_scope_flag=creds_scope_flag,
+        log_dns_queries=config.logging.dns_queries,
         log_proxy_connections=config.logging.proxy_connections,
         dns_servers=config.dns_servers,
         inbound_forwards=inbound_forwards,

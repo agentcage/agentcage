@@ -1,0 +1,124 @@
+[Unit]
+Description=agentcage egress (mitmproxy + dnsmasq)
+
+[Container]
+ContainerName={{ name }}-egress
+Image=localhost/agentcage-egress:{{ agentcage_version }}
+Network={{ name }}-net.network:ip={{ ip_egress }}
+Network=podman
+{% for srv in dns_servers %}
+DNS={{ srv }}
+{% endfor %}
+Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
+{% if dns_allowlist_enabled %}
+Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z
+{% endif %}
+Environment="PYTHONUNBUFFERED=1"
+Volume={{ name }}-certs.volume:/home/acproxy/.mitmproxy:Z
+{% if capture_enabled %}
+Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
+Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
+{% endif %}
+AddCapability=NET_ADMIN
+AddCapability=NET_BIND_SERVICE
+# SETUID + SETGID + SETPCAP: the supervisor uses ``setpriv
+# --reuid=acdns --regid=acdns --bounding-set=-all,+net_bind_service``
+# for dnsmasq and ``--reuid=acproxy --regid=acproxy --bounding-set=-all
+# --no-new-privs`` for mitmproxy.
+#   * setresuid/setresgid need CAP_SETUID / CAP_SETGID
+#   * --bounding-set drops bits from the bounding set, which needs
+#     CAP_SETPCAP
+# On default rootless podman these three are in the default cap set,
+# but `containers.conf` with ``default_capabilities = []`` (hardened
+# deployments) drops them — then setpriv fails with "Operation not
+# permitted" and the supervisor exits before either daemon binds its
+# port. Explicit AddCapability= makes the Quadlet authoritative across
+# both default and hardened podman configs.
+AddCapability=SETUID
+AddCapability=SETGID
+AddCapability=SETPCAP
+# KILL: the supervisor (PID 1 of the egress container, root in the
+# user namespace) polls dnsmasq + mitmproxy via ``kill -0 "$pid"``
+# (step C, step E, the monitor loop). Both daemons run as non-root
+# (acdns=201, acproxy=200) after setpriv drops privileges, so a uid-0
+# → uid-201 signal needs either matching uid OR CAP_KILL. On default
+# rootless podman CAP_KILL is in the default cap set; on hardened
+# ``default_capabilities = []`` setups it isn't, and every kill -0
+# returns EPERM — the supervisor mistakenly reports both daemons as
+# "exited before binding", the monitor loop exits 1 on the first
+# iteration, and the egress container restarts in a tight loop.
+AddCapability=KILL
+Sysctl=net.ipv4.ip_unprivileged_port_start=80
+# ip_forward enabled at create time — rootless podman doesn't grant
+# CAP_SYS_ADMIN even with --cap-add net_admin, so the supervisor cannot
+# `sysctl -w` it from inside. The egress is a router between the cage
+# netns and the host bridge: without ip_forward the FORWARD chain is
+# unreachable for passthrough_tcp_ports / allow_udp_ports.
+Sysctl=net.ipv4.ip_forward=1
+# Port-policy plumbing: the three lists come from cage.yaml's ``ports.tcp.allow``
+# / ``ports.tcp.passthrough`` / ``ports.udp.allow`` (after the inspected =
+# allow − passthrough subtraction in quadlets._effective_port_policy). The
+# supervisor reads these env vars and emits one iptables rule per port —
+# REDIRECT to mitmproxy for INSPECTED_TCP_PORTS, ACCEPT in FORWARD for
+# PASSTHROUGH_TCP_PORTS and ALLOW_UDP_PORTS. Always rendered (even when a
+# list is empty) so the supervisor can distinguish "use defaults" from
+# "intentionally none" — pre-fix the supervisor's hard-coded ``80 443``
+# default masked an empty / non-default cage.yaml policy.
+Environment="INSPECTED_TCP_PORTS={{ inspected_tcp_ports|join(' ') }}"
+Environment="PASSTHROUGH_TCP_PORTS={{ passthrough_tcp_ports|join(' ') }}"
+Environment="ALLOW_UDP_PORTS={{ allow_udp_ports|join(' ') }}"
+# Bind mitmproxy's regular (forward) proxy to the egress's cage-net IP
+# only. The egress sits on TWO networks — its own ``{{ name }}-net``
+# (cage-facing) AND the default ``podman`` network (host-facing, used
+# for the egress's own outbound to the internet). The initial v0.22
+# supervisor used ``--mode regular@:8080`` (i.e. 0.0.0.0) which let
+# any OTHER rootless container on the host's default podman network
+# reach this cage's mitmproxy as an open forward proxy via the
+# egress's podman-network IP. Pinning the bind to ip_egress closes
+# that path and matches what the legacy proxy.container.j2 did.
+#
+# Residual (out of scope for this fix): a foreign rootless container
+# can still reach our cage-net IP via the host's inter-bridge routing,
+# and the host MASQUERADEs the source into our cage subnet so an
+# INPUT-chain source filter doesn't catch it. The legacy 3-service
+# proxy had the same residual. Tracked separately — see the
+# corresponding note in supervisor-egress.sh.
+#
+# Transparent mode (8443) still listens on all interfaces but is safe
+# in practice because mitmproxy uses SO_ORIGINAL_DST to recover the
+# target — a direct connection from a foreign netns has no
+# REDIRECT-supplied original dst and the handshake fails.
+Environment="AGENTCAGE_REGULAR_BIND={{ ip_egress }}:8080"
+{% for fwd in inbound_forwards %}
+PublishPort={{ fwd.publish_spec }}
+{% endfor %}
+{% if inbound_forwards %}
+# Pass inbound-forward info to the egress supervisor so it adds
+# `--mode reverse:http://<ip_cage>:<port>@0.0.0.0:<port>` per forward
+# (the legacy proxy.container.j2 did this in its Exec= line). Without
+# these env vars the supervisor skips reverse-mode entirely — PublishPort
+# exposes the egress's port to the host but nothing listens, breaking
+# inbound traffic to the cage.
+Environment="AGENTCAGE_INBOUND_PORTS={% for fwd in inbound_forwards %}{{ fwd.container_port }}{% if not loop.last %} {% endif %}{% endfor %}"
+Environment="AGENTCAGE_CAGE_IP={{ ip_cage }}"
+{% endif %}
+{% for secret in proxy_secrets %}
+{% if deploy_name %}
+Secret={{ deploy_name }}.{{ secret }},type=env,target={{ secret }}
+{% else %}
+Secret={{ secret }},type=env
+{% endif %}
+{% endfor %}
+
+[Service]
+{% for cred in creds_secrets %}
+ExecStartPre=/bin/bash -o pipefail -c 'podman secret rm "{{ deploy_name }}.{{ cred }}" 2>/dev/null || true; systemd-creds {{ creds_scope_flag }}decrypt --name "{{ cred }}" "{{ creds_dir }}/{{ cred }}.cred" - | podman secret create "{{ deploy_name }}.{{ cred }}" -'
+{% endfor %}
+ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 200:200 "$mp"'
+{% if capture_enabled %}
+ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 200:200 "{{ capture_host_dir }}"{% endif %}'
+{% endif %}
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

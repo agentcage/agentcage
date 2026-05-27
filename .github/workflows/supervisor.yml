@@ -1,25 +1,21 @@
 name: Apple-container supervisor
 
-# Catches supervisor.sh regressions on every PR. The supervisor.sh in
-# src/agentcage/data/apple-container/ is the security-critical PID-1 of
-# every apple-container cage (sets up hidepid=2, per-component uids,
-# iptables egress filter, drops caps + setuid's the cage workload at
-# stage 90). Bugs here silently weaken isolation across every
-# apple-container cage, so we run two layers of validation in CI:
+# Catches supervisor regressions on every PR. After the v0.22 #196 refactor,
+# the apple-container backend uses a 2-microVM model: the cage microVM has a
+# minimal cage-init.sh entrypoint (no supervisor.sh anymore), and the egress
+# microVM uses the unified supervisor-egress.sh from src/agentcage/data/
+# containers/ — same supervisor across all three backends now.
 #
-#   1. shellcheck — catches POSIX-sh portability bugs, common quoting
-#      errors, unset-variable references. The supervisor uses `set -eu`
-#      so an unset-variable bug bricks the cage at boot time; better to
-#      catch in CI than after deploy.
-#   2. stage-marker presence — asserts every documented `log "stage N:"`
-#      marker exists. Reordering or removing a stage without updating
-#      docs/apple-container.md is a noisy way to ship a regression;
-#      this catches it as a basic dead-code check.
+# Both scripts are security-critical PID-1's:
+#   cage-init.sh: sets default route via egress, capsh-drops to uid 1000
+#                 BEFORE exec'ing the workload. Bugs here either crash the
+#                 cage at boot or weaken the privilege drop.
+#   supervisor-egress.sh: orchestrates dnsmasq + mitmproxy + iptables in
+#                 the egress microVM/container. Bugs here weaken the
+#                 allowlist + secret-injection enforcement.
 #
-# Full runtime testing (build wrapper image, run with CAP_SYS_ADMIN,
-# assert hidepid + caps + uid state) requires a multi-stage docker
-# setup that's tracked separately in issue #120. The shellcheck +
-# marker-presence layer is the minimum-viable safety net.
+# Both use `set -eu` so an unset-variable bug bricks the cage at boot —
+# better to catch in CI than after deploy.
 
 on:
   push:
@@ -28,6 +24,8 @@ on:
     branches: [master]
     paths:
       - 'src/agentcage/data/apple-container/**'
+      - 'src/agentcage/data/containers/supervisor-egress.sh'
+      - 'src/agentcage/data/containers/dns-audit.sh'
       - '.github/workflows/supervisor.yml'
 
 jobs:
@@ -37,16 +35,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
-      - name: Lint supervisor.sh
-        run: shellcheck src/agentcage/data/apple-container/supervisor.sh
-      - name: Assert documented stage markers are all present
-        run: |
-          set -euo pipefail
-          sup=src/agentcage/data/apple-container/supervisor.sh
-          for stage in 10 20 30 40 50 60 70 80 90; do
-            if ! grep -q "stage ${stage}:" "$sup"; then
-              echo "::error file=$sup::missing 'stage ${stage}:' log marker" >&2
-              exit 1
-            fi
-          done
-          echo "All 9 stages present (10/20/30/40/50/60/70/80/90)"
+      - name: Lint cage-init.sh (apple-container cage microVM entrypoint)
+        run: shellcheck src/agentcage/data/apple-container/cage-init.sh
+      - name: Lint supervisor-egress.sh (unified egress supervisor)
+        run: shellcheck src/agentcage/data/containers/supervisor-egress.sh
+      - name: Lint dns-audit.sh (dnsmasq audit-line wrapper)
+        run: shellcheck src/agentcage/data/containers/dns-audit.sh

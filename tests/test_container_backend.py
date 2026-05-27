@@ -47,15 +47,34 @@ class TestCheckPrerequisites:
 # ---------------------------------------------------------------------------
 
 class TestBuildArtifacts:
-    def test_builds_proxy_and_dns(self):
+    def test_builds_egress(self):
         backend = ContainerBackend()
         with patch.object(backend._podman, "build_image") as mock_build:
             backend.build_artifacts(_make_config(), "testcage")
 
-        assert mock_build.call_count == 2
+        # The v0.22 2-service shape ships a single agentcage-egress image
+        # (mitmproxy + dnsmasq combined) instead of the legacy proxy+dns pair.
+        assert mock_build.call_count == 1
+        tag = mock_build.call_args.args[0]
+        assert tag.startswith("agentcage-egress:"), (
+            f"expected agentcage-egress:<version>, got {tag!r}"
+        )
+        # The Containerfile path passed in is Containerfile.egress.
+        cf = mock_build.call_args.args[1]
+        assert cf.endswith("Containerfile.egress"), cf
+
+    def test_does_not_build_legacy_proxy_or_dns(self):
+        """B2: the legacy agentcage-proxy / agentcage-dns image tags are
+        gone — confirm we don't accidentally still produce them."""
+        backend = ContainerBackend()
+        with patch.object(backend._podman, "build_image") as mock_build:
+            backend.build_artifacts(_make_config(), "testcage")
         tags = [c.args[0] for c in mock_build.call_args_list]
-        assert "agentcage-proxy" in tags
-        assert "agentcage-dns" in tags
+        for legacy in ("agentcage-proxy", "agentcage-dns"):
+            assert not any(t == legacy or t.startswith(f"{legacy}:")
+                           for t in tags), (
+                f"unexpected legacy image build: {tags}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -70,14 +89,14 @@ class TestGenerateUnits:
         with patch.object(backend._podman, "info", return_value=info_data), \
              patch("agentcage.backends.container.generate_quadlets", return_value={
                  "test-cage.container": "[Container]\nImage=test",
-                 "test-proxy.container": "[Container]\nImage=proxy",
+                 "test-egress.container": "[Container]\nImage=egress",
              }) as mock_gen:
             units = backend.generate_units(
                 _make_config(), "/path/to/config.yaml", "/path/to/patches", "test"
             )
 
         assert "test-cage.container" in units
-        assert "test-proxy.container" in units
+        assert "test-egress.container" in units
         mock_gen.assert_called_once()
 
 
@@ -142,8 +161,7 @@ class TestStop:
 
         expected = [
             call("myapp-cage.service"),
-            call("myapp-proxy.service"),
-            call("myapp-dns.service"),
+            call("myapp-egress.service"),
         ]
         mock_sd.stop_unit.assert_has_calls(expected, any_order=True)
 
@@ -163,8 +181,7 @@ class TestRestart:
 
         expected = [
             call("myapp-cage.service"),
-            call("myapp-proxy.service"),
-            call("myapp-dns.service"),
+            call("myapp-egress.service"),
         ]
         mock_sd.restart_unit.assert_has_calls(expected, any_order=True)
 
@@ -179,9 +196,9 @@ class TestDestroyResources:
         unit_dir = tmp_path / "systemd"
         unit_dir.mkdir()
 
-        # Create some quadlet files
+        # Create some v0.22 quadlet files
         (unit_dir / "myapp-cage.container").write_text("")
-        (unit_dir / "myapp-proxy.container").write_text("")
+        (unit_dir / "myapp-egress.container").write_text("")
         (unit_dir / "myapp-net.network").write_text("")
 
         with patch.object(backend, "unit_dir", return_value=unit_dir), \
@@ -193,8 +210,40 @@ class TestDestroyResources:
             removed = backend.destroy_resources("myapp")
 
         assert "myapp-cage.container" in removed
-        assert "myapp-proxy.container" in removed
+        assert "myapp-egress.container" in removed
         assert not (unit_dir / "myapp-cage.container").exists()
+
+    def test_removes_legacy_v021_quadlet_files(self, tmp_path):
+        """B2 (eng review): destroy must enumerate the legacy proxy/dns
+        filenames too so a v0.21 cage's leftovers can still be cleaned up
+        after the v0.22 upgrade. _ensure_v022_cage blocks every OTHER cage
+        command on legacy cages, but destroy is the documented escape
+        hatch — the legacy filenames have to be in the enumeration here."""
+        backend = ContainerBackend()
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+
+        # v0.21 layout — both proxy and dns containers in addition to cage
+        (unit_dir / "myapp-cage.container").write_text("")
+        (unit_dir / "myapp-proxy.container").write_text("")
+        (unit_dir / "myapp-dns.container").write_text("")
+        (unit_dir / "myapp-net.network").write_text("")
+        (unit_dir / "myapp-certs.volume").write_text("")
+
+        with patch.object(backend, "unit_dir", return_value=unit_dir), \
+             patch("agentcage.backends.container.systemd.daemon_reload"), \
+             patch.object(backend._podman, "network_remove", return_value=True), \
+             patch.object(backend._podman, "volume_remove", return_value=True), \
+             patch.object(backend._podman, "secret_list", return_value=[]), \
+             patch.object(backend._podman, "secret_remove", return_value=True):
+            removed = backend.destroy_resources("myapp")
+
+        for legacy in ("myapp-proxy.container", "myapp-dns.container"):
+            assert legacy in removed, (
+                f"{legacy} not removed; v0.21 cleanup will leave the file behind. "
+                f"(removed={removed})"
+            )
+            assert not (unit_dir / legacy).exists()
 
     def test_removes_podman_resources(self, tmp_path):
         backend = ContainerBackend()
@@ -254,8 +303,8 @@ class TestIsRunning:
     def test_delegates_to_podman(self):
         backend = ContainerBackend()
         with patch.object(backend._podman, "container_running", return_value=True) as mock:
-            assert backend.is_running("myapp", "proxy") is True
-        mock.assert_called_once_with("myapp-proxy")
+            assert backend.is_running("myapp", "egress") is True
+        mock.assert_called_once_with("myapp-egress")
 
     def test_not_running(self):
         backend = ContainerBackend()
@@ -266,7 +315,7 @@ class TestIsRunning:
 class TestServiceNames:
     def test_returns_expected_services(self):
         backend = ContainerBackend()
-        assert backend.service_names("myapp") == ["cage", "proxy", "dns"]
+        assert backend.service_names("myapp") == ["cage", "egress"]
 
 
 # ---------------------------------------------------------------------------
@@ -301,13 +350,13 @@ class TestExecArgv:
     def test_as_root_with_interactive(self):
         backend = ContainerBackend()
         argv = backend.exec_argv(
-            "myapp", "proxy", ["sh"], interactive=True, as_root=True,
+            "myapp", "egress", ["sh"], interactive=True, as_root=True,
         )
-        assert argv == ["podman", "exec", "-u", "0:0", "-it", "myapp-proxy", "sh"]
+        assert argv == ["podman", "exec", "-u", "0:0", "-it", "myapp-egress", "sh"]
 
     def test_service_suffix_applied(self):
         backend = ContainerBackend()
-        argv = backend.exec_argv("foo", "dns", ["cat", "/etc/hosts"])
+        argv = backend.exec_argv("foo", "egress", ["cat", "/etc/hosts"])
         assert argv == [
-            "podman", "exec", "-u", "1000:1000", "foo-dns", "cat", "/etc/hosts",
+            "podman", "exec", "-u", "1000:1000", "foo-egress", "cat", "/etc/hosts",
         ]
