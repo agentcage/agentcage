@@ -293,6 +293,7 @@ def execute(
     extra_args: tuple[str, ...] = (),
     verbose: bool = False,
     isolation: str | None = None,
+    as_root: bool = False,
     show_timing: bool = False,
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
@@ -505,20 +506,16 @@ def execute(
     exit_code = 0
     # On apple-container the supervised cage workload runs as PID 1 of a
     # single Apple `container` per cage (no -proxy / -dns / -cage suffix
-    # split). Both the container name and the exec path use Apple's
-    # `container` CLI; proxy log monitoring goes through the same single
-    # container. Backend-protocol lift for `exec`/`logs`/`audit` is the
-    # right long-term fix — these special-cases live in cli/run.py today.
+    # split). The exec path goes through backend.exec_argv() below;
+    # ``proxy_container`` is only used for the ``podman logs -f`` monitor
+    # thread, which doesn't run on apple-container at all.
     is_apple = cfg.isolation == "apple-container"
-    if is_apple:
-        container_name = cfg.name
-        proxy_container = cfg.name
-    else:
-        container_name = f"{cfg.name}-cage"
-        proxy_container = f"{cfg.name}-proxy"
+    proxy_container = f"{cfg.name}-proxy"
     exec_flags = ["-it"] if sys.stdin.isatty() else []
 
-    # On the VM backend, route exec and log monitoring through the Lima VM.
+    # On the VM backend, the monitor thread reaches Podman inside the
+    # Lima VM via ``limactl shell``; on the container backend no prefix
+    # is needed. Apple-container skips the monitor entirely (below).
     podman_prefix = _vm_podman_prefix(cfg.isolation, cage_name)
 
     # Skip the proxy-log monitor on apple-container — it relies on
@@ -539,26 +536,22 @@ def execute(
         monitor_thread = None
 
     try:
-        if is_apple:
-            # Route through AppleContainerBackend.exec_argv() so the
-            # interactive session is wrapped in capsh: NoNewPrivs + drop=all
-            # + --user=$CAGE_USER (uid 1000). A raw `container exec` would
-            # inherit the wrapper image's USER (root) because supervisor
-            # hardening only applies to the cage workload at stage 90, not
-            # to fresh `exec` sessions. See PR #163 for the cage-exec fix —
-            # this is the same fix applied to the `agentcage run` path.
-            from agentcage.backends.apple_container import AppleContainerBackend
-            backend = AppleContainerBackend()
-            cmd = backend.exec_argv(
-                container_name, "cage", exec_cmd,
-                interactive=bool(exec_flags),
-                as_root=False,
-            )
-        else:
-            cmd = (
-                podman_prefix + ["podman", "exec"]
-                + exec_flags + [container_name] + exec_cmd
-            )
+        # All backends route through backend.exec_argv() for consistent
+        # ``--as-root`` semantics: default drops to the cage workload's
+        # uid 1000 user, ``--as-root`` opts back into root. Apple wraps
+        # the unprivileged path in capsh (NoNewPrivs + drop=all + setuid
+        # to $CAGE_USER, see PR #163); container / vm pass ``-u`` to
+        # podman exec because the cage Quadlet may have an empty
+        # ``User=`` (ubuntu scaffold), in which case ``podman exec``
+        # would otherwise inherit the image's USER — root on
+        # ubuntu:latest, which is exactly the inconsistency we are
+        # fixing.
+        backend = get_backend(cfg)
+        cmd = backend.exec_argv(
+            cfg.name, "cage", exec_cmd,
+            interactive=bool(exec_flags),
+            as_root=as_root,
+        )
         result = subprocess.run(cmd)
         exit_code = result.returncode
     except KeyboardInterrupt:

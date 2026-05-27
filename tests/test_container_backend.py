@@ -267,3 +267,47 @@ class TestServiceNames:
     def test_returns_expected_services(self):
         backend = ContainerBackend()
         assert backend.service_names("myapp") == ["cage", "proxy", "dns"]
+
+
+# ---------------------------------------------------------------------------
+# exec_argv — uid wiring for ``agentcage run --as-root`` parity with Apple
+# ---------------------------------------------------------------------------
+
+class TestExecArgv:
+    """SECURITY: ``podman exec`` must pass ``-u`` explicitly so the cage
+    Quadlet's possibly-empty ``User=`` (ubuntu scaffold) doesn't cause
+    the session to inherit the image's USER (root on ubuntu:latest).
+
+    Pre-fix history:
+      - ``agentcage run ubuntu`` on linux/podman landed at uid 0, while
+        the apple-container path correctly dropped to uid 1000 via
+        capsh — the inconsistency this test guards against."""
+
+    def test_default_drops_to_uid_1000(self):
+        backend = ContainerBackend()
+        argv = backend.exec_argv("myapp", "cage", ["bash"])
+        assert argv == ["podman", "exec", "-u", "1000", "myapp-cage", "bash"]
+
+    def test_as_root_uses_uid_0(self):
+        backend = ContainerBackend()
+        argv = backend.exec_argv("myapp", "cage", ["bash"], as_root=True)
+        assert argv == ["podman", "exec", "-u", "0", "myapp-cage", "bash"]
+
+    def test_interactive_adds_it_flag(self):
+        backend = ContainerBackend()
+        argv = backend.exec_argv("myapp", "cage", ["bash"], interactive=True)
+        assert argv == ["podman", "exec", "-u", "1000", "-it", "myapp-cage", "bash"]
+
+    def test_as_root_with_interactive(self):
+        backend = ContainerBackend()
+        argv = backend.exec_argv(
+            "myapp", "proxy", ["sh"], interactive=True, as_root=True,
+        )
+        assert argv == ["podman", "exec", "-u", "0", "-it", "myapp-proxy", "sh"]
+
+    def test_service_suffix_applied(self):
+        backend = ContainerBackend()
+        argv = backend.exec_argv("foo", "dns", ["cat", "/etc/hosts"])
+        assert argv == [
+            "podman", "exec", "-u", "1000", "foo-dns", "cat", "/etc/hosts",
+        ]

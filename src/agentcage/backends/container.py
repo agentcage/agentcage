@@ -211,17 +211,27 @@ class ContainerBackend:
         cmd: list[str],
         *,
         interactive: bool = False,
-        as_root: bool = False,  # noqa: ARG002 — container Quadlets already unprivileged
+        as_root: bool = False,
     ) -> list[str]:
-        """``podman exec [-it] <name>-<service> <cmd>``.
+        """``podman exec [-it] -u <uid> <name>-<service> <cmd>``.
 
-        ``as_root`` is ignored — the per-service container is already
-        running as its configured unprivileged user via Quadlet, and
-        ``podman exec`` defaults to the container's USER. Operators who
-        need root use ``podman exec -u 0 ...`` directly.
+        We pass ``-u`` explicitly because the Quadlet ``User=`` directive
+        may be empty (the ubuntu scaffold sets ``user: ""`` because a
+        default of 1000:1000 doesn't resolve to a real user in minimal
+        base images), so without ``-u`` ``podman exec`` inherits the
+        image's USER — typically root on ubuntu:latest. That made
+        ``agentcage run ubuntu`` land at uid 0 on linux/podman while the
+        apple-container path correctly dropped to uid 1000.
+
+        ``as_root=False`` → ``-u 1000`` (the cage workload's user).
+        ``as_root=True``  → ``-u 0`` (operator debug — re-acquires the
+        container's full cap set). NoNewPrivs=1 + dropped CapBnd from
+        the cage's Quadlet are inherited by the exec session, so a
+        capsh wrap (apple-container's primitive) isn't required here.
         """
         flags = ["-it"] if interactive else []
-        return ["podman", "exec", *flags, f"{name}-{service}", *cmd]
+        uid = "0" if as_root else "1000"
+        return ["podman", "exec", "-u", uid, *flags, f"{name}-{service}", *cmd]
 
     def logs_argv(
         self,

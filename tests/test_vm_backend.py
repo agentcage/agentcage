@@ -483,6 +483,52 @@ class TestServiceNames:
         assert backend.service_names("foo") == backend.service_names("bar")
 
 
+# ---------------------------------------------------------------------------
+# exec_argv — uid wiring for ``agentcage run --as-root`` parity with Apple
+# ---------------------------------------------------------------------------
+
+class TestExecArgv:
+    """SECURITY: ``podman exec`` inside the Lima VM must pass ``-u``
+    explicitly. The cage Quadlet's ``User=`` may be empty (ubuntu
+    scaffold), so without an explicit ``-u`` the session inherits the
+    image's USER — root on ubuntu:latest. Same fix as
+    ContainerBackend.exec_argv — keeps linux/vm/apple aligned."""
+
+    def test_default_drops_to_uid_1000(self):
+        backend = VmBackend()
+        argv = backend.exec_argv("myapp", "cage", ["bash"])
+        assert argv == [
+            "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
+            "podman", "exec", "-u", "1000", "myapp-cage", "bash",
+        ]
+
+    def test_as_root_uses_uid_0(self):
+        backend = VmBackend()
+        argv = backend.exec_argv("myapp", "cage", ["bash"], as_root=True)
+        assert argv == [
+            "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
+            "podman", "exec", "-u", "0", "myapp-cage", "bash",
+        ]
+
+    def test_interactive_adds_it_flag(self):
+        backend = VmBackend()
+        argv = backend.exec_argv("myapp", "cage", ["bash"], interactive=True)
+        assert argv == [
+            "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
+            "podman", "exec", "-u", "1000", "-it", "myapp-cage", "bash",
+        ]
+
+    def test_as_root_with_interactive(self):
+        backend = VmBackend()
+        argv = backend.exec_argv(
+            "myapp", "proxy", ["sh"], interactive=True, as_root=True,
+        )
+        assert argv == [
+            "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
+            "podman", "exec", "-u", "0", "-it", "myapp-proxy", "sh",
+        ]
+
+
 class TestWaitInfraActive:
     """Behavioral tests for _wait_infra_active — the replacement for
     the unconditional 5-second sleep that previously gated systemd startup."""
