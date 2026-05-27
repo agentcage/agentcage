@@ -209,16 +209,21 @@ def vm_local_config_dir(name: str) -> str:
     — so a host-side rewrite of ``proxy-config.yaml`` or
     ``dns-allowlist.conf`` is invisible to processes running inside the VM
     until the mount itself is reset. We sidestep that by writing a VM-local
-    copy of those two files into a parallel directory tree
-    (``~/.config/agentcage-vm/...``) that is *not* a Lima mount, and
-    bind-mounting the VM-local copy into the proxy/dns containers.
+    copy of those two files into a parallel directory tree under the user's
+    home that is *not* a Lima mount, and bind-mounting the VM-local copy
+    into the proxy/dns containers.
 
-    Returned as a POSIX-style string (``~/.config/agentcage-vm/cages/<name>``)
-    suitable for use both as a quadlet ``Volume=`` source and as a shell
-    argument inside the VM (``~`` is expanded by the guest's shell, not by
-    Python).
+    Returned with the systemd ``%h`` home-directory specifier instead of
+    ``~``: systemd-quadlet expands ``%h`` to the user's absolute home before
+    podman parses the unit, so ``Volume=%h/...`` works as a bind mount.
+    Using ``~`` would NOT work — podman-quadlet treats unprefixed paths as
+    named volumes, and the resulting "name" fails podman's
+    ``[a-zA-Z0-9_.-]*`` validator. Shell-context callers (e.g. ``mkdir`` /
+    ``base64`` in :func:`agentcage.backends.vm.push_config_files`) must
+    substitute ``%h`` with the actual ``$HOME`` before invocation; bash
+    does not expand systemd specifiers.
     """
-    return f"~/.config/agentcage-vm/cages/{name}"
+    return f"%h/.config/agentcage-vm/cages/{name}"
 
 
 def vm_local_dns_allowlist_path(name: str) -> str:
