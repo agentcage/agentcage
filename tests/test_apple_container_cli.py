@@ -105,7 +105,13 @@ class TestCageExecAppleContainer:
     @patch("agentcage.cli.state")
     def test_exec_rejects_proxy_service(self, mock_state, mock_execvp,
                                          mock_binary, _mock_inspect):
-        """--service proxy is rejected with a clear message (not a crash)."""
+        """--service proxy is rejected with a clear message (not a crash).
+
+        Post-v0.22 (#196): Click's `Choice(["cage", "egress"])` rejects
+        the value at argument-parse time, before the backend-specific
+        message had a chance to fire. The rejection message names the
+        valid alternatives, which is what an operator needs.
+        """
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         mock_binary.return_value = "/usr/local/bin/container"
@@ -114,8 +120,9 @@ class TestCageExecAppleContainer:
             main, ["cage", "exec", "demo", "-s", "proxy", "--", "ls"],
         )
         assert result.exit_code != 0
+        # Click rejects "proxy" at parse-time and names the alternatives.
         assert "proxy" in result.output
-        assert "apple-container" in result.output
+        assert "egress" in result.output
         mock_execvp.assert_not_called()
 
     @patch("agentcage.apple_container.cli.container_binary")
