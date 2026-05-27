@@ -10,10 +10,12 @@ from agentcage.quadlets import generate_quadlets, _systemd_exec_join, cage_netwo
 
 
 class TestQuadletFileNames:
-    def test_generates_five_files(self, minimal_yaml):
+    def test_generates_four_files(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/path/to/config.yaml", "/path/to/patches")
-        assert len(files) == 5
+        # v0.22 2-service shape: net.network + certs.volume + cage + egress
+        # (was 5 files in the legacy 3-service shape; proxy + dns merged).
+        assert len(files) == 4
 
     def test_file_names(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
@@ -21,8 +23,7 @@ class TestQuadletFileNames:
         assert set(files.keys()) == {
             "test-net.network",
             "test-certs.volume",
-            "test-dns.container",
-            "test-proxy.container",
+            "test-egress.container",
             "test-cage.container",
         }
 
@@ -46,489 +47,216 @@ class TestVolumeQuadlet:
         assert "VolumeName=agentcage-certs-test" in content
 
 
-class TestDnsQuadlet:
-    def test_dns_default_no_log_queries(self, minimal_yaml):
+class TestEgressQuadlet:
+    """The v0.22 2-service shape collapses the legacy proxy + dns
+    quadlets into a single ``<name>-egress.container``. Most of the
+    runtime behavior (iptables FORWARD chain, dnsmasq --servers-file
+    wiring, mitmproxy listener) now lives inside the egress image's
+    supervisor and is covered by ``test_egress_image.py``. These tests
+    pin the quadlet-level surface area: image tag, capabilities, bind
+    mounts, secrets, published ports.
+    """
+
+    def test_egress_basics(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "ContainerName=test-dns" in content
-        assert "Image=localhost/agentcage-dns" in content
-        assert f"Network=test-net.network:ip={addrs['ip_dns']}" in content
-        assert "--log-queries" not in content
+        content = files["test-egress.container"]
+        assert "ContainerName=test-egress" in content
+        # Image tag includes the version pin so a `cage update` after a
+        # release picks up the new egress image.
+        assert "Image=localhost/agentcage-egress:" in content
+        assert f"Network=test-net.network:ip={addrs['ip_egress']}" in content
 
-    def test_dns_custom_servers(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            dns_servers:
-              - 100.100.100.100
-              - 1.1.1.1
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "--server 100.100.100.100 --server 1.1.1.1" in content
-        assert "--log-queries" not in content
-
-
-    def test_dns_log_queries_enabled(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            dns_servers:
-              - 100.100.100.100
-            logging:
-              dns_queries: true
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "--log-queries" in content
-        assert "Exec=dnsmasq --no-daemon --log-queries --no-resolv --server 100.100.100.100" in content
-
-    def test_dns_log_queries_no_servers(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            logging:
-              dns_queries: true
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "Exec=dnsmasq --no-daemon --log-queries --no-resolv" in content
-
-
-    def test_dns_allowlist_filtering(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - api.anthropic.com
-                - github.com
-            dns_servers:
-              - 100.100.100.100
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        # Sinkhole stays in the quadlet; per-domain forwarders now live in
-        # the dns-allowlist.conf sidecar file referenced by --servers-file.
-        assert "--address=/#/198.51.100.1" in content
-        assert "--servers-file=/etc/dnsmasq-allow.conf" in content
-        assert "/etc/dnsmasq-allow.conf:ro,Z" in content
-        # The per-domain lines must NOT be baked into the quadlet — that's
-        # what we're moving away from so domain edits don't churn systemd.
-        assert "--server=/api.anthropic.com/" not in content
-        assert "--server=/github.com/" not in content
-
-    def test_proxy_cage_local_resolves_to_proxy_ip(self, tmp_path):
-        """proxy.cage.local is the canonical hostname for cage-internal
-        traffic that should land on the proxy container directly (e.g.
-        the protocol_relays IMAP listener). dnsmasq must hand back the
-        proxy's network IP for it instead of falling through to the
-        198.51.100.1 placeholder."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - example.com
-            dns_servers:
-              - 100.100.100.100
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        # Default cage prefix is 10.89.0; proxy is .11
-        import re
-        assert re.search(r"--address=/proxy\.cage\.local/10\.89\.\d+\.11", content), content
-
-    def test_proxy_cage_local_works_without_allowlist(self, tmp_path):
-        """Even with no domains.allow set (open-DNS mode), proxy.cage.local
-        must still resolve to the proxy IP."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            dns_servers:
-              - 100.100.100.100
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        import re
-        assert re.search(r"--address=/proxy\.cage\.local/10\.89\.\d+\.11", content), content
-
-    def test_dns_allowlist_forwards_to_all_servers(self, tmp_path, patch_state_dirs):
-        """Each allowlisted domain × upstream pair should appear in the
-        dns-allowlist.conf sidecar file (and therefore reach dnsmasq via
-        --servers-file). The quadlet itself stays stable across domain edits."""
-        state = patch_state_dirs
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - github.com
-                - pypi.org
-            dns_servers:
-              - 100.100.100.100
-              - 1.1.1.1
-              - 8.8.8.8
-        """))
-        state.save_deployment("test", str(p))
-        body = open(state.save_dns_allowlist("test")).read()
-        for domain in ("github.com", "pypi.org"):
-            for server in ("100.100.100.100", "1.1.1.1", "8.8.8.8"):
-                assert f"server=/{domain}/{server}" in body
-
-    def test_dns_allowlist_uses_wrapper(self, tmp_path):
-        """When allowlist is active, dnsmasq is wrapped with dns-audit.sh."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - api.anthropic.com
-            dns_servers:
-              - 100.100.100.100
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "Exec=/usr/local/bin/dns-audit.sh" in content
-        assert "-- dnsmasq" in content
-        assert "--log-queries" in content
-        # --log-allowed should NOT be present when dns_queries is false (default)
-        assert "--log-allowed" not in content
-
-    def test_dns_allowlist_log_allowed(self, tmp_path):
-        """When allowlist + dns_queries logging, --log-allowed flag is added."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - api.anthropic.com
-            dns_servers:
-              - 100.100.100.100
-            logging:
-              dns_queries: true
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "Exec=/usr/local/bin/dns-audit.sh --log-allowed --" in content
-        assert "--log-queries" in content
-
-    def test_dns_no_allowlist_no_wrapper(self, minimal_yaml):
-        """Without allowlist, dnsmasq runs directly (no wrapper)."""
+    def test_egress_capabilities(self, minimal_yaml):
+        """The egress container is the only one allowed to mutate
+        iptables / bind low ports. NET_ADMIN drives FORWARD chain setup
+        (router shape between cage netns and host bridge);
+        NET_BIND_SERVICE covers dnsmasq's :53 listener; SETUID/SETGID/
+        SETPCAP/KILL cover the supervisor's setpriv drop chain and
+        cross-uid kill -0 monitoring (needed under hardened
+        `default_capabilities = []` podman configs)."""
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "dns-audit.sh" not in content
-        assert "Exec=dnsmasq --no-daemon" in content
+        content = files["test-egress.container"]
+        assert "AddCapability=NET_ADMIN" in content
+        assert "AddCapability=NET_BIND_SERVICE" in content
+        assert "AddCapability=SETUID" in content
+        assert "AddCapability=SETGID" in content
+        assert "AddCapability=SETPCAP" in content
+        assert "AddCapability=KILL" in content
 
-    # ── DNS non-A-record exfil regression (CTF-derived) ──────────────
-    # On 0.21.x dnsmasq was passed both `--server <ip>` (blanket
-    # default upstream) AND `--address=/#/<sinkhole>` (catch-all). The
-    # `--address` rule only intercepts A and AAAA queries — any other
-    # RR type (TXT/MX/NS/SRV/CNAME) fell through to the blanket
-    # `--server` upstream and reached a real recursive resolver. An
-    # attacker who owns a delegated subdomain encoded bytes in the
-    # query labels and exfilled out-of-band, never touching mitmproxy.
-    # These tests pin the bypass SHAPE so the fix can't silently regress.
+    def test_egress_port_policy_default(self, minimal_yaml):
+        """A cage with no `ports:` override gets the default policy —
+        tcp.allow=[80,443], no passthrough, no UDP. The supervisor reads
+        these via Environment= entries and REDIRECTs inspected ports to
+        :8443 / ACCEPTs passthrough+UDP in FORWARD."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert 'Environment="INSPECTED_TCP_PORTS=80 443"' in content
+        assert 'Environment="PASSTHROUGH_TCP_PORTS="' in content
+        assert 'Environment="ALLOW_UDP_PORTS="' in content
 
-    def test_dns_allowlist_no_blanket_default_upstream(self, tmp_path):
-        """In allowlist mode the quadlet must NOT pass a blanket
-        `--server <ip>` (no domain scope). That argument tells dnsmasq
-        "use this upstream for any query you don't otherwise handle",
-        which is exactly the non-A-record bypass — TXT/MX/NS/SRV/CNAME
-        for any hostname recurses to upstream regardless of the
-        allowlist. Per-zone forwarders live in dns-allowlist.conf as
-        `server=/<apex>/<upstream>` and are still allowed (they scope
-        recursion to the allowlist)."""
-        import re
+    def test_egress_port_policy_custom(self, tmp_path):
+        """Operator-supplied ports.tcp.allow / passthrough / udp.allow
+        flow through to the supervisor's env. Inspected = allow MINUS
+        passthrough; passthrough lands verbatim; UDP lands verbatim.
+
+        REGRESSION GUARD: the initial v0.22 cutover passed these lists
+        to the template renderer but the template never emitted them,
+        and the supervisor fell back to hard-coded "80 443" — any
+        operator with a custom port policy silently lost the rules.
+        """
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            domains:
-              allow:
-                - api.anthropic.com
-                - github.com
-            dns_servers:
-              - 1.1.1.1
-              - 8.8.8.8
+            ports:
+              tcp:
+                allow: [80, 443, 8000, 22]
+                passthrough: [22]
+              udp:
+                allow: [123, 5353]
         """))
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        # The bypass shape: `--server <ip>` with NO leading `=/...` after
-        # `--server`. Per-zone forwarders are `--server=/<apex>/<ip>` —
-        # those are exactly what closes the bypass and stay allowed.
-        # `--servers-file=...` is also legitimate (it points at the per-
-        # zone allowlist file).
-        assert not re.search(r"--server\s+\d", content), (
-            "blanket `--server <ip>` upstream present in DNS quadlet — "
-            "non-A queries will bypass the allowlist via DNS tunneling. "
-            f"quadlet:\n{content}"
+        content = files["test-egress.container"]
+        # Inspected = allow - passthrough.
+        assert 'Environment="INSPECTED_TCP_PORTS=80 443 8000"' in content
+        assert 'Environment="PASSTHROUGH_TCP_PORTS=22"' in content
+        assert 'Environment="ALLOW_UDP_PORTS=123 5353"' in content
+
+    def test_egress_regular_bind_is_cage_net_ip(self, minimal_yaml):
+        """mitmproxy's regular forward proxy binds to the egress's
+        cage-net IP only, NOT 0.0.0.0. The egress is on two networks
+        (cage-net + default podman), and a 0.0.0.0 bind would expose
+        the proxy to every other rootless container on the host's
+        default podman network — they could use it as an open HTTP
+        proxy with this cage's allowlist + injected secrets.
+
+        REGRESSION GUARD: the initial v0.22 cutover used
+        ``--mode regular@:8080`` (no IP). A second container on the
+        ``podman`` network could ``curl --proxy <egress-podman-ip>:8080``
+        and get 200 OK back through the cage's mitmproxy.
+        """
+        cfg = load_config(minimal_yaml)
+        addrs = cage_network_addrs("test")
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert (
+            f'Environment="AGENTCAGE_REGULAR_BIND={addrs["ip_egress"]}:8080"'
+            in content
         )
 
-    def test_dns_allowlist_sinkhole_present(self, tmp_path):
-        """Defense in depth: even with per-zone forwarder scoping, the
-        A/AAAA catch-all sinkhole stays. A regression here would let
-        A/AAAA queries for non-allowlisted zones leak out."""
+    def test_egress_port_policy_empty_intentional(self, tmp_path):
+        """Empty tcp.allow is a valid configuration (cage doesn't speak
+        HTTP). The Environment= entry is emitted as empty, signaling the
+        supervisor to install zero PREROUTING REDIRECT rules. The
+        supervisor's `${VAR-default}` fallback fires only when the env
+        var is genuinely unset (smoke-test path)."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            domains:
-              allow:
-                - api.anthropic.com
-            dns_servers:
-              - 1.1.1.1
+            ports:
+              tcp:
+                allow: []
         """))
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        assert "--address=/#/198.51.100.1" in files["test-dns.container"]
+        content = files["test-egress.container"]
+        assert 'Environment="INSPECTED_TCP_PORTS="' in content
 
-    def test_dns_allowlist_servers_file_present(self, tmp_path):
-        """The per-zone forwarder allowlist lives in dns-allowlist.conf
-        and is loaded via `--servers-file`. Without it dnsmasq has no
-        way to recurse for allowlisted zones — the cage couldn't
-        resolve `api.anthropic.com` at all."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - api.anthropic.com
-            dns_servers:
-              - 1.1.1.1
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        assert "--servers-file=/etc/dnsmasq-allow.conf" in content
-        # And the file is bind-mounted in read-only.
-        assert "/etc/dnsmasq-allow.conf:ro,Z" in content
-
-    def test_dns_allowlist_no_resolv_preserved(self, tmp_path):
-        """`--no-resolv` must stay. Without it dnsmasq silently reads
-        /etc/resolv.conf as an implicit default upstream, reopening
-        the bypass via a different path."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - api.anthropic.com
-            dns_servers:
-              - 1.1.1.1
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        assert "--no-resolv" in files["test-dns.container"]
-
-    def test_dns_blocklist_mode_keeps_open_resolver(self, tmp_path):
-        """The fix is scoped to allowlist mode. In blocklist / open-DNS
-        mode the cage explicitly wants open resolution — dnsmasq must
-        keep its blanket forwarders. (HTTP egress is still filtered by
-        mitmproxy; DNS is not the gate.)"""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              block:
-                - evil.com
-            dns_servers:
-              - 1.1.1.1
-              - 8.8.8.8
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        # Blanket forwarders intentional here.
-        assert "--server 1.1.1.1 --server 8.8.8.8" in content
-        # No allowlist sidecar mount in blocklist mode.
-        assert "--servers-file=/etc/dnsmasq-allow.conf" not in content
-
-    def test_dns_no_allowlist_filtering_in_blocklist_mode(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              block:
-                - evil.com
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-dns.container"]
-        # Blocklist mode should NOT apply DNS filtering
-        assert "--address=/#/198.51.100.1" not in content
-
-
-class TestVmLocalConfigPaths:
-    """VM backend: proxy + dns quadlets must bind-mount a VM-local copy
-    of proxy-config.yaml and dns-allowlist.conf — NOT the host path
-    under ``~/.config/agentcage`` that Lima's reverse-sshfs caches past
-    the point where dnsmasq SIGHUP / proxy mtime-poll would re-read it.
-
-    The bind source uses the systemd ``%h`` home-directory specifier so
-    podman-quadlet expands it to an absolute path. A bare ``~/...`` would
-    be treated as a named volume by podman and rejected as an invalid
-    name."""
-
-    def test_quadlets_do_not_emit_unexpanded_tilde_volume(self, tmp_path):
-        """Regression: ``Volume=~/...`` reaches podman-quadlet as a
-        named-volume reference, not a bind mount, and fails the
-        ``[a-zA-Z0-9_.-]*`` name validator at service start time. Every
-        quadlet ``Volume=`` source must be either an absolute path,
-        ``%h/...`` (resolved by systemd), or a real named volume."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            isolation: vm
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - example.com
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
-        for fname, content in files.items():
-            for line in content.splitlines():
-                if line.startswith("Volume=~"):
-                    raise AssertionError(
-                        f"{fname} emits an unexpanded ~ Volume= source: "
-                        f"{line!r}"
-                    )
-
-    def test_dns_quadlet_uses_vm_local_allowlist_path(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            isolation: vm
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - example.com
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
-        content = files["test-dns.container"]
-        # VM-local path is the bind source — NOT the host
-        # ~/.config/agentcage cache path.
-        assert "%h/.config/agentcage-vm/cages/test/dns-allowlist.conf" in content
-        assert "~/.config/agentcage/cages/test/dns-allowlist.conf" not in content
-
-    def test_proxy_quadlet_uses_vm_local_config_path(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            isolation: vm
-            container:
-              image: test:latest
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
-        content = files["test-proxy.container"]
-        # The proxy config bind source is VM-local; the host path passed
-        # to generate_quadlets is ignored for the volume mount.
-        assert "%h/.config/agentcage-vm/cages/test/proxy-config.yaml:/etc/agentcage/config.yaml" in content
-        assert "/host/c.yaml:/etc/agentcage/config.yaml" not in content
-
-    def test_container_backend_still_uses_host_path(self, tmp_path):
-        """Regression guard: the container backend (no Lima sshfs) must
-        keep mounting the authoritative host paths directly. We only
-        sidestep the cache for VM cages."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - example.com
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
-        # Host paths used directly — NOT the agentcage-vm tree.
-        assert "/host/c.yaml:/etc/agentcage/config.yaml" in files["test-proxy.container"]
-        assert "agentcage-vm" not in files["test-proxy.container"]
-        assert "agentcage-vm" not in files["test-dns.container"]
-
-    def test_render_dns_quadlet_vm_uses_vm_local_path(self, tmp_path):
-        """``render_dns_quadlet`` is the entry point used by
-        ``_ensure_dns_quadlet_current`` — it must also produce the
-        VM-local bind source for vm cages so the migration check
-        rewrites pre-upgrade quadlets to the new shape."""
-        from agentcage.quadlets import render_dns_quadlet
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            isolation: vm
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - example.com
-        """))
-        cfg = load_config(str(p))
-        rendered = render_dns_quadlet(cfg)
-        assert "%h/.config/agentcage-vm/cages/test/dns-allowlist.conf" in rendered
-
-
-class TestProxyQuadlet:
-    def test_proxy_basics(self, minimal_yaml):
+    def test_egress_certs_volume(self, minimal_yaml):
+        """mitmproxy writes its CA to ~/.mitmproxy inside the container;
+        the cage trust-install path reads it back out of the named
+        volume. uid 200 (acproxy) inside the egress image."""
         cfg = load_config(minimal_yaml)
-        files = generate_quadlets(cfg, "/home/user/config.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "ContainerName=test-proxy" in content
-        assert "Image=localhost/agentcage-proxy" in content
-        assert "Requires=test-dns.service" in content
-        assert "After=test-dns.service" in content
-        assert "Volume=/home/user/config.yaml:/etc/agentcage/config.yaml:ro,Z" in content
-        assert "Volume=test-certs.volume:/home/mitmproxy/.mitmproxy:Z" in content
-        assert "AddCapability=NET_ADMIN" in content
-        assert "--mode transparent@8443" in content
-        assert "iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8443" in content
-        assert "iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8443" in content
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert "Volume=test-certs.volume:/home/acproxy/.mitmproxy:Z" in content
 
-    def test_proxy_secrets(self, tmp_path):
+    def test_egress_config_bind(self, minimal_yaml):
+        """The proxy-config bind source is the host path passed to
+        generate_quadlets; the mitmproxy addon mtime-polls this file."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert "Volume=/c.yaml:/etc/agentcage/config.yaml:ro,Z" in content
+
+    def test_egress_dns_allowlist_bind(self, tmp_path):
+        """In allowlist mode the egress quadlet bind-mounts the
+        dns-allowlist sidecar file at /etc/agentcage/dns-allowlist.conf
+        (the path supervisor-egress.sh hands to dnsmasq via
+        --servers-file). Open-DNS / blocklist mode omits the mount."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - api.anthropic.com
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="test")
+        content = files["test-egress.container"]
+        # Read-only bind, target is the path the supervisor wires into
+        # `--servers-file=...`.
+        assert "/etc/agentcage/dns-allowlist.conf:ro,Z" in content
+
+    def test_egress_no_dns_allowlist_bind_in_blocklist_mode(self, tmp_path):
+        """Blocklist / open-DNS mode does not produce an allowlist file,
+        so the bind mount stays off."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              block:
+                - evil.com
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="test")
+        content = files["test-egress.container"]
+        assert "dns-allowlist.conf" not in content
+
+    def test_egress_capture_volume_when_enabled(self, tmp_path):
+        """`capture.enable_har: true` bind-mounts the per-cage capture
+        directory at /var/log/agentcage/capture so the mitmproxy addon
+        can persist flow JSONL across container restarts."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            capture:
+              enable_har: true
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="test")
+        content = files["test-egress.container"]
+        assert ":/var/log/agentcage/capture:Z" in content
+        assert (
+            'Environment="AGENTCAGE_CAPTURE='
+            '/var/log/agentcage/capture/capture.jsonl"'
+        ) in content
+
+    def test_egress_no_capture_volume_by_default(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert "/var/log/agentcage/capture" not in content
+        assert "AGENTCAGE_CAPTURE" not in content
+
+    def test_egress_secrets_unprefixed(self, tmp_path):
+        """secret_injection entries without a deploy_name land on the
+        egress container's Secret= directives so the proxy can resolve
+        the {{PLACEHOLDER}} -> real value substitution at request time."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -542,11 +270,11 @@ class TestProxyQuadlet:
         """))
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
+        content = files["test-egress.container"]
         assert "Secret=API_KEY,type=env" in content
         assert "Secret=OTHER_KEY,type=env" in content
 
-    def test_proxy_secrets_prefixed(self, tmp_path):
+    def test_egress_secrets_prefixed_by_deploy_name(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -555,21 +283,17 @@ class TestProxyQuadlet:
             secret_injection:
               - env: API_KEY
                 placeholder: "{{API_KEY}}"
-              - env: OTHER_KEY
-                placeholder: "{{OTHER_KEY}}"
         """))
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="myapp")
-        content = files["test-proxy.container"]
+        content = files["test-egress.container"]
         assert "Secret=myapp.API_KEY,type=env,target=API_KEY" in content
-        assert "Secret=myapp.OTHER_KEY,type=env,target=OTHER_KEY" in content
         assert "Secret=API_KEY,type=env\n" not in content
 
-    def test_proxy_gets_relay_secrets(self, tmp_path):
-        """protocol_relays credentials must reach the proxy container's
+    def test_egress_relay_secrets_reach_egress(self, tmp_path):
+        """protocol_relays credentials must reach the egress container's
         env so the relay can resolve them at startup. They are stripped
-        from the cage's podman_secrets/env (cage must not see them) but
-        still need a Secret= directive on the proxy."""
+        from the cage's podman_secrets/env (cage must not see them)."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -594,11 +318,11 @@ class TestProxyQuadlet:
         # Stripped from cage.
         assert "MIGADU_USER" not in cfg.container.podman_secrets
         assert "MIGADU_PASSWORD" not in cfg.container.podman_secrets
-        # But surfaced for proxy.
+        # But surfaced for the egress container.
         files = generate_quadlets(
             cfg, "/c.yaml", "/patches", deploy_name="myapp"
         )
-        content = files["test-proxy.container"]
+        content = files["test-egress.container"]
         assert "Secret=myapp.MIGADU_USER,type=env,target=MIGADU_USER" in content
         assert "Secret=myapp.MIGADU_PASSWORD,type=env,target=MIGADU_PASSWORD" in content
         # Cage container must NOT receive them.
@@ -606,7 +330,38 @@ class TestProxyQuadlet:
         assert "MIGADU_USER" not in cage_content
         assert "MIGADU_PASSWORD" not in cage_content
 
-    def test_proxy_creds_user_scope_emits_user_flag(self, tmp_path):
+    def test_egress_publish_port_when_inbound_forward(self, tmp_path):
+        """Inbound published ports land on the egress quadlet (the
+        container the host's port reaches first); mitmproxy --mode
+        reverse:... is wired up by the supervisor based on the same
+        proxy-config the cage's ports.allow drives."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+              ports:
+                - "127.0.0.1:3000:3000"
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert "PublishPort=127.0.0.1:3000:3000" in content
+        # Cage gets no published port — it's behind the egress container.
+        cage_content = files["test-cage.container"]
+        assert "PublishPort=" not in cage_content
+
+    def test_egress_no_publish_port_without_forward(self, minimal_yaml):
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert "PublishPort=" not in content
+
+    def test_egress_creds_decrypt_user_scope(self, tmp_path):
+        """secrets.scope: user → systemd-creds decrypt picks up `--user`
+        in the ExecStartPre. This is the per-user encryption key, not
+        the host-wide one — important so the quadlet runs under
+        `systemctl --user` without a polkit prompt at start time."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -621,10 +376,10 @@ class TestProxyQuadlet:
         """))
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="myapp")
-        content = files["test-proxy.container"]
+        content = files["test-egress.container"]
         assert "systemd-creds --user decrypt" in content
 
-    def test_proxy_creds_system_scope_omits_user_flag(self, tmp_path):
+    def test_egress_creds_decrypt_system_scope(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -639,21 +394,19 @@ class TestProxyQuadlet:
         """))
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="myapp")
-        content = files["test-proxy.container"]
+        content = files["test-egress.container"]
         decrypt_line = next(
             ln for ln in content.splitlines() if "systemd-creds" in ln and "decrypt" in ln
         )
         assert "systemd-creds decrypt" in decrypt_line
         assert "--user" not in decrypt_line
 
-    def test_proxy_creds_decrypt_passes_name(self, tmp_path):
-        # systemd-creds decrypt validates the name embedded in the .cred
-        # against an expected name. With output going to stdout it cannot
-        # derive that name from the input path, so the decrypt must pass
-        # --name explicitly — matching the `--name <ENV>` that
-        # `agentcage secret set` encrypts each .cred with. Without it the
-        # proxy's ExecStartPre fails ("Name in credential doesn't match
-        # expectations") and the whole cage cannot start.
+    def test_egress_creds_decrypt_passes_name(self, tmp_path):
+        """systemd-creds decrypt validates the name embedded in the
+        .cred against an expected name. With output going to stdout it
+        cannot derive that name from the input path, so the decrypt
+        must pass --name explicitly (matching what `agentcage secret
+        set` encrypts each .cred with)."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -666,343 +419,101 @@ class TestProxyQuadlet:
         """))
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="myapp")
-        content = files["test-proxy.container"]
+        content = files["test-egress.container"]
         decrypt_line = next(
             ln for ln in content.splitlines() if "systemd-creds" in ln and "decrypt" in ln
         )
         assert '--name "API_KEY"' in decrypt_line
 
-    def test_proxy_default_flags(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "Exec=mitmdump" in content
-        assert "--set flow_detail=0" in content
-        assert "--quiet" not in content
-        assert "-v" not in content
-        assert 'Environment="PYTHONUNBUFFERED=1"' in content
 
-    def test_proxy_no_flow_detail_when_logging(self, tmp_path):
+class TestVmLocalEgressConfigPaths:
+    """VM backend: the egress quadlet must bind-mount a VM-local copy of
+    proxy-config.yaml and dns-allowlist.conf — NOT the host path under
+    ``~/.config/agentcage`` that Lima's reverse-sshfs caches past the
+    point where dnsmasq SIGHUP / proxy mtime-poll would re-read it.
+
+    The bind source uses the systemd ``%h`` home-directory specifier so
+    podman-quadlet expands it to an absolute path. A bare ``~/...`` would
+    be treated as a named volume by podman and rejected as an invalid
+    name."""
+
+    def test_quadlets_do_not_emit_unexpanded_tilde_volume(self, tmp_path):
+        """Regression: ``Volume=~/...`` reaches podman-quadlet as a
+        named-volume reference, not a bind mount, and fails the
+        ``[a-zA-Z0-9_.-]*`` name validator at service start time."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        for fname, content in files.items():
+            for line in content.splitlines():
+                if line.startswith("Volume=~"):
+                    raise AssertionError(
+                        f"{fname} emits an unexpanded ~ Volume= source: "
+                        f"{line!r}"
+                    )
+
+    def test_egress_quadlet_uses_vm_local_allowlist_path(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        content = files["test-egress.container"]
+        # VM-local path is the bind source — NOT the host
+        # ~/.config/agentcage cache path.
+        assert "%h/.config/agentcage-vm/cages/test/dns-allowlist.conf" in content
+        assert "~/.config/agentcage/cages/test/dns-allowlist.conf" not in content
+
+    def test_egress_quadlet_uses_vm_local_config_path(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        content = files["test-egress.container"]
+        # The proxy config bind source is VM-local; the host path passed
+        # to generate_quadlets is ignored for the volume mount.
+        assert "%h/.config/agentcage-vm/cages/test/proxy-config.yaml:/etc/agentcage/config.yaml" in content
+        assert "/host/c.yaml:/etc/agentcage/config.yaml" not in content
+
+    def test_container_backend_still_uses_host_path(self, tmp_path):
+        """Regression guard: the container backend (no Lima sshfs) must
+        keep mounting the authoritative host paths directly. We only
+        sidestep the cache for VM cages."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
             container:
               image: test:latest
-            logging:
-              proxy_connections: true
+            domains:
+              allow:
+                - example.com
         """))
         cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "Exec=mitmdump" in content
-        assert "--quiet" not in content
-        assert "flow_detail" not in content
-
-    def test_proxy_resolv_conf_uses_upstream_dns(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            dns_servers:
-              - 100.100.100.100
-              - 1.1.1.1
-        """))
-        cfg = load_config(str(p))
-        addrs = cage_network_addrs("test")
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "ExecStartPost=" in content
-        assert "nameserver 100.100.100.100" in content
-        assert "nameserver 1.1.1.1" in content
-        # Proxy should NOT use dnsmasq
-        assert f"nameserver {addrs['ip_dns']}" not in content
-
-    def test_proxy_inspected_tcp_default(self, minimal_yaml):
-        """Default ports.tcp.allow ([80, 443]) with empty passthrough
-        means the inspected TCP set is [80, 443]. Both get
-        nat:PREROUTING REDIRECTs to mitmdump's transparent listener."""
-        cfg = load_config(minimal_yaml)
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "--dport 80 -j REDIRECT --to-port 8443" in content
-        assert "--dport 443 -j REDIRECT --to-port 8443" in content
-        # Non-default ports must not appear unless requested.
-        assert "--dport 8448" not in content
-
-    def test_proxy_inspected_tcp_custom(self, tmp_path):
-        """Custom tcp.allow list emits one REDIRECT rule per inspected
-        port (= tcp.allow - tcp.passthrough), single &&-chain."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              tcp:
-                allow: [80, 443, 8448]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        for port in (80, 443, 8448):
-            assert f"--dport {port} -j REDIRECT --to-port 8443" in content
-        iptables_lines = [
-            line for line in content.splitlines()
-            if "iptables -t nat -A PREROUTING" in line
-        ]
-        assert len(iptables_lines) == 1
-        assert iptables_lines[0].count("iptables -t nat -A PREROUTING") == 3
-
-    def test_proxy_inspected_tcp_single(self, tmp_path):
-        """Single inspected TCP port emits one rule with no trailing &&."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              tcp:
-                allow: [443]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        iptables_lines = [
-            line for line in content.splitlines()
-            if "iptables -t nat -A PREROUTING" in line
-        ]
-        assert len(iptables_lines) == 1
-        assert "--dport 443 -j REDIRECT --to-port 8443" in iptables_lines[0]
-        assert "--dport 80" not in iptables_lines[0]
-        assert not iptables_lines[0].rstrip().endswith("&&\"")
-
-    def test_proxy_no_inspected_tcp_omits_redirect(self, tmp_path):
-        """When inspected TCP (tcp.allow - tcp.passthrough) is empty,
-        the nat:PREROUTING ExecStartPost is omitted entirely."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              tcp:
-                allow: []
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "iptables -t nat -A PREROUTING" not in content
-
-    def test_proxy_tcp_passthrough_subtracts_from_inspected(self, tmp_path):
-        """Putting a port in BOTH tcp.allow and tcp.passthrough means
-        it's allowed but bypasses inspection — no REDIRECT, just a
-        FORWARD ACCEPT for TCP."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              tcp:
-                allow: [80, 443, 5432]
-                passthrough: [5432]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "--dport 80 -j REDIRECT --to-port 8443" in content
-        assert "--dport 443 -j REDIRECT --to-port 8443" in content
-        assert "--dport 5432 -j REDIRECT --to-port 8443" not in content
-        assert "iptables -A FORWARD -p tcp --dport 5432 -j ACCEPT" in content
-        # No automatic UDP rule for tcp.passthrough — UDP requires
-        # explicit udp.allow listing.
-        assert "iptables -A FORWARD -p udp --dport 5432 -j ACCEPT" not in content
-
-    def test_proxy_tcp_passthrough_auto_merges_into_allow(self, tmp_path):
-        """If a tcp.passthrough port isn't explicitly in tcp.allow, the
-        FORWARD ACCEPT still gets installed (auto-merge)."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              tcp:
-                allow: [80, 443]
-                passthrough: [5432]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "iptables -A FORWARD -p tcp --dport 5432 -j ACCEPT" in content
-        assert "--dport 5432 -j REDIRECT --to-port 8443" not in content
-
-    def test_proxy_udp_allow_renders_forward_accept(self, tmp_path):
-        """Each udp.allow port emits exactly one filter:FORWARD UDP
-        ACCEPT (no REDIRECT, no TCP rule)."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              udp:
-                allow: [123, 443]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "iptables -A FORWARD -p udp --dport 123 -j ACCEPT" in content
-        assert "iptables -A FORWARD -p udp --dport 443 -j ACCEPT" in content
-        # No REDIRECT for UDP entries — mitmdump can't audit UDP.
-        assert "--dport 123 -j REDIRECT" not in content
-        # No automatic TCP rule for udp.allow — TCP entries live in
-        # tcp.allow / tcp.passthrough.
-        assert "iptables -A FORWARD -p tcp --dport 123 -j ACCEPT" not in content
-
-    def test_proxy_quic_alongside_tcp_inspection(self, tmp_path):
-        """The headline case: TCP/443 is REDIRECTed (HTTP/2 audited),
-        UDP/443 is FORWARD-ACCEPTed (HTTP/3 reachable, uninspected).
-        Same port, two protocols, governed independently."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              tcp:
-                allow: [80, 443]
-              udp:
-                allow: [443]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "-p tcp --dport 443 -j REDIRECT --to-port 8443" in content
-        assert "iptables -A FORWARD -p udp --dport 443 -j ACCEPT" in content
-
-    def test_proxy_forward_default_deny_always_installed(self, minimal_yaml):
-        """The filter:FORWARD policy DROP, ESTABLISHED,RELATED ACCEPT,
-        and ICMP echo-request ACCEPT are installed for every cage —
-        there is no opt-out flag. With the default config (no
-        passthrough, no UDP), only TCP/{80,443} (REDIRECTed at
-        PREROUTING) plus echo + replies reach upstream."""
-        cfg = load_config(minimal_yaml)
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert (
-            "iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED "
-            "-j ACCEPT" in content
-        )
-        assert (
-            "iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT"
-            in content
-        )
-        assert "iptables -P FORWARD DROP" in content
-        assert "iptables -A FORWARD -p tcp --dport" not in content
-        assert "iptables -A FORWARD -p udp --dport" not in content
-
-    def test_proxy_ipv6_forward_drop_failsafe(self, minimal_yaml):
-        """Always install ip6tables -P FORWARD DROP — IPv6 is not
-        currently inspected and podman networks are IPv4-only, so this
-        is a latent-gap failsafe rather than active filtering."""
-        cfg = load_config(minimal_yaml)
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "ip6tables -P FORWARD DROP" in content
-
-    def test_proxy_forward_atomic_chain(self, tmp_path):
-        """The FORWARD ExecStartPost is a single &&-chained shell
-        command so partial-rule states are impossible. Critically,
-        `-P FORWARD DROP` runs FIRST: if any subsequent ACCEPT rule
-        fails, packets matching the failed rule fall through to the
-        DROP policy (fail-closed) instead of leaving the kernel
-        default ACCEPT in place (fail-open). Default-deny is the
-        headline of this feature; the failure mode must match."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            ports:
-              tcp:
-                allow: [80, 443, 5432]
-                passthrough: [5432]
-              udp:
-                allow: [123]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        forward_lines = [
-            line for line in content.splitlines()
-            if "iptables -A FORWARD" in line or "iptables -P FORWARD" in line
-        ]
-        # All FORWARD-related rules live on a single ExecStartPost line.
-        assert len(forward_lines) == 1
-        line = forward_lines[0]
-        # DROP first → ESTABLISHED,RELATED → ICMP echo → per-port ACCEPTs.
-        drop_pos = line.find("-P FORWARD DROP")
-        est_pos = line.find("ESTABLISHED,RELATED")
-        icmp_pos = line.find("icmp-type echo-request")
-        tcp_pos = line.find("--dport 5432")
-        udp_pos = line.find("--dport 123")
-        assert 0 < drop_pos < est_pos < icmp_pos < tcp_pos
-        assert 0 < icmp_pos < udp_pos
-
-    def test_proxy_jacque_worked_example_renders(self, tmp_path):
-        """The jacque worked example from docs/proxy-audit-ports.md is
-        the headline use case. Pin the rendered iptables rules so doc
-        updates don't silently regress the example: TCP/{80,443,8448}
-        REDIRECTed, UDP/123 (NTP) FORWARD-ACCEPTed, default-deny, ICMP
-        echo always-on."""
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: jacque
-            container:
-              image: localhost/jacque-cage:latest
-            ports:
-              tcp:
-                allow: [80, 443, 8448]
-              udp:
-                allow: [123]
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["jacque-proxy.container"]
-        for port in (80, 443, 8448):
-            assert (
-                f"iptables -t nat -A PREROUTING -p tcp --dport {port} "
-                f"-j REDIRECT --to-port 8443" in content
-            )
-        # NTP allowed but uninspected.
-        assert "iptables -A FORWARD -p udp --dport 123 -j ACCEPT" in content
-        # Audited TCP ports never get FORWARD ACCEPT (they're REDIRECTed
-        # at PREROUTING and never traverse FORWARD).
-        for port in (80, 443, 8448):
-            assert (
-                f"iptables -A FORWARD -p tcp --dport {port} -j ACCEPT"
-                not in content
-            )
-        # Default-deny + ICMP echo always installed.
-        assert "iptables -P FORWARD DROP" in content
-        assert (
-            "iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT"
-            in content
-        )
-        # IPv6 failsafe.
-        assert "ip6tables -P FORWARD DROP" in content
-
-    def test_proxy_inspected_tcp_not_re_accepted(self, minimal_yaml):
-        """Inspected TCP ports are REDIRECTed at nat:PREROUTING and
-        never traverse filter:FORWARD, so they should NOT have explicit
-        ACCEPT rules in FORWARD."""
-        cfg = load_config(minimal_yaml)
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        content = files["test-proxy.container"]
-        assert "iptables -A FORWARD -p tcp --dport 80 -j ACCEPT" not in content
-        assert "iptables -A FORWARD -p tcp --dport 443 -j ACCEPT" not in content
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        # Host paths used directly — NOT the agentcage-vm tree.
+        assert "/host/c.yaml:/etc/agentcage/config.yaml" in files["test-egress.container"]
+        assert "agentcage-vm" not in files["test-egress.container"]
 
 
 class TestCageQuadlet:
@@ -1013,12 +524,14 @@ class TestCageQuadlet:
         content = files["test-cage.container"]
         assert "ContainerName=test-cage" in content
         assert "Image=localhost/test:latest" in content
-        assert "Requires=test-proxy.service" in content
-        assert "After=test-proxy.service" in content
-        assert f'Environment="HTTP_PROXY=http://{addrs["ip_proxy"]}:8080"' in content
-        assert f'Environment="HTTPS_PROXY=http://{addrs["ip_proxy"]}:8080"' in content
-        assert f'Environment="http_proxy=http://{addrs["ip_proxy"]}:8080"' in content
-        assert f'Environment="https_proxy=http://{addrs["ip_proxy"]}:8080"' in content
+        # v0.22: the cage now depends on the single egress service (was
+        # proxy + dns).
+        assert "Requires=test-egress.service" in content
+        assert "After=test-egress.service" in content
+        assert f'Environment="HTTP_PROXY=http://{addrs["ip_egress"]}:8080"' in content
+        assert f'Environment="HTTPS_PROXY=http://{addrs["ip_egress"]}:8080"' in content
+        assert f'Environment="http_proxy=http://{addrs["ip_egress"]}:8080"' in content
+        assert f'Environment="https_proxy=http://{addrs["ip_egress"]}:8080"' in content
         assert 'Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'NODE_OPTIONS' not in content
@@ -1028,7 +541,7 @@ class TestCageQuadlet:
         # leaked every sibling cage's resolv-<name>.conf to this cage.
         assert "Volume=/home/patches:/agentcage:ro,Z" not in content
         assert "nsenter" in content
-        assert f"ip route replace default via {addrs['ip_proxy']}" in content
+        assert f"ip route replace default via {addrs['ip_egress']}" in content
 
     def test_cage_no_broad_patches_mount(self, minimal_yaml):
         """Regression guard for the resolv-leak finding: the cage quadlet
@@ -1118,7 +631,8 @@ class TestCageQuadlet:
         addrs = cage_network_addrs("myapp")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["myapp-cage.container"]
-        proxy_content = files["myapp-proxy.container"]
+        # v0.22: published ports land on the egress quadlet (was proxy).
+        egress_content = files["myapp-egress.container"]
         # Image
         assert "Image=node:22-slim" in content
         # Command
@@ -1129,9 +643,9 @@ class TestCageQuadlet:
         assert "Volume=myapp-data:/data:rw" in content
         # Tmpfs
         assert "Tmpfs=/tmp:rw,noexec,nosuid,size=64M" in content
-        # Ports — should be on proxy, not cage
+        # Ports — should be on egress, not cage
         assert "PublishPort=" not in content
-        assert "PublishPort=127.0.0.1:3000:3000" in proxy_content
+        assert "PublishPort=127.0.0.1:3000:3000" in egress_content
         # Cage has static IP
         assert f"ip={addrs['ip_cage']}" in content
         # Podman secrets (INJECTED_KEY removed, MY_API_KEY kept)
@@ -1335,8 +849,17 @@ class TestCageQuadlet:
             generate_quadlets(cfg, "/c.yaml", "/patches")
 
 
-class TestProxyReverseMode:
-    def test_proxy_reverse_mode_with_ports(self, tmp_path):
+class TestPublishPortsOnEgress:
+    """In the v0.22 shape inbound published ports land on the egress
+    container's quadlet (the only one with PublishPort directives —
+    the cage sits behind it on the per-cage podman network). The
+    mitmproxy --mode reverse:... wiring previously baked into the
+    proxy quadlet's Exec= line is now derived by the supervisor from
+    proxy-config.yaml at runtime, so the quadlet-level assertion shifts
+    to PublishPort presence rather than the regular/transparent/reverse
+    mitmdump argument string."""
+
+    def test_publish_port_lands_on_egress(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -1346,26 +869,20 @@ class TestProxyReverseMode:
                 - "127.0.0.1:3000:3000"
         """))
         cfg = load_config(str(p))
-        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        proxy = files["test-proxy.container"]
-        assert f"--mode regular@{addrs['ip_proxy']}:8080" in proxy
-        assert "--mode transparent@8443" in proxy
-        assert f"--mode reverse:http://{addrs['ip_cage']}:3000@0.0.0.0:3000" in proxy
-        assert "--set keep_host_header=true" in proxy
-        assert "PublishPort=127.0.0.1:3000:3000" in proxy
+        egress = files["test-egress.container"]
+        cage = files["test-cage.container"]
+        assert "PublishPort=127.0.0.1:3000:3000" in egress
+        # Cage never gets PublishPort — it's behind the egress container.
+        assert "PublishPort=" not in cage
 
-    def test_proxy_no_reverse_without_ports(self, minimal_yaml):
+    def test_no_publish_ports_without_inbound_forwards(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
-        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        proxy = files["test-proxy.container"]
-        assert f"--mode regular@{addrs['ip_proxy']}:8080" in proxy
-        assert "--mode transparent@8443" in proxy
-        assert "keep_host_header" not in proxy
-        assert "PublishPort=" not in proxy
+        egress = files["test-egress.container"]
+        assert "PublishPort=" not in egress
 
-    def test_proxy_multiple_reverse_ports(self, tmp_path):
+    def test_multiple_publish_ports_all_on_egress(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: test
@@ -1376,16 +893,12 @@ class TestProxyReverseMode:
                 - "0.0.0.0:9090:9090"
         """))
         cfg = load_config(str(p))
-        addrs = cage_network_addrs("test")
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        proxy = files["test-proxy.container"]
+        egress = files["test-egress.container"]
         cage = files["test-cage.container"]
-        # Proxy has both reverse modes and both PublishPorts
-        assert f"--mode reverse:http://{addrs['ip_cage']}:3000@0.0.0.0:3000" in proxy
-        assert f"--mode reverse:http://{addrs['ip_cage']}:9090@0.0.0.0:9090" in proxy
-        assert "PublishPort=127.0.0.1:3000:3000" in proxy
-        assert "PublishPort=0.0.0.0:9090:9090" in proxy
-        assert "--set keep_host_header=true" in proxy
+        # Both PublishPorts on egress.
+        assert "PublishPort=127.0.0.1:3000:3000" in egress
+        assert "PublishPort=0.0.0.0:9090:9090" in egress
         # Cage has no PublishPort
         assert "PublishPort=" not in cage
 
@@ -1395,8 +908,11 @@ class TestCageNetworkAddrs:
         addrs = cage_network_addrs("test")
         assert "subnet" in addrs
         assert "ip_cage" in addrs
-        assert "ip_dns" in addrs
-        assert "ip_proxy" in addrs
+        # v0.22: single ip_egress for the combined mitmproxy+dnsmasq
+        # container (was separate ip_proxy + ip_dns).
+        assert "ip_egress" in addrs
+        assert "ip_proxy" not in addrs
+        assert "ip_dns" not in addrs
 
     def test_deterministic(self):
         assert cage_network_addrs("foo") == cage_network_addrs("foo")
@@ -1639,36 +1155,18 @@ class TestEffectiveDnsAllowlist:
         assert _effective_dns_allowlist(cfg) == []
 
 
-class TestPassthroughQuadlets:
-    def test_proxy_ignore_hosts_present(self, tmp_path):
-        p = tmp_path / "config.yaml"
-        p.write_text(textwrap.dedent("""\
-            name: test
-            container:
-              image: test:latest
-            domains:
-              allow:
-                - anthropic.com
-                - whatsapp.com
-              passthrough:
-                - whatsapp.com
-        """))
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        proxy = files["test-proxy.container"]
-        assert "--ignore-hosts" in proxy
-        assert "whatsapp" in proxy
-
-    def test_proxy_no_ignore_hosts_without_passthrough(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        proxy = files["test-proxy.container"]
-        assert "--ignore-hosts" not in proxy
+class TestPassthroughSidecarFiles:
+    """In the v0.22 shape mitmproxy's --ignore-hosts and dnsmasq's
+    --servers-file flags are wired by the supervisor inside the egress
+    image, not baked into the quadlet command line. The remaining
+    quadlet-visible artifact for passthrough is the dns-allowlist.conf
+    sidecar that the supervisor mounts in. These tests pin the sidecar
+    content rather than the (now image-side) command-line shape."""
 
     def test_dns_includes_passthrough_domains(self, tmp_path, patch_state_dirs):
-        """Passthrough domains must resolve via real DNS (not the sinkhole),
-        so they are merged into the dns-allowlist.conf sidecar alongside
-        normal allow entries."""
+        """Passthrough domains must resolve via real DNS (not the
+        sinkhole), so they are merged into the dns-allowlist.conf
+        sidecar alongside normal allow entries."""
         state = patch_state_dirs
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -1688,9 +1186,11 @@ class TestPassthroughQuadlets:
         assert "server=/whatsapp.com/100.100.100.100" in body
         assert "server=/anthropic.com/100.100.100.100" in body
 
-    def test_backward_compat_mode_list_quadlets(self, tmp_path, patch_state_dirs):
-        """Old ``mode: allowlist`` + ``list:`` format still produces the right
-        sidecar file and a quadlet with the sinkhole + servers-file flag."""
+    def test_backward_compat_mode_list_sidecar(self, tmp_path, patch_state_dirs):
+        """Old ``mode: allowlist`` + ``list:`` format still produces
+        the right sidecar file. The quadlet itself is now stable across
+        allowlist edits (no --servers-file flag baked in — see the
+        supervisor inside Containerfile.egress)."""
         state = patch_state_dirs
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -1707,9 +1207,3 @@ class TestPassthroughQuadlets:
         state.save_deployment("test", str(p))
         body = open(state.save_dns_allowlist("test")).read()
         assert "server=/api.anthropic.com/100.100.100.100" in body
-
-        cfg = load_config(str(p))
-        files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        dns = files["test-dns.container"]
-        assert "--address=/#/198.51.100.1" in dns
-        assert "--servers-file=/etc/dnsmasq-allow.conf" in dns

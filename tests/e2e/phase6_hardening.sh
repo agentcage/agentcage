@@ -51,13 +51,14 @@ else
   e2e_fail "6.4" "Memory limit (256m)" "got $OUTPUT"
 fi
 
-# 6.5: DNS query logging
+# 6.5: DNS query logging (now reads from the unified egress journal)
 assert_cmd_ok "6.5" "DNS query logging" \
-  agentcage cage logs "$CAGE" -s dns -n 20
+  agentcage cage logs "$CAGE" -s egress -n 20
 
-# 6.6: Proxy connection logging
+# 6.6: Proxy connection logging (also egress; mitmproxy + dnsmasq share
+# the supervisor's stderr stream)
 assert_cmd_ok "6.6" "Proxy connection logging" \
-  agentcage cage logs "$CAGE" -s proxy -n 20
+  agentcage cage logs "$CAGE" -s egress -n 20
 
 # 6.7: Severity filtering
 assert_cmd_ok "6.7" "Log severity filtering" \

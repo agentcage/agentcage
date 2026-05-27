@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-05-27
+
+### Changed
+
+- **Per-cage container shape collapses from 3 services to 2** (cage +
+  proxy + dns → cage + egress). The new `agentcage-egress` image bundles
+  mitmproxy + dnsmasq + iptables behind a single tini-supervised PID 1.
+  All three backends (container, vm, apple-container) consume the same
+  image:
+  - `container` and `vm`: the `<name>-egress.container` Quadlet replaces
+    the old `<name>-proxy` + `<name>-dns` units. `cage logs -s proxy/-s
+    dns` are gone; use `-s egress`.
+  - `apple-container`: now runs **two** microVMs per cage (slim cage VM
+    + sibling egress VM). Secrets bind-mount lives ONLY in the egress
+    VM — `cage exec --user 0 <cage>` cannot read injected secrets even
+    as root, because they're in a different microVM's filesystem
+    namespace. No mitmproxy / dnsmasq / iptables binaries in the cage
+    VM either.
+
+  Cages created on v0.21.x cannot be addressed by v0.22 commands: their
+  containers carry the legacy `-proxy` / `-dns` names. A version-aware
+  detector at every CLI entry exits with `error: cage … was created
+  with v0.21…` and prints the migration procedure (`systemctl --user
+  stop … && cage destroy && cage create`). `cage destroy` and `cage
+  list` are exempt so the escape hatch and the listing remain usable.
+
+### Security
+
+- **mitmproxy regular proxy now binds to the egress's cage-net IP**,
+  not 0.0.0.0. The egress sits on the per-cage `{name}-net` AND the
+  default `podman` network; an earlier draft of the supervisor used
+  `--mode regular@:8080` (all interfaces) — any other rootless container
+  on the host's default podman network could `curl --proxy
+  http://<egress-podman-ip>:8080` and use this cage's allowlist +
+  injected secrets as an open HTTP proxy. Bind narrowing restores the
+  legacy proxy's posture. A residual remains: the cage-net IP is still
+  reachable from other rootless containers via host inter-bridge
+  routing, with SNAT rewriting the source into our cage subnet so an
+  INPUT source filter doesn't catch it; same issue in the legacy
+  3-service shape. Mitigation requires either dropping `Network=podman`
+  from the egress quadlet (and finding a different outbound path) or
+  host-level pf/nft rules outside the container's reach — tracked.
+- **Custom port policy from cage.yaml is honoured again** under the new
+  shape. The first cut of `egress.container.j2` passed
+  `ports.tcp.allow` / `ports.tcp.passthrough` / `ports.udp.allow` to the
+  template renderer but never emitted them — the supervisor fell back
+  to a hard-coded `INSPECTED_TCP_PORTS="80 443"`. Any cage that
+  configured e.g. `tcp.allow: [80, 443, 8000]` silently lost the
+  PREROUTING REDIRECT for port 8000. The Quadlet now emits the three
+  lists as `Environment="INSPECTED_TCP_PORTS=…"` etc.; the supervisor
+  consumes them via `${VAR-default}` (preserves intentional empty
+  config). Regression tests pinned in `test_quadlets.py`.
+
+### Fixed
+
+- **`domain add` / `domain rm` SIGHUP path now actually fires.** The
+  initial supervisor wrote dnsmasq's pidfile to `/run/agentcage/
+  dnsmasq.pid` but the CLI's reload path did
+  `kill -HUP "$(cat /run/dnsmasq.pid)"` — path mismatch, `cat` returned
+  empty, `kill -HUP ""` no-op'd silently, dnsmasq kept the stale
+  allowlist. The unit test pinned the wrong path so the regression
+  survived in CI. Pidfile is now under `/home/acdns/` (pre-chowned at
+  image build time) and the SIGHUP shell aborts if the pidfile is
+  missing rather than no-op'ing.
+- **Egress container starts on hardened rootless podman**
+  (`containers.conf` with `default_capabilities = []`). The supervisor's
+  setpriv drop chain, runtime chown, cross-uid `kill -0` monitoring,
+  and `/var/log/agentcage/ready` touch all required caps that aren't in
+  the hardened default set. The Quadlet now requests SETUID, SETGID,
+  SETPCAP, and KILL explicitly; the runtime chown is eliminated (pidfile
+  dir is pre-chowned at build time); `/var/log/agentcage` is mode 1777
+  with a sticky bit so root can write the ready marker without
+  CAP_DAC_OVERRIDE. The apple-container backend's `container run` argv
+  was updated to match.
+- **apple-container `phase_apple.sh` e2e** — `cage create` no longer
+  takes a positional cage name (it reads from `cage.yaml`); `cage
+  destroy` flag is `-y` not `--force`; the test now bootstraps `curl`
+  via apt inside the cage (ubuntu:24.04 base ships without it) and adds
+  the apt mirrors to the allowlist for that one connectivity probe.
+- **`cage logs/exec/shell -s egress`** is now accepted on every
+  backend's CLI. The container/vm path uses `["cage", "egress"]` (the
+  legacy `proxy` / `dns` are rejected at parse time per the new
+  service_names shape); the apple-container path uses the same names.
+
 ## [0.21.19] - 2026-05-27
 
 ### Added

@@ -240,8 +240,8 @@ def build_and_deploy(
     the cage name hash.  This is the path ``cage update`` takes so an
     existing cage keeps the subnet its podman network was created
     with — re-allocating would generate quadlets whose static IPs
-    fall outside the existing ``<name>-net`` and the DNS/proxy
-    sidecars would refuse to start.
+    fall outside the existing ``<name>-net`` and the egress sidecar
+    would refuse to start.
     """
     from agentcage.quadlets import cage_network_addrs
 
@@ -255,7 +255,7 @@ def build_and_deploy(
     )
     resolv_path = os.path.join(patches_work, f"resolv-{cfg.name}.conf")
     with open(resolv_path, "w") as f:
-        f.write(f"nameserver {addrs['ip_dns']}\n")
+        f.write(f"nameserver {addrs['ip_egress']}\n")
 
     backend.build_artifacts(cfg, deploy_name, quiet=quiet)
 

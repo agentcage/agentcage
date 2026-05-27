@@ -112,7 +112,7 @@ class TestCageUpdate:
         mock_state.deployment_exists.return_value = True
         mock_state.deployment_dir.return_value = tmp_path
         mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
-        mock_state.load_metadata.return_value = {}
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
         mock_state.load_deployment_config.return_value = Config(
             name="inferred-from-config",
             isolation="container",
@@ -151,7 +151,7 @@ class TestCageUpdate:
         mock_state.deployment_exists.return_value = True
         mock_state.deployment_dir.return_value = tmp_path
         mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
-        mock_state.load_metadata.return_value = {}
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
         mock_state.load_raw_config.return_value = {
             "name": "test",
             "container": {"image": "test:latest", "build": {"args": {}}},
@@ -190,7 +190,7 @@ class TestCageUpdateNoCache:
         mock_state.deployment_exists.return_value = True
         mock_state.deployment_dir.return_value = tmp_path
         mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
-        mock_state.load_metadata.return_value = {}
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
         # cage_update reads raw config via state.load_raw_config to do
         # scaffold-aware tag resolution; return a real dict so the
         # `image_base, _, current_tag = current_image.rpartition(":")`
@@ -351,7 +351,7 @@ class TestCageUpdateBuildArgs:
             ),
         )
         mock_state.load_deployment_config.return_value = mock_cfg
-        mock_state.load_metadata.return_value = {"scaffold": "openclaw"}
+        mock_state.load_metadata.return_value = {"scaffold": "openclaw", "agentcage_version": "0.22.0"}
         mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
         mock_state.save_metadata.return_value = None
         # Use a real tmp dir so scaffold-refresh's shutil.copy2 call doesn't
@@ -462,7 +462,7 @@ class TestCageUpdateBuildArgs:
         stored.pop("scaffold", None)
         scaffold_meta = {"build": [{"build_args": {"BASE_IMAGE": "ghcr.io/openclaw/openclaw"}}]}
         # Metadata has NO scaffold key — force inference from image name
-        mock_state.load_metadata.return_value = {"agentcage_version": "0.10.1"}
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
         mock_state.deployment_exists.return_value = True
         mock_state.load_raw_config.return_value = stored
         saved: dict = {}
@@ -538,8 +538,8 @@ class TestCageUpdatePreservesNetworkOctet:
         # The cage was already created and its network octet was persisted
         # to metadata.json. cage_update must read this and pass it through.
         mock_state.load_metadata.return_value = {
+            "agentcage_version": "0.22.0",
             "network_octet": persisted_octet,
-            "agentcage_version": "0.0.0",
         }
         mock_state.load_raw_config.return_value = {
             "name": "test",
@@ -599,7 +599,7 @@ class TestCageUpdatePreservesNetworkOctet:
         mock_state.deployment_exists.return_value = True
         mock_state.deployment_dir.return_value = tmp_path
         mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
-        mock_state.load_metadata.return_value = {}  # legacy: no octet persisted
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}  # legacy: no octet persisted
         mock_state.load_raw_config.return_value = {
             "name": "test",
             "container": {"image": "test:latest", "build": {"args": {}}},
@@ -647,12 +647,11 @@ class TestCageUpdateNetworkOctetEndToEnd:
         # The network subnet must be 10.89.174.0/24
         net = files["pi01-net.network"]
         assert "10.89.174.0/24" in net, net
-        # DNS sidecar must request 10.89.174.10 (in the subnet)
-        dns = files["pi01-dns.container"]
-        assert "10.89.174.10" in dns, dns
-        # Proxy must request 10.89.174.11
-        proxy = files["pi01-proxy.container"]
-        assert "10.89.174.11" in proxy, proxy
+        # Egress container (combined mitmproxy + dnsmasq) gets the
+        # single 10.89.174.10 address (the v0.22 layout drops the
+        # separate dns at .10 / proxy at .11 pair).
+        egress = files["pi01-egress.container"]
+        assert "10.89.174.10" in egress, egress
         # Cage gets 10.89.174.2
         cage = files["pi01-cage.container"]
         assert "10.89.174.2" in cage, cage
@@ -705,7 +704,7 @@ class TestCageUpdateNetworkOctetEndToEnd:
             mock_backend = MagicMock()
             mock_backend.generate_units.return_value = {}
             mock_get_backend.return_value = mock_backend
-            mock_state.load_metadata.return_value = {}
+            mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
 
             build_and_deploy(
                 cfg, "/cfg.yaml", "pi01", MagicMock(), network_octet=174,
@@ -750,47 +749,61 @@ class TestCageList:
         mock_state.load_deployment_config.return_value = _mock_config("container")
         mock_state.load_metadata.return_value = {"agentcage_version": "1.2.3"}
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.service_names.return_value = ["cage", "egress"]
         backend.is_running.return_value = True
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "myapp" in result.output
         assert "container" in result.output
         assert "service" in result.output  # default lifecycle
-        assert "running (3/3)" in result.output
+        assert "running (2/2)" in result.output
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
     def test_list_shows_vm_cage(self, mock_state, mock_get_backend):
         mock_state.list_deployments.return_value = ["myvm"]
         mock_state.load_deployment_config.return_value = _mock_config("vm")
-        mock_state.load_metadata.return_value = {"agentcage_version": "0.9.0"}
+        # v0.22-or-newer metadata so cage_list takes the normal status
+        # path rather than annotating as legacy.
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage"]
+        backend.service_names.return_value = ["cage", "egress"]
         backend.is_running.return_value = True
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "myvm" in result.output
         assert "vm" in result.output
-        assert "running (1/1)" in result.output
+        assert "running (2/2)" in result.output
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_list_missing_metadata_shows_dash(self, mock_state, mock_get_backend):
+    def test_list_missing_metadata_shows_legacy(self, mock_state, mock_get_backend):
+        """A cage with no metadata at all is treated as pre-v0.22 (the
+        agentcage_version key was added before v0.22, so any cage
+        missing it is older than the egress unification). cage_list
+        annotates it accordingly rather than running is_running checks
+        against the new shape — which would mislabel a still-running
+        legacy cage as 0/N stopped."""
         mock_state.list_deployments.return_value = ["old"]
         mock_state.load_deployment_config.return_value = _mock_config("container")
+        # Empty metadata — no agentcage_version key recorded. The v0.21
+        # detector treats this as legacy (the key was always present in
+        # v0.22+ metadata).
         mock_state.load_metadata.return_value = {}
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.service_names.return_value = ["cage", "egress"]
         backend.is_running.return_value = True
         result = _runner().invoke(main, ["cage", "list"])
         assert result.exit_code == 0
         assert "old" in result.output
         # LIFECYCLE column header present
         assert "LIFECYCLE" in result.output
-        lines = result.output.strip().split("\n")
-        data_line = [l for l in lines if "old" in l][0]
-        assert "service" in data_line  # default lifecycle
+        # The legacy annotation surfaces explicitly so the operator
+        # knows to destroy+recreate.
+        assert "legacy v0.21" in result.output
+        # is_running must not have been called against the new shape
+        # for legacy entries — it would query the wrong containers.
+        backend.is_running.assert_not_called()
 
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
@@ -1141,46 +1154,25 @@ class TestCageStart:
 
 
 class TestEnsureDnsQuadletCurrent:
-    """The DNS-quadlet migration check execs inside the Lima VM — it must
-    not crash when that VM is stopped (the normal state for `cage start`,
-    `cage restart` and domain edits on an exited cage)."""
+    """In the v0.22 2-service shape there is no separate dns quadlet to
+    migrate — the egress quadlet's content is stable across allowlist
+    edits (the allowlist lives in a bind-mounted sidecar file rather
+    than being baked into ``--server=/…/…`` flags on the command line).
+    ``_ensure_dns_quadlet_current`` is a stub that always returns False
+    so existing callers that condition on a "quadlet was rewritten" flag
+    take the no-op branch."""
 
-    @patch("agentcage.quadlets.render_dns_quadlet", return_value="DESIRED")
-    @patch("agentcage.cli.LimaInstance")
-    @patch("agentcage.cli.get_backend")
-    @patch("agentcage.cli.state")
-    def test_vm_not_running_is_noop(self, mock_state, mock_get_backend,
-                                    MockLima, _mock_render):
+    def test_returns_false_unconditionally_for_container_cage(self):
         from agentcage.cli import _ensure_dns_quadlet_current
-        mock_state.load_metadata.return_value = {"network_octet": 42}
-        inst = MockLima.return_value
-        inst.is_running.return_value = False
+        cfg = _mock_config("container")
+        cfg.name = "test"
+        assert _ensure_dns_quadlet_current(cfg) is False
+
+    def test_returns_false_unconditionally_for_vm_cage(self):
+        from agentcage.cli import _ensure_dns_quadlet_current
         cfg = _mock_config("vm")
         cfg.name = "test"
-
-        result = _ensure_dns_quadlet_current(cfg)
-
-        assert result is False
-        inst.exec.assert_not_called()
-
-    @patch("agentcage.quadlets.render_dns_quadlet", return_value="DESIRED")
-    @patch("agentcage.cli.LimaInstance")
-    @patch("agentcage.cli.get_backend")
-    @patch("agentcage.cli.state")
-    def test_vm_running_reads_quadlet(self, mock_state, mock_get_backend,
-                                      MockLima, _mock_render):
-        from agentcage.cli import _ensure_dns_quadlet_current
-        mock_state.load_metadata.return_value = {"network_octet": 42}
-        inst = MockLima.return_value
-        inst.is_running.return_value = True
-        inst.exec.return_value = MagicMock(stdout="DESIRED")
-        cfg = _mock_config("vm")
-        cfg.name = "test"
-
-        result = _ensure_dns_quadlet_current(cfg)
-
-        assert result is False
-        inst.exec.assert_called_once()  # the read; no write (current == desired)
+        assert _ensure_dns_quadlet_current(cfg) is False
 
 
 class TestCageVerify:
@@ -1198,7 +1190,7 @@ class TestCageVerify:
     def test_verify_container_all_running(self, mock_state, mock_get_backend, MockPodman):
         mock_state.load_deployment_config.return_value = _mock_config("container")
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.service_names.return_value = ["cage", "egress"]
         backend.is_running.return_value = True
         podman = MockPodman.return_value
         # CA cert check → success; which curl → found; curl egress → blocked
@@ -1257,7 +1249,7 @@ class TestCageVerify:
         """When curl and node are missing, python3 urllib fallback works."""
         mock_state.load_deployment_config.return_value = _mock_config("container")
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.service_names.return_value = ["cage", "egress"]
         backend.is_running.return_value = True
         podman = MockPodman.return_value
         podman.container_exec.side_effect = [
@@ -1284,7 +1276,7 @@ class TestCageVerify:
         """When no HTTP client is available, verify warns instead of failing."""
         mock_state.load_deployment_config.return_value = _mock_config("container")
         backend = mock_get_backend.return_value
-        backend.service_names.return_value = ["cage", "proxy", "dns"]
+        backend.service_names.return_value = ["cage", "egress"]
         backend.is_running.return_value = True
         podman = MockPodman.return_value
         podman.container_exec.side_effect = [
@@ -1322,9 +1314,11 @@ class TestCageLogs:
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("container")
         result = _runner().invoke(main, ["cage", "logs", "basic"])
+        # v0.22 default-selected services are cage + egress (was
+        # cage + proxy + dns).
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user",
-            "-u", "basic-cage", "-u", "basic-proxy", "-u", "basic-dns",
+            "-u", "basic-cage", "-u", "basic-egress",
             "-n", "50",
         ])
 
@@ -1336,7 +1330,7 @@ class TestCageLogs:
         result = _runner().invoke(main, ["cage", "logs", "basic", "-f"])
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user",
-            "-u", "basic-cage", "-u", "basic-proxy", "-u", "basic-dns",
+            "-u", "basic-cage", "-u", "basic-egress",
             "-n", "50", "-f",
         ])
 
@@ -1345,12 +1339,24 @@ class TestCageLogs:
     def test_logs_filtered(self, mock_state, mock_execvp):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("container")
-        result = _runner().invoke(main, ["cage", "logs", "basic", "-s", "proxy"])
+        result = _runner().invoke(main, ["cage", "logs", "basic", "-s", "egress"])
         mock_execvp.assert_called_once_with("journalctl", [
             "journalctl", "--user",
-            "-u", "basic-proxy",
+            "-u", "basic-egress",
             "-n", "50",
         ])
+
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_rejects_legacy_proxy_service_choice(self, mock_state, mock_execvp):
+        """`-s proxy` / `-s dns` were valid in v0.21 but the v0.22
+        Click Choice() only accepts ``cage`` / ``egress`` — invocation
+        must fail at parse time with a clear error."""
+        mock_state.deployment_exists.return_value = True
+        result = _runner().invoke(main, ["cage", "logs", "basic", "-s", "proxy"])
+        assert result.exit_code != 0
+        assert "'proxy' is not one of" in result.output
+        mock_execvp.assert_not_called()
 
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
@@ -1367,7 +1373,8 @@ class TestCageLogs:
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
     def test_logs_vm_default(self, mock_state, mock_execvp, MockLimaInstance):
-        """All services requested → limactl shell + sg systemd-journal -c journalctl --user-unit."""
+        """All services requested → limactl shell + sg systemd-journal -c journalctl --user-unit.
+        v0.22: the default set is cage + egress (was cage + proxy + dns)."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("vm")
         MockLimaInstance.return_value.name = "agentcage-basic"
@@ -1377,7 +1384,7 @@ class TestCageLogs:
         mock_execvp.assert_called_once_with("limactl", [
             "limactl", "shell", "--workdir", "/", "agentcage-basic", "--",
             "sg", "systemd-journal", "-c",
-            "journalctl --user-unit basic-cage --user-unit basic-proxy --user-unit basic-dns -n 50 -o cat",
+            "journalctl --user-unit basic-cage --user-unit basic-egress -n 50 -o cat",
         ])
 
     @patch("agentcage.cli.subprocess.Popen")
@@ -1395,7 +1402,7 @@ class TestCageLogs:
         mock_popen.return_value = mock_proc
 
         result = _runner().invoke(main, [
-            "cage", "logs", "basic", "-s", "proxy", "--no-follow", "-l", "warning",
+            "cage", "logs", "basic", "-s", "egress", "--no-follow", "-l", "warning",
         ])
 
         # Should call Popen with limactl shell wrapping journalctl in sg systemd-journal -c
@@ -1403,7 +1410,7 @@ class TestCageLogs:
         assert call_args[0] == "limactl"
         assert "agentcage-basic" in call_args
         assert "sg" in call_args and "systemd-journal" in call_args
-        assert "basic-proxy" in call_args[-1]
+        assert "basic-egress" in call_args[-1]
         mock_execvp.assert_not_called()
 
     @patch("agentcage.cli.subprocess.Popen")
@@ -1411,19 +1418,19 @@ class TestCageLogs:
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
     def test_logs_vm_multi_units(self, mock_state, mock_execvp, MockLimaInstance, mock_popen):
-        """Two services with no severity filter → execvp limactl with both units."""
+        """Both services with no severity filter → execvp limactl with both units."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("vm")
         MockLimaInstance.return_value.name = "agentcage-basic"
         result = _runner().invoke(main, [
-            "cage", "logs", "basic", "-s", "proxy", "-s", "dns",
+            "cage", "logs", "basic", "-s", "cage", "-s", "egress",
         ])
         # execvp called with limactl wrapping journalctl in sg systemd-journal -c
         mock_execvp.assert_called_once()
         call_args = mock_execvp.call_args[0][1]
         assert "sg" in call_args and "systemd-journal" in call_args
-        assert "basic-proxy" in call_args[-1]
-        assert "basic-dns" in call_args[-1]
+        assert "basic-cage" in call_args[-1]
+        assert "basic-egress" in call_args[-1]
 
 
 # ── sample audit JSON lines ──────────────────────────────
@@ -1484,17 +1491,17 @@ class TestCageAudit:
         assert "api.anthropic.com" in result.output
         assert "evil.com" in result.output
 
-        # Verify journal command uses proxy unit
+        # v0.22: audit reads the single egress unit (was proxy + dns).
         cmd = mock_popen.call_args[0][0]
         assert "-u" in cmd
         idx = cmd.index("-u")
-        assert cmd[idx + 1] == "myapp-proxy"
+        assert cmd[idx + 1] == "myapp-egress"
 
     @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.subprocess.Popen")
     @patch("agentcage.cli.state")
     def test_audit_vm_mode(self, mock_state, mock_popen, MockLimaInstance):
-        """VM mode uses limactl shell + journalctl with proxy and dns units."""
+        """VM mode uses limactl shell + journalctl with the egress unit."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("vm")
         MockLimaInstance.return_value.name = "agentcage-myvm"
@@ -1511,7 +1518,7 @@ class TestCageAudit:
         assert cmd[0] == "limactl"
         assert "agentcage-myvm" in cmd
         assert "sg" in cmd and "systemd-journal" in cmd
-        assert "myvm-proxy" in cmd[-1]
+        assert "myvm-egress" in cmd[-1]
 
     @patch("agentcage.cli.subprocess.Popen")
     @patch("agentcage.cli.state")
@@ -1635,12 +1642,30 @@ class TestCageExec:
         mock_state.load_deployment_config.return_value = cfg
         mock_run.return_value = MagicMock(returncode=0, stdout="running")
 
+        # v0.22: `-s proxy` / `-s dns` are gone; `-s egress` is the only
+        # non-cage target.
+        result = _runner().invoke(main, [
+            "cage", "exec", "myapp", "-s", "egress", "--", "ls",
+        ])
+        mock_run.assert_called_with(
+            ["podman", "exec", "-u", "1000:1000", "myapp-egress", "ls"]
+        )
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.state")
+    def test_exec_rejects_legacy_proxy_service_choice(self, mock_state, mock_run):
+        """v0.21 invocations like `-s proxy` / `-s dns` are rejected at
+        Click parse time — no migration alias, just a clean error."""
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_config("container")
+        cfg.exec_aliases = {}
+        mock_state.load_deployment_config.return_value = cfg
         result = _runner().invoke(main, [
             "cage", "exec", "myapp", "-s", "proxy", "--", "ls",
         ])
-        mock_run.assert_called_with(
-            ["podman", "exec", "-u", "1000:1000", "myapp-proxy", "ls"]
-        )
+        assert result.exit_code != 0
+        assert "'proxy' is not one of" in result.output
+        mock_run.assert_not_called()
 
     @patch("agentcage.backends.vm.LimaInstance")
     @patch("agentcage.cli.LimaInstance")

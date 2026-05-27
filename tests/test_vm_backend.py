@@ -46,7 +46,7 @@ class TestCheckPrerequisites:
 
 
 class TestBuildArtifacts:
-    def test_builds_images_inside_vm(self):
+    def test_builds_egress_image_inside_vm(self):
         backend = VmBackend()
         mock_inst = MagicMock()
         mock_inst.is_running.return_value = True
@@ -58,12 +58,19 @@ class TestBuildArtifacts:
             mock_sp_run.return_value = MagicMock(returncode=0)
             backend.build_artifacts(config, "testcage")
 
-        # Should call: rm, cp, podman build proxy, podman build dns, podman pull, rm
+        # v0.22: a single agentcage-egress image replaces the legacy proxy
+        # + dns image pair. The cage image is pulled (or built) too.
         exec_calls = mock_inst.exec.call_args_list
         build_calls = [c for c in exec_calls if "podman" in str(c) and "build" in str(c)]
-        assert len(build_calls) == 2
-        assert "agentcage-proxy" in str(build_calls[0])
-        assert "agentcage-dns" in str(build_calls[1])
+        assert len(build_calls) == 1, (
+            f"expected exactly one image build (egress); got {len(build_calls)}"
+        )
+        assert "agentcage-egress" in str(build_calls[0])
+        # Legacy tags must NOT appear — verifies the legacy pair was dropped.
+        for legacy in ("agentcage-proxy", "agentcage-dns"):
+            assert legacy not in str(build_calls[0]), (
+                f"unexpected legacy image build: {build_calls[0]}"
+            )
         # Should have pulled the cage image
         pull_calls = [c for c in exec_calls if "pull" in str(c)]
         assert len(pull_calls) == 1
@@ -289,7 +296,7 @@ class TestStop:
         # systemctl stop called for each service
         exec_calls = [c[0][0] for c in mock_inst.exec.call_args_list]
         service_stop_calls = [c for c in exec_calls if "stop" in c]
-        assert len(service_stop_calls) == 3  # cage, proxy, dns
+        assert len(service_stop_calls) == 2  # cage, egress
 
         mock_inst.stop.assert_called_once()
 
@@ -309,8 +316,7 @@ class TestStop:
                 stopped_services.append(cmd[-1])
 
         assert "testcage-cage.service" in stopped_services
-        assert "testcage-proxy.service" in stopped_services
-        assert "testcage-dns.service" in stopped_services
+        assert "testcage-egress.service" in stopped_services
 
     def test_does_not_stop_if_not_running(self):
         backend = VmBackend()
@@ -467,16 +473,16 @@ class TestIsRunning:
         mock_inst.exec.return_value = mock_exec_result
 
         with patch.object(backend, "_instance", return_value=mock_inst):
-            backend.is_running("mycage", "proxy")
+            backend.is_running("mycage", "egress")
 
         cmd = mock_inst.exec.call_args[0][0]
-        assert "mycage-proxy.service" in cmd
+        assert "mycage-egress.service" in cmd
 
 
 class TestServiceNames:
-    def test_returns_cage_proxy_dns(self):
+    def test_returns_cage_egress(self):
         backend = VmBackend()
-        assert backend.service_names("anything") == ["cage", "proxy", "dns"]
+        assert backend.service_names("anything") == ["cage", "egress"]
 
     def test_name_argument_ignored(self):
         backend = VmBackend()
@@ -521,11 +527,11 @@ class TestExecArgv:
     def test_as_root_with_interactive(self):
         backend = VmBackend()
         argv = backend.exec_argv(
-            "myapp", "proxy", ["sh"], interactive=True, as_root=True,
+            "myapp", "egress", ["sh"], interactive=True, as_root=True,
         )
         assert argv == [
             "limactl", "shell", "--workdir", "/", "agentcage-myapp", "--",
-            "podman", "exec", "-u", "0:0", "-it", "myapp-proxy", "sh",
+            "podman", "exec", "-u", "0:0", "-it", "myapp-egress", "sh",
         ]
 
 
@@ -636,20 +642,20 @@ class TestSystemctlStart:
 
         mock_inst = MagicMock()
         mock_inst.exec.return_value = MagicMock(returncode=0)
-        _systemctl_start(mock_inst, "foo-dns", restart=True)
+        _systemctl_start(mock_inst, "foo-egress", restart=True)
 
         mock_inst.exec.assert_called_once_with(
-            ["systemctl", "--user", "restart", "foo-dns.service"]
+            ["systemctl", "--user", "restart", "foo-egress.service"]
         )
 
 
 class TestDeployCageStartOrder:
     """The cage's ExecStartPre is a 30s poll for mitmproxy's CA cert.
-    Starting cage in the same loop as proxy/dns races that cert
-    generation and produces a spurious 'failed to start <name>-cage'
+    Starting cage in the same loop as the egress container races that
+    cert generation and produces a spurious 'failed to start <name>-cage'
     warning before the second-attempt cage start (which is gated on
-    wait_proxy) succeeds. The fix: never start cage in the first loop;
-    only start it after proxy is confirmed active."""
+    wait_egress) succeeds. The fix: never start cage in the first loop;
+    only start it after egress is confirmed active."""
 
     def test_cage_not_in_first_start_loop(self):
         from agentcage.backends.vm import VmBackend
@@ -686,7 +692,7 @@ class TestDeployCageStartOrder:
         if "foo-cage.service" in unit_seq:
             cage_idx = unit_seq.index("foo-cage.service")
             infra = {"foo-net-network.service", "foo-certs-volume.service",
-                     "foo-proxy.service", "foo-dns.service"}
+                     "foo-egress.service"}
             earlier = set(unit_seq[:cage_idx])
             # Every infra service that ran must have run before cage.
             assert infra.intersection(unit_seq).issubset(earlier), (

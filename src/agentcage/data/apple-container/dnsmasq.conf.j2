@@ -25,8 +25,13 @@
 # other zone returns REFUSED regardless of record type because there is
 # no default upstream to fall back to. The `address=/#/<sinkhole>` line
 # remains as defense in depth for A/AAAA inside non-allowed zones.
-listen-address=127.0.0.1
-bind-interfaces
+# Listen on all interfaces — in the 2-microVM model the cage container
+# is in a SEPARATE network namespace from this egress container, so loopback
+# is not reachable from the cage. dnsmasq's binding to 0.0.0.0:53 is fine
+# because the egress container's iptables FORWARD chain only ACCEPTs DNS
+# from cage→egress (the supervisor sets net.ipv4.ip_forward=1 + ESTABLISHED
+# RELATED + per-port ACCEPTs).
+listen-address=0.0.0.0
 no-resolv
 no-hosts
 port=53

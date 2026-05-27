@@ -1,16 +1,25 @@
 """Per-cage wrapper image generation for the apple-container backend.
 
-For each cage we generate a small Containerfile that layers the agentcage
-supervisor + hardening onto the user's cage image. The supervisor is then the
-PID 1 of the Apple container microVM and exec's the user's original CMD after
-hardening setup.
+PR 3 of #196 — 2-microVM refactor. The legacy `build_wrapper` produced a
+heavyweight image carrying mitmproxy + dnsmasq + iptables + supervisor.sh.
+That all moved to the sibling <cage>-egress microVM (built from the
+shared agentcage-egress image; PR 1). What's left here is a tiny wrapper
+that adds a `cage-init.sh` entrypoint to the user's image — sets the
+default route to the egress sibling, capsh-drops, then exec's the user's
+original CMD via a shell-escaped one-shot script.
+
+Helpers also exposed from this module (still used by build_artifacts +
+domain add/rm):
+  - `render_dnsmasq_conf(allowlist, dns_servers)` — host-side rendering
+    of the dnsmasq config. Now bind-mounted into the egress microVM at
+    runtime rather than baked into the wrapper image. Same template
+    (dnsmasq.conf.j2) as the legacy path.
 """
 
 from __future__ import annotations
 
-import json
+import shlex
 import shutil
-import tarfile
 from pathlib import Path
 from typing import Iterable
 
@@ -21,38 +30,6 @@ from agentcage.apple_container import cli as ac_cli
 
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "apple-container"
-# Secret-injection transforms (e.g. google-jwt-bearer) live in the shared
-# proxy data dir alongside the container-backend addon. We stage them into
-# the apple-container build context so the in-cage mitmproxy addon can
-# ``import transforms`` exactly like the container backend's addon does.
-_TRANSFORMS_SRC = (
-    Path(__file__).resolve().parent.parent / "data" / "proxy" / "transforms"
-)
-# Protocol relays (IMAP, SMTP) — non-HTTP secret-injection listeners that
-# run on the same mitmproxy event loop as the HTTP allowlist. Bundled
-# into the apple-container image so the addon can do
-# ``from relays import get`` once a cage.yaml declares ``protocol_relays:``.
-_RELAYS_SRC = (
-    Path(__file__).resolve().parent.parent / "data" / "proxy" / "relays"
-)
-# Inspectors registry — same package the container-backend addon imports from
-# (``from inspectors.base import Inspector`` etc.). We bundle the entire
-# package into the apple-container build context so the in-cage addon can
-# load + run the chain identically to the container backend. Same
-# ADD-tarball trick as transforms above to dodge Apple ``container build``'s
-# silent directory-COPY drop. Also required by the ``relays.smtp`` module
-# which does ``from inspectors.base import InspectionContext`` at import time.
-_INSPECTORS_SRC = (
-    Path(__file__).resolve().parent.parent / "data" / "proxy" / "inspectors"
-)
-# Shared CaptureWriter — same encoder/snapshot/should_capture logic the
-# container backend uses. Staged next to the addon so the in-cage script
-# can ``from capture import CaptureWriter`` (mitmproxy adds the script
-# directory to sys.path). Keeping a single source-of-truth avoids the
-# two-implementations-drift footgun that bit us with secret_injection.
-_CAPTURE_SRC = (
-    Path(__file__).resolve().parent.parent / "data" / "proxy" / "capture.py"
-)
 
 
 def _user_cmd(user_image: str) -> list[str]:
@@ -105,8 +82,29 @@ def _user_cmd(user_image: str) -> list[str]:
     return combined
 
 
-def render_wrapper_containerfile(user_image: str, *, user_cmd: list[str] | None = None) -> str:
-    """Render the per-cage wrapper Containerfile to a string."""
+def _shlex_join_argv(argv: list[str]) -> str:
+    """Shell-escape each argv element and join with spaces.
+
+    The result is safe to feed straight to ``/bin/sh -c "exec <result>"``
+    or as the body of an `exec ...` line in a sh script. Every shell
+    metacharacter (whitespace, ``$VAR``, ``&&``, ``;``, etc.) is escaped
+    by ``shlex.quote`` so the cage user's argv survives the build-time
+    bake into ``cage-cmd.sh`` verbatim.
+    """
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+def render_wrapper_containerfile(
+    user_image: str,
+    *,
+    user_cmd: list[str] | None = None,
+) -> str:
+    """Render the per-cage wrapper Containerfile to a string.
+
+    The template's only dynamic inputs are the user image reference and
+    the shell-escaped form of the user's CMD (baked into cage-cmd.sh by
+    a RUN heredoc).
+    """
     env = SandboxedEnvironment(
         loader=FileSystemLoader(str(_DATA_DIR)),
         keep_trailing_newline=True,
@@ -114,28 +112,10 @@ def render_wrapper_containerfile(user_image: str, *, user_cmd: list[str] | None 
     if user_cmd is None:
         user_cmd = _user_cmd(user_image)
     tmpl = env.get_template("Containerfile.wrapper.j2")
-    return tmpl.render(user_image=user_image)
-
-
-def _pack_tarball(src: Path, archive: Path) -> None:
-    """Pack ``src``'s top-level entries into a flat ``archive`` tarball.
-
-    Excludes ``__pycache__`` (host-local Python bytecode that bloats
-    the image layer and ruins layer determinism). Entries are added in
-    sorted order so each rebuild with unchanged source produces a
-    bit-identical artifact — helps Apple's container layer cache and
-    is required for reproducible-build digests downstream.
-
-    The archive uses flat (top-level-only) ``arcname``s so an
-    ``ADD foo.tar.gz /opt/agentcage/foo/`` directive in the
-    Containerfile drops the contents straight into the target dir
-    — no nested ``foo/foo/...`` directory.
-    """
-    with tarfile.open(archive, "w:gz") as tar:
-        for entry in sorted(src.iterdir()):
-            if entry.name == "__pycache__":
-                continue
-            tar.add(entry, arcname=entry.name)
+    return tmpl.render(
+        user_image=user_image,
+        user_cmd_quoted=_shlex_join_argv(user_cmd),
+    )
 
 
 _DEFAULT_DNS_SERVERS: list[str] = ["1.1.1.1", "8.8.8.8"]
@@ -153,6 +133,12 @@ def render_dnsmasq_conf(
     line would forward TXT/MX/NS/SRV/CNAME queries to upstream for any
     hostname an attacker chose, which is a fully out-of-band DNS-tunnel
     exfil channel (mitmproxy never sees DNS).
+
+    Same template + invariants as the legacy wrapper. The semantic
+    location moved (bind-mounted into the egress microVM at runtime
+    instead of baked into the wrapper image at build time), but the
+    rendering itself is unchanged so all the dnsmasq-shape regression
+    tests still apply.
     """
     env = SandboxedEnvironment(
         loader=FileSystemLoader(str(_DATA_DIR)),
@@ -170,125 +156,60 @@ def render_dnsmasq_conf(
 def stage_build_context(
     dest: Path,
     user_cmd: list[str],
-    allowlist: list[str] | None = None,
-    secret_injection_rules: list[dict] | None = None,
-    protocol_relays: list[dict] | None = None,
-    capture_config: dict | None = None,
-    inspectors: list[dict] | None = None,
-    dns_servers: list[str] | None = None,
+    # Kwargs kept (and ignored) for back-compat with callers that still
+    # pass them — the 2-microVM refactor moved every per-cage proxy/dns
+    # config out of the wrapper image, so none of these flow into the
+    # cage's build context anymore. The signatures stay so existing
+    # callers (build_artifacts, possibly tests) don't have to keep
+    # version-gating; they'll all be cleaned up in a follow-up.
+    allowlist: list[str] | None = None,  # noqa: ARG001  -- egress-side now
+    secret_injection_rules: list[dict] | None = None,  # noqa: ARG001
+    protocol_relays: list[dict] | None = None,  # noqa: ARG001
+    capture_config: dict | None = None,  # noqa: ARG001
+    inspectors: list[dict] | None = None,  # noqa: ARG001
+    dns_servers: list[str] | None = None,  # noqa: ARG001
 ) -> None:
-    """Stage supervisor + cage CMD + egress filter config into *dest*.
+    """Stage cage-init.sh into the wrapper build context.
 
     Files written:
-      - supervisor.sh         -- PID 1 of the cage microVM (security-critical)
-      - dnsmasq.conf          -- per-cage DNS resolver config, rendered from
-                                 dnsmasq.conf.j2 with the cage's allowlist so
-                                 upstream recursion is scoped to allowlisted
-                                 apex domains. Non-allowlisted zones get
-                                 REFUSED for every record type — closes the
-                                 non-A-record DNS-tunnel exfil channel.
-      - allowlist_addon.py    -- mitmproxy addon (allowlist + audit + injection)
-      - capture.py            -- shared CaptureWriter (snapshot + size guard +
-                                 binary-skip + filter). Same source the
-                                 container backend's addon imports — staged
-                                 next to allowlist_addon.py so mitmproxy's
-                                 script loader puts it on sys.path.
-      - cage-cmd.json         -- user image's original ENTRYPOINT+CMD
-      - allowlist.txt         -- one host per line
-      - secret_injection.json -- list of
-                                 ``{env, placeholder, inject_to, transform,
-                                 transform_config}`` rules read by the
-                                 mitmproxy addon at startup; actual secret
-                                 values are env-passed at container run
-                                 time so the build context stays free of
-                                 secrets.
-      - capture.json          -- HAR capture config (enable_har, max_body_size,
-                                 domains, exclude_domains, min_action). Empty
-                                 / disabled means the addon skips body capture
-                                 entirely (legacy headers-only entries still
-                                 record allow/block traffic in audit.jsonl).
-      - inspectors.json       -- list of ``{name, config}`` entries that the
-                                 in-cage addon dispatches through the
-                                 bundled ``inspectors`` registry — same
-                                 chain the container backend's addon runs.
-                                 Empty list (or missing key) means no
-                                 inspectors run; allowlist-only mode.
-      - transforms.tar.gz     -- tarball of ``data/proxy/transforms`` so the
-                                 in-cage addon can import the same transform
-                                 implementations (google-jwt-bearer, ...)
-                                 the container backend uses. Rules with no
-                                 ``transform`` field never load this code.
-      - relays.tar.gz         -- tarball of ``data/proxy/relays`` so the
-                                 in-cage addon can ``from relays import get``
-                                 to spawn IMAP/SMTP listeners declared in
-                                 cage.yaml ``protocol_relays:``.
-      - inspectors.tar.gz     -- tarball of ``data/proxy/inspectors`` so the
-                                 in-cage addon can ``import inspectors``
-                                 identically to the container backend.
-                                 Also required by the ``relays.smtp``
-                                 module which imports ``inspectors.base``
-                                 at module load even when the
-                                 apple-container addon passes
-                                 ``inspectors=None`` to the relay.
-      - protocol_relays.json  -- the cage's ``protocol_relays:`` list
-                                 (passes through ``name/type/listen/
-                                 upstream/auth/policy``). Credential
-                                 VALUES are NOT here — the addon reads
-                                 them at relay-start time from the same
-                                 ``/home/acproxy/secrets/<env>`` files
-                                 secret_injection uses.
+      - cage-init.sh — PID 1 of the cage microVM. Waits for the egress
+                       sibling to be ARP-reachable, replaces the default
+                       route via the egress IP, installs the proxy CA
+                       into the trust store, capsh-drops + exec's the
+                       user's CMD via cage-cmd.sh.
 
-    NOTE on the tarballs: Apple's ``container build`` (0.5+) silently
-    drops the contents when a Containerfile does ``COPY <dir> <dst>``
-    — the destination directory exists but is empty. ADD'ing a
-    ``.tar.gz`` works because the underlying buildkit path
-    auto-extracts archives. We use the OCI image's ADD-extract
-    semantics deliberately to dodge the directory-copy bug; if Apple
-    ever fixes plain dir COPY we can simplify here.
+    Files no longer written (vs the legacy single-VM model):
+      - supervisor.sh        — deleted; the egress image's supervisor
+                                handles every stage 30-80 equivalent.
+      - allowlist_addon.py   — mitmproxy addon now lives in the egress
+                                container's image (PR 1 + PR 2 wire it).
+      - capture.py           — same.
+      - cage-cmd.json        — replaced by /opt/agentcage/cage-cmd.sh,
+                                baked at build time via a RUN heredoc
+                                in Containerfile.wrapper.j2 with the
+                                shlex.quote'd argv. No runtime jq.
+      - allowlist.txt        — egress-side now.
+      - dnsmasq.conf         — egress-side; rendered host-side and
+                                bind-mounted into the egress container.
+      - secret_injection.json + protocol_relays.json + capture.json
+        + inspectors.json    — egress-side now (PR 2 stages the addon
+                                config dir on the host and bind-mounts
+                                it into the egress container).
+      - transforms.tar.gz / relays.tar.gz / inspectors.tar.gz
+                              — egress-side.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(_DATA_DIR / "supervisor.sh", dest / "supervisor.sh")
-    (dest / "dnsmasq.conf").write_text(
-        render_dnsmasq_conf(allowlist, dns_servers=dns_servers)
-    )
-    shutil.copy2(_DATA_DIR / "allowlist_addon.py", dest / "allowlist_addon.py")
-    # Shared CaptureWriter from the container backend's proxy package. The
-    # addon imports it (``from capture import CaptureWriter``) so we have
-    # exactly one snapshot/encode/filter implementation across backends.
-    shutil.copy2(_CAPTURE_SRC, dest / "capture.py")
-    # Pack the transforms, relays, and inspectors packages into
-    # deterministic tarballs (sorted entries, no __pycache__). Each is
-    # a few KB; the COPY-drop bug forces us through ADD for every
-    # directory we want bundled. The inspectors tarball is unconditionally
-    # staged so adding ``inspectors:`` to cage.yaml after the image was
-    # last built doesn't silently no-op until a rebuild that happens to
-    # also touch the registry.
-    _pack_tarball(_TRANSFORMS_SRC, dest / "transforms.tar.gz")
-    _pack_tarball(_RELAYS_SRC, dest / "relays.tar.gz")
-    _pack_tarball(_INSPECTORS_SRC, dest / "inspectors.tar.gz")
-    (dest / "cage-cmd.json").write_text(json.dumps(user_cmd))
-    allow_lines = "\n".join(h.strip() for h in (allowlist or []) if h.strip())
-    (dest / "allowlist.txt").write_text(allow_lines + ("\n" if allow_lines else ""))
-    (dest / "secret_injection.json").write_text(
-        json.dumps(secret_injection_rules or [])
-    )
-    # protocol_relays.json is always written (possibly as ``[]``) so the
-    # in-cage addon's loader can read+parse unconditionally — same
-    # pattern as secret_injection.json above.
-    (dest / "protocol_relays.json").write_text(
-        json.dumps(protocol_relays or [])
-    )
-    # Capture config — empty dict / enable_har:false means the addon falls
-    # back to the legacy headers-only capture record (no body bytes).
-    # Operators turn this on by setting ``capture.enable_har: true`` in
-    # cage.yaml; rebuild required (the file is baked in at image build
-    # time, same shape as secret_injection.json).
-    (dest / "capture.json").write_text(json.dumps(capture_config or {}))
-    (dest / "inspectors.json").write_text(json.dumps(inspectors or []))
+    shutil.copy2(_DATA_DIR / "cage-init.sh", dest / "cage-init.sh")
 
 
 def wrapped_image_name(cage_name: str) -> str:
-    """Return the OCI image reference for the wrapped per-cage image."""
+    """Return the OCI image reference for the wrapped per-cage image.
+
+    The per-cage tag is unchanged from the legacy single-VM model so
+    `cage update` on a 0.21 cage finds the existing image and replaces
+    it in place. The PR 3 image content is unrecognizable to the
+    legacy supervisor, but Apple's `container build` retags freely.
+    """
     return f"localhost/agentcage-apple-{cage_name}:latest"
 
 
@@ -297,12 +218,17 @@ def build_wrapper(
     user_image: str,
     *,
     user_cmd: list[str] | None = None,
-    allowlist: list[str] | None = None,
-    secret_injection_rules: list[dict] | None = None,
-    protocol_relays: list[dict] | None = None,
-    capture_config: dict | None = None,
-    inspectors: list[dict] | None = None,
-    dns_servers: list[str] | None = None,
+    # Back-compat kwargs — see stage_build_context's docstring. None of
+    # these flow into the wrapper image anymore; the per-cage egress
+    # config (dnsmasq.conf, allowlist, secret_injection.json, etc.) is
+    # rendered host-side by AppleContainerBackend.build_artifacts and
+    # bind-mounted into the egress sibling at runtime.
+    allowlist: list[str] | None = None,  # noqa: ARG001
+    secret_injection_rules: list[dict] | None = None,  # noqa: ARG001
+    protocol_relays: list[dict] | None = None,  # noqa: ARG001
+    capture_config: dict | None = None,  # noqa: ARG001
+    inspectors: list[dict] | None = None,  # noqa: ARG001
+    dns_servers: list[str] | None = None,  # noqa: ARG001
 ) -> str:
     """Generate Containerfile, stage build context, run `container build`.
 
@@ -311,22 +237,16 @@ def build_wrapper(
     import tempfile
 
     image = wrapped_image_name(cage_name)
-    containerfile = render_wrapper_containerfile(user_image, user_cmd=user_cmd)
 
     if user_cmd is None:
         user_cmd = _user_cmd(user_image)
 
+    containerfile = render_wrapper_containerfile(user_image, user_cmd=user_cmd)
+
     with tempfile.TemporaryDirectory(prefix="agentcage-apple-build-") as tmp:
         tmpdir = Path(tmp)
         (tmpdir / "Containerfile").write_text(containerfile)
-        stage_build_context(
-            tmpdir, user_cmd, allowlist=allowlist,
-            secret_injection_rules=secret_injection_rules,
-            protocol_relays=protocol_relays,
-            capture_config=capture_config,
-            inspectors=inspectors,
-            dns_servers=dns_servers,
-        )
+        stage_build_context(tmpdir, user_cmd)
         ac_cli.run(
             ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],
             capture_output=False,  # stream output to user
@@ -335,5 +255,10 @@ def build_wrapper(
 
 
 def collect_image_artifacts(cage_name: str) -> Iterable[str]:
-    """Return image references owned by *cage_name* (for cleanup)."""
+    """Return image references owned by *cage_name* (for cleanup).
+
+    The shared agentcage-egress image is NOT yielded here — destroying
+    one cage must not delete an image used by sibling cages. The egress
+    image is host-wide; its lifecycle is tied to the agentcage version.
+    """
     yield wrapped_image_name(cage_name)
