@@ -207,14 +207,21 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # allowed domain × upstream pair). This closes the same non-A-record
   # exfil channel that the apple-container dnsmasq.conf.j2 closes.
   log "step B: container/vm path — applying allowlist flags inline"
-  # NB: we do NOT pass --no-hosts. dnsmasq reads /etc/hosts inside the
-  # egress container by default, which the e2e harness uses to redirect
-  # specific upstream domains (e.g. httpbin.org → the mock container's
-  # cage-net IP) for testing the proxy chain end-to-end without external
-  # DNS. The legacy dns.container.j2 didn't pass --no-hosts either —
-  # the additional hardening it would provide is minimal (only the
-  # egress container's own hostname and 127.0.0.1 are in /etc/hosts by
-  # default; operators who care can mount an empty /etc/hosts).
+  # ``--no-hosts``: dnsmasq must NOT honor /etc/hosts inside the egress
+  # container. mitmproxy lives in the same container as dnsmasq in the
+  # unified v0.22 shape, and the e2e harness patches /etc/hosts here so
+  # mitmproxy (via NSS in its getaddrinfo + keep_host_header=true)
+  # resolves the mocked upstream domain to the cage-net mock IP. If
+  # dnsmasq also reads /etc/hosts, the cage's DNS query returns that
+  # mock IP, the cage connects to the mock SAME-SUBNET-DIRECTLY, and
+  # the outbound flow bypasses mitmproxy entirely — no inspection, no
+  # audit, no domain-allowlist enforcement. With ``--no-hosts``,
+  # dnsmasq returns either the real upstream IP (allowed zones) or
+  # 198.51.100.1 (sinkhole) and the cage's packet enters the egress's
+  # PREROUTING REDIRECT path into mitmproxy, where the per-request
+  # /etc/hosts lookup happens. The LEGACY 3-service shape got this
+  # split for free (dns sidecar and proxy were separate containers
+  # with separate /etc/hosts files); v0.22 has to enforce it.
   prlimit --as=$((256 * 1024 * 1024)) -- \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
@@ -222,6 +229,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
       /usr/sbin/dnsmasq -k \
         --pid-file="$DNSMASQ_PID_FILE" \
         --no-resolv \
+        --no-hosts \
         --listen-address="$DNS_LISTEN_IP" \
         --port=53 \
         --address=/#/198.51.100.1 \
