@@ -1167,7 +1167,34 @@ class AppleContainerBackend:
             )
         flags = ["-it"] if interactive else []
         spec = "0:0" if as_root else "1000:1000"
-        return [binary, "exec", "-u", spec, *flags, target, *cmd]
+
+        # F2 from the CTF: ``--as-root`` previously gave the operator
+        # CapEff including NET_ADMIN (Apple's runtime reconstructs the
+        # cap set from the container's --cap-add CAP_NET_ADMIN on every
+        # exec). One ``ip route replace default via <apple-gw>`` then
+        # disabled the egress filter entirely. The cage VM is started
+        # with NET_ADMIN because ``cage-init.sh`` stage B needs it for
+        # the default-route bootstrap — but every subsequent exec
+        # session should run WITHOUT NET_ADMIN.
+        #
+        # ``setpriv --bounding-set=-net_admin --inh-caps=-net_admin``
+        # drops NET_ADMIN from the bounding + inheritable sets before
+        # exec'ing the operator's command. CapEff is recomputed from
+        # CapBnd on execve, so the operator's shell starts without
+        # NET_ADMIN — ``ip route replace`` returns EPERM. The rest of
+        # the cap set is preserved (CHOWN/FOWNER/SETUID/SETGID/etc.)
+        # so debug sessions can still apt-install or chown files.
+        # ``setpriv`` is part of util-linux and ships in every distro
+        # we wrap.
+        wrap = []
+        if as_root and service in ("cage", ""):
+            wrap = [
+                "setpriv",
+                "--bounding-set=-net_admin",
+                "--inh-caps=-net_admin",
+                "--",
+            ]
+        return [binary, "exec", "-u", spec, *flags, target, *wrap, *cmd]
 
     def logs_argv(
         self,

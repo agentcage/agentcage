@@ -75,12 +75,29 @@ class TestCageExecAppleContainer:
     @patch("agentcage.apple_container.cli.container_binary")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_exec_as_root_skips_capsh_wrap(
+    def test_exec_as_root_drops_net_admin_via_setpriv(
         self, mock_state, mock_execvp, mock_binary, _mock_inspect,
     ):
-        """`--as-root` bypasses capsh entirely — operator gets a root
-        shell with the container's full cap set + NoNewPrivs=0.
-        Necessary for `apt-get install` and similar one-off ops."""
+        """``--as-root`` gets a uid-0 shell with NET_ADMIN DROPPED from
+        the bounding set, so ``ip route replace`` returns EPERM and the
+        operator cannot bypass the egress filter. CTF F2 (v0.22.1).
+
+        The cage VM is started with ``--cap-add CAP_NET_ADMIN`` because
+        ``cage-init.sh`` stage B needs it to set the default route via
+        the egress sibling. Apple's runtime reconstructs that cap in
+        CapEff on every ``container exec --user 0``, so before this fix
+        an operator could ``ip route replace default via
+        <apple-gateway>`` and reach the internet without mitmproxy
+        interposition — full egress bypass via the operator-debug door.
+
+        ``setpriv --bounding-set=-net_admin
+        --inh-caps=-net_admin`` runs as uid 0 (no setuid happens),
+        drops NET_ADMIN from the bounding + inheritable sets, then
+        execve's the operator's cmd. execve recomputes CapEff/CapPrm
+        from CapBnd, so the new process starts with NET_ADMIN cleared.
+        Other caps (CHOWN, SETUID, SETGID, etc.) survive — ``apt-get
+        install`` and similar debug ops continue to work.
+        """
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         mock_binary.return_value = "/usr/local/bin/container"
@@ -90,12 +107,13 @@ class TestCageExecAppleContainer:
         )
 
         argv = mock_execvp.call_args.args[1]
-        # No capsh = full root with the container's caps.
-        assert "capsh" not in argv
-        assert "--no-new-privs" not in argv
-        assert "--drop=all" not in argv
-        # And no `-u 1000` either; image USER (root on wrapper) applies.
-        assert "1000" not in argv
+        # Setpriv wrap drops NET_ADMIN before exec'ing the operator's cmd.
+        assert "setpriv" in argv
+        assert "--bounding-set=-net_admin" in argv
+        assert "--inh-caps=-net_admin" in argv
+        # Still --as-root → uid 0:0 (operator's debug intent).
+        assert "0:0" in argv
+        # The operator's actual cmd still reaches the executable.
         assert "iptables" in argv
 
     @patch("agentcage.backends.apple_container.ac_cli.inspect",
