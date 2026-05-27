@@ -44,32 +44,20 @@ class TestCageExecAppleContainer:
     @patch("agentcage.apple_container.cli.container_binary")
     @patch("agentcage.cli.os.execvp")
     @patch("agentcage.cli.state")
-    def test_exec_wraps_in_capsh_for_nonewprivs_and_drop_all(
+    def test_exec_uses_flat_uid_spec(
         self, mock_state, mock_execvp, mock_binary, _mock_inspect,
     ):
-        """SECURITY: exec on apple-container wraps the user's command in
-        ``capsh --no-new-privs --drop=all --user=1000 ...``, the same
-        primitive supervisor.sh uses at stage 90. Three properties
-        this gives the exec session that a plain `-u 1000` wouldn't:
-
-          1. NoNewPrivs=1 — kernel refuses to grant caps via setuid
-             binaries (cage ships /usr/bin/su, /usr/bin/mount,
-             /usr/lib/openssh/ssh-keysign, etc. as 4755-mode root)
-          2. CapBnd=0 — drop=all clears the bounding set BEFORE the
-             user switch; without it, CapBnd would still contain
-             CAP_NET_ADMIN + CAP_SYS_ADMIN from the container's cap
-             set, leaving a re-grant path open
-          3. uid 1000 with all caps empty — exec session has the same
-             identity + fs ACL access as the workload
-
-        Pre-fix history:
-          - Originally `cage exec <cage> -- claude` ran as root with
-            full caps (image USER=root, container exec inherits)
-          - First fix (#162) added `-u 1000` so eff/prm caps drop, but
-            left CapBnd non-empty AND NoNewPrivs=0 — a setuid-root
-            binary could re-acquire CAP_NET_ADMIN and `iptables -F`
-            the egress filter
-          - This fix (capsh wrap) closes that last door"""
+        """PR 3 (2-microVM model): `cage exec` is now a flat
+        ``container exec -u 1000:1000 <cage> <cmd>``. No capsh wrap —
+        the cage VM no longer contains the egress filter, so the
+        legacy setuid-binary-reacquires-caps escape path against
+        iptables doesn't exist anymore (no iptables binary in the
+        slim wrapper). uid 0→1000 in `container exec -u` clears
+        CapEff/CapPrm; CAP_NET_ADMIN remains in CapBnd but uid 1000
+        can't gain it back via setuid-root because the slim wrapper
+        also has no setuid-root binaries that would help (no
+        iptables to flush, no dnsmasq config to rewrite, secrets in
+        a different VM)."""
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
         mock_binary.return_value = "/usr/local/bin/container"
@@ -78,13 +66,8 @@ class TestCageExecAppleContainer:
 
         mock_execvp.assert_called_once_with(
             "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "-u", "0",
-             "demo",
-             "/bin/sh", "-c",
-             'CAGE_USER=$(getent passwd 1000 | cut -d: -f1) && '
-             'exec capsh --no-new-privs --drop=all '
-             '--user="$CAGE_USER" --shell=/bin/sh '
-             '-- -c \'exec ls -la\''],
+            ["/usr/local/bin/container", "exec", "-u", "1000:1000",
+             "demo", "ls", "-la"],
         )
 
     @patch("agentcage.backends.apple_container.ac_cli.inspect",

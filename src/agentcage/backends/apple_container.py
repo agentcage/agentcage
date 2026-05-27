@@ -1,26 +1,34 @@
-"""Apple container backend — single hardened microVM per cage.
+"""Apple container backend — 2-microVM model (cage + egress).
 
-See issue #120 for the design. This backend uses Apple's `container` CLI on
-macOS 26+ Apple Silicon. Each cage is one Apple container (one microVM); the
-agentcage supervisor runs as PID 1 and applies hardening before exec'ing the
-user's cage workload.
+PR 3 of #196: previously each cage was a single Apple microVM with a
+329-line supervisor.sh booting mitmproxy + dnsmasq + iptables inside it
+before capsh-dropping to uid 1000. This refactor splits the per-cage
+shape into TWO sibling microVMs:
 
-What ships in this backend:
-  - Hardened cage process: uid 1000, CapEff/Prm/Inh/Bnd all empty,
-    NoNewPrivs=1, hidepid=2 on /proc.
-  - Egress filter: in-microVM mitmproxy (uid 200) intercepts the cage's
-    tcp/80 + tcp/443 via iptables REDIRECT; non-allowlisted hosts get a
-    403 from the proxy. dnsmasq (uid 201) is the only DNS path. IPv6 is
-    killed at netfilter + sysctl so AAAA records can't bypass v4 NAT.
-  - Cage HTTPS is MITMed with a per-cage CA installed in the cage's trust
-    store before the workload starts.
+  <cage>-egress  — built from the shared `agentcage-egress` image (PR 1).
+                   Carries mitmproxy + dnsmasq + iptables. Acts as a
+                   router/proxy between the cage and the internet.
+  <cage>         — the slimmed wrapper (FROM <user_image> + tiny
+                   cage-init.sh). No mitmproxy, no dnsmasq, no iptables,
+                   no jq, no acproxy/acdns users, no secrets.
 
-Not yet shipped (follow-ups tracked in #120):
-  - Server-side {{SECRET:...}} placeholder injection via the existing
-    SecretInjector — for now the cage sees env-injected secrets raw.
-  - `agentcage cage audit` integration (mitmproxy already writes proxy.log
-    inside the cage; CLI plumbing is part of the Backend protocol lift).
-  - Backend protocol lift for exec/logs/audit.
+Both microVMs join a per-cage Apple `container` network. cage-init.sh
+inside the cage VM sets the default route to the egress VM's IP, then
+capsh-drops to uid 1000 and exec's the user's CMD.
+
+Threat model — workload (uid 1000) cannot:
+  * read /home/acproxy/secrets/* (not in cage VM's namespace at all)
+  * modify iptables (no binary in cage wrapper)
+  * change routes (no NET_ADMIN in CapEff/CapPrm at uid 1000)
+  * see other UIDs' processes (kernel namespace gives this for free —
+    no need for the legacy supervisor.sh's hidepid=2 remount)
+
+Known residual: cage VM is started with --cap-add CAP_NET_ADMIN (needed
+for cage-init's `ip route replace`). `container exec --user 0 <cage>`
+re-acquires NET_ADMIN per the spike on Apple's runtime; an operator with
+--as-root can `ip route replace default via <host-bridge-ip>` to bypass
+the egress sibling. Workload threat is unaffected. Tracked for v0.23 via
+macOS pf rules.
 """
 
 from __future__ import annotations
@@ -30,6 +38,8 @@ import math
 import os
 import re
 import shutil
+import time
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 import click
@@ -39,6 +49,31 @@ from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
+
+
+# Shared agentcage-egress image is built once per host (tagged with the
+# agentcage version so a wheel upgrade triggers a rebuild). All cages
+# share this image — building per cage would burn ~30s + ~120MB on every
+# `cage create`.
+_EGRESS_IMAGE_REPO = "localhost/agentcage-egress"
+
+
+def _agentcage_version() -> str:
+    """Return the installed agentcage version (used to tag the egress image).
+
+    Falls back to ``unknown`` if importlib.metadata can't find the
+    distribution (e.g. running uninstalled from a source checkout without
+    `pip install -e .`). Same fallback shape the quadlet renderer uses.
+    """
+    try:
+        return _pkg_version("agentcage")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _egress_image_name() -> str:
+    """Full tagged reference for the shared egress image."""
+    return f"{_EGRESS_IMAGE_REPO}:{_agentcage_version()}"
 
 
 def _normalize_cpus(value: str) -> str:
@@ -83,33 +118,63 @@ class AppleContainerBackend:
         return Path(os.path.expanduser("~/.config/agentcage/apple-container")) / name
 
     def logs_dir(self, name: str) -> Path:
-        """Per-cage logs dir on the host, bind-mounted into the microVM.
+        """Per-cage logs dir on the host, bind-mounted into the egress microVM.
 
-        The supervisor writes proxy.log + capture.jsonl + dnsmasq.log to
-        /var/log/agentcage/ inside the microVM; we mount this host path
-        there so `agentcage cage audit` and `cage har` can read those
-        files from the host without having to exec into the microVM.
+        The egress sibling writes audit.jsonl + capture.jsonl + dnsmasq.log
+        + the `ready` marker into /var/log/agentcage/ inside its microVM;
+        we mount this host path there so `agentcage cage audit` and
+        `cage har` can read those files from the host without having to
+        exec into the microVM.
 
         Created on demand (start), preserved on stop/restart, removed by
         destroy_resources alongside the rest of the per-cage state.
         """
         return self._state_dir(name) / "logs"
 
+    def egress_config_dir(self, name: str) -> Path:
+        """Per-cage config dir on the host, bind-mounted into the egress VM.
+
+        Holds the bytes the egress microVM consumes at startup:
+          * ``proxy-config.yaml``      → /etc/agentcage/config.yaml (mitmproxy
+                                          addon reads via $AGENTCAGE_CONFIG).
+          * ``dnsmasq.conf``           → /etc/agentcage/dnsmasq.conf.
+          * ``dns-allowlist.conf``     → /etc/agentcage/dns-allowlist.conf.
+
+        Host-side rendering instead of build-time bake means `domain add`
+        can SIGHUP dnsmasq inside the egress VM after a host file rewrite,
+        no rebuild + restart needed (parity with container/vm backends).
+        """
+        return self._state_dir(name) / "egress-config"
+
+    def certs_dir(self, name: str) -> Path:
+        """Per-cage CA-cert exchange dir, bind-mounted into BOTH microVMs.
+
+        Egress writes mitmproxy-ca-cert.pem here at startup; cage-init.sh
+        reads it to install into the cage's trust store. Same host path
+        for both --volume flags so the two VMs see byte-identical contents
+        (avoids the apple-container directory-COPY 0-byte bug entirely
+        since there's no COPY involved).
+        """
+        return self._state_dir(name) / "certs"
+
     def secrets_dir(self, name: str) -> Path:
-        """Per-cage secrets dir on the host, bind-mounted into the microVM
-        read-only at /run/agentcage/secrets.
+        """Per-cage secrets dir on the host, bind-mounted ONLY into the
+        EGRESS microVM (read-only) at /home/acproxy/secrets.
 
         Each ``secret_injection`` rule's resolved value gets written to
         ``<secrets_dir>/<env-name>`` (mode 0600, owned by the host user)
         at ``start()`` time. The cage's ``container run`` argv carries
         only the PLACEHOLDER (``-e API_KEY={{API_KEY}}``) — the raw value
-        is never on the command line (visible to host `ps`) nor in
-        ``container inspect`` output. Inside the cage, virtiofs preserves
-        the host's 0600 perms so only root in the microVM can read; the
-        supervisor (PID 1, root) re-stages each file into
-        /home/acproxy/secrets/<env-name> (mode 0400, owned by acproxy
-        uid 200) so mitmproxy can read them but the cage workload (uid
-        1000) cannot.
+        is never on the command line (visible to host `ps`), not in
+        ``container inspect`` output, and not in the cage microVM's
+        namespace at all. The egress sibling reads each file and the
+        mitmproxy addon substitutes the value on the wire.
+
+        Threat-model invariant (vs the legacy single-VM model where the
+        bind happened in the cage VM): `container exec --user 0 <cage>`
+        cannot read injected secrets — they're in a different microVM's
+        filesystem. Workload-uid-1000 already couldn't read them under
+        either model, but `--as-root` operators now can't either.
 
         Created on demand (start), removed by destroy_resources alongside
         the rest of the per-cage state.
@@ -280,28 +345,47 @@ class AppleContainerBackend:
     def build_artifacts(
         self, config: Config, deploy_name: str, *, quiet: bool = False
     ) -> None:
-        """Build the per-cage wrapper image.
+        """Build (or refresh) the per-cage wrapper + the shared egress image,
+        and stage per-cage egress config files on the host.
 
-        For the apple-container backend, the only artifact we produce is the
-        wrapped user image (user's image + supervisor). The user's cage image
-        itself must already be pullable / built — we don't build it here.
+        Two image builds happen here (vs the legacy single wrapper build):
+
+          1. **agentcage-egress:<version>** — built ONCE per host
+             (skipped if already present locally with the version tag).
+             All cages share this image; per-cage build would burn
+             ~30s + ~120MB on every `cage create`.
+          2. **agentcage-apple-<cage>:latest** — per-cage wrapper, now
+             slimmed to FROM <user_image> + cage-init.sh + cage-cmd.sh
+             (the user's argv shell-escaped at build time via
+             shlex.quote). No mitmproxy/dnsmasq/iptables/jq install.
+
+        Three host-side renderings also happen here (vs the legacy
+        baked-into-image path) so domain add / secret rotation can use
+        live-reload semantics in PR 3 follow-ups:
+
+          1. <egress_config>/proxy-config.yaml — mitmproxy addon config.
+          2. <egress_config>/dnsmasq.conf      — dnsmasq main config.
+          3. <egress_config>/dns-allowlist.conf — dnsmasq --servers-file.
         """
         user_image = config.container.image
         if not user_image:
             raise ValueError("cage has no container.image set")
 
-        # If the cage came from a scaffold (cage.yaml has `scaffold:`),
+        # 1. Build (or skip) the shared agentcage-egress image. Tagged with
+        # the agentcage version so a wheel upgrade triggers a rebuild even
+        # if the user already has a stale tag from an older release.
+        self._build_egress_image_if_missing(quiet=quiet)
+
+        # 2. If the cage came from a scaffold (cage.yaml has `scaffold:`),
         # build any scaffold-declared images via Apple `container build`
-        # FIRST. The wrapper's `FROM <user_image>` references one of these
-        # tags, so it must exist before wrapper build kicks off. This
-        # replaces the host-podman path in `run.py`'s `run_scaffold_setup`
-        # which does not work on macOS (no host podman).
+        # BEFORE the wrapper build. The wrapper's `FROM <user_image>`
+        # references one of these tags, so it must exist first.
         scaffold_name = getattr(config, "scaffold", "") or ""
         if scaffold_name:
             ac_scaffold.build_scaffold_images(scaffold_name, quiet=quiet)
 
-        # Pull the user image (no-op if it was just built by the scaffold
-        # step above, or if it's already local).
+        # 3. Pull the user image (no-op if it was just built by the
+        # scaffold step above, or if it's already local).
         if not quiet:
             click.echo(f"Ensuring user image is available: {user_image}")
         pull_result = ac_cli.run(
@@ -314,13 +398,12 @@ class AppleContainerBackend:
                 f"failed to pull user image {user_image!r} and it is not built locally"
             )
 
-        # Resolve the cage's CMD. Precedence: cage.yaml `container.command:`
-        # wins (it's the cage author's explicit intent and is portable across
-        # backends), and we fall back to the user image's OCI CMD only when
-        # the cage hasn't set one. Without this precedence the apple-container
-        # backend silently ignores cage.yaml `command:` and execs the base
-        # image's CMD instead (e.g. ubuntu → `/bin/bash`, which exits
-        # immediately under `run -d` with no TTY).
+        # 4. Resolve the cage's CMD. Precedence: cage.yaml `container.command:`
+        # wins (explicit intent, portable across backends); fall back to the
+        # user image's OCI CMD only when unset. Without this precedence the
+        # apple-container backend silently ignores cage.yaml `command:` and
+        # execs the base image's CMD instead (e.g. ubuntu → `/bin/bash`,
+        # which exits immediately under `run -d` with no TTY).
         if config.container.command:
             user_cmd = list(config.container.command)
         else:
@@ -332,118 +415,114 @@ class AppleContainerBackend:
                     "set CMD in your Containerfile or use a scaffold that provides one"
                 ) from e
 
+        # 5. Render per-cage egress config files host-side. These get
+        # bind-mounted into the egress sibling at runtime.
+        self._render_egress_config(config, deploy_name)
+
+        # 6. Build the per-cage wrapper image. The slim template only
+        # needs the user image ref + the shlex-quoted user CMD (baked
+        # into cage-cmd.sh by a RUN heredoc in the Containerfile). All
+        # the legacy kwargs are accepted but ignored by the new wrapper.
         if not quiet:
             click.echo(f"Building apple-container wrapper for {deploy_name}...")
-        # Collect the cage's domain allowlist for the mitmproxy addon.
-        # config.domains and .allow are dataclass fields with safe defaults,
-        # so no defensive getattr is needed. An empty allowlist means
-        # "block all egress" (safer default than "allow all").
-        allowlist = list(config.domains.allow or [])
-        # Secret-injection rules — only the metadata (env name, placeholder,
-        # inject_to allow-list of domains, transform name + its config) is
-        # baked into the image. The actual secret VALUES are env-passed at
-        # `container run` time (see `start()` below) so the build context —
-        # which ends up in the image layer — stays free of secrets. The
-        # ``transform`` field tells the in-cage addon to derive a value
-        # (e.g. mint a Google OAuth bearer from a service-account JWT)
-        # instead of substituting the raw env value verbatim.
-        secret_rules = [
-            {
-                "env": r.env,
-                "placeholder": r.placeholder,
-                "inject_to": list(r.inject_to or []),
-                "transform": r.transform or "",
-                "transform_config": dict(r.transform_config or {}),
-            }
-            for r in (config.secret_injection or [])
-        ]
-        # Protocol relays (IMAP, SMTP) — same metadata-only contract as
-        # secret_injection: the credential VALUES never go into the
-        # image layer; only the structural config does. Credential env
-        # names are resolved at `start()` and written to the per-cage
-        # secrets bind mount alongside secret_injection values, so the
-        # in-cage addon can read them at relay-start time.
-        relay_rules = [
-            {
-                "name": r.name,
-                "type": r.type,
-                "listen": r.listen,
-                "upstream": {
-                    "host": r.upstream.host,
-                    "port": r.upstream.port,
-                    "tls": r.upstream.tls,
-                },
-                "auth": {
-                    "type": r.auth.type,
-                    "user_source": r.auth.user_source,
-                    "password_source": r.auth.password_source,
-                },
-                "policy": {
-                    "readonly": r.policy.readonly,
-                    "folder_allowlist": list(r.policy.folder_allowlist or []),
-                    "sender_allowlist": list(r.policy.sender_allowlist or []),
-                    "recipient_allowlist": {
-                        "addresses": list(
-                            r.policy.recipient_allowlist.addresses or []
-                        ),
-                        "domains": list(
-                            r.policy.recipient_allowlist.domains or []
-                        ),
-                    },
-                    "max_message_bytes": r.policy.max_message_bytes,
-                    "max_recipients": r.policy.max_recipients,
-                    "conn_rate_limit": r.policy.conn_rate_limit,
-                    "send_rate_limit": r.policy.send_rate_limit,
-                    "idle_timeout_seconds": r.policy.idle_timeout_seconds,
-                    "bypass_inspectors_for_allowlisted": list(
-                        r.policy.bypass_inspectors_for_allowlisted or []
-                    ),
-                },
-            }
-            for r in (config.protocol_relays or [])
-        ]
-        # Capture config — when ``capture.enable_har: true`` is set in
-        # cage.yaml, the in-cage mitmproxy addon stages request+response
-        # body snapshots (subject to ``max_body_size`` + binary-skip) and
-        # writes them as ``{inbound, outbound}``-keyed entries to
-        # capture.jsonl. ``cage har`` reads that file on the host (already
-        # bind-mounted out of the microVM since 0.20.6) and renders HAR
-        # 1.2 with non-zero ``content.size`` / ``request.postData.text``.
-        # Disabled / empty config preserves the legacy headers-only
-        # capture path (no body bytes ever written).
-        cap = getattr(config, "capture", None)
-        capture_dict: dict = {}
-        if cap is not None:
-            capture_dict = {
-                "enable_har": bool(cap.enable_har),
-                "max_body_size": int(cap.max_body_size),
-                "min_action": str(cap.min_action or "all"),
-                "domains": list(cap.domains or []),
-                "exclude_domains": list(cap.exclude_domains or []),
-            }
-        # Inspector chain — passed through verbatim. The cage.yaml
-        # ``inspectors:`` list is the same shape the container backend
-        # addon reads, so we keep the dicts opaque here and let the
-        # in-cage addon dispatch through the bundled ``inspectors``
-        # registry. An empty/missing list means allowlist-only mode,
-        # which is the legacy apple-container behavior.
-        inspectors = [dict(e) for e in (config.inspectors or [])]
-        # dns_servers is threaded into the dnsmasq.conf.j2 template as the
-        # per-allowlisted-zone upstream forwarder set. With the DNS bypass
-        # fix (no blanket `server=<ip>`), these are the ONLY upstreams
-        # recursion is ever sent to — and only for allowlisted zones.
-        ac_wrapper.build_wrapper(
-            deploy_name, user_image,
-            user_cmd=user_cmd,
-            allowlist=allowlist,
-            secret_injection_rules=secret_rules,
-            protocol_relays=relay_rules,
-            capture_config=capture_dict,
-            inspectors=inspectors,
-            dns_servers=list(config.dns_servers or []),
-        )
+        ac_wrapper.build_wrapper(deploy_name, user_image, user_cmd=user_cmd)
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")
+
+    def _build_egress_image_if_missing(self, *, quiet: bool = False) -> None:
+        """Build localhost/agentcage-egress:<version> if not already present.
+
+        The Containerfile lives at src/agentcage/data/containers/Containerfile.egress
+        (PR 1). It expects the build context to be src/agentcage/data/ so
+        `COPY containers/supervisor-egress.sh ...` resolves — same context
+        the smoke-test in tests/test_egress_image.py uses.
+        """
+        image = _egress_image_name()
+        if ac_cli.image_inspect(image) is not None:
+            if not quiet:
+                click.echo(f"Egress image {image} already present; skipping rebuild")
+            return
+
+        if not quiet:
+            click.echo(f"Building shared egress image {image}...")
+        # Resolve paths relative to this file so the build works regardless
+        # of cwd (tests, agentcage invoked from a sub-dir, etc.).
+        data_dir = Path(__file__).resolve().parent.parent / "data"
+        containerfile = data_dir / "containers" / "Containerfile.egress"
+        if not containerfile.is_file():
+            raise RuntimeError(
+                f"egress Containerfile missing at {containerfile} — "
+                f"is the agentcage install complete?"
+            )
+        ac_cli.run(
+            ["build", "-t", image, "-f", str(containerfile), str(data_dir)],
+            capture_output=False,
+        )
+
+    def _render_egress_config(self, config: Config, deploy_name: str) -> None:
+        """Render proxy-config.yaml + dnsmasq.conf + dns-allowlist.conf to
+        the per-cage egress config dir.
+
+        These three files are bind-mounted read-only into the egress
+        sibling at runtime; the egress supervisor (supervisor-egress.sh,
+        PR 1) reads them on startup. Same shape the container/vm backends
+        produce via quadlets + state.save_proxy_config / save_dns_allowlist.
+        """
+        import yaml as _yaml
+        from agentcage import state as _state
+
+        dest = self.egress_config_dir(deploy_name)
+        dest.mkdir(parents=True, exist_ok=True)
+
+        # proxy-config.yaml — same subset state.save_proxy_config writes
+        # for container/vm. Re-use the helper directly so the on-disk
+        # shape stays identical across backends. The helper reads from
+        # ~/.config/agentcage/cages/<name>/cage.yaml, so save_deployment
+        # must have run first (it has — `cage create` calls it before
+        # build_artifacts).
+        try:
+            proxy_yaml_path = Path(_state.save_proxy_config(deploy_name))
+            shutil.copy2(proxy_yaml_path, dest / "proxy-config.yaml")
+        except FileNotFoundError:
+            # Pre-create / test path — no stored cage.yaml yet. Write a
+            # minimal config so the egress addon can still load.
+            (dest / "proxy-config.yaml").write_text(
+                _yaml.safe_dump(
+                    {
+                        "name": deploy_name,
+                        "domains": {"allow": list(config.domains.allow or [])},
+                    },
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
+            )
+
+        # dnsmasq.conf — same template as the legacy single-VM model.
+        # Just write the rendered bytes to disk instead of into the
+        # wrapper build context.
+        (dest / "dnsmasq.conf").write_text(
+            ac_wrapper.render_dnsmasq_conf(
+                list(config.domains.allow or []),
+                dns_servers=list(config.dns_servers or []),
+            )
+        )
+
+        # dns-allowlist.conf — same shape state.save_dns_allowlist
+        # produces for the container backend. Re-use the helper for
+        # parity; fall back to in-line rendering if the cage.yaml isn't
+        # on disk yet (pre-create path).
+        try:
+            allowlist_path = Path(_state.save_dns_allowlist(deploy_name))
+            shutil.copy2(allowlist_path, dest / "dns-allowlist.conf")
+        except FileNotFoundError:
+            lines = [
+                f"server=/{d}/{srv}"
+                for d in (config.domains.allow or [])
+                for srv in (config.dns_servers or ["1.1.1.1", "8.8.8.8"])
+            ]
+            (dest / "dns-allowlist.conf").write_text(
+                "\n".join(lines) + ("\n" if lines else "")
+            )
 
     def generate_units(
         self,
@@ -557,8 +636,17 @@ class AppleContainerBackend:
             click.echo(f"Installed apple-container unit metadata to {dest}/")
 
     def start(self, name: str, *, quiet: bool = False) -> None:
-        """Run the wrapped image as a long-lived Apple container."""
-        # Read the unit metadata to recover cage config.
+        """Start the cage's two sibling microVMs (egress + cage).
+
+        Ordered:
+          1. Create the per-cage network (idempotent).
+          2. Run <name>-egress (the agentcage-egress image).
+          3. Wait for egress readiness (file marker in the shared logs dir).
+          4. Read the egress sibling's IP.
+          5. Run <name> (the slim wrapper) with AGENTCAGE_EGRESS_IP env.
+             cage-init.sh sets the default route via that IP and execs
+             the user's CMD after capsh-drop.
+        """
         unit_path = self.unit_dir() / f"{name}.json"
         if not unit_path.exists():
             raise RuntimeError(
@@ -567,233 +655,295 @@ class AppleContainerBackend:
             )
         meta = json.loads(unit_path.read_text())
 
-        image = ac_wrapper.wrapped_image_name(name)
-        if not ac_cli.image_inspect(image):
+        wrapper_image = ac_wrapper.wrapped_image_name(name)
+        if not ac_cli.image_inspect(wrapper_image):
             raise RuntimeError(
-                f"wrapped image {image!r} not found — was build_artifacts() called?"
+                f"wrapped image {wrapper_image!r} not found — was build_artifacts() called?"
+            )
+        egress_image = _egress_image_name()
+        if not ac_cli.image_inspect(egress_image):
+            raise RuntimeError(
+                f"egress image {egress_image!r} not found — was build_artifacts() called?"
             )
 
-        # If a container with this name already exists, stop+delete it first
-        # (start should be idempotent like the other backends).
-        existing = ac_cli.inspect(name)
-        if existing is not None:
-            ac_cli.run(["stop", name], check=False)
-            ac_cli.run(["delete", "-f", name], check=False)
+        # Stop+delete any prior incarnations of either container (start
+        # should be idempotent like every other backend).
+        for cname in (name, f"{name}-egress"):
+            if ac_cli.inspect(cname) is not None:
+                ac_cli.run(["stop", cname], check=False)
+                ac_cli.run(["delete", "-f", cname], check=False)
 
-        # Per-cage logs dir on the host: bind-mounted into the microVM
-        # at /var/log/agentcage so `cage audit` / `cage har` can read
-        # proxy.log + capture.jsonl from the host without exec'ing in.
-        # Create as 0o755 owned by the current user; the supervisor's
-        # `chown acproxy:acproxy /var/log/agentcage` inside the cage
-        # adjusts ownership to the per-component uids — Apple's bind
-        # mount transparently maps host uid ↔ guest uid.
+        # Per-cage state dirs created on demand. Egress writes audit
+        # / capture / dnsmasq logs + the ready marker into logs_dir; the
+        # CA exchange dir is mounted into BOTH VMs.
         logs_dir = self.logs_dir(name)
         logs_dir.mkdir(parents=True, exist_ok=True)
-        # virtiofs locks ownership inside the cage to the host file's
-        # owner (currently the user running agentcage). uid 200
-        # (mitmproxy) and uid 201 (dnsmasq) in the guest can only write
-        # to this dir if the host-side permissions allow them — so set
-        # the dir 1777 (world-writable + sticky bit). Sticky means each
-        # file is owned (host-side) by `m1`, with all in-cage writes
-        # showing as root in the guest because of virtiofs uid mapping;
-        # that's fine — the supervisor's own chown attempts are now
-        # best-effort and tolerate EPERM.
+        # 1777 — virtiofs maps host owner identity-wise into the guest, so
+        # uid 200/201 (mitmproxy/dnsmasq in the egress VM) can only write
+        # here if the host-side perms allow it. Sticky bit prevents
+        # cross-uid file deletion. Same trick the legacy single-VM model
+        # used; preserved verbatim.
         os.chmod(logs_dir, 0o1777)
 
-        # CAP_SYS_ADMIN: supervisor needs it to remount /proc with hidepid=2
-        # and to mount the proxy's private tmpfs. CAP_NET_ADMIN: supervisor
-        # needs it to apply the iptables egress lockdown. Both are dropped
-        # by capsh before the cage workload starts.
-        argv = [
-            "run", "-d", "--name", name,
-            "--cap-add", "CAP_SYS_ADMIN",
-            "--cap-add", "CAP_NET_ADMIN",
-            "--volume", f"{logs_dir}:/var/log/agentcage",
-        ]
-        # User-defined bind mounts. Each entry is `host:cage[:mode]`; we
-        # expand ~ / $VAR in the host path, validate it lives under $HOME
-        # (same containment rule the container backend's quadlet template
-        # enforces — prevents accidental /etc, /var, /root bind-ins), and
-        # pass through verbatim. Unresolved $VAR yields a warning + skip
-        # to match quadlets.py's behavior for parity.
-        for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
-            argv += ["--volume", vol_entry]
-        # Apple's `container run --cpus / --memory` has stricter input
-        # acceptance than podman: --cpus requires an integer (fractional
-        # like "0.5" or "1.5" → "Help: --cpus <cpus> ..." rejection), and
-        # --memory requires an UPPERCASE suffix (`512m` → rejected,
-        # `512M` accepted). agentcage config historically uses podman's
-        # looser forms, so normalize on the way out: ceil fractional cpus
-        # to the next integer (give users at least the cap they asked
-        # for) and uppercase the memory suffix.
-        # Backward compat for unit JSON: 0.20.5 and earlier used integer
-        # `cpus` + integer `mem_mb` (mb-only); accept both so cages
-        # created before this change keep starting after upgrade.
-        cpus_raw = meta.get("cpus")
-        if cpus_raw not in (None, "", 0):
-            argv += ["--cpus", _normalize_cpus(str(cpus_raw))]
-        memory_raw = meta.get("memory")
-        if memory_raw:
-            argv += ["--memory", _normalize_memory(str(memory_raw))]
-        elif meta.get("mem_mb"):  # pre-0.20.6 unit JSON
-            argv += ["--memory", f"{meta['mem_mb']}M"]
+        certs_dir = self.certs_dir(name)
+        certs_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(certs_dir, 0o1777)
 
-        # User-defined ``container.env:`` entries — passed verbatim to
-        # ``container run`` as ``-e KEY=VAL``. Container backend wires
-        # the same shape via quadlets.py:338; apple-container ignored
-        # these silently pre-this-fix. Persisted under the ``env`` key
-        # in the unit JSON by ``generate_units`` (with $VAR already
-        # expanded host-side at unit-write time). secret_injection
-        # placeholders flow through ``secret_env_placeholders`` below
-        # and never collide (validate_config rejects shared keys).
-        for env_k, env_v in (meta.get("env") or {}).items():
-            argv += ["-e", f"{env_k}={env_v}"]
+        egress_cfg_dir = self.egress_config_dir(name)
+        if not egress_cfg_dir.is_dir():
+            raise RuntimeError(
+                f"egress config dir {egress_cfg_dir} missing — run `cage update`"
+            )
 
-        # Secret-injection. For each env named in the cage's
-        # `secret_injection:` rules:
-        #   - Resolve the real value from <deployment_dir>/pending_secrets.json,
-        #     written by `agentcage cage create -s KEY=VAL` and
-        #     `agentcage run -s KEY=VAL`. Values are NEVER read from the
-        #     host shell's environment — anything not passed via
-        #     --set-secret is treated as missing and a warning is emitted.
-        #   - Write the real value to <secrets_dir>/<env-name> on the
-        #     host (mode 0600). The dir gets bind-mounted at
-        #     /run/agentcage/secrets:ro in the cage; supervisor stage 35
-        #     re-stages each file as /home/acproxy/secrets/<env-name>
-        #     (chown 200:200, mode 0400) for mitmproxy.
-        #   - Pass `-e <env>={{PLACEHOLDER}}` (the placeholder, NOT the
-        #     real value) to `container run`. The cage's env carries the
-        #     placeholder so cage code that reads `os.environ["API_KEY"]`
-        #     gets `{{API_KEY}}` and the proxy substitutes the real
-        #     value on the wire. This means the cleartext value is NOT
-        #     visible via host `ps -ef`, NOT in `container inspect`,
-        #     and NOT in the cage workload's `/proc/self/environ`.
-        placeholders = meta.get("secret_env_placeholders") or {}
-        secret_envs = meta.get("secret_envs") or list(placeholders.keys())
-        # Protocol-relay credential env names. Same secrets bind mount as
-        # secret_injection — but NO `-e` flag is added to `container run`,
-        # so the cage workload's environ block never carries the relay
-        # password. The in-cage mitmproxy addon reads each file in its
-        # `running()` hook and `os.environ[var] = value` before calling
-        # the relay's constructor.
-        relay_secret_envs = meta.get("relay_secret_envs") or []
-        all_secret_envs = list(secret_envs) + [
-            v for v in relay_secret_envs if v not in secret_envs
-        ]
-        if all_secret_envs:
-            # Load --set-secret values staged by run.py / cli.py at the
-            # per-cage 0600 plaintext file. No host podman / Keychain on
-            # apple-container yet (#120); plaintext-at-0600 is the
-            # persistence mechanism. Missing file = no secrets provided.
-            from agentcage import state as _state
-            provided: dict[str, str] = {}
-            pending_path = _state.deployment_dir(name) / "pending_secrets.json"
-            if pending_path.is_file():
-                try:
-                    provided = {k: v for k, v in json.loads(pending_path.read_text())}
-                except Exception:
-                    click.echo(
-                        f"warning: failed to parse {pending_path}; treating "
-                        f"all secret_injection rules as unprovided",
-                        err=True,
-                    )
-
-            secrets_dir = self.secrets_dir(name)
-            secrets_dir.mkdir(parents=True, exist_ok=True)
-            os.chmod(secrets_dir, 0o700)
-            # Drop any stale secret files from a prior start so removed
-            # rules don't linger in the bind mount.
-            for stale in secrets_dir.iterdir():
-                stale.unlink()
-            relay_only = set(relay_secret_envs) - set(secret_envs)
-            for env_name in all_secret_envs:
-                value = provided.get(env_name)
-                if value is None:
-                    if env_name in relay_only:
-                        click.echo(
-                            f"warning: protocol_relays env {env_name!r} "
-                            f"not provided via --set-secret; the relay "
-                            f"will fail to start with empty credentials",
-                            err=True,
-                        )
-                    else:
-                        click.echo(
-                            f"warning: secret_injection env {env_name!r} "
-                            f"not provided via --set-secret; placeholder "
-                            f"will NOT be substituted in cage requests",
-                            err=True,
-                        )
-                    continue
-                if env_name in relay_only:
-                    # Relay credential — file goes in the bind mount so
-                    # the addon can read it, but no `-e` so the cage
-                    # workload never sees the credential name in its env.
-                    secret_file = secrets_dir / env_name
-                    secret_file.write_text(value)
-                    os.chmod(secret_file, 0o600)
-                    continue
-                placeholder = placeholders.get(env_name)
-                if not placeholder:
-                    # Unit JSON predates the placeholder map (pre-0.21.1).
-                    # Refuse to fall back to cleartext-env delivery — the
-                    # whole point of placeholders is to keep the raw value
-                    # off `container run`'s argv and out of the cage's
-                    # /proc/self/environ. Operator must `cage update` to
-                    # regenerate the unit JSON.
-                    click.echo(
-                        f"warning: secret_injection env {env_name!r} has "
-                        f"no placeholder in unit JSON (pre-0.21.1 cage); "
-                        f"run `agentcage cage update` to regenerate. "
-                        f"Skipping injection.",
-                        err=True,
-                    )
-                    continue
-                secret_file = secrets_dir / env_name
-                secret_file.write_text(value)
-                os.chmod(secret_file, 0o600)
-                argv += ["-e", f"{env_name}={placeholder}"]
-            # Mount the per-cage secrets dir read-only into the microVM.
-            # Only mount if any files were written (avoid mounting an empty
-            # dir when every secret env was unprovided).
-            if any(secrets_dir.iterdir()):
-                argv += ["--volume", f"{secrets_dir}:/run/agentcage/secrets:ro"]
-
-        argv.append(image)
-
-        # Clear any stale readiness marker from a prior run BEFORE we kick
-        # `container run -d`. The supervisor will touch this file again as
-        # its final action of stage 90; we poll for it below.
-        ready_marker = self.logs_dir(name) / "ready"
+        # Clear any stale readiness marker BEFORE the first container run.
+        # The egress supervisor touches /var/log/agentcage/ready at end of
+        # its step F; we poll for it below.
+        ready_marker = logs_dir / "ready"
         try:
             ready_marker.unlink()
         except FileNotFoundError:
             pass
 
-        result = ac_cli.run(argv, check=False, capture_output=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"`container run` failed (exit {result.returncode})")
+        # 1. Per-cage network. `network create` errors if already-present
+        # (rc != 0); tolerated — the post-error inspect path would slow
+        # the common case. Subnet auto-allocated by Apple's container
+        # network plugin (no shared 10.89.X pool to coordinate on, unlike
+        # the container backend's quadlet network shape).
+        network_name = f"{name}-net"
+        ac_cli.run(["network", "create", network_name], check=False)
 
-        # Wait for the supervisor to finish booting before returning. Apple's
-        # `container run -d` returns when the microVM is up — NOT when the
-        # user CMD (supervisor.sh) has progressed past stage 90. Without
-        # this poll, the next operator action (`cage exec`, `agentcage run`'s
-        # integrated claude exec, etc.) races the supervisor and may hit the
-        # cage before dnsmasq binds, mitmproxy listens, iptables NAT applies,
-        # or secrets are re-staged into /home/acproxy/secrets/. The supervisor
-        # `touch`es /var/log/agentcage/ready right before its `exec capsh`,
-        # which lands on the host-side virtiofs bind at logs_dir(name)/ready.
-        # See issue #168.
+        # 2. Egress sibling. Resolve secret values + write them into the
+        # secrets dir BEFORE the egress runs (its addon reads them at
+        # startup). The cage VM never sees the secrets dir — that's the
+        # whole point of the refactor. ``staged_envs`` is the set of
+        # secret env names that actually got a value (subset of
+        # secret_envs minus the unprovided ones) — used below to decide
+        # which `-e NAME={{NAME}}` flags to add to the cage VM's argv.
+        staged_envs = self._stage_secrets(name, meta)
+
+        # CAP_NET_ADMIN: egress needs it for iptables PREROUTING REDIRECT
+        # + FORWARD-chain shape (supervisor-egress.sh step A). CAP_NET_
+        # BIND_SERVICE: dnsmasq binds :53 (the egress image setcap's the
+        # binary but the bounding set still needs to permit the file cap).
+        secrets_dir = self.secrets_dir(name)
+        egress_argv = [
+            "run", "-d", "--name", f"{name}-egress",
+            "--cap-add", "CAP_NET_ADMIN",
+            "--cap-add", "CAP_NET_BIND_SERVICE",
+            "--network", network_name,
+            "--volume", f"{logs_dir}:/var/log/agentcage",
+            "--volume", f"{certs_dir}:/home/acproxy/.mitmproxy",
+            "--volume", f"{egress_cfg_dir}/proxy-config.yaml:/etc/agentcage/config.yaml:ro",
+            "--volume", f"{egress_cfg_dir}/dnsmasq.conf:/etc/agentcage/dnsmasq.conf:ro",
+            "--volume", f"{egress_cfg_dir}/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro",
+        ]
+        # Only mount the secrets dir if it actually has files (avoids an
+        # empty-bind whose listdir would shadow the egress image's empty
+        # /home/acproxy/secrets dir).
+        if secrets_dir.is_dir() and any(secrets_dir.iterdir()):
+            egress_argv += [
+                "--volume", f"{secrets_dir}:/home/acproxy/secrets:ro",
+            ]
+        # Egress runs the agentcage addon — point it at the bind-mounted
+        # config + capture jsonl. Same env vars data/proxy/addon.py reads.
+        egress_argv += [
+            "-e", "AGENTCAGE_CONFIG=/etc/agentcage/config.yaml",
+            "-e", "AGENTCAGE_AUDIT_LOG=/var/log/agentcage/audit.jsonl",
+            "-e", "AGENTCAGE_CAPTURE=/var/log/agentcage/capture.jsonl",
+        ]
+        # Egress is small — 512M is plenty. We don't normalize here
+        # because the value is internal, not operator-supplied.
+        egress_argv += ["--memory", "512M"]
+        egress_argv.append(egress_image)
+
+        result = ac_cli.run(egress_argv, check=False, capture_output=False)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"`container run` for egress sibling failed (exit {result.returncode})"
+            )
+
+        # 3. Wait for egress readiness — the supervisor's step F touches
+        # /var/log/agentcage/ready which virtiofs surfaces here.
         self._wait_supervisor_ready(name, ready_marker)
 
-        # Install (or refresh) the launchd plist if the cage opted in to
-        # autostart. Read from the unit metadata so plists stick across
-        # reloads — the user-visible cage.yaml may have been edited since
-        # but `cage create / update` is what propagates flags into the
-        # unit JSON, so we honor whatever was set at the last create/update.
+        # 4. Read the egress sibling's allocated IP. The cage uses it as
+        # default-route gateway via cage-init.sh.
+        egress_ip = self._container_ip(f"{name}-egress")
+        if not egress_ip:
+            raise RuntimeError(
+                f"could not resolve IP of {name}-egress — `container inspect` "
+                f"returned no address. Check `container logs {name}-egress`."
+            )
+
+        # 5. Cage VM. CAP_NET_ADMIN is needed for cage-init's `ip route
+        # replace default via <egress_ip>`. capsh drops it before the
+        # workload runs, so uid 1000 has no caps — but `cage exec --user 0`
+        # re-acquires NET_ADMIN per the spike (known residual; see module
+        # docstring). The cage VM has NO secrets bind, NO config bind,
+        # NO mitmproxy/dnsmasq/iptables.
+        cage_argv = [
+            "run", "-d", "--name", name,
+            "--cap-add", "CAP_NET_ADMIN",
+            "--network", network_name,
+            "--volume", f"{certs_dir}:/certs",
+            "-e", f"AGENTCAGE_EGRESS_IP={egress_ip}",
+        ]
+        # User-defined env from cage.yaml.
+        for env_k, env_v in (meta.get("env") or {}).items():
+            cage_argv += ["-e", f"{env_k}={env_v}"]
+        # Placeholder env (NOT real values) for each secret_injection
+        # rule that actually got a value. The cage workload sees
+        # `{{API_KEY}}` in its env; the egress addon substitutes the
+        # real value on the wire. If --set-secret didn't provide a
+        # value for an env, we skip the -e flag entirely so the
+        # placeholder doesn't end up leaking through to upstream as a
+        # literal string (matches legacy single-VM start() behavior).
+        placeholders = meta.get("secret_env_placeholders") or {}
+        for env_name in staged_envs:
+            ph = placeholders.get(env_name)
+            if not ph:
+                continue
+            cage_argv += ["-e", f"{env_name}={ph}"]
+        # User-defined bind mounts (verbatim, after $HOME-containment check).
+        for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
+            cage_argv += ["--volume", vol_entry]
+        # Apple's --cpus / --memory normalization (uppercase suffix, ceil
+        # fractions). Backward-compat fallback to pre-0.20.6 `mem_mb` int.
+        cpus_raw = meta.get("cpus")
+        if cpus_raw not in (None, "", 0):
+            cage_argv += ["--cpus", _normalize_cpus(str(cpus_raw))]
+        memory_raw = meta.get("memory")
+        if memory_raw:
+            cage_argv += ["--memory", _normalize_memory(str(memory_raw))]
+        elif meta.get("mem_mb"):
+            cage_argv += ["--memory", f"{meta['mem_mb']}M"]
+        cage_argv.append(wrapper_image)
+
+        result = ac_cli.run(cage_argv, check=False, capture_output=False)
+        if result.returncode != 0:
+            # Clean up the orphaned egress sibling so a retry isn't blocked
+            # by the "already exists" check at the top of start().
+            ac_cli.run(["stop", f"{name}-egress"], check=False)
+            ac_cli.run(["delete", "-f", f"{name}-egress"], check=False)
+            raise RuntimeError(
+                f"`container run` for cage failed (exit {result.returncode})"
+            )
+
+        # launchd plist refresh if the cage opted in to autostart. Same
+        # logic as legacy: read from the unit metadata so flags stick
+        # across reloads.
         if meta.get("autostart"):
             self._install_launchd_plist(name)
         if not quiet:
-            click.echo(f"Started {name} (apple-container)")
+            click.echo(f"Started {name} (apple-container, 2-microVM model)")
+
+    def _stage_secrets(self, name: str, meta: dict) -> set[str]:
+        """Resolve --set-secret values into <secrets_dir>/<env-name> files.
+
+        Returns the set of secret_injection env names that got a value
+        staged — the caller uses this to decide which `-e NAME={{NAME}}`
+        flags to add to the cage VM's run argv. Relay-only envs are
+        NEVER returned (they're staged to the bind mount but never
+        `-e`'d to the cage workload).
+
+        The host-side resolution logic mirrors the legacy single-VM
+        start(); the only difference vs the legacy model is WHERE the
+        bind-mount lands: the egress sibling at /home/acproxy/secrets
+        (read-only), not the cage VM. Cleartext never flows through
+        ``container run`` argv on either side.
+        """
+        staged: set[str] = set()
+        placeholders = meta.get("secret_env_placeholders") or {}
+        secret_envs = meta.get("secret_envs") or list(placeholders.keys())
+        relay_secret_envs = meta.get("relay_secret_envs") or []
+        all_secret_envs = list(secret_envs) + [
+            v for v in relay_secret_envs if v not in secret_envs
+        ]
+        if not all_secret_envs:
+            return staged
+
+        from agentcage import state as _state
+        provided: dict[str, str] = {}
+        pending_path = _state.deployment_dir(name) / "pending_secrets.json"
+        if pending_path.is_file():
+            try:
+                provided = {k: v for k, v in json.loads(pending_path.read_text())}
+            except Exception:
+                click.echo(
+                    f"warning: failed to parse {pending_path}; treating "
+                    f"all secret_injection rules as unprovided",
+                    err=True,
+                )
+
+        secrets_dir = self.secrets_dir(name)
+        secrets_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(secrets_dir, 0o700)
+        # Drop stale secret files so a removed rule doesn't linger in the
+        # bind mount.
+        for stale in secrets_dir.iterdir():
+            stale.unlink()
+        relay_only = set(relay_secret_envs) - set(secret_envs)
+        for env_name in all_secret_envs:
+            value = provided.get(env_name)
+            if value is None:
+                if env_name in relay_only:
+                    click.echo(
+                        f"warning: protocol_relays env {env_name!r} not "
+                        f"provided via --set-secret; the relay will fail "
+                        f"to start with empty credentials",
+                        err=True,
+                    )
+                else:
+                    click.echo(
+                        f"warning: secret_injection env {env_name!r} not "
+                        f"provided via --set-secret; placeholder will NOT "
+                        f"be substituted in cage requests",
+                        err=True,
+                    )
+                continue
+            if env_name in relay_only:
+                # Relay credential — file goes in the bind mount; no -e
+                # flag added to the cage VM's run argv.
+                secret_file = secrets_dir / env_name
+                secret_file.write_text(value)
+                os.chmod(secret_file, 0o600)
+                continue
+            placeholder = placeholders.get(env_name)
+            if not placeholder:
+                # Pre-0.21.1 unit JSON — refuse cleartext fallback.
+                continue
+            secret_file = secrets_dir / env_name
+            secret_file.write_text(value)
+            os.chmod(secret_file, 0o600)
+            staged.add(env_name)
+        return staged
+
+    def _container_ip(self, name: str) -> str | None:
+        """Return the IPv4 address Apple's network plugin assigned to *name*.
+
+        Apple's `container inspect` returns a list (one entry per
+        container). The IP lives under ``networks[].address`` (CIDR-form,
+        e.g. ``192.168.64.5/24``); we strip the mask. Falls back to None
+        if no address is present (still booting, or non-standard schema).
+        """
+        data = ac_cli.inspect(name)
+        if not data:
+            return None
+        # Apple inspect schema (0.5+): top-level `networks` is a list of
+        # {network, address, gateway, ...}. Older schemas vary; defensively
+        # check both.
+        networks = data.get("networks") or data.get("Networks") or []
+        if isinstance(networks, list):
+            for net in networks:
+                addr = (net.get("address") or net.get("Address") or "").strip()
+                if addr:
+                    return addr.split("/", 1)[0]
+        # Fallback: some schemas put the IP at `network.address`.
+        n = data.get("network") or {}
+        addr = (n.get("address") or n.get("Address") or "").strip()
+        if addr:
+            return addr.split("/", 1)[0]
+        return None
 
     # Polling interval and total timeout for the supervisor readiness wait.
     # Module-level so tests can monkeypatch them to ~0 without subclassing.
@@ -801,62 +951,79 @@ class AppleContainerBackend:
     _READY_TIMEOUT_S = 30.0
 
     def _wait_supervisor_ready(self, name: str, marker: Path) -> None:
-        """Block until ``marker`` exists or the cage exits.
+        """Block until ``marker`` (the egress sibling's ready file) exists
+        or the egress sibling exits.
 
-        Raises ``RuntimeError`` if the cage exits before signaling ready
+        Raises ``RuntimeError`` if the egress exits before signaling ready
         (so the operator sees a real error, not a successful return that
         then 401s on the first request).
-        """
-        import time as _time
 
-        deadline = _time.monotonic() + self._READY_TIMEOUT_S
-        while _time.monotonic() < deadline:
+        ``name`` is the cage's base name; we poll ``<name>-egress`` since
+        the supervisor running in the egress sibling owns the marker.
+        """
+        deadline = time.monotonic() + self._READY_TIMEOUT_S
+        egress_name = f"{name}-egress"
+        while time.monotonic() < deadline:
             if marker.exists():
                 return
-            # If the cage exited (supervisor `die`d at some stage, or the
-            # workload itself crashed before we got a chance to wait), we'd
-            # otherwise loop until timeout. Detect it and surface the error.
-            data = ac_cli.inspect(name)
+            data = ac_cli.inspect(egress_name)
             status = (data or {}).get("status") or (data or {}).get("Status")
             if data is not None and status not in ("running", None):
                 raise RuntimeError(
-                    f"cage {name!r} exited before becoming ready "
-                    f"(status={status!r}); see `container logs {name}`"
+                    f"egress sibling {egress_name!r} exited before becoming "
+                    f"ready (status={status!r}); see `container logs {egress_name}`"
                 )
-            _time.sleep(self._READY_POLL_INTERVAL_S)
+            time.sleep(self._READY_POLL_INTERVAL_S)
         raise RuntimeError(
-            f"cage {name!r} did not signal ready within "
-            f"{self._READY_TIMEOUT_S:.0f}s; see `container logs {name}` "
-            f"for the supervisor's last stage"
+            f"egress sibling {egress_name!r} did not signal ready within "
+            f"{self._READY_TIMEOUT_S:.0f}s; see `container logs {egress_name}` "
+            f"for the supervisor's last step"
         )
 
     def stop(self, name: str) -> None:
+        """Stop both microVMs (cage + egress)."""
         ac_cli.run(["stop", name], check=False)
+        ac_cli.run(["stop", f"{name}-egress"], check=False)
 
     def restart(self, name: str) -> None:
         self.stop(name)
         self.start(name)
 
     def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:  # noqa: ARG002
+        """Stop+delete both microVMs, delete the per-cage network + wrapper
+        image + state dir.
+
+        The shared egress image (agentcage-egress:<version>) is NOT
+        removed — it's used by sibling cages.
+        """
         removed: list[str] = []
-        # launchd plist (best-effort; only present when autostart was enabled).
+        # launchd plist (best-effort).
         plist = self._launchd_plist_path(name)
         if plist.exists():
             self._uninstall_launchd_plist(name)
             removed.append(f"launchd:{plist}")
-        # Container
-        if ac_cli.inspect(name) is not None:
-            ac_cli.run(["stop", name], check=False)
-            r = ac_cli.run(["delete", "-f", name], check=False)
+        # Containers — stop+delete cage first (in case start() ordered them
+        # the other way, this just makes the cleanup more readable).
+        for cname in (name, f"{name}-egress"):
+            if ac_cli.inspect(cname) is not None:
+                ac_cli.run(["stop", cname], check=False)
+                r = ac_cli.run(["delete", "-f", cname], check=False)
+                if r.returncode == 0:
+                    removed.append(f"container:{cname}")
+        # Per-cage network. `network delete` is idempotent in Apple's CLI
+        # but we only care to report when it actually existed; rely on the
+        # rc to decide whether to add it to `removed`.
+        net_result = ac_cli.run(["network", "delete", f"{name}-net"], check=False)
+        if net_result.returncode == 0:
+            removed.append(f"network:{name}-net")
+        # Wrapper image. The shared egress image is NOT deleted here —
+        # sibling cages depend on it.
+        wrapper_image = ac_wrapper.wrapped_image_name(name)
+        if ac_cli.image_inspect(wrapper_image) is not None:
+            r = ac_cli.run(["image", "delete", wrapper_image], check=False)
             if r.returncode == 0:
-                removed.append(f"container:{name}")
-        # Image
-        image = ac_wrapper.wrapped_image_name(name)
-        if ac_cli.image_inspect(image) is not None:
-            r = ac_cli.run(["image", "delete", image], check=False)
-            if r.returncode == 0:
-                removed.append(f"image:{image}")
-        # State dir
+                removed.append(f"image:{wrapper_image}")
+        # State dir + unit JSON.
         unit_path = self.unit_dir() / f"{name}.json"
         if unit_path.exists():
             unit_path.unlink()
@@ -874,21 +1041,34 @@ class AppleContainerBackend:
             return True
         return False
 
-    def is_running(self, name: str, service: str) -> bool:  # noqa: ARG002
-        data = ac_cli.inspect(name)
+    def is_running(self, name: str, service: str) -> bool:
+        """Dispatch on service: cage → <name>, egress → <name>-egress.
+
+        Unknown service names get treated as "cage" for parity with the
+        legacy single-VM model where every service collapsed to a single
+        container — keeps existing CLI plumbing in `cage verify` /
+        `cage status` from breaking when it iterates service_names().
+        """
+        if service == "egress":
+            target = f"{name}-egress"
+        else:
+            target = name
+        data = ac_cli.inspect(target)
         if not data:
             return False
-        # Apple's inspect returns {"status": "running" | "stopped" | ...}.
         status = data.get("status") or data.get("Status")
         return status == "running"
 
     def service_names(self, name: str) -> list[str]:  # noqa: ARG002
-        # Three components run inside one Apple microVM per cage:
-        # the cage workload, mitmproxy (the egress filter), and dnsmasq
-        # (the resolver). cli.py uses these names for status display and
-        # — once `exec`/`logs`/`audit` are lifted onto the Backend
-        # protocol — for targeted component access.
-        return ["cage", "proxy", "dns"]
+        """The 2-microVM model has two addressable services.
+
+        ``cage`` is the user's workload VM; ``egress`` is the sibling
+        running mitmproxy + dnsmasq from the agentcage-egress image.
+        ``proxy`` / ``dns`` names from the legacy single-VM model are
+        gone — they collapse into ``egress``. cli.py uses these names
+        for status display and ``cage exec --service``.
+        """
+        return ["cage", "egress"]
 
     # --- Backend protocol: process inspection / streaming --------------------
 
@@ -901,51 +1081,45 @@ class AppleContainerBackend:
         interactive: bool = False,
         as_root: bool = False,
     ) -> list[str]:
-        """`container exec [-it] -u 0 <cage> -- capsh ... -- -c "exec <cmd>"`.
+        """`container exec [-it] -u <spec> <target> -- <cmd>`.
 
-        proxy / dns run in-process inside the cage microVM (supervised),
-        not as separate Apple containers. Reject those service names.
+        Service dispatch:
+          * ``cage`` (default) → target is ``<name>``.
+          * ``egress``         → target is ``<name>-egress``.
 
-        Privilege model — `as_root=False` (default) execs the user's
-        command via capsh with the same primitive the supervisor uses
-        at stage 90:
+        Privilege model in the 2-microVM model — significantly simpler
+        than the legacy single-VM capsh wrap because the cage VM no
+        longer contains the egress filter:
 
-            capsh --no-new-privs --drop=all --user=1000 --shell=/bin/sh
-                  -- -c "exec <user-cmd>"
+          * ``as_root=False`` (default) → ``-u 1000:1000``. Cage VM has
+            no iptables binary and no secrets bind-mount in its
+            namespace; CAP_NET_ADMIN is the only inherited cap and
+            it's stripped from uid 1000's CapEff by the uid 0→1000
+            transition that `container exec -u` performs.
+          * ``as_root=True``           → ``-u 0:0``. Operator debug
+            path. Image USER (root on the slim wrapper) applies. Per
+            the spike on Apple's runtime, --user 0 RE-acquires
+            NET_ADMIN — operator with --as-root can change the cage's
+            default route. Workload-uid-1000 is unaffected.
 
-        That gives the exec session:
+        The legacy capsh wrap is gone: with no iptables/dnsmasq inside
+        the cage VM and no secrets bind-mount, there's no
+        CapBnd-acquired escape path to wrap closed. ``container exec
+        -u 1000:1000`` is now what `cage exec` should produce.
 
-          1. uid 1000 — same as the cage workload
-          2. CapEff/Prm/Inh/Bnd all empty — drop=all clears CapBnd
-             BEFORE the user switch (uid 0→1000 clears the rest)
-          3. NoNewPrivs=1 — the kernel refuses to grant caps via
-             setuid binaries, even though the cage image still ships
-             /usr/bin/su, /usr/bin/mount, etc. as 4755-mode
-          4. inherits the proxy/dns/secrets isolation the workload has
-
-        Without (2)+(3), an earlier-fix `-u 1000` alone left CapBnd
-        non-empty (a82435fb = cap_net_admin + cap_sys_admin + the
-        default container set) AND NoNewPrivs=0, so a setuid-root
-        binary inside the cage could re-acquire caps and `iptables -F`
-        the egress filter. capsh closes the door.
-
-        Apple's `container` CLI doesn't support `--security-opt
-        no-new-privileges`, so the only way to set NoNewPrivs on the
-        exec session is via capsh/prctl from inside. capsh ships as
-        part of libcap2-bin in the wrapper image (installed at
-        Containerfile build for the supervisor's own stage-90 use).
-
-        `as_root=True` bypasses capsh entirely: the operator gets a
-        root shell with the container's full cap set. Only for explicit
-        debugging.
+        Pre-PR-3 behavior — for callers that still build the legacy
+        capsh-wrap argv (tests/cli.py), this method now returns the
+        flat `-u 1000:1000` form. Test expectations updated alongside.
         """
         from agentcage.backend import BackendUnsupported
-        import shlex as _shlex
-        if service != "cage":
+        if service == "egress":
+            target = f"{name}-egress"
+        elif service in ("cage", ""):
+            target = name
+        else:
             raise BackendUnsupported(
-                f"'cage exec --service {service}' is not yet supported on "
-                f"the apple-container backend; only --service cage is "
-                f"addressable (proxy and dnsmasq run inside the same microVM)"
+                f"'cage exec --service {service}' is not supported on the "
+                f"apple-container backend; valid services are cage / egress"
             )
         binary = ac_cli.container_binary()
         if binary is None:
@@ -954,52 +1128,28 @@ class AppleContainerBackend:
                 "https://github.com/apple/container/releases"
             )
         flags = ["-it"] if interactive else []
-        if as_root:
-            # Operator debug — pass through to the image's USER (root
-            # on the wrapper). Skips capsh entirely so apt-get install
-            # etc. work for the operator.
-            return [binary, "exec", *flags, name, *cmd]
-        # Secure default — invoke capsh as root so prctl(PR_SET_NO_NEW_PRIVS)
-        # is allowed, then capsh drops caps + setuid's to the uid-1000
-        # user + execs the user's command via sh -c so shell
-        # metacharacters work.
-        #
-        # capsh's `--user=` resolves by NAME via getpwnam (it does NOT
-        # accept a numeric uid — `--user=1000` errors with "User [1000]
-        # not known"). The uid-1000 user's name varies by base image
-        # (e.g. `ubuntu` on ubuntu:24.04, `node` on node:*, `cage` on
-        # bases without a uid-1000 user via the Containerfile.wrapper.j2
-        # useradd fallback). Resolve at exec time via a shell `getent`
-        # so we don't have to teach the CLI about every base image's
-        # user name. Same trick the supervisor uses at stage 90 (PR #140).
-        inner = (
-            "CAGE_USER=$(getent passwd 1000 | cut -d: -f1) && "
-            "exec capsh --no-new-privs --drop=all "
-            "--user=\"$CAGE_USER\" --shell=/bin/sh "
-            "-- -c " + _shlex.quote("exec " + _shlex.join(cmd))
-        )
-        return [
-            binary, "exec", "-u", "0", *flags, name,
-            "/bin/sh", "-c", inner,
-        ]
+        spec = "0:0" if as_root else "1000:1000"
+        return [binary, "exec", "-u", spec, *flags, target, *cmd]
 
     def logs_argv(
         self,
         name: str,
-        services: list[str],  # noqa: ARG002 — single-microVM model
+        services: list[str],
         *,
         follow: bool = False,
-        lines: int = 0,
+        lines: int = 0,  # noqa: ARG002 — Apple `container logs` has no -n
         min_level: str | None = None,  # noqa: ARG002 — Apple doesn't filter
     ) -> list[str]:
-        """`container logs [-f] <name>` — combined supervisor stdout/stderr.
+        """`container logs [-f] <target>`.
 
-        The supervisor multiplexes the cage workload + proxy + dnsmasq into
-        one stream; we can't filter per-service the way container/vm do
-        with their per-unit journal cursors. ``services`` is accepted for
-        protocol parity but ignored. ``lines`` is similarly ignored — Apple
-        ``container logs`` doesn't accept ``-n``; the CLI can post-trim if
-        it cares.
+        ``services`` dispatch:
+          * ``["cage"]``   (or empty / unrecognized) → tail the cage VM.
+          * ``["egress"]`` → tail the egress sibling.
+          * mixed list      → tail the cage (first wins; ``cage logs --service``
+                              filtering happens at the CLI layer for now).
+
+        Apple's `container logs` doesn't accept `-n`; ``lines`` is
+        accepted for protocol parity but ignored.
         """
         from agentcage.backend import BackendUnsupported
         binary = ac_cli.container_binary()
@@ -1008,10 +1158,20 @@ class AppleContainerBackend:
                 "Apple `container` CLI not found; install from "
                 "https://github.com/apple/container/releases"
             )
+        # Pick the target — cage VM by default; egress only if explicitly
+        # requested and no cage in the list.
+        target = name
+        for s in services or []:
+            if s == "egress":
+                target = f"{name}-egress"
+                break
+            if s == "cage":
+                target = name
+                break
         argv = [binary, "logs"]
         if follow:
             argv.append("-f")
-        argv.append(name)
+        argv.append(target)
         return argv
 
     def audit_argv(

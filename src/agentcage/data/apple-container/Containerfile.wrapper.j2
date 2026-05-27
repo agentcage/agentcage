@@ -1,131 +1,88 @@
-{# Per-cage wrapper Containerfile.
-   Layers the agentcage supervisor + egress filter (mitmproxy + dnsmasq)
-   on top of the user's cage image. The user's original ENTRYPOINT+CMD is
-   captured in /etc/agentcage/cage-cmd.json and exec'd by the supervisor
-   after the egress filter is in place. #}
+{# Per-cage wrapper Containerfile — slimmed for the 2-microVM model (PR 3
+   of #196). The legacy single-VM template was ~120 lines installing
+   mitmproxy + dnsmasq + supervisor.sh; those all moved to the sibling
+   <cage>-egress microVM built from agentcage-egress (PR 1). This wrapper
+   now only adds a small cage-init.sh entrypoint + the shell-escaped one-
+   shot exec script the user's CMD lives in.
+
+   What this template adds on top of the user's image:
+     * iproute2 (ip route), libcap2-bin (capsh), iputils-ping (cage-init's
+       ARP-wait), ca-certificates (trust-store update). All four tiny.
+     * A uid-1000 user (reuses image's existing one if present).
+     * /opt/agentcage/cage-init.sh — PID 1; sets route to egress sibling,
+       installs proxy CA, capsh-drops, execs the cage CMD.
+     * /opt/agentcage/cage-cmd.sh — the user's argv, shell-escaped at
+       build time via Python's shlex.quote() (host-side; the rendered
+       template carries the already-quoted string). No jq, no runtime
+       parsing, no shell-metacharacter risk.
+
+   What this template no longer carries (vs the legacy version):
+     * mitmproxy bundle (and its SHA-pinned 120MB download)
+     * dnsmasq
+     * iptables binary
+     * jq
+     * acproxy/acdns system users
+     * supervisor.sh + allowlist_addon.py + capture.py
+     * transforms.tar.gz + relays.tar.gz + inspectors.tar.gz
+     * cage-cmd.json + allowlist.txt + dnsmasq.conf + secret_injection.json
+       + protocol_relays.json + capture.json + inspectors.json
+
+   `container exec --user 0 <cage>` therefore cannot read injected secrets
+   (no /home/acproxy/secrets bind-mount in this VM) and cannot disable the
+   egress (no iptables binary). The route-bypass via `ip route replace`
+   remains for --as-root operators (CAP_NET_ADMIN still in CapBnd) —
+   documented as a known residual in docs/apple-container.md; tracked for
+   v0.23 via macOS pf rules.
+#}
 FROM {{ user_image }}
 
-# Switch to root for the install + user-add steps below. Many user images
-# (claude-code, codex, node:*, etc.) set a non-root USER which makes the
-# package install fail with EACCES. The supervisor itself runs as root
-# (PID 1 of the microVM) until stage 90 where capsh setuid's to the cage
-# user — the final cage workload still runs unprivileged.
+# Many user images set a non-root USER (claude-code, codex, node:*) which
+# would make the apt install step EACCES. cage-init runs as root until
+# stage D's capsh-drop, so we don't lose the workload's uid-1000 invariant.
 USER root
 
-# apple-container backend supports glibc bases natively (debian, ubuntu,
-# distroless with package manager) by extracting mitmproxy's official
-# PyInstaller bundle. Alpine/musl support is detected and surfaces a
-# clear, actionable error explaining why it can't land yet (mitmproxy-rs
-# needs cargo edition2024 = rust 1.88+ which alpine doesn't ship even
-# in 3.22; a multi-stage builder + glibc-compat is the planned path,
-# tracked in #120).
+# Minimal install: route control, capsh, ping, trust store update. The
+# apt/apk branches are best-effort; an image that doesn't have either
+# package manager (distroless, etc.) just skips the install — the cage
+# might still work if the binaries are already present in the base.
+# Failure here surfaces as cage-init's "command not found" at boot time,
+# which `container logs` shows clearly.
 RUN if command -v apt-get >/dev/null 2>&1; then \
-        echo "[agentcage] detected debian/ubuntu (apt-get); installing supervisor deps + mitmproxy bundle" >&2; \
-        apt-get update -qq && apt-get install -y --no-install-recommends \
-            libcap2-bin util-linux jq iptables dnsmasq ca-certificates curl procps \
-            iproute2 \
+        apt-get update -qq \
+        && apt-get install -y --no-install-recommends \
+            iproute2 libcap2-bin iputils-ping ca-certificates \
         && rm -rf /var/lib/apt/lists/* ; \
     elif command -v apk >/dev/null 2>&1; then \
-        echo "agentcage apple-container does not yet support alpine/musl user images." >&2; \
-        echo "" >&2; \
-        echo "Status: the official mitmproxy PyInstaller bundle is glibc-only," >&2; \
-        echo "and the pip-install fallback fails because mitmproxy-rs requires" >&2; \
-        echo "cargo edition2024 (rustc >= 1.88) which alpine ships only in" >&2; \
-        echo "edge — too unstable for a per-cage build dependency." >&2; \
-        echo "" >&2; \
-        echo "Workarounds:" >&2; \
-        echo "  - Use a debian or ubuntu base image (works today)." >&2; \
-        echo "  - Use the 'vm' isolation backend (Lima), which has its own" >&2; \
-        echo "    proxy/dns containers and doesn't require glibc in your image." >&2; \
-        echo "" >&2; \
-        echo "Tracked in https://github.com/agentcage/agentcage/issues/120 ." >&2; \
-        exit 78; \
-    else \
-        echo "agentcage apple-container backend requires a debian/ubuntu (apt) user image" >&2; \
-        echo "(alpine/musl and other distros not yet wired; see #120)" >&2; \
-        exit 78; \
+        apk add --no-cache iproute2 libcap iputils ca-certificates ; \
     fi
 
-# mitmproxy install — glibc bundle path (musl path is rejected above).
-RUN mkdir -p /opt/agentcage/mitmproxy \
-    && curl -fsSL -o /tmp/mitmproxy.tar.gz \
-        https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-aarch64.tar.gz \
-    && echo "b358643a6c4f4b39e33d985350f660b724fece95687d7daa899ef0c4e211f681  /tmp/mitmproxy.tar.gz" \
-        | sha256sum -c - \
-    && tar xzf /tmp/mitmproxy.tar.gz -C /opt/agentcage/mitmproxy \
-    && rm /tmp/mitmproxy.tar.gz
+# Ensure a uid-1000 user exists for the cage workload. Bases like
+# ubuntu (`ubuntu`), node (`node`), claude-code (`claude`) ship their
+# own at uid 1000 — we reuse those. Only synthesize `cage` as a
+# fallback when uid 1000 is truly free. Same logic the legacy wrapper
+# had (lifted verbatim) — useradd refuses to share a uid, which is why
+# we don't try to alias the existing name to `cage`.
+RUN if ! getent passwd 1000 >/dev/null 2>&1; then \
+        useradd --uid 1000 --create-home --shell /bin/sh cage; \
+    fi
 
-# Per-component users (egress filter components run unprivileged; cage runs
-# at uid 1000). These uids are referenced from the supervisor.
-# Names are prefixed with `ac` to avoid colliding with system users (debian
-# bookworm has `proxy` at uid 13, which would silently take precedence and
-# leave mitmproxy running as uid 13 — invisible to our uid-200 iptables
-# rule, so all mitmproxy egress would be dropped). Bail loudly if the
-# uids we want are already taken by other users.
-#
-# `useradd` is the debian/ubuntu name; alpine ships busybox `adduser`
-# instead (and shadow's `useradd` from the shadow package). We installed
-# the shadow package in the apk branch above, so `useradd` is available
-# in both bases.
-RUN getent passwd 200 >/dev/null && { echo "uid 200 already taken" >&2; exit 79; } || true \
-    && getent passwd 201 >/dev/null && { echo "uid 201 already taken" >&2; exit 79; } || true \
-    && useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acproxy \
-    && useradd --uid 201 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acdns \
-    && if getent passwd 1000 >/dev/null; then \
-         # User image already has a user at uid 1000 (ubuntu uses
-         # `ubuntu`, node:* uses `node`, claude-code uses `claude`, etc.).
-         # Reuse that user for the cage workload. The supervisor resolves
-         # the uid-1000 user's *name* at runtime (`getent passwd 1000`)
-         # and passes it to `capsh --user=`, so the existing name works
-         # without needing to alias to `cage`. useradd refuses to share
-         # a uid, which is why we don't try to create a second name here.
-         existing=$(getent passwd 1000 | cut -d: -f1); \
-         echo "reusing existing uid-1000 user: $existing" >&2; \
-       else \
-         useradd --uid 1000 --create-home --shell /bin/sh cage; \
-       fi
+# Bake the user's original argv as a shell-escaped one-shot script.
+# cage-init.sh exec's this after capsh-dropping. The shlex.quote on the
+# Python side handles every metacharacter (spaces, $VAR, &&, ; etc.) so
+# the resulting `exec ...` line is safe to feed straight to /bin/sh
+# without further parsing. Closes the I2 argv-injection risk from the
+# eng review on the prior runtime-jq approach.
+RUN mkdir -p /opt/agentcage /etc/agentcage
+RUN cat > /opt/agentcage/cage-cmd.sh <<'CAGECMD'
+#!/bin/sh
+exec {{ user_cmd_quoted }}
+CAGECMD
+RUN chmod 0755 /opt/agentcage/cage-cmd.sh
 
-# Supervisor + cage CMD + proxy config staged into the build context by
-# AppleContainerBackend.build_artifacts().
-COPY supervisor.sh /opt/agentcage/supervisor
-COPY allowlist_addon.py /opt/agentcage/allowlist_addon.py
-# Shared CaptureWriter (same source the container backend's addon imports).
-# Lives next to allowlist_addon.py so mitmproxy's script loader puts the
-# directory on sys.path and `from capture import CaptureWriter` resolves.
-COPY capture.py /opt/agentcage/capture.py
-# Transforms live next to the addon so mitmproxy's script loader puts the
-# script's dir on sys.path and `from transforms import get` resolves. Same
-# shape as src/agentcage/data/proxy/ on the container backend.
-#
-# We ADD a tar.gz (auto-extracted) rather than COPY the directory because
-# Apple's `container build` 0.5+ silently drops the contents of a COPY'd
-# directory — the target dir exists but is empty. Confirmed on macOS 26
-# with `container --version` 0.5.x; tracked alongside #120 follow-ups.
-RUN mkdir -p /opt/agentcage/transforms /opt/agentcage/relays /opt/agentcage/inspectors
-ADD transforms.tar.gz /opt/agentcage/transforms/
-# Protocol relays (IMAP, SMTP) and the inspector base classes they
-# import. Same tarball workaround for the directory-COPY bug — see
-# the transforms ADD above. The mitmproxy script loader puts the
-# addon's directory on sys.path, so we put the relays + inspectors
-# packages NEXT to the addon so ``from relays import get`` and
-# ``from inspectors.base import ...`` both resolve from the same
-# import root the addon lives under.
-ADD relays.tar.gz /opt/agentcage/relays/
-# Inspectors registry, packaged identically to transforms above and for the
-# same reason — ``container build`` 0.5+ silently drops the contents of a
-# directory COPY. ADD'ing a .tar.gz triggers the BuildKit auto-extract path
-# that actually preserves the files. (The /opt/agentcage/inspectors dir is
-# already created by the mkdir above alongside transforms + relays.)
-ADD inspectors.tar.gz /opt/agentcage/inspectors/
-COPY cage-cmd.json /etc/agentcage/cage-cmd.json
-COPY allowlist.txt /etc/agentcage/allowlist.txt
-COPY dnsmasq.conf /etc/agentcage/dnsmasq.conf
-COPY secret_injection.json /etc/agentcage/secret_injection.json
-COPY protocol_relays.json /etc/agentcage/protocol_relays.json
-COPY capture.json /etc/agentcage/capture.json
-COPY inspectors.json /etc/agentcage/inspectors.json
-RUN chmod 0755 /opt/agentcage/supervisor
+# cage-init.sh staged into the build context by stage_build_context
+# (copies from src/agentcage/data/apple-container/cage-init.sh).
+COPY cage-init.sh /opt/agentcage/cage-init.sh
+RUN chmod 0755 /opt/agentcage/cage-init.sh
 
-# Supervisor runs as PID 1.
-ENTRYPOINT ["/opt/agentcage/supervisor"]
+ENTRYPOINT ["/opt/agentcage/cage-init.sh"]
 CMD []

@@ -1,59 +1,68 @@
 # Apple Container Isolation
 
-`apple-container` isolation uses Apple's [`container`](https://github.com/apple/container) CLI on macOS 26+ Apple Silicon. Each cage runs in a single Apple `container` microVM (one kernel per cage, hypervisor boundary via Apple's Virtualization.framework). A small POSIX-sh supervisor takes PID 1 inside the microVM, stands up an in-microVM egress filter (mitmproxy + dnsmasq + iptables), then drops privileges before exec'ing the cage workload.
+`apple-container` isolation uses Apple's [`container`](https://github.com/apple/container) CLI on macOS 26+ Apple Silicon. Each cage runs in **two sibling Apple `container` microVMs** (one kernel per VM, hypervisor boundary via Apple's Virtualization.framework). One VM holds the egress filter (mitmproxy + dnsmasq); the other holds the cage workload. The cage VM has its default route pointed at the egress sibling, so all cage egress traffic flows through the proxy.
 
-Introduced in **0.20**, reached functional parity with `container` / `vm` in **0.21** for everything users actually exercise (init → create → exec → audit / har / verify → backup / restore → secret-injection → domain-management → autostart → config validation). On macOS 26+ Apple Silicon hosts where the `container` CLI is installed, this is the **default** when `isolation:` is omitted from `cage.yaml`. Lima remains the default everywhere else.
+Introduced in **0.20** as a single-microVM model and reached parity with `container` / `vm` in **0.21**. **0.21.20** refactored to the 2-microVM model (PR #196 / #197) so the workload-threat invariants match container/vm: secrets cleartext lives only in the egress VM; the cage VM has no mitmproxy / dnsmasq / iptables / jq.
+
+On macOS 26+ Apple Silicon hosts where the `container` CLI is installed, this is the **default** when `isolation:` is omitted from `cage.yaml`. Lima remains the default everywhere else.
 
 ## Why apple-container
 
 Versus Lima on the same host:
 
 - **~10–20× faster cage create** warm (~5s vs ~60s+ Lima warm). Apple microVMs boot in well under a second; Lima has to bring up a full Ubuntu cloud image.
-- **~3× less RAM per cage.** A single microVM with one kernel vs Lima's full guest OS.
+- **~3× less RAM per cage.** Two thin microVMs (single kernel each) vs Lima's full guest OS.
 - **Same hypervisor boundary** — both use Virtualization.framework. The host-side trust boundary is identical.
 
 Trade-offs:
 
 - **macOS 26+ Apple Silicon only.** Older macOS, Intel Macs, and Linux all stay on Lima/container.
-- **User cage image must be glibc-based** (debian, ubuntu, slim variants, distroless w/ apt). The bundled mitmproxy is a PyInstaller binary built against glibc; alpine/musl bases fail at wrapper-build time with a clear actionable error (see [Known gaps](#known-gaps-with-workarounds)).
-- **One defense layer instead of two** for egress (see [Security model](#security-model) below).
+- **User cage image needs `iproute2` + `libcap2-bin` + `iputils-ping` + `ca-certificates`** — the slim wrapper installs these on debian/ubuntu/alpine bases via apt-get / apk; distroless images may need the user to layer them in.
+- **Per-cage CAP_NET_ADMIN residual** on the cage VM (see [Known residual](#known-residual-route-bypass-via-as-root)).
 
-## Architecture
-
-Per cage, one Apple `container` microVM runs:
+## Architecture (PR 3 onwards — 2-microVM model)
 
 ```
-microVM (one kernel, isolated from host via Apple Virtualization.framework)
+Apple `container` network (per-cage, e.g. <cage>-net)
 │
-├── PID 1: /opt/agentcage/supervisor (POSIX sh, runs as root inside the µVM)
-│   │
-│   ├── stage 10  remount /proc with hidepid=2
-│   ├── stage 20  parse cage CMD from /etc/agentcage/cage-cmd.json (jq @sh)
-│   ├── stage 30  start dnsmasq (uid 201) → :53 forwarding to 1.1.1.1/8.8.8.8
-│   ├── stage 40  start mitmproxy (uid 200) → transparent on :8080 with
-│   │             /opt/agentcage/allowlist_addon.py
-│   ├── stage 50  poll mitmproxy CA file AND listening socket (fail loud)
-│   ├── stage 60  install proxy CA via update-ca-certificates;
-│   │             mirror CA into /certs/ for cage.yaml command compatibility
-│   ├── stage 70  point /etc/resolv.conf at 127.0.0.1
-│   ├── stage 80  iptables: DROP OUTPUT, REDIRECT 80/443 → :8080 (excludes
-│   │             uids 200/201 to avoid proxy/dns self-loop), allow lo:{8080,53},
-│   │             allow uid 200/201 egress, kill IPv6
-│   └── stage 90  capsh --no-new-privs --drop=all
-│                 --user=$(getent passwd 1000 | cut -d: -f1)
-│                 → exec the cage workload
+├── <cage>-egress  ──── built from shared agentcage-egress image (one per host)
+│   ├── PID 1: tini → /opt/agentcage/supervisor-egress (POSIX sh)
+│   ├── step A   iptables: PREROUTING REDIRECT 80/443 → :8443 (transparent),
+│   │            FORWARD default DROP, allow ESTABLISHED + ICMP echo
+│   ├── step B/C dnsmasq (uid 201, CapBnd=0)   — recursive resolver scoped
+│   │            to allowlisted apex zones; sinks A/AAAA for unlisted zones
+│   ├── step D/E mitmproxy (uid 200, CapBnd=0) — transparent on :8443;
+│   │            allowlist + {{SECRET}} injection + audit + capture
+│   ├── step F   touch /var/log/agentcage/ready (host polls before cage start)
+│   ├── bind: <state>/<cage>/secrets       → /home/acproxy/secrets:ro
+│   ├── bind: <state>/<cage>/egress-config → /etc/agentcage/{config,dnsmasq,dns-allowlist}.conf:ro
+│   ├── bind: <state>/<cage>/certs         → /home/acproxy/.mitmproxy
+│   └── bind: <state>/<cage>/logs          → /var/log/agentcage  (cage audit / har)
 │
-├── dnsmasq      (uid 201) — only DNS path the cage has; filter-AAAA strips
-│                            IPv6 records so clients don't waste time on
-│                            unreachable AAAA addresses
-├── mitmproxy    (uid 200) — egress filter + allowlist + {{SECRET}} injection +
-│                            JSON audit log + capture.jsonl
-└── cage workload (uid 1000 or image USER) — exactly zero capabilities,
-                                              NoNewPrivs set, hidepid hides
-                                              other UIDs' PIDs
+└── <cage>        ──── built from per-cage agentcage-apple-<cage>:latest
+    │                  (slim wrapper: FROM user_image + cage-init.sh +
+    │                   cage-cmd.sh; no mitmproxy/dnsmasq/iptables/jq)
+    ├── PID 1: /opt/agentcage/cage-init.sh (POSIX sh, runs as root briefly)
+    │   ├── stage A   ping <egress-ip> until ARP-reachable (≤15s grace)
+    │   ├── stage B   ip route replace default via <egress-ip>
+    │   ├── stage C   install /certs/mitmproxy-ca-cert.pem → trust store
+    │   └── stage D   capsh --no-new-privs --drop=all --user=$(getent passwd 1000)
+    │                 → exec /opt/agentcage/cage-cmd.sh (the user's argv,
+    │                   shell-escaped at build time via Python's shlex.quote)
+    ├── env: AGENTCAGE_EGRESS_IP=<sibling-ip>  (resolved by backend at start)
+    ├── env: -e KEY={{KEY}} per secret_injection rule  (placeholders only;
+    │        cleartext lives only in the egress sibling's bind mount)
+    └── bind: <state>/<cage>/certs            → /certs (read by cage-init)
 ```
 
-The per-cage wrapper image (built by `AppleContainerBackend.build_artifacts` via `container build`) layers the supervisor + addons + dnsmasq + mitmproxy bundle (SHA256-pinned, fetched from `downloads.mitmproxy.org`) onto the user's cage image with an explicit `USER root` so the apt install step works even when the user image sets a non-root USER. The microVM also bind-mounts `~/.config/agentcage/apple-container/<cage>/logs/` to `/var/log/agentcage/` so `cage audit` and `cage har` can read proxy logs and capture JSONL from the host.
+**Workload-threat invariants** verified end-to-end:
+
+- `cage exec -- ls /home/acproxy/secrets` → `No such file or directory` (different microVM; the secrets bind isn't in the cage's namespace).
+- `cage exec -- iptables -L` → command not found (no iptables in the slim wrapper).
+- `cage exec -- /usr/sbin/dnsmasq` → command not found.
+- Workload (uid 1000) has empty `CapEff/CapPrm` and `NoNewPrivs=1` set by `capsh --no-new-privs --drop=all` in cage-init's stage D.
+
+The shared `agentcage-egress` image is built once per host (tagged with the agentcage version, e.g. `localhost/agentcage-egress:0.21.20`) so sibling cages share a single ~120MB mitmproxy bundle install. Per-cage builds only need to add the ~30-line wrapper on top of the user's image.
 
 ## Prerequisites
 
@@ -110,31 +119,39 @@ The cage **workload** (PID 1 = whatever your `cage.yaml` `command` evaluates to)
 | Property | Value | Verifiable in `/proc/1/status` |
 |---|---|---|
 | UID | image's uid-1000 user (`ubuntu`, `node`, `claude`, or auto-created `cage`) | `Uid: 1000 1000 1000 1000` |
-| Capability sets | all empty | `CapInh/Prm/Eff/Bnd: 0000000000000000` |
+| Capability sets | all empty | `CapEff/CapPrm/CapInh: 0000000000000000` |
 | `NoNewPrivs` | set | `NoNewPrivs: 1` |
-| `/proc` visibility | only own UID's PIDs | `hidepid=2` mount option |
 
-Cage-side escape attempts that are blocked end-to-end (verified on macOS 26.3.2 + ASi from inside the workload's process tree):
+Cage-side escape attempts that are blocked end-to-end:
 
-- `iptables -F` → "Permission denied" (workload has no `CAP_NET_ADMIN`)
-- `mount` syscall → denied (no `CAP_SYS_ADMIN`)
-- TCP to non-80/443 port → DROPped by iptables
-- UDP DNS to upstream (8.8.8.8) → DROPped by iptables; only path is dnsmasq on 127.0.0.1
-- Connect to arbitrary loopback port (not 53 or 8080) → DROPped by iptables
-- IPv6 fallback → killed at ip6tables + sysctl `disable_ipv6=1`
+- `iptables -L` → command not found (no iptables binary in the slim wrapper)
+- `cat /home/acproxy/secrets/*` → ENOENT (secrets bind-mount is in the egress sibling VM, not the cage's namespace)
 - TLS with `Host: evil.com` spoofed on connection to allowlisted host → 403 from proxy (addon uses SNI/dst, not Host header)
 - Bypass via raw IP literal → 403 from proxy (allowlist applies to all hosts)
+- DNS exfil via non-A record type → REFUSED by dnsmasq (per-zone recursion scoping)
+- IPv6 fallback → no AAAA records reach the cage (`filter-AAAA` in dnsmasq.conf)
 
-**`cage exec` / `agentcage run` default to uid 1000.** From 0.21.18+ the CLI passes `-u 1000:1000` to `container exec` so interactive sessions run as the cage workload's user, matching `container` and `vm` backends. Pass `--as-root` for the operator-debug path.
+**`cage exec` / `agentcage run` default to uid 1000.** The CLI passes `-u 1000:1000` to `container exec` so interactive sessions run as the cage workload's user, matching `container` and `vm` backends. Pass `--as-root` for the operator-debug path.
 
-**`--as-root` on apple-container is weaker than on `container` / `vm`.** Three backends share the same `--as-root` *uid contract* (uid 0 + image's default cap set) but not the same blast radius:
+**Threat-model parity with container / vm (PR 3, 0.21.20+).** With the 2-microVM split, the workload-threat invariants now match container/vm:
 
-- On `container` / `vm`, mitmproxy + dnsmasq run in **separate containers** (their own netns + mntns). `--as-root` lands the operator in the *cage* container, which has `DropCapability=ALL` plus only the scaffold's `add_capabilities`. CAP_NET_ADMIN is not in the cage's bounding set, so `iptables -F` returns EPERM. Cleartext injected secrets live only in the proxy container, so the cage workload (root or not) can't read them.
-- On `apple-container`, mitmproxy + dnsmasq + the cage workload all share **one microVM** (single netns + mntns). The microVM was started with `--cap-add CAP_NET_ADMIN --cap-add CAP_SYS_ADMIN` (the supervisor needs them at stages 10-80), and `container exec` inherits the container's full cap set. So `cage exec --as-root` against an apple cage CAN `iptables -F` (defeating the egress filter) and CAN `cat /home/acproxy/secrets/<env>` (defeating `secret_injection`'s placeholder model). Both Linux MAC frameworks (SELinux, AppArmor) are unavailable in Apple's microVM kernel — the kernel ships SELinux compiled in but with `CONFIG_SECURITYFS` unset and SELinux not in the active LSM list, and the CLI exposes no `--security-opt label=` equivalent.
+| Threat | container/vm | apple-container (0.21.19) | apple-container (0.21.20+, 2-microVM) |
+|---|---|---|---|
+| Workload (uid 1000) reads injected secrets | ❌ different container | ❌ different uid (re-stage) | ❌ different microVM |
+| Workload modifies iptables | ❌ no NET_ADMIN | ❌ no NET_ADMIN | ❌ no iptables binary |
+| Workload reads dnsmasq config | ❌ different container | ❌ root-only file | ❌ different microVM |
+| `--as-root` reads secrets | ❌ different container | ⚠️ same VM (CAP_DAC_OVERRIDE) | ❌ different microVM |
+| `--as-root` flushes iptables | ❌ no NET_ADMIN | ⚠️ same VM (CAP_NET_ADMIN re-acquired) | ❌ no iptables binary |
 
-The threat model still treats the *workload* (the AI agent code) as untrusted — the workload runs at uid 1000 with NoNewPrivs and an empty CapBnd via capsh, same as on Lima. `--as-root` is an explicit operator action, opted-into per-invocation. On apple-container in particular, treat it as "I trust the command I'm about to run not to read secrets or open egress" — which is a weaker contract than on `container` / `vm`. Tracked in [#120](https://github.com/agentcage/agentcage/issues/120); the structural fix is to move proxy/dns into separate Apple containers (multi-microVM per cage, similar to the Quadlet model) so secrets and the egress filter live outside the cage's namespace.
+### Known residual: route bypass via --as-root
 
-The single defense-in-depth layer that's missing vs Lima: if iptables in the cage netns is somehow flushed (would require a supervisor bug or kernel CVE — the workload itself cannot do this), Lima's `<cage>-net` is a non-routed podman network so the cage still can't reach the internet. Apple custom networks always have NAT, so apple-container has no equivalent backstop. We compensate with shellcheck + stage-marker CI on the supervisor (`.github/workflows/supervisor.yml`) and manual macOS verification on supervisor changes.
+The cage microVM is created with `--cap-add CAP_NET_ADMIN` because `cage-init.sh` needs it to set the default route to the egress sibling at startup. Per the spike on Apple's runtime, `container exec --user 0 <cage>` re-acquires `CAP_NET_ADMIN` in the bounding set even after `capsh --drop=all` dropped it for the workload — Apple's runtime reconstructs `CapBnd` from `configuration.capAdd` on every exec.
+
+An operator with `--as-root` can therefore `ip route replace default via <host-bridge-ip>` to bypass the egress sibling. They **cannot** read cleartext secrets (they're in a different microVM's filesystem) and **cannot** flush iptables (no binary in the wrapper) — but they can route around the egress filter for that exec session.
+
+This affects the **`--as-root` operator threat** only, not the workload threat. The structural fix is macOS host pf rules pinning egress to the per-cage Apple network's egress interface, planned for v0.23. Tracked in [#196](https://github.com/agentcage/agentcage/issues/196).
+
+If your threat model requires hardening `--as-root` operator sessions against egress bypass on apple-container, use `isolation: vm` (Lima) — there, the cage workload's container has `DropCapability=ALL`, so `podman exec --user 0 <cage>` enters a process with no CAP_NET_ADMIN in CapBnd at all.
 
 ## Known gaps with workarounds
 
