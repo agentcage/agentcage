@@ -387,21 +387,22 @@ MOCK_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-httpbin.py"
 #   Replaces any existing block so entries don't accumulate.
 _patch_egress_hosts() {
   local cage="$1" mock_ip="$2"; shift 2
-  local block="# e2e-mock-start\n"
+  local block="# e2e-mock-start"$'\n'
   for domain in "$@"; do
-    block="${block}${mock_ip} ${domain}\n"
+    block="${block}${mock_ip} ${domain}"$'\n'
   done
-  block="${block}# e2e-mock-end"
-  # podman bind-mounts /etc/hosts from a host-managed file, so `sed -i` —
-  # which writes a temp file and renames over the target — fails silently
-  # at the rename across the bind-mount boundary. Pre-#187 the proxy
-  # container restart on every domain add wiped /etc/hosts, masking it;
-  # now stale e2e-mock blocks accumulate and the egress container's
-  # resolver picks the first (dead) mock IP it finds. Use awk +
-  # cat-overwrite, which truncates the existing inode in place rather
-  # than renaming.
-  podman exec --user root "${cage}-egress" \
-    sh -c "awk '/# e2e-mock-start/{skip=1; next} /# e2e-mock-end/{skip=0; next} !skip{print}' /etc/hosts > /tmp/.e2e-hosts.new && cat /tmp/.e2e-hosts.new > /etc/hosts && rm -f /tmp/.e2e-hosts.new; printf '${block}\n' >> /etc/hosts" 2>/dev/null
+  block="${block}# e2e-mock-end"$'\n'
+  # Read current /etc/hosts, strip any existing e2e-mock block, append
+  # new block, write back. Using `tee` instead of `>` redirection because
+  # the latter is processed by the OUTER shell (the bash running this
+  # function) NOT the inner sh inside `podman exec`, so > /etc/hosts
+  # would try to write the host's /etc/hosts which fails silently.
+  local current
+  current=$(podman exec "${cage}-egress" cat /etc/hosts 2>/dev/null) || return 1
+  local stripped
+  stripped=$(printf '%s\n' "$current" | awk '/# e2e-mock-start/{skip=1; next} /# e2e-mock-end/{skip=0; next} !skip{print}')
+  printf '%s\n%s' "$stripped" "$block" | \
+    podman exec -i --user root "${cage}-egress" tee /etc/hosts >/dev/null 2>&1
 }
 
 start_mock() {
