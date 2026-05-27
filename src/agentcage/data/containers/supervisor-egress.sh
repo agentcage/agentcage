@@ -18,6 +18,16 @@ set -eu
 log() { printf '[egress-supervisor] %s\n' "$*" >&2; }
 die() { log "FATAL: $1"; exit "${2:-99}"; }
 
+# dnsmasq writes its pidfile here. /run/ is root-owned; uid 201 (acdns)
+# can't write there. /run/agentcage/ is created here and chowned to
+# acdns so dnsmasq can write the pidfile after dropping privileges.
+# The pidfile is what `domain add` / `domain rm` use to SIGHUP dnsmasq
+# without restarting the egress container.
+DNSMASQ_PID_FILE=/run/agentcage/dnsmasq.pid
+mkdir -p /run/agentcage
+chown acdns:acdns /run/agentcage
+chmod 0755 /run/agentcage
+
 #-- Step A. iptables setup -------------------------------------------------
 # The egress container acts as a ROUTER between the cage netns and the
 # internet (NOT an in-netns OUTPUT filter — that's the apple-container
@@ -107,7 +117,7 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /opt/agentcage/dns-audit.sh \
       /usr/sbin/dnsmasq -k \
-        --pid-file=/run/dnsmasq.pid \
+        --pid-file=/run/agentcage/dnsmasq.pid \
         --conf-file=/etc/agentcage/dnsmasq.conf \
         --servers-file=/etc/agentcage/dns-allowlist.conf \
     &
@@ -126,7 +136,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /opt/agentcage/dns-audit.sh \
       /usr/sbin/dnsmasq -k \
-        --pid-file=/run/dnsmasq.pid \
+        --pid-file=/run/agentcage/dnsmasq.pid \
         --no-resolv \
         --no-hosts \
         --listen-address=0.0.0.0 \
@@ -143,7 +153,7 @@ else
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
     /usr/sbin/dnsmasq -k \
-      --pid-file=/run/dnsmasq.pid \
+      --pid-file=/run/agentcage/dnsmasq.pid \
       --no-resolv --no-hosts \
       --listen-address=0.0.0.0 --port=53 \
       --domain-needed --bogus-priv \

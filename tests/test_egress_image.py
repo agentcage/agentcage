@@ -267,7 +267,7 @@ def test_dnsmasq_uid_and_capbnd(egress_container: str) -> None:
     for _ in range(10):
         check = _podman(
             "exec", egress_container,
-            "test", "-s", "/run/dnsmasq.pid",
+            "test", "-s", "/run/agentcage/dnsmasq.pid",
             check=False,
         )
         if check.returncode == 0:
@@ -275,7 +275,7 @@ def test_dnsmasq_uid_and_capbnd(egress_container: str) -> None:
         time.sleep(0.5)
     status = _podman(
         "exec", egress_container,
-        "sh", "-c", 'cat /proc/$(cat /run/dnsmasq.pid)/status | grep -E "^(Uid|CapBnd):"',
+        "sh", "-c", 'cat /proc/$(cat /run/agentcage/dnsmasq.pid)/status | grep -E "^(Uid|CapBnd):"',
         check=False,
     )
     if status.returncode != 0:
