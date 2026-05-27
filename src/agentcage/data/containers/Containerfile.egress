@@ -1,0 +1,105 @@
+# agentcage-egress: combined mitmproxy + dnsmasq image for the unified
+# 2-container per-cage shape (cage + egress). Replaces the legacy
+# Containerfile.proxy + Containerfile.dns pair. PR 1 ships the image only;
+# PR 2 will switch the container + vm backends to use it.
+#
+# Both processes run unprivileged inside the container:
+#   uid 200 (acproxy) → mitmproxy
+#   uid 201 (acdns)   → dnsmasq
+# The supervisor at PID 1 (tini → /opt/agentcage/supervisor) drops CapBnd
+# via `setpriv --no-new-privs --bounding-set=-all --inh-caps=-all` for each
+# child, closing the setuid-root reacquisition path that `--reuid` alone
+# leaves open. See supervisor-egress.sh for the full security rationale.
+FROM debian:bookworm-slim
+
+# Single RUN to keep layer count low and lists clean.
+# Packages:
+#   dnsmasq          — recursive DNS forwarder + allowlist enforcer
+#   libcap2-bin      — capsh + setcap (we setcap dnsmasq for :53 bind)
+#   iptables         — egress FORWARD-chain shape (the egress container
+#                      acts as a router between the cage netns and the
+#                      internet, NOT an in-netns OUTPUT filter; see
+#                      supervisor-egress.sh)
+#   jq               — used by future supervisor extensions (parity with
+#                      the apple-container supervisor's stage 20)
+#   procps           — pgrep/pkill for the smoke test + general debug
+#   ca-certificates  — needed by mitmproxy to verify upstream TLS
+#   curl             — used to fetch the mitmproxy bundle below
+#   tini             — PID 1 → SIGCHLD reaping + SIGTERM forwarding
+#   util-linux       — setpriv (CapBnd drop) + prlimit (memory caps)
+#   iproute2         — ss for the supervisor's listener readiness check
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        dnsmasq \
+        libcap2-bin \
+        iptables \
+        jq \
+        procps \
+        ca-certificates \
+        curl \
+        tini \
+        util-linux \
+        iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Per-component users. uids match the apple-container backend's wrapper
+# (which also uses 200/201) so any iptables rule using uid-owner matchers
+# in shared scripts works consistently. `acproxy` / `acdns` (not `proxy` /
+# `dns`) to avoid colliding with debian bookworm's existing `proxy` user
+# at uid 13 — silently taking that would leave mitmproxy running as uid
+# 13, invisible to any uid-200 owner-match.
+RUN useradd --uid 200 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acproxy \
+    && useradd --uid 201 --system --no-create-home --shell /usr/sbin/nologin --home-dir /var/empty acdns
+
+# setcap so uid 201 can bind :53 without NET_BIND_SERVICE in CapBnd.
+# The supervisor strips CapBnd entirely before exec'ing dnsmasq; the
+# file capability survives the bounding-set drop because the kernel
+# checks file caps at execve and the resulting effective set is
+# computed from the file cap + the (now empty) bounding set. For
+# NET_BIND_SERVICE specifically the file cap is enough because uid 201
+# is already starting a process that needs to bind a low port — there
+# is no privilege escalation path opened up by this single file cap.
+RUN setcap cap_net_bind_service=+ep /usr/sbin/dnsmasq
+
+# mitmproxy install — multi-arch PyInstaller bundle. SHA256s pinned for
+# supply-chain integrity (same bundle that apple-container's
+# Containerfile.wrapper.j2 already pins).
+#   arm64: b358643a6c4f4b39e33d985350f660b724fece95687d7daa899ef0c4e211f681
+#   amd64: 2e95286b618fa6fd33e5e62a78c2e5112571d85f42ec2bac29b97ee242bdb5c5
+# Both hashes verified by direct download of the upstream tarball
+# (mitmproxy does not publish a SHA256SUMS manifest, so each arch URL
+# was fetched + hashed once during PR 1 authoring).
+RUN mkdir -p /opt/agentcage/mitmproxy \
+    && arch=$(dpkg --print-architecture) \
+    && case "$arch" in \
+         arm64) \
+           url=https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-aarch64.tar.gz; \
+           sha=b358643a6c4f4b39e33d985350f660b724fece95687d7daa899ef0c4e211f681 ;; \
+         amd64) \
+           url=https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-x86_64.tar.gz; \
+           sha=2e95286b618fa6fd33e5e62a78c2e5112571d85f42ec2bac29b97ee242bdb5c5 ;; \
+         *) echo "unsupported arch: $arch" >&2; exit 78 ;; \
+       esac \
+    && curl -fsSL -o /tmp/mitmproxy.tar.gz "$url" \
+    && echo "$sha  /tmp/mitmproxy.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/mitmproxy.tar.gz -C /opt/agentcage/mitmproxy \
+    && rm /tmp/mitmproxy.tar.gz
+
+# Supervisor + DNS audit wrapper. dns-audit.sh is also referenced by the
+# legacy Containerfile.dns; both images keep a copy during the
+# transition (PR 1) so we don't have to touch the legacy image — the
+# source-of-truth lives in src/agentcage/data/containers/dns-audit.sh.
+COPY containers/supervisor-egress.sh /opt/agentcage/supervisor
+COPY containers/dns-audit.sh /opt/agentcage/dns-audit.sh
+RUN chmod 0755 /opt/agentcage/supervisor /opt/agentcage/dns-audit.sh
+
+# Home + log dirs. mitmproxy writes its CA into ~/.mitmproxy; the cage
+# trust install path (PR 2) will read it from /home/acproxy/.mitmproxy.
+RUN mkdir -p /home/acproxy/.mitmproxy /var/log/agentcage \
+    && chown -R acproxy:acproxy /home/acproxy /var/log/agentcage
+RUN mkdir -p /home/acdns \
+    && chown acdns:acdns /home/acdns
+
+# tini is PID 1 — handles SIGCHLD reaping (so the supervisor stays a
+# simple POSIX-sh script without `wait -n`) and forwards SIGTERM to the
+# whole process group on container stop.
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/agentcage/supervisor"]
