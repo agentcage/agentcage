@@ -399,16 +399,23 @@ _patch_egress_hosts() {
       sh -c "echo '${mock_ip} ${domain}' >> /etc/hosts" 2>/dev/null \
       || return 1
   done
-  # dnsmasq does not auto-reload /etc/hosts at runtime (entries are
-  # read at startup, and ``server=`` upstream-forwarding for allowlisted
-  # zones wins until /etc/hosts is re-read). Force a reload via SIGHUP
-  # on the supervisor-managed pidfile. Best-effort: on the first patch
-  # attempt the supervisor's step B may not have finished writing the
-  # pidfile yet — the start_mock loop retries up to 15s and the next
-  # patch will succeed.
-  podman exec --user root "${cage}-egress" sh -c \
-    'pid="$(cat /home/acdns/dnsmasq.pid 2>/dev/null)" && [ -n "$pid" ] && kill -HUP "$pid"' \
-    2>/dev/null || true
+  # NB: we deliberately do NOT SIGHUP dnsmasq after the patch. If
+  # dnsmasq picked up /etc/hosts → mock-IP, the cage's DNS would
+  # resolve httpbin.org directly to the mock's cage-net IP, the cage
+  # workload would connect to a SAME-SUBNET host and bypass the
+  # gateway-mediated PREROUTING REDIRECT into mitmproxy entirely. The
+  # outbound flow would never be inspected/audited, and Phase 2's
+  # ``cage audit --host httpbin.org`` would show nothing.
+  #
+  # Instead we let dnsmasq keep forwarding httpbin.org to the upstream
+  # (server=/httpbin.org/<upstream>) → returns the REAL public IP. The
+  # cage connects to the real IP, the packet enters the egress on the
+  # cage-net interface, PREROUTING REDIRECT lands it on mitmproxy
+  # transparent at :8443, and mitmproxy with ``keep_host_header=true``
+  # resolves the Host header via getaddrinfo, which reads /etc/hosts
+  # at request time (no caching that needs invalidation) and connects
+  # to the patched mock IP. This is exactly how the legacy 3-service
+  # proxy worked.
   return 0
 }
 
