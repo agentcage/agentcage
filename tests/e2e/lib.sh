@@ -430,12 +430,17 @@ start_mock() {
   # --sysctl ip_unprivileged_port_start=80: required on hosts where the
   #   default unprivileged port range starts at 1024 (e.g. Arch). The
   #   egress quadlet sets the same sysctl (egress.container.j2).
+  # --entrypoint=python3: agentcage-egress has ENTRYPOINT
+  #   [tini, --, /opt/agentcage/supervisor]. We override here so
+  #   `python3 /mock.py` runs directly instead of being parsed as the
+  #   supervisor's args.
   if ! podman run -d --name "${cage}-mock" \
     --user root \
     --network "${cage}-net" \
     --sysctl net.ipv4.ip_unprivileged_port_start=80 \
+    --entrypoint=python3 \
     -v "${MOCK_SCRIPT}:/mock.py:ro" \
-    "$mock_image" python3 /mock.py >/dev/null 2>&1; then
+    "$mock_image" /mock.py >/dev/null 2>&1; then
     echo "WARNING: failed to start mock container for $cage" >&2
     return 1
   fi
