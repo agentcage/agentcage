@@ -55,6 +55,70 @@ class TestCageCreate:
         result = _runner().invoke(main, ["cage", "create"])
         assert result.exit_code != 0
 
+    @patch("agentcage.config.platform.machine", return_value="arm64")
+    @patch("agentcage.config.platform.system", return_value="Darwin")
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_apple_container_rw_host_bind_warning(
+        self, mock_state, MockPodman, mock_systemd, _ms, _mm, tmp_path,
+    ):
+        """CTF F4: warn when an apple-container cage has rw host bind
+        mounts. Apple's runtime uses identity uid_map so rw mounts
+        grant the cage workload host-uid-1000 write access to anything
+        readable by the macOS user.
+
+        Test still expects cage create to FAIL on a later step (we
+        don't mock the full backend); the assertion is just that the
+        F4 warning is emitted to stderr.
+        """
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: testaa
+            isolation: apple-container
+            container:
+              image: test:latest
+              volumes:
+                - "/Users/op/project:/workspace"
+                - "/Users/op/cache:/cache:ro"
+                - "agentcage-named:/data"
+        """))
+        mock_state.deployment_exists.return_value = False
+
+        result = _runner().invoke(main, ["cage", "create", "-c", str(p)])
+        assert "apple-container has identity uid_map" in result.output
+        # The rw mount is flagged.
+        assert "/Users/op/project:/workspace" in result.output
+        # The :ro mount is NOT flagged.
+        assert "/Users/op/cache" not in result.output
+        # The named volume is NOT flagged.
+        assert "agentcage-named" not in result.output
+
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_container_backend_no_apple_warning(
+        self, mock_state, MockPodman, mock_systemd, tmp_path,
+    ):
+        """Container backend has user-namespace shift via rootless
+        podman, so rw host bind mounts don't grant identity host-uid
+        access. The F4 warning should NOT fire."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: testbb
+            container:
+              image: test:latest
+              volumes:
+                - "/home/u/project:/workspace"
+        """))
+        mock_state.deployment_exists.return_value = False
+        podman = MockPodman.return_value
+        podman.secret_exists.return_value = True
+
+        result = _runner().invoke(main, ["cage", "create", "-c", str(p)])
+        # No F4 warning on the container backend.
+        assert "apple-container has identity uid_map" not in result.output
+
 
 class TestCageUpdate:
     @patch("agentcage.cli.systemd")

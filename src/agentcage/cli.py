@@ -66,6 +66,35 @@ def _is_apple_container(cfg) -> bool:
     return getattr(cfg, "isolation", None) == "apple-container"
 
 
+def _is_rw_host_bind(volume_spec: str) -> bool:
+    """True if *volume_spec* describes an rw host bind mount.
+
+    Distinguishes from RO bind mounts (`:ro` suffix) and from named
+    volumes (no `/` or `~` in the source). Used by the cage create
+    warning for CTF F4 (apple-container identity uid_map).
+
+    >>> _is_rw_host_bind("/Users/m1/proj:/workspace")
+    True
+    >>> _is_rw_host_bind("/Users/m1/proj:/workspace:ro")
+    False
+    >>> _is_rw_host_bind("/Users/m1/proj:/workspace:rw")
+    True
+    >>> _is_rw_host_bind("agentcage-cache:/cache")
+    False
+    """
+    parts = volume_spec.split(":")
+    if len(parts) < 2:
+        return False
+    source = parts[0]
+    # Named volume: no host path. Only `/`-rooted or `~`-rooted strings
+    # are bind mounts; everything else is a podman named volume reference.
+    if not source.startswith(("/", "~")):
+        return False
+    # Mode suffix: anything other than 'ro' (e.g. 'rw', 'Z', or none).
+    mode = parts[-1] if len(parts) >= 3 else ""
+    return "ro" not in mode.split(",")
+
+
 def _exit_apple_container_unsupported(command: str) -> None:
     """Exit cleanly when a subcommand isn't implemented on apple-container.
 
@@ -466,6 +495,34 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool,
         sys.exit(1)
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
+
+    # CTF F4: apple-container has identity uid_map (0 0 4294967295 — no
+    # user-namespace shift). Any host bind mount mounted RW into the cage
+    # means uid-1000-inside-the-cage maps to uid-1000-on-the-mac-host (the
+    # ``m1`` user), so the cage workload can write to anything readable by
+    # the m1 user via the virtiofs lower layer. RO mounts close the path.
+    # Container/VM backends shift uids via rootless podman's user namespace
+    # so this isn't an issue there.
+    if cfg.isolation == "apple-container" and cfg.container.volumes:
+        rw_host_mounts = [
+            v for v in cfg.container.volumes
+            if _is_rw_host_bind(v)
+        ]
+        if rw_host_mounts:
+            click.echo(
+                "warning: apple-container has identity uid_map; "
+                "rw host bind mounts grant the cage write access to the "
+                "host filesystem at uid 1000. Affected mounts:",
+                err=True,
+            )
+            for v in rw_host_mounts:
+                click.echo(f"  {v}", err=True)
+            click.echo(
+                "  Add ``:ro`` to make these mounts read-only, or run on "
+                "the ``container`` / ``vm`` backend where rootless podman "
+                "user-namespace shift isolates the host uid range.",
+                err=True,
+            )
 
     name = cfg.name
 
