@@ -343,11 +343,20 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
               type=click.Choice(["container", "vm", "apple-container"]),
               default=None,
               help="Isolation backend (default: auto-detect from platform).")
+@click.option("--as-root", is_flag=True,
+              help="Run the session as root inside the cage (debug only — "
+                   "bypasses the cage's egress filter via CAP_NET_ADMIN). "
+                   "Default is the cage workload's uid 1000 user. "
+                   "NOTE: on apple-container the egress filter and secret "
+                   "store share the cage's microVM, so --as-root can "
+                   "disable iptables and read injected secrets — a known "
+                   "limitation of the single-microVM architecture.")
 @click.option("--time", "show_timing", is_flag=True,
               help="Echo per-phase wall times and print a summary on completion.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
         secrets: tuple[str, ...], verbose: bool, isolation: str | None,
+        as_root: bool,
         show_timing: bool,
         extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
@@ -367,6 +376,7 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
         scaffold, project_dir=project_dir, name=name,
         secrets=secrets, extra_args=extra_args, verbose=verbose,
         isolation=isolation,
+        as_root=as_root,
         show_timing=show_timing,
     )
     sys.exit(exit_code)
@@ -1853,7 +1863,11 @@ def _logs_apple_container(name, services, lines, no_follow, min_level=None):  # 
 @click.option("--as-root", is_flag=True,
               help="Run the command as root inside the cage (debug only — "
                    "bypasses the cage's egress filter via CAP_NET_ADMIN). "
-                   "Default is the cage workload's uid 1000 user.")
+                   "Default is the cage workload's uid 1000 user. "
+                   "NOTE: on apple-container the egress filter and secret "
+                   "store share the cage's microVM, so --as-root can "
+                   "disable iptables and read injected secrets — a known "
+                   "limitation of the single-microVM architecture.")
 @click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
 def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
     """Run a command inside a cage container.
@@ -1939,7 +1953,11 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
 @click.option("--as-root", is_flag=True,
               help="Open the shell as root (debug only — bypasses the "
                    "cage's egress filter via CAP_NET_ADMIN). Default is "
-                   "the cage workload's uid 1000 user.")
+                   "the cage workload's uid 1000 user. "
+                   "NOTE: on apple-container the egress filter and secret "
+                   "store share the cage's microVM, so --as-root can "
+                   "disable iptables and read injected secrets — a known "
+                   "limitation of the single-microVM architecture.")
 def cage_shell(name: str, service: str, as_root: bool):
     """Open an interactive shell in a cage container."""
     if not state.deployment_exists(name):
@@ -1954,22 +1972,28 @@ def cage_shell(name: str, service: str, as_root: bool):
         # --workdir / on every `limactl shell` for the same reason as
         # _logs_vm and vm.exec_argv — host cwd isn't mounted, default cd
         # spews a "No such file or directory" before our command runs.
+        # ``-u`` matches the security intent of the apple-container path
+        # below: the cage Quadlet's ``User=`` may be empty (ubuntu
+        # scaffold), so without an explicit ``-u`` ``podman exec``
+        # inherits the image's USER (root on ubuntu:latest). gid is
+        # pinned too — see ContainerBackend.exec_argv for rationale.
+        spec = "0:0" if as_root else "1000:1000"
         # Auto-detect bash or fall back to sh inside the VM
         for shell in ("/bin/bash", "/bin/sh"):
             result = subprocess.run(
                 ["limactl", "shell", "--workdir", "/", inst.name, "--",
-                 "podman", "exec", container, "test", "-x", shell],
+                 "podman", "exec", "-u", spec, container, "test", "-x", shell],
                 capture_output=True,
             )
             if result.returncode == 0:
                 exec_flags = ["-it"] if sys.stdin.isatty() else []
                 os.execvp("limactl", ["limactl", "shell", "--workdir", "/",
                           inst.name, "--",
-                          "podman", "exec", *exec_flags, container, shell])
+                          "podman", "exec", "-u", spec, *exec_flags, container, shell])
         exec_flags = ["-it"] if sys.stdin.isatty() else []
         os.execvp("limactl", ["limactl", "shell", "--workdir", "/",
                   inst.name, "--",
-                  "podman", "exec", *exec_flags, container, "/bin/sh"])
+                  "podman", "exec", "-u", spec, *exec_flags, container, "/bin/sh"])
 
     if _is_apple_container(cfg):
         _require_cage_service_on_apple_container(service, "shell")
@@ -2020,18 +2044,24 @@ def cage_shell(name: str, service: str, as_root: bool):
         ])
 
     container = f"{name}-{service}"
+    # ``-u`` matches the security intent of the apple-container path
+    # above: the cage Quadlet's ``User=`` may be empty (ubuntu scaffold),
+    # so without an explicit ``-u`` ``podman exec`` inherits the image's
+    # USER (root on ubuntu:latest). gid is pinned too — see
+    # ContainerBackend.exec_argv for rationale.
+    spec = "0:0" if as_root else "1000:1000"
     # Auto-detect bash or fall back to sh
     for shell in ("/bin/bash", "/bin/sh"):
         result = subprocess.run(
-            ["podman", "exec", container, "test", "-x", shell],
+            ["podman", "exec", "-u", spec, container, "test", "-x", shell],
             capture_output=True,
         )
         if result.returncode == 0:
             exec_flags = ["-it"] if sys.stdin.isatty() else []
-            os.execvp("podman", ["podman", "exec", *exec_flags, container, shell])
+            os.execvp("podman", ["podman", "exec", "-u", spec, *exec_flags, container, shell])
     # Fallback
     exec_flags = ["-it"] if sys.stdin.isatty() else []
-    os.execvp("podman", ["podman", "exec", *exec_flags, container, "/bin/sh"])
+    os.execvp("podman", ["podman", "exec", "-u", spec, *exec_flags, container, "/bin/sh"])
 
 
 # ── cage audit ─────────────────────────────────────────────

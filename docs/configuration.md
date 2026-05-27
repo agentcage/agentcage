@@ -71,7 +71,7 @@ dns_servers:
 | `tmpfs` | `list[string]` | `[]` | tmpfs mount specs (useful for writable areas on read-only containers) |
 | `ports` | `list[string]` | `[]` | Published port specs — see [Ports](#ports) below |
 | `podman_secrets` | `list[string]` | `[]` | [Podman secret](https://docs.podman.io/en/latest/markdown/podman-secret.1.html) names (injected as env vars) |
-| `user` | `string` | `"1000:1000"` | UID:GID to run as. Set to `""` to use the image default. See [Podman `--user`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
+| `user` | `string` | `"1000:1000"` | UID:GID for the cage workload (Quadlet `User=`). Set to `""` to use the image default. **Note:** this only controls the workload's startup user. Interactive `agentcage run` / `cage exec` / `cage shell` sessions are pinned to uid 1000 (or `0` with `--as-root`) regardless of this field — matching the apple-container backend's behavior. See [Podman `--user`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `userns` | `string` | `""` | User namespace mode (e.g. `"keep-id"`). See [Podman `--userns`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `memory` | `string` | *(none)* | Memory limit (e.g. `"4g"`). See [Podman `--memory`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |
 | `cpus` | `string` | *(none)* | CPU limit (e.g. `"2.0"`). See [Podman `--cpus`](https://docs.podman.io/en/latest/markdown/podman-run.1.html) |

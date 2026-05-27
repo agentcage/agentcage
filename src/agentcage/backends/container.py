@@ -211,17 +211,33 @@ class ContainerBackend:
         cmd: list[str],
         *,
         interactive: bool = False,
-        as_root: bool = False,  # noqa: ARG002 — container Quadlets already unprivileged
+        as_root: bool = False,
     ) -> list[str]:
-        """``podman exec [-it] <name>-<service> <cmd>``.
+        """``podman exec [-it] -u <uid:gid> <name>-<service> <cmd>``.
 
-        ``as_root`` is ignored — the per-service container is already
-        running as its configured unprivileged user via Quadlet, and
-        ``podman exec`` defaults to the container's USER. Operators who
-        need root use ``podman exec -u 0 ...`` directly.
+        We pass ``-u`` explicitly because the Quadlet ``User=`` directive
+        may be empty (the ubuntu scaffold sets ``user: ""`` because a
+        default of 1000:1000 doesn't resolve to a real user in minimal
+        base images), so without ``-u`` ``podman exec`` inherits the
+        image's USER — typically root on ubuntu:latest. That made
+        ``agentcage run ubuntu`` land at uid 0 on linux/podman while the
+        apple-container path correctly dropped to uid 1000.
+
+        ``as_root=False`` → ``-u 1000:1000`` (the cage workload's user).
+        ``as_root=True``  → ``-u 0:0`` (operator debug — re-acquires
+        the container's full cap set). NoNewPrivs=1 + dropped CapBnd
+        from the cage's Quadlet are inherited by the exec session, so
+        a capsh wrap (apple-container's primitive) isn't required here.
+
+        Both uid and gid are pinned. ``-u 1000`` alone leaves the gid
+        at the container default — for images without a uid 1000 in
+        ``/etc/passwd`` (busybox, scratch-based) that default is gid 0
+        (root group), which can read group-readable root files. Setting
+        ``-u 1000:1000`` closes that minor leak.
         """
         flags = ["-it"] if interactive else []
-        return ["podman", "exec", *flags, f"{name}-{service}", *cmd]
+        spec = "0:0" if as_root else "1000:1000"
+        return ["podman", "exec", "-u", spec, *flags, f"{name}-{service}", *cmd]
 
     def logs_argv(
         self,
