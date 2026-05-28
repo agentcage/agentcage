@@ -43,7 +43,7 @@ The primary threat is an AI agent exfiltrating sensitive data -- secrets, source
 
 - **Non-HTTP protocols** -- TCP/UDP connections other than HTTP (blocked by network isolation, but not inspected)
 - **DNS exfiltration** -- data encoded in subdomain labels of allowlisted domains (blocked for non-allowlisted domains; see Known Limitations)
-- **Kernel or container escapes (container mode)** -- exploits that break out of the Podman container via kernel or runtime vulnerabilities. In VM mode, these are contained by the VM boundary (see Isolation modes above).
+- **Kernel or container escapes (container mode)** -- exploits that break out of the Podman container via kernel or runtime vulnerabilities. In VM mode, these are contained by the VM boundary (see [Isolation modes](isolation-modes.md)).
 - **Side-channel attacks** -- timing-based or resource-usage-based data leakage
 - **Multi-request evasion** -- splitting secrets across many small requests to avoid pattern matching
 - **Confused deputy / prompt injection** -- an agent tricked into exfiltrating data through legitimate-looking requests to allowed domains

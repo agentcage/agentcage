@@ -1,12 +1,7 @@
 <!-- owner: @luca  last-reviewed: 2026-05-28 -->
 # Install
 
-Backend-specific setup steps for agentcage. This is a temporary staging page consolidating the install snippets that previously lived in `docs/vm.md` and `docs/apple-container.md`; a later pass will rewrite it as a proper quickstart.
-
-<!-- WIP: this is a holding bay during the docs revamp. The one-line installer
-in README.md is the canonical entry point; this page exists so that backend
-prerequisites are not lost when vm.md and apple-container.md are deleted.
-A future step will rewrite this into a full Diataxis "get started" tutorial. -->
+Backend-specific setup steps for agentcage. Read this when the one-line installer doesn't fit your environment, or when you want to know exactly what gets installed.
 
 ## One-line installer
 
