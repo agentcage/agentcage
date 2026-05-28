@@ -10,7 +10,7 @@ Don't let your agent phone home.
 
 > :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security model](docs/explain/security-model.md) for details and known limitations.
 
-> **Coding agents:** [Claude Code](src/agentcage/scaffolds/claude-code/README.md) · [Codex](src/agentcage/scaffolds/codex/README.md) &nbsp;|&nbsp; **Agent platforms:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md)
+> **Coding agents:** [Claude Code](src/agentcage/scaffolds/claude-code/README.md) · [Codex](src/agentcage/scaffolds/codex/README.md) · [Pi](src/agentcage/scaffolds/pi/README.md) &nbsp;|&nbsp; **Agent platforms:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md)
 
 <p align="center">
   <a href="https://asciinema.org/a/838890"><img src="https://asciinema.org/a/838890.svg" alt="agentcage demo" width="700"></a>
@@ -37,16 +37,21 @@ Three isolation backends are supported:
 
 See [Security model](docs/explain/security-model.md#isolation-modes-and-the-threat-surface) for the threat-by-threat matrix and [Isolation modes](docs/explain/isolation-modes.md) for how each backend works and when to pick which. For the full container topology and inspector chain, see [Architecture](docs/explain/architecture.md).
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
+```
+
+The installer detects your platform and installs the right backend (Podman on Linux, Apple `container` on macOS 26+ Apple Silicon, Lima elsewhere). For manual setup per backend, see [Install](docs/get-started/install.md).
+
 ## Quick Start
 
 ### Ephemeral session
 
-The fastest way to sandbox a coding agent. One command builds the image, creates a temporary cage, and drops you into an interactive session. The cage is torn down when you exit; audit logs are preserved.
+One command builds the image, creates a temporary cage, and drops you into an interactive session. The cage is torn down when you exit; audit logs are preserved.
 
 ```bash
-# Install
-curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
-
 # Run Claude Code in a sandbox
 agentcage run claude-code
 
@@ -57,26 +62,16 @@ agentcage run codex
 agentcage run claude-code -s ANTHROPIC_API_KEY --project ~/myrepo
 ```
 
-### Persistent interactive cage
+### Persistent cage
 
-Use this when you want the cage to survive across sessions -- for example, to keep auth tokens, run multiple `cage exec` sessions, or inspect traffic after the fact.
-
-```bash
-agentcage init myagent --scaffold claude-code
-agentcage secret set myagent ANTHROPIC_API_KEY
-agentcage cage create -c cage.yaml
-agentcage cage exec myagent -- claude
-```
-
-### Always-on service cage
-
-For agents that run continuously (API gateways, coding platforms, webhook receivers). systemd auto-restarts the container on failure and starts it on boot.
+Survives across sessions — keep auth tokens, run multiple `cage exec` sessions, or let it run continuously as a background service (systemd auto-restarts on failure and starts on boot).
 
 ```bash
-agentcage init myapp --scaffold openclaw
+agentcage init myapp --scaffold claude-code
 agentcage secret set myapp ANTHROPIC_API_KEY
 agentcage cage create -c cage.yaml
-agentcage cage verify myapp
+agentcage cage exec myapp -- claude     # interactive
+agentcage cage verify myapp             # or just check it's running
 ```
 
 ### Custom image
@@ -88,14 +83,6 @@ agentcage cage create -c cage.yaml
 ```
 
 Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Reference](docs/reference/cli.md) for the full command set.
-
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
-```
-
-The installer detects your platform and installs the right backend (Podman on Linux, Apple `container` on macOS 26+ Apple Silicon, Lima elsewhere). For manual setup per backend, see [Install](docs/get-started/install.md).
 
 ## Day-to-day
 
