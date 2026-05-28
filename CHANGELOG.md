@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.10] - 2026-05-28
+
 ### Security
 
 - **container + vm backends: cage no longer mounts the egress CA private
