@@ -91,107 +91,28 @@ Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Refer
 
 ## Install
 
-**One-line installer** (installs agentcage + prerequisites):
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/agentcage/agentcage/master/install.sh | sh
 ```
 
-**Manual install:**
+The installer detects your platform and installs the right backend (Podman on Linux, Apple `container` on macOS 26+ Apple Silicon, Lima elsewhere). For manual setup per backend, see [Install](docs/get-started/install.md).
 
-*Container mode* (Linux only) -- prerequisites: [Podman](https://podman.io/) (rootless), Python 3.12+, [uv](https://docs.astral.sh/uv/).
-
-| OS | Command |
-|---|---|
-| Arch Linux | `sudo pacman -S podman python uv` |
-| Debian / Ubuntu 24.04+ | `sudo apt install podman python3 && curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| Fedora | `sudo dnf install podman python3 uv` |
-
-*VM mode* (Linux and macOS) -- prerequisites: [Lima](https://lima-vm.io/), Python 3.12+, [uv](https://docs.astral.sh/uv/). QEMU also required on Linux.
-
-| OS | Command |
-|---|---|
-| macOS (any version) | `brew install lima python uv` |
-| Arch Linux | `sudo pacman -S qemu-full python uv` + [install Lima](https://lima-vm.io/docs/installation/) |
-| Debian / Ubuntu | `sudo apt install qemu-system python3 && curl -LsSf https://astral.sh/uv/install.sh \| sh` + [install Lima](https://lima-vm.io/docs/installation/) |
-
-*apple-container mode* (macOS 26+ Apple Silicon, recommended on that platform) -- prerequisites: Apple's [`container`](https://github.com/apple/container) CLI, Python 3.12+, [uv](https://docs.astral.sh/uv/).
+## Day-to-day
 
 ```bash
-# Install Apple container (from the latest GitHub release .pkg)
-PKG=$(curl -fsSL https://api.github.com/repos/apple/container/releases/latest \
-      | grep -oE 'https://github.com/apple/container/releases/download/[^"]+\.pkg' | head -1)
-curl -fsSLO "$PKG" && sudo installer -pkg "$(basename "$PKG")" -target /
-container system start --enable-kernel-install
-
-# Plus Python + uv
-brew install python uv
+agentcage cage list                              # what's running
+agentcage cage logs myapp                        # agent logs
+agentcage cage audit myapp --summary --since 24h # inspection decisions
+agentcage secret set myapp ANTHROPIC_API_KEY     # rotate a secret
+agentcage cage update myapp -c cage.yaml         # apply config changes
+agentcage cage destroy myapp                     # tear it down
 ```
 
-On macOS 26+ Apple Silicon hosts with `container` installed, `apple-container` is the **default** when `isolation:` is omitted from `cage.yaml`. Older macOS, Intel Macs, and macOS 26 hosts without `container` continue to default to `vm` (Lima). Podman is optional on macOS (only needed for `agentcage secret set` with the container backend). See [Isolation modes](docs/explain/isolation-modes.md) for details, security trade-offs, and limitations.
+See [CLI reference](docs/reference/cli.md) for the full command set and [Operate a cage](docs/README.md#operate-a-cage) for the how-tos.
 
-Then install agentcage:
+## Documentation
 
-```bash
-uv tool install agentcage                                            # from PyPI
-uv tool install git+https://github.com/agentcage/agentcage.git      # from GitHub
-```
-
-For development:
-
-```bash
-git clone https://github.com/agentcage/agentcage.git
-cd agentcage
-uv run agentcage --help
-```
-
-## Usage
-
-```bash
-# View logs
-agentcage cage logs myapp             # agent logs
-agentcage cage logs myapp -s proxy    # proxy inspection logs
-
-# Audit inspection decisions
-agentcage cage audit myapp --summary --since 24h
-
-# Rotate a secret (auto-reloads the cage)
-agentcage secret set myapp ANTHROPIC_API_KEY
-
-# Update after code/config changes
-agentcage cage update myapp -c cage.yaml
-
-# Restart without rebuild
-agentcage cage restart myapp
-
-# Backup and restore
-agentcage cage backup myapp --include-secrets -o backup.tar.gz
-agentcage cage restore backup.tar.gz --name myapp-clone
-
-# Tear it all down
-agentcage cage destroy myapp
-```
-
-| Command / Group | Commands |
-|---|---|
-| `run` | *(top-level)* -- run a coding agent in a sandbox (`agentcage run claude-code`) |
-| `init` | *(top-level)* -- scaffold a config file |
-| `doctor` | *(top-level)* -- check system prerequisites |
-| `update` | *(top-level)* -- self-update agentcage |
-| `cage` | `create`, `update`, `list`, `show`, `verify`, `start`, `stop`, `restart`, `logs`, `exec`, `shell`, `audit`, `har`, `backup`, `restore`, `destroy`, `prune` (aliases: `ls`/`ps`/`status` → `list`, `describe`/`inspect` → `show`, `rm`/`delete` → `destroy`, `reload` → `restart`) |
-| `secret` | `set`, `list`, `migrate`, `rm` (alias: `ls` → `list`) |
-| `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
-| `scaffold` | `list`, `show`, `create`, `edit`, `delete`, `export` -- manage custom scaffolds |
-
-See [CLI Reference](docs/reference/cli.md) for full documentation of all commands and options.
-
-## Configuration
-
-See the [Configuration Reference](docs/reference/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/). Deployment state is tracked per-cage in `~/.config/agentcage/cages/<name>/`.
-
-## Security
-
-The agent has no internet gateway -- all traffic must pass through the proxy, which applies domain filtering, secret detection, payload inspection, and custom inspectors. For workloads requiring hardware-level isolation, VM mode adds a dedicated guest kernel per cage via Lima, eliminating container escape as an attack vector. See [Security model](docs/explain/security-model.md) for the full threat model, defense layers, and known limitations.
+The [docs map](docs/README.md) lays out the tree by task: control egress, operate a cage, extend with a custom inspector, understand the architecture and security model.
 
 ## License
 
