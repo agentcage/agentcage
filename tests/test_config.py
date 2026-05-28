@@ -1779,7 +1779,9 @@ class TestAppleContainerSilentDrops:
         _, warnings = self._validate_under_apple(str(p))
         assert any("container.named_volumes" in w for w in warnings), warnings
 
-    def test_tmpfs_warns(self, tmp_path):
+    def test_tmpfs_non_default_warns(self, tmp_path):
+        """Multi-entry tmpfs or non-/tmp target → operator intent that
+        apple-container can't honor → warn."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
@@ -1788,9 +1790,31 @@ class TestAppleContainerSilentDrops:
               image: localhost/test:latest
               tmpfs:
                 - "/tmp:rw,size=64M"
+                - "/run:rw,size=16M"
         """))
         _, warnings = self._validate_under_apple(str(p))
         assert any("container.tmpfs" in w for w in warnings), warnings
+
+    def test_tmpfs_single_tmp_entry_does_not_warn(self, tmp_path):
+        """Scaffold default ``tmpfs: ["/tmp:rw,noexec,nosuid,size=256M"]``
+        is the single-most-common cage.yaml shape across built-in scaffolds.
+        On apple-container the cage's /tmp lives in the RW rootfs — the
+        workload still gets a writable /tmp — so the noisiest warning on
+        every default cage was pure cosmetic friction. 0.22.7+ suppresses
+        it when the only tmpfs entry targets /tmp."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              tmpfs:
+                - "/tmp:rw,noexec,nosuid,size=256M"
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert not any(
+            "container.tmpfs" in w for w in warnings
+        ), warnings
 
     def test_podman_secrets_warns(self, tmp_path):
         p = tmp_path / "config.yaml"
@@ -1817,17 +1841,38 @@ class TestAppleContainerSilentDrops:
         _, warnings = self._validate_under_apple(str(p))
         assert any("container.nested_containers" in w for w in warnings), warnings
 
-    def test_userns_warns(self, tmp_path):
+    def test_userns_custom_warns(self, tmp_path):
+        """Non-``keep-id`` userns is operator intent (explicit remap
+        config) that this backend can't honor → warn."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
             isolation: apple-container
             container:
               image: localhost/test:latest
-              userns: keep-id
+              userns: "auto:uidmapping=0:200000:65536"
         """))
         _, warnings = self._validate_under_apple(str(p))
         assert any("container.userns" in w for w in warnings), warnings
+
+    def test_userns_keep_id_does_not_warn(self, tmp_path):
+        """Scaffold default ``userns: keep-id`` is for container backend's
+        rootless-podman UID mapping. On apple-container the supervisor's
+        drop-to-uid-1000 already achieves the "workload isn't root" goal,
+        so keep-id is functionally compatible — don't warn on the
+        scaffold default. 0.22.7+ suppresses."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              userns: "keep-id"
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert not any(
+            "container.userns" in w for w in warnings
+        ), warnings
 
     def test_add_capabilities_warns(self, tmp_path):
         p = tmp_path / "config.yaml"
@@ -1871,7 +1916,28 @@ class TestAppleContainerSilentDrops:
             "container.drop_capabilities" in w for w in warnings
         ), warnings
 
-    def test_read_only_false_warns(self, tmp_path):
+    def test_read_only_true_warns(self, tmp_path):
+        """Operator wants a read-only rootfs but apple-container always
+        runs RW → real conflict, warn so the operator knows their config
+        won't be honored."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              read_only: true
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.read_only" in w for w in warnings), warnings
+
+    def test_read_only_false_does_not_warn(self, tmp_path):
+        """Pre-0.22.7 the predicate was ``read_only is False``, firing
+        on every default cage (the scaffolds ship ``read_only: false``
+        for coding agents that write to the FS). The False default
+        matches apple-container's actual behavior — no conflict, no
+        need to warn. This was the single loudest warning on every
+        ``agentcage run``."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
@@ -1881,7 +1947,9 @@ class TestAppleContainerSilentDrops:
               read_only: false
         """))
         _, warnings = self._validate_under_apple(str(p))
-        assert any("container.read_only" in w for w in warnings), warnings
+        assert not any(
+            "container.read_only" in w for w in warnings
+        ), warnings
 
     def test_security_label_disable_false_warns(self, tmp_path):
         p = tmp_path / "config.yaml"

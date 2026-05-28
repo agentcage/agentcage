@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.7] - 2026-05-28
+
+### Changed
+
+- **apple-container scaffold-default warnings are no longer noisy.**
+  Pre-0.22.7 every `agentcage run` on apple-container emitted three
+  warnings about `container.tmpfs`, `container.userns`, and
+  `container.read_only` — all triggered by the scaffold's standard
+  defaults, not by operator intent. Predicates tightened:
+  - `read_only`: warn only when explicitly set to `true` (real
+    conflict — apple-container's rootfs is always RW). The default
+    `false` matches backend behavior; no warning.
+  - `userns`: warn only when set to something other than `"keep-id"`.
+    The scaffold ships `keep-id` for the container backend's rootless-
+    podman UID mapping; on apple-container the supervisor's drop-to-
+    uid-1000 already achieves the same outcome.
+  - `tmpfs`: warn only when the operator has multiple entries or a
+    non-`/tmp` target. A single `/tmp:...` entry is the scaffold
+    default; the cage's `/tmp` lives in the RW rootfs and is
+    functionally writable for the workload.
+  Explicit operator overrides still surface — only the defaulted
+  noise is suppressed.
+
 ## [0.22.6] - 2026-05-28
 
 ### Security
