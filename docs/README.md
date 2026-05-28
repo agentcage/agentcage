@@ -19,7 +19,3 @@
 - [Codex](../src/agentcage/scaffolds/codex/README.md) — OpenAI's CLI coding agent
 - [OpenClaw](../src/agentcage/scaffolds/openclaw/README.md) — full-featured AI coding agent
 - [Managing Your Cage](cage-management.md) — common operations and troubleshooting
-
-## Reference
-
-- [Security Review (Feb 2026)](security-review-2026-02.md) — adversarial review from compromised agent perspective
