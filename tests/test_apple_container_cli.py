@@ -68,14 +68,37 @@ class TestCageExecAppleContainer:
 
         _runner().invoke(main, ["cage", "exec", "demo", "--", "ls", "-la"])
 
-        mock_execvp.assert_called_once_with(
-            "/usr/local/bin/container",
-            ["/usr/local/bin/container", "exec", "demo",
-             "setpriv", "--reuid=1000", "--regid=1000",
-             "--clear-groups", "--no-new-privs",
-             "--bounding-set=-all", "--inh-caps=-all", "--",
-             "ls", "-la"],
-        )
+        argv = mock_execvp.call_args.args[1]
+        # Outer shape: `container exec demo sh -c <script> <$0> ls -la`.
+        # The sh -c wrapper exists to re-export HOME/USER/LOGNAME for the
+        # dropped-uid workload (setpriv itself does NOT touch env). See
+        # the `else` branch in apple_container.py exec_argv for why.
+        assert argv[:4] == ["/usr/local/bin/container", "exec", "demo", "sh"]
+        assert argv[4] == "-c"
+        script = argv[5]
+        # $0 placeholder must come after the script; the operator's cmd
+        # tail must come after that and be reachable via "$@" inside
+        # the script.
+        assert argv[6] == "agentcage-exec-wrap"
+        assert argv[-2:] == ["ls", "-la"]
+        # The script reads /etc/passwd for uid 1000 and exports the
+        # right HOME/USER/LOGNAME before exec'ing setpriv. This is the
+        # load-bearing change vs. the pre-0.22.4 flat-setpriv shape that
+        # left HOME=/root for the cage workload and broke claude-code
+        # 2.1.x in `-p` mode (silent exit-0 on EACCES at ~/.claude/).
+        assert "getent passwd 1000" in script
+        assert 'HOME="$CH"' in script
+        assert 'USER="$CU"' in script
+        assert 'LOGNAME="$CU"' in script
+        # All of the F3 setpriv guards are still present in the script,
+        # so the cap-drop posture is unchanged.
+        assert "setpriv" in script
+        assert "--reuid=1000" in script
+        assert "--regid=1000" in script
+        assert "--clear-groups" in script
+        assert "--no-new-privs" in script
+        assert "--bounding-set=-all" in script
+        assert "--inh-caps=-all" in script
 
     @patch("agentcage.backends.apple_container.ac_cli.inspect",
            return_value={"status": "running"})

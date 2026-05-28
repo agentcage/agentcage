@@ -217,6 +217,16 @@ def test_stage_build_context_writes_cage_init(tmp_path):
     assert "AGENTCAGE_EGRESS_IP" in cage_init
     assert "ip route replace default via" in cage_init
     assert "capsh" in cage_init
+    # Stage D must export HOME/USER/LOGNAME for the dropped-uid workload
+    # before exec'ing capsh. capsh switches uid but does NOT update env,
+    # so without these the workload inherits root's HOME=/root and any
+    # tool that touches ~/.config or ~/.cache fails EACCES — claude-code
+    # 2.1.x silently exits 0 from `claude -p` on that path. 0.22.4
+    # regression guard.
+    assert 'export HOME="${CAGE_HOME}"' in cage_init
+    assert 'export USER="${CAGE_USER}"' in cage_init
+    assert 'export LOGNAME="${CAGE_USER}"' in cage_init
+    assert 'CAGE_HOME=$(getent passwd 1000 | cut -d: -f6)' in cage_init
     # Legacy files must NOT be staged.
     assert not (tmp_path / "supervisor.sh").exists()
     assert not (tmp_path / "allowlist_addon.py").exists()

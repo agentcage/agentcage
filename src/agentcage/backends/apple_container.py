@@ -1222,16 +1222,28 @@ class AppleContainerBackend:
                 # and ``--regid`` are numeric so we don't need to look
                 # up the cage user's name (varies: ubuntu / node /
                 # claude / cage).
+                #
+                # setpriv changes uid but does NOT update HOME/USER/
+                # LOGNAME — the exec target inherits root's HOME=/root,
+                # which is 0700 and unreadable to uid 1000. claude-
+                # code 2.1.x reads/writes ~/.claude/ on startup and
+                # silently exits 0 from `claude -p` on EACCES (no error
+                # message, no stderr). Same EACCES surface bites npm
+                # (~/.npm), pip (~/.cache/pip), and any tool that
+                # touches XDG_*. Wrap setpriv in a small sh -c that
+                # reads /etc/passwd for uid 1000 and re-exports HOME/
+                # USER/LOGNAME before exec'ing setpriv. Matches cage-
+                # init.sh stage D's behavior for the workload PID 1.
                 spec = None
                 wrap = [
-                    "setpriv",
-                    "--reuid=1000",
-                    "--regid=1000",
-                    "--clear-groups",
-                    "--no-new-privs",
-                    "--bounding-set=-all",
-                    "--inh-caps=-all",
-                    "--",
+                    "sh", "-c",
+                    'CU=$(getent passwd 1000 | cut -d: -f1) && '
+                    'CH=$(getent passwd 1000 | cut -d: -f6) && '
+                    'exec env HOME="$CH" USER="$CU" LOGNAME="$CU" '
+                    'setpriv --reuid=1000 --regid=1000 --clear-groups '
+                    '--no-new-privs --bounding-set=-all --inh-caps=-all '
+                    '-- "$@"',
+                    "agentcage-exec-wrap",
                 ]
         else:
             spec = "0:0" if as_root else "1000:1000"
