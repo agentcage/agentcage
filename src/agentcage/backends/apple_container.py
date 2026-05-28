@@ -819,6 +819,17 @@ class AppleContainerBackend:
             "--network", network_name,
             "--volume", f"{certs_dir}:/certs",
             "-e", f"AGENTCAGE_EGRESS_IP={egress_ip}",
+            # Point HTTPS clients at the proxy CA immediately, without
+            # waiting for cage-init.sh stage C to finish copying it into
+            # /usr/local/share/ca-certificates and running
+            # update-ca-certificates. curl reads SSL_CERT_FILE, Node reads
+            # NODE_EXTRA_CA_CERTS; together they cover the agents we
+            # actually ship (claude-code, codex, the openclaw stack).
+            # Mirrors the container backend's cage.container.j2 (lines
+            # 14–15). Without this, claude-code 2.1.x silently exits 0
+            # from `-p` when its HTTPS call fails verification.
+            "-e", "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem",
+            "-e", "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem",
         ]
         # User-defined env from cage.yaml.
         for env_k, env_v in (meta.get("env") or {}).items():
