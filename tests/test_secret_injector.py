@@ -306,6 +306,69 @@ class TestConfigure:
         inj.configure([])
         assert len(inj.rules) == 0
 
+    def test_falls_back_to_file_when_env_missing(self, monkeypatch, tmp_path):
+        """Apple-container backend stages secrets to a bind-mounted file
+        dir rather than injecting them as env vars on the egress (no
+        cleartext on `container inspect` / process listings). The
+        injector must read from that file when the env var is empty,
+        otherwise the addon silently no-ops and every outbound request
+        sends the literal `{{PLACEHOLDER}}` upstream → 401. Regression
+        guard against the 0.22.0 file-delivery refactor (PR #196).
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        secrets_dir = tmp_path / "secrets"
+        secrets_dir.mkdir()
+        (secrets_dir / "ANTHROPIC_API_KEY").write_text("sk-ant-real-1234\n")
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(secrets_dir))
+        # Module reads AGENTCAGE_SECRETS_DIR once at import time, so
+        # reload it to pick up the test override.
+        import importlib, secret_injector
+        importlib.reload(secret_injector)
+        inj = secret_injector.SecretInjector()
+        inj.configure([
+            {"env": "ANTHROPIC_API_KEY",
+             "placeholder": "{{ANTHROPIC_API_KEY}}",
+             "inject_to": ["anthropic.com"]},
+        ])
+        assert len(inj.rules) == 1
+        # Trailing newline must be stripped — file delivery writes with
+        # \n at the end on apple-container, and the on-wire header would
+        # include the \n verbatim otherwise (breaks HTTP framing).
+        assert inj.rules[0].real_value == "sk-ant-real-1234"
+
+    def test_file_fallback_missing_file_still_skips(self, monkeypatch, tmp_path):
+        """Env var missing AND no fallback file → rule is skipped (the
+        original behavior). The fallback only fires when the file exists.
+        """
+        monkeypatch.delenv("MISSING_KEY", raising=False)
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(tmp_path))
+        import importlib, secret_injector
+        importlib.reload(secret_injector)
+        inj = secret_injector.SecretInjector()
+        inj.configure([
+            {"env": "MISSING_KEY", "placeholder": "{{MISSING_KEY}}"},
+        ])
+        assert len(inj.rules) == 0
+
+    def test_env_takes_precedence_over_file(self, monkeypatch, tmp_path):
+        """When BOTH env and file are present, env wins. This matches the
+        container/podman backend's behavior (Quadlet `Secret=type=env`
+        sets the env var; the file path is the fallback for backends
+        that can't do env-based secret injection)."""
+        monkeypatch.setenv("DUAL_KEY", "from-env")
+        secrets_dir = tmp_path / "secrets"
+        secrets_dir.mkdir()
+        (secrets_dir / "DUAL_KEY").write_text("from-file\n")
+        monkeypatch.setenv("AGENTCAGE_SECRETS_DIR", str(secrets_dir))
+        import importlib, secret_injector
+        importlib.reload(secret_injector)
+        inj = secret_injector.SecretInjector()
+        inj.configure([
+            {"env": "DUAL_KEY", "placeholder": "{{DUAL_KEY}}"},
+        ])
+        assert len(inj.rules) == 1
+        assert inj.rules[0].real_value == "from-env"
+
 
 # ── Domain matching ──────────────────────────────────────
 
