@@ -2,7 +2,7 @@
 
 Lima VM isolation is an optional alternative to the default container-based isolation. When `isolation: vm` is set in the cage configuration, each cage runs inside a dedicated Linux VM managed by [Lima](https://lima-vm.io), providing hardware-level isolation via KVM rather than Linux namespace separation.
 
-For configuration options, see the [Configuration Reference](configuration.md).
+For configuration options, see the [Configuration Reference](reference/configuration.md).
 
 ## Why VM isolation
 

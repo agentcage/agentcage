@@ -187,7 +187,7 @@ See [CLI Reference](docs/cli.md) for full documentation of all commands and opti
 
 ## Configuration
 
-See the [Configuration Reference](docs/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/). Deployment state is tracked per-cage in `~/.config/agentcage/cages/<name>/`.
+See the [Configuration Reference](docs/reference/configuration.md) for all settings, defaults, and examples. Example configs: [`basic/cage.yaml`](examples/basic/). Deployment state is tracked per-cage in `~/.config/agentcage/cages/<name>/`.
 
 ## Security
 

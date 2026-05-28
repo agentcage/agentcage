@@ -2,7 +2,7 @@
 
 agentcage deploys a three-container topology — agent, DNS sidecar, and inspecting proxy — on an internal network with no internet gateway. In **container mode** (default), these containers run directly on the host via rootless Podman. In **VM mode**, the same topology runs inside a dedicated Lima VM with its own kernel, adding hardware-level isolation around the containers.
 
-This document covers the shared architecture used by both modes. For VM-specific details, see [Lima VM Isolation](vm.md). For configuration options, see the [Configuration Reference](configuration.md).
+This document covers the shared architecture used by both modes. For VM-specific details, see [Lima VM Isolation](vm.md). For configuration options, see the [Configuration Reference](reference/configuration.md).
 
 ## Container Topology
 
@@ -83,7 +83,7 @@ All HTTP traffic passes through a pluggable inspector chain implemented in `addo
 
 Custom inspectors can be added via Python files that extend the `Inspector` base class. Inspectors can also implement `inspect_response()` to scan inbound responses after forwarding.
 
-See the [Configuration Reference](configuration.md#inspectors) for the full inspector API, `InspectionContext` fields, and custom inspector examples.
+See the [Inspectors reference](reference/inspectors.md) for the full inspector API, `InspectionContext` fields, and custom inspector examples.
 
 ## Secret Injection
 
@@ -119,7 +119,7 @@ Two policy checks run before injection:
 1. **Literal value blocking** — If a real secret value appears anywhere in the request (URL, headers, or body), the request is blocked with severity `critical`. The cage should never know real values, so their presence indicates the agent learned the secret outside the placeholder system. This applies to all domains (including `inject_to` domains), except `redact_to` domains where redaction handles the substitution.
 2. **Placeholder domain restriction** — If a placeholder is found heading to a domain not in the rule's `inject_to` list, the request is flagged.
 
-See the [Configuration Reference](configuration.md#secret-injection-secret_injection) for setup and examples.
+See the [Secret injection reference](reference/secret-injection.md) for setup and examples.
 
 ## Startup Order
 
@@ -149,7 +149,7 @@ In container mode, outbound TCP traffic to the inspected port set is intercepted
 
 1. **Default route** -- An `ExecStartPost` script uses `nsenter` to add a default route in the cage container's network namespace, pointing to the proxy container's IP. This gives the cage container a path to send packets to arbitrary IPs (which previously had no route on the internal network).
 
-2. **iptables REDIRECT** -- The proxy container has `NET_ADMIN` capability and runs iptables rules that redirect TCP traffic on each inspected port (`ports.tcp.allow - ports.tcp.passthrough`, default `[80, 443]`) to mitmproxy's transparent listener on port 8443. Operators extend `ports.tcp.allow` to permit non-standard services (e.g. `8448` for a Matrix homeserver, `5432` for Postgres). See [Port policy](proxy-audit-ports.md) for the full discussion.
+2. **iptables REDIRECT** -- The proxy container has `NET_ADMIN` capability and runs iptables rules that redirect TCP traffic on each inspected port (`ports.tcp.allow - ports.tcp.passthrough`, default `[80, 443]`) to mitmproxy's transparent listener on port 8443. Operators extend `ports.tcp.allow` to permit non-standard services (e.g. `8448` for a Matrix homeserver, `5432` for Postgres). See [Port policy](reference/ports.md) for the full discussion.
 
 3. **mitmproxy transparent mode** -- mitmproxy runs with `--mode transparent@8443` alongside its regular forward proxy mode on port 8080. It uses `SO_ORIGINAL_DST` to determine the original destination of redirected connections — so any TLS-terminated TCP port works without per-port mitmproxy configuration.
 

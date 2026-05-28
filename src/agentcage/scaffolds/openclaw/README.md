@@ -2,7 +2,7 @@
 
 [OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
-For the full list of configuration options, see the [Configuration Reference](../../docs/configuration.md).
+For the full list of configuration options, see the [Configuration Reference](../../docs/reference/configuration.md).
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ agentcage secret set myapp OPENCLAW_GATEWAY_PASSWORD
 
 If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `cage.yaml`.
 
-> **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](../../docs/configuration.md#secret-injection-secret_injection) for details.
+> **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a placeholder like `{{ANTHROPIC_API_KEY}}`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](../../docs/reference/secret-injection.md) for details.
 
 ### 4. Connect and pair your browser
 
@@ -124,7 +124,7 @@ secrets:
   builtin_allow_to_domains: false
 ```
 
-See [Secret detection](../../docs/configuration.md#secret-detection-secrets) for the full reference.
+See [Secret detection](../../docs/reference/inspectors.md#secrets-inspector) for the full reference.
 
 ## Domain allowlist tiers
 
