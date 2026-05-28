@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.12] - 2026-05-28
+
 ### Security
 
 - **apple-container cage workload can no longer DNS-tunnel via direct
