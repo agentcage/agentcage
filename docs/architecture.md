@@ -2,7 +2,7 @@
 
 agentcage deploys a three-container topology — agent, DNS sidecar, and inspecting proxy — on an internal network with no internet gateway. In **container mode** (default), these containers run directly on the host via rootless Podman. In **VM mode**, the same topology runs inside a dedicated Lima VM with its own kernel, adding hardware-level isolation around the containers.
 
-This document covers the shared architecture used by both modes. For VM-specific details, see [Lima VM Isolation](vm.md). For configuration options, see the [Configuration Reference](reference/configuration.md).
+This document covers the shared architecture used by both modes. For backend-specific details — how VM and apple-container differ from container mode — see [Isolation modes](explain/isolation-modes.md). For configuration options, see the [Configuration Reference](reference/configuration.md).
 
 ## Container Topology
 

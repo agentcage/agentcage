@@ -35,7 +35,7 @@ Three isolation backends are supported:
 - **vm** (Linux + macOS) — a Lima VM per cage with hardware isolation via KVM
 - **apple-container** (macOS 26+ Apple Silicon, new in 0.20) — a single Apple `container` microVM per cage with the egress filter (mitmproxy + dnsmasq + iptables) running inside, supervised by an in-microVM PID 1 that drops to uid 1000 / zero caps / NoNewPrivs before exec'ing the cage workload. ~10–20× faster than Lima and ~3× less RAM per cage; the default on macOS 26+ when Apple's `container` CLI is installed.
 
-See [Security & Threat Model](docs/security.md#isolation-modes-and-the-threat-surface) for the comparison and the threat-by-threat matrix. For the full container topology and inspector chain, see [Architecture](docs/architecture.md). For apple-container specifics, see [Apple Container Isolation](docs/apple-container.md).
+See [Security & Threat Model](docs/security.md#isolation-modes-and-the-threat-surface) for the threat-by-threat matrix and [Isolation modes](docs/explain/isolation-modes.md) for how each backend works and when to pick which. For the full container topology and inspector chain, see [Architecture](docs/architecture.md).
 
 ## Quick Start
 
@@ -87,7 +87,7 @@ agentcage init myapp --image node:22-slim
 agentcage cage create -c cage.yaml
 ```
 
-Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Reference](docs/cli.md) for the full command set.
+Run `agentcage init --list-scaffolds` to see available scaffolds. See [CLI Reference](docs/reference/cli.md) for the full command set.
 
 ## Install
 
@@ -128,7 +128,7 @@ container system start --enable-kernel-install
 brew install python uv
 ```
 
-On macOS 26+ Apple Silicon hosts with `container` installed, `apple-container` is the **default** when `isolation:` is omitted from `cage.yaml`. Older macOS, Intel Macs, and macOS 26 hosts without `container` continue to default to `vm` (Lima). Podman is optional on macOS (only needed for `agentcage secret set` with the container backend). See [Apple Container Isolation](docs/apple-container.md) for details, security trade-offs, and limitations.
+On macOS 26+ Apple Silicon hosts with `container` installed, `apple-container` is the **default** when `isolation:` is omitted from `cage.yaml`. Older macOS, Intel Macs, and macOS 26 hosts without `container` continue to default to `vm` (Lima). Podman is optional on macOS (only needed for `agentcage secret set` with the container backend). See [Isolation modes](docs/explain/isolation-modes.md) for details, security trade-offs, and limitations.
 
 Then install agentcage:
 
@@ -183,7 +183,7 @@ agentcage cage destroy myapp
 | `domain` | `list`, `add`, `rm` (alias: `ls` → `list`) |
 | `scaffold` | `list`, `show`, `create`, `edit`, `delete`, `export` -- manage custom scaffolds |
 
-See [CLI Reference](docs/cli.md) for full documentation of all commands and options.
+See [CLI Reference](docs/reference/cli.md) for full documentation of all commands and options.
 
 ## Configuration
 

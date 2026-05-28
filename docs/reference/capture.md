@@ -64,7 +64,7 @@ agentcage cage har mycage --view outbound -o wire-view.har
 agentcage cage har mycage --decision blocked --since 1h
 ```
 
-See [CLI Reference — cage har](../cli.md#cage-har) for full options.
+See [CLI Reference — cage har](cli.md#cage-har) for full options.
 
 ## Related
 

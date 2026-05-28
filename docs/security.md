@@ -40,7 +40,7 @@ agentcage offers three isolation modes that affect the threat model differently:
 | **Boot overhead** | ~1s | ~15–30s | ~3–5s warm, ~25–30s cold |
 | **Best for** | Development, CI on Linux | Production, untrusted agents, high-security | Fast iteration on macOS 26+; default macOS path |
 
-Set `isolation: vm` or `isolation: apple-container` explicitly in your config to override the platform default. See [Lima VM Isolation](vm.md) and [Apple Container Isolation](apple-container.md) for setup and per-backend details.
+Set `isolation: vm` or `isolation: apple-container` explicitly in your config to override the platform default. See [Isolation modes](explain/isolation-modes.md) for how each backend works and [Install](get-started/install.md) for setup.
 
 ### What agentcage prevents
 
@@ -166,7 +166,7 @@ These changes increase the container escape attack surface. All network-level pr
 
 **Shared kernel (container mode only)** — In container mode, rootless Podman containers share the host kernel. A container escape CVE in the Linux kernel, runc, or crun would bypass all container-level protections and give the agent access to the host. This is the most significant limitation of container mode.
 
-VM mode eliminates this limitation. Each cage runs in a dedicated Lima VM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host. Set `isolation: vm` to use this mode. See [Lima VM Isolation](vm.md) for setup and tradeoffs.
+VM mode eliminates this limitation. Each cage runs in a dedicated Lima VM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host. Set `isolation: vm` to use this mode. See [Isolation modes](explain/isolation-modes.md) for the comparison across backends.
 
 ## Traffic Capture and HAR Export
 

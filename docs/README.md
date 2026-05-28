@@ -5,13 +5,13 @@
 - [Architecture](architecture.md) — container topology, inspector chain, secret injection, network isolation
 - [Security & Threat Model](security.md) — threat model, defense layers, isolation modes, known limitations
 - [Configuration Reference](reference/configuration.md) — all settings, defaults, and examples
-- [CLI Reference](cli.md) — full command set and options
+- [CLI Reference](reference/cli.md) — full command set and options
 - [Port Policy](reference/ports.md) — `ports.tcp` / `ports.udp` allowlists, the default-deny FORWARD chain, worked examples
 
 ## Isolation
 
-- [Lima VM Isolation](vm.md) — KVM-based hardware isolation via Lima
-- [Apple Container Isolation](apple-container.md) — Apple `container` microVM per cage, macOS 26+ Apple Silicon (default on that platform)
+- [Isolation modes](explain/isolation-modes.md) — when to use container vs vm vs apple-container, how each one works, and the canonical comparison
+- [Install](get-started/install.md) — backend-specific setup steps
 
 ## Setup Guides
 
