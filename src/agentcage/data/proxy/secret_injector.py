@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from mitmproxy import http
@@ -18,6 +19,19 @@ from mitmproxy import http
 from inspectors.base import InspectionResult
 
 log = logging.getLogger("agentcage.secret_injector")
+
+# File-delivery fallback for backends that don't inject secrets as env vars.
+# The container/podman backend uses Quadlet `Secret=type=env,target=KEY` so
+# secrets land in os.environ. The apple-container backend can't — apple's
+# `container` CLI has no quadlet-style env-secret primitive and we
+# deliberately don't pass cleartext via `-e KEY=VAL` (would show in
+# `container inspect` and process listings). Instead the backend bind-mounts
+# a 0600 secrets dir into the egress sibling at /home/acproxy/secrets.
+# This module reads from there when env lookup misses. Path is overridable
+# via AGENTCAGE_SECRETS_DIR so tests don't need to write to /home.
+_SECRETS_DIR = Path(
+    os.environ.get("AGENTCAGE_SECRETS_DIR", "/home/acproxy/secrets")
+)
 
 
 @dataclass
@@ -65,6 +79,23 @@ class SecretInjector:
             inject_to = [d.lower() for d in entry.get("inject_to", [])]
 
             real_value = os.environ.get(env_name, "")
+            if not real_value:
+                # Fallback: read from the bind-mounted secrets dir. Used by
+                # the apple-container backend, which stages secrets as 0600
+                # files at /home/acproxy/secrets/<env-name> rather than
+                # injecting them as env vars on the egress process.
+                # Without this fallback the addon silently no-ops and every
+                # outbound request sends the literal {{PLACEHOLDER}}
+                # upstream, getting 401'd.
+                secret_file = _SECRETS_DIR / env_name
+                try:
+                    if secret_file.is_file():
+                        real_value = secret_file.read_text().rstrip("\n")
+                except OSError as e:
+                    log.warning(
+                        "secret_injection: failed reading %s: %s",
+                        secret_file, e,
+                    )
             if not real_value:
                 log.warning(
                     "secret_injection: env var %s not set, skipping rule", env_name

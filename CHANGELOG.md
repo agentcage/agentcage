@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.5] - 2026-05-28
+
+### Fixed
+
+- **Egress secret-injection now works on the apple-container backend.**
+  The mitmproxy `SecretInjector` only read real secret values from
+  `os.environ[<env_name>]`. The container/podman backend wires that
+  via Quadlet `Secret=type=env,target=<KEY>`, but apple-container
+  deliberately doesn't pass cleartext via `-e KEY=VAL` (would leak
+  through `container inspect` and process listings) — instead it
+  bind-mounts the secret values as 0600 files at
+  `/home/acproxy/secrets/<env-name>` on the egress sibling. The
+  injector was unaware of those files, so on apple-container every
+  outbound request sent the literal `{{PLACEHOLDER}}` upstream and got
+  401'd. Add a file-delivery fallback: when env lookup misses, read
+  from `$AGENTCAGE_SECRETS_DIR/<env-name>` (defaults to
+  `/home/acproxy/secrets`). Env still takes precedence so the
+  container backend's behavior is unchanged.
+
 ## [0.22.4] - 2026-05-28
 
 ### Fixed
