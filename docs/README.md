@@ -26,7 +26,6 @@ The operator's map of agentcage. Find your task; follow the link.
 
 ## Operate a cage
 
-- [Deploy to a server](how-to/deploy-to-server.md) — systemd-service pattern under a dedicated user.
 - [Troubleshoot](how-to/troubleshoot.md) — stuck cages, blocked requests, missing secrets.
 - [Upgrade agentcage](how-to/upgrade-agentcage.md) — bump the binary, update running cages.
 - [Back up and restore](how-to/back-up-and-restore.md) — snapshotting, restore drills.
