@@ -75,6 +75,10 @@ fi
 
 # ── master cleanup ───────────────────────────────────────────────────
 cleanup_all() {
+  # Preserve the script's exit code so trap completion doesn't mask
+  # an earlier bash-level failure (unbound variable, syntax error,
+  # etc.) as success.
+  local rc=$?
   echo ""
   echo "Final cleanup..."
   for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw e2e-apple; do
@@ -83,6 +87,7 @@ cleanup_all() {
   done
   # Phase 8 uses user-named volumes that aren't cleaned by cage destroy
   podman volume rm -f e2e-openclaw-workspace e2e-openclaw-state >/dev/null 2>&1 || true
+  return $rc
 }
 trap cleanup_all EXIT
 
@@ -100,12 +105,10 @@ PHASE_SCRIPTS=(
   [8]="phase8_openclaw.sh"
 )
 
-# Named phases use the same script lookup but live outside the [1-8] grid
-# because they target a specific isolation backend rather than a phase of
-# the shared container e2e flow.
-declare -A NAMED_PHASE_SCRIPTS=(
-  [apple]="phase_apple.sh"
-)
+# Named phases live outside the [1-8] grid because they target a specific
+# isolation backend rather than a phase of the shared container e2e flow.
+# We resolve them via case in _script_for_phase below — macOS ships bash
+# 3.2 (no `declare -A`), so an associative array isn't portable here.
 
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -144,9 +147,12 @@ _script_for_phase() {
   local phase="$1"
   if [[ "$phase" =~ ^[0-9]+$ ]]; then
     echo "${PHASE_SCRIPTS[$phase]}"
-  else
-    echo "${NAMED_PHASE_SCRIPTS[$phase]}"
+    return
   fi
+  case "$phase" in
+    apple) echo "phase_apple.sh" ;;
+    *) echo ""; return 1 ;;
+  esac
 }
 
 # Run a phase, capture output to a temp file, and record timing.
