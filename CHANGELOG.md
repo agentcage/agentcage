@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-05-28
+
+### Fixed
+
+- **apple-container cage now trusts the egress MITM CA** via env vars,
+  not just the system trust store. The 0.22.0 3→2-service unification
+  (#200) dropped the `SSL_CERT_FILE` + `NODE_EXTRA_CA_CERTS` env vars
+  the old single-VM supervisor.sh used to wire up; the slimmed cage VM
+  was left relying only on cage-init.sh stage C's
+  `update-ca-certificates` dance, which races with workload startup
+  and silently no-ops on non-debian bases. Without these env vars
+  `curl https://api.anthropic.com` inside the cage failed with
+  "unable to get local issuer certificate", and claude-code 2.1.x
+  silently exited 0 from `-p` when its HTTPS call failed — meaning
+  the CTF agent (and every other claude-code workload on
+  apple-container since 0.22.0) was running blind. Wire the two env
+  vars at `container run` time so HTTPS clients trust the proxy CA
+  immediately. Mirrors `cage.container.j2` lines 14-15 on the
+  container backend.
+
 ## [0.22.2] - 2026-05-27
 
 ### Security

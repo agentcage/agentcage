@@ -859,6 +859,30 @@ def test_start_argv_uses_file_delivery_when_placeholders_known(
     assert oct(secrets_dir.stat().st_mode & 0o777) == "0o700"
 
 
+def test_start_argv_injects_proxy_ca_env_vars(tmp_path, monkeypatch):
+    """Apple-container's cage VM must get SSL_CERT_FILE and NODE_EXTRA_CA_CERTS
+    pointing at /certs/mitmproxy-ca-cert.pem so HTTPS clients trust the
+    egress MITM CA without waiting for cage-init.sh stage C to finish the
+    update-ca-certificates dance. Mirrors cage.container.j2 lines 14-15
+    on the container backend. Regression guard: the 0.22.0 3→2-service
+    unification dropped these env vars and claude-code 2.1.x silently
+    exited 0 from `-p` when its HTTPS calls failed cert verification.
+    """
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+        },
+    )
+
+    backend.start("demo", quiet=True)
+
+    cage_argv = _cage_run_argv(captured)
+    assert "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" in cage_argv
+    assert "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" in cage_argv
+
+
 def test_start_secrets_bind_only_to_egress(tmp_path, monkeypatch):
     """Threat-model invariant for PR 3: the secrets bind-mount appears
     on the egress sibling's argv and NEVER on the cage VM's argv. This
