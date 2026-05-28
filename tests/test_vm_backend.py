@@ -692,7 +692,7 @@ class TestDeployCageStartOrder:
         if "foo-cage.service" in unit_seq:
             cage_idx = unit_seq.index("foo-cage.service")
             infra = {"foo-net-network.service", "foo-certs-volume.service",
-                     "foo-egress.service"}
+                     "foo-public-certs-volume.service", "foo-egress.service"}
             earlier = set(unit_seq[:cage_idx])
             # Every infra service that ran must have run before cage.
             assert infra.intersection(unit_seq).issubset(earlier), (

@@ -10,12 +10,14 @@ from agentcage.quadlets import generate_quadlets, _systemd_exec_join, cage_netwo
 
 
 class TestQuadletFileNames:
-    def test_generates_four_files(self, minimal_yaml):
+    def test_generates_five_files(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/path/to/config.yaml", "/path/to/patches")
-        # v0.22 2-service shape: net.network + certs.volume + cage + egress
-        # (was 5 files in the legacy 3-service shape; proxy + dns merged).
-        assert len(files) == 4
+        # v0.22 shape: net.network + certs.volume (private, egress-only) +
+        # public-certs.volume (cage-visible) + cage + egress. The split
+        # between certs.volume and public-certs.volume closes CTF F6/F9 —
+        # the cage MUST NOT see mitmproxy's private key.
+        assert len(files) == 5
 
     def test_file_names(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
@@ -23,6 +25,7 @@ class TestQuadletFileNames:
         assert set(files.keys()) == {
             "test-net.network",
             "test-certs.volume",
+            "test-public-certs.volume",
             "test-egress.container",
             "test-cage.container",
         }
@@ -45,6 +48,15 @@ class TestVolumeQuadlet:
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-certs.volume"]
         assert "VolumeName=agentcage-certs-test" in content
+
+    def test_public_certs_volume_content(self, minimal_yaml):
+        """Public-cert-only volume that the cage mounts at /certs:ro.
+        Lives separately from agentcage-certs-<name> so the cage cannot
+        see mitmproxy's private key + .p12 bundles (CTF F6 + F9)."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-public-certs.volume"]
+        assert "VolumeName=agentcage-public-certs-test" in content
 
 
 class TestEgressQuadlet:
@@ -178,6 +190,21 @@ class TestEgressQuadlet:
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-egress.container"]
         assert "Volume=test-certs.volume:/home/acproxy/.mitmproxy:Z" in content
+
+    def test_egress_public_certs_volume(self, minimal_yaml):
+        """Egress also mounts the public-certs volume RW so
+        supervisor-egress.sh Step E can publish mitmproxy-ca-cert.pem
+        there. Cage will mount the SAME volume read-only at /certs."""
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert "Volume=test-public-certs.volume:/home/acproxy/public-certs:Z" in content
+        # Chown ExecStartPre for the public-certs mountpoint mirrors the
+        # private-certs one — uid 200 = acproxy inside the egress image.
+        assert (
+            "podman volume inspect agentcage-public-certs-test" in content
+            and "200:200" in content
+        )
 
     def test_egress_config_bind(self, minimal_yaml):
         """The proxy-config bind source is the host path passed to
@@ -536,7 +563,13 @@ class TestCageQuadlet:
         assert 'Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"' in content
         assert 'NODE_OPTIONS' not in content
         assert 'Environment="AGENTCAGE_VERSION=' in content
-        assert "Volume=test-certs.volume:/certs:ro,Z" in content
+        # The cage MUST mount the public-certs volume (public cert only),
+        # NOT the certs volume (which holds mitmproxy's private key,
+        # .p12 bundles, etc.). CTF F6/F9 — agentcage 0.22.0 leaked the
+        # full keypair into /certs and only file mode + uid mismatch
+        # blocked reads.
+        assert "Volume=test-public-certs.volume:/certs:ro,Z" in content
+        assert "Volume=test-certs.volume:/certs:ro,Z" not in content
         # The broad `<patches_host_dir>:/agentcage` bind was removed — it
         # leaked every sibling cage's resolv-<name>.conf to this cage.
         assert "Volume=/home/patches:/agentcage:ro,Z" not in content

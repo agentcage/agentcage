@@ -97,13 +97,13 @@ class TestNestedQuadletGeneration:
         content = files["test-podman-storage.volume"]
         assert "VolumeName=agentcage-podman-test" in content
 
-    def test_five_files_generated_with_nested(self, nested_yaml):
+    def test_six_files_generated_with_nested(self, nested_yaml):
         cfg = load_config(nested_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        # v0.22: net + certs + cage + egress + podman-storage = 5
-        # (was 6 with the legacy proxy + dns pair, now collapsed to
-        # a single egress quadlet).
-        assert len(files) == 5
+        # net + certs + public-certs + cage + egress + podman-storage = 6
+        # (public-certs split off from certs in the CTF F6/F9 fix so the
+        # cage no longer mounts the volume that holds the CA private key).
+        assert len(files) == 6
 
     def test_capabilities_overridden(self, nested_yaml):
         cfg = load_config(nested_yaml)
@@ -165,12 +165,12 @@ class TestNestedQuadletGeneration:
 
 
 class TestNestedDisabledDefault:
-    def test_four_files_when_disabled(self, minimal_yaml):
+    def test_five_files_when_disabled(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
-        # v0.22: net + certs + cage + egress = 4 (was 5; proxy + dns
-        # merged into the single egress quadlet).
-        assert len(files) == 4
+        # net + certs + public-certs + cage + egress = 5
+        # (public-certs split off from certs in the CTF F6/F9 fix).
+        assert len(files) == 5
         assert "test-podman-storage.volume" not in files
 
     def test_no_fuse_device_when_disabled(self, minimal_yaml):

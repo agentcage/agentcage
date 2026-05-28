@@ -14,7 +14,7 @@ Environment="https_proxy=http://{{ ip_egress }}:8080"
 Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
 Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
 Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
-Volume={{ name }}-certs.volume:/certs:ro,Z
+Volume={{ name }}-public-certs.volume:/certs:ro,Z
 {# NOTE: do NOT reintroduce a broad `Volume={{ patches_host_dir }}:/agentcage`
    bind here. That mount used to expose every sibling cage's resolv-<name>.conf
    inside this cage (cage name + DNS sidecar IP — any cage could `ls /agentcage/`

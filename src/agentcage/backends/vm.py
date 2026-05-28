@@ -417,6 +417,7 @@ class VmBackend:
         infra_services = [
             f"{name}-net-network",
             f"{name}-certs-volume",
+            f"{name}-public-certs-volume",
             f"{name}-egress",
         ]
 
