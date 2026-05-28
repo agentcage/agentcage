@@ -23,25 +23,28 @@ else
       container) PHASES+=(1 2 3 4 5 6) ;;
       vm)        PHASES+=(7) ;;
       openclaw)  PHASES+=(8) ;;
+      apple)     PHASES+=(apple) ;;
       all)       PHASES=(1 2 3 4 5 6 7 8) ;;
       [1-8])     PHASES+=("$arg") ;;
       -h|--help)
-        echo "Usage: $0 [PHASE...] [container|vm|openclaw|all]"
+        echo "Usage: $0 [PHASE...] [container|vm|openclaw|apple|all]"
         echo ""
         echo "Phases:"
-        echo "  1  Container lifecycle & core security"
-        echo "  2  Audit, logs & HAR capture"
-        echo "  3  Secret injection & management"
-        echo "  4  Domain management & hot-reload"
-        echo "  5  Backup/restore & multi-cage isolation"
-        echo "  6  Security hardening & edge cases"
-        echo "  7  VM mode (requires Lima + KVM)"
-        echo "  8  OpenClaw scaffold regression canary (pulls openclaw:latest)"
+        echo "  1      Container lifecycle & core security"
+        echo "  2      Audit, logs & HAR capture"
+        echo "  3      Secret injection & management"
+        echo "  4      Domain management & hot-reload"
+        echo "  5      Backup/restore & multi-cage isolation"
+        echo "  6      Security hardening & edge cases"
+        echo "  7      VM mode (requires Lima + KVM)"
+        echo "  8      OpenClaw scaffold regression canary (pulls openclaw:latest)"
+        echo "  apple  apple-container 2-microVM lifecycle (macOS 26+ ASi only)"
         echo ""
         echo "Shortcuts:"
         echo "  container   Phases 1-6"
         echo "  vm          Phase 7 only"
         echo "  openclaw    Phase 8 only"
+        echo "  apple       phase_apple only (macOS 26+ ASi)"
         echo "  all         Phases 1-8 (default)"
         echo ""
         echo "Environment:"
@@ -74,7 +77,7 @@ fi
 cleanup_all() {
   echo ""
   echo "Final cleanup..."
-  for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw; do
+  for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw e2e-apple; do
     podman rm -f "${name}-mock" >/dev/null 2>&1 || true
     agentcage cage destroy "$name" -y >/dev/null 2>&1 || true
   done
@@ -95,6 +98,13 @@ PHASE_SCRIPTS=(
   [6]="phase6_hardening.sh"
   [7]="phase7_vm.sh"
   [8]="phase8_openclaw.sh"
+)
+
+# Named phases use the same script lookup but live outside the [1-8] grid
+# because they target a specific isolation backend rather than a phase of
+# the shared container e2e flow.
+declare -A NAMED_PHASE_SCRIPTS=(
+  [apple]="phase_apple.sh"
 )
 
 TOTAL_PASS=0
@@ -129,11 +139,22 @@ _tally_output() {
   fi
 }
 
+# Resolve a phase name/number to its script filename.
+_script_for_phase() {
+  local phase="$1"
+  if [[ "$phase" =~ ^[0-9]+$ ]]; then
+    echo "${PHASE_SCRIPTS[$phase]}"
+  else
+    echo "${NAMED_PHASE_SCRIPTS[$phase]}"
+  fi
+}
+
 # Run a phase, capture output to a temp file, and record timing.
 # Usage: run_phase PHASE_NUM [ENV_VAR=VALUE ...]
 run_phase() {
   local phase="$1"; shift
-  local script="${PHASE_SCRIPTS[$phase]}"
+  local script
+  script="$(_script_for_phase "$phase")"
   local outfile
   outfile=$(mktemp /tmp/e2e-phase${phase}-XXXXXX.log)
 
@@ -152,7 +173,8 @@ run_phase() {
 # Run a phase sequentially and tally results immediately
 run_and_tally() {
   local phase="$1"; shift
-  local script="${PHASE_SCRIPTS[$phase]}"
+  local script
+  script="$(_script_for_phase "$phase")"
 
   local start end elapsed rc output
   start=$(date +%s)
@@ -259,6 +281,14 @@ fi
 # so it doesn't contend with other phases for Podman resources.
 if HAS_PHASE 8 && [ "$SUITE_FAILED" = false ]; then
   run_and_tally 8
+fi
+
+# ── phase_apple (macOS 26+ ASi only) ──────────────────────────────
+# Uses Apple's `container` CLI instead of Podman, so it can't share
+# resources with the container phases — but the phase script itself
+# self-skips on non-Darwin / missing-CLI.
+if HAS_PHASE apple && [ "$SUITE_FAILED" = false ]; then
+  run_and_tally apple
 fi
 
 # ── summary ──────────────────────────────────────────────────────────

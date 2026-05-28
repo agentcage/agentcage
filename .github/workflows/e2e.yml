@@ -92,3 +92,58 @@ jobs:
 
       - name: Run phase 8
         run: bash tests/e2e/run.sh openclaw
+
+  e2e-apple:
+    name: E2E apple-container (Phase Apple)
+    # macos-26 is GitHub-hosted Apple Silicon — required for Apple's
+    # `container` CLI (no x86_64 build, no macOS 25 build).
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install agentcage
+        run: uv tool install -e .
+
+      - name: Install Apple container CLI
+        # Pin to the latest release artifact published by apple/container.
+        # The install pkg drops the binary at /usr/local/bin/container; no
+        # post-install configuration is needed beyond starting the apiserver.
+        run: |
+          PKG_URL=$(curl -fsSL https://api.github.com/repos/apple/container/releases/latest \
+            | grep -oE 'https://github.com/apple/container/releases/download/[^"]+\.pkg' \
+            | head -1)
+          if [ -z "$PKG_URL" ]; then
+            echo "Could not resolve apple/container .pkg URL"
+            exit 1
+          fi
+          echo "Downloading $PKG_URL"
+          curl -fsSLO "$PKG_URL"
+          sudo installer -pkg "$(basename "$PKG_URL")" -target /
+          container --version
+
+      - name: Start container apiserver
+        # --enable-kernel-install fetches the recommended kernel image on
+        # first boot. The apiserver runs in the user's launchd domain, so
+        # subsequent `container` invocations from the same shell session
+        # talk to it without needing sudo.
+        run: |
+          container system start --enable-kernel-install
+          # Give the apiserver a moment to settle before doctor probes it.
+          for _ in 1 2 3 4 5; do
+            if container system status >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          container system status
+
+      - name: agentcage doctor (apple-container readiness)
+        run: agentcage doctor
+
+      - name: Run phase_apple
+        run: bash tests/e2e/run.sh apple
