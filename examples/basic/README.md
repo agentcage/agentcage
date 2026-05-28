@@ -40,4 +40,4 @@ agentcage cage destroy basic
 bash tests/e2e/run.sh
 ```
 
-See [Configuration Reference](../../docs/configuration.md) for all settings.
+See [Configuration Reference](../../docs/reference/configuration.md) for all settings.

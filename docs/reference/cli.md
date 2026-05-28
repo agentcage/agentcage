@@ -1,0 +1,298 @@
+<!-- owner: @luca  last-reviewed: 2026-05-28 -->
+# CLI
+
+Reference for every `agentcage` command, subcommand, and flag. Pair with [Configuration](configuration.md) for `cage.yaml` settings and the how-to pages for worked examples.
+
+```bash
+agentcage <command> [args] [options]
+```
+
+Top-level commands: `run`, `init`, `doctor`. Command groups: `cage`, `secret`, `domain`, `scaffold`.
+
+## init
+
+Generate a starter `cage.yaml` for a new cage.
+
+```bash
+agentcage init [NAME] [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-o, --output` | path | `cage.yaml` | Output file path |
+| `--image` | string | `node:22-slim` | Container image |
+| `--isolation` | `container` \| `vm` | `container` | Isolation backend |
+| `--force` | flag | | Overwrite existing file |
+| `--scaffold` | string | | Use a scaffold template (e.g. `claude-code`, `codex`, `openclaw`) |
+| `--list-scaffolds` | flag | | List available scaffolds and exit |
+| `--port` | int | | Host port to publish (scaffold-specific) |
+
+## run
+
+Create a sandboxed cage from a scaffold, open an interactive session, and stop the cage on exit. The cage state is preserved after exit for auditing — use `cage prune` to clean up.
+
+```bash
+agentcage run SCAFFOLD [options] [-- EXTRA_ARGS...]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--project` | path | current directory | Project directory to mount as `/workspace` |
+| `--name` | string | auto-generated | Override the auto-generated cage name |
+| `-i, --interactive-domains` | flag | | Prompt to add blocked domains to the allowlist in real time |
+| `-s, --set-secret` | repeatable | | Set a secret (`KEY=VALUE` or `KEY` to prompt) |
+| `-v, --verbose` | flag | | Enable verbose output |
+| `--isolation` | `container` \| `vm` | `container` | Isolation backend |
+
+## doctor
+
+Check that all required tools are installed and properly configured (Podman, systemd, Lima, etc.).
+
+```bash
+agentcage doctor
+```
+
+## cage
+
+Manage cages.
+
+| Command | Description |
+|---------|-------------|
+| `cage create -c CONFIG` | Build images, generate quadlets, install, and start a new cage |
+| `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
+| `cage edit NAME` | Edit a cage's stored config in `$EDITOR` with validation and live-reload |
+| `cage list` | List all cages with status |
+| `cage destroy NAME` | Stop containers, remove quadlets, state, and scoped secrets |
+| `cage prune` | Remove all exited interactive and ephemeral cages |
+| `cage show NAME` | Show cage configuration and status |
+| `cage verify NAME` | Run health checks (containers, certs, proxy, egress, rootless) |
+| `cage stop NAME` | Stop a running cage without destroying it |
+| `cage start NAME` | Start a stopped cage |
+| `cage restart NAME` | Restart containers without rebuilding images |
+| `cage logs NAME` | Show journalctl logs for a cage |
+| `cage shell NAME` | Open an interactive shell in a cage container |
+| `cage audit NAME` | Query, filter, and summarize proxy audit logs |
+| `cage har NAME` | Export captured HTTP traffic as HAR 1.2 JSON |
+| `cage backup NAME` | Create a backup tarball of a cage |
+| `cage restore TARBALL` | Restore a cage from a backup tarball |
+
+Aliases: `ls`/`ps`/`status` → `list`, `rm`/`delete` → `destroy`, `reload` → `restart`, `describe`/`inspect` → `show`, `config` → `edit`.
+
+### cage create
+
+```bash
+agentcage cage create -c <config>
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-c, --config` | path | *(required)* | Path to `cage.yaml` |
+| `-s, --set-secret` | repeatable | | Set a secret inline during creation (`KEY=VALUE`) |
+| `--no-cache` | flag | | Force a full image rebuild, ignoring podman's layer cache |
+| `--pull` | flag | | Force a re-pull of the base image from the registry |
+
+Fails with an actionable error if any required secrets are missing.
+
+### cage update
+
+```bash
+agentcage cage update <name> [-c <config>]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-c, --config` | path | stored config | Update the stored config before rebuilding |
+| `--no-cache` | flag | | Force a full image rebuild |
+| `--pull` | flag | | Force a re-pull of the base image |
+
+### cage edit
+
+```bash
+agentcage cage edit <name>
+```
+
+Opens the stored `cage.yaml` in `$EDITOR` (falls back to `vi`). Validates on save, backs up the prior config to `cage.yaml.bak`, writes atomically, shows a diff, and hot-reloads domains, proxy inspectors, rate limits, and logging where possible. Service-restart or rebuild prompts appear for container or isolation changes. Aliased as `cage config`. See [Architecture — hot-reload](../explain/architecture.md#hot-reload-semantics) for the reload model.
+
+### cage destroy
+
+```bash
+agentcage cage destroy <name> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-y, --yes` | flag | | Skip the confirmation prompt |
+| `--keep-secrets` | flag | | Preserve scoped secrets after teardown |
+
+User-defined named volumes and bind-mounted data are never removed.
+
+### cage list
+
+Lists all known cages with name, isolation, version, and status (`running`/`stopped`/`degraded` plus running container count).
+
+### cage verify
+
+Runs health checks against a running cage: containers up, CA cert present, `HTTP(S)_PROXY` set, egress filtering blocks denied domains, nested-container support (when configured), and rootless Podman.
+
+### cage show
+
+Show cage configuration and status: name, isolation mode, image, version, service status, ports, domain mode, and secrets status. Aliases: `describe`, `inspect`.
+
+### cage stop / start / restart
+
+Stop a running cage without destroying it, start a stopped cage, or restart containers without rebuilding. `restart` regenerates `proxy-config.yaml` and `dns-allowlist.conf` from `cage.yaml` before bouncing services. `restart` alias: `reload`.
+
+### cage logs
+
+```bash
+agentcage cage logs <name> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-s, --service` | repeatable `cage`\|`proxy`\|`dns` | all | Filter by service |
+| `-n, --lines` | int | `50` | Number of lines to show |
+| `-f, --follow` | flag | | Stream logs in real time |
+| `-l, --severity` | `debug`\|`info`\|`warning`\|`error`\|`critical` | | Minimum severity level |
+
+### cage shell
+
+```bash
+agentcage cage shell <name> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-s, --service` | `cage`\|`proxy`\|`dns` | `cage` | Container to shell into |
+
+### cage audit
+
+Query, filter, and summarize proxy audit logs from the `{name}-proxy` systemd unit (or the Lima VM journal in VM mode).
+
+```bash
+agentcage cage audit <name> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-d, --decision` | repeatable `blocked`\|`flagged`\|`allowed` | | Filter by decision (OR within, AND with other filters) |
+| `--host` | repeatable string | | Filter by target host (substring match) |
+| `--inspector` | repeatable string | | Filter by inspector name |
+| `--severity` | `debug`\|`info`\|`warning`\|`error`\|`critical` | | Minimum severity level |
+| `--method` | repeatable string | | Filter by HTTP method |
+| `--direction` | repeatable `inbound`\|`outbound` | | Filter by traffic direction |
+| `--since` | string | | Time window (`1h`, `30m`, `7d`, or ISO date) |
+| `-n, --max-entries` | int | `100` | Max entries to show (`0` = unlimited) |
+| `-f, --follow` | flag | | Stream new entries in real time |
+| `--json` | flag | | Output as JSON lines |
+| `--summary` | flag | | Show aggregated statistics (incompatible with `--follow`) |
+| `--no-color` | flag | | Disable colored output |
+
+### cage har
+
+Export captured HTTP traffic as HAR 1.2 JSON. Requires `capture.enabled: true` in the cage config. Output is loadable in Chrome DevTools (Network > Import HAR).
+
+```bash
+agentcage cage har <name> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--view` | `inbound`\|`outbound` | `inbound` | Perspective to export (`outbound` contains real secrets) |
+| `-d, --decision` | repeatable `blocked`\|`flagged`\|`allowed` | | Filter by decision |
+| `--host` | repeatable string | | Filter by host (substring match) |
+| `--method` | repeatable string | | Filter by HTTP method |
+| `--direction` | repeatable `inbound`\|`outbound` | | Filter by traffic direction |
+| `--since` | string | | Time window (`1h`, `30m`, `7d`, or ISO date) |
+| `-n, --max-entries` | int | `0` | Max entries (`0` = unlimited) |
+| `-o, --output` | path | stdout | Output file |
+| `--json-lines` | flag | | Output raw capture JSONL instead of HAR |
+
+### cage backup
+
+```bash
+agentcage cage backup <name> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-o, --output` | path | `./{name}-backup-{timestamp}.tar.gz` | Output path |
+| `--include-secrets` | flag | | Include secret values in the backup |
+
+### cage restore
+
+```bash
+agentcage cage restore <tarball> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--name` | string | original | Restore with a different name (for cloning) |
+| `--force` | flag | | Overwrite existing cage |
+| `--no-start` | flag | | Restore state without building or starting |
+
+## secret
+
+Manage cage-scoped secrets.
+
+| Command | Description |
+|---------|-------------|
+| `secret list NAME` | List secrets for a cage (with status if cage exists) |
+| `secret set NAME KEY` | Set a secret (prompts for value or reads stdin) |
+| `secret rm NAME KEY` | Remove a secret |
+| `secret migrate NAME` | Migrate a cage's secrets to a different storage backend |
+
+Aliases: `ls` → `list`.
+
+Secrets are stored in Podman as `<name>.<key>` (e.g. `myapp.ANTHROPIC_API_KEY`) and mapped back to the original env var name via `target=` in the quadlet templates. Setting or removing a secret auto-reloads a running cage.
+
+### secret migrate
+
+```bash
+agentcage secret migrate <name> [options]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--backend` | `systemd-creds` | | Target backend for secret storage |
+| `--remove-old` | flag | | Remove old plaintext secrets from the Podman store |
+| `--keep-old` | flag | | Keep old plaintext secrets in the Podman store |
+
+The encrypting key's scope (`user` or `system`) follows the cage's `secrets.scope` config field. `agentcage doctor` reports the resolved scope.
+
+## domain
+
+Manage cage domain filters.
+
+| Command | Description |
+|---------|-------------|
+| `domain list NAME` | List domains and filtering mode for a cage |
+| `domain add NAME DOMAIN` | Add a domain to the filter list (hot-reloads if running) |
+| `domain rm NAME DOMAIN` | Remove a domain from the filter list (hot-reloads if running) |
+
+Aliases: `ls` → `list`.
+
+Mode is `allowlist` (only listed domains permitted, default) or `blocklist` (listed domains blocked). Subdomain matching is built in — adding `anthropic.com` also allows `api.anthropic.com`.
+
+## scaffold
+
+Manage scaffold templates. Resolved in order: project-local (`.agentcage/scaffolds/`), user (`~/.config/agentcage/scaffolds/`), built-in.
+
+| Command | Description |
+|---------|-------------|
+| `scaffold list` | List available scaffolds |
+| `scaffold show NAME` | Show scaffold details and config template |
+| `scaffold create NAME` | Create a new user scaffold |
+| `scaffold edit NAME` | Edit a user scaffold |
+| `scaffold delete NAME` | Delete a user scaffold |
+| `scaffold export NAME` | Export a scaffold as a directory |
+
+Aliases: `ls` → `list`, `rm` → `delete`.
+
+## Related
+
+- [Configuration](configuration.md) — `cage.yaml` settings reference
+- [Domains](domains.md) — filtering rules and modes
+- [Capture](capture.md) — HAR export and traffic recording
+- [Architecture](../explain/architecture.md) — hot-reload model and startup order
+- [Secret injection](secret-injection.md) — injection vs direct secrets

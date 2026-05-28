@@ -2,7 +2,7 @@
 
 ## Threat Model
 
-See [docs/security.md](docs/security.md) for the full threat model, defense layers, and known limitations.
+See [docs/explain/security-model.md](docs/explain/security-model.md) for the full threat model, defense layers, and known limitations.
 
 ## Reporting a Vulnerability
 
@@ -15,4 +15,4 @@ If you discover a security vulnerability in agentcage, please report it responsi
 
 ## Scope
 
-agentcage is a defense-in-depth tool that reduces exfiltration risk but does not claim to be a complete security boundary. See [Known Limitations](docs/security.md#known-limitations) for what is explicitly out of scope.
+agentcage is a defense-in-depth tool that reduces exfiltration risk but does not claim to be a complete security boundary. See [Known Limitations](docs/explain/security-model.md#known-limitations) for what is explicitly out of scope.

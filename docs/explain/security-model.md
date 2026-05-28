@@ -1,10 +1,9 @@
-# Security & Threat Model
+<!-- owner: @luca  last-reviewed: 2026-05-28 -->
+# Security model
 
-agentcage is a defense-in-depth proxy sandbox designed to reduce the risk of data exfiltration from AI agent containers. It is not a silver bullet -- it raises the bar significantly for HTTP-based exfiltration while acknowledging limitations outside that scope.
+A defense-in-depth proxy sandbox that reduces the risk of data exfiltration from AI agent containers. Read this when deciding whether agentcage's protections match your threat model.
 
-For architecture details, see [Architecture](architecture.md). For configuration options, see [Configuration Reference](configuration.md).
-
-## Threat Model
+## Threat model
 
 ### Isolation modes and the threat surface
 
@@ -26,21 +25,7 @@ agentcage offers three isolation modes that affect the threat model differently:
 | Kernel exploit | **Out of scope** (shared kernel) | Defended (guest kernel) | Defended (microVM kernel) |
 | Side-channel attacks | Out of scope | Out of scope | Out of scope |
 
-### Isolation modes
-
-| | Container mode | VM mode | apple-container mode |
-|---|---|---|---|
-| **Isolation** | Linux namespaces (rootless Podman) | Hardware virtualization (KVM via Lima) | Hardware virtualization (Virtualization.framework, Apple `container` per cage) |
-| **Kernel** | Shared with host | Dedicated guest kernel per cage | Dedicated microVM kernel per cage |
-| **Container escape risk** | Mitigated by hardening, not eliminated | Eliminated — escape lands in VM, not on host | Eliminated — escape lands in microVM, not on host |
-| **Egress defense layers** | iptables-in-cage + non-routed `<cage>-net` (two) | iptables-in-cage + non-routed `<cage>-net` (two) | iptables-in-cage only (one; CAP_NET_ADMIN dropped so cage can't bypass) |
-| **Root required** | No | No (Lima handles VM networking) | No (Apple's `container` is rootless) |
-| **macOS support** | No (use VM or apple-container) | Yes (Lima supports macOS) | macOS 26+ Apple Silicon only |
-| **User image constraint** | Any glibc-or-musl Linux | Any (built inside the VM) | Glibc-based (debian/ubuntu/etc) — mitmproxy bundle is glibc-only |
-| **Boot overhead** | ~1s | ~15–30s | ~3–5s warm, ~25–30s cold |
-| **Best for** | Development, CI on Linux | Production, untrusted agents, high-security | Fast iteration on macOS 26+; default macOS path |
-
-Set `isolation: vm` or `isolation: apple-container` explicitly in your config to override the platform default. See [Lima VM Isolation](vm.md) and [Apple Container Isolation](apple-container.md) for setup and per-backend details.
+For the full capability comparison (boot overhead, image constraints, egress layers) and per-backend mechanics, see [Isolation modes](isolation-modes.md). Set `isolation: vm` or `isolation: apple-container` explicitly to override the platform default; see [Install](../get-started/install.md) for setup.
 
 ### What agentcage prevents
 
@@ -58,12 +43,12 @@ The primary threat is an AI agent exfiltrating sensitive data -- secrets, source
 
 - **Non-HTTP protocols** -- TCP/UDP connections other than HTTP (blocked by network isolation, but not inspected)
 - **DNS exfiltration** -- data encoded in subdomain labels of allowlisted domains (blocked for non-allowlisted domains; see Known Limitations)
-- **Kernel or container escapes (container mode)** -- exploits that break out of the Podman container via kernel or runtime vulnerabilities. In VM mode, these are contained by the VM boundary (see Isolation modes above).
+- **Kernel or container escapes (container mode)** -- exploits that break out of the Podman container via kernel or runtime vulnerabilities. In VM mode, these are contained by the VM boundary (see [Isolation modes](isolation-modes.md)).
 - **Side-channel attacks** -- timing-based or resource-usage-based data leakage
 - **Multi-request evasion** -- splitting secrets across many small requests to avoid pattern matching
 - **Confused deputy / prompt injection** -- an agent tricked into exfiltrating data through legitimate-looking requests to allowed domains
 
-## Defense Layers
+## Defense layers
 
 agentcage applies multiple overlapping defenses:
 
@@ -73,11 +58,11 @@ agentcage applies multiple overlapping defenses:
 
 3. **DNS filtering** -- When using allowlist mode, the dnsmasq sidecar returns a placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for non-allowlisted domains, preventing DNS resolution from reaching real infrastructure while keeping SSRF guards functional. DNS query logging is enabled by default for forensic analysis.
 
-4. **Secret injection** -- When configured, the cage container never receives real secrets. It gets placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`), and the proxy transparently injects real values on outbound requests and redacts them from inbound responses. Inspectors run on the pre-injection flow (with placeholders still in place), so real secret values are never exposed to the inspector chain. Two policy checks enforce this boundary: if a **literal real secret value** appears in any outbound request or WebSocket frame, the request is blocked (severity `critical`) — the agent should never know real values; if a **placeholder** is sent to a domain not in the rule's `inject_to` list, the request is flagged. See [Secret injection](configuration.md#secret-injection-secret_injection).
+4. **Secret injection** -- When configured, the cage container never receives real secrets. It gets placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`), and the proxy transparently injects real values on outbound requests and redacts them from inbound responses. Inspectors run on the pre-injection flow (with placeholders still in place), so real secret values are never exposed to the inspector chain. Two policy checks enforce this boundary: if a **literal real secret value** appears in any outbound request or WebSocket frame, the request is blocked (severity `critical`) — the agent should never know real values; if a **placeholder** is sent to a domain not in the rule's `inject_to` list, the request is flagged. See [Secret injection](../reference/secret-injection.md).
 
-   For credentials that must be exchanged in-process for a derived value before any HTTPS request (e.g. signing a JWT bearer assertion with a Google service-account private key), `secret_injection` rules can be configured with a `transform`. The proxy holds the underlying credential, mints the derived value at request time, and substitutes it on the wire. The cage never sees the long-lived credential. The literal-value block is *strengthened* for transform rules — the underlying secret is never expected to legitimately appear on the wire to anywhere, including the rule's own `inject_to` domains, so any appearance is blocked unconditionally. See [Transforms](configuration.md#transforms).
+   For credentials that must be exchanged in-process for a derived value before any HTTPS request (e.g. signing a JWT bearer assertion with a Google service-account private key), `secret_injection` rules can be configured with a `transform`. The proxy holds the underlying credential, mints the derived value at request time, and substitutes it on the wire. The cage never sees the long-lived credential. The literal-value block is *strengthened* for transform rules — the underlying secret is never expected to legitimately appear on the wire to anywhere, including the rule's own `inject_to` domains, so any appearance is blocked unconditionally. See [Transforms](../reference/secret-injection.md#transforms).
 
-   For non-HTTP protocols (IMAP, SMTP), the equivalent property is provided by [Protocol relays](configuration.md#protocol-relays-protocol_relays) — stateful in-proxy listeners that perform upstream auth on the cage's behalf. The cage connects to a localhost address inside the proxy container with no credentials; the relay holds the upstream password in its own memory only. Per-protocol policy enforces things the HTTP injection model handles by domain. IMAP: `readonly` blocks state-mutating commands; `folder_allowlist` restricts SELECT/EXAMINE/STATUS targets. SMTP: `recipient_allowlist` (addresses + domains) gates every `RCPT TO`, `sender_allowlist` gates `MAIL FROM`, and every `DATA` payload runs through the same inspector chain (`secrets`, `entropy`, `content-type`, `body-size`) used for HTTP — so a leaked API key in an outbound email body blocks the message before it reaches the upstream MTA.
+   For non-HTTP protocols (IMAP, SMTP), the equivalent property is provided by [Protocol relays](../reference/protocol-relays.md) — stateful in-proxy listeners that perform upstream auth on the cage's behalf. The cage connects to a localhost address inside the proxy container with no credentials; the relay holds the upstream password in its own memory only. Per-protocol policy enforces things the HTTP injection model handles by domain. IMAP: `readonly` blocks state-mutating commands; `folder_allowlist` restricts SELECT/EXAMINE/STATUS targets. SMTP: `recipient_allowlist` (addresses + domains) gates every `RCPT TO`, `sender_allowlist` gates `MAIL FROM`, and every `DATA` payload runs through the same inspector chain (`secrets`, `entropy`, `content-type`, `body-size`) used for HTTP — so a leaked API key in an outbound email body blocks the message before it reaches the upstream MTA.
 
 5. **Secret detection** -- 19 regex patterns scan every request for common secret formats: OpenAI, Anthropic, AWS, GitHub, Google, Slack, Stripe, GitLab, Hugging Face, Databricks, Azure JWT, OpenRouter, Perplexity, Brave, Telegram, Discord, and Firecrawl tokens, plus private keys. Matches result in a hard block by default. Built-in `allow_to_domains` mappings automatically let each secret type reach its provider domain (e.g., an Anthropic key to `anthropic.com`) without manual configuration. Custom patterns can be added via `extra_patterns` config, including env-var-based literal matching.
 
@@ -95,19 +80,19 @@ agentcage applies multiple overlapping defenses:
 
 10. **Audit logging** -- All inspection decisions (blocked, flagged, and allowed requests) are written as structured JSON lines to a persistent audit log file (`/var/log/agentcage/audit.jsonl` by default). Allowed request logging is disabled by default.
 
-## Fail-Closed Design
+## Fail-closed design
 
 If the proxy container goes down, the agent gets connection errors -- not unfiltered internet access. Since the agent has no internet gateway, a proxy failure means no connectivity at all.
 
 The generated quadlet files use systemd `Restart=on-failure` so the proxy recovers automatically from transient failures.
 
-## Container Hardening
+## Container hardening
 
-The cage container is hardened by default: read-only root filesystem, all Linux capabilities dropped, no-new-privileges flag set. See the [Configuration Reference](configuration.md#container-hardening) for details and how to adjust these settings.
+The cage container is hardened by default: read-only root filesystem, all Linux capabilities dropped, no-new-privileges flag set. See the [Configuration Reference](../reference/configuration.md#container-hardening) for details and how to adjust these settings.
 
 The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` capability (set via `setcap` at build time). The proxy container runs as the `mitmproxy` user and binds only to the internal network IP (not 0.0.0.0).
 
-### Nested containers (`nested_containers: true`)
+### Nested containers
 
 When nested container support is enabled, several hardening defaults are overridden to allow podman-in-podman:
 
@@ -122,7 +107,7 @@ These changes increase the container escape attack surface. All network-level pr
 
 `nested_containers` is only supported with `isolation: container`. For production nested workloads, consider running the cage on a dedicated host or VM to limit blast radius.
 
-## Supply Chain Hardening
+## Supply chain hardening
 
 - **Container base images** are pinned to specific `sha256` digests in the Containerfiles, preventing silent upstream changes
 - **Python dependencies** (pyyaml) are pinned to exact versions
@@ -133,7 +118,7 @@ These changes increase the container escape attack surface. All network-level pr
 - **Volume host paths** are validated to resolve within the user's home directory
 - **Proxy config isolation** -- the proxy container receives a filtered config subset containing only proxy-relevant keys, not the full YAML
 
-## OWASP Top 10 for Agentic Applications (2026)
+## OWASP top 10 for agentic applications (2026)
 
 | OWASP Risk | agentcage Coverage | Residual Gaps |
 |---|---|---|
@@ -148,11 +133,11 @@ These changes increase the container escape attack surface. All network-level pr
 | **ASI09 Human Trust** | Strong — persistent structured audit logging with all decisions logged by default | — |
 | **ASI10 Rogue Agents** | Strong — network isolation + multi-layer inspection + DNS filtering + WebSocket inspection | Multi-request evasion, confused-deputy via allowed domains |
 
-## Known Limitations
+## Known limitations
 
 **Multi-request evasion** -- An agent could split a secret across many requests to avoid regex matching. The entropy and content-type inspectors help catch encoded exfiltration, but are not foolproof against sophisticated splitting strategies. The GTG-1002 campaign demonstrated that AI agents can autonomously develop multi-step exfiltration strategies where each individual request appears legitimate.
 
-**Proxy-unaware applications** -- In container mode, transparent proxy interception (default route + iptables REDIRECT) captures outbound TCP traffic on the inspected port set (`ports.tcp.allow - ports.tcp.passthrough`, default `[80, 443]`) regardless of whether the application uses `HTTP_PROXY` env vars. This covers Go, Rust, Node.js `fetch()`, and any other runtime. Applications using ports outside the configured policy are dropped at the proxy's default-deny `filter:FORWARD` rule — the security guarantee holds (no unfiltered internet access; the cage cannot reach a port the operator hasn't permitted), but the error is a connection timeout rather than a 403 response. UDP traffic on `ports.udp.allow` ports is forwarded uninspected (mitmproxy is HTTP-only). See [Port policy](proxy-audit-ports.md) for the full discussion.
+**Proxy-unaware applications** -- In container mode, transparent proxy interception (default route + iptables REDIRECT) captures outbound TCP traffic on the inspected port set (`ports.tcp.allow - ports.tcp.passthrough`, default `[80, 443]`) regardless of whether the application uses `HTTP_PROXY` env vars. This covers Go, Rust, Node.js `fetch()`, and any other runtime. Applications using ports outside the configured policy are dropped at the proxy's default-deny `filter:FORWARD` rule — the security guarantee holds (no unfiltered internet access; the cage cannot reach a port the operator hasn't permitted), but the error is a connection timeout rather than a 403 response. UDP traffic on `ports.udp.allow` ports is forwarded uninspected (mitmproxy is HTTP-only). See [Port policy](../reference/ports.md) for the full discussion.
 
   In VM mode, transparent interception is not yet implemented, so proxy-unaware applications get connection errors for all ports. The same security guarantee applies — requests fail rather than bypass inspection.
 
@@ -160,19 +145,19 @@ These changes increase the container escape attack surface. All network-level pr
 
 **Exfiltration through allowed domains** -- The domain allowlist prevents direct exfiltration to attacker infrastructure, but data can be smuggled through *allowed* endpoints. For example, an agent could embed secrets in GitHub issue titles, Brave Search query parameters, or npm package metadata. The secrets inspector detects known secret patterns in URLs, but custom-encoded data in URL paths and query parameters is not subject to entropy analysis (only request bodies are). Rate limiting and audit log monitoring help bound this channel.
 
-**Published port limitations** -- Published ports (`container.ports` config option) are served through mitmproxy reverse mode, so HTTP traffic is inspected by the full inspector chain. However, non-HTTP protocols (raw TCP, WebSocket upgrade on non-standard ports) will fail at HTTP parsing. Container ports 8080 and 8443 cannot be published as they conflict with the forward proxy and transparent proxy listeners respectively. The same reserved-port check rejects `ports.tcp.allow` overlap with any inbound forward port — see [Port policy](proxy-audit-ports.md#reserved-ports).
+**Published port limitations** -- Published ports (`container.ports` config option) are served through mitmproxy reverse mode, so HTTP traffic is inspected by the full inspector chain. However, non-HTTP protocols (raw TCP, WebSocket upgrade on non-standard ports) will fail at HTTP parsing. Container ports 8080 and 8443 cannot be published as they conflict with the forward proxy and transparent proxy listeners respectively. The same reserved-port check rejects `ports.tcp.allow` overlap with any inbound forward port — see [Port policy](../reference/ports.md#reserved-ports).
 
 **Supply chain poisoning** -- The agent can install arbitrary packages from allowlisted registries (npm, PyPI, etc.). A prompt injection could direct the agent to install a malicious package that runs code inside the container. Container hardening (read-only root, dropped caps, no-new-privileges) limits the impact but does not prevent data access within the agent's workspace. Consider pre-approved package lists for high-security deployments.
 
 **Shared kernel (container mode only)** — In container mode, rootless Podman containers share the host kernel. A container escape CVE in the Linux kernel, runc, or crun would bypass all container-level protections and give the agent access to the host. This is the most significant limitation of container mode.
 
-VM mode eliminates this limitation. Each cage runs in a dedicated Lima VM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host. Set `isolation: vm` to use this mode. See [Lima VM Isolation](vm.md) for setup and tradeoffs.
+VM mode eliminates this limitation. Each cage runs in a dedicated Lima VM with its own guest kernel, isolated by KVM hardware virtualization (VT-x/AMD-V). A kernel exploit inside the VM affects only the guest kernel, not the host. A container escape inside the VM lands in the VM's userspace, not on the host. Set `isolation: vm` to use this mode. See [Isolation modes](isolation-modes.md) for the comparison across backends.
 
-## Traffic Capture and HAR Export
+## Traffic capture and HAR export
 
 When `capture: enable_har: true` is set, the proxy records full decrypted request/response bodies to a JSONL file. This data is exported via `agentcage cage har`.
 
-### OUTBOUND captures contain real secrets
+### Outbound captures contain real secrets
 
 The OUTBOUND perspective records what actually went on the wire, including real API keys, tokens, and session cookies after secret injection. OUTBOUND HAR files must be treated with the same access controls as the secrets themselves.
 
@@ -180,7 +165,7 @@ The OUTBOUND perspective records what actually went on the wire, including real 
 - The CLI prints a warning to stderr when exporting with `--view outbound`
 - The capture volume has the same ownership/permissions as the podman user (not world-readable)
 
-### INBOUND captures may contain sensitive content
+### Inbound captures may contain sensitive content
 
 Even INBOUND captures (with secrets replaced by placeholders) may contain PII, user queries, model responses, or other sensitive content in request/response bodies. Handle HAR files under the same data governance as the agent's operational data. The Okta breach (2023) is a cautionary reference — HAR files uploaded to support portals led to session hijacking of 134 customers.
 
@@ -200,7 +185,7 @@ The capture file is plain JSON lines on disk. An attacker with host access could
 
 The capture volume is accessible to the host user running podman. This is the same trust boundary as podman secrets — if an attacker has access to the host user's files, they already have access to the secrets.
 
-## Secret Backend Trust Boundaries
+## Secret backend trust boundaries
 
 The `source` field in `secret_injection` rules supports a `cmd:` scheme that executes shell commands to retrieve secrets. This runs with the privileges of the user invoking agentcage, the same trust boundary as Containerfile execution or volume mounts.
 
@@ -210,6 +195,13 @@ The `env:` backend reads from the host's environment variables. No shell executi
 
 The `systemd-creds:` backend encrypts secrets at rest with AES256-GCM, keyed by a combination of a TPM2 chip and a host-specific key. Encrypted blobs are bound to the machine's hardware. A motherboard swap, TPM reset, or BIOS update may render encrypted secrets unrecoverable. Use `agentcage cage backup --include-secrets` to create portable backups.
 
-## Reporting Security Issues
+## Reporting security issues
 
-Please report security vulnerabilities via email to **security@agentcage.ai**. Do not open a public GitHub issue for security vulnerabilities. See [SECURITY.md](../SECURITY.md) for details.
+Please report security vulnerabilities via email to **security@agentcage.ai**. Do not open a public GitHub issue for security vulnerabilities. See [SECURITY.md](../../SECURITY.md) for details.
+
+## Related
+
+- [Architecture](architecture.md) — the topology and inspector chain this model defends
+- [Isolation modes](isolation-modes.md) — how container, VM, and apple-container backends compare
+- [Secret injection reference](../reference/secret-injection.md) — placeholder, transform, and backend config
+- [Ports reference](../reference/ports.md) — the default-deny FORWARD chain and per-port policy

@@ -2,7 +2,7 @@
 
 [Pi](https://pi.dev/docs/latest) is a minimal terminal coding harness — an extensible CLI for AI-assisted coding that supports multiple model providers and is also embeddable as a Node.js SDK. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
-For the full list of configuration options, see the [Configuration Reference](../../docs/configuration.md).
+For the full list of configuration options, see the [Configuration Reference](../../docs/reference/configuration.md).
 
 ## Prerequisites
 
@@ -109,7 +109,7 @@ See [Pi SDK docs](https://pi.dev/docs/latest/sdk) for embedding the agent in a N
 
 ## Managing your cage
 
-See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
+See [Troubleshoot](../../docs/how-to/troubleshoot.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../docs/reference/cli.md#cage) for the full `cage` subcommand set.
 
 ## Configuration
 

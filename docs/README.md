@@ -1,25 +1,47 @@
+<!-- owner: @luca  last-reviewed: 2026-05-28 -->
 # Documentation
 
-## Core
+The operator's map of agentcage. Find your task; follow the link.
 
-- [Architecture](architecture.md) — container topology, inspector chain, secret injection, network isolation
-- [Security & Threat Model](security.md) — threat model, defense layers, isolation modes, known limitations
-- [Configuration Reference](configuration.md) — all settings, defaults, and examples
-- [CLI Reference](cli.md) — full command set and options
-- [Port Policy](proxy-audit-ports.md) — `ports.tcp` / `ports.udp` allowlists, the default-deny FORWARD chain, worked examples
+## Get started
 
-## Isolation
+- [Install](get-started/install.md) — backend prerequisites for Linux, macOS, and Apple Silicon.
+- Need to sandbox a coding agent right now? Run `agentcage run claude-code` (see the [README Quick Start](../README.md#quick-start)).
 
-- [Lima VM Isolation](vm.md) — KVM-based hardware isolation via Lima
-- [Apple Container Isolation](apple-container.md) — Apple `container` microVM per cage, macOS 26+ Apple Silicon (default on that platform)
+## Sandbox an agent
 
-## Setup Guides
+- [Claude Code](../src/agentcage/scaffolds/claude-code/README.md) — Anthropic's CLI agent.
+- [Codex](../src/agentcage/scaffolds/codex/README.md) — OpenAI's CLI agent.
+- [OpenClaw](../src/agentcage/scaffolds/openclaw/README.md) — full agent platform.
 
-- [Claude Code](../src/agentcage/scaffolds/claude-code/README.md) — Anthropic's CLI coding agent
-- [Codex](../src/agentcage/scaffolds/codex/README.md) — OpenAI's CLI coding agent
-- [OpenClaw](../src/agentcage/scaffolds/openclaw/README.md) — full-featured AI coding agent
-- [Managing Your Cage](cage-management.md) — common operations and troubleshooting
+## Control what the agent can do
 
-## Reference
+- [Domains](reference/domains.md) — allowlist, blocklist, TLS passthrough.
+- [Ports](reference/ports.md) — TCP/UDP policy and the default-deny FORWARD chain.
+- [Secret injection](reference/secret-injection.md) — keep real credentials out of the cage.
+- [Protocol relays](reference/protocol-relays.md) — IMAP/SMTP credential brokers.
+- [Inspectors](reference/inspectors.md) — built-in checks and the custom inspector API.
+- [Configuration](reference/configuration.md) — every other `cage.yaml` setting.
+- [Capture](reference/capture.md) — HAR recording, inbound vs outbound perspectives.
 
-- [Security Review (Feb 2026)](security-review-2026-02.md) — adversarial review from compromised agent perspective
+## Operate a cage
+
+- [Deploy to a server](how-to/deploy-to-server.md) — systemd-service pattern under a dedicated user.
+- [Troubleshoot](how-to/troubleshoot.md) — stuck cages, blocked requests, missing secrets.
+- [Upgrade agentcage](how-to/upgrade-agentcage.md) — bump the binary, update running cages.
+- [Back up and restore](how-to/back-up-and-restore.md) — snapshotting, restore drills.
+- [CLI reference](reference/cli.md) — full command set.
+
+## Extend agentcage
+
+- [Write a custom inspector](how-to/write-a-custom-inspector.md) — end-to-end walkthrough.
+
+## Understand how it works
+
+- [Architecture](explain/architecture.md) — topology, egress flow, inspector chain.
+- [Isolation modes](explain/isolation-modes.md) — container vs vm vs apple-container, when to use which.
+- [Security model](explain/security-model.md) — threat model, defense layers, known limitations.
+
+## Past audits
+
+- [Security review (Feb 2026)](audits/2026-02-security-review.md) — frozen snapshot, not always-current.

@@ -2,7 +2,7 @@
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's official CLI for Claude -- an interactive coding agent that lives in your terminal. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
-For the full list of configuration options, see the [Configuration Reference](../../docs/configuration.md).
+For the full list of configuration options, see the [Configuration Reference](../../docs/reference/configuration.md).
 
 ## Prerequisites
 
@@ -114,7 +114,7 @@ With `lifecycle: service`, systemd auto-restarts the container on failure and st
 
 ## Managing your cage
 
-See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
+See [Troubleshoot](../../docs/how-to/troubleshoot.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../docs/reference/cli.md#cage) for the full `cage` subcommand set.
 
 ## Configuration
 
