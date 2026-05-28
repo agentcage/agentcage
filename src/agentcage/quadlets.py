@@ -422,9 +422,25 @@ def generate_quadlets(
     # Network
     files[f"{name}-net.network"] = env.get_template("network.j2").render(**common)
 
-    # Volume
+    # Volumes
+    #
+    # Two cert volumes, not one:
+    #   * agentcage-certs-<name>        — mitmproxy state dir (private key,
+    #     .p12 bundles, public cert). Mounted RW into the egress only.
+    #   * agentcage-public-certs-<name> — published public cert only.
+    #     Mounted RW into the egress (so supervisor-egress.sh Step E can
+    #     install the cert there) and RO into the cage at /certs.
+    #
+    # The cage MUST NOT see the private-key volume. CTF findings F6 (container)
+    # and F9 (vm) on agentcage 0.22.0 flagged the prior single-volume layout
+    # as a defense-in-depth violation: a uid/perm regression would let the
+    # cage mint trusted certs for any allowlisted host. Mirrors the apple-
+    # container split done in #208 (a1dcb4a).
     files[f"{name}-certs.volume"] = env.get_template("volume.j2").render(
         volume_name=f"agentcage-certs-{name}",
+    )
+    files[f"{name}-public-certs.volume"] = env.get_template("volume.j2").render(
+        volume_name=f"agentcage-public-certs-{name}",
     )
 
     # DNS allowlist sidecar file path — bind-mounted into the egress

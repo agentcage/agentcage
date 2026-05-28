@@ -151,6 +151,7 @@ class TestStart:
 
         mock_sd.restart_unit.assert_any_call("myapp-net-network.service")
         mock_sd.restart_unit.assert_any_call("myapp-certs-volume.service")
+        mock_sd.restart_unit.assert_any_call("myapp-public-certs-volume.service")
 
 
 class TestStop:
@@ -261,6 +262,11 @@ class TestDestroyResources:
         mock_net.assert_called_once_with("myapp-net")
         assert "network:myapp-net" in removed
         assert "volume:agentcage-certs-myapp" in removed
+        # The public-certs volume is a separate podman volume — leaving it
+        # behind across destroy would leave stale published certs that the
+        # next cage with the same name would silently inherit.
+        assert "volume:agentcage-public-certs-myapp" in removed
+        mock_vol.assert_any_call("agentcage-public-certs-myapp")
 
     def test_removes_secrets_by_default(self, tmp_path):
         backend = ContainerBackend()

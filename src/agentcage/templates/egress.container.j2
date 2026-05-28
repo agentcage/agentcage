@@ -15,6 +15,11 @@ Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z
 {% endif %}
 Environment="PYTHONUNBUFFERED=1"
 Volume={{ name }}-certs.volume:/home/acproxy/.mitmproxy:Z
+# Public-only cert publish dir — see quadlets.py for why this is a
+# separate volume. supervisor-egress.sh Step E installs the public
+# CA cert here after mitmproxy generates it; the cage's /certs:ro
+# bind reads from this volume (NOT the private-key volume above).
+Volume={{ name }}-public-certs.volume:/home/acproxy/public-certs:Z
 {% if capture_enabled %}
 Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
@@ -115,6 +120,7 @@ Secret={{ secret }},type=env
 ExecStartPre=/bin/bash -o pipefail -c 'podman secret rm "{{ deploy_name }}.{{ cred }}" 2>/dev/null || true; systemd-creds {{ creds_scope_flag }}decrypt --name "{{ cred }}" "{{ creds_dir }}/{{ cred }}.cred" - | podman secret create "{{ deploy_name }}.{{ cred }}" -'
 {% endfor %}
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 200:200 "$mp"'
+ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-public-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 200:200 "$mp"'
 {% if capture_enabled %}
 ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 200:200 "{{ capture_host_dir }}"{% endif %}'
 {% endif %}
