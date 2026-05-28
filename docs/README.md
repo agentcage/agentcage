@@ -3,7 +3,7 @@
 ## Core
 
 - [Architecture](explain/architecture.md) — container topology, inspector chain, secret injection, network isolation
-- [Security & Threat Model](security.md) — threat model, defense layers, isolation modes, known limitations
+- [Security model](explain/security-model.md) — threat model, defense layers, isolation modes, known limitations
 - [Configuration Reference](reference/configuration.md) — all settings, defaults, and examples
 - [CLI Reference](reference/cli.md) — full command set and options
 - [Port Policy](reference/ports.md) — `ports.tcp` / `ports.udp` allowlists, the default-deny FORWARD chain, worked examples

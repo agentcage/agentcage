@@ -122,4 +122,4 @@ With `nested_containers: true`, the cage runs podman internally so it can host a
 - [Inspectors reference](../reference/inspectors.md) — built-in inspectors and custom-inspector API
 - [Secret injection reference](../reference/secret-injection.md) — setup, backends, and transforms
 - [Ports reference](../reference/ports.md) — port policy and iptables layout
-- [Security and threat model](../security.md) — what each isolation mode defends against
+- [Security model](security-model.md) — what each isolation mode defends against

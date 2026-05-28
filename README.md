@@ -8,7 +8,7 @@
 
 Don't let your agent phone home.
 
-> :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security & Threat Model](docs/security.md) for details and known limitations.
+> :warning: **Warning:** This is an experimental project. It has not been audited by security professionals. Use it at your own risk. See [Security model](docs/explain/security-model.md) for details and known limitations.
 
 > **Coding agents:** [Claude Code](src/agentcage/scaffolds/claude-code/README.md) · [Codex](src/agentcage/scaffolds/codex/README.md) &nbsp;|&nbsp; **Agent platforms:** [OpenClaw](src/agentcage/scaffolds/openclaw/README.md)
 
@@ -20,7 +20,7 @@ Don't let your agent phone home.
 
 agentcage is a CLI that generates hardened, sandboxed environments for AI agents. Your agent runs on an internal-only network with no internet gateway; the only way out is through an inspecting proxy that scans every HTTP request before forwarding it.
 
-Most agent deployments hand the agent a [**lethal trifecta**](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/): internet access, real secrets, and arbitrary code execution. Combined, they create an exfiltration risk that most setups have zero defense against. agentcage breaks that combination. See [Security & Threat Model](docs/security.md) for the full breakdown.
+Most agent deployments hand the agent a [**lethal trifecta**](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/): internet access, real secrets, and arbitrary code execution. Combined, they create an exfiltration risk that most setups have zero defense against. agentcage breaks that combination. See [Security model](docs/explain/security-model.md) for the full breakdown.
 
 - **Network isolation** -- agent on internal-only network, no internet gateway
 - **Inspecting proxy** -- pluggable inspector chain on every HTTP request, WebSocket frame, and DNS query
@@ -35,7 +35,7 @@ Three isolation backends are supported:
 - **vm** (Linux + macOS) — a Lima VM per cage with hardware isolation via KVM
 - **apple-container** (macOS 26+ Apple Silicon, new in 0.20) — a single Apple `container` microVM per cage with the egress filter (mitmproxy + dnsmasq + iptables) running inside, supervised by an in-microVM PID 1 that drops to uid 1000 / zero caps / NoNewPrivs before exec'ing the cage workload. ~10–20× faster than Lima and ~3× less RAM per cage; the default on macOS 26+ when Apple's `container` CLI is installed.
 
-See [Security & Threat Model](docs/security.md#isolation-modes-and-the-threat-surface) for the threat-by-threat matrix and [Isolation modes](docs/explain/isolation-modes.md) for how each backend works and when to pick which. For the full container topology and inspector chain, see [Architecture](docs/explain/architecture.md).
+See [Security model](docs/explain/security-model.md#isolation-modes-and-the-threat-surface) for the threat-by-threat matrix and [Isolation modes](docs/explain/isolation-modes.md) for how each backend works and when to pick which. For the full container topology and inspector chain, see [Architecture](docs/explain/architecture.md).
 
 ## Quick Start
 
@@ -191,7 +191,7 @@ See the [Configuration Reference](docs/reference/configuration.md) for all setti
 
 ## Security
 
-The agent has no internet gateway -- all traffic must pass through the proxy, which applies domain filtering, secret detection, payload inspection, and custom inspectors. For workloads requiring hardware-level isolation, VM mode adds a dedicated guest kernel per cage via Lima, eliminating container escape as an attack vector. See [Security & Threat Model](docs/security.md) for the full threat model, defense layers, and known limitations.
+The agent has no internet gateway -- all traffic must pass through the proxy, which applies domain filtering, secret detection, payload inspection, and custom inspectors. For workloads requiring hardware-level isolation, VM mode adds a dedicated guest kernel per cage via Lima, eliminating container escape as an attack vector. See [Security model](docs/explain/security-model.md) for the full threat model, defense layers, and known limitations.
 
 ## License
 

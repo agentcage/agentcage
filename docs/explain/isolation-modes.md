@@ -92,7 +92,7 @@ A shared `agentcage-egress` image is built once per host so sibling cages reuse 
 | Host bind mounts into cage | Yes | No | No |
 | Secrets at rest | Host Podman secret store | Host Podman secret store | Host environment at `cage start`, bind-mounted as files into the egress sibling |
 
-For the threat-by-threat matrix and what each mode defends against, see [security](../security.md).
+For the threat-by-threat matrix and what each mode defends against, see [Security model](security-model.md).
 
 ## Known limitations
 
@@ -124,7 +124,7 @@ For the threat-by-threat matrix and what each mode defends against, see [securit
 
 ## Related
 
-- [Security and threat model](../security.md) — defended threats per mode
+- [Security model](security-model.md) — defended threats per mode
 - [Architecture](architecture.md) — inspector chain and shared topology
 - [Configuration reference](../reference/configuration.md) — `isolation:` and `vm:` settings
 - [Install](../get-started/install.md) — backend-specific setup steps

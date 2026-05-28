@@ -98,7 +98,7 @@ container:
   nested_containers: true
 ```
 
-> **Security note:** Nested containers require elevated capabilities that weaken container hardening. All network-level protections (proxy inspection, domain filtering, secret detection) remain active. Only supported with `isolation: container`. See [Security & Threat Model](../security.md).
+> **Security note:** Nested containers require elevated capabilities that weaken container hardening. All network-level protections (proxy inspection, domain filtering, secret detection) remain active. Only supported with `isolation: container`. See [Security model](../explain/security-model.md).
 
 ## Container hardening
 
