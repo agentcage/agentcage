@@ -31,7 +31,7 @@ test shape *cannot* catch.
 | **8.6** `controlUi.allowedOrigins` includes gateway URL | Entrypoint templated the port correctly into both `http://localhost:$PORT` and `http://127.0.0.1:$PORT` | Doesn't prove device pairing actually succeeds with those origins. If the allowedOrigins key is renamed upstream, 8.6 fails loudly — which is the correct behaviour. |
 | **8.7** Matrix extension workspace workaround | `/app/node_modules/openclaw` is a symlink AND its target `package.json` is resolvable — proves the Containerfile layer that creates the symlink ran | Doesn't verify matrix-js-sdk actually loads at runtime, or that `import`s from the matrix extension resolve. A regression that breaks extension loading for a different reason (e.g. peer-dep mismatch) wouldn't be caught here. |
 | **8.8a** Cage env has literal placeholder | `ANTHROPIC_API_KEY` in the cage environment equals the literal string `{{ANTHROPIC_API_KEY}}` — proves secret_injection's placeholder substitution is wired and the real key does not leak into the cage | The placeholder format is hardcoded in the test. If agentcage ever changes placeholder syntax (e.g. `${X}`), the test silently passes the wrong thing while the injection contract has moved. |
-| **8.8b** Proxy logs `secrets_injected` on injected domain | Audit log records `secrets_injected: [ANTHROPIC_API_KEY]` for the flow to `httpbin.org` (in `inject_to`) — proves inject rules fire on matched domains | Follows phase 3's audit-log pattern: only proves the proxy ATTEMPTED injection, not that the real value landed on the wire. A bug where the audit log fires but the mutation doesn't persist is NOT caught here. The trigger is a `curl` from inside the cage, not openclaw's own outbound — see T1 in TODOS.md. |
+| **8.8b** Proxy logs `secrets_injected` on injected domain | Audit log records `secrets_injected: [ANTHROPIC_API_KEY]` for the flow to `httpbin.org` (in `inject_to`) — proves inject rules fire on matched domains | Follows phase 3's audit-log pattern: only proves the proxy ATTEMPTED injection, not that the real value landed on the wire. A bug where the audit log fires but the mutation doesn't persist is NOT caught here. The trigger is a `curl` from inside the cage, not openclaw's own outbound — see issue #222. |
 | **8.8c** Substitution is domain-scoped | Audit log does NOT record `secrets_injected` for the flow to `postman-echo.com` (allowlisted but NOT in `inject_to`) — proves the `inject_to` list is honored | Absence proof via polling is weaker than presence — a race that misses the log entry would false-pass. Doesn't test path-scoped or method-scoped injection (not features today, but future-proofing is absent). |
 | **8.9** Domain allowlist blocks unlisted host | `curl https://forbidden.example.com` through the proxy returns 403 or 502 | Doesn't test subdomain-matching edge cases (e.g. `evil.httpbin.org` when only `httpbin.org` is allowed); doesn't assert a proper audit entry for the block event. |
 | **8.10** Nested rootless podman smoke | `podman run --rm busybox echo ok` works inside the cage — proves the scaffold's subuid/subgid/`fuse-overlayfs`/`slirp4netns`/storage.conf layer is functional *when the environment supports it*. Probes `podman ps` first and `e2e_skip`s if unavailable (GHA ubuntu-24.04 uncertainty) | `busybox echo` is the smallest possible nested workload. Doesn't test CNI networking inside, doesn't test volume mounts, doesn't test running a real agent inside. The skip path could mask a regression on CI permanently — if GHA never runs 8.10, we won't notice the day scaffolds/openclaw/Containerfile drops `fuse-overlayfs`. |
@@ -47,7 +47,7 @@ regression that this phase is blind to.
    token-only auth and ignored the password secret, all 12 assertions
    still pass.
 
-2. **Openclaw's own outbound requests.** Captured as TODO T1. The
+2. **Openclaw's own outbound requests.** Tracked in #222. The
    current 8.8a/b/c prove the proxy side end-to-end but trigger the
    flows with `curl` inside the cage. Openclaw's own client code is
    never exercised.
@@ -180,7 +180,6 @@ adding new test cases:
 
 ## TODOs this phase surfaced
 
-- **T1** (tracked in `TODOS.md`): HAR-capture openclaw's organic
-  outbound to prove the scaffold ACTUALLY uses the placeholder in
-  its own traffic, not just that our test curl does. Addresses the
-  biggest remaining gap.
+- **#222**: HAR-capture openclaw's organic outbound to prove the
+  scaffold ACTUALLY uses the placeholder in its own traffic, not
+  just that our test curl does. Addresses the biggest remaining gap.
