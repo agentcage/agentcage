@@ -227,6 +227,16 @@ def test_stage_build_context_writes_cage_init(tmp_path):
     assert 'export USER="${CAGE_USER}"' in cage_init
     assert 'export LOGNAME="${CAGE_USER}"' in cage_init
     assert 'CAGE_HOME=$(getent passwd 1000 | cut -d: -f6)' in cage_init
+    # CTF F1 (0.22.6): stage B' must install iptables rules that DROP
+    # cage→apple-host-gateway TCP and non-DNS UDP. Without this the cage
+    # can reach the macOS host's sshd (:22) and Apple Remote Desktop
+    # (:5900) directly via the vmnet gateway, OUTSIDE the egress proxy.
+    assert "_apple_host_gw=" in cage_init
+    assert 'iptables -A OUTPUT -d "${_apple_host_gw}" -p tcp -j DROP' in cage_init
+    assert (
+        'iptables -A OUTPUT -d "${_apple_host_gw}" -p udp ! --dport 53 -j DROP'
+        in cage_init
+    )
     # Legacy files must NOT be staged.
     assert not (tmp_path / "supervisor.sh").exists()
     assert not (tmp_path / "allowlist_addon.py").exists()

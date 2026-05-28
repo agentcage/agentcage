@@ -67,6 +67,39 @@ log "stage B: setting default route via ${AGENTCAGE_EGRESS_IP}"
 ip route replace default via "${AGENTCAGE_EGRESS_IP}" \
   || die "failed to set default route via ${AGENTCAGE_EGRESS_IP} — CAP_NET_ADMIN missing?" 2
 
+#-- Stage B'. Block cage→apple-host-gateway TCP + non-DNS UDP --------------
+# CTF F1 (0.22.6): Apple's container runtime puts the macOS host on the
+# same vmnet subnet as the cage as the .1 address. The host's loopback
+# services (sshd on :22, Apple Remote Desktop on :5900) are reachable
+# from the cage directly via that gateway IP — OUTSIDE the egress proxy
+# (which sees only :80/:443 via the REDIRECT). The cage doesn't have any
+# legitimate reason to talk to the host gateway: HTTPS goes through the
+# egress sibling at AGENTCAGE_EGRESS_IP, and DNS *should* too (F2 — the
+# resolv.conf still points at the apple gateway in this commit, fixed
+# in a separate PR). Until F2 lands we keep UDP :53 open as a temporary
+# exception so name resolution doesn't break; F1 still closes the
+# heaviest abuse channel (TCP :22 / :5900 / arbitrary ports).
+#
+# Derive the apple-vmnet host IP as <subnet>.1 — apple-container always
+# assigns the host the first usable address on the bridge subnet, and
+# our default route via the egress sibling sits at <subnet>.2 (or
+# elsewhere on the same /24). Anchoring on the cage's own eth0 IP makes
+# this robust to apple changing the default subnet allocation in a
+# future runtime release.
+_local_ip=$(ip -o -4 addr show eth0 2>/dev/null \
+  | awk '/inet / {sub(/\/.*/,"",$4); print $4; exit}')
+_apple_host_gw=$(printf '%s\n' "${_local_ip}" \
+  | awk -F. 'NF==4 {print $1"."$2"."$3".1"}')
+if [ -n "${_apple_host_gw}" ] && command -v iptables >/dev/null 2>&1; then
+  log "stage B': blocking cage→host-gateway ${_apple_host_gw} (TCP all; UDP except :53)"
+  iptables -A OUTPUT -d "${_apple_host_gw}" -p tcp -j DROP \
+    || log "warn: iptables TCP DROP rule for ${_apple_host_gw} failed (cage→host SSH/ARD remains reachable)"
+  iptables -A OUTPUT -d "${_apple_host_gw}" -p udp ! --dport 53 -j DROP \
+    || log "warn: iptables UDP-non-53 DROP rule for ${_apple_host_gw} failed"
+else
+  log "warn: cannot derive apple-vmnet gateway IP or iptables missing — F1 mitigation skipped"
+fi
+
 #-- Stage C. Install proxy CA into the cage's trust store -----------------
 # The egress sibling writes mitmproxy-ca-cert.pem into the shared /certs
 # bind-mount on its first startup. Cage and egress mount the same host
