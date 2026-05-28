@@ -426,6 +426,59 @@ class Agentcage:
         # Skip for reverse proxy flows — the host is the configured upstream
         # and must not be overwritten with the client's Host header.
         if not is_reverse:
+            # CTF F3 (0.22.6, HIGH): strict SNI ↔ Host header match.
+            # The rewrite below makes the proxy FOLLOW the Host header
+            # for the upstream connection. If the cage opened TLS with
+            # SNI=A and then sent an HTTP `Host: B` inside that TLS,
+            # the upstream connection would go to B while every
+            # forensic identifier downstream (audit logs, allowlist
+            # decisions, secret_injection rule selection) was keyed
+            # on either A or B — never both. The attacker controls
+            # which one is queried at each decision point. Closing
+            # this requires enforcing equality before any host rewrite.
+            #
+            # HTTP requests (no SNI) are exempt: the Host header is
+            # the only authority available, and the destination IP is
+            # already trusted to come from the cage's allowlisted
+            # resolver (or, in transparent mode, from SO_ORIGINAL_DST
+            # which mitmproxy preserves into flow.request.host).
+            sni = getattr(getattr(flow, "client_conn", None), "sni", None)
+            if isinstance(sni, bytes):
+                try:
+                    sni = sni.decode("idna")
+                except UnicodeError:
+                    sni = sni.decode("utf-8", "replace")
+            host_hdr = flow.request.host_header
+            if isinstance(sni, str) and sni and host_hdr:
+                # Strip optional port from the Host header before
+                # comparing; SNI is host-only by spec.
+                hh_host = host_hdr.rsplit(":", 1)[0] if ":" in host_hdr else host_hdr
+                sni_norm = sni.lower().rstrip(".")
+                hh_norm = hh_host.lower().rstrip(".")
+                if sni_norm != hh_norm:
+                    reason = (
+                        f"SNI/Host header mismatch: TLS was established "
+                        f"with SNI={sni!r} but HTTP Host header is "
+                        f"{host_hdr!r}; agentcage requires strict equality "
+                        f"so audit identity, allowlist decisions, and "
+                        f"secret-injection routing all reference the same "
+                        f"upstream"
+                    )
+                    flow.response = http.Response.make(
+                        403,
+                        json.dumps(
+                            {"blocked": True, "reason": reason,
+                             "host": host_hdr, "by": "agentcage"}
+                        ).encode(),
+                        {"Content-Type": "application/json"},
+                    )
+                    flow.metadata["agentcage_blocked"] = True
+                    self._log(
+                        flow, "blocked",
+                        "sni-host mismatch", [],
+                    )
+                    return
+
             pretty = flow.request.pretty_host
             if pretty != flow.request.host:
                 flow.request.host = pretty
