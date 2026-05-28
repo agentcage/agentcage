@@ -147,15 +147,33 @@ class AppleContainerBackend:
         return self._state_dir(name) / "egress-config"
 
     def certs_dir(self, name: str) -> Path:
-        """Per-cage CA-cert exchange dir, bind-mounted into BOTH microVMs.
+        """Per-cage CA-cert dir, bind-mounted ONLY into the egress microVM.
 
-        Egress writes mitmproxy-ca-cert.pem here at startup; cage-init.sh
-        reads it to install into the cage's trust store. Same host path
-        for both --volume flags so the two VMs see byte-identical contents
-        (avoids the apple-container directory-COPY 0-byte bug entirely
-        since there's no COPY involved).
+        This is mitmproxy's full ``~/.mitmproxy/`` working dir on the host
+        — it contains the egress's CA *private* key
+        (``mitmproxy-ca.pem``, ``mitmproxy-ca.p12``) which mitmproxy needs
+        to mint per-host certs for transparent MITM. The private key MUST
+        NEVER be exposed to the cage workload — a uid-1000 process that
+        can read it can mint a trusted certificate for any allowlisted
+        host and bypass the trust-store guard from cage-init.sh stage C.
+
+        Pre-0.22.6: this dir was bind-mounted on the cage at /certs (for
+        the public cert install), which silently exposed the private key
+        too — caught by the CTF re-run on 0.22.5 as the headline finding.
+        The cage now mounts ``public_certs_dir`` instead; the egress is
+        still the only VM that sees the full mitmproxy dir.
         """
         return self._state_dir(name) / "certs"
+
+    def public_certs_dir(self, name: str) -> Path:
+        """Per-cage *public-only* cert dir, bind-mounted into BOTH microVMs.
+
+        Egress's supervisor copies just ``mitmproxy-ca-cert.pem`` here
+        after generation; cage-init.sh stage C reads it to install into
+        the cage's trust store. Private key material stays in
+        ``certs_dir`` which is egress-only.
+        """
+        return self._state_dir(name) / "public-certs"
 
     def secrets_dir(self, name: str) -> Path:
         """Per-cage secrets dir on the host, bind-mounted ONLY into the
@@ -689,6 +707,15 @@ class AppleContainerBackend:
         certs_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(certs_dir, 0o1777)
 
+        # Separate cage-visible cert dir — holds ONLY the public cert.
+        # Egress's supervisor-egress.sh Step E copies
+        # mitmproxy-ca-cert.pem here after generation; the cage mounts
+        # THIS dir at /certs, not the full certs_dir which holds the
+        # private key. See public_certs_dir() docstring for context.
+        public_certs_dir = self.public_certs_dir(name)
+        public_certs_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(public_certs_dir, 0o1777)
+
         egress_cfg_dir = self.egress_config_dir(name)
         if not egress_cfg_dir.is_dir():
             raise RuntimeError(
@@ -755,6 +782,11 @@ class AppleContainerBackend:
             "--network", network_name,
             "--volume", f"{logs_dir}:/var/log/agentcage",
             "--volume", f"{certs_dir}:/home/acproxy/.mitmproxy",
+            # Egress writes the public-only cert here so the cage can
+            # bind-mount JUST this dir, not certs_dir (which holds the
+            # CA private key — see public_certs_dir() docstring + the
+            # CTF F1 finding on 0.22.5).
+            "--volume", f"{public_certs_dir}:/home/acproxy/public-certs",
             "--volume", f"{egress_cfg_dir}/proxy-config.yaml:/etc/agentcage/config.yaml:ro",
             "--volume", f"{egress_cfg_dir}/dnsmasq.conf:/etc/agentcage/dnsmasq.conf:ro",
             "--volume", f"{egress_cfg_dir}/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro",
@@ -817,7 +849,13 @@ class AppleContainerBackend:
             "run", "-d", "--name", name,
             "--cap-add", "CAP_NET_ADMIN",
             "--network", network_name,
-            "--volume", f"{certs_dir}:/certs",
+            # CTF F1 (0.22.5): pre-0.22.6 this bound certs_dir, which
+            # holds mitmproxy-ca.pem (the CA *private* key). A uid-1000
+            # cage workload could read it and mint a trusted forged
+            # cert for any allowlisted host. Bind public_certs_dir
+            # instead — egress's Step E copies only the public cert
+            # there. The full mitmproxy dir is now egress-only.
+            "--volume", f"{public_certs_dir}:/certs",
             "-e", f"AGENTCAGE_EGRESS_IP={egress_ip}",
             # Point HTTPS clients at the proxy CA immediately, without
             # waiting for cage-init.sh stage C to finish copying it into

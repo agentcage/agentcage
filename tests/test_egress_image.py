@@ -377,3 +377,43 @@ def test_mitmproxy_uid_and_capbnd(egress_container: str) -> None:
             f"no mitmdump pid had uid=200 + CapBnd=0.\n"
             f"last checked: {last_report}\nall pids: {pids}\nlogs:\n{logs}"
         )
+
+
+def test_supervisor_publishes_public_cert_only():
+    """CTF F1 (0.22.5): supervisor-egress.sh must publish the *public*
+    cert to /home/acproxy/public-certs/ after Step E, so the
+    apple-container backend can mount a dir that DOES NOT contain
+    mitmproxy-ca.pem (the CA private key) on the cage. Static check on
+    the script content — running the cage would be the strongest
+    assertion but the script content is the load-bearing piece.
+    """
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parent.parent
+    script = (
+        repo_root / "src/agentcage/data/containers/supervisor-egress.sh"
+    ).read_text()
+    # The install line publishes ONLY the public cert. Asserting on
+    # the exact target path keeps a future "let's also copy the .p12"
+    # edit from re-leaking the private key.
+    assert (
+        'install -m 0644 "$CA_PATH" /home/acproxy/public-certs/mitmproxy-ca-cert.pem'
+        in script
+    ), "supervisor-egress.sh missing the public-cert publish step"
+    # Defense-in-depth: no line in the script should copy the CA
+    # private key (.p12 or mitmproxy-ca.pem without the -cert suffix)
+    # to the public-certs dir.
+    for line in script.splitlines():
+        if "/home/acproxy/public-certs" not in line:
+            continue
+        # mitmproxy-ca.pem is the private key; mitmproxy-ca-cert.pem is
+        # the public cert. The former must never appear here without
+        # the latter substring being the actual target.
+        if "mitmproxy-ca.pem" in line and "mitmproxy-ca-cert.pem" not in line:
+            raise AssertionError(
+                f"supervisor-egress.sh copies the CA *private* key "
+                f"into public-certs: {line!r}"
+            )
+        assert "mitmproxy-ca.p12" not in line, (
+            f"supervisor-egress.sh copies CA .p12 into public-certs: "
+            f"{line!r}"
+        )
