@@ -13,12 +13,12 @@ agentcage offers three isolation modes that affect the threat model differently:
 
 **VM mode** — The same container topology runs inside a Lima VM with a dedicated guest kernel, isolated by KVM hardware virtualization. This brings "kernel or container escapes" **into scope** as a defended threat: an escape from the container lands inside the VM, not on the host. The host sees only the Lima VM process.
 
-**apple-container mode** (macOS 26+ Apple Silicon default, new in 0.20) — Each cage runs in a single Apple `container` microVM with its own kernel (hypervisor boundary via Apple's Virtualization.framework). The supervisor inside the microVM stands up mitmproxy + dnsmasq + iptables, installs the proxy CA into the cage's trust store, then drops to uid 1000 / zero caps / NoNewPrivs before exec'ing the cage workload. Functionally equivalent to VM mode on every threat where it matters, with one documented trade-off: there is no second backstop network layer (Lima's `<cage>-net` is non-routed; Apple custom networks always have NAT). The cage's iptables — which the cage workload cannot mutate (CAP_NET_ADMIN dropped) — is the sole defense rather than the second layer.
+**apple-container mode** (macOS 26+ Apple Silicon default, new in 0.20; restructured to two microVMs in 0.22) — Each cage runs as **two sibling Apple `container` microVMs**: a slim cage VM containing only the user's workload + a tiny `cage-init.sh`, and a `<cage>-egress` sibling VM running the shared `agentcage-egress` image (mitmproxy + dnsmasq + iptables under uid 200/201). The cage VM has no mitmproxy, no dnsmasq, no iptables. `cage-init.sh` waits for the egress sibling, replaces the default route to point at it, starts a loopback-only dnsmasq scoped to the cage's allowlist (Apple's vmnet drops inter-microVM UDP, so the egress sibling's dnsmasq is unreachable), installs the proxy CA into the cage's trust store, then capsh-drops to uid 1000 / zero caps / NoNewPrivs before exec'ing the workload. Each microVM has its own kernel (hypervisor boundary via Apple's Virtualization.framework). One documented trade-off: there is no second backstop network layer (Lima's `<cage>-net` is non-routed; Apple custom networks always have NAT). The egress sibling's iptables — which the cage workload cannot mutate (different microVM filesystem; no iptables binary in the cage VM) — is the sole defense rather than the second layer.
 
 | Threat | Container mode | VM mode | apple-container mode |
 |---|---|---|---|
 | HTTP/HTTPS exfiltration | Defended (proxy inspection) | Defended (same) | Defended (in-microVM proxy + addon allowlist) |
-| Secret leakage | Defended (injection + scanning) | Defended (same) | **Partial** — egress filter + MITM in place; server-side `{{SECRET:...}}` injection deferred (v1 ships filter only) |
+| Secret leakage | Defended (injection + scanning) | Defended (same) | Defended (injection + scanning, with the secrets bind-mount living only in the egress sibling — `cage exec --user 0` cannot read them) |
 | Unauthorized API calls | Defended (domain filtering) | Defended (same) | Defended (mitmproxy addon 403s non-listed hosts) |
 | DNS exfiltration | Partially defended (placeholder IPs) | Partially defended (same) | Partially defended (cage's only DNS path is local dnsmasq) |
 | Container/runtime escape | **Out of scope** (shared kernel) | Defended (VM boundary) | Defended (microVM boundary) |
@@ -56,7 +56,7 @@ agentcage applies multiple overlapping defenses:
 
 2. **Domain filtering** -- An allowlist or blocklist controls which domains the agent can reach. Non-matching requests receive a 403 response with a JSON body explaining the block. Subdomains are matched automatically.
 
-3. **DNS filtering** -- When using allowlist mode, the dnsmasq sidecar returns a placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for non-allowlisted domains, preventing DNS resolution from reaching real infrastructure while keeping SSRF guards functional. DNS query logging is enabled by default for forensic analysis.
+3. **DNS filtering** -- When using allowlist mode, the dnsmasq sidecar returns a placeholder IP (198.51.100.1, RFC 5737 TEST-NET-2) for A/AAAA queries to non-allowlisted domains, preventing DNS resolution from reaching real infrastructure while keeping SSRF guards functional. Non-A query types (TXT/MX/NS/SRV/CNAME) to non-allowlisted apexes are refused at dnsmasq rather than recursed (closes the non-A-record DNS exfil channel). DNS query logging is opt-in via `logging.dns_queries: true`.
 
 4. **Secret injection** -- When configured, the cage container never receives real secrets. It gets placeholder tokens (e.g. `{{ANTHROPIC_API_KEY}}`), and the proxy transparently injects real values on outbound requests and redacts them from inbound responses. Inspectors run on the pre-injection flow (with placeholders still in place), so real secret values are never exposed to the inspector chain. Two policy checks enforce this boundary: if a **literal real secret value** appears in any outbound request or WebSocket frame, the request is blocked (severity `critical`) — the agent should never know real values; if a **placeholder** is sent to a domain not in the rule's `inject_to` list, the request is flagged. See [Secret injection](../reference/secret-injection.md).
 
@@ -64,7 +64,7 @@ agentcage applies multiple overlapping defenses:
 
    For non-HTTP protocols (IMAP, SMTP), the equivalent property is provided by [Protocol relays](../reference/protocol-relays.md) — stateful in-proxy listeners that perform upstream auth on the cage's behalf. The cage connects to a localhost address inside the proxy container with no credentials; the relay holds the upstream password in its own memory only. Per-protocol policy enforces things the HTTP injection model handles by domain. IMAP: `readonly` blocks state-mutating commands; `folder_allowlist` restricts SELECT/EXAMINE/STATUS targets. SMTP: `recipient_allowlist` (addresses + domains) gates every `RCPT TO`, `sender_allowlist` gates `MAIL FROM`, and every `DATA` payload runs through the same inspector chain (`secrets`, `entropy`, `content-type`, `body-size`) used for HTTP — so a leaked API key in an outbound email body blocks the message before it reaches the upstream MTA.
 
-5. **Secret detection** -- 19 regex patterns scan every request for common secret formats: OpenAI, Anthropic, AWS, GitHub, Google, Slack, Stripe, GitLab, Hugging Face, Databricks, Azure JWT, OpenRouter, Perplexity, Brave, Telegram, Discord, and Firecrawl tokens, plus private keys. Matches result in a hard block by default. Built-in `allow_to_domains` mappings automatically let each secret type reach its provider domain (e.g., an Anthropic key to `anthropic.com`) without manual configuration. Custom patterns can be added via `extra_patterns` config, including env-var-based literal matching.
+5. **Secret detection** -- 21 regex patterns scan every request for common secret formats: OpenAI, Anthropic, AWS, GitHub (classic + fine-grained PAT), Google (API key + OAuth access token), Slack, Stripe, GitLab, Hugging Face, Databricks, Azure JWT, OpenRouter, Perplexity, Brave, Telegram, Discord, and Firecrawl tokens, plus a generic private-key block-header pattern. Matches result in a hard block (severity `critical`) by default. Built-in `allow_to_domains` mappings automatically let each secret type reach its provider domain (e.g., an Anthropic key to `anthropic.com`) without manual configuration. Custom patterns can be added via `extra_patterns` config, including env-var-based literal matching. Body-text scanning skips opaque binary content types (`image/*`, `audio/*`, `video/*`, `application/octet-stream`, `application/pdf`) so base64-encoded image bytes don't false-positive against patterns like `BSAI...`; URL and headers are still scanned on binary-body requests.
 
 6. **Payload inspection** -- Inspectors analyze request bodies for anomalies (default action: block):
    - **Entropy analysis** detects encrypted or compressed payloads that may hide exfiltrated data
@@ -78,7 +78,7 @@ agentcage applies multiple overlapping defenses:
 
 9. **Custom inspectors** -- User-defined Python inspectors can implement arbitrary detection logic, extending the chain with domain-specific rules. Custom inspector paths are validated against an allowed directory list to prevent arbitrary code loading.
 
-10. **Audit logging** -- All inspection decisions (blocked, flagged, and allowed requests) are written as structured JSON lines to a persistent audit log file (`/var/log/agentcage/audit.jsonl` by default). Allowed request logging is disabled by default.
+10. **Audit logging** -- Blocked and flagged inspection decisions are written as structured JSON lines to a persistent audit log file (`/var/log/agentcage/audit.jsonl` by default; override with `AGENTCAGE_AUDIT_LOG`). Allowed requests are not logged by default — set `logging.allowed_requests: true` to record every inspection outcome (high volume, useful for forensics).
 
 ## Fail-closed design
 
@@ -90,7 +90,7 @@ The generated quadlet files use systemd `Restart=on-failure` so the proxy recove
 
 The cage container is hardened by default: read-only root filesystem, all Linux capabilities dropped, no-new-privileges flag set. See the [Configuration Reference](../reference/configuration.md#container-hardening) for details and how to adjust these settings.
 
-The DNS sidecar runs as a non-root `dnsmasq` user with only `NET_BIND_SERVICE` capability (set via `setcap` at build time). The proxy container runs as the `mitmproxy` user and binds only to the internal network IP (not 0.0.0.0).
+Since 0.22 the proxy and DNS now share one `agentcage-egress` container (cage + egress instead of cage + proxy + dns). Inside it, dnsmasq runs as the non-root `acdns` user (uid 201) with only `NET_BIND_SERVICE` (set via `setcap` at build time), and mitmproxy runs as the non-root `acproxy` user (uid 200). The mitmproxy listeners bind to the per-cage network IP (not 0.0.0.0), so other rootless containers on the host's default podman network can't borrow this cage's allowlist + injected secrets as an open HTTP proxy.
 
 ### Nested containers
 
@@ -103,14 +103,14 @@ When nested container support is enabled, several hardening defaults are overrid
 | `User=1000:1000` | `User=0` (root in user namespace) |
 | seccomp profile active | `seccomp=unconfined` |
 
-These changes increase the container escape attack surface. All network-level protections (proxy inspection, domain filtering, secret detection, DNS filtering) remain fully active. Inner containers default to `--network none` with no network access.
+These changes increase the container escape attack surface. All network-level protections (proxy inspection, domain filtering, secret detection, DNS filtering) remain fully active. Inner containers default to `netns = "host"` (sharing the cage's network namespace) plus `http_proxy = true`, so all inner-container traffic still routes through the same mitmproxy egress filter the cage uses — no separate enforcement path. The mitmproxy CA is bind-mounted into inner containers and exposed via `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` so inner-process TLS verification succeeds.
 
 `nested_containers` is only supported with `isolation: container`. For production nested workloads, consider running the cage on a dedicated host or VM to limit blast radius.
 
 ## Supply chain hardening
 
 - **Container base images** are pinned to specific `sha256` digests in the Containerfiles, preventing silent upstream changes
-- **Python dependencies** (pyyaml) are pinned to exact versions
+- **Python runtime dependencies** are minimized to three libraries (`click`, `pyyaml`, `jinja2`); mitmproxy and the inspector chain ship inside the egress container image, not on the host
 - **Patch files** (nested container support) are re-copied from package data on every cage create, update, and reload
 - **Custom inspector paths** are validated against an allowed directory list (default: `/etc/agentcage/inspectors/`)
 - **Cage names** are validated against `^[a-z0-9][a-z0-9-]{0,62}$` to prevent shell injection in generated systemd units
@@ -125,12 +125,12 @@ These changes increase the container escape attack surface. All network-level pr
 | **ASI01 Agent Goal Hijack** | Out of scope — agentcage inspects network traffic, not agent intent | Correctly scoped |
 | **ASI02 Tool Misuse** | Strong — domain allowlist + WebSocket inspection + DNS filtering limit which services agents can reach | Multi-request evasion, DNS subdomain exfiltration, allowed-domain data smuggling |
 | **ASI03 Identity/Privilege Abuse** | Strong — secret injection prevents agent from holding real secrets; inspectors see only placeholders | — |
-| **ASI04 Supply Chain** | Strong — pinned image digests, pinned deps, lockfile integrity, patch file verification, inspector path validation | Agent can install arbitrary packages from allowlisted registries |
+| **ASI04 Supply Chain** | Strong — pinned image digests, `uv.lock`-backed dependency resolution, patch files re-copied from package data on every cage operation, inspector path allowlist | Agent can install arbitrary packages from allowlisted registries |
 | **ASI05 Code Execution** | Strong — read-only root, dropped caps, no-new-privileges; custom inspector paths restricted to allowed directories | — |
 | **ASI06 Memory Poisoning** | Not applicable — agentcage doesn't manage agent memory | Named volumes persist across sessions (design choice) |
 | **ASI07 Inter-Agent Comms** | Not applicable — single-agent scope | — |
 | **ASI08 Cascading Failures** | Strong — fail-closed on proxy down, systemd restart, per-host rate limiting | — |
-| **ASI09 Human Trust** | Strong — persistent structured audit logging with all decisions logged by default | — |
+| **ASI09 Human Trust** | Strong — persistent structured audit logging; blocked + flagged decisions on by default, allowed decisions opt-in via `logging.allowed_requests` | — |
 | **ASI10 Rogue Agents** | Strong — network isolation + multi-layer inspection + DNS filtering + WebSocket inspection | Multi-request evasion, confused-deputy via allowed domains |
 
 ## Known limitations
@@ -193,7 +193,7 @@ If a `cage.yaml` is sourced from an untrusted location (e.g. a public git reposi
 
 The `env:` backend reads from the host's environment variables. No shell execution is involved.
 
-The `systemd-creds:` backend encrypts secrets at rest with AES256-GCM, keyed by a combination of a TPM2 chip and a host-specific key. Encrypted blobs are bound to the machine's hardware. A motherboard swap, TPM reset, or BIOS update may render encrypted secrets unrecoverable. Use `agentcage cage backup --include-secrets` to create portable backups.
+The `systemd-creds:` backend encrypts secrets at rest with AES256-GCM, keyed by the host's systemd-creds key (TPM2 when available, host key otherwise; controlled by `secrets.scope: auto|user|system`). Encrypted blobs are bound to the machine. A motherboard swap, TPM reset, or BIOS update may render encrypted secrets unrecoverable. Use `agentcage cage backup --include-secrets` to create portable backups. systemd-creds requires systemd 250+; on older hosts agentcage transparently falls back to storing the secret in the Podman secret store.
 
 ## Reporting security issues
 
