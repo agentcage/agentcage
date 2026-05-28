@@ -113,17 +113,20 @@ jobs:
         # Pin to the latest release artifact published by apple/container.
         # The install pkg drops the binary at /usr/local/bin/container; no
         # post-install configuration is needed beyond starting the apiserver.
+        # Use `gh release download` so the call is authenticated by the
+        # action's GITHUB_TOKEN — unauthenticated api.github.com hits
+        # shared-runner rate limits and 403s.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          PKG_URL=$(curl -fsSL https://api.github.com/repos/apple/container/releases/latest \
-            | grep -oE 'https://github.com/apple/container/releases/download/[^"]+\.pkg' \
-            | head -1)
-          if [ -z "$PKG_URL" ]; then
-            echo "Could not resolve apple/container .pkg URL"
+          gh release download --repo apple/container --pattern '*.pkg' --dir .
+          PKG=$(ls -1 ./*.pkg | head -1)
+          if [ -z "$PKG" ]; then
+            echo "No .pkg in apple/container latest release"
             exit 1
           fi
-          echo "Downloading $PKG_URL"
-          curl -fsSLO "$PKG_URL"
-          sudo installer -pkg "$(basename "$PKG_URL")" -target /
+          echo "Installing $PKG"
+          sudo installer -pkg "$PKG" -target /
           container --version
 
       - name: Start container apiserver
