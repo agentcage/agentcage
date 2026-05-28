@@ -12,6 +12,7 @@ The operator's map of agentcage. Find your task; follow the link.
 
 - [Claude Code](../src/agentcage/scaffolds/claude-code/README.md) — Anthropic's CLI agent.
 - [Codex](../src/agentcage/scaffolds/codex/README.md) — OpenAI's CLI agent.
+- [Pi](../src/agentcage/scaffolds/pi/README.md) — minimal terminal coding harness.
 - [OpenClaw](../src/agentcage/scaffolds/openclaw/README.md) — full agent platform.
 
 ## Control what the agent can do
