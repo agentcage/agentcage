@@ -950,6 +950,19 @@ def validate_config(config: Config) -> list[str]:
 
     warnings = []
 
+    def _is_scaffold_default_tmpfs(entries: list[str]) -> bool:
+        """A single entry whose target is /tmp matches the stock scaffold
+        default (``tmpfs: ["/tmp:rw,noexec,nosuid,size=256M"]``). On
+        apple-container the cage's /tmp lives in the RW rootfs, so the
+        functional outcome (writable /tmp for the workload) is the same;
+        the noexec/nosuid hardening flags aren't enforced but no scaffold
+        relies on them. Multiple entries OR a non-``/tmp`` target IS
+        operator intent that this backend can't honor — keep warning."""
+        if len(entries) != 1:
+            return False
+        target = entries[0].split(":", 1)[0]
+        return target == "/tmp"
+
     # Apple-container backend: surface config knobs that the backend doesn't
     # respect today (silently dropped pre-this-warning). Tracked as the full
     # parity work in #120. Plain `validate_config` warnings so the user sees
@@ -972,7 +985,20 @@ def validate_config(config: Config) -> list[str]:
             # `_user_volume_argv`.
             ("container.named_volumes", bool(config.container.named_volumes),
              "podman named volumes (no equivalent on apple-container)"),
-            ("container.tmpfs", bool(config.container.tmpfs),
+            # Stock scaffold ships `tmpfs: ["/tmp:rw,noexec,nosuid,size=256M"]`
+            # as defense-in-depth for the container backend. On apple-
+            # container the cage's /tmp lives in the RW rootfs — the
+            # workload functionally gets a writable /tmp, and the noexec
+            # /nosuid hardening flags aren't enforced. A single /tmp
+            # entry is the documented scaffold default; treating it as
+            # "compatible enough" silences the noisiest warning on every
+            # default cage. Anything else (multiple entries, non-/tmp
+            # targets like /run, /var/cache) still warns because those
+            # do represent operator intent that this backend can't honor.
+            ("container.tmpfs",
+             bool(config.container.tmpfs) and not _is_scaffold_default_tmpfs(
+                 config.container.tmpfs
+             ),
              "tmpfs mounts (apple-container's rootfs is RW; explicit tmpfs entries "
              "are not wired)"),
             ("container.podman_secrets", bool(config.container.podman_secrets),
@@ -981,7 +1007,15 @@ def validate_config(config: Config) -> list[str]:
             ("container.nested_containers", bool(config.container.nested_containers),
              "nested container runtime (no podman-in-podman shim available in "
              "the Apple microVM)"),
-            ("container.userns", bool(config.container.userns),
+            # Scaffold default `userns: "keep-id"` exists for the container
+            # backend's rootless-podman uid mapping. On apple-container,
+            # the supervisor's drop-to-uid-1000 already achieves the
+            # "workload isn't root" goal, so keep-id is functionally a
+            # no-op rather than a missing feature. Anything else (e.g.
+            # an explicit remap config) is operator intent that doesn't
+            # apply here — keep warning on those.
+            ("container.userns",
+             bool(config.container.userns) and config.container.userns != "keep-id",
              "user namespace remap (the supervisor drops to a fixed uid 1000 — "
              "no remap layer)"),
             ("container.add_capabilities", bool(config.container.add_capabilities),
@@ -992,10 +1026,17 @@ def validate_config(config: Config) -> list[str]:
              list(config.container.drop_capabilities) != ["ALL"],
              "custom drop list — the supervisor unconditionally drops ALL caps; "
              "your selective drop list has no effect"),
-            ("container.read_only", config.container.read_only is False,
-             "writable rootfs — apple-container's rootfs is always RW; "
-             "the False here matches behavior but is silently not enforced "
-             "as a config-driven choice"),
+            # Only warn when the operator EXPLICITLY wants a read-only
+            # rootfs and apple-container can't deliver. The False default
+            # matches the backend's actual behavior — it's not a conflict,
+            # just config-vs-runtime parity. Pre-0.22.7 the predicate was
+            # `is False` which fired on every default cage (the scaffold
+            # ships read_only: false for coding agents that write to the
+            # FS), making this the single noisiest warning on every
+            # `agentcage run`.
+            ("container.read_only", config.container.read_only is True,
+             "read-only rootfs — apple-container's rootfs is always RW, "
+             "so `read_only: true` cannot be enforced"),
             ("container.security_label_disable",
              config.container.security_label_disable is False,
              "SELinux label control — apple-container's microVM has no SELinux"),
