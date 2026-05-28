@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.8] - 2026-05-28
+
+### Security
+
+- **apple-container cage→host-gateway TCP and non-DNS UDP are now
+  blocked at cage-init.** Headline finding F1 from the CTF re-run on
+  0.22.6: Apple's container runtime puts the macOS host on the cage's
+  vmnet subnet as the `.1` address, and the host's loopback services
+  (sshd on `:22`, Apple Remote Desktop on `:5900`) were reachable
+  directly via that gateway — completely OUTSIDE the egress proxy at
+  `192.168.65.2:8080`, which only handles `:80`/`:443` via the
+  REDIRECT rule. claude demonstrated banner-grabbing OpenSSH 10.2 and
+  RFB 003.889 from inside the cage. Wrapper Containerfile now installs
+  `iptables`; cage-init.sh stage B' (new) derives the host-gateway IP
+  as `<subnet>.1` from the cage's own eth0 address and installs
+  `iptables -A OUTPUT -d <gw> -p tcp -j DROP` plus
+  `-p udp ! --dport 53 -j DROP`. UDP `:53` is kept open as a temporary
+  exception because the cage's `/etc/resolv.conf` still points at the
+  apple gateway in this commit (closed in a follow-up PR for F2).
+
 ## [0.22.7] - 2026-05-28
 
 ### Changed
