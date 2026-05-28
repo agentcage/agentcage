@@ -33,7 +33,7 @@ Three isolation backends are supported:
 
 - **container** (Linux, default) — rootless Podman containers on the host
 - **vm** (Linux + macOS) — a Lima VM per cage with hardware isolation via KVM
-- **apple-container** (macOS 26+ Apple Silicon, new in 0.20) — a single Apple `container` microVM per cage with the egress filter (mitmproxy + dnsmasq + iptables) running inside, supervised by an in-microVM PID 1 that drops to uid 1000 / zero caps / NoNewPrivs before exec'ing the cage workload. ~10–20× faster than Lima and ~3× less RAM per cage; the default on macOS 26+ when Apple's `container` CLI is installed.
+- **apple-container** (macOS 26+ Apple Silicon, default there) — an Apple `container` microVM per cage; faster and lighter than Lima.
 
 See [Security model](docs/explain/security-model.md#isolation-modes-and-the-threat-surface) for the threat-by-threat matrix and [Isolation modes](docs/explain/isolation-modes.md) for how each backend works and when to pick which. For the full container topology and inspector chain, see [Architecture](docs/explain/architecture.md).
 
