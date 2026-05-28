@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **apple-container cage now runs a local dnsmasq scoped to the per-
+  cage `domains.allow` apexes** (CTF F2, HIGH severity). Pre-fix the
+  cage's `/etc/resolv.conf` defaulted to the apple-vmnet host gateway
+  (`<subnet>.1`) whose recursive resolver answered arbitrary queries —
+  a clean DNS-tunnel exfil channel that bypassed the egress filter
+  (the apex-scoped dnsmasq runs in the egress sibling, not the host).
+  The obvious fix — repoint `resolv.conf` at the egress sibling's
+  dnsmasq (`<subnet>.2:53`) — doesn't work because macOS vmnet drops
+  inter-microVM UDP at the framework layer (verified against
+  `apple/container` source — `NonisolatedInterfaceStrategy.swift:32-56`
+  uses `VMNET_SHARED_MODE` NAT, which state-tracks TCP and ICMP but
+  drops direct UDP between peer microVMs). The fix is a local
+  dnsmasq inside the cage VM: the wrapper Containerfile now installs
+  `dnsmasq-base` + creates a dropped-priv `acdns` user;
+  `cage-init.sh` stage A' launches dnsmasq on loopback (`--bind-
+  interfaces --except-interface=eth0`) with the same per-cage
+  `dnsmasq.conf` the egress sibling reads (bind-mounted from the
+  host's egress-config dir); `/etc/resolv.conf` is rewritten to
+  `nameserver 127.0.0.1`. The egress sibling's iptables `FORWARD`
+  chain now ACCEPTs UDP `:53` (via `ALLOW_UDP_PORTS=53`) so the
+  cage's dnsmasq can reach its upstream forwarders. Closes #213.
+
 ## [0.22.10] - 2026-05-28
 
 ### Security

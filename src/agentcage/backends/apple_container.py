@@ -804,6 +804,16 @@ class AppleContainerBackend:
             "-e", "AGENTCAGE_CONFIG=/etc/agentcage/config.yaml",
             "-e", "AGENTCAGE_AUDIT_LOG=/var/log/agentcage/audit.jsonl",
             "-e", "AGENTCAGE_CAPTURE=/var/log/agentcage/capture.jsonl",
+            # CTF F2 (0.22.6): the cage's local dnsmasq (cage-init.sh
+            # stage A') queries upstream resolvers via UDP :53. Those
+            # packets route through the egress sibling (the cage's
+            # default gateway). supervisor-egress.sh sets FORWARD policy
+            # to DROP and only ACCEPTs ports listed in $ALLOW_UDP_PORTS,
+            # which is otherwise unset. Without :53 in the list, the
+            # cage's dnsmasq sees its upstream forwarders timeout and
+            # returns SERVFAIL — even for allowlisted apexes. Setting
+            # ALLOW_UDP_PORTS=53 here closes that gap.
+            "-e", "ALLOW_UDP_PORTS=53",
         ]
         # Egress is small — 512M is plenty. We don't normalize here
         # because the value is internal, not operator-supplied.
@@ -856,7 +866,18 @@ class AppleContainerBackend:
             # instead — egress's Step E copies only the public cert
             # there. The full mitmproxy dir is now egress-only.
             "--volume", f"{public_certs_dir}:/certs",
+            # CTF F2 (0.22.6): the cage's local dnsmasq (cage-init stage A')
+            # reads the same allowlist-scoped config the egress sibling
+            # uses, bind-mounted from the host's egress-config dir. macOS
+            # vmnet drops inter-microVM UDP (verified against apple/container
+            # source — NonisolatedInterfaceStrategy.swift uses
+            # VMNET_SHARED_MODE NAT), so the cage can't reach the egress's
+            # dnsmasq on .2:53; the only fix is a local resolver scoped to
+            # the same config.
+            "--volume", f"{egress_cfg_dir}/dnsmasq.conf:/etc/agentcage/dnsmasq.conf:ro",
+            "--volume", f"{egress_cfg_dir}/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro",
             "-e", f"AGENTCAGE_EGRESS_IP={egress_ip}",
+            "-e", "AGENTCAGE_DNS_SERVERS_FILE=/etc/agentcage/dns-allowlist.conf",
             # Point HTTPS clients at the proxy CA immediately, without
             # waiting for cage-init.sh stage C to finish copying it into
             # /usr/local/share/ca-certificates and running
