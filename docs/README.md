@@ -18,4 +18,6 @@
 - [Claude Code](../src/agentcage/scaffolds/claude-code/README.md) — Anthropic's CLI coding agent
 - [Codex](../src/agentcage/scaffolds/codex/README.md) — OpenAI's CLI coding agent
 - [OpenClaw](../src/agentcage/scaffolds/openclaw/README.md) — full-featured AI coding agent
-- [Managing Your Cage](cage-management.md) — common operations and troubleshooting
+- [Troubleshoot](how-to/troubleshoot.md) — diagnose and fix a misbehaving cage
+- [Back up and restore](how-to/back-up-and-restore.md) — capture and recover cage state
+- [Upgrade agentcage](how-to/upgrade-agentcage.md) — bump agentcage and update running cages

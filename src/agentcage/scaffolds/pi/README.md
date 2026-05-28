@@ -109,7 +109,7 @@ See [Pi SDK docs](https://pi.dev/docs/latest/sdk) for embedding the agent in a N
 
 ## Managing your cage
 
-See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
+See [Troubleshoot](../../docs/how-to/troubleshoot.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../docs/reference/cli.md#cage) for the full `cage` subcommand set.
 
 ## Configuration
 

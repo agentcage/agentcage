@@ -80,7 +80,7 @@ agentcage cage logs myapp -s dns    # DNS sidecar
 
 ## Managing your cage
 
-See [Managing Your Cage](../../docs/cage-management.md) for common operations (edit, update, restart, audit, destroy) and troubleshooting.
+See [Troubleshoot](../../docs/how-to/troubleshoot.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../docs/reference/cli.md#cage) for the full `cage` subcommand set.
 
 ## Reverse proxy & device pairing
 
