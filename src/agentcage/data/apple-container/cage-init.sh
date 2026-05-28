@@ -124,11 +124,18 @@ if command -v dnsmasq >/dev/null 2>&1 \
     i=$((i + 1))
   done
   # Repoint /etc/resolv.conf at the in-cage dnsmasq. Atomic rename so
-  # a concurrent reader never sees a half-written file.
-  printf 'nameserver 127.0.0.1\noptions edns0\n' \
-    > /etc/resolv.conf.agentcage \
-    && mv /etc/resolv.conf.agentcage /etc/resolv.conf \
-    || log "warn: failed to rewrite /etc/resolv.conf — DNS may still leak to apple gateway"
+  # a concurrent reader never sees a half-written file. Explicit
+  # if/then/else (instead of `A && B || log`) because shellcheck's
+  # SC2015 correctly notes that `A && B || C` runs C when A succeeds
+  # but B fails — fine here, but the warn path is the same either way
+  # so the structured form is clearer.
+  if printf 'nameserver 127.0.0.1\noptions edns0\n' \
+       > /etc/resolv.conf.agentcage \
+     && mv /etc/resolv.conf.agentcage /etc/resolv.conf; then
+    :
+  else
+    log "warn: failed to rewrite /etc/resolv.conf — DNS may still leak to apple gateway"
+  fi
 else
   log "warn: dnsmasq or /etc/agentcage/dnsmasq.conf missing — DNS NOT scoped (apple gateway will resolve arbitrary apexes; F2 exposure)"
 fi
