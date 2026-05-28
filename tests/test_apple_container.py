@@ -237,6 +237,21 @@ def test_stage_build_context_writes_cage_init(tmp_path):
         'iptables -A OUTPUT -d "${_apple_host_gw}" -p udp ! --dport 53 -j DROP'
         in cage_init
     )
+    # CTF F2 (0.22.6): stage A' must launch a local dnsmasq scoped to
+    # the cage's `domains.allow` apexes and point /etc/resolv.conf at
+    # 127.0.0.1. Apple's vmnet drops inter-microVM UDP, so the egress
+    # sibling's dnsmasq on .2:53 is unreachable; the only fix is a
+    # local resolver. Verified against apple/container source.
+    assert "stage A': starting local dnsmasq" in cage_init
+    assert "--conf-file=/etc/agentcage/dnsmasq.conf" in cage_init
+    # Conf says `listen-address=0.0.0.0`; `--except-interface=eth0`
+    # whittles that down to just lo. Direct `--listen-address=127.0.0.1`
+    # on the cmdline would conflict because dnsmasq treats listen-
+    # address values as additive (duplicate → EADDRINUSE).
+    assert "--bind-interfaces" in cage_init
+    assert "--except-interface=eth0" in cage_init
+    assert "--user=acdns" in cage_init
+    assert "nameserver 127.0.0.1" in cage_init
     # Legacy files must NOT be staged.
     assert not (tmp_path / "supervisor.sh").exists()
     assert not (tmp_path / "allowlist_addon.py").exists()
@@ -905,6 +920,45 @@ def test_start_argv_injects_proxy_ca_env_vars(tmp_path, monkeypatch):
     cage_argv = _cage_run_argv(captured)
     assert "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" in cage_argv
     assert "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" in cage_argv
+
+
+def test_start_cage_binds_dnsmasq_conf_for_local_resolver(tmp_path, monkeypatch):
+    """CTF F2 (0.22.6): the cage's local dnsmasq (cage-init.sh stage A')
+    reads the same dnsmasq.conf the egress sibling does, bind-mounted
+    from the host's egress-config dir. macOS vmnet drops inter-microVM
+    UDP (verified against apple/container source), so the cage cannot
+    reach the egress's dnsmasq on .2:53; the only fix is a local
+    resolver scoped to the same config. Without these binds the cage's
+    dnsmasq has nothing to load and falls back to the apple gateway
+    (the F2 exfil channel)."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+        },
+    )
+
+    backend.start("demo", quiet=True)
+
+    cage_argv = _cage_run_argv(captured)
+    egress_cfg = tmp_path / "egress-config"
+
+    assert (
+        f"{egress_cfg}/dnsmasq.conf:/etc/agentcage/dnsmasq.conf:ro"
+        in cage_argv
+    )
+    assert (
+        f"{egress_cfg}/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro"
+        in cage_argv
+    )
+    # The env var that cage-init.sh interpolates into the dnsmasq
+    # --servers-file flag — without it the cage's dnsmasq would not
+    # know the per-cage upstream forwarders.
+    assert (
+        "AGENTCAGE_DNS_SERVERS_FILE=/etc/agentcage/dns-allowlist.conf"
+        in cage_argv
+    )
 
 
 def test_start_cage_bind_excludes_ca_private_key(tmp_path, monkeypatch):

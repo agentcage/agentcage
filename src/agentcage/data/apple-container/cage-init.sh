@@ -59,6 +59,80 @@ done
 [ "$egress_ok" -eq 1 ] \
   || die "egress sibling at ${AGENTCAGE_EGRESS_IP} unreachable after 30 attempts" 1
 
+#-- Stage A'. Local dnsmasq scoped to the cage's allowlisted apexes --------
+# CTF F2 (0.22.6): apple-container's default /etc/resolv.conf points at
+# the vmnet host gateway (<subnet>.1) whose recursive resolver answers
+# arbitrary queries — clean DNS-tunnel exfil channel. The egress
+# sibling's dnsmasq is unreachable from this microVM because macOS
+# vmnet drops inter-microVM UDP at the framework layer (apple/container
+# source: NonisolatedInterfaceStrategy.swift uses VMNET_SHARED_MODE for
+# NAT — TCP and ICMP get state-tracked through, UDP between peer
+# microVMs is not forwarded). The fix is a local dnsmasq inside the
+# cage VM, listening only on loopback, with the same per-cage
+# `domains.allow`-scoped recursion config that the egress sibling uses.
+# The conf file is bind-mounted in from the host's egress-config dir.
+#
+# Best-effort: the wrapper Containerfile installs dnsmasq-base; bases
+# without a package manager (distroless, etc.) skip the install and
+# this block falls through with the apple gateway resolver intact —
+# loud warning is preferable to silently broken DNS.
+if command -v dnsmasq >/dev/null 2>&1 \
+   && [ -f /etc/agentcage/dnsmasq.conf ]; then
+  log "stage A': starting local dnsmasq on 127.0.0.1:53 (scoped DNS)"
+  mkdir -p /run/agentcage
+  # The bind-mounted dnsmasq.conf sets `log-facility=/var/log/agentcage
+  # /dnsmasq.log` (rendered for the egress sibling which has that path
+  # mounted). dnsmasq treats cmdline `--log-facility` as additive, so
+  # `--log-facility=-` doesn't override the conf entry — both are kept
+  # and dnsmasq tries to open the file, which doesn't exist in the
+  # cage. Create the directory so the open succeeds (the file ends up
+  # in the cage's writable rootfs; no operator-visible side effect).
+  # acdns:acdns ownership so the dropped-priv dnsmasq can write it.
+  mkdir -p /var/log/agentcage
+  chown acdns:acdns /var/log/agentcage 2>/dev/null || true
+  chmod 0755 /var/log/agentcage
+  # The bind-mounted dnsmasq.conf is the same one the egress sibling
+  # uses, which sets `listen-address=0.0.0.0`. We can't simply override
+  # that on the cmdline (dnsmasq's --listen-address is ADDITIVE, not
+  # replace, and a duplicate listen-address triggers an "Address
+  # already in use" error). Instead, pair `--bind-interfaces` with
+  # `--except-interface=eth0` — dnsmasq computes per-interface
+  # sockets from the listen-address set, then drops the excluded
+  # interfaces. Net effect: dnsmasq listens only on loopback even
+  # though the conf says 0.0.0.0.
+  # --user=acdns — drop privileges; setcap cap_net_bind_service in
+  # the wrapper Containerfile lets uid 201 still bind :53.
+  # --log-facility=- — log to stderr (no /var/log/agentcage/ in the
+  # cage; that mount only exists in the egress sibling).
+  /usr/sbin/dnsmasq \
+    --conf-file=/etc/agentcage/dnsmasq.conf \
+    ${AGENTCAGE_DNS_SERVERS_FILE:+--servers-file="${AGENTCAGE_DNS_SERVERS_FILE}"} \
+    --bind-interfaces \
+    --except-interface=eth0 \
+    --user=acdns \
+    --pid-file=/run/agentcage/dnsmasq.pid \
+    --log-facility=- \
+    || die "dnsmasq failed to start in the cage — check setcap on /usr/sbin/dnsmasq" 4
+  # Wait briefly for the listener to come up so the resolv.conf
+  # rewrite below doesn't race with the workload's first lookup.
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if ss -lun 2>/dev/null | grep -q '127\.0\.0\.1:53 '; then
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  # Repoint /etc/resolv.conf at the in-cage dnsmasq. Atomic rename so
+  # a concurrent reader never sees a half-written file.
+  printf 'nameserver 127.0.0.1\noptions edns0\n' \
+    > /etc/resolv.conf.agentcage \
+    && mv /etc/resolv.conf.agentcage /etc/resolv.conf \
+    || log "warn: failed to rewrite /etc/resolv.conf — DNS may still leak to apple gateway"
+else
+  log "warn: dnsmasq or /etc/agentcage/dnsmasq.conf missing — DNS NOT scoped (apple gateway will resolve arbitrary apexes; F2 exposure)"
+fi
+
 #-- Stage B. Default route via egress sibling ------------------------------
 # `ip route replace` is idempotent — equivalent to `add` if missing or
 # `change` if present, so we can re-run cage-init (e.g. cage restart)
