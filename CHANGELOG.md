@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.9] - 2026-05-28
+
+### Security
+
+- **Egress addon now enforces strict SNI ↔ Host header match.** CTF
+  finding F3 from the 0.22.6 re-run, HIGH severity. The previous
+  `request()` hook rewrote `flow.request.host = pretty_host`
+  unconditionally, so when a cage opened TLS with `SNI=A` and sent
+  HTTP `Host: B` inside the TLS, mitmproxy's upstream connection
+  followed the Host header (B) while every forensic identifier
+  downstream (audit logs, allowlist decisions, secret-injection rule
+  selection) keyed on A — the attacker chose which one fired at each
+  decision point. CTF demonstrated by reaching api.anthropic.com over
+  TLS with `SNI=evil.example` (Cloudflare's `set-cookie: Domain=
+  api.anthropic.com` confirmed the upstream was real api.anthropic.com,
+  no 403 from the addon). The fix adds a pre-rewrite check: if both
+  SNI and Host are present and don't match (case-insensitive, port-
+  stripped, trailing-dot tolerated), the addon emits 403 with reason
+  `SNI/Host header mismatch`. HTTP requests with no SNI fall through
+  to the Host header as before. Reverse-proxy flows are exempt — the
+  SNI/Host relationship there is between an external client and the
+  proxy's configured upstream.
+
 ## [0.22.7] - 2026-05-28
 
 ### Changed
