@@ -22,7 +22,7 @@ def _cage_from_units(units: dict[str, str]) -> str | None:
     for fname in units:
         for suffix in ("-cage.container", "-egress.container",
                        "-proxy.container", "-dns.container",
-                       "-net.network", "-certs.volume"):
+                       "-net.network", "-public-certs.volume", "-certs.volume"):
             if fname.endswith(suffix):
                 return fname[: -len(suffix)]
     return None
@@ -122,6 +122,11 @@ class ContainerBackend:
             except Exception as e:
                 if not quiet:
                     click.echo(f"warning: failed to restart volume service: {e}", err=True)
+            try:
+                systemd.restart_unit(f"{name}-public-certs-volume.service")
+            except Exception as e:
+                if not quiet:
+                    click.echo(f"warning: failed to restart public-certs volume service: {e}", err=True)
             if (self.unit_dir() / f"{name}-podman-storage.volume").exists():
                 try:
                     systemd.restart_unit(f"{name}-podman-storage-volume.service")
@@ -158,6 +163,7 @@ class ContainerBackend:
         "-egress.container",
         "-net.network",
         "-certs.volume",
+        "-public-certs.volume",
         "-podman-storage.volume",
         # legacy v0.21 layout — kept for `cage destroy` cleanup only
         "-proxy.container",
@@ -183,6 +189,8 @@ class ContainerBackend:
             removed.append(f"network:{name}-net")
         if self._podman.volume_remove(f"agentcage-certs-{name}"):
             removed.append(f"volume:agentcage-certs-{name}")
+        if self._podman.volume_remove(f"agentcage-public-certs-{name}"):
+            removed.append(f"volume:agentcage-public-certs-{name}")
         if self._podman.volume_remove(f"agentcage-podman-{name}"):
             removed.append(f"volume:agentcage-podman-{name}")
 

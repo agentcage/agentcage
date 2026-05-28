@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **container + vm backends: cage no longer mounts the egress CA private
+  key.** Previously the cage's `/certs:ro` bind exposed the whole
+  `agentcage-certs-<name>` podman volume — including mitmproxy's
+  `mitmproxy-ca.pem` (cert + private key) and the `.p12` bundles. Today
+  the file mode (0600) + uid mismatch (199 vs 1000) blocked reads, but
+  any future uid-map regression, mount-mode flip, or container escape
+  would have promoted "escape this cage" into "mint trusted certs for
+  every allowlisted host." CTF re-run on 0.22.7 flagged this as F6
+  (container) and F9 (vm); both reports recommended the apple-container
+  split done in #208.
+
+  Split the volume mirroring the apple-container fix:
+  - New `<name>-public-certs.volume` quadlet (`agentcage-public-certs-<name>`
+    podman volume) holds the published public cert only.
+  - Egress mounts BOTH: `agentcage-certs-<name>` at `/home/acproxy/.mitmproxy`
+    (RW, for mitmproxy's own use including the private key) AND
+    `agentcage-public-certs-<name>` at `/home/acproxy/public-certs` (RW,
+    target of `supervisor-egress.sh` Step E's `install -m 0644 ...
+    mitmproxy-ca-cert.pem`).
+  - Cage now mounts ONLY `agentcage-public-certs-<name>` at `/certs:ro` —
+    no path to the private key, regardless of uid mapping or file mode.
+
+  Lifecycle wiring (`backends/container.py`, `backends/vm.py`) updated to
+  start, restart, enumerate, and tear down the new volume alongside the
+  existing one. `_QUADLET_FILES` includes the new suffix so `cage destroy`
+  cleans it up.
+
 ## [0.22.9] - 2026-05-28
 
 ### Security
