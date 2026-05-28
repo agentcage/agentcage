@@ -2,7 +2,7 @@
 
 agentcage is a defense-in-depth proxy sandbox designed to reduce the risk of data exfiltration from AI agent containers. It is not a silver bullet -- it raises the bar significantly for HTTP-based exfiltration while acknowledging limitations outside that scope.
 
-For architecture details, see [Architecture](architecture.md). For configuration options, see [Configuration Reference](reference/configuration.md).
+For architecture details, see [Architecture](explain/architecture.md). For configuration options, see [Configuration Reference](reference/configuration.md).
 
 ## Threat Model
 

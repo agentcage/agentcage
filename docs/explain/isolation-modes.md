@@ -125,6 +125,6 @@ For the threat-by-threat matrix and what each mode defends against, see [securit
 ## Related
 
 - [Security and threat model](../security.md) — defended threats per mode
-- [Architecture](../architecture.md) — inspector chain and shared topology
+- [Architecture](architecture.md) — inspector chain and shared topology
 - [Configuration reference](../reference/configuration.md) — `isolation:` and `vm:` settings
 - [Install](../get-started/install.md) — backend-specific setup steps

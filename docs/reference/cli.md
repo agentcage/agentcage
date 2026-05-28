@@ -111,7 +111,7 @@ agentcage cage update <name> [-c <config>]
 agentcage cage edit <name>
 ```
 
-Opens the stored `cage.yaml` in `$EDITOR` (falls back to `vi`). Validates on save, backs up the prior config to `cage.yaml.bak`, writes atomically, shows a diff, and hot-reloads domains, proxy inspectors, rate limits, and logging where possible. Service-restart or rebuild prompts appear for container or isolation changes. Aliased as `cage config`. See [Architecture — hot-reload](../architecture.md) for the reload model.
+Opens the stored `cage.yaml` in `$EDITOR` (falls back to `vi`). Validates on save, backs up the prior config to `cage.yaml.bak`, writes atomically, shows a diff, and hot-reloads domains, proxy inspectors, rate limits, and logging where possible. Service-restart or rebuild prompts appear for container or isolation changes. Aliased as `cage config`. See [Architecture — hot-reload](../explain/architecture.md#hot-reload-semantics) for the reload model.
 
 ### cage destroy
 
@@ -294,5 +294,5 @@ Aliases: `ls` → `list`, `rm` → `delete`.
 - [Configuration](configuration.md) — `cage.yaml` settings reference
 - [Domains](domains.md) — filtering rules and modes
 - [Capture](capture.md) — HAR export and traffic recording
-- [Architecture](../architecture.md) — hot-reload model and startup order
+- [Architecture](../explain/architecture.md) — hot-reload model and startup order
 - [Secret injection](secret-injection.md) — injection vs direct secrets
