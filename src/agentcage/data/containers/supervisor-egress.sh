@@ -362,6 +362,20 @@ ss -lnt 2>/dev/null | grep -q ':8443 ' \
   || die "mitmproxy listener never came up on :8443 within 30s" 52
 log "step E: mitmproxy ready (CA at $CA_PATH, listening on :8443)"
 
+# Publish just the public cert to /home/acproxy/public-certs, which the
+# apple-container backend bind-mounts to the cage at /certs. The cage
+# must NOT see the full ~/.mitmproxy/ dir because it also contains
+# mitmproxy-ca.pem (the CA private key) — exposed to uid 1000 in 0.22.0
+# through 0.22.5, caught as F1 by the CTF re-run on 0.22.5.
+# install(1) handles atomic-rename + permissions in one call; -m 0644
+# matches mitmproxy-ca-cert.pem's default mode. The directory is
+# created by the host backend before the egress is started, so this
+# never runs on a missing mount point.
+if [ -d /home/acproxy/public-certs ]; then
+  install -m 0644 "$CA_PATH" /home/acproxy/public-certs/mitmproxy-ca-cert.pem
+  log "step E: published public cert to /home/acproxy/public-certs/"
+fi
+
 #-- Step F. Readiness marker -----------------------------------------------
 # Backends (PR 2) poll for this file to declare the cage ready. Must be
 # the LAST thing the supervisor does before entering the monitor loop —

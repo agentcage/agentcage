@@ -755,6 +755,7 @@ def _setup_start_test(tmp_path, monkeypatch, *, unit_meta):
     (egress_cfg / "dnsmasq.conf").write_text("# stub\n")
     (egress_cfg / "dns-allowlist.conf").write_text("\n")
     certs_dir = tmp_path / "certs"
+    public_certs_dir = tmp_path / "public-certs"
 
     captured: list[list[str]] = []
 
@@ -767,6 +768,9 @@ def _setup_start_test(tmp_path, monkeypatch, *, unit_meta):
     monkeypatch.setattr(backend, "secrets_dir", lambda _n: secrets_dir)
     monkeypatch.setattr(backend, "egress_config_dir", lambda _n: egress_cfg)
     monkeypatch.setattr(backend, "certs_dir", lambda _n: certs_dir)
+    monkeypatch.setattr(
+        backend, "public_certs_dir", lambda _n: public_certs_dir,
+    )
     monkeypatch.setattr(
         ac_cli, "image_inspect", lambda _img: {"config": {}},
     )
@@ -891,6 +895,48 @@ def test_start_argv_injects_proxy_ca_env_vars(tmp_path, monkeypatch):
     cage_argv = _cage_run_argv(captured)
     assert "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem" in cage_argv
     assert "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" in cage_argv
+
+
+def test_start_cage_bind_excludes_ca_private_key(tmp_path, monkeypatch):
+    """CTF F1 (0.22.5): the cage's /certs bind-mount MUST come from
+    ``public_certs_dir``, not ``certs_dir``. ``certs_dir`` is mitmproxy's
+    full ~/.mitmproxy/ — it contains ``mitmproxy-ca.pem`` (the CA
+    *private* key) which a uid-1000 cage workload could read and use to
+    mint a forged trusted cert for any allowlisted host, defeating the
+    egress's trust-store guard. 0.22.6 regression guard.
+    """
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+        },
+    )
+
+    backend.start("demo", quiet=True)
+
+    cage_argv = _cage_run_argv(captured)
+    egress_argv = _egress_run_argv(captured)
+    certs_dir = str(tmp_path / "certs")
+    public_certs_dir = str(tmp_path / "public-certs")
+
+    # Cage's /certs MUST come from public_certs_dir.
+    assert f"{public_certs_dir}:/certs" in cage_argv
+    # Cage MUST NOT mount certs_dir anywhere (any guest path) — that
+    # would re-introduce the CA-private-key leak. Anchor on the host
+    # path so an empty certs_dir name (unlikely tmp_path collision)
+    # doesn't false-match.
+    for a in cage_argv:
+        assert not (
+            a.startswith(certs_dir + ":") and not a.startswith(public_certs_dir + ":")
+        ), f"cage argv leaks certs_dir mount: {a!r}"
+
+    # Egress still gets the full mitmproxy dir (needs the private key
+    # to mint per-host certs).
+    assert f"{certs_dir}:/home/acproxy/.mitmproxy" in egress_argv
+    # Egress also gets the public-cert dir so supervisor-egress.sh's
+    # Step E can copy the cert there for the cage to pick up.
+    assert f"{public_certs_dir}:/home/acproxy/public-certs" in egress_argv
 
 
 def test_start_secrets_bind_only_to_egress(tmp_path, monkeypatch):

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.6] - 2026-05-28
+
+### Security
+
+- **apple-container cage no longer sees the egress's CA private key.**
+  Headline finding from the CTF re-run on 0.22.5 (`F1`): the cage
+  bound `certs_dir` (mitmproxy's full `~/.mitmproxy/` dir) at `/certs`
+  so claude-code could install the public CA cert into its trust
+  store. That dir also holds `mitmproxy-ca.pem` and `mitmproxy-ca.p12`
+  (the CA *private* key + PKCS#12), mode 0600 but identity-mapped to
+  uid 1000 via virtiofs — so a uid-1000 cage workload could read the
+  key and sign a forged cert for any allowlisted host (the CTF
+  generated a `forged-anthropic.crt` that verified cleanly against the
+  cage's trust store). Regression introduced by #205 (the 0.22.3 CA
+  env-var fix). Split the bind: cage now mounts a new
+  `public_certs_dir` containing only `mitmproxy-ca-cert.pem`, populated
+  by `supervisor-egress.sh` Step E (`install -m 0644 "$CA_PATH"
+  /home/acproxy/public-certs/mitmproxy-ca-cert.pem`). The full
+  `~/.mitmproxy/` dir stays egress-only.
+
 ## [0.22.5] - 2026-05-28
 
 ### Fixed
