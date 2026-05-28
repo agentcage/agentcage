@@ -24,6 +24,12 @@ jobs:
     # macos-26 is Apple Silicon — exercise the apple-container unit tests
     # on their actual host platform, so platform.system()/mac_ver()/arch
     # branches in src/agentcage/apple_container/ aren't only mocked.
+    #
+    # Scope is limited to test_apple_container*.py. The rest of the suite
+    # bakes in Linux assumptions (default isolation=container, podman
+    # required, Lima optional) and intentionally rejects container
+    # isolation on macOS — running it here would just surface those
+    # platform-by-design assertions as failures.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -31,4 +37,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync --dev
-      - run: uv run pytest
+      - run: uv run pytest tests/test_apple_container.py tests/test_apple_container_cli.py

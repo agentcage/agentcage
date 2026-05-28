@@ -143,7 +143,11 @@ jobs:
           container system status
 
       - name: agentcage doctor (apple-container readiness)
-        run: agentcage doctor
+        # Doctor flags missing Lima as `error` on macOS unconditionally,
+        # even when apple-container is fully ready — fine for our purposes,
+        # since phase_apple does its own `container` CLI presence check.
+        # Run for diagnostic output but don't gate the e2e on its rc.
+        run: agentcage doctor || true
 
       - name: Run phase_apple
         run: bash tests/e2e/run.sh apple
