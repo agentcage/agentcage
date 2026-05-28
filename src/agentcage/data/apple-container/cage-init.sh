@@ -105,8 +105,23 @@ fi
 CAGE_USER=$(getent passwd 1000 | cut -d: -f1)
 [ -n "${CAGE_USER}" ] \
   || die "no uid-1000 user in cage image — wrapper Containerfile should have created one" 3
+CAGE_HOME=$(getent passwd 1000 | cut -d: -f6)
+[ -n "${CAGE_HOME}" ] \
+  || die "no home directory for uid 1000 — wrapper Containerfile useradd should have set one" 3
 
 log "stage D: dropping caps, switching to '${CAGE_USER}' (uid 1000), exec'ing cage CMD"
+
+# capsh changes uid/caps but does NOT update env vars. cage-init runs
+# as root with HOME=/root inherited from the entrypoint; without these
+# exports the dropped-priv workload would see HOME=/root, which is
+# 0700 root-owned, so any tool that touches its config dir (claude-
+# code's ~/.claude/, npm's ~/.npm/, pip's ~/.cache/) fails EACCES and
+# in claude-code 2.1.x specifically that means a silent exit-0 from
+# `claude -p`. Set HOME/USER/LOGNAME explicitly; capsh passes env
+# through to the exec target.
+export HOME="${CAGE_HOME}"
+export USER="${CAGE_USER}"
+export LOGNAME="${CAGE_USER}"
 
 # capsh chain (order matters):
 #   --no-new-privs  — prctl(PR_SET_NO_NEW_PRIVS). Sticks across exec.

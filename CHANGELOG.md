@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-05-28
+
+### Fixed
+
+- **apple-container cage workload now sees `HOME=/home/<user>`, not
+  `HOME=/root`** (companion fix to 0.22.3). cage-init.sh stage D's
+  capsh-drop and the F3 `cage exec` setpriv wrapper both change uid
+  but leave env vars alone, so the dropped-priv workload inherited
+  root's `HOME=/root` — which is mode 0700 and unreadable to uid
+  1000. claude-code 2.1.x reads/writes `~/.claude/` on startup and,
+  on EACCES there, silently exits 0 from `claude -p` (no error
+  message, no stderr). Same surface hits npm (`~/.npm`),
+  pip (`~/.cache/pip`), and anything else touching XDG_* paths.
+  Stage D now exports `HOME`/`USER`/`LOGNAME` derived from
+  `getent passwd 1000` before exec'ing capsh; the `cage exec`
+  wrapper does the same via a small `sh -c` shim around setpriv.
+
 ## [0.22.3] - 2026-05-28
 
 ### Fixed
