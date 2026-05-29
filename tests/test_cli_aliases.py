@@ -100,3 +100,59 @@ class TestDomainAliases:
         assert result.exit_code == 0
         assert "Aliases:" in result.output
         assert "ls" in result.output
+
+
+class TestTopLevelAliases:
+    """Top-level aliases that drop the `cage` group prefix (PR #240):
+    `agentcage ls`/`logs`/`update`/... resolve to their `cage <cmd>`
+    equivalents via _BannerGroup.get_command."""
+
+    @patch("agentcage.cli.state")
+    def test_top_level_ls_resolves_to_cage_list(self, mock_state):
+        mock_state.list_deployments.return_value = []
+        result = _runner().invoke(main, ["ls"])
+        assert result.exit_code == 0
+        assert "No cages found" in result.output or "NAME" in result.output
+
+    @patch("agentcage.cli.state")
+    def test_top_level_ps_and_status_resolve_to_cage_list(self, mock_state):
+        mock_state.list_deployments.return_value = []
+        for alias in ("ps", "status"):
+            result = _runner().invoke(main, [alias])
+            assert result.exit_code == 0, f"alias {alias!r} failed"
+
+    def test_top_level_update_resolves_to_cage_update(self):
+        # `update` was the missing mapping #240 added; --help proves routing
+        # without needing a real cage.
+        result = _runner().invoke(main, ["update", "--help"])
+        assert result.exit_code == 0
+        assert "Rebuild and restart an existing cage" in result.output
+
+    def test_top_level_aliases_route_to_right_command(self):
+        # Each alias's --help should match the target cage command's help.
+        cases = {
+            "rm": "destroy",
+            "show": "show",
+            "logs": "logs",
+            "exec": "exec",
+            "restart": "restart",
+        }
+        for alias, target in cases.items():
+            aliased = _runner().invoke(main, [alias, "--help"])
+            direct = _runner().invoke(main, ["cage", target, "--help"])
+            assert aliased.exit_code == 0, f"alias {alias!r} failed"
+            # Usage line differs (prog name) but the body/options should match.
+            assert direct.output.split("\n", 1)[1] == aliased.output.split("\n", 1)[1], (
+                f"alias {alias!r} routed to wrong command"
+            )
+
+    def test_help_lists_top_level_aliases(self):
+        result = _runner().invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "Aliases:" in result.output
+        assert "ls → cage list" in result.output
+
+    def test_unknown_top_level_command_still_errors(self):
+        # The alias override must not swallow genuinely unknown commands.
+        result = _runner().invoke(main, ["definitely-not-a-command"])
+        assert result.exit_code != 0

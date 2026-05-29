@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Top-level CLI aliases — drop the `cage` group prefix for common
+  commands.** `agentcage ls`/`ps`/`status` (→ `cage list`), `rm`/`delete`
+  (→ `cage destroy`), `restart`/`reload`, `show`/`describe`/`inspect`,
+  `edit`/`config`, and `stop`/`start`/`logs`/`exec`/`shell`/`update` now
+  work at the top level as shortcuts for their `cage <cmd>` equivalents
+  (also adds the previously-missing `update` mapping). `agentcage --help`
+  lists the aliases.
+
 ### Fixed
 
 - **`fix(egress/dns)`: container/vm egress no longer intermittently
