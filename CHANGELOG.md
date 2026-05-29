@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A scaffold is now a one-shot generator, not a live dependency — `cage
+  update` freezes a cage's `cage.yaml` and `Containerfile`.** Previously
+  `cage update` (without `-c`) silently re-staged the scaffold's
+  `Containerfile` over the cage's staged copy (clobbering any operator
+  edits), re-rendered the scaffold template to patch `command`/`env`, and
+  auto-bumped scaffold-declared build args. It now does none of that: the
+  cage owns its `cage.yaml` + `Containerfile` from create time onward, and
+  `cage update` only rebuilds the staged Containerfile, pulls fresh base
+  images, and restarts. The stored config is never mutated. The freeze
+  lives in the shared CLI path, so it is consistent across the container,
+  vm, and apple-container backends. To change config, edit the staged
+  files, use `cage edit`, or pass a new config with `cage update -c <file>`.
+- **apple-container builds the cage's own staged Containerfile, not the live
+  scaffold.** The apple-container backend previously (re)built the scaffold
+  image from the live scaffold directory on disk via `build_scaffold_images`,
+  using the scaffold's unpinned build args — so an agentcage upgrade that
+  changed a scaffold leaked into existing cages on `cage update`
+  (especially under `--no-cache`/`--pull`). It now builds `container.image`
+  from the cage's per-cage staged `Containerfile` with point-in-time build-arg
+  resolution, exactly like the container/vm backends. Verified on macOS 26 /
+  Apple `container` 0.12.3: an edit to the staged Containerfile is applied on
+  `cage update`, while a change to the live scaffold is not.
+
+### Added
+
+- **`cage show` now prints a `Build:` line** with the path of the staged
+  `Containerfile` that `cage update` actually builds — making it obvious
+  the cage builds its own copy in the state dir, not the file you authored
+  at create time. The build step also echoes the resolved Containerfile
+  path (`Building <image> from <path>...`).
+
 ## [0.22.16] - 2026-05-29
 
 ### Added

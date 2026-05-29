@@ -103,9 +103,11 @@ agentcage cage update <name> [-c <config>]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `-c, --config` | path | stored config | Update the stored config before rebuilding |
+| `-c, --config` | path | stored config | Replace the stored config before rebuilding |
 | `--no-cache` | flag | | Force a full image rebuild |
 | `--pull` | flag | | Force a re-pull of the base image |
+
+A cage's `cage.yaml` and `Containerfile` are **frozen at create time** — a scaffold is a one-shot generator, not a live dependency. Without `-c`, `cage update` rebuilds the **staged** Containerfile (the copy in the cage's state dir, shown as `Build:` in `cage show`), pulls fresh base images, and restarts. It never re-reads the scaffold and never mutates the stored config. To change config, edit the staged files and rerun, use `cage edit`, or pass a new config with `-c`.
 
 ### cage edit
 
