@@ -1007,6 +1007,21 @@ def validate_config(config: Config) -> list[str]:
             ("container.nested_containers", bool(config.container.nested_containers),
              "nested container runtime (no podman-in-podman shim available in "
              "the Apple microVM)"),
+            # Inbound published ports. On the container/vm backends these
+            # become egress `PublishPort=host:host_port:container_port`
+            # entries plus reverse-mode mitmdump listeners, exposing a cage
+            # service to the host through the inspector chain. Apple's
+            # `container` runtime has no host-port-publishing equivalent —
+            # it uses VMNET_SHARED_MODE NAT and reaches containers by their
+            # vmnet-assigned IP, not via host port forwarding (verified
+            # against apple/container; see backends/apple_container.py
+            # NonisolatedInterfaceStrategy note). So a `container.ports:`
+            # entry is silently dropped here. Warn so operators stop being
+            # surprised by an inbound service that never becomes reachable.
+            ("container.ports", bool(config.container.ports),
+             "inbound published ports — Apple's runtime has no host "
+             "port-publishing (no `--publish`); reach the cage by its "
+             "vmnet IP instead"),
             # Scaffold default `userns: "keep-id"` exists for the container
             # backend's rootless-podman uid mapping. On apple-container,
             # the supervisor's drop-to-uid-1000 already achieves the
