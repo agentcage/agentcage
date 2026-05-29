@@ -325,6 +325,136 @@ class TestCageLogsAppleContainer:
             ["/usr/local/bin/container", "logs", "-f", "demo"],
         )
 
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_service_egress_routes_to_egress_vm(
+        self, mock_state, mock_execvp, mock_binary,
+    ):
+        """`--service egress` tails the `<name>-egress` microVM, not the cage."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        _runner().invoke(main, ["cage", "logs", "demo", "--service", "egress"])
+
+        mock_execvp.assert_called_once_with(
+            "/usr/local/bin/container",
+            ["/usr/local/bin/container", "logs", "demo-egress"],
+        )
+
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_service_cage_routes_to_cage_vm(
+        self, mock_state, mock_execvp, mock_binary,
+    ):
+        """`--service cage` tails the cage VM (`<name>`)."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        _runner().invoke(main, ["cage", "logs", "demo", "--service", "cage"])
+
+        mock_execvp.assert_called_once_with(
+            "/usr/local/bin/container",
+            ["/usr/local/bin/container", "logs", "demo"],
+        )
+
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_default_both_warns_and_tails_cage(
+        self, mock_state, mock_execvp, mock_binary,
+    ):
+        """No --service tails the cage VM and warns egress is excluded
+        (apple-container can't multiplex two log streams)."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        result = _runner().invoke(main, ["cage", "logs", "demo"])
+
+        mock_execvp.assert_called_once_with(
+            "/usr/local/bin/container",
+            ["/usr/local/bin/container", "logs", "demo"],
+        )
+        assert "can only tail one microVM" in result.output
+        assert "--service egress" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_severity_filters_client_side(
+        self, mock_state, mock_execvp, mock_binary, mock_popen,
+    ):
+        """`--severity warning` drops info/debug lines client-side
+        (Apple `container logs` has no severity flag), and does NOT
+        exec — it streams through a filtering Popen."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        proc = MagicMock()
+        proc.stdout = iter([
+            "starting up normally\n",      # cage → info
+            "Traceback (most recent)\n",   # cage → error
+            "WARNING: low disk\n",         # cage → warning
+        ])
+        mock_popen.return_value = proc
+
+        result = _runner().invoke(
+            main, ["cage", "logs", "demo", "--service", "cage",
+                   "--severity", "warning"],
+        )
+
+        # No exec — streaming filter path is used instead.
+        mock_execvp.assert_not_called()
+        # The argv handed to Popen still routes to the cage VM.
+        popen_argv = mock_popen.call_args.args[0]
+        assert popen_argv == [
+            "/usr/local/bin/container", "logs", "demo",
+        ]
+        # info line dropped; error + warning kept.
+        assert "starting up normally" not in result.output
+        assert "Traceback (most recent)" in result.output
+        assert "WARNING: low disk" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.apple_container.cli.container_binary")
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_severity_egress_classifies_egress_lines(
+        self, mock_state, mock_execvp, mock_binary, mock_popen,
+    ):
+        """Severity filtering on `--service egress` uses the egress
+        classifier: a blocked-decision line is `warning`, an allowed
+        one is `info` (dropped at --severity warning)."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_binary.return_value = "/usr/local/bin/container"
+
+        proc = MagicMock()
+        proc.stdout = iter([
+            '{"decision":"allowed","host":"ok.example"}\n',    # info
+            '{"decision":"blocked","host":"bad.example"}\n',   # warning
+        ])
+        mock_popen.return_value = proc
+
+        result = _runner().invoke(
+            main, ["cage", "logs", "demo", "--service", "egress",
+                   "--severity", "warning"],
+        )
+
+        mock_execvp.assert_not_called()
+        popen_argv = mock_popen.call_args.args[0]
+        assert popen_argv == [
+            "/usr/local/bin/container", "logs", "demo-egress",
+        ]
+        assert "bad.example" in result.output
+        assert "ok.example" not in result.output
+
 
 # ── cage verify ─────────────────────────────────────────
 

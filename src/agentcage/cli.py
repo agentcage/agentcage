@@ -1882,7 +1882,7 @@ def cage_logs(name, services, lines, follow, no_follow, min_level):
     if cfg.isolation == "vm":
         _logs_vm(name, selected, lines, no_follow_effective, min_level)
     elif _is_apple_container(cfg):
-        _logs_apple_container(name, selected, lines, no_follow_effective, min_level)
+        _logs_apple_container(name, selected, lines, no_follow_effective, min_level, cfg=cfg)
     else:
         _logs_container(name, selected, lines, no_follow_effective, min_level)
 
@@ -2018,30 +2018,89 @@ def _logs_vm(name, services, lines, no_follow, min_level=None):
             proc.terminate()
 
 
-def _logs_apple_container(name, services, lines, no_follow, min_level=None):  # noqa: ARG001
-    """Stream logs from the per-cage Apple container.
+def _logs_apple_container(name, services, lines, no_follow, min_level=None, cfg=None):
+    """Stream logs from the per-cage Apple microVMs, honoring --service.
 
-    Apple's `container logs` reads the supervisor's stdout/stderr for the
-    one microVM that backs the cage. There are no separate proxy/dns
-    journal units to filter on — those run as processes inside the same
-    container — so the ``services`` and ``min_level`` arguments are
-    accepted for parity with the other backends but currently don't
-    sub-filter output. The user gets the full combined stream.
+    The 2-microVM model has two addressable services: ``cage`` (the
+    workload VM, container ``<name>``) and ``egress`` (the sibling
+    running mitmproxy + dnsmasq, container ``<name>-egress``). Apple's
+    `container logs` can only tail ONE container at a time, so we
+    dispatch on the requested service via the backend's ``logs_argv``:
+
+      * ``--service egress`` → tail ``<name>-egress``.
+      * ``--service cage`` (or the implicit both-selected default) →
+        tail the cage VM. When both services are selected (no explicit
+        ``--service``) we tail the cage VM and warn that egress is not
+        included, since the runtime can't multiplex the two streams.
+
+    Apple's `container logs` has no severity flag, so ``--severity``
+    filtering is applied client-side on the streamed lines (mirroring
+    the container/vm backends). Lines are classified with the same
+    ``_classify_line`` heuristic and dropped below ``min_level``.
     """
-    from agentcage.apple_container import cli as ac_cli
-    binary = ac_cli.container_binary()
-    if binary is None:
+    backend = get_backend(cfg) if cfg is not None else get_backend(
+        state.load_deployment_config(name)
+    )
+    from agentcage.backend import BackendUnsupported
+
+    valid = set(backend.service_names(name))
+    requested = list(services)
+    bad = [s for s in requested if s not in valid]
+    if bad:
         click.echo(
-            "error: Apple `container` CLI not found; install from "
-            "https://github.com/apple/container/releases",
+            f"error: unknown service(s) {', '.join(bad)}; "
+            f"valid: {', '.join(sorted(valid))}",
             err=True,
         )
         sys.exit(1)
-    argv = [binary, "logs"]
-    if not no_follow:
-        argv.append("-f")
-    argv.append(name)
-    os.execvp(binary, argv)
+
+    # Apple `container logs` tails a single container. When the operator
+    # didn't pin a service (both selected), default to the cage VM and
+    # tell them egress is excluded rather than silently dropping it.
+    if "cage" in requested and "egress" in requested:
+        click.echo(
+            "warning: apple-container can only tail one microVM at a time; "
+            "showing 'cage' logs. Use --service egress for the egress VM.",
+            err=True,
+        )
+        effective = ["cage"]
+    else:
+        effective = requested
+
+    try:
+        argv = backend.logs_argv(
+            name, effective, follow=not no_follow, lines=lines,
+            min_level=min_level,
+        )
+    except BackendUnsupported as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+
+    binary = argv[0]
+
+    # Apple's `container logs` has no severity flag; filter client-side.
+    # With --follow we stream-filter; without it the behavior is identical
+    # but bounded. When no severity is requested, exec directly so the
+    # operator gets the native stream (incl. Ctrl-C semantics).
+    if min_level is None:
+        os.execvp(binary, argv)
+        return
+
+    # The classifier keys off the service name; with a single effective
+    # target every line belongs to that service.
+    svc = effective[0] if effective else "cage"
+    min_ord = _LEVEL_ORDER.get(min_level, 1)
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True)
+    try:
+        for raw_line in proc.stdout:
+            line = raw_line.rstrip("\n")
+            lvl = _classify_line(svc, line)
+            if _LEVEL_ORDER.get(lvl, 1) >= min_ord:
+                click.echo(line)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        proc.terminate()
 
 
 @cage.command("exec", context_settings={"ignore_unknown_options": True})
