@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cage secret set`/`list`/`rm` now work on the apple-container
+  backend.** They previously exited with "not yet implemented for the
+  apple-container backend (see issue #120)", forcing operators to edit
+  `cage.yaml` and re-run `cage update` to change a single secret.
+  apple-container has no host-podman secret store; the commands now read
+  and rewrite the cage's `pending_secrets.json` (mode 0600) — the same
+  file the backend's `_stage_secrets` reads at `start()` to bind-mount
+  cleartext into the egress microVM. `set` upserts a key, `rm` drops one,
+  and `list` cross-references expected secrets to flag MISSING entries;
+  all three never touch host podman (which doesn't exist on most macOS
+  hosts). A running cage is auto-restarted so the re-staged secret takes
+  effect.
+
 ## [0.22.12] - 2026-05-28
 
 ### Security
