@@ -203,6 +203,49 @@ def test_render_wrapper_shell_escapes_user_cmd():
     assert "exec sh -c 'echo $FOO && wait'" in out
 
 
+def test_render_wrapper_user_creation_is_musl_busybox_portable():
+    """The uid-1000 + acdns(201) user-creation steps must build on bases
+    without shadow-utils' `useradd` (musl/busybox userlands like alpine
+    or a bare busybox), not just glibc debian/ubuntu.
+
+    This mirrors the existing apt-get||apk best-effort install branch:
+    each `useradd` must fall back to busybox `adduser`, and as a final
+    resort append the user straight to /etc/passwd (+ /etc/group). The
+    glibc `useradd` path that already works must remain the first branch.
+
+    Render/string-level only — we can't actually build a musl image in
+    CI (no macOS/container runtime). Building a real busybox-based cage
+    on a Mac is required follow-up before this is considered verified.
+    """
+    out = ac_wrapper.render_wrapper_containerfile(
+        "docker.io/library/busybox:latest",
+        user_cmd=["sh", "-c", "echo hi"],
+    )
+
+    # --- cage workload uid 1000 ---------------------------------------
+    # glibc path is still first (debian/ubuntu must keep building).
+    assert "useradd --uid 1000 --create-home --shell /bin/sh cage" in out
+    # busybox fallback.
+    assert "adduser -D -u 1000 -s /bin/sh -h /home/cage cage" in out
+    # last-resort direct /etc/passwd append, with a home dir created by
+    # hand (cage-init.sh hard-requires uid 1000 to have a home).
+    assert "cage:x:1000:1000::/home/cage:/bin/sh" in out
+    assert "/etc/passwd" in out
+    assert "mkdir -p /home/cage" in out
+    # The existing guard (don't recreate uid 1000 if it already exists)
+    # must survive.
+    assert "if ! getent passwd 1000 >/dev/null 2>&1; then" in out
+
+    # --- acdns system user (uid 201), only on the dnsmasq path --------
+    assert "useradd --uid 201 --system" in out
+    assert "adduser -S -D -H -u 201" in out
+    assert "acdns:x:201:201::/var/empty:/sbin/nologin" in out
+    # acdns creation must remain guarded behind dnsmasq presence.
+    assert "if [ -x /usr/sbin/dnsmasq ]; then" in out
+    # And behind the existing "already exists" guard.
+    assert "getent passwd acdns >/dev/null 2>&1" in out
+
+
 def test_stage_build_context_writes_cage_init(tmp_path):
     """The slim build context only stages cage-init.sh. Every per-cage
     proxy/dns config file (cage-cmd.json, allowlist.txt, dnsmasq.conf,
