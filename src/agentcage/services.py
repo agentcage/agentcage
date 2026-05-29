@@ -224,6 +224,58 @@ def build_container_image(
     )
 
 
+def write_resolv_files(
+    patches_work: str,
+    name: str,
+    ip_egress: str,
+    dns_servers: list[str],
+) -> tuple[str, str]:
+    """Write the cage's and egress's resolv.conf files into *patches_work*.
+
+    Returns ``(cage_resolv_path, egress_resolv_path)``.
+
+    The cage's resolv.conf (``resolv-<name>.conf``) points at this cage's
+    egress sidecar, so the cage's DNS goes through the egress's bundled,
+    allowlist-scoped dnsmasq.
+
+    The egress's resolv.conf (``resolv-egress-<name>.conf``) is pinned to
+    the configured upstream resolvers (*dns_servers*) and NOTHING else.
+
+    Why the egress needs its own pinned resolv.conf — the resolv.conf
+    ordering race: the egress sidecar joins two podman networks — the
+    per-cage ``<name>-net`` and the default ``podman`` network — both of
+    which have aardvark-dns enabled. podman injects aardvark's address as
+    the FIRST nameserver in the egress's auto-generated /etc/resolv.conf,
+    ahead of any upstream servers passed via the quadlet's ``DNS=``
+    directive. mitmproxy resolves allowlisted upstream hostnames
+    (archive.ubuntu.com, …) via THIS resolv.conf. When aardvark wins the
+    order and intermittently fails to forward external names — which it
+    does after rapid create/destroy churn degrades the aardvark network
+    state — mitmproxy gets "Name or service not known" and returns 502 Bad
+    Gateway to the cage for every allowlisted host. (The allowlist-gate
+    403 path is unaffected because it short-circuits before upstream
+    resolution.)
+
+    The egress never needs aardvark name resolution: it only ever resolves
+    REAL upstream hostnames for mitmproxy, and the cage's own DNS goes
+    through the egress's bundled dnsmasq (not aardvark). So we bind-mount a
+    deterministic resolv.conf that lists only the upstream servers,
+    mirroring how the cage gets its own ``resolv-<name>.conf`` and how the
+    apple-container backend rewrites the cage's resolv.conf to its dnsmasq
+    (CHANGELOG 0.22.11). aardvark is never consulted, so the ordering race
+    cannot occur.
+    """
+    cage_resolv_path = os.path.join(patches_work, f"resolv-{name}.conf")
+    with open(cage_resolv_path, "w") as f:
+        f.write(f"nameserver {ip_egress}\n")
+
+    egress_resolv_path = os.path.join(patches_work, f"resolv-egress-{name}.conf")
+    with open(egress_resolv_path, "w") as f:
+        f.write("".join(f"nameserver {srv}\n" for srv in dns_servers))
+
+    return cage_resolv_path, egress_resolv_path
+
+
 def build_and_deploy(
     cfg,
     config_host_path: str,
@@ -251,13 +303,14 @@ def build_and_deploy(
 
     patches_work = ensure_patches(podman)
 
-    # Write per-cage resolv.conf pointing to this cage's dnsmasq sidecar
+    # Write the per-cage resolv.conf files (cage + egress) into the
+    # patches dir; the quadlets bind-mount them at /etc/resolv.conf.
     addrs = cage_network_addrs(
         cfg.name, used_octets=used_octets, network_octet=network_octet,
     )
-    resolv_path = os.path.join(patches_work, f"resolv-{cfg.name}.conf")
-    with open(resolv_path, "w") as f:
-        f.write(f"nameserver {addrs['ip_egress']}\n")
+    write_resolv_files(
+        patches_work, cfg.name, addrs["ip_egress"], cfg.dns_servers,
+    )
 
     backend.build_artifacts(
         cfg, deploy_name, quiet=quiet, no_cache=no_cache, pull=pull,

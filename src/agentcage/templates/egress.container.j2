@@ -6,9 +6,23 @@ ContainerName={{ name }}-egress
 Image=localhost/agentcage-egress:{{ agentcage_version }}
 Network={{ name }}-net.network:ip={{ ip_egress }}
 Network=podman
-{% for srv in dns_servers %}
-DNS={{ srv }}
-{% endfor %}
+# Pin the egress's OWN resolv.conf to the configured upstream resolvers
+# (config.dns_servers) and nothing else — do NOT use the racy `DNS=`
+# directive. The egress is on two aardvark-dns-enabled networks
+# ({{ name }}-net + podman), and podman injects aardvark as the FIRST
+# nameserver ahead of any `DNS=` entries. mitmproxy resolves allowlisted
+# upstream hostnames via this file; when aardvark wins the order and
+# intermittently fails to forward external names (degrades after rapid
+# create/destroy churn), mitmproxy returns "Name not known" → 502 Bad
+# Gateway for every allowlisted host. Bind-mounting a deterministic
+# resolv.conf that lists only the upstreams removes aardvark from the
+# egress's resolution path entirely, so the ordering race cannot happen.
+# The egress never needs aardvark name resolution: it only resolves real
+# upstream hostnames, and the cage's DNS goes through the egress's
+# bundled dnsmasq. Mirrors the cage's resolv-{{ name }}.conf bind and the
+# apple-container resolv.conf rewrite (CHANGELOG 0.22.11). The file is
+# written by services.write_resolv_files (resolv-egress-{{ name }}.conf).
+Volume={{ patches_host_dir }}/resolv-egress-{{ name }}.conf:/etc/resolv.conf:ro,Z
 Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 {% if dns_allowlist_enabled %}
 Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z

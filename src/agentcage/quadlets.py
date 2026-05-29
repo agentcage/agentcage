@@ -506,6 +506,7 @@ def generate_quadlets(
     files[f"{name}-egress.container"] = env.get_template("egress.container.j2").render(
         **common,
         agentcage_version=_pkg_version("agentcage"),
+        patches_host_dir=patches_host_dir,
         config_host_path=proxy_config_path,
         dns_allowlist_enabled=(config.domains.mode == "allowlist"),
         dns_allowlist_host_path=dns_allowlist_path_str,
