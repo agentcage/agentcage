@@ -329,9 +329,46 @@ class AliasGroup(click.Group):
 class _BannerGroup(click.Group):
     """Show the agentcage banner before help text."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._global_aliases = {
+            "ls": ("cage_list", "cage list"),
+            "rm": ("cage_destroy", "cage destroy"),
+            "delete": ("cage_destroy", "cage destroy"),
+            "ps": ("cage_list", "cage list"),
+            "status": ("cage_list", "cage list"),
+            "restart": ("cage_restart", "cage restart"),
+            "reload": ("cage_restart", "cage restart"),
+            "show": ("cage_show", "cage show"),
+            "describe": ("cage_show", "cage show"),
+            "inspect": ("cage_show", "cage show"),
+            "edit": ("cage_edit", "cage edit"),
+            "config": ("cage_edit", "cage edit"),
+            "stop": ("cage_stop", "cage stop"),
+            "start": ("cage_start", "cage start"),
+            "logs": ("cage_logs", "cage logs"),
+            "exec": ("cage_exec", "cage exec"),
+            "shell": ("cage_shell", "cage shell"),
+            "update": ("cage_update", "cage update"),
+        }
+
+    def get_command(self, ctx, cmd_name):
+        if cmd_name in self._global_aliases:
+            func_name, _ = self._global_aliases[cmd_name]
+            return globals().get(func_name)
+        return super().get_command(ctx, cmd_name)
+
     def get_help(self, ctx: click.Context) -> str:
         from agentcage.output import banner_text
         return banner_text(version("agentcage")) + "\n" + super().get_help(ctx)
+
+    def format_help(self, ctx, formatter):
+        super().format_help(ctx, formatter)
+        formatter.write_paragraph()
+        formatter.write_text("Aliases:")
+        with formatter.indentation():
+            for alias, (_, target) in sorted(self._global_aliases.items()):
+                formatter.write_text(f"{alias} → {target}")
 
 
 @click.group(cls=_BannerGroup)

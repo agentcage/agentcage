@@ -76,7 +76,9 @@ Manage cages.
 | `cage backup NAME` | Create a backup tarball of a cage |
 | `cage restore TARBALL` | Restore a cage from a backup tarball |
 
-Aliases: `ls`/`ps`/`status` → `list`, `rm`/`delete` → `destroy`, `reload` → `restart`, `describe`/`inspect` → `show`, `config` → `edit`.
+Aliases: `ls`/`ps`/`status` → `list`, `rm`/`delete` → `destroy`, `reload` → `restart`, `describe`/`inspect` → `show`, `config` → `edit`, `update` → `update`.
+
+> **Note**: `agentcage` also supports dropping the `cage` group prefix for all standard cage commands and these aliases (e.g. `agentcage ls`, `agentcage start`, `agentcage stop`, `agentcage update`, `agentcage logs` function as their `cage` equivalents).
 
 ### cage create
 
