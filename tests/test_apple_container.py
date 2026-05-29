@@ -1376,8 +1376,9 @@ def test_build_artifacts_prefers_cage_yaml_command():
     assert build_mock.call_count == 1
     kwargs = build_mock.call_args.kwargs
     assert kwargs["user_cmd"] == ["sh", "-c", "exec sleep infinity"]
-    # `image pull` must still have run.
-    assert any(
+    # The image is already present locally (image_inspect truthy), so we must
+    # NOT pull it — pulling an already-local image is wasted, doomed work.
+    assert not any(
         call.args and call.args[0][:2] == ["image", "pull"]
         for call in run_mock.call_args_list
     )
@@ -1400,15 +1401,14 @@ def test_build_artifacts_falls_back_to_user_cmd_when_unset():
     assert build_mock.call_args.kwargs["user_cmd"] == ["/bin/sh"]
 
 
-def test_build_artifacts_orders_scaffold_then_pull_then_wrapper():
-    """Scaffold images must build BEFORE pull, and pull BEFORE wrapper build.
-
-    The wrapper's `FROM <user_image>` references a scaffold-produced tag, so
-    flipping these would leave the wrapper build referencing a tag that
-    doesn't yet exist.
+def test_build_artifacts_orders_scaffold_before_wrapper_no_pull_for_local():
+    """Scaffold images build BEFORE the wrapper (the wrapper's
+    `FROM <user_image>` references the scaffold-produced tag), and a
+    locally-present `localhost/` scaffold image is NOT pulled — pulling a
+    local-only ref is guaranteed to fail and is pure wasted work.
     """
     cfg = Config(name="t", isolation="apple-container")
-    cfg.container.image = "localhost/agentcage-ubuntu:latest"
+    cfg.container.image = "localhost/agentcage-scaffold-ubuntu:latest"
     cfg.scaffold = "ubuntu"
 
     calls: list[str] = []
@@ -1432,10 +1432,69 @@ def test_build_artifacts_orders_scaffold_then_pull_then_wrapper():
          patch.object(ac_wrapper, "build_wrapper", side_effect=build_wrapper_side_effect):
         AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
 
-    # Only the first occurrence of each matters; pull can be called more than
-    # once depending on internal retries, but the ordering invariant is fixed.
-    first_idx = {step: calls.index(step) for step in ("scaffold", "pull", "wrapper")}
-    assert first_idx["scaffold"] < first_idx["pull"] < first_idx["wrapper"]
+    assert "pull" not in calls  # local image present → never pulled
+    assert calls.index("scaffold") < calls.index("wrapper")
+
+
+def test_build_artifacts_localhost_image_missing_raises_clear_error():
+    """A `localhost/` image that isn't in the local store must fail fast with
+    an actionable message and must NOT attempt a (doomed) registry pull.
+
+    Regression: a mistyped/unbuilt scaffold tag previously fell through to
+    `container image pull localhost/...`, which can never resolve in a
+    registry — surfacing as a cryptic 'Connection refused' after a multi-
+    second timeout instead of 'this local image was not built'.
+    """
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/agentcage-scaffold-alpine-typo:latest"
+
+    with patch.object(ac_cli, "run", side_effect=_ok_run) as run_mock, \
+         patch.object(ac_cli, "image_inspect", return_value=None), \
+         patch.object(ac_wrapper, "build_wrapper", new=MagicMock()):
+        with pytest.raises(RuntimeError, match="local-only.*not present|not present.*local"):
+            AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    # No registry pull was attempted for the local-only ref.
+    assert not any(
+        call.args and call.args[0][:2] == ["image", "pull"]
+        for call in run_mock.call_args_list
+    )
+
+
+def test_build_artifacts_pulls_remote_image_when_absent():
+    """A genuinely-remote image that is absent locally IS pulled (the only
+    case where a registry pull is warranted)."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "docker.io/library/debian:stable-slim"
+    cfg.container.command = ["sleep", "infinity"]
+
+    with patch.object(ac_cli, "run", side_effect=_ok_run) as run_mock, \
+         patch.object(ac_cli, "image_inspect", return_value=None), \
+         patch.object(ac_wrapper, "build_wrapper", return_value="img"):
+        AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
+
+    assert any(
+        call.args and call.args[0][:3]
+        == ["image", "pull", "docker.io/library/debian:stable-slim"]
+        for call in run_mock.call_args_list
+    )
+
+
+def test_build_artifacts_remote_pull_fails_and_absent_raises():
+    """A remote image whose pull fails AND that isn't local → clear error."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "docker.io/library/does-not-exist:latest"
+    cfg.container.command = ["sleep", "infinity"]
+
+    def fail_pull(argv, **kwargs):  # noqa: ARG001
+        rc = 1 if argv[:2] == ["image", "pull"] else 0
+        return type("CP", (), {"returncode": rc, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "run", side_effect=fail_pull), \
+         patch.object(ac_cli, "image_inspect", return_value=None), \
+         patch.object(ac_wrapper, "build_wrapper", new=MagicMock()):
+        with pytest.raises(RuntimeError, match="failed to pull user image"):
+            AppleContainerBackend().build_artifacts(cfg, "deploy", quiet=True)
 
 
 def test_build_artifacts_no_cmd_anywhere_raises_helpful_error():

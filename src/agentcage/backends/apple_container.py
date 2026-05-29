@@ -403,19 +403,46 @@ class AppleContainerBackend:
         if scaffold_name:
             ac_scaffold.build_scaffold_images(scaffold_name, quiet=quiet)
 
-        # 3. Pull the user image (no-op if it was just built by the
-        # scaffold step above, or if it's already local).
-        if not quiet:
-            click.echo(f"Ensuring user image is available: {user_image}")
-        pull_result = ac_cli.run(
-            ["image", "pull", user_image],
-            check=False,
-            capture_output=False,
-        )
-        if pull_result.returncode != 0 and not ac_cli.image_inspect(user_image):
+        # 3. Ensure the user image is available locally — checking the local
+        # store FIRST, before any registry pull. This matters because:
+        #   * The scaffold step above (and any Containerfile build) produces a
+        #     `localhost/...` image that can NEVER resolve in a registry. The
+        #     old code pulled unconditionally, so every scaffold cage create
+        #     burned a multi-second `container image pull` that was guaranteed
+        #     to fail (POSIXErrorCode 61 / "Connection refused" when offline)
+        #     and only "worked" via the local fallback below — wasting time
+        #     and printing an alarming error on the happy path.
+        #   * A mistyped or unbuilt `localhost/` tag previously surfaced as that
+        #     same cryptic pull error instead of a clear "not built" message.
+        # So: use the local image if present; pull only a genuinely-remote ref
+        # that is genuinely absent; never try to pull a local-only `localhost/`
+        # ref (fail fast with an actionable message instead).
+        if ac_cli.image_inspect(user_image):
+            if not quiet:
+                click.echo(f"Using local image: {user_image}")
+        elif user_image.startswith("localhost/"):
             raise RuntimeError(
-                f"failed to pull user image {user_image!r} and it is not built locally"
+                f"image {user_image!r} is a local-only ('localhost/') reference "
+                f"but is not present in the local image store. It is never "
+                f"pulled from a registry. If it should be built from a "
+                f"Containerfile, set 'container.build.containerfile' (and, for a "
+                f"scaffold, ensure 'container.image' matches the tag the build "
+                f"produces, e.g. 'localhost/agentcage-scaffold-<name>:latest'); "
+                f"otherwise build/load it first with "
+                f"'container build -t {user_image} ...'."
             )
+        else:
+            if not quiet:
+                click.echo(f"Pulling user image: {user_image}")
+            pull_result = ac_cli.run(
+                ["image", "pull", user_image],
+                check=False,
+                capture_output=False,
+            )
+            if pull_result.returncode != 0 and not ac_cli.image_inspect(user_image):
+                raise RuntimeError(
+                    f"failed to pull user image {user_image!r} and it is not built locally"
+                )
 
         # 4. Resolve the cage's CMD. Precedence: cage.yaml `container.command:`
         # wins (explicit intent, portable across backends); fall back to the

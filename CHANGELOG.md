@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **apple-container no longer attempts a doomed registry pull of local
+  images.** `build_artifacts` pulled `container.image` unconditionally,
+  before checking the local image store — so every scaffold `cage create`
+  ran `container image pull localhost/agentcage-scaffold-<name>:latest`,
+  which can never resolve in a registry. That burned a multi-second
+  connection timeout and printed an alarming `POSIXErrorCode 61 / Connection
+  refused` on the happy path (it only succeeded via a local fallback), and a
+  mistyped/unbuilt `localhost/` tag surfaced as that same cryptic error
+  instead of a clear cause. Now the local store is checked first: a present
+  image is used as-is (no pull), a missing `localhost/` ref fails fast with
+  an actionable message (it's never pulled), and only a genuinely-remote,
+  genuinely-absent image is pulled from a registry.
+
 - **apple-container workspace mount no longer disappears on restart.** The
   scaffold workspace bind is `${PROJECT_DIR}:/workspace`, and `PROJECT_DIR`
   only exists in the environment of the `agentcage run` process. The backend
