@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.14] - 2026-05-29
+
 ### Fixed
 
 - **apple-container `domain add`/`rm` no longer rebuilds the image and
