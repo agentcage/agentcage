@@ -615,12 +615,24 @@ class AppleContainerBackend:
                 "relay_secret_envs": relay_secret_envs,
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
                 # User-defined host bind mounts. Apple's `container run`
-                # accepts `--volume host:cage[:mode]` just like podman, so
-                # we pass each through verbatim at start() time. Persisted
-                # in the unit JSON (rather than re-read from cage.yaml at
-                # start) so a `cage update` controls the surface, matching
-                # how the rest of the runtime config flows.
-                "volumes": list(config.container.volumes),
+                # accepts `--volume host:cage[:mode]` just like podman.
+                # Expand + validate the host path HERE (at generate_units
+                # / create-update time) and persist the resolved ABSOLUTE
+                # path, NOT the raw cage.yaml string. This is load-bearing:
+                # the scaffold workspace mount is `${PROJECT_DIR}:/workspace`
+                # and PROJECT_DIR only lives in the environment of the
+                # `agentcage run` process. If we persisted the literal
+                # `${PROJECT_DIR}` and expanded it lazily in start() (as we
+                # did pre-fix), any start() outside that process — launchd
+                # autostart, reboot, `cage start`, `cage restart` — has no
+                # PROJECT_DIR set, so _user_volume_argv's unresolved-`$`
+                # guard silently dropped the workspace. Baking the absolute
+                # path at create time (matching quadlets.py's
+                # expand-at-generate semantics for container/vm) makes the
+                # mount survive restarts. _user_volume_argv is idempotent on
+                # already-absolute paths, so start() re-running it is a safe
+                # revalidation, not a re-expansion.
+                "volumes": self._user_volume_argv(config.container.volumes),
                 # User-defined ``container.env:`` entries. Apple's
                 # `container run` accepts `-e KEY=VAL` like podman. The
                 # container backend wires these via quadlets.py:338;
@@ -906,7 +918,12 @@ class AppleContainerBackend:
             if not ph:
                 continue
             cage_argv += ["-e", f"{env_name}={ph}"]
-        # User-defined bind mounts (verbatim, after $HOME-containment check).
+        # User-defined bind mounts. meta["volumes"] already holds ABSOLUTE,
+        # expanded, $HOME-validated entries (baked by generate_units at
+        # create/update time — see the "volumes" comment there). Re-running
+        # _user_volume_argv here is an idempotent revalidation, NOT a
+        # re-expansion: absolute paths have no `~`/`$VAR` left to resolve, so
+        # this no longer depends on PROJECT_DIR being in the start() env.
         for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
             cage_argv += ["--volume", vol_entry]
         # Apple's --cpus / --memory normalization (uppercase suffix, ceil
