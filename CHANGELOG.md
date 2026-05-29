@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.15] - 2026-05-29
+
 ### Fixed
 
 - **apple-container `cage create`/`update` now honor `--no-cache` and
