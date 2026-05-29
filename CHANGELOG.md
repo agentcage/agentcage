@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **apple-container `cage create`/`update` now honor `--no-cache` and
+  `--pull`.** Both flags were silently ignored on apple-container: they were
+  only wired into the container backend's image build, while
+  `build_and_deploy` never forwarded them to `AppleContainerBackend.
+  build_artifacts`, and the egress/scaffold builds short-circuited whenever
+  the image tag already existed. Now the flags thread through every apple
+  build step — the shared egress image, the scaffold image, and the per-cage
+  wrapper — mapping to `container build --no-cache` / `--pull` and bypassing
+  the "skip if present" checks so a forced rebuild actually rebuilds.
+  `--pull` additionally re-pulls a genuinely-remote user image even when a
+  copy is cached (a local-only `localhost/` ref is still never pulled — its
+  freshness comes from the forced scaffold rebuild).
+
 ## [0.22.14] - 2026-05-29
 
 ### Fixed

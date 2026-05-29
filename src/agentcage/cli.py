@@ -731,7 +731,8 @@ def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool,
     used_octets = collect_used_octets()
 
     try:
-        _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets)
+        _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets,
+                           no_cache=no_cache, pull=pull)
     except Exception:
         # Stop partially-started services but preserve state for debugging
         backend = get_backend(cfg)
@@ -1056,6 +1057,8 @@ def cage_update(name: str | None, config_path: str | None,
         podman,
         used_octets=_collect_update(exclude=name),
         network_octet=_existing_octet,
+        no_cache=no_cache,
+        pull=pull,
     )
     click.echo(f"Updated cage '{name}'")
 

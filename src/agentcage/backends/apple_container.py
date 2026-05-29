@@ -362,7 +362,8 @@ class AppleContainerBackend:
         return ac_prereq.check_prerequisites()
 
     def build_artifacts(
-        self, config: Config, deploy_name: str, *, quiet: bool = False
+        self, config: Config, deploy_name: str, *, quiet: bool = False,
+        no_cache: bool = False, pull: bool = False,
     ) -> None:
         """Build (or refresh) the per-cage wrapper + the shared egress image,
         and stage per-cage egress config files on the host.
@@ -385,6 +386,14 @@ class AppleContainerBackend:
           1. <egress_config>/proxy-config.yaml — mitmproxy addon config.
           2. <egress_config>/dnsmasq.conf      — dnsmasq main config.
           3. <egress_config>/dns-allowlist.conf — dnsmasq --servers-file.
+
+        ``no_cache`` / ``pull`` come from ``cage create/update
+        --no-cache/--pull`` and are honored across every build step here
+        (egress image, scaffold image, wrapper image) — they map to
+        ``container build --no-cache`` / ``--pull`` and bypass the
+        "skip if image already present" short-circuits, so a forced
+        rebuild actually rebuilds. ``pull`` also forces a re-pull of a
+        genuinely-remote user image even when a copy is already cached.
         """
         user_image = config.container.image
         if not user_image:
@@ -393,7 +402,10 @@ class AppleContainerBackend:
         # 1. Build (or skip) the shared agentcage-egress image. Tagged with
         # the agentcage version so a wheel upgrade triggers a rebuild even
         # if the user already has a stale tag from an older release.
-        self._build_egress_image_if_missing(quiet=quiet)
+        # --no-cache/--pull force a rebuild even when the tag is present.
+        self._build_egress_image_if_missing(
+            quiet=quiet, no_cache=no_cache, pull=pull,
+        )
 
         # 2. If the cage came from a scaffold (cage.yaml has `scaffold:`),
         # build any scaffold-declared images via Apple `container build`
@@ -401,7 +413,9 @@ class AppleContainerBackend:
         # references one of these tags, so it must exist first.
         scaffold_name = getattr(config, "scaffold", "") or ""
         if scaffold_name:
-            ac_scaffold.build_scaffold_images(scaffold_name, quiet=quiet)
+            ac_scaffold.build_scaffold_images(
+                scaffold_name, quiet=quiet, no_cache=no_cache, pull=pull,
+            )
 
         # 3. Ensure the user image is available locally — checking the local
         # store FIRST, before any registry pull. This matters because:
@@ -417,7 +431,14 @@ class AppleContainerBackend:
         # So: use the local image if present; pull only a genuinely-remote ref
         # that is genuinely absent; never try to pull a local-only `localhost/`
         # ref (fail fast with an actionable message instead).
-        if ac_cli.image_inspect(user_image):
+        #
+        # --pull overrides the "use local if present" shortcut for remote
+        # refs: the operator explicitly asked for the latest from the
+        # registry. A `localhost/` ref is still never pulled (no registry
+        # source) — its freshness comes from the --no-cache/--pull rebuild
+        # of the scaffold image above, not from a pull.
+        force_pull_remote = pull and not user_image.startswith("localhost/")
+        if ac_cli.image_inspect(user_image) and not force_pull_remote:
             if not quiet:
                 click.echo(f"Using local image: {user_image}")
         elif user_image.startswith("localhost/"):
@@ -471,20 +492,29 @@ class AppleContainerBackend:
         # the legacy kwargs are accepted but ignored by the new wrapper.
         if not quiet:
             click.echo(f"Building apple-container wrapper for {deploy_name}...")
-        ac_wrapper.build_wrapper(deploy_name, user_image, user_cmd=user_cmd)
+        ac_wrapper.build_wrapper(
+            deploy_name, user_image, user_cmd=user_cmd, no_cache=no_cache,
+        )
         if not quiet:
             click.echo(f"Built {ac_wrapper.wrapped_image_name(deploy_name)}")
 
-    def _build_egress_image_if_missing(self, *, quiet: bool = False) -> None:
+    def _build_egress_image_if_missing(
+        self, *, quiet: bool = False, no_cache: bool = False, pull: bool = False,
+    ) -> None:
         """Build localhost/agentcage-egress:<version> if not already present.
 
         The Containerfile lives at src/agentcage/data/containers/Containerfile.egress
         (PR 1). It expects the build context to be src/agentcage/data/ so
         `COPY containers/supervisor-egress.sh ...` resolves — same context
         the smoke-test in tests/test_egress_image.py uses.
+
+        ``no_cache`` / ``pull`` force a rebuild even when the version-tagged
+        image is already present (``cage create/update --no-cache/--pull``):
+        the operator asked for a clean rebuild / fresh base, so the shared
+        egress image is rebuilt too rather than served from the cached tag.
         """
         image = _egress_image_name()
-        if ac_cli.image_inspect(image) is not None:
+        if not (no_cache or pull) and ac_cli.image_inspect(image) is not None:
             if not quiet:
                 click.echo(f"Egress image {image} already present; skipping rebuild")
             return
@@ -500,10 +530,13 @@ class AppleContainerBackend:
                 f"egress Containerfile missing at {containerfile} — "
                 f"is the agentcage install complete?"
             )
-        ac_cli.run(
-            ["build", "-t", image, "-f", str(containerfile), str(data_dir)],
-            capture_output=False,
-        )
+        argv = ["build", "-t", image, "-f", str(containerfile)]
+        if no_cache:
+            argv.append("--no-cache")
+        if pull:
+            argv.append("--pull")
+        argv.append(str(data_dir))
+        ac_cli.run(argv, capture_output=False)
 
     def _render_egress_config(self, config: Config, deploy_name: str) -> None:
         """Render proxy-config.yaml + dnsmasq.conf + dns-allowlist.conf to

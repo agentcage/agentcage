@@ -218,6 +218,7 @@ def build_wrapper(
     user_image: str,
     *,
     user_cmd: list[str] | None = None,
+    no_cache: bool = False,
     # Back-compat kwargs — see stage_build_context's docstring. None of
     # these flow into the wrapper image anymore; the per-cage egress
     # config (dnsmasq.conf, allowlist, secret_injection.json, etc.) is
@@ -247,8 +248,12 @@ def build_wrapper(
         tmpdir = Path(tmp)
         (tmpdir / "Containerfile").write_text(containerfile)
         stage_build_context(tmpdir, user_cmd)
+        argv = ["build", "-t", image, "-f", str(tmpdir / "Containerfile")]
+        if no_cache:
+            argv.append("--no-cache")
+        argv.append(str(tmpdir))
         ac_cli.run(
-            ["build", "-t", image, "-f", str(tmpdir / "Containerfile"), str(tmpdir)],
+            argv,
             capture_output=False,  # stream output to user
         )
     return image

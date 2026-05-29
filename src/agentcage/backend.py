@@ -15,8 +15,16 @@ class Backend(Protocol):
         """Return list of unmet prerequisite descriptions (empty = all OK)."""
         ...
 
-    def build_artifacts(self, config: Config, deploy_name: str, *, quiet: bool = False) -> None:
-        """Build container images or VM rootfs as needed."""
+    def build_artifacts(
+        self, config: Config, deploy_name: str, *, quiet: bool = False,
+        no_cache: bool = False, pull: bool = False,
+    ) -> None:
+        """Build container images or VM rootfs as needed.
+
+        ``no_cache``/``pull`` come from ``cage create/update
+        --no-cache/--pull``. Backends that build images here should honor
+        them; backends that build images elsewhere may ignore them.
+        """
         ...
 
     def generate_units(
