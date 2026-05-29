@@ -92,6 +92,15 @@ if not m:
 insert_at = m.end()
 extra = "    - httpbin.org\n    - postman-echo.com\n"
 text = text[:insert_at] + extra + text[insert_at:]
+
+# CI has no usable systemd-creds → opt secrets into the plaintext store so
+# `cage create -s` doesn't fail-closed in the sandbox. On a real host with
+# systemd-creds this is unnecessary and secrets are encrypted at rest.
+sm = re.search(r"^secrets:[ \t]*\n", text, re.M)
+if sm:
+    text = text[:sm.end()] + "  allow_plaintext: true\n" + text[sm.end():]
+else:
+    text += "\nsecrets:\n  allow_plaintext: true\n"
 path.write_text(text)
 PYEOF
 
