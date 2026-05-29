@@ -49,6 +49,7 @@ from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
+from agentcage.quadlets import _effective_port_policy
 
 
 # Shared agentcage-egress image is built once per host (tagged with the
@@ -603,6 +604,16 @@ class AppleContainerBackend:
                 scheme, _, var = (src or "").partition(":")
                 if scheme and var and var not in relay_secret_envs:
                     relay_secret_envs.append(var)
+        # Resolve cage.yaml's nested ``ports.*`` into the three int lists the
+        # egress supervisor's Step A turns into iptables rules. Computed HERE
+        # (at unit-generation time, when we have a live Config) and persisted
+        # into metadata.json so ``start()`` — which works only from the meta
+        # dict, not a Config — can feed them to the egress argv. Reuses the
+        # SAME ``_effective_port_policy`` the container/vm quadlet path uses
+        # (quadlets.py:152) so the policy resolution can never diverge between
+        # backends. Pre-this-fix apple-container hardcoded only ALLOW_UDP_PORTS=53
+        # and silently dropped a cage.yaml's ports.tcp.* / ports.udp.* policy.
+        inspected_tcp, passthrough_tcp, allow_udp = _effective_port_policy(config)
         unit_json = json.dumps(
             {
                 "name": deploy_name,
@@ -648,6 +659,12 @@ class AppleContainerBackend:
                     k: os.path.expandvars(str(v))
                     for k, v in (config.container.env or {}).items()
                 },
+                # Egress port policy (see _effective_port_policy above). Three
+                # lists of ints; start() space-joins them onto the egress argv
+                # as INSPECTED_TCP_PORTS / PASSTHROUGH_TCP_PORTS / ALLOW_UDP_PORTS.
+                "inspected_tcp_ports": inspected_tcp,
+                "passthrough_tcp_ports": passthrough_tcp,
+                "allow_udp_ports": allow_udp,
             },
             indent=2,
             sort_keys=True,
@@ -816,16 +833,38 @@ class AppleContainerBackend:
             "-e", "AGENTCAGE_CONFIG=/etc/agentcage/config.yaml",
             "-e", "AGENTCAGE_AUDIT_LOG=/var/log/agentcage/audit.jsonl",
             "-e", "AGENTCAGE_CAPTURE=/var/log/agentcage/capture.jsonl",
-            # CTF F2 (0.22.6): the cage's local dnsmasq (cage-init.sh
-            # stage A') queries upstream resolvers via UDP :53. Those
-            # packets route through the egress sibling (the cage's
-            # default gateway). supervisor-egress.sh sets FORWARD policy
-            # to DROP and only ACCEPTs ports listed in $ALLOW_UDP_PORTS,
-            # which is otherwise unset. Without :53 in the list, the
-            # cage's dnsmasq sees its upstream forwarders timeout and
-            # returns SERVFAIL — even for allowlisted apexes. Setting
-            # ALLOW_UDP_PORTS=53 here closes that gap.
-            "-e", "ALLOW_UDP_PORTS=53",
+        ]
+        # Egress port policy. generate_units() persisted these three int
+        # lists (from cage.yaml's nested ``ports.*`` via the shared
+        # _effective_port_policy). supervisor-egress.sh Step A turns them
+        # into iptables rules: INSPECTED_TCP_PORTS → nat:PREROUTING REDIRECT
+        # to mitmproxy, PASSTHROUGH_TCP_PORTS → FORWARD ACCEPT uninspected,
+        # ALLOW_UDP_PORTS → FORWARD ACCEPT for UDP.
+        inspected_tcp = [int(p) for p in (meta.get("inspected_tcp_ports") or [])]
+        passthrough_tcp = [int(p) for p in (meta.get("passthrough_tcp_ports") or [])]
+        allow_udp = [int(p) for p in (meta.get("allow_udp_ports") or [])]
+        # INSPECTED_TCP_PORTS MUST be set explicitly: the supervisor only
+        # falls back to "80 443" when the var is UNSET, so a cage that
+        # narrows or widens its inspected set has to be honored here.
+        egress_argv += [
+            "-e", f"INSPECTED_TCP_PORTS={' '.join(str(p) for p in inspected_tcp)}",
+            "-e", f"PASSTHROUGH_TCP_PORTS={' '.join(str(p) for p in passthrough_tcp)}",
+        ]
+        # CTF F2 (0.22.6): the cage's local dnsmasq (cage-init.sh
+        # stage A') queries upstream resolvers via UDP :53. Those
+        # packets route through the egress sibling (the cage's
+        # default gateway). supervisor-egress.sh sets FORWARD policy
+        # to DROP and only ACCEPTs ports listed in $ALLOW_UDP_PORTS,
+        # which is otherwise unset. Without :53 in the list, the
+        # cage's dnsmasq sees its upstream forwarders timeout and
+        # returns SERVFAIL — even for allowlisted apexes. So 53 MUST
+        # remain present even when the operator's config.udp.allow is
+        # empty: we union it in and dedupe (preserving operator order).
+        udp_with_dns = list(allow_udp)
+        if 53 not in udp_with_dns:
+            udp_with_dns.append(53)
+        egress_argv += [
+            "-e", f"ALLOW_UDP_PORTS={' '.join(str(p) for p in udp_with_dns)}",
         ]
         # Egress is small — 512M is plenty. We don't normalize here
         # because the value is internal, not operator-supplied.

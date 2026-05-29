@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than a re-expansion. Volumes that can't be resolved (unset variable)
   or escape `$HOME` are dropped at create time with a warning instead of
   failing silently later.
+- **apple-container now honors `cage.yaml`'s egress port policy.** The
+  `{name}-egress` microVM's supervisor builds its iptables filter from
+  `INSPECTED_TCP_PORTS` / `PASSTHROUGH_TCP_PORTS` / `ALLOW_UDP_PORTS`, but
+  `start()` previously hardcoded only `ALLOW_UDP_PORTS=53` and never read
+  `ports.tcp.allow` / `ports.tcp.passthrough` / `ports.udp.allow` — so a
+  cage that narrowed, widened, or added passthrough/UDP ports had its
+  policy silently dropped and fell back to the supervisor's default
+  "80 443". `generate_units()` now persists the resolved policy (computed
+  via the same `_effective_port_policy` the container/vm quadlet path
+  uses) into `metadata.json`, and `start()` feeds all three env vars to
+  the egress argv. Port 53 remains unioned into the UDP set so in-cage
+  DNS keeps working even when `ports.udp.allow` is empty.
 
 ### Added
 
