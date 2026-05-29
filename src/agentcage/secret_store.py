@@ -19,8 +19,16 @@ opted into plaintext, resolution raises rather than silently storing cleartext.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
+
+#: macOS System keychain — root-owned, unlocked at boot, headless-capable.
+_SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
+#: keychain service namespace for all agentcage secrets.
+_KEYCHAIN_SERVICE = "agentcage"
 
 
 class SecretStoreError(Exception):
@@ -121,9 +129,204 @@ class PlaintextStore(SecretStore):
         return self._podman.secret_read(full)
 
 
+def _security_interaction_blocked(stderr: str) -> bool:
+    return "interaction is not allowed" in (stderr or "").lower()
+
+
+class KeychainStore(SecretStore):
+    """macOS: store secrets in a keychain, encrypted at rest.
+
+    Target selection (per the operator's requested policy):
+      1. the **login keychain** if it's accessible (an unlocked GUI session) —
+         no sudo, per-user, the strongest option;
+      2. else the **System keychain** *only if passwordless sudo already works*
+         (``sudo -n``) — boot-unlocked, headless, host-key encrypted;
+      3. else **bail** (fail-closed) — never prompts for sudo.
+
+    A non-secret name index (``<state>/secret_keys.json``) records which keys
+    exist, since the `security` CLI can't enumerate by service/account.
+    """
+
+    name = "keychain"
+    runtime_decrypts = False  # agentcage retrieves + materializes at start
+
+    def __init__(self) -> None:
+        self._target_cache: Optional[tuple] = None
+
+    @staticmethod
+    def _account(cage: str, key: str) -> str:
+        return f"{cage}.{key}"
+
+    @staticmethod
+    def _writable(prefix: list, kc: Optional[str]) -> bool:
+        """Probe real write-ability: add a throwaway item, then delete it.
+
+        A read probe is insufficient — the login keychain answers reads over
+        headless SSH but refuses writes ("interaction not allowed"). Only an
+        actual add reflects whether secrets can be stored here.
+        """
+        acct = "__agentcage_probe__"
+        kc_arg = [kc] if kc else []
+        add = subprocess.run(
+            prefix + ["security", "add-generic-password",
+                      "-s", _KEYCHAIN_SERVICE, "-a", acct, "-w", "x", "-U"]
+            + kc_arg,
+            capture_output=True, text=True,
+        )
+        if add.returncode != 0:
+            return False
+        subprocess.run(
+            prefix + ["security", "delete-generic-password",
+                      "-s", _KEYCHAIN_SERVICE, "-a", acct] + kc_arg,
+            capture_output=True, text=True,
+        )
+        return True
+
+    @staticmethod
+    def _sudo_n_ok() -> bool:
+        return subprocess.run(
+            ["sudo", "-n", "true"], capture_output=True).returncode == 0
+
+    def _target(self) -> tuple:
+        """Return (sudo_prefix, keychain_path_or_None), or raise."""
+        if self._target_cache is not None:
+            return self._target_cache
+        if sys.platform != "darwin":
+            raise SecretStoreError("keychain backend is macOS-only")
+        if self._writable([], None):
+            self._target_cache = ([], None)            # login keychain
+        elif self._sudo_n_ok() and self._writable(["sudo", "-n"], _SYSTEM_KEYCHAIN):
+            self._target_cache = (["sudo", "-n"], _SYSTEM_KEYCHAIN)
+        else:
+            raise SecretStoreError(
+                "macOS keychain unavailable: the login keychain is locked "
+                "(no unlocked GUI session) and passwordless sudo for the "
+                "System keychain is not configured. Log into the Mac's GUI, "
+                "set up NOPASSWD sudo for /usr/bin/security, or set "
+                "secrets.allow_plaintext."
+            )
+        return self._target_cache
+
+    def available(self) -> bool:
+        try:
+            self._target()
+            return True
+        except SecretStoreError:
+            return False
+
+    def set(self, cage: str, key: str, value: str, *, state_dir: Path) -> None:
+        prefix, kc = self._target()
+        argv = prefix + [
+            "security", "add-generic-password",
+            "-s", _KEYCHAIN_SERVICE, "-a", self._account(cage, key),
+            "-w", value, "-U",
+        ]
+        if kc:
+            argv.append(kc)
+        r = subprocess.run(argv, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SecretStoreError(f"keychain add failed: {r.stderr.strip()}")
+        self._index_add(state_dir, key)
+
+    def get(self, cage: str, key: str, *, state_dir: Path) -> Optional[str]:
+        prefix, kc = self._target()
+        argv = prefix + [
+            "security", "find-generic-password",
+            "-s", _KEYCHAIN_SERVICE, "-a", self._account(cage, key), "-w",
+        ]
+        if kc:
+            argv.append(kc)
+        r = subprocess.run(argv, capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        return r.stdout.rstrip("\n")
+
+    def delete(self, cage: str, key: str, *, state_dir: Path) -> None:
+        prefix, kc = self._target()
+        argv = prefix + [
+            "security", "delete-generic-password",
+            "-s", _KEYCHAIN_SERVICE, "-a", self._account(cage, key),
+        ]
+        if kc:
+            argv.append(kc)
+        subprocess.run(argv, capture_output=True, text=True)
+        self._index_remove(state_dir, key)
+
+    # ── non-secret name index ──────────────────────────────
+    @staticmethod
+    def _index_path(state_dir: Path) -> Path:
+        return state_dir / "secret_keys.json"
+
+    def names(self, cage: str, *, state_dir: Path) -> list[str]:
+        p = self._index_path(state_dir)
+        if not p.is_file():
+            return []
+        try:
+            return list(json.loads(p.read_text()))
+        except Exception:
+            return []
+
+    def _index_add(self, state_dir: Path, key: str) -> None:
+        keys = [k for k in self.names("", state_dir=state_dir) if k != key]
+        keys.append(key)
+        self._index_path(state_dir).write_text(json.dumps(sorted(keys)))
+
+    def _index_remove(self, state_dir: Path, key: str) -> None:
+        keys = [k for k in self.names("", state_dir=state_dir) if k != key]
+        self._index_path(state_dir).write_text(json.dumps(sorted(keys)))
+
+
+class ApplePlaintextStore(SecretStore):
+    """macOS opt-in cleartext: the legacy ``pending_secrets.json`` (0600)."""
+
+    name = "plaintext"
+    runtime_decrypts = False
+
+    @staticmethod
+    def _path(state_dir: Path) -> Path:
+        return state_dir / "pending_secrets.json"
+
+    def _load(self, state_dir: Path) -> dict:
+        p = self._path(state_dir)
+        if not p.is_file():
+            return {}
+        try:
+            return {k: v for k, v in json.loads(p.read_text())}
+        except Exception:
+            return {}
+
+    def _save(self, state_dir: Path, pairs: dict) -> None:
+        import os
+        p = self._path(state_dir)
+        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, json.dumps([[k, v] for k, v in pairs.items()]).encode())
+        finally:
+            os.close(fd)
+
+    def available(self) -> bool:
+        return True
+
+    def set(self, cage: str, key: str, value: str, *, state_dir: Path) -> None:
+        pairs = self._load(state_dir)
+        pairs[key] = value
+        self._save(state_dir, pairs)
+
+    def get(self, cage: str, key: str, *, state_dir: Path) -> Optional[str]:
+        return self._load(state_dir).get(key)
+
+    def delete(self, cage: str, key: str, *, state_dir: Path) -> None:
+        pairs = self._load(state_dir)
+        pairs.pop(key, None)
+        self._save(state_dir, pairs)
+
+    def names(self, cage: str, *, state_dir: Path) -> list[str]:
+        return sorted(self._load(state_dir).keys())
+
+
 # Backend names valid in cage.yaml ``secrets.backend``.
 KNOWN_BACKENDS = frozenset({
-    "auto", "systemd-creds", "system-keychain", "plaintext",
+    "auto", "systemd-creds", "keychain", "plaintext",
 })
 
 
@@ -136,19 +339,27 @@ def resolve_store(cfg, *, podman=None, source_scheme: str = "") -> SecretStore:
     ``secrets.allow_plaintext`` is set (then plaintext), so cleartext is never
     a silent default.
     """
-    import sys as _sys
-
     sec = cfg.secrets
     allow_plaintext = bool(getattr(sec, "allow_plaintext", False))
+    is_apple = getattr(cfg, "isolation", "") == "apple-container"
 
-    # Explicit per-rule scheme wins.
+    # Platform-appropriate stores.
+    plaintext = ApplePlaintextStore() if is_apple else PlaintextStore(podman)
+
+    def encrypting():
+        return KeychainStore() if is_apple else SystemdCredsStore(
+            scope=sec.scope, podman=podman)
+
+    # Explicit per-rule scheme wins (container/vm only).
     if source_scheme == "podman":
-        return PlaintextStore(podman)
+        return plaintext
     if source_scheme == "systemd-creds":
         return SystemdCredsStore(scope=sec.scope, podman=podman)
 
     backend = getattr(sec, "backend", "auto") or "auto"
 
+    if backend == "plaintext":
+        return plaintext
     if backend == "systemd-creds":
         store = SystemdCredsStore(scope=sec.scope, podman=podman)
         if not store.available():
@@ -157,22 +368,22 @@ def resolve_store(cfg, *, podman=None, source_scheme: str = "") -> SecretStore:
                 "encryption is not usable on this host"
             )
         return store
-    if backend == "plaintext":
-        return PlaintextStore(podman)
-    if backend == "system-keychain":
-        raise SecretStoreError(
-            "secrets.backend 'system-keychain' is only available on macOS "
-            "(apple-container)"
-        )
+    if backend == "keychain":
+        store = KeychainStore()
+        if not store.available():
+            raise SecretStoreError(
+                "secrets.backend 'keychain' requires macOS with an unlocked "
+                "login keychain or passwordless sudo for the System keychain"
+            )
+        return store
 
-    # auto: prefer an encrypting backend; fail-closed otherwise.
-    if _sys.platform == "linux":
-        creds = SystemdCredsStore(scope=sec.scope, podman=podman)
-        if creds.available():
-            return creds
+    # auto: prefer the platform's encrypting backend; fail-closed otherwise.
+    enc = encrypting()
+    if enc.available():
+        return enc
     if allow_plaintext:
-        return PlaintextStore(podman)
+        return plaintext
     raise SecretStoreError(
-        "no encrypting secret backend is available (systemd-creds unusable) "
-        "and secrets.allow_plaintext is not set"
+        "no encrypting secret backend is available and "
+        "secrets.allow_plaintext is not set"
     )
