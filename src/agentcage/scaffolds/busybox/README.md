@@ -27,7 +27,7 @@ agentcage run busybox
 
 ## Limitations
 
-**No package manager.** `busybox:latest` ships only the busybox static binary — no `apk`, `apt`, `pacman`, or `opkg`. You cannot install additional tools at runtime. If you need to test package installs or pull in something like `curl`, use the [alpine scaffold](../alpine/README.md) instead (also tiny, but with `apk`).
+**No package manager.** `busybox:latest` ships only the busybox static binary — no `apk`, `apt`, `pacman`, or `opkg`. You cannot install additional tools at runtime. If you need to test package installs or pull in something like `curl`, use the [debian scaffold](../debian/README.md) instead (`apt`-based, still small).
 
 ## Use cases
 
