@@ -1379,7 +1379,7 @@ def _verify_apple_container(name: str, _pass, _fail, _warn):
 
     # -- 3. Egress filtering: blocked domain returns 403 from mitmproxy
     # Use a fixed domain that should never be in any cage's allowlist;
-    # mitmproxy's allowlist_addon should respond with 403.
+    # the mitmproxy egress addon should respond with 403.
     click.echo()
     click.echo("-- Egress Filtering --")
     ec, _ = _exec(["which", "curl"])
