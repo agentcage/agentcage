@@ -20,13 +20,24 @@ from agentcage.apple_container import cli as ac_cli
 from agentcage.init import load_scaffold_meta, resolve_scaffold
 
 
-def build_scaffold_images(scaffold: str, *, quiet: bool = False) -> None:
+def build_scaffold_images(
+    scaffold: str,
+    *,
+    quiet: bool = False,
+    no_cache: bool = False,
+    pull: bool = False,
+) -> None:
     """Build every image declared in *scaffold*'s ``scaffold.yaml``.
 
     Mirrors the surface of :func:`agentcage.init.run_scaffold_setup`
     but builds via Apple ``container build`` rather than host podman.
-    Build args, cap-add hints, and the "skip if image exists" check
-    all carry over.
+    Build args and cap-add hints carry over.
+
+    ``no_cache`` / ``pull`` map to ``container build --no-cache`` /
+    ``--pull`` (force `cage create/update --no-cache/--pull`). When either
+    is set the "skip if image already exists" short-circuit is bypassed —
+    the whole point of those flags is to rebuild from scratch / re-pull the
+    base, so a cached image must NOT be reused.
 
     No-op when *scaffold* is empty (cage.yaml without a scaffold).
     """
@@ -43,9 +54,10 @@ def build_scaffold_images(scaffold: str, *, quiet: bool = False) -> None:
         if not quiet:
             click.echo(msg)
 
+    force = no_cache or pull
     for entry in meta.get("build", []):
         image = entry["image"]
-        if ac_cli.image_inspect(image):
+        if not force and ac_cli.image_inspect(image):
             _echo(f"Image {image} already exists, skipping build.")
             continue
         if "containerfile" not in entry:
@@ -59,6 +71,10 @@ def build_scaffold_images(scaffold: str, *, quiet: bool = False) -> None:
         containerfile = str(scaffold_dir / entry["containerfile"])
         _echo(f"Building {image} (apple-container)...")
         argv = ["build", "-t", image, "-f", containerfile]
+        if no_cache:
+            argv.append("--no-cache")
+        if pull:
+            argv.append("--pull")
         # build_args are scaffold-resolved templating, e.g. registry tags.
         # Apple's `container build` accepts --build-arg KEY=VALUE.
         for k, v in (entry.get("build_args") or {}).items():

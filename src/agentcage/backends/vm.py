@@ -175,8 +175,15 @@ class VmBackend:
     def check_prerequisites(self, config: Config) -> list[str]:
         return lima_prerequisites.check_prerequisites()
 
-    def build_artifacts(self, config: Config, deploy_name: str, *, quiet: bool = False) -> None:
+    def build_artifacts(
+        self, config: Config, deploy_name: str, *, quiet: bool = False,
+        no_cache: bool = False, pull: bool = False,  # noqa: ARG002
+    ) -> None:
         """Build the egress image inside the VM.
+
+        ``no_cache``/``pull`` are accepted for protocol parity; the VM
+        backend builds/pulls the user image inside the VM via the cli
+        path, so they are not used here.
 
         The build context (package data directory) is copied into the VM
         via ``limactl copy`` since the home directory is not mounted

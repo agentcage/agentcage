@@ -46,7 +46,14 @@ class ContainerBackend:
             issues.append("Podman is not available")
         return issues
 
-    def build_artifacts(self, config: Config, deploy_name: str, *, quiet: bool = False) -> None:
+    def build_artifacts(
+        self, config: Config, deploy_name: str, *, quiet: bool = False,
+        no_cache: bool = False, pull: bool = False,  # noqa: ARG002
+    ) -> None:
+        # The container backend builds/pulls the user image separately in
+        # cli (_build_container_image + podman.pull), which already honor
+        # --no-cache/--pull; this builds only the static helper/proxy
+        # images, so the flags are accepted for protocol parity and ignored.
         data_dir = Path(__file__).resolve().parent.parent / "data"
         containers_dir = str(data_dir / "containers")
         build_context = str(data_dir)

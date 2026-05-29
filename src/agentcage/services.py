@@ -232,6 +232,8 @@ def build_and_deploy(
     used_octets: set[int] | None = None,
     network_octet: int | None = None,
     quiet: bool = False,
+    no_cache: bool = False,
+    pull: bool = False,
 ):
     """Build images, generate quadlets, install, and start.
 
@@ -257,7 +259,9 @@ def build_and_deploy(
     with open(resolv_path, "w") as f:
         f.write(f"nameserver {addrs['ip_egress']}\n")
 
-    backend.build_artifacts(cfg, deploy_name, quiet=quiet)
+    backend.build_artifacts(
+        cfg, deploy_name, quiet=quiet, no_cache=no_cache, pull=pull,
+    )
 
     units = backend.generate_units(
         cfg,

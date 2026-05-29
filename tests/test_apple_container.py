@@ -1413,7 +1413,7 @@ def test_build_artifacts_orders_scaffold_before_wrapper_no_pull_for_local():
 
     calls: list[str] = []
 
-    def scaffold_side_effect(scaffold, *, quiet=False):  # noqa: ARG001
+    def scaffold_side_effect(scaffold, **kwargs):  # noqa: ARG001
         calls.append("scaffold")
 
     def run_side_effect(argv, **kwargs):  # noqa: ARG001
@@ -3920,3 +3920,132 @@ def test_reload_domains_no_signal_when_egress_stopped(tmp_path, monkeypatch):
 
     assert rendered == [1]          # re-rendered the files
     run_mock.assert_not_called()    # but did not exec into the stopped egress
+
+
+# ---------------------------------------------------------------------------
+# --no-cache / --pull propagation (cage create/update flags)
+# ---------------------------------------------------------------------------
+
+
+def test_egress_build_no_cache_forces_rebuild_even_when_present():
+    """`_build_egress_image_if_missing(no_cache=True)` must rebuild with
+    --no-cache even though the version-tagged egress image already exists —
+    the whole point of --no-cache is to not reuse the cached image."""
+    backend = AppleContainerBackend()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(ac_cli, "image_inspect", return_value={"present": True}):
+        backend._build_egress_image_if_missing(quiet=True, no_cache=True, pull=True)
+
+    builds = [a for a in calls if a[:1] == ["build"]]
+    assert builds, "egress must rebuild when --no-cache/--pull is set"
+    assert "--no-cache" in builds[0]
+    assert "--pull" in builds[0]
+
+
+def test_egress_build_skips_when_present_and_not_forced():
+    """Without the flags, a present egress image is still skipped (default)."""
+    backend = AppleContainerBackend()
+    with patch.object(ac_cli, "run") as run_mock, \
+         patch.object(ac_cli, "image_inspect", return_value={"present": True}):
+        backend._build_egress_image_if_missing(quiet=True)
+    run_mock.assert_not_called()
+
+
+def test_scaffold_build_no_cache_pull_bypasses_skip_and_passes_flags():
+    """`build_scaffold_images(no_cache=True, pull=True)` rebuilds even when
+    the scaffold image exists and forwards both flags to `container build`."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(ac_cli, "image_inspect", return_value={"present": True}):
+        ac_scaffold.build_scaffold_images(
+            "debian", quiet=True, no_cache=True, pull=True,
+        )
+
+    builds = [a for a in calls if a[:1] == ["build"]]
+    assert builds, "scaffold image must rebuild when forced"
+    assert "--no-cache" in builds[0]
+    assert "--pull" in builds[0]
+
+
+def test_build_artifacts_threads_no_cache_and_pull_to_all_builders():
+    """`build_artifacts(no_cache=True, pull=True)` propagates both flags to
+    the egress build, the scaffold build, and the wrapper build (no-cache)."""
+    backend = AppleContainerBackend()
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/agentcage-scaffold-debian:latest"
+    cfg.container.command = ["sh", "-c", "sleep infinity"]
+    cfg.scaffold = "debian"
+
+    with patch.object(backend, "_build_egress_image_if_missing") as egress, \
+         patch.object(ac_scaffold, "build_scaffold_images") as scaffold, \
+         patch.object(ac_cli, "image_inspect", return_value={"present": True}), \
+         patch.object(backend, "_render_egress_config"), \
+         patch.object(ac_wrapper, "build_wrapper") as wrapper:
+        backend.build_artifacts(cfg, "t", quiet=True, no_cache=True, pull=True)
+
+    assert egress.call_args.kwargs.get("no_cache") is True
+    assert egress.call_args.kwargs.get("pull") is True
+    assert scaffold.call_args.kwargs.get("no_cache") is True
+    assert scaffold.call_args.kwargs.get("pull") is True
+    assert wrapper.call_args.kwargs.get("no_cache") is True
+
+
+def test_build_artifacts_pull_forces_repull_of_cached_remote_image():
+    """`--pull` re-pulls a genuinely-remote image even when it's already
+    cached locally (operator asked for the latest)."""
+    backend = AppleContainerBackend()
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "docker.io/library/debian:stable-slim"
+    cfg.container.command = ["sh"]
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "_build_egress_image_if_missing"), \
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(ac_cli, "image_inspect", return_value={"present": True}), \
+         patch.object(backend, "_render_egress_config"), \
+         patch.object(ac_wrapper, "build_wrapper"):
+        backend.build_artifacts(cfg, "t", quiet=True, pull=True)
+
+    assert any(a[:2] == ["image", "pull"] for a in calls), \
+        "--pull must re-pull a cached remote image"
+
+
+def test_build_artifacts_pull_does_not_pull_localhost_ref():
+    """`--pull` never pulls a `localhost/` ref (no registry source); a
+    present localhost image is used as-is."""
+    backend = AppleContainerBackend()
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "localhost/agentcage-scaffold-debian:latest"
+    cfg.container.command = ["sh"]
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(backend, "_build_egress_image_if_missing"), \
+         patch.object(ac_scaffold, "build_scaffold_images"), \
+         patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(ac_cli, "image_inspect", return_value={"present": True}), \
+         patch.object(backend, "_render_egress_config"), \
+         patch.object(ac_wrapper, "build_wrapper"):
+        backend.build_artifacts(cfg, "t", quiet=True, pull=True)
+
+    assert not any(a[:2] == ["image", "pull"] for a in calls)
