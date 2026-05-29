@@ -31,10 +31,14 @@ _VALID_SECRET_SCOPES = ("auto", "user", "system")
 
 @dataclass
 class SecretsConfig:
-    scope: str = "auto"  # "auto" | "user" | "system"
-    # When systemd-creds encryption is unavailable, agentcage refuses to
-    # store secrets as cleartext podman secrets (fail-closed). Set this to
-    # true to explicitly opt into the unencrypted podman secret store.
+    # At-rest storage backend: "auto" picks the best encrypting backend for
+    # the platform (Linux: systemd-creds). Explicit: "systemd-creds",
+    # "system-keychain" (macOS), "plaintext".
+    backend: str = "auto"
+    scope: str = "auto"  # "auto" | "user" | "system" (systemd-creds only)
+    # When no encrypting backend is available, agentcage refuses to store
+    # secrets as cleartext (fail-closed). Set this to true to explicitly opt
+    # into the unencrypted podman secret store under `backend: auto`.
     allow_plaintext: bool = False
 
 
@@ -507,7 +511,15 @@ def load_config(path: str) -> Config:
         raise ValueError(
             f"invalid secrets.scope: {scope!r}. Valid: {valid}"
         )
+    backend = str(secrets_raw.get("backend", "auto"))
+    from agentcage.secret_store import KNOWN_BACKENDS
+    if backend not in KNOWN_BACKENDS:
+        valid = ", ".join(sorted(KNOWN_BACKENDS))
+        raise ValueError(
+            f"invalid secrets.backend: {backend!r}. Valid: {valid}"
+        )
     cfg.secrets = SecretsConfig(
+        backend=backend,
         scope=scope,
         allow_plaintext=bool(secrets_raw.get("allow_plaintext", False)),
     )

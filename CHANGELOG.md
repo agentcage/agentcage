@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pluggable secret-storage backends — `secrets.backend`.** Secret storage now goes through a `SecretStore` abstraction selectable via `secrets.backend`: `auto` (default — best encrypting backend for the platform), `systemd-creds` (Linux), `plaintext` (explicit opt-in), with `system-keychain` (macOS) landing in a follow-up. `auto` is fail-closed: it refuses cleartext unless `secrets.allow_plaintext: true`. The previous inline systemd-creds/plaintext branching in `cage create -s` / `secret set` is unified behind the abstraction (behavior-preserving on Linux).
+
 ### Changed
 
 - **Secrets are fail-closed on Linux — no silent cleartext fallback.** When systemd-creds encryption is unavailable or fails, `cage create -s` and `secret set` previously fell back to storing the value as an *unencrypted* podman secret. They now refuse and error out unless the operator explicitly opts in with `secrets.allow_plaintext: true` in cage.yaml (or uses an explicit `podman:` source). New `secrets.allow_plaintext` config field (default `false`); opting in prints an `UNENCRYPTED` warning. (macOS Keychain-backed storage for apple-container is a separate follow-up.)
