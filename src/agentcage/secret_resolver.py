@@ -116,11 +116,6 @@ def _systemd_creds_works(scope: str) -> bool:
         return False
 
 
-def _systemd_creds_usable() -> bool:
-    """Back-compat shim: True if any scope works."""
-    return detect_default_scope() is not None
-
-
 def resolve(source: str, env_name: str, state_dir: Path) -> ResolveResult:
     """Resolve a secret value from the configured backend.
 

@@ -147,7 +147,6 @@ class EntropyInspector(Inspector):
                     f"(threshold {self.threshold})"
                 ),
                 severity="error",
-                score=ctx.body_entropy,
                 metadata={
                     "entropy": ctx.body_entropy,
                     "threshold": self.threshold,
@@ -191,7 +190,6 @@ class EntropyInspector(Inspector):
                             f"(threshold {self.url_threshold})"
                         ),
                         severity="error",
-                        score=ent,
                         metadata={
                             "entropy": ent,
                             "url_threshold": self.url_threshold,
@@ -232,7 +230,6 @@ class EntropyInspector(Inspector):
                         f"(threshold {self.url_threshold})"
                     ),
                     severity="error",
-                    score=ent,
                     metadata={
                         "entropy": ent,
                         "url_threshold": self.url_threshold,

@@ -151,22 +151,6 @@ def _is_rw_host_bind(volume_spec: str) -> bool:
     return "ro" not in mode.split(",")
 
 
-def _exit_apple_container_unsupported(command: str) -> None:
-    """Exit cleanly when a subcommand isn't implemented on apple-container.
-
-    The apple-container backend does not yet support every cage subcommand
-    that container/vm do. Rather than fall through to host podman (which
-    crashes on macOS without podman installed), we exit non-zero with a
-    helpful message. Tracked as a follow-up in issue #120.
-    """
-    click.echo(
-        f"error: 'cage {command}' is not yet implemented for the "
-        f"apple-container backend (see issue #120)",
-        err=True,
-    )
-    sys.exit(1)
-
-
 def _parse_version(ver: str) -> tuple[int, int]:
     """Parse 'X.Y[.Z…]' → (X, Y); return (0, 0) on garbage."""
     try:
@@ -291,17 +275,15 @@ def _restart_cage(name: str, cfg=None):
       part of the systemd unit, so updating it doesn't require a
       daemon-reload — just a service restart, which we're about to do anyway.
 
-    The DNS quadlet itself almost never has to change (its content no longer
-    depends on the domain list); :func:`_ensure_dns_quadlet_current` handles
-    the rare migration case where an older agentcage left a stale unit on
-    disk. Delegates the actual service restart to
+    The DNS quadlet itself no longer has to change (its content no longer
+    depends on the domain list — the allowlist lives in a bind-mounted
+    sidecar file). Delegates the actual service restart to
     :func:`agentcage.services.restart_cage`.
     """
     if cfg is None:
         cfg = state.load_deployment_config(name)
     state.save_proxy_config(name)
     state.save_dns_allowlist(name)
-    _ensure_dns_quadlet_current(cfg)
     from agentcage.services import restart_cage
     restart_cage(name, cfg)
 
@@ -1740,7 +1722,6 @@ def cage_start(name: str):
         # itself only needs rewriting on the (rare) migration case.
         state.save_proxy_config(name)
         state.save_dns_allowlist(name)
-        _ensure_dns_quadlet_current(cfg)
 
     backend = get_backend(cfg)
     backend.start(name)
@@ -2165,7 +2146,6 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
     # with CAP_NET_ADMIN). container / vm ignore the kwarg — their proxy
     # / dns / cage units already drop privileges per Quadlet.
     from agentcage.backend import BackendUnsupported
-    backend = get_backend(cfg)
     try:
         argv = backend.exec_argv(
             name, service, cmd,
@@ -3482,25 +3462,6 @@ def domain_list(name: str):
     for d in sorted(passthrough):
         if d not in domain_entries:
             click.echo(f"{d} [passthrough only]")
-
-
-def _ensure_dns_quadlet_current(cfg) -> bool:
-    """No-op in the v0.22 2-service shape.
-
-    Kept as a callable so the cage-restart path's invocation site doesn't
-    need a conditional. In the legacy 3-service shape this helper rendered
-    a fresh ``<name>-dns.container`` quadlet and ``daemon-reload``-ed when
-    the rendered content drifted from disk (e.g. after a pre-allowlist-
-    sidecar upgrade). In the v0.22 shape the egress quadlet is the only
-    DNS-bearing unit, its content is stable across domain edits (the
-    allowlist lives in a bind-mounted sidecar file), and the file rewrite
-    + SIGHUP fast path handled by :func:`_update_dns_quadlet` is sufficient.
-
-    Always returns ``False`` so existing call sites that branch on a
-    "quadlet was rewritten" return value (e.g. tests pinning the
-    legacy-migration ``systemctl restart`` path) take the no-op branch.
-    """
-    return False
 
 
 def _update_dns_quadlet(cfg) -> None:

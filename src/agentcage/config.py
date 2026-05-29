@@ -11,9 +11,7 @@ from dataclasses import dataclass, field
 import yaml
 
 from agentcage.data.proxy.relays._validate import (
-    KNOWN_RELAY_TYPES,
     validate_relay_entry,
-    validate_relay_type,
 )
 
 
