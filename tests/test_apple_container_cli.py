@@ -13,6 +13,8 @@ message instead of crashing.
 
 from __future__ import annotations
 
+import json
+import os
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -569,61 +571,177 @@ class TestCageStartRestartAppleContainer:
         assert result.exit_code == 0
 
 
-# ── secret list/set/rm: must not fall through to host podman ──
+# ── secret list/set/rm: operate on pending_secrets.json ──
 
 
 class TestSecretCommandsAppleContainer:
-    """Regression: `agentcage secret list/set/rm <cage>` on apple-container
-    must exit cleanly with the unsupported message instead of crashing into
-    host podman (which doesn't exist on most macOS installs).
-
-    The proper apple-container secret store is tracked in #120 (heavy lift
-    for `cage backup/restore` brings the secret-store abstraction). Until
-    then `cage create` env-passes secrets directly via the supervisor's
-    config; users edit them by editing cage.yaml + `cage update`.
+    """`agentcage secret list/set/rm <cage>` on apple-container edits the
+    cage's pending_secrets.json (the backend re-stages it into the egress
+    microVM on next start) and must NEVER touch host podman, which doesn't
+    exist on most macOS installs.
     """
 
+    @patch("agentcage.cli._apple_restart_if_running")
+    @patch("agentcage.cli._write_apple_pending_secrets")
+    @patch("agentcage.cli._load_apple_pending_secrets")
     @patch("agentcage.cli._podman_for_cage")
     @patch("agentcage.cli.state")
-    def test_secret_list_exits_unsupported(self, mock_state, mock_podman):
+    def test_secret_set_writes_pending(
+        self, mock_state, mock_podman, mock_load, mock_write, mock_restart,
+    ):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
-
-        result = _runner().invoke(main, ["secret", "list", "demo"])
-
-        assert result.exit_code != 0
-        assert "apple-container" in result.output
-        assert "not yet implemented" in result.output
-        # Host podman must NEVER be instantiated.
-        mock_podman.assert_not_called()
-
-    @patch("agentcage.cli._podman_for_cage")
-    @patch("agentcage.cli.state")
-    def test_secret_set_exits_unsupported(self, mock_state, mock_podman):
-        mock_state.deployment_exists.return_value = True
-        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_load.return_value = []
 
         result = _runner().invoke(
             main, ["secret", "set", "demo", "MY_KEY"], input="value\n",
         )
 
-        assert result.exit_code != 0
-        assert "apple-container" in result.output
-        assert "not yet implemented" in result.output
+        assert result.exit_code == 0
+        mock_write.assert_called_once_with("demo", [("MY_KEY", "value")])
+        mock_restart.assert_called_once()
+        # Host podman must NEVER be instantiated.
+        mock_podman.assert_not_called()
+
+    @patch("agentcage.cli._apple_restart_if_running")
+    @patch("agentcage.cli._write_apple_pending_secrets")
+    @patch("agentcage.cli._load_apple_pending_secrets")
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_secret_set_upserts_existing_key(
+        self, mock_state, mock_podman, mock_load, mock_write, mock_restart,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_load.return_value = [("MY_KEY", "old"), ("OTHER", "x")]
+
+        result = _runner().invoke(
+            main, ["secret", "set", "demo", "MY_KEY"], input="new\n",
+        )
+
+        assert result.exit_code == 0
+        # OTHER preserved, MY_KEY replaced (not duplicated).
+        mock_write.assert_called_once_with(
+            "demo", [("OTHER", "x"), ("MY_KEY", "new")],
+        )
         mock_podman.assert_not_called()
 
     @patch("agentcage.cli._podman_for_cage")
     @patch("agentcage.cli.state")
-    def test_secret_rm_exits_unsupported(self, mock_state, mock_podman):
+    def test_secret_set_rejects_empty_value(self, mock_state, mock_podman):
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+
+        result = _runner().invoke(
+            main, ["secret", "set", "demo", "MY_KEY"], input="\n",
+        )
+
+        assert result.exit_code != 0
+        assert "empty secret value" in result.output
+        mock_podman.assert_not_called()
+
+    @patch("agentcage.cli._apple_restart_if_running")
+    @patch("agentcage.cli._write_apple_pending_secrets")
+    @patch("agentcage.cli._load_apple_pending_secrets")
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_secret_rm_removes_key(
+        self, mock_state, mock_podman, mock_load, mock_write, mock_restart,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_load.return_value = [("MY_KEY", "v"), ("KEEP", "y")]
+
+        result = _runner().invoke(main, ["secret", "rm", "demo", "MY_KEY"])
+
+        assert result.exit_code == 0
+        mock_write.assert_called_once_with("demo", [("KEEP", "y")])
+        mock_restart.assert_called_once()
+        mock_podman.assert_not_called()
+
+    @patch("agentcage.cli._write_apple_pending_secrets")
+    @patch("agentcage.cli._load_apple_pending_secrets")
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_secret_rm_missing_key_errors(
+        self, mock_state, mock_podman, mock_load, mock_write,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        mock_load.return_value = [("OTHER", "x")]
 
         result = _runner().invoke(main, ["secret", "rm", "demo", "MY_KEY"])
 
         assert result.exit_code != 0
-        assert "apple-container" in result.output
-        assert "not yet implemented" in result.output
+        assert "does not exist" in result.output
+        mock_write.assert_not_called()
         mock_podman.assert_not_called()
+
+    @patch("agentcage.cli._expected_secrets")
+    @patch("agentcage.cli._load_apple_pending_secrets")
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_secret_list_marks_present_and_missing(
+        self, mock_state, mock_podman, mock_load, mock_expected,
+    ):
+        cfg = _mock_config("apple-container")
+        cfg.secret_injection = [MagicMock(env="MY_KEY")]
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = cfg
+        mock_load.return_value = [("MY_KEY", "v")]
+        mock_expected.return_value = ["MY_KEY", "ABSENT"]
+
+        result = _runner().invoke(main, ["secret", "list", "demo"])
+
+        # ABSENT is expected but not staged → MISSING → non-zero exit.
+        assert result.exit_code != 0
+        assert "MY_KEY" in result.output
+        assert "injection" in result.output
+        assert "ok" in result.output
+        assert "ABSENT" in result.output
+        assert "MISSING" in result.output
+        mock_podman.assert_not_called()
+
+
+class TestPendingSecretsHelpers:
+    """The pending_secrets.json reader/writer must round-trip in exactly
+    the ``[[key, value], ...]`` shape the backend's _stage_secrets parses,
+    and the on-disk file must be mode 0600 (secrets at rest).
+    """
+
+    def _patch_dir(self, tmp_path):
+        return patch("agentcage.cli.state.deployment_dir", return_value=tmp_path)
+
+    def test_roundtrip_preserves_pairs(self, tmp_path):
+        from agentcage.cli import (
+            _load_apple_pending_secrets,
+            _write_apple_pending_secrets,
+        )
+
+        with self._patch_dir(tmp_path):
+            assert _load_apple_pending_secrets("demo") == []
+            _write_apple_pending_secrets("demo", [("A", "1"), ("B", "2")])
+            assert _load_apple_pending_secrets("demo") == [("A", "1"), ("B", "2")]
+
+        # On-disk shape matches what apple_container._stage_secrets parses.
+        raw = json.loads((tmp_path / "pending_secrets.json").read_text())
+        assert raw == [["A", "1"], ["B", "2"]]
+        assert dict((k, v) for k, v in raw) == {"A": "1", "B": "2"}
+
+    def test_written_file_is_0600(self, tmp_path):
+        from agentcage.cli import _write_apple_pending_secrets
+
+        with self._patch_dir(tmp_path):
+            _write_apple_pending_secrets("demo", [("A", "1")])
+        mode = os.stat(tmp_path / "pending_secrets.json").st_mode & 0o777
+        assert mode == 0o600
+
+    def test_load_tolerates_garbage(self, tmp_path):
+        from agentcage.cli import _load_apple_pending_secrets
+
+        (tmp_path / "pending_secrets.json").write_text("{not json")
+        with self._patch_dir(tmp_path):
+            assert _load_apple_pending_secrets("demo") == []
 
 
 # ── domain add/rm: auto-rebuild wrapper on apple-container ──
