@@ -277,6 +277,69 @@ class TestAuditFilter:
         assert not filt.matches(self._entry(_BLOCKED))
         assert not filt.matches(self._entry(_ALLOWED))
 
+    # ── since (post-parse time filtering) ───────────────────
+
+    def test_since_drops_older(self):
+        from datetime import datetime, timezone
+        # _ALLOWED is 10:00; cutoff at 10:01 should drop it.
+        cutoff = datetime(2026, 2, 20, 10, 1, tzinfo=timezone.utc)
+        filt = AuditFilter(since=cutoff)
+        assert not filt.matches(self._entry(_ALLOWED))  # 10:00 < 10:01
+
+    def test_since_keeps_newer(self):
+        from datetime import datetime, timezone
+        cutoff = datetime(2026, 2, 20, 10, 1, tzinfo=timezone.utc)
+        filt = AuditFilter(since=cutoff)
+        assert filt.matches(self._entry(_FLAGGED))  # 10:02 >= 10:01
+
+    def test_since_inclusive_boundary(self):
+        from datetime import datetime, timezone
+        # _BLOCKED is exactly 10:01; an equal cutoff keeps it (>= semantics).
+        cutoff = datetime(2026, 2, 20, 10, 1, tzinfo=timezone.utc)
+        filt = AuditFilter(since=cutoff)
+        assert filt.matches(self._entry(_BLOCKED))
+
+    def test_since_none_keeps_all(self):
+        filt = AuditFilter(since=None)
+        assert filt.matches(self._entry(_ALLOWED))
+        assert filt.matches(self._entry(_BLOCKED))
+
+    def test_since_missing_timestamp_kept(self):
+        from datetime import datetime, timezone
+        cutoff = datetime(2026, 2, 20, 10, 1, tzinfo=timezone.utc)
+        filt = AuditFilter(since=cutoff)
+        no_ts = dict(_ALLOWED)
+        no_ts["ts"] = ""
+        assert filt.matches(self._entry(no_ts))  # fail-open
+
+    def test_since_unparseable_timestamp_kept(self):
+        from datetime import datetime, timezone
+        cutoff = datetime(2026, 2, 20, 10, 1, tzinfo=timezone.utc)
+        filt = AuditFilter(since=cutoff)
+        bad_ts = dict(_ALLOWED)
+        bad_ts["ts"] = "not-a-timestamp"
+        assert filt.matches(self._entry(bad_ts))  # fail-open
+
+    def test_since_naive_entry_timestamp(self):
+        from datetime import datetime, timezone
+        cutoff = datetime(2026, 2, 20, 10, 1, tzinfo=timezone.utc)
+        filt = AuditFilter(since=cutoff)
+        naive = dict(_ALLOWED)
+        naive["ts"] = "2026-02-20T10:00:00"  # no tz → assumed UTC
+        assert not filt.matches(self._entry(naive))
+        # And a newer naive timestamp is kept.
+        naive["ts"] = "2026-02-20T10:05:00"
+        assert filt.matches(self._entry(naive))
+
+    def test_since_combined_with_decision(self):
+        from datetime import datetime, timezone
+        cutoff = datetime(2026, 2, 20, 10, 1, tzinfo=timezone.utc)
+        filt = AuditFilter(decisions=["blocked"], since=cutoff)
+        # _SECRETS_BLOCKED is 10:03 + blocked → matches
+        assert filt.matches(self._entry(_SECRETS_BLOCKED))
+        # _BLOCKED is 10:01 + blocked → matches (boundary inclusive)
+        assert filt.matches(self._entry(_BLOCKED))
+
 
 # ── TestComputeSummary ───────────────────────────────────
 

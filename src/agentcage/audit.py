@@ -61,6 +61,11 @@ class AuditFilter:
     inspectors: list[str] = field(default_factory=list)
     min_severity: str | None = None
     methods: list[str] = field(default_factory=list)
+    # Drop entries with a timestamp strictly older than this. Honored on
+    # backends whose audit_argv() has no native time index (apple-container's
+    # tail), giving --since parity with the journalctl-backed container/vm
+    # paths. None disables time filtering.
+    since: datetime | None = None
 
     def matches(self, entry: AuditEntry) -> bool:
         if self.decisions and entry.decision not in self.decisions:
@@ -78,7 +83,30 @@ class AuditFilter:
                 return False
         if self.methods and entry.method.upper() not in [m.upper() for m in self.methods]:
             return False
+        if self.since and not self._after_since(entry):
+            return False
         return True
+
+    def _after_since(self, entry: AuditEntry) -> bool:
+        """True if the entry is at/after ``since``.
+
+        A missing or unparseable timestamp is kept (fail-open), mirroring
+        CaptureFilter in har.py so a malformed record is never silently
+        dropped by a time window.
+        """
+        if not entry.ts:
+            return True
+        try:
+            entry_dt = datetime.fromisoformat(entry.ts)
+        except (ValueError, TypeError):
+            return True
+        # Make naive timestamps comparable to the (tz-aware) since cutoff.
+        if entry_dt.tzinfo is None:
+            entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+        since = self.since
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        return entry_dt >= since
 
     def _meets_severity(self, entry: AuditEntry) -> bool:
         order = {"debug": 0, "info": 1, "warning": 2, "error": 3, "critical": 4}
