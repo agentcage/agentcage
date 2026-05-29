@@ -1,3 +1,0 @@
-FROM docker.io/library/alpine:latest
-
-WORKDIR /workspace

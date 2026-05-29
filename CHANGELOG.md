@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Dropped the `alpine` scaffold.** Its only distinguishing feature over
+  `busybox` was a package manager (`apk`), but the apple-container backend
+  can't build an Alpine-based cage at all: the wrapper image build runs
+  `useradd` (to create the `acdns`/`cage` users), which Alpine's busybox
+  userland doesn't provide, so `cage create --isolation apple-container`
+  with an Alpine base fails at wrapper-build stage with `useradd: not found`.
+  Rather than ship a scaffold that's broken on one of the three backends,
+  use `debian` (apt-based, still small) when you need a package manager, or
+  `busybox` for a minimal no-package-manager base. Scaffolds are discovered
+  by directory listing, so removing the dir fully de-registers it from
+  `agentcage run`, `--scaffold`, and the alias map.
+
 ### Fixed
 
 - **apple-container workspace mount no longer disappears on restart.** The
