@@ -65,6 +65,7 @@ Manage cages.
 | `cage destroy NAME` | Stop containers, remove quadlets, state, and scoped secrets |
 | `cage prune` | Remove all exited interactive and ephemeral cages |
 | `cage show NAME` | Show cage configuration and status |
+| `cage status [NAME]` | `systemctl`-style: detail for one cage (with NAME) or list all (without) |
 | `cage verify NAME` | Run health checks (containers, certs, proxy, egress, rootless) |
 | `cage stop NAME` | Stop a running cage without destroying it |
 | `cage start NAME` | Start a stopped cage |
@@ -83,17 +84,19 @@ Aliases: `ls`/`ps`/`status` → `list`, `rm`/`delete` → `destroy`, `reload` �
 ### cage create
 
 ```bash
-agentcage cage create -c <config>
+agentcage cage create <config>        # positional (docker/podman style)
+agentcage cage create -c <config>     # or with -c
 ```
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `-c, --config` | path | *(required)* | Path to `cage.yaml` |
+| `CONFIG` | path (positional) | | Path to `cage.yaml`. Alternative to `-c`. |
+| `-c, --config` | path | | Path to `cage.yaml`. Give the config positionally **or** with `-c`, not both. |
 | `-s, --set-secret` | repeatable | | Set a secret inline during creation (`KEY=VALUE`) |
 | `--no-cache` | flag | | Force a full image rebuild, ignoring podman's layer cache |
 | `--pull` | flag | | Force a re-pull of the base image from the registry |
 
-Fails with an actionable error if any required secrets are missing.
+The config is required — pass it positionally or with `-c`. Fails with an actionable error if any required secrets are missing.
 
 ### cage update
 
@@ -140,7 +143,15 @@ Runs health checks against a running cage: containers up, CA cert present, `HTTP
 
 ### cage show
 
-Show cage configuration and status: name, isolation mode, image, version, service status, ports, domain mode, and secrets status. Aliases: `describe`, `inspect`.
+Show cage configuration and status: name, isolation mode, image, `Build:` (the staged Containerfile path), version, service status, ports, domain mode, and secrets status. Aliases: `describe`, `inspect`.
+
+### cage status
+
+```bash
+agentcage cage status [name]
+```
+
+`systemctl status`-style: with a `NAME`, shows that cage's detail (identical to `cage show`); with no argument, lists every cage (identical to `cage list`). Available top-level as `agentcage status`.
 
 ### cage stop / start / restart
 
@@ -154,9 +165,10 @@ agentcage cage logs <name> [options]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `-s, --service` | repeatable `cage`\|`proxy`\|`dns` | all | Filter by service |
-| `-n, --lines` | int | `50` | Number of lines to show |
+| `-s, --service` | repeatable `cage`\|`egress` | all | Filter by service |
+| `-n, --lines, --tail` | int | `50` | Number of lines to show (`--tail` is a docker/podman alias) |
 | `-f, --follow` | flag | | Stream logs in real time |
+| `--since` | string | | Show entries since a time, journalctl syntax (`10 min ago`, `today`, `2026-05-29 14:00`). Not supported on apple-container. |
 | `-l, --severity` | `debug`\|`info`\|`warning`\|`error`\|`critical` | | Minimum severity level |
 
 ### cage shell

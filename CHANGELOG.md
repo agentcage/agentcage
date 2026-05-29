@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CLI ergonomics for docker/podman/systemctl users.**
+  - `cage create` now accepts the config **positionally** (`agentcage create ./cage.yaml`) as well as via `-c` (docker/podman `create`/`run` style); giving it both ways errors.
+  - `cage logs` gained `--tail` (docker/podman alias for `-n/--lines`) and `--since` (journalctl/docker time filter, threaded to journalctl on container/vm; warned-and-ignored on apple-container, which can't honor it).
+  - `cage status [NAME]` is now a real `systemctl status`-style command: with a NAME it shows that cage's detail (same as `cage show`); with no argument it lists all cages. `status` (group + top-level) previously always listed and ignored any NAME.
+
 ## [0.22.17] - 2026-05-29
 
 ### Changed
