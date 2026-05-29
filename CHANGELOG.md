@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cage show` now reports per-secret present/missing status on
+  apple-container.** It previously printed `N expected (status not tracked on
+  apple-container)` because host podman — the secret store on the container
+  backend — doesn't exist on macOS. But the staged keys already live in
+  `pending_secrets.json`, so `cage show` now reads them from there (the same
+  source `secret list` uses) and prints the same `Secrets: provided/expected
+  (N missing)` summary as the container/vm backends.
+
 ## [0.22.15] - 2026-05-29
 
 ### Fixed
