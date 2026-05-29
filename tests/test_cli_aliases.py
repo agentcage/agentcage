@@ -29,10 +29,21 @@ class TestCageAliases:
         assert result.exit_code == 0
 
     @patch("agentcage.cli.state")
-    def test_status_resolves_to_list(self, mock_state):
+    def test_status_without_name_lists(self, mock_state):
+        # `systemctl status`-style: no NAME → list every cage.
         mock_state.list_deployments.return_value = []
         result = _runner().invoke(main, ["cage", "status"])
         assert result.exit_code == 0
+
+    @patch("agentcage.cli.state")
+    def test_status_with_name_routes_to_show(self, mock_state):
+        # `systemctl status <unit>`-style: a NAME → single-cage detail (show),
+        # NOT the list. `show` checks existence and says "does not exist";
+        # `list` would print "No cages found." with exit 0.
+        mock_state.deployment_exists.return_value = False
+        result = _runner().invoke(main, ["cage", "status", "ghost"])
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
 
     def test_rm_resolves_to_destroy(self):
         result = _runner().invoke(main, ["cage", "rm", "--help"])

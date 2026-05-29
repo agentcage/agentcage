@@ -336,7 +336,7 @@ class _BannerGroup(click.Group):
             "rm": ("cage_destroy", "cage destroy"),
             "delete": ("cage_destroy", "cage destroy"),
             "ps": ("cage_list", "cage list"),
-            "status": ("cage_list", "cage list"),
+            "status": ("cage_status", "cage status"),
             "restart": ("cage_restart", "cage restart"),
             "reload": ("cage_restart", "cage restart"),
             "show": ("cage_show", "cage show"),
@@ -551,13 +551,15 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
 # ── cage group ────────────────────────────────────────────
 
 
-@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "status": "list", "reload": "restart", "delete": "destroy", "describe": "show", "inspect": "show", "config": "edit"})
+@main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "reload": "restart", "delete": "destroy", "describe": "show", "inspect": "show", "config": "edit"})
 def cage():
     """Manage cages."""
 
 
 @cage.command("create")
-@click.option("-c", "--config", "config_path", required=True, type=click.Path(exists=True))
+@click.argument("config_pos", required=False, type=click.Path(exists=True))
+@click.option("-c", "--config", "config_path", required=False, type=click.Path(exists=True),
+              help="Path to the cage config (cage.yaml). May also be given positionally.")
 @click.option("-s", "--set-secret", "secrets", multiple=True,
               help="Set a secret (KEY=VALUE or KEY to prompt). Repeatable.")
 @click.option("--no-cache", is_flag=True,
@@ -566,12 +568,32 @@ def cage():
               help="Force re-pull of the base image from the registry.")
 @click.option("--time", "show_timing", is_flag=True,
               help="Echo per-phase wall times and print a summary on completion.")
-def cage_create(config_path: str, secrets: tuple, no_cache: bool, pull: bool,
-                show_timing: bool):
-    """Build images, generate quadlets, install, and start a new cage."""
+def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
+                no_cache: bool, pull: bool, show_timing: bool):
+    """Build images, generate quadlets, install, and start a new cage.
+
+    The config may be given positionally (`agentcage create ./cage.yaml`)
+    or with -c (`agentcage create -c ./cage.yaml`).
+    """
     from agentcage import output as _out
     from agentcage import _timing
     _out.banner(version("agentcage"))
+
+    # Reconcile the positional config and -c/--config: exactly one source.
+    if config_pos and config_path and config_pos != config_path:
+        click.echo(
+            "error: config given both positionally and with -c; specify it once",
+            err=True,
+        )
+        sys.exit(1)
+    config_path = config_path or config_pos
+    if not config_path:
+        click.echo(
+            "error: missing config — pass a path (e.g. `create ./cage.yaml`) "
+            "or use -c/--config",
+            err=True,
+        )
+        sys.exit(1)
 
     if show_timing:
         os.environ["AGENTCAGE_TIMING"] = "1"
@@ -1800,18 +1822,37 @@ def cage_show(name: str):
             click.echo(f"Secrets:    {len(expected)}/{len(expected)}")
 
 
+@cage.command("status")
+@click.argument("name", required=False)
+@click.pass_context
+def cage_status(ctx, name):
+    """Show status — one cage's detail (with NAME) or all cages (without).
+
+    Mirrors `systemctl status`: `agentcage status` lists every cage;
+    `agentcage status <name>` shows that cage's detail (same as `cage show`).
+    """
+    if name:
+        ctx.invoke(cage_show, name=name)
+    else:
+        ctx.invoke(cage_list)
+
+
 @cage.command("logs")
 @click.argument("name")
 @click.option("-s", "--service", "services", multiple=True,
               type=click.Choice(["cage", "egress"]))
-@click.option("-n", "--lines", default=50, show_default=True,
-              help="Number of lines to show.")
+@click.option("-n", "--lines", "--tail", "lines", default=50, show_default=True,
+              help="Number of lines to show (alias: --tail, like docker/podman).")
 @click.option("-f", "--follow", is_flag=True, help="Stream logs in real time.")
 @click.option("--no-follow", is_flag=True, hidden=True, help="Backward compat no-op.")
+@click.option("--since", default=None,
+              help="Show entries since a time, journalctl syntax "
+                   "(e.g. '10 min ago', 'today', '2026-05-29 14:00'). "
+                   "Not supported on apple-container.")
 @click.option("-l", "--severity", "min_level", default=None,
               type=click.Choice(["debug", "info", "warning", "error", "critical"]),
               help="Minimum severity level to show.")
-def cage_logs(name, services, lines, follow, no_follow, min_level):
+def cage_logs(name, services, lines, follow, no_follow, since, min_level):
     """Show journalctl logs for a cage."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
@@ -1824,11 +1865,16 @@ def cage_logs(name, services, lines, follow, no_follow, min_level):
     no_follow_effective = not follow
 
     if cfg.isolation == "vm":
-        _logs_vm(name, selected, lines, no_follow_effective, min_level)
+        _logs_vm(name, selected, lines, no_follow_effective, min_level, since=since)
     elif _is_apple_container(cfg):
+        if since:
+            click.echo(
+                "warning: --since is not supported on apple-container; ignoring",
+                err=True,
+            )
         _logs_apple_container(name, selected, lines, no_follow_effective, min_level, cfg=cfg)
     else:
-        _logs_container(name, selected, lines, no_follow_effective, min_level)
+        _logs_container(name, selected, lines, no_follow_effective, min_level, since=since)
 
 
 def _classify_line(service: str, line: str) -> str:
@@ -1867,13 +1913,15 @@ def _classify_line(service: str, line: str) -> str:
     return "info"
 
 
-def _logs_container(name, services, lines, no_follow, min_level=None):
+def _logs_container(name, services, lines, no_follow, min_level=None, since=None):
     """Exec into journalctl with one -u per host-level service unit."""
     units = [f"{name}-{svc}" for svc in services]
     cmd = ["journalctl", "--user"]
     for u in units:
         cmd += ["-u", u]
     cmd += ["-n", str(lines)]
+    if since:
+        cmd += ["--since", since]
     if not no_follow:
         cmd.append("-f")
 
@@ -1916,7 +1964,7 @@ def _level_grep_pattern(services: tuple, min_level: str | None) -> str:
     return rf"\[({svc_alt}):({lvl_alt})\]"
 
 
-def _logs_vm(name, services, lines, no_follow, min_level=None):
+def _logs_vm(name, services, lines, no_follow, min_level=None, since=None):
     """Show logs from inside the Lima VM via limactl shell."""
     inst = LimaInstance(name)
     # Quadlets run as systemd --user units, but conmon writes their logs to
@@ -1929,6 +1977,8 @@ def _logs_vm(name, services, lines, no_follow, min_level=None):
     for u in units:
         inner += ["--user-unit", u]
     inner += ["-n", str(lines), "-o", "cat"]
+    if since:
+        inner += ["--since", since]
     if not no_follow:
         inner.append("-f")
 

@@ -54,6 +54,33 @@ class TestCageCreate:
     def test_create_requires_config(self, mock_state, MockPodman, mock_systemd):
         result = _runner().invoke(main, ["cage", "create"])
         assert result.exit_code != 0
+        assert "missing config" in result.output
+
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_create_accepts_positional_config(self, mock_state, MockPodman, mock_systemd, minimal_yaml):
+        # Positional config is sugar for -c (docker/podman style). It reaches
+        # the same load path; deployment_exists=True short-circuits to the
+        # "already exists" error, proving the positional config resolved.
+        mock_state.deployment_exists.return_value = True
+        result = _runner().invoke(main, ["cage", "create", minimal_yaml])
+        assert result.exit_code != 0
+        assert "already exists" in result.output
+
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_create_rejects_conflicting_config_sources(
+        self, mock_state, MockPodman, mock_systemd, minimal_yaml, tmp_path,
+    ):
+        other = tmp_path / "other.yaml"
+        other.write_text("name: other\ncontainer:\n  image: x:latest\n")
+        result = _runner().invoke(
+            main, ["cage", "create", minimal_yaml, "-c", str(other)],
+        )
+        assert result.exit_code != 0
+        assert "specify it once" in result.output
 
     @patch("agentcage.config.platform.machine", return_value="arm64")
     @patch("agentcage.config.platform.system", return_value="Darwin")
@@ -1285,6 +1312,36 @@ class TestCageLogs:
             "journalctl", "--user",
             "-u", "basic-cage", "-u", "basic-egress",
             "-n", "50", "-f",
+        ])
+
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_tail_alias(self, mock_state, mock_execvp):
+        """`--tail N` is a docker/podman-style alias for `-n/--lines`."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        result = _runner().invoke(main, ["cage", "logs", "basic", "--tail", "7"])
+        assert result.exit_code == 0
+        mock_execvp.assert_called_once_with("journalctl", [
+            "journalctl", "--user",
+            "-u", "basic-cage", "-u", "basic-egress",
+            "-n", "7",
+        ])
+
+    @patch("agentcage.cli.os.execvp")
+    @patch("agentcage.cli.state")
+    def test_logs_since(self, mock_state, mock_execvp):
+        """`--since` threads through to journalctl (docker/journalctl style)."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("container")
+        result = _runner().invoke(
+            main, ["cage", "logs", "basic", "--since", "10 min ago"],
+        )
+        assert result.exit_code == 0
+        mock_execvp.assert_called_once_with("journalctl", [
+            "journalctl", "--user",
+            "-u", "basic-cage", "-u", "basic-egress",
+            "-n", "50", "--since", "10 min ago",
         ])
 
     @patch("agentcage.cli.os.execvp")
