@@ -744,26 +744,27 @@ class TestPendingSecretsHelpers:
             assert _load_apple_pending_secrets("demo") == []
 
 
-# ── domain add/rm: auto-rebuild wrapper on apple-container ──
+# ── domain add/rm: live SIGHUP reload on apple-container (no restart) ──
 
 
 class TestDomainCommandsAppleContainer:
-    """REGRESSION: `agentcage domain add/rm` on apple-container must rebuild
-    the wrapper image (which has the dnsmasq + mitmproxy allowlists baked in
-    at build time) before restarting the cage. Pre-fix, the command saved
-    cage.yaml + restarted the cage — but the restart re-executed the OLD
-    image, so the change silently didn't apply. Users had to remember to
-    run `cage update` manually.
+    """`agentcage domain add/rm` on apple-container live-reloads the egress
+    allowlist (re-render bind-mounted config + SIGHUP dnsmasq) instead of
+    rebuilding the wrapper image and restarting the cage. `_update_dns_quadlet`
+    delegates to `backend.reload_domains`; the stopped-egress short-circuit
+    lives inside that method (unit-tested in test_apple_container.py).
+    Regression guard against the old stop→build→start path that killed any
+    interactive session in the cage on every domain edit.
     """
 
     @patch("agentcage.cli._is_apple_container", return_value=True)
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_update_dns_quadlet_rebuilds_wrapper(
+    def test_update_dns_quadlet_live_reloads_no_rebuild(
         self, mock_state, mock_get_backend, _mock_is_apple,
     ):
-        """`_update_dns_quadlet(cfg)` on apple-container must call
-        `backend.build_artifacts()` (the rebuild path) before restart."""
+        """`_update_dns_quadlet(cfg)` on apple-container delegates to
+        `backend.reload_domains(cfg, name)` and never rebuilds/restarts."""
         from agentcage.cli import _update_dns_quadlet
         cfg = _mock_config("apple-container")
         cfg.name = "demo"
@@ -774,38 +775,7 @@ class TestDomainCommandsAppleContainer:
 
         _update_dns_quadlet(cfg)
 
-        # Stop → build → start ordering matters: the rebuild must happen
-        # while the cage is stopped (otherwise Apple's `container build`
-        # would try to tag an image name in use by a running container).
-        mock_calls = [c[0] for c in backend.mock_calls]
-        stop_idx = next(i for i, c in enumerate(mock_calls) if c == "stop")
-        build_idx = next(i for i, c in enumerate(mock_calls) if c == "build_artifacts")
-        start_idx = next(i for i, c in enumerate(mock_calls) if c == "start")
-        assert stop_idx < build_idx < start_idx
-
-        backend.build_artifacts.assert_called_once()
-        ba_args = backend.build_artifacts.call_args
-        assert ba_args.args[1] == "demo"
-
-    @patch("agentcage.cli._is_apple_container", return_value=True)
-    @patch("agentcage.cli.get_backend")
-    @patch("agentcage.cli.state")
-    def test_update_dns_quadlet_skips_start_when_cage_not_running(
-        self, mock_state, mock_get_backend, _mock_is_apple,
-    ):
-        """If the cage isn't running, rebuild the image but don't start it
-        (matches the container backend's behavior — `domain add` on a
-        stopped cage updates the state but doesn't auto-start)."""
-        from agentcage.cli import _update_dns_quadlet
-        cfg = _mock_config("apple-container")
-        cfg.name = "demo"
-
-        backend = MagicMock()
-        backend.is_running.return_value = False
-        mock_get_backend.return_value = backend
-
-        _update_dns_quadlet(cfg)
-
-        backend.build_artifacts.assert_called_once()
+        backend.reload_domains.assert_called_once_with(cfg, "demo")
         backend.stop.assert_not_called()
+        backend.build_artifacts.assert_not_called()
         backend.start.assert_not_called()

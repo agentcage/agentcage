@@ -388,16 +388,17 @@ class TestVmBackendLiveReload:
         inst.exec.assert_not_called()
 
 
-class TestAppleContainerBackendStillRebuilds:
-    """The apple-container path is unchanged — its allowlist is baked
-    into the wrapper image at build time, so a domain change still
-    requires rebuilding the image and restarting the cage. Regression
-    guard."""
+class TestAppleContainerBackendLiveReloads:
+    """apple-container now live-reloads domain changes too: the egress
+    bind-mounts the rendered allowlist, so a domain edit re-renders +
+    SIGHUPs dnsmasq via ``backend.reload_domains`` — NO image rebuild and
+    NO cage stop/start (an interactive session survives). Regression guard
+    against the old rebuild path."""
 
     @patch("agentcage.cli._is_apple_container", return_value=True)
     @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli.state")
-    def test_apple_container_path_unchanged(
+    def test_apple_container_path_live_reloads(
         self, mock_state, mock_get_backend, _mock_is_apple,
     ):
         from agentcage.cli import _update_dns_quadlet
@@ -408,6 +409,9 @@ class TestAppleContainerBackendStillRebuilds:
 
         _update_dns_quadlet(cfg)
 
-        backend.stop.assert_called_once_with("demo")
-        backend.build_artifacts.assert_called_once()
-        backend.start.assert_called_once()
+        # Live reload, not rebuild: reload_domains is called and the cage
+        # is never stopped/rebuilt/started.
+        backend.reload_domains.assert_called_once_with(cfg, "demo")
+        backend.stop.assert_not_called()
+        backend.build_artifacts.assert_not_called()
+        backend.start.assert_not_called()

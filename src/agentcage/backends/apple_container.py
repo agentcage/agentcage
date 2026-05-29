@@ -570,6 +570,104 @@ class AppleContainerBackend:
                 "\n".join(lines) + ("\n" if lines else "")
             )
 
+    def reload_domains(self, config: Config, name: str) -> None:
+        """Apply a domain-allowlist change to a RUNNING egress in place —
+        no cage rebuild, no cage restart.
+
+        The egress microVM bind-mounts the three rendered config files
+        read-only from the host egress-config dir (see ``start()``):
+        ``dns-allowlist.conf`` / ``dnsmasq.conf`` →
+        ``/etc/agentcage/{dns-allowlist,dnsmasq}.conf`` and
+        ``proxy-config.yaml`` → ``/etc/agentcage/config.yaml``.
+        ``_render_egress_config`` rewrites those files **in place** (same
+        inode, via ``shutil.copy2`` / ``write_text`` truncate-in-place),
+        so virtiofs surfaces the new bytes inside the running egress
+        without re-creating the mount. We then:
+
+          1. Validate the rewritten allowlist inside the egress
+             (``dnsmasq --test``); on failure revert the file and raise,
+             so a malformed allowlist can't silently break DNS.
+          2. SIGHUP both dnsmasq instances so they re-read the
+             ``--servers-file`` allowlist:
+               * the egress dnsmasq (pidfile ``/home/acdns/dnsmasq.pid``,
+                 run under ``setpriv --reuid=acdns`` — signal the pid, not
+                 ``pkill``);
+               * the **cage-local** dnsmasq (pidfile
+                 ``/run/agentcage/dnsmasq.pid``) — the load-bearing one,
+                 since the cage workload resolves via 127.0.0.1:53 served
+                 by that local dnsmasq (vmnet drops inter-microVM UDP, so
+                 the cage can't use the egress dnsmasq; see cage-init.sh
+                 stage A'). Best-effort: skipped if the cage has no
+                 dnsmasq.
+          3. Leave ``proxy-config.yaml`` to the mitmproxy addon, which
+             polls its mtime per request and hot-reloads in place
+             (``data/proxy/addon.py``) — no signal needed.
+
+        The cage microVM is never touched, so an interactive
+        ``agentcage run`` session survives the domain change. Mirrors the
+        container/vm SIGHUP fast path (see cli._update_dns_quadlet); the
+        only difference is the ``container exec`` wrapper vs ``podman
+        exec`` / ``limactl shell``.
+        """
+        egress_dir = self.egress_config_dir(name)
+        allow_dest = egress_dir / "dns-allowlist.conf"
+        previous = allow_dest.read_text() if allow_dest.is_file() else None
+
+        # Rewrite the bind-mounted config files in place from the (already
+        # updated) stored cage.yaml + live config object.
+        self._render_egress_config(config, name)
+
+        # If the egress isn't up, the rewrite is enough — the next start()
+        # reads the new files. Nothing to signal.
+        if not self.is_running(name, "egress"):
+            return
+
+        container = f"{name}-egress"
+
+        # 1. Validate the new allowlist inside the egress before signaling.
+        test = ac_cli.run(
+            ["exec", container, "dnsmasq", "--test",
+             "--servers-file=/etc/agentcage/dns-allowlist.conf"],
+            check=False,
+        )
+        if test.returncode != 0:
+            if previous is not None:
+                allow_dest.write_text(previous)
+            raise RuntimeError(
+                "dnsmasq rejected the new allowlist; reverted it and left "
+                "the egress serving the previous config. Details:\n"
+                f"{(test.stderr or test.stdout or '').strip()}"
+            )
+
+        # 2. SIGHUP the egress dnsmasq via its pidfile so it re-reads the
+        # allowlist.
+        ac_cli.run(
+            ["exec", container, "sh", "-c",
+             'kill -HUP "$(cat /home/acdns/dnsmasq.pid)"'],
+            check=False,
+        )
+
+        # 3. SIGHUP the CAGE-local dnsmasq too — this is the load-bearing
+        # one. The cage workload resolves via 127.0.0.1:53 served by a
+        # dnsmasq started in the cage by cage-init.sh stage A' (macOS vmnet
+        # drops inter-microVM UDP, so the cage can't query the egress
+        # dnsmasq). It reads the SAME bind-mounted allowlist (pidfile
+        # /run/agentcage/dnsmasq.pid). Without this SIGHUP the new domain
+        # lands in the file but the cage keeps resolving the old set.
+        # Best-effort: the cage dnsmasq is itself best-effort (skipped on
+        # bases without dnsmasq, cage-init.sh stage A'), so guard on the
+        # pidfile and never fail the reload.
+        if self.is_running(name, "cage"):
+            ac_cli.run(
+                ["exec", name, "sh", "-c",
+                 'p=/run/agentcage/dnsmasq.pid; '
+                 '[ -f "$p" ] && kill -HUP "$(cat "$p")" || true'],
+                check=False,
+            )
+
+        # 4. proxy-config.yaml is hot-reloaded by the mitmproxy addon's
+        # mtime poll — no signal required.
+
     def generate_units(
         self,
         config: Config,
