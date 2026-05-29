@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`fix(egress/dns)`: container/vm egress no longer intermittently
+  returns 502 Bad Gateway for allowlisted hosts (resolv.conf ordering
+  race).** The egress sidecar joins two aardvark-dns-enabled podman
+  networks — the per-cage `<name>-net` and the default `podman` network.
+  podman injected aardvark's address as the *first* nameserver in the
+  egress's auto-generated `/etc/resolv.conf`, ahead of the upstream
+  resolvers passed via the quadlet's `DNS=` directive. mitmproxy resolves
+  allowlisted upstream hostnames (e.g. `archive.ubuntu.com`) via that
+  resolv.conf, so whenever aardvark won the order and failed to forward
+  the external name — which it does intermittently after rapid
+  `cage create`/`cage destroy` churn degrades the aardvark network state
+  — mitmproxy got "Name or service not known" and returned
+  `502 Bad Gateway [IP: <egress>:8080]` to the cage for *every*
+  allowlisted host. (The allowlist-gate 403 path was unaffected because
+  it short-circuits before any upstream resolution, which is why blocked
+  domains still got a clean 403 while allowed ones 502'd.) The fix
+  bind-mounts a deterministic `resolv-egress-<name>.conf` (written by
+  `services.write_resolv_files` with only `config.dns_servers`) at the
+  egress's `/etc/resolv.conf` and drops the racy `DNS=` directive
+  entirely. The egress never needs aardvark name resolution — it only
+  resolves real upstream hostnames for mitmproxy, and the cage's DNS goes
+  through the egress's bundled allowlist-scoped dnsmasq — so removing
+  aardvark from the egress's resolution path eliminates the race
+  deterministically. Mirrors the cage's existing `resolv-<name>.conf`
+  bind and the apple-container resolv.conf rewrite (0.22.11). Replaces
+  the previous "restart the egress sidecar" band-aid workaround.
 - **`cage show` now reports per-secret present/missing status on
   apple-container.** It previously printed `N expected (status not tracked on
   apple-container)` because host podman — the secret store on the container

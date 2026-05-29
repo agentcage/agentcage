@@ -235,6 +235,47 @@ class TestEgressQuadlet:
         # `--servers-file=...`.
         assert "/etc/agentcage/dns-allowlist.conf:ro,Z" in content
 
+    def test_egress_resolv_conf_pinned_not_dns_directive(self, tmp_path):
+        """REGRESSION GUARD (egress DNS resolv.conf ordering race).
+
+        The egress must NOT use the podman `DNS=` directive for its own
+        upstream resolution. The egress joins two aardvark-dns-enabled
+        networks (<name>-net + podman); podman injects aardvark as the
+        FIRST nameserver ahead of any `DNS=` entries. mitmproxy resolves
+        allowlisted upstream hostnames via the egress's /etc/resolv.conf,
+        so when aardvark wins the order and intermittently fails to
+        forward external names (after rapid create/destroy churn) every
+        allowlisted host returns 502 Bad Gateway (mitmproxy "Name not
+        known").
+
+        The deterministic fix bind-mounts resolv-egress-<name>.conf
+        (written by services.provision_cage with only the configured
+        upstream resolvers) at /etc/resolv.conf, mirroring the cage's own
+        resolv-<name>.conf mount. aardvark is never consulted, so the
+        ordering race cannot happen.
+        """
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            dns_servers:
+              - 1.1.1.1
+              - 8.8.8.8
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="test")
+        content = files["test-egress.container"]
+        # The deterministic resolv.conf is bind-mounted read-only at
+        # /etc/resolv.conf, sourced from the patches dir.
+        assert (
+            "Volume=/patches/resolv-egress-test.conf:/etc/resolv.conf:ro,Z"
+            in content
+        )
+        # The racy `DNS=` directive must NOT appear — that's the whole
+        # point. Match on the line-start form so we never reintroduce it.
+        assert "\nDNS=" not in content
+
     def test_egress_no_dns_allowlist_bind_in_blocklist_mode(self, tmp_path):
         """Blocklist / open-DNS mode does not produce an allowlist file,
         so the bind mount stays off."""
