@@ -3804,3 +3804,119 @@ def test_egress_supervisor_keeps_lazy_connection_strategy():
         / "src" / "agentcage" / "data" / "containers" / "supervisor-egress.sh"
     ).read_text()
     assert "connection_strategy=lazy" in egress_supervisor
+
+
+# ---------------------------------------------------------------------------
+# reload_domains: live SIGHUP allowlist reload (no cage rebuild/restart)
+# ---------------------------------------------------------------------------
+
+
+def test_reload_domains_sighups_dnsmasq_without_restart(tmp_path, monkeypatch):
+    """A domain change on a running apple-container cage re-renders the
+    bind-mounted egress config in place and SIGHUPs dnsmasq — it must NOT
+    rebuild the image or stop/start the cage (so an interactive session
+    survives)."""
+    backend = AppleContainerBackend()
+    egress_dir = tmp_path / "egress"
+    egress_dir.mkdir()
+    allow = egress_dir / "dns-allowlist.conf"
+    allow.write_text("server=/old.example/1.1.1.1\n")
+
+    monkeypatch.setattr(backend, "egress_config_dir", lambda name: egress_dir)
+    monkeypatch.setattr(
+        backend, "_render_egress_config",
+        lambda cfg, name: allow.write_text("server=/new.example/1.1.1.1\n"),
+    )
+    monkeypatch.setattr(backend, "is_running", lambda name, svc: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    cfg = Config(name="demo", isolation="apple-container")
+    cfg.container.image = "x"
+    with patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch.object(backend, "stop") as stop_mock, \
+         patch.object(backend, "build_artifacts") as build_mock, \
+         patch.object(backend, "start") as start_mock:
+        backend.reload_domains(cfg, "demo")
+
+    # Validated the allowlist inside the egress, then SIGHUP'd dnsmasq in
+    # BOTH the egress and the cage (the cage-local resolver is the one the
+    # workload actually queries).
+    assert any(
+        a[:2] == ["exec", "demo-egress"] and "dnsmasq" in a and "--test" in a
+        for a in calls
+    )
+    assert any(
+        a[:2] == ["exec", "demo-egress"] and "kill -HUP" in " ".join(a)
+        for a in calls
+    )
+    assert any(
+        a[:2] == ["exec", "demo"] and "/run/agentcage/dnsmasq.pid" in " ".join(a)
+        for a in calls
+    )
+    # No rebuild, no cage restart.
+    stop_mock.assert_not_called()
+    build_mock.assert_not_called()
+    start_mock.assert_not_called()
+
+
+def test_reload_domains_reverts_on_invalid_allowlist(tmp_path, monkeypatch):
+    """If `dnsmasq --test` rejects the rewritten allowlist, revert the file
+    and raise — never SIGHUP a broken config (which dnsmasq would ignore,
+    silently serving stale rules)."""
+    backend = AppleContainerBackend()
+    egress_dir = tmp_path / "egress"
+    egress_dir.mkdir()
+    allow = egress_dir / "dns-allowlist.conf"
+    allow.write_text("server=/old.example/1.1.1.1\n")
+
+    monkeypatch.setattr(backend, "egress_config_dir", lambda name: egress_dir)
+    monkeypatch.setattr(
+        backend, "_render_egress_config",
+        lambda cfg, name: allow.write_text("this is not valid dnsmasq syntax\n"),
+    )
+    monkeypatch.setattr(backend, "is_running", lambda name, svc: True)
+
+    sighup_seen = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        if "--test" in argv:
+            return type("CP", (), {"returncode": 2, "stdout": "", "stderr": "bad allowlist"})()
+        if "kill" in " ".join(argv):
+            sighup_seen.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    cfg = Config(name="demo", isolation="apple-container")
+    with patch.object(ac_cli, "run", side_effect=fake_run):
+        with pytest.raises(RuntimeError, match="rejected the new allowlist"):
+            backend.reload_domains(cfg, "demo")
+
+    # File reverted to its previous contents; no SIGHUP sent.
+    assert allow.read_text() == "server=/old.example/1.1.1.1\n"
+    assert sighup_seen == []
+
+
+def test_reload_domains_no_signal_when_egress_stopped(tmp_path, monkeypatch):
+    """When the egress isn't running, re-rendering the files is enough — the
+    next start() reads them; we must not exec into a stopped microVM."""
+    backend = AppleContainerBackend()
+    egress_dir = tmp_path / "egress"
+    egress_dir.mkdir()
+    (egress_dir / "dns-allowlist.conf").write_text("server=/old.example/1.1.1.1\n")
+
+    rendered: list[int] = []
+    monkeypatch.setattr(backend, "egress_config_dir", lambda name: egress_dir)
+    monkeypatch.setattr(backend, "_render_egress_config",
+                        lambda cfg, name: rendered.append(1))
+    monkeypatch.setattr(backend, "is_running", lambda name, svc: False)
+
+    cfg = Config(name="demo", isolation="apple-container")
+    with patch.object(ac_cli, "run") as run_mock:
+        backend.reload_domains(cfg, "demo")
+
+    assert rendered == [1]          # re-rendered the files
+    run_mock.assert_not_called()    # but did not exec into the stopped egress

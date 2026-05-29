@@ -3464,12 +3464,16 @@ def _update_dns_quadlet(cfg) -> None:
     via ``inst.exec`` (base64 over the limactl ssh channel) before the
     SIGHUP.
 
-    Apple-container backend:
-      - Allowlist is baked into the wrapper image at build time, so a
-        domain change requires rebuilding the image and restarting the
-        cage. The observability bridge (see #120) is expected to add a
-        bind-mounted allowlist path on apple-container, at which point
-        this branch can collapse.
+    Apple-container backend (live-reload, no cage restart):
+      - The egress microVM bind-mounts the rendered ``dns-allowlist.conf``
+        / ``dnsmasq.conf`` / ``proxy-config.yaml`` read-only from the host
+        egress-config dir, so a domain change is applied exactly like
+        container/vm: re-render the files in place, validate, and SIGHUP
+        dnsmasq in the ``<name>-egress`` microVM (the mitmproxy addon
+        hot-reloads proxy-config.yaml via its mtime poll). The cage VM is
+        untouched. See ``AppleContainerBackend.reload_domains``. (Pre-this
+        path the allowlist was baked into the wrapper image and a domain
+        change forced an image rebuild + cage restart.)
 
     Pre-flight validation: before publishing the rewritten allowlist we
     run ``dnsmasq --test --servers-file=<allowlist>`` inside the egress
@@ -3483,14 +3487,10 @@ def _update_dns_quadlet(cfg) -> None:
     name = cfg.name
 
     if _is_apple_container(cfg):
-        # Image-bake path — keep the rebuild semantics.
-        state.save_dns_allowlist(name)
-        was_running = backend.is_running(name, "cage")
-        if was_running:
-            backend.stop(name)
-        backend.build_artifacts(cfg, name, quiet=True)
-        if was_running:
-            backend.start(name, quiet=True)
+        # Live-reload: re-render the bind-mounted egress config in place,
+        # validate, and SIGHUP dnsmasq — no cage rebuild/restart, so an
+        # interactive session in the cage survives the domain change.
+        backend.reload_domains(cfg, name)
         return
 
     # Container + VM: write the new file, validate inside the egress

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **apple-container `domain add`/`rm` no longer rebuilds the image and
+  restarts the cage.** A domain-allowlist change rebuilt the wrapper image
+  and did a full cage stop→start — which killed any interactive session
+  running in the cage (e.g. `agentcage run`) on every edit. The egress
+  allowlist is no longer baked into the image; it's host-rendered and
+  bind-mounted into the egress microVM, so the backend now applies a domain
+  change exactly like the container/vm backends: re-render the bind-mounted
+  `dns-allowlist.conf`/`proxy-config.yaml` in place, validate with
+  `dnsmasq --test`, and SIGHUP dnsmasq (the mitmproxy addon hot-reloads
+  `proxy-config.yaml` via its mtime poll). The cage microVM is untouched, so
+  sessions survive. A malformed allowlist is reverted instead of signalled in.
+
 ## [0.22.13] - 2026-05-29
 
 ### Removed
