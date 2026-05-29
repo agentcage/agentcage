@@ -73,6 +73,54 @@ class TestSecretSet:
             assert "does not exist" in result.output
 
 
+class TestSecretFailClosed:
+    """Without systemd-creds, agentcage must refuse cleartext storage unless
+    the operator opted in via secrets.allow_plaintext."""
+
+    def _cfg(self, allow_plaintext):
+        cfg = MagicMock()
+        cfg.isolation = "container"
+        cfg.name = "myapp"
+        cfg.secret_injection = []
+        cfg.container.podman_secrets = []
+        cfg.secrets.scope = "auto"
+        cfg.secrets.allow_plaintext = allow_plaintext
+        return cfg
+
+    @patch("agentcage.secret_resolver.detect_default_backend", return_value="podman")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_set_fails_closed_without_systemd_creds(
+        self, mock_state, MockPodman, _backend,
+    ):
+        podman = MockPodman.return_value
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = self._cfg(False)
+        result = _runner().invoke(
+            main, ["secret", "set", "myapp", "API_KEY"], input="s3cret\n",
+        )
+        assert result.exit_code != 0
+        assert "refusing to store" in result.output
+        podman.secret_create.assert_not_called()
+
+    @patch("agentcage.secret_resolver.detect_default_backend", return_value="podman")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_set_allows_plaintext_when_opted_in(
+        self, mock_state, MockPodman, _backend,
+    ):
+        podman = MockPodman.return_value
+        podman.secret_exists.return_value = False
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = self._cfg(True)
+        result = _runner().invoke(
+            main, ["secret", "set", "myapp", "API_KEY"], input="s3cret\n",
+        )
+        assert result.exit_code == 0
+        podman.secret_create.assert_called_once_with("myapp.API_KEY", "s3cret")
+        assert "UNENCRYPTED" in result.output
+
+
 class TestSecretList:
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")

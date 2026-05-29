@@ -32,6 +32,10 @@ _VALID_SECRET_SCOPES = ("auto", "user", "system")
 @dataclass
 class SecretsConfig:
     scope: str = "auto"  # "auto" | "user" | "system"
+    # When systemd-creds encryption is unavailable, agentcage refuses to
+    # store secrets as cleartext podman secrets (fail-closed). Set this to
+    # true to explicitly opt into the unencrypted podman secret store.
+    allow_plaintext: bool = False
 
 
 @dataclass
@@ -503,7 +507,10 @@ def load_config(path: str) -> Config:
         raise ValueError(
             f"invalid secrets.scope: {scope!r}. Valid: {valid}"
         )
-    cfg.secrets = SecretsConfig(scope=scope)
+    cfg.secrets = SecretsConfig(
+        scope=scope,
+        allow_plaintext=bool(secrets_raw.get("allow_plaintext", False)),
+    )
 
     # Secret injection — accepts list or {"rules": [...]}
     si_cfg = raw.get("secret_injection") or []

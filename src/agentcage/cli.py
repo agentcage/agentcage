@@ -109,6 +109,40 @@ def _write_apple_pending_secrets(name: str, pairs) -> None:
         os.close(fd)
 
 
+def _store_plaintext_secret_or_fail(podman, full_name: str, value: str,
+                                    cfg, key: str) -> None:
+    """Store *value* in the (unencrypted) podman secret store, or fail-closed.
+
+    agentcage refuses to persist cleartext secrets unless the operator has
+    explicitly opted in via ``secrets.allow_plaintext: true``. Reached only
+    when systemd-creds encryption is unavailable or fails — the default is to
+    error out rather than silently write an unencrypted secret to disk.
+    """
+    if not cfg.secrets.allow_plaintext:
+        click.echo(
+            f"error: refusing to store secret '{key}' as cleartext — "
+            f"systemd-creds encryption is unavailable on this host.",
+            err=True,
+        )
+        click.echo(
+            "  Fix: enable systemd-creds (systemd 250+ with a TPM2, host, or "
+            "per-user key), or — if you accept unencrypted at-rest storage — "
+            "set `secrets:\\n  allow_plaintext: true` in cage.yaml (or use a "
+            "'podman:' source for this rule).",
+            err=True,
+        )
+        sys.exit(1)
+    if podman.secret_exists(full_name):
+        podman.secret_remove(full_name)
+    podman.secret_create(full_name, value)
+    click.echo(
+        f"warning: secret '{full_name}' stored UNENCRYPTED in the podman "
+        f"store (secrets.allow_plaintext is set).",
+        err=True,
+    )
+    click.echo(f"Secret '{full_name}' set (unencrypted).")
+
+
 def _apple_restart_if_running(name: str, cfg) -> None:
     """Restart an apple-container cage so re-staged secrets take effect.
 
@@ -695,11 +729,11 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
                 source_scheme = ""
                 if rule and rule.source:
                     source_scheme = rule.source.partition(":")[0]
-                if source_scheme == "podman":
-                    use_creds = False  # operator explicitly asked for Podman store
-                else:
-                    use_creds = (source_scheme == "systemd-creds"
-                                 or (not source_scheme and default_backend == "systemd-creds"))
+                explicit_podman = source_scheme == "podman"
+                use_creds = (source_scheme == "systemd-creds"
+                             or (not source_scheme
+                                 and default_backend == "systemd-creds"))
+                full = f"{name}.{key}"
                 if use_creds:
                     from agentcage.secret_resolver import resolve_scope
                     try:
@@ -713,13 +747,23 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
                         )
                         continue
                     except ValueError as e:
-                        click.echo(f"warning: systemd-creds encrypt failed: {e}", err=True)
-                        click.echo("Falling back to Podman store.", err=True)
-                full = f"{name}.{key}"
-                if podman_secrets.secret_exists(full):
-                    podman_secrets.secret_remove(full)
-                podman_secrets.secret_create(full, val)
-                click.echo(f"Secret '{full}' set.")
+                        click.echo(
+                            f"warning: systemd-creds encrypt failed: {e}",
+                            err=True,
+                        )
+                        _store_plaintext_secret_or_fail(
+                            podman_secrets, full, val, cfg, key)
+                        continue
+                if explicit_podman:
+                    # Operator explicitly chose the podman store.
+                    if podman_secrets.secret_exists(full):
+                        podman_secrets.secret_remove(full)
+                    podman_secrets.secret_create(full, val)
+                    click.echo(f"Secret '{full}' set.")
+                else:
+                    # No scheme + systemd-creds unavailable → cleartext.
+                    _store_plaintext_secret_or_fail(
+                        podman_secrets, full, val, cfg, key)
         else:
             # VM mode: store secrets for bridging after VM starts.
             # We need host podman for this — prompt to install if missing.
@@ -3313,11 +3357,9 @@ def secret_set(name: str, key: str):
         source_scheme = rule.source.partition(":")[0]
 
     backend = detect_default_backend()
-    if source_scheme == "podman":
-        use_creds = False  # operator explicitly asked for Podman store
-    else:
-        use_creds = (source_scheme == "systemd-creds"
-                     or (not source_scheme and backend == "systemd-creds"))
+    explicit_podman = source_scheme == "podman"
+    use_creds = (source_scheme == "systemd-creds"
+                 or (not source_scheme and backend == "systemd-creds"))
 
     if use_creds:
         from agentcage.secret_resolver import resolve_scope
@@ -3334,17 +3376,17 @@ def secret_set(name: str, key: str):
                 f"({scope}-scope)."
             )
         except ValueError as e:
-            click.echo(f"error: {e}", err=True)
-            click.echo("Falling back to Podman secret store.", err=True)
-            if podman.secret_exists(full_name):
-                podman.secret_remove(full_name)
-            podman.secret_create(full_name, value)
-            click.echo(f"Secret '{full_name}' set (unencrypted).")
-    else:
+            click.echo(f"warning: systemd-creds encrypt failed: {e}", err=True)
+            _store_plaintext_secret_or_fail(podman, full_name, value, cfg, key)
+    elif explicit_podman:
+        # Operator explicitly chose the podman store.
         if podman.secret_exists(full_name):
             podman.secret_remove(full_name)
         podman.secret_create(full_name, value)
         click.echo(f"Secret '{full_name}' set.")
+    else:
+        # No scheme + systemd-creds unavailable → would be cleartext.
+        _store_plaintext_secret_or_fail(podman, full_name, value, cfg, key)
 
     # Auto-reload if cage is running
     if state.deployment_exists(name):
