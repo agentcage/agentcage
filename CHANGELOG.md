@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.17] - 2026-05-29
+
 ### Changed
 
 - **A scaffold is now a one-shot generator, not a live dependency — `cage
