@@ -1579,9 +1579,12 @@ class AppleContainerBackend:
 
         The mitmproxy addon writes one JSON line per request decision into
         /var/log/agentcage/audit.jsonl, which `start()` bind-mounts to
-        `<state>/<cage>/logs/audit.jsonl` on the host. `since` is not yet
-        respected (the host JSONL has no journalctl-style time index);
-        the CLI's AuditFilter still applies time filtering post-parse.
+        `<state>/<cage>/logs/audit.jsonl` on the host. `since` is ignored
+        here because the host JSONL has no journalctl-style time index —
+        `tail` cannot seek by time. The CLI compensates: `cage audit`
+        parses --since and applies it as `AuditFilter.since`, dropping
+        records older than the cutoff after they are parsed (parity with
+        the native journalctl --since on the container/vm backends).
         """
         path = self.logs_dir(name) / "audit.jsonl"
         if follow:

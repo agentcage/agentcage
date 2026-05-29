@@ -547,6 +547,118 @@ class TestCageAuditHarAppleContainer:
         assert popen_argv[0] == "tail"
         assert str(audit_path) in popen_argv
 
+    # ── --since post-parse time filtering (apple-container parity) ──
+    #
+    # apple-container's `tail` has no native time index, so --since is
+    # honored by AuditFilter.since after each JSONL line is parsed. These
+    # tests feed synthetic records spanning a time range and assert that
+    # records older than the cutoff are dropped in both batch and summary
+    # output.
+
+    _OLD_LINE = (
+        '{"ts": "2026-02-20T10:00:00+00:00", "direction": "outbound", '
+        '"method": "GET", "host": "old.example.com", "port": 443, '
+        '"path": "/", "url": "https://old.example.com/", '
+        '"decision": "allowed", "reason": "", "inspectors": []}'
+    )
+    _NEW_LINE = (
+        '{"ts": "2026-02-20T11:00:00+00:00", "direction": "outbound", '
+        '"method": "GET", "host": "new.example.com", "port": 443, '
+        '"path": "/", "url": "https://new.example.com/", '
+        '"decision": "allowed", "reason": "", "inspectors": []}'
+    )
+
+    def _run_audit_with_since(self, mock_popen, mock_path, tmp_path, extra_args):
+        """Helper: wire mocks so `cage audit demo <extra_args>` reads two
+        synthetic JSONL lines (one old @10:00, one new @11:00)."""
+        from agentcage.backends.apple_container import AppleContainerBackend
+        audit_path = tmp_path / "audit.jsonl"
+        audit_path.touch()
+        mock_path.return_value = audit_path
+
+        fake_proc = MagicMock()
+        fake_proc.stdout = iter([self._OLD_LINE + "\n", self._NEW_LINE + "\n"])
+        mock_popen.return_value = fake_proc
+
+        with patch.object(AppleContainerBackend, "logs_dir", return_value=tmp_path):
+            return _runner().invoke(main, ["cage", "audit", "demo", *extra_args])
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli._apple_container_audit_path")
+    @patch("agentcage.cli.state")
+    def test_audit_batch_since_drops_older(
+        self, mock_state, mock_path, mock_popen, tmp_path,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        # Cutoff at 10:30 → drops the 10:00 record, keeps the 11:00 one.
+        result = self._run_audit_with_since(
+            mock_popen, mock_path, tmp_path,
+            ["--since", "2026-02-20T10:30:00+00:00"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "old.example.com" not in result.output
+        assert "new.example.com" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli._apple_container_audit_path")
+    @patch("agentcage.cli.state")
+    def test_audit_batch_without_since_keeps_all(
+        self, mock_state, mock_path, mock_popen, tmp_path,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        result = self._run_audit_with_since(
+            mock_popen, mock_path, tmp_path, [],
+        )
+        assert result.exit_code == 0, result.output
+        assert "old.example.com" in result.output
+        assert "new.example.com" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli._apple_container_audit_path")
+    @patch("agentcage.cli.state")
+    def test_audit_summary_since_drops_older(
+        self, mock_state, mock_path, mock_popen, tmp_path,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        result = self._run_audit_with_since(
+            mock_popen, mock_path, tmp_path,
+            ["--summary", "--since", "2026-02-20T10:30:00+00:00"],
+        )
+        assert result.exit_code == 0, result.output
+        # Only the 11:00 record survives → total entries: 1.
+        assert "Total entries: 1" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli._apple_container_audit_path")
+    @patch("agentcage.cli.state")
+    def test_audit_summary_without_since_counts_all(
+        self, mock_state, mock_path, mock_popen, tmp_path,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        result = self._run_audit_with_since(
+            mock_popen, mock_path, tmp_path, ["--summary"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Total entries: 2" in result.output
+
+    @patch("agentcage.cli.subprocess.Popen")
+    @patch("agentcage.cli._apple_container_audit_path")
+    @patch("agentcage.cli.state")
+    def test_audit_since_unparseable_errors(
+        self, mock_state, mock_path, mock_popen, tmp_path,
+    ):
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        result = self._run_audit_with_since(
+            mock_popen, mock_path, tmp_path, ["--since", "garbage!!"],
+        )
+        assert result.exit_code != 0
+        assert "could not parse --since" in result.output
+
 
 # ── cage verify: deeper probes on apple-container ──
 

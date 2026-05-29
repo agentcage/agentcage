@@ -2497,6 +2497,7 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
     # apple-container reads audit.jsonl from the per-cage logs dir
     # (bind-mounted from the microVM by `start()`); _build_audit_journal_cmd
     # below dispatches to a tail-based reader for this backend.
+    since_dt = None
     if _is_apple_container(cfg):
         path = _apple_container_audit_path(name)
         if not path.is_file():
@@ -2511,6 +2512,22 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
             )
             sys.exit(1)
 
+        # apple-container's tail-based audit_argv has no native time index,
+        # so honor --since by post-parse filtering (parity with the
+        # journalctl --since the container/vm backends apply natively).
+        # parse_since (reused from har.py) supports the same 1h/30m/7d/ISO
+        # formats as _normalize_since does for journalctl.
+        if since:
+            from agentcage.har import parse_since
+            since_dt = parse_since(since)
+            if since_dt is None:
+                click.echo(
+                    f"error: could not parse --since '{since}' "
+                    f"(use 1h, 30m, 7d, or an ISO date)",
+                    err=True,
+                )
+                sys.exit(1)
+
     filt = AuditFilter(
         decisions=list(decisions),
         directions=list(directions),
@@ -2518,6 +2535,7 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
         inspectors=list(inspectors),
         min_severity=severity,
         methods=list(methods),
+        since=since_dt,
     )
 
     if summary:

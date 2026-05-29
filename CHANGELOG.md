@@ -47,6 +47,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning pointing at `--service egress` rather than silently dropping the
   egress stream. Verified on real hardware (`--service egress` tails the
   egress supervisor logs, `--service cage` the cage-init logs).
+- **apple-container `cage audit --since` is now honored instead of being
+  silently ignored.** On apple-container the audit log is a host-bind-mounted
+  `audit.jsonl` read with `tail`, which has no journalctl-style time index, so
+  `--since` had no effect (a docstring even falsely claimed `AuditFilter`
+  applied time filtering — it had no time field). `AuditFilter` now carries an
+  optional `since` datetime and drops records whose timestamp is older than the
+  cutoff. `cage audit` parses `--since` with the same `1h`/`30m`/`7d`/ISO-date
+  parser used by `cage har` and applies it post-parse on apple-container, giving
+  parity with the native journalctl `--since` on the container/vm backends
+  (both the batch table and the `--summary` path). A bad `--since` value now
+  fails loudly instead of being ignored. Verified on real hardware
+  (`--since 1h` drops a 2020 record, keeps a current one; a far-future
+  `--since` drops both; a malformed value errors).
 
 ## [0.22.15] - 2026-05-29
 
