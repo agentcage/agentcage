@@ -66,43 +66,22 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
 # dnsmasq inside the cage VM scoped to the per-cage `domains.allow`.
 # setcap so a non-root `acdns` user can bind :53; matches the egress
 # image's pattern (Containerfile.egress:56-63). Best-effort because
-# distroless / alpine bases may not have dnsmasq-base. The acdns user
-# creation falls back useradd -> busybox adduser -> direct /etc/passwd
-# append so musl/busybox bases without shadow-utils still get uid 201.
+# distroless / alpine bases may not have dnsmasq-base.
 RUN if [ -x /usr/sbin/dnsmasq ]; then \
         setcap cap_net_bind_service=+ep /usr/sbin/dnsmasq \
         && (getent passwd acdns >/dev/null 2>&1 \
             || useradd --uid 201 --system --no-create-home \
-                       --shell /usr/sbin/nologin --home-dir /var/empty acdns 2>/dev/null \
-            || adduser -S -D -H -u 201 -s /sbin/nologin -h /var/empty acdns 2>/dev/null \
-            || { \
-                 getent group acdns >/dev/null 2>&1 || printf 'acdns:x:201:\n' >> /etc/group; \
-                 printf 'acdns:x:201:201::/var/empty:/sbin/nologin\n' >> /etc/passwd; \
-               }) ; \
+                       --shell /usr/sbin/nologin --home-dir /var/empty acdns) ; \
     fi
 
 # Ensure a uid-1000 user exists for the cage workload. Bases like
 # ubuntu (`ubuntu`), node (`node`), claude-code (`claude`) ship their
 # own at uid 1000 — we reuse those. Only synthesize `cage` as a
-# fallback when uid 1000 is truly free. useradd refuses to share a
-# uid, which is why we don't try to alias the existing name to `cage`.
-#
-# Best-effort across userlands (mirrors the apt-get||apk install branch
-# above): glibc bases (debian/ubuntu) have shadow-utils' `useradd`;
-# musl/busybox bases (alpine, busybox) only ship `adduser` with a
-# different flag syntax; some minimal bases ship neither, so the last
-# resort appends the user straight to /etc/passwd + /etc/group and
-# materializes the home dir by hand. cage-init.sh reads uid 1000's home
-# via `getent passwd 1000` and hard-requires it, so every branch must
-# leave a home directory behind.
+# fallback when uid 1000 is truly free. Same logic the legacy wrapper
+# had (lifted verbatim) — useradd refuses to share a uid, which is why
+# we don't try to alias the existing name to `cage`.
 RUN if ! getent passwd 1000 >/dev/null 2>&1; then \
-        useradd --uid 1000 --create-home --shell /bin/sh cage 2>/dev/null \
-        || adduser -D -u 1000 -s /bin/sh -h /home/cage cage 2>/dev/null \
-        || { \
-             getent group cage >/dev/null 2>&1 || printf 'cage:x:1000:\n' >> /etc/group; \
-             printf 'cage:x:1000:1000::/home/cage:/bin/sh\n' >> /etc/passwd; \
-             mkdir -p /home/cage && chown 1000:1000 /home/cage; \
-           }; \
+        useradd --uid 1000 --create-home --shell /bin/sh cage; \
     fi
 
 # Bake the user's original argv as a shell-escaped one-shot script.

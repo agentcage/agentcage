@@ -16,22 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pending_secrets.json`, so `cage show` now reads them from there (the same
   source `secret list` uses) and prints the same `Secrets: provided/expected
   (N missing)` summary as the container/vm backends.
-- **apple-container wrapper image now builds on musl/busybox bases without
-  shadow-utils.** The per-cage wrapper image creates a uid-1000 cage user
-  (and, on the dnsmasq path, an `acdns` uid-201 system user) via `useradd`.
-  On a user-supplied `container.image` with a musl/busybox userland that
-  lacks shadow-utils, `useradd` is absent and the wrapper build failed with
-  `useradd: not found` (exit 127) — with no warning. Both user-creation
-  steps are now best-effort across userlands, mirroring the existing
-  `apt-get … || apk …` install branch: `useradd` falls back to busybox
-  `adduser`, and as a last resort appends the user directly to
-  `/etc/passwd`/`/etc/group` (materializing the home dir by hand, since
-  `cage-init.sh` hard-requires uid 1000 to have a home). The glibc
-  debian/ubuntu path is unchanged. Verified on real hardware: an
-  `alpine:latest`-based cage (which previously failed at `useradd: not
-  found`) now builds and starts. (Note: `cage exec` still doesn't work on
-  musl bases — BusyBox `setpriv` lacks the util-linux `--reuid` options the
-  exec wrapper uses — tracked separately.)
 - **apple-container `cage logs` now honors `--service` and `--severity`.**
   On apple-container the CLI helper hardcoded the cage container name and
   always tailed the cage microVM: `--service egress` was silently ignored
