@@ -64,6 +64,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the egress argv. Port 53 remains unioned into the UDP set so in-cage
   DNS keeps working even when `ports.udp.allow` is empty.
 
+### Changed
+
+- **apple-container now warns when `container.ports` (inbound published
+  ports) is set.** On the container/vm backends a `container.ports:` entry
+  becomes an egress `PublishPort=` plus a reverse-mode mitmdump listener,
+  exposing a cage service to the host through the inspector chain. Apple's
+  `container` runtime has no host-port-publishing equivalent (no
+  `--publish`; it uses VMNET_SHARED_MODE NAT and reaches containers by their
+  vmnet-assigned IP), so the entry was silently dropped. `validate_config`
+  now surfaces it alongside the other apple-container parity warnings so
+  operators stop being surprised by an inbound service that never becomes
+  reachable on the host. (Tracked in #120.)
+
 ### Added
 
 - **`cage secret set`/`list`/`rm` now work on the apple-container

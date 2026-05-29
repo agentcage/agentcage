@@ -1779,6 +1779,35 @@ class TestAppleContainerSilentDrops:
         _, warnings = self._validate_under_apple(str(p))
         assert any("container.named_volumes" in w for w in warnings), warnings
 
+    def test_inbound_ports_warns(self, tmp_path):
+        """`container.ports` (inbound published ports) is silently dropped on
+        apple-container: Apple's runtime has no host port-publishing
+        (`--publish`/`PublishPort` equivalent). Warn so operators stop
+        expecting an inbound service to become reachable on the host."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+              ports:
+                - "127.0.0.1:8000:3000"
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert any("container.ports" in w for w in warnings), warnings
+
+    def test_no_inbound_ports_no_warn(self, tmp_path):
+        """No `container.ports:` → no inbound-ports warning (default cage)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: ac-demo
+            isolation: apple-container
+            container:
+              image: localhost/test:latest
+        """))
+        _, warnings = self._validate_under_apple(str(p))
+        assert not any("container.ports" in w for w in warnings), warnings
+
     def test_tmpfs_non_default_warns(self, tmp_path):
         """Multi-entry tmpfs or non-/tmp target → operator intent that
         apple-container can't honor → warn."""
