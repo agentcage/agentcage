@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **apple-container workspace mount no longer disappears on restart.** The
+  scaffold workspace bind is `${PROJECT_DIR}:/workspace`, and `PROJECT_DIR`
+  only exists in the environment of the `agentcage run` process. The backend
+  persisted that literal string into `metadata.json` and expanded it lazily
+  at every `start()` — so any start outside the original run process (launchd
+  autostart, reboot, `cage start`, `cage restart`) had no `PROJECT_DIR` set,
+  tripped `_user_volume_argv`'s unresolved-`$` guard, and silently dropped the
+  workspace (cage came up with no `/workspace`). `generate_units` now expands
+  and `$HOME`-validates volume host paths at create/update time and bakes the
+  absolute path into the unit JSON — matching how the container/vm backends
+  resolve volumes at generate time (`quadlets.py`). The mount now survives
+  restarts; `_user_volume_argv` at `start()` is an idempotent revalidation
+  rather than a re-expansion. Volumes that can't be resolved (unset variable)
+  or escape `$HOME` are dropped at create time with a warning instead of
+  failing silently later.
+
 ### Added
 
 - **`cage secret set`/`list`/`rm` now work on the apple-container

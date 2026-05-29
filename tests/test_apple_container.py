@@ -1744,8 +1744,14 @@ def test_user_volume_argv_accepts_home_relative_paths(tmp_path, monkeypatch):
 def test_unit_json_persists_user_volumes(tmp_path, monkeypatch):
     """`generate_units` must include `volumes` in the unit JSON so a
     subsequent `start()` (which only reads the unit JSON, not the
-    cage.yaml) can re-emit them as --volume args. Was missing pre-fix."""
+    cage.yaml) can re-emit them as --volume args. The persisted value is
+    the EXPANDED, absolute host path — `~`/`$VAR` are resolved at
+    create/update time, not lazily at start() — so the mount survives a
+    restart that has no PROJECT_DIR/HOME-dependent env (see
+    test_unit_json_bakes_env_var_so_mount_survives_restart)."""
     from agentcage.config import Config, ContainerConfig
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "foo").mkdir()
     cfg = Config(
         name="demo",
         isolation="apple-container",
@@ -1757,7 +1763,65 @@ def test_unit_json_persists_user_volumes(tmp_path, monkeypatch):
     backend = AppleContainerBackend()
     out = backend.generate_units(cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo")
     parsed = json.loads(out["demo.json"])
-    assert parsed["volumes"] == ["~/foo:/workspace:rw"]
+    # `~` expanded to the absolute home path, not persisted verbatim.
+    assert parsed["volumes"] == [f"{tmp_path}/foo:/workspace:rw"]
+
+
+def test_unit_json_bakes_env_var_so_mount_survives_restart(tmp_path, monkeypatch):
+    """Regression: the scaffold workspace mount is `${PROJECT_DIR}:/workspace`
+    and PROJECT_DIR only exists in the `agentcage run` process env. Pre-fix,
+    generate_units persisted the literal `${PROJECT_DIR}` and start() expanded
+    it lazily — so a restart/launchd-autostart/reboot (no PROJECT_DIR set)
+    silently dropped the workspace via _user_volume_argv's unresolved-`$`
+    guard. generate_units must bake the ABSOLUTE path so it survives a
+    PROJECT_DIR-less start()."""
+    from agentcage.config import Config, ContainerConfig
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setenv("PROJECT_DIR", str(proj))
+    cfg = Config(
+        name="demo",
+        isolation="apple-container",
+        container=ContainerConfig(
+            image="localhost/test:latest",
+            volumes=["${PROJECT_DIR}:/workspace:rw"],
+        ),
+    )
+    backend = AppleContainerBackend()
+    out = backend.generate_units(cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo")
+    baked = json.loads(out["demo.json"])["volumes"]
+    # Baked to the absolute project path — no literal `${PROJECT_DIR}` left.
+    assert baked == [f"{proj}:/workspace:rw"]
+    assert not any("$" in v for v in baked)
+    # Simulate a restart: PROJECT_DIR no longer in the environment. start()
+    # re-runs _user_volume_argv on the baked metadata; the mount must remain.
+    monkeypatch.delenv("PROJECT_DIR")
+    assert AppleContainerBackend._user_volume_argv(baked) == [f"{proj}:/workspace:rw"]
+
+
+def test_generate_units_drops_unresolvable_volume_at_create_time(tmp_path, monkeypatch):
+    """Validation gate: a volume whose host path can't be resolved (unset
+    var) or escapes $HOME is dropped at generate_units time (with a stderr
+    warning from _user_volume_argv) rather than silently failing later. The
+    unit JSON only ever carries mountable, $HOME-contained absolute paths."""
+    from agentcage.config import Config, ContainerConfig
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AGENTCAGE_NOPE", raising=False)
+    cfg = Config(
+        name="demo",
+        isolation="apple-container",
+        container=ContainerConfig(
+            image="localhost/test:latest",
+            volumes=[
+                "${AGENTCAGE_NOPE}/x:/cage:rw",  # unresolved var → dropped
+                "/etc:/cage-etc:ro",             # outside $HOME → dropped
+            ],
+        ),
+    )
+    backend = AppleContainerBackend()
+    out = backend.generate_units(cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo")
+    assert json.loads(out["demo.json"])["volumes"] == []
 
 
 def test_start_passes_user_env_as_container_run_args(tmp_path, monkeypatch):
