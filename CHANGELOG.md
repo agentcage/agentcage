@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **Dead code cleanup (no behavior change).** Removed unreachable/dead internals surfaced by a complexity sweep: the never-called `_exit_apple_container_unsupported` helper, the permanent no-op `_ensure_dns_quadlet_current` stub (and its call sites + tests), the unused `_systemd_creds_usable` shim, a redundant second `get_backend()` call in `cage exec`, two unused imports in `config.py`, and the write-only `InspectionResult.score` field. Purely subtractive; all behavior is unchanged.
+- **Deleted the dead `apple-container/allowlist_addon.py` (1,444 lines).** Secret injection / redaction is now unified on the single shared `data/proxy/addon.py` + `SecretInjector` for *both* the container and apple-container backends, gated on the authoritative TLS-SNI host (strict SNI↔Host equality, CTF F3) before any injection. `allowlist_addon.py` was the pre-2-microVM Apple egress addon, superseded by the shared `addon.py` (which the egress supervisor loads via `mitmdump -s addon.py`); it was no longer staged into any image, imported, or loaded — only kept alive by direct-import unit tests. Removed it and its ~1.4k lines of now-redundant tests; ported the addon's inspector-chain orchestration (block→403, flag→record, empty→passthrough) to live tests against `addon.py` so coverage stays on the shipping code. No deployed code path changes.
 
 ## [0.22.18] - 2026-05-29
 
