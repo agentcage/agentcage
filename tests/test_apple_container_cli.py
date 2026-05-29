@@ -702,6 +702,75 @@ class TestSecretCommandsAppleContainer:
         assert "MISSING" in result.output
         mock_podman.assert_not_called()
 
+    @patch("agentcage.cli._ensure_v022_cage")
+    @patch("agentcage.cli._expected_secrets")
+    @patch("agentcage.cli._load_apple_pending_secrets")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_show_reports_per_secret_present_and_missing(
+        self, mock_state, mock_podman, mock_get_backend,
+        mock_load, mock_expected, _mock_ensure,
+    ):
+        """`cage show` on apple-container reports the present/expected
+        secret count from pending_secrets.json (the same source as
+        `secret list`), not the old "status not tracked" placeholder, and
+        never instantiates host podman.
+        """
+        cfg = _mock_config("apple-container")
+        cfg.container.ports = []
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = cfg
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
+        backend = MagicMock()
+        backend.service_names.return_value = ["cage", "egress"]
+        backend.is_running.return_value = True
+        mock_get_backend.return_value = backend
+        # MY_KEY staged; ABSENT expected but missing.
+        mock_load.return_value = [("MY_KEY", "v")]
+        mock_expected.return_value = ["MY_KEY", "ABSENT"]
+
+        result = _runner().invoke(main, ["cage", "show", "demo"])
+
+        assert result.exit_code == 0
+        # 1 of 2 present, 1 missing — mirrors the container branch wording.
+        assert "Secrets:    1/2 (1 missing)" in result.output
+        assert "status not tracked" not in result.output
+        # Host podman must NEVER be instantiated on apple-container.
+        mock_podman.assert_not_called()
+
+    @patch("agentcage.cli._ensure_v022_cage")
+    @patch("agentcage.cli._expected_secrets")
+    @patch("agentcage.cli._load_apple_pending_secrets")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.state")
+    def test_show_reports_all_secrets_present(
+        self, mock_state, mock_podman, mock_get_backend,
+        mock_load, mock_expected, _mock_ensure,
+    ):
+        """When every expected secret is staged, `cage show` reports the
+        full N/N count with no "missing" suffix.
+        """
+        cfg = _mock_config("apple-container")
+        cfg.container.ports = []
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = cfg
+        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
+        backend = MagicMock()
+        backend.service_names.return_value = ["cage", "egress"]
+        backend.is_running.return_value = True
+        mock_get_backend.return_value = backend
+        mock_load.return_value = [("MY_KEY", "v"), ("OTHER", "w")]
+        mock_expected.return_value = ["MY_KEY", "OTHER"]
+
+        result = _runner().invoke(main, ["cage", "show", "demo"])
+
+        assert result.exit_code == 0
+        assert "Secrets:    2/2" in result.output
+        assert "missing" not in result.output
+        mock_podman.assert_not_called()
+
 
 class TestPendingSecretsHelpers:
     """The pending_secrets.json reader/writer must round-trip in exactly

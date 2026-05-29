@@ -1833,12 +1833,12 @@ def cage_show(name: str):
     except Exception:
         pass
 
-    # Secrets — host podman is the secret store, so skip the count on
-    # apple-container (which has no host podman) rather than crash.
+    # Secrets — host podman is the secret store, but apple-container has no
+    # host podman, so read present keys from pending_secrets.json instead
+    # (the same source `secret list` uses).
     if _is_apple_container(cfg):
         expected = _expected_secrets(cfg)
-        if expected:
-            click.echo(f"Secrets:    {len(expected)} expected (status not tracked on apple-container)")
+        present_keys = {k for k, _ in _load_apple_pending_secrets(name)}
     else:
         podman = _podman_for_cage(name)
         secrets = podman.secret_list(prefix=f"{name}.")
@@ -1847,12 +1847,13 @@ def cage_show(name: str):
             s.get("Name", "").removeprefix(f"{name}.")
             for s in secrets
         }
-        missing = [k for k in expected if k not in present_keys]
-        if expected:
-            if missing:
-                click.echo(f"Secrets:    {len(present_keys)}/{len(expected)} ({len(missing)} missing)")
-            else:
-                click.echo(f"Secrets:    {len(expected)}/{len(expected)}")
+    missing = [k for k in expected if k not in present_keys]
+    if expected:
+        provided = sum(1 for k in expected if k in present_keys)
+        if missing:
+            click.echo(f"Secrets:    {provided}/{len(expected)} ({len(missing)} missing)")
+        else:
+            click.echo(f"Secrets:    {len(expected)}/{len(expected)}")
 
 
 @cage.command("logs")
