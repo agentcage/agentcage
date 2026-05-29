@@ -360,180 +360,43 @@ class TestCageUpdateNoCache:
         assert mock_build.call_args.kwargs.get("no_cache") is True
 
 
-class TestCageUpdateBuildArgs:
-    """Verify `cage update` re-resolves scaffold-declared-untagged build args."""
+class TestCageUpdateFreezesConfig:
+    """`cage update` (without -c) treats cage.yaml + the staged Containerfile
+    as frozen: it rebuilds the staged image and restarts, but never re-reads
+    the scaffold and never mutates the stored config.
 
-    def _mock_stored_raw(self, build_args: dict[str, str], scaffold: str = "openclaw"):
-        """Return a minimal raw config dict with the given build_args."""
-        return {
+    Regression for the old behavior where update re-staged the scaffold's
+    Containerfile (clobbering operator edits), re-rendered command/env, and
+    auto-bumped scaffold-declared build args.
+    """
+
+    def _run_update(self, mock_state, MockPodman, tmp_path):
+        from agentcage.config import Config, ContainerConfig, BuildConfig
+        stored = {
             "name": "test",
-            "scaffold": scaffold,
+            "scaffold": "openclaw",
             "container": {
-                "image": "localhost/agentcage-scaffold-openclaw:latest",
+                # A real registry ref (not localhost/) so the OLD code would
+                # have tried resolve_latest_tag; an untagged build arg so the
+                # OLD code would have auto-bumped it. Freeze must do neither.
+                "image": "ghcr.io/openclaw/openclaw:2026.3.13-1",
                 "build": {
                     "containerfile": "Containerfile",
-                    "args": dict(build_args),
+                    "args": {"BASE_IMAGE": "ghcr.io/openclaw/openclaw"},
                 },
             },
             "domains": {"allow": ["example.com"]},
         }
-
-    def _run_update(
-        self,
-        stored_raw,
-        scaffold_meta,
-        resolver_returns,
-        mock_state,
-        MockPodman,
-        mock_systemd,
-        tmp_path,
-    ):
-        """Invoke `cage update test` with everything below the resolver mocked out."""
-        mock_state.deployment_exists.return_value = True
-        mock_state.load_raw_config.return_value = stored_raw
-        # After save_raw_config, capture the raw dict so tests can assert on it.
-        saved: dict = {}
-
-        def _save(name, raw):
-            saved.clear()
-            saved.update(raw)
-
-        mock_state.save_raw_config.side_effect = _save
-        # Make load_deployment_config pass through validate_config by reusing the
-        # raw dict the test handed in (state saves are captured but we want
-        # validation to succeed regardless).
-        from agentcage.config import Config, ContainerConfig, BuildConfig
-        mock_cfg = Config(
-            name=stored_raw["name"],
-            isolation="container",
-            container=ContainerConfig(
-                image=stored_raw["container"]["image"],
-                build=BuildConfig(
-                    containerfile="Containerfile",
-                    args=stored_raw["container"]["build"]["args"],
-                ),
-            ),
-        )
-        mock_state.load_deployment_config.return_value = mock_cfg
-        mock_state.load_metadata.return_value = {"scaffold": "openclaw", "agentcage_version": "0.22.0"}
-        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
-        mock_state.save_metadata.return_value = None
-        # Use a real tmp dir so scaffold-refresh's shutil.copy2 call doesn't
-        # create a file named after the MagicMock's repr in the cwd.
-        mock_state.deployment_dir.return_value = tmp_path
-
-        podman = MockPodman.return_value
-        podman.secret_exists.return_value = True
-        podman.pull.return_value = True
-
-        with patch("agentcage.init.load_scaffold_meta", return_value=scaffold_meta), \
-             patch("agentcage.registry.resolve_latest_tag", side_effect=resolver_returns), \
-             patch("agentcage.cli._build_container_image"), \
-             patch("agentcage.cli._build_and_deploy"), \
-             patch("agentcage.cli._check_port_availability", return_value=[]), \
-             patch("agentcage.cli._check_secrets", return_value=[]), \
-             patch("agentcage.cli.get_backend") as mock_backend:
-            mock_backend.return_value.stop.return_value = None
-            result = _runner().invoke(main, ["cage", "update", "test"])
-        return result, saved
-
-    @patch("agentcage.cli.systemd")
-    @patch("agentcage.cli.Podman")
-    @patch("agentcage.cli.state")
-    def test_bumps_scaffold_untagged_arg(self, mock_state, MockPodman, mock_systemd, tmp_path):
-        stored = self._mock_stored_raw({"BASE_IMAGE": "ghcr.io/openclaw/openclaw:2026.3.13-1"})
-        scaffold_meta = {"build": [{"build_args": {"BASE_IMAGE": "ghcr.io/openclaw/openclaw"}}]}
-        result, saved = self._run_update(
-            stored, scaffold_meta, lambda _: "2026.4.1-1",
-            mock_state, MockPodman, mock_systemd, tmp_path,
-        )
-        assert result.exit_code == 0, result.output
-        assert "Build arg BASE_IMAGE:" in result.output
-        assert "2026.3.13-1" in result.output
-        assert "2026.4.1-1" in result.output
-        assert saved["container"]["build"]["args"]["BASE_IMAGE"] == "ghcr.io/openclaw/openclaw:2026.4.1-1"
-
-    @patch("agentcage.cli.systemd")
-    @patch("agentcage.cli.Podman")
-    @patch("agentcage.cli.state")
-    def test_respects_scaffold_pinned_arg(self, mock_state, MockPodman, mock_systemd, tmp_path):
-        stored = self._mock_stored_raw({"BASE_IMAGE": "ghcr.io/openclaw/openclaw:v1.0.0"})
-        scaffold_meta = {"build": [{"build_args": {"BASE_IMAGE": "ghcr.io/openclaw/openclaw:v1.0.0"}}]}
-        resolve_calls: list[str] = []
-
-        def _resolver(base):
-            resolve_calls.append(base)
-            return "v9.9.9"
-
-        result, _saved = self._run_update(
-            stored, scaffold_meta, _resolver,
-            mock_state, MockPodman, mock_systemd, tmp_path,
-        )
-        assert result.exit_code == 0, result.output
-        # Scaffold pin matches stored pin — nothing changed, no resolver call
-        assert "Build arg BASE_IMAGE:" not in result.output
-        # resolve_latest_tag MUST NOT have been called for the scaffold-pinned arg
-        # (may have been called for container.image but that starts with "localhost/"
-        # so we short-circuited that path too)
-        assert resolve_calls == []
-
-    @patch("agentcage.cli.systemd")
-    @patch("agentcage.cli.Podman")
-    @patch("agentcage.cli.state")
-    def test_preserves_pin_on_resolver_failure(self, mock_state, MockPodman, mock_systemd, tmp_path):
-        """REGRESSION: offline update MUST NOT un-pin a working build."""
-        stored = self._mock_stored_raw({"BASE_IMAGE": "ghcr.io/openclaw/openclaw:2026.3.13-1"})
-        scaffold_meta = {"build": [{"build_args": {"BASE_IMAGE": "ghcr.io/openclaw/openclaw"}}]}
-        result, saved = self._run_update(
-            stored, scaffold_meta, lambda _: None,  # resolver fails
-            mock_state, MockPodman, mock_systemd, tmp_path,
-        )
-        assert result.exit_code == 0, result.output
-        assert "Build arg BASE_IMAGE:" not in result.output
-        # No state write for build_args happened — saved is either empty (never
-        # called) or has the original value untouched.
-        if saved:
-            assert saved["container"]["build"]["args"]["BASE_IMAGE"] == "ghcr.io/openclaw/openclaw:2026.3.13-1"
-
-    @patch("agentcage.cli.systemd")
-    @patch("agentcage.cli.Podman")
-    @patch("agentcage.cli.state")
-    def test_migrates_on_scaffold_base_change(self, mock_state, MockPodman, mock_systemd, tmp_path):
-        """Scaffold author renamed the upstream image — users auto-migrate + warning."""
-        stored = self._mock_stored_raw({"BASE_IMAGE": "ghcr.io/old/base:v1"})
-        scaffold_meta = {"build": [{"build_args": {"BASE_IMAGE": "ghcr.io/new/base"}}]}
-        result, saved = self._run_update(
-            stored, scaffold_meta, lambda _: "v2",
-            mock_state, MockPodman, mock_systemd, tmp_path,
-        )
-        assert result.exit_code == 0, result.output
-        assert "Build arg BASE_IMAGE:" in result.output
-        assert "ghcr.io/new/base:v2" in result.output
-        # Drift warning visible
-        assert "base image for BASE_IMAGE changed" in result.output
-        assert "ghcr.io/old/base" in result.output
-        assert saved["container"]["build"]["args"]["BASE_IMAGE"] == "ghcr.io/new/base:v2"
-
-    @patch("agentcage.cli.systemd")
-    @patch("agentcage.cli.Podman")
-    @patch("agentcage.cli.state")
-    def test_infers_scaffold_from_image_when_metadata_missing(
-        self, mock_state, MockPodman, mock_systemd, tmp_path,
-    ):
-        """Cages created before scaffold-persistence landed still auto-bump."""
-        stored = self._mock_stored_raw({"BASE_IMAGE": "ghcr.io/openclaw/openclaw:2026.3.13-1"})
-        # Legacy cage: no scaffold field anywhere — only the image name hints at it
-        stored.pop("scaffold", None)
-        scaffold_meta = {"build": [{"build_args": {"BASE_IMAGE": "ghcr.io/openclaw/openclaw"}}]}
-        # Metadata has NO scaffold key — force inference from image name
-        mock_state.load_metadata.return_value = {"agentcage_version": "0.22.0"}
         mock_state.deployment_exists.return_value = True
         mock_state.load_raw_config.return_value = stored
-        saved: dict = {}
-        mock_state.save_raw_config.side_effect = lambda _n, r: saved.update(r) or None
-        from agentcage.config import Config, ContainerConfig, BuildConfig
+        mock_state.load_metadata.return_value = {
+            "scaffold": "openclaw", "agentcage_version": "0.22.0",
+        }
+        mock_state.deployment_dir.return_value = tmp_path
+        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
         mock_state.load_deployment_config.return_value = Config(
-            name=stored["name"], isolation="container",
+            name="test",
+            isolation="container",
             container=ContainerConfig(
                 image=stored["container"]["image"],
                 build=BuildConfig(
@@ -542,41 +405,67 @@ class TestCageUpdateBuildArgs:
                 ),
             ),
         )
-        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
-        mock_state.deployment_dir.return_value = tmp_path
         podman = MockPodman.return_value
         podman.secret_exists.return_value = True
         podman.pull.return_value = True
 
-        with patch("agentcage.init.load_scaffold_meta", return_value=scaffold_meta), \
-             patch("agentcage.registry.resolve_latest_tag", side_effect=lambda _b: "2026.4.9"), \
-             patch("agentcage.cli._build_container_image"), \
+        with patch("agentcage.init.load_scaffold_meta") as mock_meta, \
+             patch("agentcage.registry.resolve_latest_tag") as mock_tag, \
+             patch("agentcage.cli._stage_build_context") as mock_stage, \
+             patch("agentcage.cli._build_container_image") as mock_build, \
              patch("agentcage.cli._build_and_deploy"), \
              patch("agentcage.cli._check_port_availability", return_value=[]), \
              patch("agentcage.cli._check_secrets", return_value=[]), \
              patch("agentcage.cli.get_backend") as mock_backend:
             mock_backend.return_value.stop.return_value = None
             result = _runner().invoke(main, ["cage", "update", "test"])
-
-        assert result.exit_code == 0, result.output
-        # Scaffold inferred from "localhost/agentcage-scaffold-openclaw:latest"
-        assert "Build arg BASE_IMAGE:" in result.output
-        assert saved["container"]["build"]["args"]["BASE_IMAGE"] == "ghcr.io/openclaw/openclaw:2026.4.9"
+        return result, mock_meta, mock_tag, mock_stage, mock_build, podman
 
     @patch("agentcage.cli.systemd")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
-    def test_suppresses_localhost_warning(self, mock_state, MockPodman, mock_systemd, tmp_path):
-        """localhost/... image refs must not produce `could not resolve latest tag` noise."""
-        stored = self._mock_stored_raw({"BASE_IMAGE": "ghcr.io/openclaw/openclaw:2026.3.13-1"})
-        scaffold_meta = {"build": [{"build_args": {"BASE_IMAGE": "ghcr.io/openclaw/openclaw"}}]}
-        # stored["container"]["image"] is "localhost/agentcage-scaffold-openclaw:latest"
-        result, _saved = self._run_update(
-            stored, scaffold_meta, lambda _: "2026.4.1-1",
-            mock_state, MockPodman, mock_systemd, tmp_path,
-        )
+    def test_does_not_mutate_stored_config(
+        self, mock_state, MockPodman, mock_systemd, tmp_path,
+    ):
+        result, *_ = self._run_update(mock_state, MockPodman, tmp_path)
         assert result.exit_code == 0, result.output
-        assert "could not resolve latest tag" not in result.output
+        # The frozen config is never rewritten...
+        assert not mock_state.save_raw_config.called
+        # ...and none of the old mutation chatter appears.
+        assert "Build arg" not in result.output
+        assert "Image:" not in result.output
+        assert "Command updated" not in result.output
+        assert "Added env" not in result.output
+
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_does_not_read_or_restage_scaffold(
+        self, mock_state, MockPodman, mock_systemd, tmp_path,
+    ):
+        result, mock_meta, mock_tag, mock_stage, _build, _podman = \
+            self._run_update(mock_state, MockPodman, tmp_path)
+        assert result.exit_code == 0, result.output
+        # The scaffold is never consulted...
+        mock_meta.assert_not_called()
+        mock_tag.assert_not_called()
+        # ...and the staged Containerfile is never overwritten.
+        mock_stage.assert_not_called()
+
+    @patch("agentcage.cli.systemd")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_still_rebuilds_and_pulls(
+        self, mock_state, MockPodman, mock_systemd, tmp_path,
+    ):
+        result, _meta, _tag, _stage, mock_build, podman = \
+            self._run_update(mock_state, MockPodman, tmp_path)
+        assert result.exit_code == 0, result.output
+        # Freeze still rebuilds the staged image from the cage's state dir...
+        mock_build.assert_called_once()
+        assert mock_build.call_args.args[1] == tmp_path
+        # ...and pulls a fresh base image.
+        assert podman.pull.called
 
 
 class TestCageUpdatePreservesNetworkOctet:

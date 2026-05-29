@@ -407,15 +407,28 @@ class AppleContainerBackend:
             quiet=quiet, no_cache=no_cache, pull=pull,
         )
 
-        # 2. If the cage came from a scaffold (cage.yaml has `scaffold:`),
-        # build any scaffold-declared images via Apple `container build`
-        # BEFORE the wrapper build. The wrapper's `FROM <user_image>`
-        # references one of these tags, so it must exist first.
-        scaffold_name = getattr(config, "scaffold", "") or ""
-        if scaffold_name:
-            ac_scaffold.build_scaffold_images(
-                scaffold_name, quiet=quiet, no_cache=no_cache, pull=pull,
-            )
+        # 2. Build the cage's image from its OWN staged Containerfile (frozen
+        # into the cage state dir at create) — mirroring the container/vm
+        # backends. The build must precede the wrapper build, whose
+        # `FROM <user_image>` references the tag produced here. A scaffold is
+        # a one-shot generator, not a live dependency: we never re-read it
+        # here, so an agentcage upgrade that changes a scaffold cannot leak
+        # into an existing cage on `cage update`.
+        bc = config.container.build
+        if bc.containerfile:
+            from agentcage import state
+            staged_cf = state.deployment_dir(deploy_name) / bc.containerfile
+            if staged_cf.is_file():
+                ac_scaffold.build_image_from_staged(
+                    user_image, staged_cf, staged_cf.parent, bc.args,
+                    quiet=quiet, no_cache=no_cache, pull=pull,
+                )
+            elif not quiet:
+                click.echo(
+                    f"warning: no staged Containerfile at {staged_cf}; "
+                    f"relying on a prebuilt or pullable {user_image}",
+                    err=True,
+                )
 
         # 3. Ensure the user image is available locally — checking the local
         # store FIRST, before any registry pull. This matters because:

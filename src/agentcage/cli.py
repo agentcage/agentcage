@@ -864,116 +864,14 @@ def cage_update(name: str | None, config_path: str | None,
             click.echo(f"error: cage '{name}' does not exist", err=True)
             sys.exit(1)
         _ensure_v022_cage(name)
-        # Auto-resolve latest image tags for stored configs
-        from agentcage.init import (
-            infer_scaffold_from_image,
-            load_scaffold_meta,
-        )
-        from agentcage.registry import resolve_build_args, resolve_latest_tag
-
-        raw = state.load_raw_config(name)
-
-        # Resolve the scaffold name for this cage. Precedence:
-        #   1. metadata.json "scaffold" (populated by cage create / run)
-        #   2. raw.get("scaffold") (legacy inline field)
-        #   3. infer from container.image naming convention
-        stored_meta = state.load_metadata(name) or {}
-        scaffold_name = (
-            stored_meta.get("scaffold")
-            or raw.get("scaffold", "")
-            or infer_scaffold_from_image(raw.get("container", {}).get("image", ""))
-            or ""
-        )
-
-        # Top-level container.image — skip scaffold-built local images
-        # (e.g. "localhost/agentcage-scaffold-openclaw:latest") since those
-        # are never in a real registry.
-        current_image = raw.get("container", {}).get("image", "")
-        image_base, _, current_tag = current_image.rpartition(":")
-        if image_base and current_tag and not image_base.startswith("localhost/"):
-            new_tag = resolve_latest_tag(image_base)
-            if new_tag and new_tag != current_tag:
-                raw["container"]["image"] = f"{image_base}:{new_tag}"
-                state.save_raw_config(name, raw)
-                click.echo(f"Image: {image_base}:{current_tag} \u2192 {new_tag}")
-            elif new_tag is None:
-                click.echo(
-                    f"warning: could not resolve latest tag for {image_base}, "
-                    f"keeping {current_tag}",
-                    err=True,
-                )
-
-        # Build args — scaffold.yaml declaration is authoritative.
-        # Untagged-in-scaffold ⇒ auto-bump on every update (tracks upstream).
-        # Tagged-in-scaffold   ⇒ respected (author pinned on purpose).
-        # User-added args      ⇒ resolved once if untagged, then respected.
-        scaffold_declared_args: dict[str, str] = {}
-        if scaffold_name:
-            scaffold_meta = load_scaffold_meta(scaffold_name) or {}
-            for entry in scaffold_meta.get("build", []):
-                scaffold_declared_args.update(entry.get("build_args") or {})
-
-        build_raw = raw.get("container", {}).get("build", {})
-        stored_args = build_raw.get("args") or {}
-        resolved_args, changes = resolve_build_args(
-            stored_args, scaffold_declared_args,
-        )
-        for key, old, new in changes:
-            click.echo(f"Build arg {key}: {old} \u2192 {new}")
-            old_base = old.rsplit(":", 1)[0]
-            new_base = new.rsplit(":", 1)[0]
-            if old_base != new_base:
-                click.echo(
-                    f"warning: base image for {key} changed "
-                    f"({old_base} \u2192 {new_base}) \u2014 scaffold updated "
-                    f"upstream reference",
-                    err=True,
-                )
-        if changes:
-            raw.setdefault("container", {}).setdefault("build", {})["args"] = resolved_args
-            state.save_raw_config(name, raw)
-
-        # Refresh scaffold build artifacts and command if scaffold is known
-        if scaffold_name:
-            from agentcage.init import resolve_scaffold, render_config
-
-            scaffold_dir = resolve_scaffold(scaffold_name)
-            if scaffold_dir is not None:
-                # Copy fresh Containerfile + sibling build inputs (files and
-                # directory trees) from the scaffold
-                _stage_build_context(scaffold_dir, state.deployment_dir(name))
-
-                # Re-render scaffold template and patch command + new env vars
-                try:
-                    import yaml
-                    rendered = render_config(name, scaffold=scaffold_name)
-                    scaffold_cfg = yaml.safe_load(rendered) or {}
-                    scaffold_container = scaffold_cfg.get("container", {})
-
-                    # Update command
-                    new_cmd = scaffold_container.get("command")
-                    old_cmd = raw.get("container", {}).get("command")
-                    if new_cmd and new_cmd != old_cmd:
-                        raw.setdefault("container", {})["command"] = new_cmd
-                        click.echo(f"Command updated from scaffold")
-
-                    # Merge new env vars (additive — never remove user's vars)
-                    scaffold_env = scaffold_container.get("env", {})
-                    stored_env = raw.get("container", {}).get("env", {})
-                    for key, val in scaffold_env.items():
-                        if key not in stored_env:
-                            stored_env[key] = val
-                            click.echo(f"Added env: {key}")
-                    if stored_env:
-                        raw.setdefault("container", {})["env"] = stored_env
-
-                    state.save_raw_config(name, raw)
-                except Exception as e:
-                    click.echo(
-                        f"warning: could not refresh scaffold: {e}",
-                        err=True,
-                    )
-
+        # The cage's cage.yaml + Containerfile are frozen at create time and
+        # owned by the cage from then on — a scaffold is a one-shot
+        # generator, not a live dependency. `cage update` (without -c)
+        # deliberately never re-reads the scaffold and never mutates the
+        # stored config: it rebuilds the staged Containerfile, pulls fresh
+        # base images (--pull), and restarts. To change config, edit it
+        # explicitly via `cage edit` or supply a new config with
+        # `cage update -c <file>`.
         cfg = state.load_deployment_config(name)
         try:
             warnings = validate_config(cfg)
@@ -1854,6 +1752,15 @@ def cage_show(name: str):
     click.echo(f"Name:       {cfg.name}")
     click.echo(f"Isolation:  {cfg.isolation}")
     click.echo(f"Image:      {cfg.container.image}")
+    # Surface the staged Containerfile — the copy `cage update` actually
+    # builds (any backend). It's owned by the cage, not the file authored at
+    # create time, so edits to the original have no effect; this is the one
+    # to edit. Only shown when a staged copy really exists on disk.
+    if cfg.container.build.containerfile:
+        staged_cf = (state.deployment_dir(name)
+                     / cfg.container.build.containerfile)
+        if staged_cf.is_file():
+            click.echo(f"Build:      {staged_cf}")
     click.echo(f"Version:    {meta.get('agentcage_version', '-')}")
     click.echo(f"Status:     {status}")
 

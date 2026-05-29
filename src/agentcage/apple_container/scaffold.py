@@ -1,83 +1,76 @@
-"""Scaffold image building for the apple-container backend.
+"""Image building for the apple-container backend.
 
 The host-side ``run_scaffold_setup`` in ``agentcage.init`` invokes
 ``podman build`` directly on the host. That path is fine for the Linux
 container backend, but on macOS there is no host podman — Apple's
 `container` CLI is the only builder available. This module mirrors the
-``run_scaffold_setup`` logic but routes every build through
+container backend's ``build_container_image`` but routes the build through
 ``ac_cli.run(['build', ...])`` instead.
 
-Called by :meth:`AppleContainerBackend.build_artifacts` BEFORE the
-per-cage wrapper image is built — the wrapper's ``FROM <user_image>``
-references the scaffold-built image, so it must exist first.
+Called by :meth:`AppleContainerBackend.build_artifacts` BEFORE the per-cage
+wrapper image is built — the wrapper's ``FROM <user_image>`` references the
+image produced here, so it must exist first.
+
+Crucially, the build reads the cage's OWN staged Containerfile (frozen into
+the cage state dir at create), NOT the live scaffold on disk. A scaffold is
+a one-shot generator, not a live dependency: an agentcage upgrade that
+changes a scaffold therefore can never leak into an existing cage on
+``cage update`` — identical to the container/vm backends, which rebuild the
+cage's staged Containerfile.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from agentcage.apple_container import cli as ac_cli
-from agentcage.init import load_scaffold_meta, resolve_scaffold
 
 
-def build_scaffold_images(
-    scaffold: str,
+def build_image_from_staged(
+    image: str,
+    containerfile: Path,
+    context_dir: Path,
+    build_args: dict[str, str] | None = None,
     *,
     quiet: bool = False,
     no_cache: bool = False,
     pull: bool = False,
 ) -> None:
-    """Build every image declared in *scaffold*'s ``scaffold.yaml``.
+    """Build *image* from a cage's staged Containerfile via Apple
+    ``container build``.
 
-    Mirrors the surface of :func:`agentcage.init.run_scaffold_setup`
-    but builds via Apple ``container build`` rather than host podman.
-    Build args and cap-add hints carry over.
+    *containerfile* / *context_dir* point at the cage's per-cage staged copy
+    (in the cage state dir), so the build is frozen to what was captured at
+    create time — never the live scaffold.
 
-    ``no_cache`` / ``pull`` map to ``container build --no-cache`` /
-    ``--pull`` (force `cage create/update --no-cache/--pull`). When either
-    is set the "skip if image already exists" short-circuit is bypassed —
-    the whole point of those flags is to rebuild from scratch / re-pull the
-    base, so a cached image must NOT be reused.
-
-    No-op when *scaffold* is empty (cage.yaml without a scaffold).
+    Build args are resolved point-in-time exactly as the container backend
+    does (untagged registry refs get a concrete tag), so ``--pull`` fetches a
+    fresh base without mutating the frozen cage.yaml. ``no_cache`` / ``pull``
+    map to ``container build --no-cache`` / ``--pull``.
     """
-    if not scaffold:
-        return
-    meta = load_scaffold_meta(scaffold)
-    if meta is None:
-        return
-    scaffold_dir = resolve_scaffold(scaffold)
-    if scaffold_dir is None:
-        return
+    from agentcage.registry import resolve_build_args
+
+    resolved_args, changes = resolve_build_args(dict(build_args or {}))
 
     def _echo(msg: str) -> None:
         if not quiet:
             click.echo(msg)
 
-    force = no_cache or pull
-    for entry in meta.get("build", []):
-        image = entry["image"]
-        if not force and ac_cli.image_inspect(image):
-            _echo(f"Image {image} already exists, skipping build.")
-            continue
-        if "containerfile" not in entry:
-            # The host podman flow supports other build types (pull,
-            # registry tag) — apple-container backend only handles
-            # local Containerfile builds in v1. Anything else is a no-op
-            # here and the wrapper build will fail later with a clear
-            # "image not found" error.
-            _echo(f"warning: scaffold entry for {image!r} has no containerfile; skipping")
-            continue
-        containerfile = str(scaffold_dir / entry["containerfile"])
-        _echo(f"Building {image} (apple-container)...")
-        argv = ["build", "-t", image, "-f", containerfile]
-        if no_cache:
-            argv.append("--no-cache")
-        if pull:
-            argv.append("--pull")
-        # build_args are scaffold-resolved templating, e.g. registry tags.
-        # Apple's `container build` accepts --build-arg KEY=VALUE.
-        for k, v in (entry.get("build_args") or {}).items():
-            argv += ["--build-arg", f"{k}={v}"]
-        argv.append(str(scaffold_dir))
-        ac_cli.run(argv, capture_output=False)
+    for key, _old, new in changes:
+        _echo(f"Build arg {key}: {new}")
+    _echo(
+        f"Building {image} from {containerfile}"
+        f"{' (no-cache)' if no_cache else ''} (apple-container)..."
+    )
+
+    argv = ["build", "-t", image, "-f", str(containerfile)]
+    if no_cache:
+        argv.append("--no-cache")
+    if pull:
+        argv.append("--pull")
+    for k, v in resolved_args.items():
+        argv += ["--build-arg", f"{k}={v}"]
+    argv.append(str(context_dir))
+    ac_cli.run(argv, capture_output=False)

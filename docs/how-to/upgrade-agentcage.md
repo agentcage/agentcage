@@ -3,7 +3,9 @@
 
 Bump agentcage on a host with running cages, propagate the upgrade to each cage, and recover if it goes wrong. Read this when a new release lands and you want to ship it without surprising your operators.
 
-The agentcage binary and the cages it manages are upgraded separately. Bumping the binary does not rebuild your cages; until you run `cage update`, each cage keeps the templates and patches it was created with.
+The agentcage binary and the cages it manages are upgraded separately. Bumping the binary does not rebuild your cages; until you run `cage update`, each cage keeps the generated runtime (quadlets, egress image, apple-container wrapper) it was created with.
+
+A cage's `cage.yaml` and `Containerfile` are **frozen at create time** — a scaffold is a one-shot generator, not a live dependency. `cage update` rebuilds the cage's *own* staged `Containerfile`, pulls fresh base images, and regenerates the agentcage-managed runtime — but it never re-reads the scaffold, so a newer agentcage's scaffold templates are **not** pulled into existing cages (on any backend). To adopt new scaffold templates, recreate the cage or edit its staged files (`cage edit` / edit the staged `Containerfile`, then `cage update`).
 
 ## Before you upgrade
 
@@ -43,7 +45,7 @@ agentcage doctor
 
 Cages keep their old generated quadlets and wrapper images until you explicitly update them. Pick the right command for what changed:
 
-- New agentcage version with template or patch changes → `cage update` (rebuilds the image and regenerates quadlets).
+- New agentcage version with runtime changes (quadlets, egress, supervisor, apple-container wrapper) → `cage update` (rebuilds the cage's own staged Containerfile, pulls fresh base images, and regenerates the runtime). It does **not** pull in new scaffold templates — the cage's `cage.yaml`/`Containerfile` are frozen at create.
 - `cage.yaml` field that live-reloads (`domains`, `inspectors`, `secret_injection`, `capture`, `protocol_relays`) → `cage edit` or `domain add` / `domain rm`; the proxy picks up the change in place.
 - `cage.yaml` field that needs a service restart (`ports`, `container.command`, `container.env`) → `cage restart` after editing.
 - `cage.yaml` field that needs a rebuild (`isolation`, `vm`, `container.image`) → `cage update`.

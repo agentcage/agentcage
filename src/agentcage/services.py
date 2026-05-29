@@ -212,7 +212,13 @@ def build_container_image(
             echo(f"Build arg {key}: {new}")
 
     if echo:
-        echo(f"Building {cfg.container.image}{' (no-cache)' if no_cache else ''}...")
+        # Show the resolved Containerfile path so the operator can see which
+        # copy is actually built — for an existing cage this is the staged
+        # copy in the cage's state dir, NOT the file they authored at create
+        # time. Editing the original has no effect; edit this one (or use
+        # `cage update -c <config>` to re-stage from a config you control).
+        echo(f"Building {cfg.container.image} from {containerfile}"
+             f"{' (no-cache)' if no_cache else ''}...")
     podman.build_image(
         cfg.container.image,
         str(containerfile),

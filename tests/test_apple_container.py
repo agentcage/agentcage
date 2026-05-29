@@ -1401,19 +1401,21 @@ def test_build_artifacts_falls_back_to_user_cmd_when_unset():
     assert build_mock.call_args.kwargs["user_cmd"] == ["/bin/sh"]
 
 
-def test_build_artifacts_orders_scaffold_before_wrapper_no_pull_for_local():
-    """Scaffold images build BEFORE the wrapper (the wrapper's
-    `FROM <user_image>` references the scaffold-produced tag), and a
-    locally-present `localhost/` scaffold image is NOT pulled — pulling a
-    local-only ref is guaranteed to fail and is pure wasted work.
+def test_build_artifacts_orders_scaffold_before_wrapper_no_pull_for_local(tmp_path):
+    """The cage image (built from its staged Containerfile) builds BEFORE the
+    wrapper (the wrapper's `FROM <user_image>` references that tag), and a
+    locally-present `localhost/` image is NOT pulled — pulling a local-only
+    ref is guaranteed to fail and is pure wasted work.
     """
+    (tmp_path / "Containerfile").write_text("FROM scratch\n")
     cfg = Config(name="t", isolation="apple-container")
     cfg.container.image = "localhost/agentcage-scaffold-ubuntu:latest"
+    cfg.container.build.containerfile = "Containerfile"
     cfg.scaffold = "ubuntu"
 
     calls: list[str] = []
 
-    def scaffold_side_effect(scaffold, **kwargs):  # noqa: ARG001
+    def staged_side_effect(*args, **kwargs):  # noqa: ARG001
         calls.append("scaffold")
 
     def run_side_effect(argv, **kwargs):  # noqa: ARG001
@@ -1425,7 +1427,8 @@ def test_build_artifacts_orders_scaffold_before_wrapper_no_pull_for_local():
         calls.append("wrapper")
         return "img"
 
-    with patch.object(ac_scaffold, "build_scaffold_images", side_effect=scaffold_side_effect), \
+    with patch.object(ac_scaffold, "build_image_from_staged", side_effect=staged_side_effect), \
+         patch("agentcage.state.deployment_dir", return_value=tmp_path), \
          patch.object(ac_cli, "run", side_effect=run_side_effect), \
          patch.object(ac_cli, "image_inspect", return_value={"config": {"Cmd": ["/bin/bash"]}}), \
          patch.object(ac_wrapper, "_user_cmd", return_value=["/bin/bash"]), \
@@ -3957,9 +3960,12 @@ def test_egress_build_skips_when_present_and_not_forced():
     run_mock.assert_not_called()
 
 
-def test_scaffold_build_no_cache_pull_bypasses_skip_and_passes_flags():
-    """`build_scaffold_images(no_cache=True, pull=True)` rebuilds even when
-    the scaffold image exists and forwards both flags to `container build`."""
+def test_build_image_from_staged_passes_flags_and_build_args(tmp_path):
+    """`build_image_from_staged(no_cache=True, pull=True)` forwards both flags
+    and the (resolved) build args to `container build`, building the cage's
+    own staged Containerfile."""
+    cf = tmp_path / "Containerfile"
+    cf.write_text("FROM scratch\n")
     calls: list[list[str]] = []
 
     def fake_run(argv, **kwargs):  # noqa: ARG001
@@ -3967,28 +3973,37 @@ def test_scaffold_build_no_cache_pull_bypasses_skip_and_passes_flags():
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     with patch.object(ac_cli, "run", side_effect=fake_run), \
-         patch.object(ac_cli, "image_inspect", return_value={"present": True}):
-        ac_scaffold.build_scaffold_images(
-            "debian", quiet=True, no_cache=True, pull=True,
+         patch("agentcage.registry.resolve_build_args",
+               return_value=({"BASE_IMAGE": "x:1"}, [])):
+        ac_scaffold.build_image_from_staged(
+            "localhost/agentcage-scaffold-debian:latest", cf, tmp_path,
+            {"BASE_IMAGE": "x"}, quiet=True, no_cache=True, pull=True,
         )
 
     builds = [a for a in calls if a[:1] == ["build"]]
-    assert builds, "scaffold image must rebuild when forced"
+    assert builds, "image must be built from the staged Containerfile"
     assert "--no-cache" in builds[0]
     assert "--pull" in builds[0]
+    assert "-f" in builds[0] and str(cf) in builds[0]
+    assert "--build-arg" in builds[0] and "BASE_IMAGE=x:1" in builds[0]
+    assert builds[0][-1] == str(tmp_path)  # context dir
 
 
-def test_build_artifacts_threads_no_cache_and_pull_to_all_builders():
+def test_build_artifacts_threads_no_cache_and_pull_to_all_builders(tmp_path):
     """`build_artifacts(no_cache=True, pull=True)` propagates both flags to
-    the egress build, the scaffold build, and the wrapper build (no-cache)."""
+    the egress build, the staged-Containerfile build, and the wrapper build
+    (no-cache)."""
+    (tmp_path / "Containerfile").write_text("FROM scratch\n")
     backend = AppleContainerBackend()
     cfg = Config(name="t", isolation="apple-container")
     cfg.container.image = "localhost/agentcage-scaffold-debian:latest"
+    cfg.container.build.containerfile = "Containerfile"
     cfg.container.command = ["sh", "-c", "sleep infinity"]
     cfg.scaffold = "debian"
 
     with patch.object(backend, "_build_egress_image_if_missing") as egress, \
-         patch.object(ac_scaffold, "build_scaffold_images") as scaffold, \
+         patch.object(ac_scaffold, "build_image_from_staged") as staged, \
+         patch("agentcage.state.deployment_dir", return_value=tmp_path), \
          patch.object(ac_cli, "image_inspect", return_value={"present": True}), \
          patch.object(backend, "_render_egress_config"), \
          patch.object(ac_wrapper, "build_wrapper") as wrapper:
@@ -3996,8 +4011,8 @@ def test_build_artifacts_threads_no_cache_and_pull_to_all_builders():
 
     assert egress.call_args.kwargs.get("no_cache") is True
     assert egress.call_args.kwargs.get("pull") is True
-    assert scaffold.call_args.kwargs.get("no_cache") is True
-    assert scaffold.call_args.kwargs.get("pull") is True
+    assert staged.call_args.kwargs.get("no_cache") is True
+    assert staged.call_args.kwargs.get("pull") is True
     assert wrapper.call_args.kwargs.get("no_cache") is True
 
 
@@ -4041,7 +4056,6 @@ def test_build_artifacts_pull_does_not_pull_localhost_ref():
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     with patch.object(backend, "_build_egress_image_if_missing"), \
-         patch.object(ac_scaffold, "build_scaffold_images"), \
          patch.object(ac_cli, "run", side_effect=fake_run), \
          patch.object(ac_cli, "image_inspect", return_value={"present": True}), \
          patch.object(backend, "_render_egress_config"), \
