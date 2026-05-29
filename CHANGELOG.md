@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.19] - 2026-05-29
+
 ### Removed
 
 - **Dead code cleanup (no behavior change).** Removed unreachable/dead internals surfaced by a complexity sweep: the never-called `_exit_apple_container_unsupported` helper, the permanent no-op `_ensure_dns_quadlet_current` stub (and its call sites + tests), the unused `_systemd_creds_usable` shim, a redundant second `get_backend()` call in `cage exec`, two unused imports in `config.py`, and the write-only `InspectionResult.score` field. Purely subtractive; all behavior is unchanged.
