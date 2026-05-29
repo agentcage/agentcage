@@ -32,6 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   found`) now builds and starts. (Note: `cage exec` still doesn't work on
   musl bases — BusyBox `setpriv` lacks the util-linux `--reuid` options the
   exec wrapper uses — tracked separately.)
+- **apple-container `cage logs` now honors `--service` and `--severity`.**
+  On apple-container the CLI helper hardcoded the cage container name and
+  always tailed the cage microVM: `--service egress` was silently ignored
+  (so operators could never reach the `<name>-egress` mitmproxy/dnsmasq VM's
+  logs), and `--severity`/min-level filtering was a no-op. `cage logs` now
+  routes through the backend's `logs_argv` so `--service egress` tails
+  `<name>-egress` and `--service cage` tails the cage VM, with invalid
+  service values rejected cleanly. Apple's `container logs` has no severity
+  flag, so `--severity` is now applied client-side on the streamed lines
+  (using the same `_classify_line` heuristic as the container/vm backends).
+  Because Apple's runtime can only tail one microVM at a time, the implicit
+  both-services default tails the cage VM and prints a one-line stderr
+  warning pointing at `--service egress` rather than silently dropping the
+  egress stream. Verified on real hardware (`--service egress` tails the
+  egress supervisor logs, `--service cage` the cage-init logs).
 
 ## [0.22.15] - 2026-05-29
 
