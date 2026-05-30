@@ -59,6 +59,10 @@ class SecretStore:
     def delete(self, cage: str, key: str, *, state_dir: Path) -> None:
         raise NotImplementedError
 
+    def names(self, cage: str, *, state_dir: Path) -> list[str]:
+        """Names of secrets currently stored for *cage*."""
+        raise NotImplementedError
+
     def get(self, cage: str, key: str, *, state_dir: Path) -> Optional[str]:
         """Return the cleartext value, or None. Backends whose runtime
         decrypts (systemd-creds) need not implement retrieval."""
@@ -328,6 +332,13 @@ class ApplePlaintextStore(SecretStore):
 KNOWN_BACKENDS = frozenset({
     "auto", "systemd-creds", "keychain", "plaintext",
 })
+
+
+def plaintext_store_for(cfg, podman=None) -> SecretStore:
+    """The platform's explicit-opt-in cleartext store."""
+    if getattr(cfg, "isolation", "") == "apple-container":
+        return ApplePlaintextStore()
+    return PlaintextStore(podman)
 
 
 def resolve_store(cfg, *, podman=None, source_scheme: str = "") -> SecretStore:
