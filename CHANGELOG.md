@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.20] - 2026-05-30
+
 ### Added
 
 - **Pluggable secret-storage backends — `secrets.backend`.** Secret storage now goes through a `SecretStore` abstraction selectable via `secrets.backend`: `auto` (default — best encrypting backend for the platform), `systemd-creds` (Linux), `keychain` (macOS), `plaintext` (explicit opt-in). `auto` is fail-closed: it refuses cleartext unless `secrets.allow_plaintext: true`. The previous inline systemd-creds/plaintext branching in `cage create -s` / `secret set` is unified behind the abstraction (behavior-preserving on Linux).
