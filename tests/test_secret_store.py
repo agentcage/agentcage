@@ -114,7 +114,6 @@ def test_keychain_target_falls_to_system_when_login_locked(monkeypatch):
     monkeypatch.setattr(ss.sys, "platform", "darwin")
     kc = ss.KeychainStore()
     monkeypatch.setattr(kc, "_writable", lambda prefix, k: prefix == ["sudo", "-n"])
-    monkeypatch.setattr(kc, "_sudo_n_ok", lambda: True)
     assert kc._target() == (["sudo", "-n"], ss._SYSTEM_KEYCHAIN)
 
 
@@ -123,6 +122,5 @@ def test_keychain_bails_when_neither_works(monkeypatch):
     monkeypatch.setattr(ss.sys, "platform", "darwin")
     kc = ss.KeychainStore()
     monkeypatch.setattr(kc, "_writable", lambda prefix, k: False)
-    monkeypatch.setattr(kc, "_sudo_n_ok", lambda: False)
     with pytest.raises(ss.SecretStoreError):
         kc._target()

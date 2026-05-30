@@ -186,20 +186,20 @@ class KeychainStore(SecretStore):
         )
         return True
 
-    @staticmethod
-    def _sudo_n_ok() -> bool:
-        return subprocess.run(
-            ["sudo", "-n", "true"], capture_output=True).returncode == 0
-
     def _target(self) -> tuple:
-        """Return (sudo_prefix, keychain_path_or_None), or raise."""
+        """Return (sudo_prefix, keychain_path_or_None), or raise.
+
+        The System-keychain probe runs ``sudo -n security …`` directly, so a
+        narrow ``NOPASSWD: /usr/bin/security`` sudoers rule (the recommended
+        headless setup) is enough — we don't require blanket passwordless sudo.
+        """
         if self._target_cache is not None:
             return self._target_cache
         if sys.platform != "darwin":
             raise SecretStoreError("keychain backend is macOS-only")
         if self._writable([], None):
             self._target_cache = ([], None)            # login keychain
-        elif self._sudo_n_ok() and self._writable(["sudo", "-n"], _SYSTEM_KEYCHAIN):
+        elif self._writable(["sudo", "-n"], _SYSTEM_KEYCHAIN):
             self._target_cache = (["sudo", "-n"], _SYSTEM_KEYCHAIN)
         else:
             raise SecretStoreError(
