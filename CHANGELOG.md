@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Pluggable secret-storage backends — `secrets.backend`.** Secret storage now goes through a `SecretStore` abstraction selectable via `secrets.backend`: `auto` (default — best encrypting backend for the platform), `systemd-creds` (Linux), `plaintext` (explicit opt-in), with `system-keychain` (macOS) landing in a follow-up. `auto` is fail-closed: it refuses cleartext unless `secrets.allow_plaintext: true`. The previous inline systemd-creds/plaintext branching in `cage create -s` / `secret set` is unified behind the abstraction (behavior-preserving on Linux).
+- **Pluggable secret-storage backends — `secrets.backend`.** Secret storage now goes through a `SecretStore` abstraction selectable via `secrets.backend`: `auto` (default — best encrypting backend for the platform), `systemd-creds` (Linux), `keychain` (macOS), `plaintext` (explicit opt-in). `auto` is fail-closed: it refuses cleartext unless `secrets.allow_plaintext: true`. The previous inline systemd-creds/plaintext branching in `cage create -s` / `secret set` is unified behind the abstraction (behavior-preserving on Linux).
+- **macOS: secrets are encrypted at rest in the Keychain (apple-container).** Replaces the cleartext `pending_secrets.json`/0600 files. The `keychain` backend layers: it uses the **login keychain** if it's writable (unlocked GUI session), else the **System keychain** if passwordless `sudo` for `/usr/bin/security` is configured (`sudo -n` — headless-capable, host-key encrypted), else fails closed (never prompts). At `cage start`, secret values are materialized from the keychain into the egress bind-mount **only transiently** and wiped once the egress has loaded them — nothing cleartext persists at rest (only a non-secret key-name index remains on disk). Validated end-to-end on Apple Silicon.
 
 ### Changed
 

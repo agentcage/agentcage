@@ -795,6 +795,10 @@ class AppleContainerBackend:
                 "secret_envs": secret_envs,
                 "secret_env_placeholders": secret_env_placeholders,
                 "relay_secret_envs": relay_secret_envs,
+                # Secret backend choice, baked in so start() (which is
+                # meta-driven, no Config) can resolve the right store.
+                "secrets_backend": config.secrets.backend,
+                "secrets_allow_plaintext": bool(config.secrets.allow_plaintext),
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
                 # User-defined host bind mounts. Apple's `container run`
                 # accepts `--volume host:cage[:mode]` just like podman.
@@ -1052,6 +1056,13 @@ class AppleContainerBackend:
         # /var/log/agentcage/ready which virtiofs surfaces here.
         self._wait_supervisor_ready(name, ready_marker)
 
+        # 3b. The egress (mitmproxy SecretInjector) has now loaded the staged
+        # secrets into memory. Wipe the transiently-staged cleartext files so
+        # nothing persists at rest — the durable copy lives in the cage's
+        # secret backend (macOS keychain) and is re-staged on the next start().
+        if staged_envs:
+            self._wipe_staged_secrets(name)
+
         # 4. Read the egress sibling's allocated IP. The cage uses it as
         # default-route gateway via cage-init.sh. Apple's runtime populates
         # `networks[].address` asynchronously — even after the supervisor's
@@ -1166,6 +1177,23 @@ class AppleContainerBackend:
         if not quiet:
             click.echo(f"Started {name} (apple-container, 2-microVM model)")
 
+    def _wipe_staged_secrets(self, name: str) -> None:
+        """Delete the transiently-staged cleartext secret files.
+
+        Called once the egress has loaded them into memory (after the
+        supervisor-ready marker), so no cleartext persists in the bind-mount
+        dir at rest. The durable encrypted copy lives in the cage's secret
+        backend (keychain); ``start()`` re-stages from it each time.
+        """
+        secrets_dir = self.secrets_dir(name)
+        if not secrets_dir.is_dir():
+            return
+        for f in secrets_dir.iterdir():
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
     def _stage_secrets(self, name: str, meta: dict) -> set[str]:
         """Resolve --set-secret values into <secrets_dir>/<env-name> files.
 
@@ -1191,18 +1219,37 @@ class AppleContainerBackend:
         if not all_secret_envs:
             return staged
 
+        # Pull secret VALUES from the cage's backend (macOS keychain by
+        # default, encrypted at rest; or the legacy pending_secrets.json under
+        # `secrets.backend: plaintext`). The values are materialized into the
+        # 0600 bind-mount dir below ONLY transiently — wiped once the egress
+        # has loaded them (see _wipe_staged_secrets, called from start()).
+        from types import SimpleNamespace
+
         from agentcage import state as _state
+        from agentcage.secret_store import SecretStoreError, resolve_store
+        sd = _state.deployment_dir(name)
+        # start() is meta-driven (no Config); rebuild the bits resolve_store
+        # needs from the unit JSON the backend baked in at generate time.
+        cfg_shim = SimpleNamespace(
+            isolation="apple-container",
+            secrets=SimpleNamespace(
+                backend=meta.get("secrets_backend", "auto"),
+                allow_plaintext=bool(meta.get("secrets_allow_plaintext", False)),
+                scope="auto",
+            ),
+        )
         provided: dict[str, str] = {}
-        pending_path = _state.deployment_dir(name) / "pending_secrets.json"
-        if pending_path.is_file():
-            try:
-                provided = {k: v for k, v in json.loads(pending_path.read_text())}
-            except Exception:
-                click.echo(
-                    f"warning: failed to parse {pending_path}; treating "
-                    f"all secret_injection rules as unprovided",
-                    err=True,
-                )
+        try:
+            store = resolve_store(cfg_shim)
+            for env_name in all_secret_envs:
+                val = store.get(name, env_name, state_dir=sd)
+                if val is not None:
+                    provided[env_name] = val
+        except SecretStoreError as exc:
+            click.echo(
+                f"warning: could not read secrets for {name}: {exc}", err=True,
+            )
 
         secrets_dir = self.secrets_dir(name)
         secrets_dir.mkdir(parents=True, exist_ok=True)

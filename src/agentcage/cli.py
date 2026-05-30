@@ -66,47 +66,15 @@ def _is_apple_container(cfg) -> bool:
     return getattr(cfg, "isolation", None) == "apple-container"
 
 
-def _apple_pending_secrets_path(name: str):
-    """Path to the apple-container pending_secrets.json for a cage.
-
-    apple-container has no host-podman secret store; secrets live in this
-    JSON file (a list of ``[key, value]`` pairs) in the deployment dir.
-    The backend's ``_stage_secrets`` re-reads it on every ``start()`` and
-    bind-mounts the resolved values read-only into the egress microVM, so
-    the file is the durable source of truth for cage secrets.
-    """
-    return state.deployment_dir(name) / "pending_secrets.json"
-
-
-def _load_apple_pending_secrets(name: str) -> "list[tuple[str, str]]":
-    """Load pending_secrets.json as a list of (key, value) pairs.
-
-    Returns an empty list if the file is absent or unparseable.
-    """
-    path = _apple_pending_secrets_path(name)
-    if not path.is_file():
-        return []
+def _apple_secret_names(cfg, name: str) -> set[str]:
+    """Names of secrets stored for an apple-container cage via its backend
+    (macOS keychain, or the legacy pending_secrets.json under plaintext)."""
+    from agentcage.secret_store import SecretStoreError, resolve_store
     try:
-        return [(k, v) for k, v in json.loads(path.read_text())]
-    except Exception:
-        click.echo(
-            f"warning: failed to parse {path}; treating it as empty",
-            err=True,
-        )
-        return []
-
-
-def _write_apple_pending_secrets(name: str, pairs) -> None:
-    """Atomically rewrite pending_secrets.json with mode 0600.
-
-    Mirrors the create-time writer so secrets stay protected at rest.
-    """
-    path = _apple_pending_secrets_path(name)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, json.dumps([list(p) for p in pairs]).encode())
-    finally:
-        os.close(fd)
+        store = resolve_store(cfg)
+    except SecretStoreError:
+        return set()
+    return set(store.names(name, state_dir=state.deployment_dir(name)))
 
 
 def _store_secret(podman, cfg, cage: str, key: str, value: str, *,
@@ -120,7 +88,7 @@ def _store_secret(podman, cfg, cage: str, key: str, value: str, *,
     source — in which case it stores and prints an UNENCRYPTED warning.
     """
     from agentcage.secret_store import (
-        PlaintextStore, SecretStoreError, resolve_store,
+        SecretStoreError, plaintext_store_for, resolve_store,
     )
     full = f"{cage}.{key}"
     state_dir = state.deployment_dir(cage)
@@ -129,9 +97,11 @@ def _store_secret(podman, cfg, cage: str, key: str, value: str, *,
     except SecretStoreError as e:
         click.echo(f"error: refusing to store secret '{key}': {e}", err=True)
         click.echo(
-            "  Fix: enable an encrypting backend (systemd-creds: systemd 250+ "
-            "with a TPM2/host/per-user key) or, to accept unencrypted at-rest "
-            "storage, set `secrets:\\n  allow_plaintext: true` in cage.yaml.",
+            "  Fix: enable an encrypting backend (Linux: systemd-creds with a "
+            "TPM2/host/per-user key; macOS: an unlocked login keychain or "
+            "passwordless sudo for the System keychain) or, to accept "
+            "unencrypted at-rest storage, set `secrets:\\n  allow_plaintext: "
+            "true` in cage.yaml.",
             err=True,
         )
         sys.exit(1)
@@ -139,23 +109,25 @@ def _store_secret(podman, cfg, cage: str, key: str, value: str, *,
     try:
         store.set(cage, key, value, state_dir=state_dir)
     except (SecretStoreError, ValueError) as e:
-        # An encrypting backend failed at runtime (e.g. TPM2 contention).
-        if cfg.secrets.allow_plaintext and not isinstance(store, PlaintextStore):
+        # An encrypting backend failed at runtime (e.g. TPM2 contention,
+        # keychain lock). Fall back to plaintext only if explicitly allowed.
+        if cfg.secrets.allow_plaintext and store.name != "plaintext":
             click.echo(f"warning: {store.name} storage failed: {e}", err=True)
-            PlaintextStore(podman).set(cage, key, value, state_dir=state_dir)
-            store = PlaintextStore(podman)
+            store = plaintext_store_for(cfg, podman)
+            store.set(cage, key, value, state_dir=state_dir)
         else:
             click.echo(f"error: failed to store secret '{key}': {e}", err=True)
             sys.exit(1)
 
-    if isinstance(store, PlaintextStore):
+    if store.name == "plaintext":
         click.echo(
-            f"warning: secret '{full}' stored UNENCRYPTED in the podman store.",
-            err=True,
+            f"warning: secret '{full}' stored UNENCRYPTED at rest.", err=True,
         )
         click.echo(f"Secret '{full}' set (unencrypted).")
     elif store.name == "systemd-creds":
         click.echo(f"Secret '{key}' encrypted with systemd-creds.")
+    elif store.name == "keychain":
+        click.echo(f"Secret '{key}' stored in the macOS keychain.")
     else:
         click.echo(f"Secret '{full}' set ({store.name}).")
 
@@ -745,6 +717,16 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
                     source_scheme = rule.source.partition(":")[0]
                 _store_secret(podman_secrets, cfg, name, key, val,
                               source_scheme=source_scheme)
+        elif _is_apple_container(cfg):
+            # apple-container: persist via the cage's backend (macOS keychain
+            # by default); the egress re-stages secrets transiently at start().
+            for spec in secrets:
+                if "=" in spec:
+                    key, val = spec.split("=", 1)
+                else:
+                    key = spec
+                    val = click.prompt(f"Value for {key}", hide_input=True)
+                _store_secret(None, cfg, name, key, val)
         else:
             # VM mode: store secrets for bridging after VM starts.
             # We need host podman for this — prompt to install if missing.
@@ -938,17 +920,10 @@ def cage_update(name: str | None, config_path: str | None,
         # secrets from pending_secrets.json before services come up,
         # so a stopped VM is not a "missing secrets" condition.
     elif cfg.isolation == "apple-container":
-        from agentcage import state as _state
-        pending = _state.deployment_dir(name) / "pending_secrets.json"
-        if pending.is_file():
-            try:
-                provided = {
-                    k for k, _ in json.loads(pending.read_text())
-                }
-            except Exception:
-                provided = set()
-        else:
-            provided = set()
+        # Secrets live in the cage's backend (macOS keychain by default);
+        # the egress re-stages them at start(), so presence in the backend
+        # is what counts.
+        provided = _apple_secret_names(cfg, name)
         from agentcage.services import expected_secrets
         missing = [k for k in expected_secrets(cfg) if k not in provided]
     if missing:
@@ -1806,11 +1781,11 @@ def cage_show(name: str):
         pass
 
     # Secrets — host podman is the secret store, but apple-container has no
-    # host podman, so read present keys from pending_secrets.json instead
+    # host podman, so read present keys from the cage's backend instead
     # (the same source `secret list` uses).
     if _is_apple_container(cfg):
         expected = _expected_secrets(cfg)
-        present_keys = {k for k, _ in _load_apple_pending_secrets(name)}
+        present_keys = _apple_secret_names(cfg, name)
     else:
         podman = _podman_for_cage(name)
         secrets = podman.secret_list(prefix=f"{name}.")
@@ -3238,8 +3213,8 @@ def secret_list(name: str):
     _ensure_v022_cage(name)
     cfg = state.load_deployment_config(name)
     if _is_apple_container(cfg):
-        # Keys live in pending_secrets.json, not a podman store.
-        present_keys = {k for k, _ in _load_apple_pending_secrets(name)}
+        # Keys live in the cage's secret backend (keychain / pending_secrets).
+        present_keys = _apple_secret_names(cfg, name)
         expected = _expected_secrets(cfg)
         injection_names = {r.env for r in cfg.secret_injection}
         click.echo(f"{'NAME':<30} {'TYPE':<12} STATUS")
@@ -3316,12 +3291,9 @@ def secret_set(name: str, key: str):
         sys.exit(1)
 
     if _is_apple_container(cfg):
-        # apple-container has no host-podman store. Upsert the value into
-        # pending_secrets.json; the backend re-stages it on next start().
-        pairs = [(k, v) for k, v in _load_apple_pending_secrets(name) if k != key]
-        pairs.append((key, value))
-        _write_apple_pending_secrets(name, pairs)
-        click.echo(f"Secret '{key}' set for '{name}'.")
+        # apple-container has no host-podman store. Persist via the cage's
+        # backend (macOS keychain by default); the cage re-stages on start().
+        _store_secret(None, cfg, name, key, value)
         _apple_restart_if_running(name, cfg)
         return
 
@@ -3355,14 +3327,14 @@ def secret_rm(name: str, key: str):
     _ensure_v022_cage(name)
     cfg = state.load_deployment_config(name)
     if _is_apple_container(cfg):
-        pairs = _load_apple_pending_secrets(name)
-        if not any(k == key for k, _ in pairs):
+        if key not in _apple_secret_names(cfg, name):
             click.echo(
                 f"error: secret '{key}' does not exist for '{name}'",
                 err=True,
             )
             sys.exit(1)
-        _write_apple_pending_secrets(name, [(k, v) for k, v in pairs if k != key])
+        from agentcage.secret_store import resolve_store
+        resolve_store(cfg).delete(name, key, state_dir=state.deployment_dir(name))
         click.echo(f"Secret '{key}' removed from '{name}'.")
         _apple_restart_if_running(name, cfg)
         return

@@ -562,6 +562,10 @@ def _setup_start_test(tmp_path, monkeypatch, *, unit_meta):
     backend = AppleContainerBackend()
     unit_dir = tmp_path / "apple-container"
     unit_dir.mkdir()
+    # On Linux CI the macOS keychain is unavailable; the stage tests seed a
+    # pending_secrets.json, so default the unit to the plaintext backend
+    # (ApplePlaintextStore reads that file).
+    unit_meta.setdefault("secrets_backend", "plaintext")
     (unit_dir / "demo.json").write_text(json.dumps(unit_meta))
 
     logs_dir = tmp_path / "logs"
@@ -583,6 +587,9 @@ def _setup_start_test(tmp_path, monkeypatch, *, unit_meta):
     monkeypatch.setattr(backend, "unit_dir", lambda: unit_dir)
     monkeypatch.setattr(backend, "logs_dir", lambda _n: logs_dir)
     monkeypatch.setattr(backend, "secrets_dir", lambda _n: secrets_dir)
+    # The post-boot secret wipe is tested separately; keep staged files in
+    # place so the staging assertions below can inspect them.
+    monkeypatch.setattr(backend, "_wipe_staged_secrets", lambda _n: None)
     monkeypatch.setattr(backend, "egress_config_dir", lambda _n: egress_cfg)
     monkeypatch.setattr(backend, "certs_dir", lambda _n: certs_dir)
     monkeypatch.setattr(
@@ -2602,3 +2609,20 @@ def test_build_artifacts_pull_does_not_pull_localhost_ref():
         backend.build_artifacts(cfg, "t", quiet=True, pull=True)
 
     assert not any(a[:2] == ["image", "pull"] for a in calls)
+
+
+def test_wipe_staged_secrets_empties_the_bind_dir(tmp_path, monkeypatch):
+    """The transient post-boot wipe removes staged cleartext files while
+    leaving the bind-mount dir in place (re-staged on the next start)."""
+    from agentcage.backends.apple_container import AppleContainerBackend
+    backend = AppleContainerBackend()
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "API_KEY").write_text("sk-secret")
+    (secrets_dir / "GH_TOKEN").write_text("ghp-x")
+    monkeypatch.setattr(backend, "secrets_dir", lambda _n: secrets_dir)
+
+    backend._wipe_staged_secrets("demo")
+
+    assert secrets_dir.is_dir()
+    assert list(secrets_dir.iterdir()) == []
