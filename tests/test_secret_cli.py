@@ -160,6 +160,30 @@ class TestSecretList:
 
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
+    def test_list_shows_orphan_stored_but_undeclared(self, mock_state, MockPodman):
+        # A secret set for a key with no injection rule / podman_secret is
+        # still stored at rest; it must be surfaced (type 'orphan') rather
+        # than silently hidden by the expected-only filter.
+        podman = MockPodman.return_value
+        podman.secret_list.return_value = [
+            {"Name": "myapp.API_KEY"},
+            {"Name": "myapp.STRAY"},
+        ]
+        mock_state.deployment_exists.return_value = True
+        cfg = _mock_container_config()
+        cfg.secret_injection = [MagicMock(env="API_KEY")]
+        cfg.container.podman_secrets = []
+        mock_state.load_deployment_config.return_value = cfg
+
+        result = _runner().invoke(main, ["secret", "list", "myapp"])
+        assert result.exit_code == 0
+        assert "API_KEY" in result.output
+        assert "injection" in result.output
+        assert "STRAY" in result.output
+        assert "orphan" in result.output
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
     def test_list_empty(self, mock_state, MockPodman):
         podman = MockPodman.return_value
         podman.secret_list.return_value = []

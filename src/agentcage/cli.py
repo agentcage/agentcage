@@ -3203,6 +3203,42 @@ def secret():
     """Manage cage-scoped secrets."""
 
 
+def _render_secret_list(cfg, present_keys: set[str]) -> bool:
+    """Print the NAME/TYPE/STATUS table for a cage's secrets.
+
+    Renders the *union* of declared (``cage.yaml``) and actually-stored
+    secrets so a value set via ``secret set`` for a key with no matching
+    ``secret_injection`` rule (or ``podman_secret`` / relay credential) is
+    still surfaced — as type ``orphan`` — rather than silently hidden.
+    Declared-but-absent secrets show ``MISSING``.
+
+    Returns True if any declared secret is missing (callers exit non-zero).
+    """
+    expected = _expected_secrets(cfg)
+    injection_names = {r.env for r in cfg.secret_injection}
+    # Declared secrets first (preserving config order), then any stored
+    # keys that aren't declared anywhere.
+    expected_set = set(expected)
+    orphans = sorted(k for k in present_keys if k not in expected_set)
+
+    click.echo(f"{'NAME':<30} {'TYPE':<12} STATUS")
+    any_missing = False
+    for key in expected:
+        stype = "injection" if key in injection_names else "direct"
+        if key in present_keys:
+            status = "ok"
+        else:
+            status = "MISSING"
+            any_missing = True
+        click.echo(f"{key:<30} {stype:<12} {status}")
+    for key in orphans:
+        # Stored at rest but not referenced by the config — staged at
+        # start() but never injected/redacted. Surface it so it can be
+        # audited or removed with `secret rm`.
+        click.echo(f"{key:<30} {'orphan':<12} ok")
+    return any_missing
+
+
 @secret.command("list")
 @click.argument("name")
 def secret_list(name: str):
@@ -3215,58 +3251,17 @@ def secret_list(name: str):
     if _is_apple_container(cfg):
         # Keys live in the cage's secret backend (keychain / pending_secrets).
         present_keys = _apple_secret_names(cfg, name)
-        expected = _expected_secrets(cfg)
-        injection_names = {r.env for r in cfg.secret_injection}
-        click.echo(f"{'NAME':<30} {'TYPE':<12} STATUS")
-        any_missing = False
-        for key in expected:
-            stype = "injection" if key in injection_names else "direct"
-            if key in present_keys:
-                status = "ok"
-            else:
-                status = "MISSING"
-                any_missing = True
-            click.echo(f"{key:<30} {stype:<12} {status}")
-        if any_missing:
+        if _render_secret_list(cfg, present_keys):
             sys.exit(1)
         return
     podman = _podman_for_cage(name)
     secrets = podman.secret_list(prefix=f"{name}.")
-
-    # If cage state exists, cross-reference with expected secrets
-    if state.deployment_exists(name):
-        cfg = state.load_deployment_config(name)
-        expected = _expected_secrets(cfg)
-
-        # Determine which type each secret is
-        injection_names = {r.env for r in cfg.secret_injection}
-        present_keys = {
-            s.get("Name", "").removeprefix(f"{name}.")
-            for s in secrets
-        }
-
-        click.echo(f"{'NAME':<30} {'TYPE':<12} STATUS")
-        any_missing = False
-        for key in expected:
-            stype = "injection" if key in injection_names else "direct"
-            if key in present_keys:
-                status = "ok"
-            else:
-                status = "MISSING"
-                any_missing = True
-            click.echo(f"{key:<30} {stype:<12} {status}")
-
-        if any_missing:
-            sys.exit(1)
-    else:
-        if not secrets:
-            click.echo(f"No secrets found for '{name}'.")
-            return
-        click.echo(f"{'NAME':<30}")
-        for s in secrets:
-            sname = s.get("Name", "")
-            key = sname.removeprefix(f"{name}.")
-            click.echo(f"{key:<30}")
+    present_keys = {
+        s.get("Name", "").removeprefix(f"{name}.")
+        for s in secrets
+    }
+    if _render_secret_list(cfg, present_keys):
+        sys.exit(1)
 
 
 @secret.command("set")
