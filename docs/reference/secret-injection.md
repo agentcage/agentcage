@@ -64,6 +64,8 @@ To switch a cage between secret backends (e.g. legacy Podman store → systemd-c
 
 Existing values in the old backend are not migrated automatically; once the cage is updated and new secrets are set, the old store entries are unused and can be removed with `podman secret rm` or left in place (they are inert).
 
+> **Orphan secrets:** `agentcage secret set <cage> <key>` stores a value even when no `secret_injection` rule, `podman_secret`, or relay credential references `<key>`. Such a value is staged at start but never injected or redacted. `agentcage secret list` shows these with type `orphan` so you can either add a matching rule or remove the value with `agentcage secret rm`.
+
 ## Domain restrictions
 
 When `inject_to` is set for a rule, the proxy only injects the real value for requests to matching domains (subdomains are matched automatically). If the cage sends a placeholder to any other domain, the request is **flagged**.
