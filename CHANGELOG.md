@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Secret injection is strict by default — `Authorization` header only.** The proxy now only substitutes a placeholder for its real secret value when the placeholder appears in the request's `Authorization` header. Placeholders left in the URL/query string, request body, other headers, or WebSocket frames pass through unchanged. This confines credentials to the standard auth channel and prevents accidental injection into bodies that may be logged or echoed.
+
+### Added
+
+- **`secret_injection[].inject_body` toggle (default `false`).** Set `inject_body: true` on a rule to opt back into the previous looser behavior, where placeholders are substituted in the request URL, all headers, the body, and WebSocket frames. Use this for APIs that carry the credential outside the `Authorization` header (e.g. a `?api_key=` query parameter or a JSON body field). Response redaction and literal-value blocking are unaffected by the toggle.
+
 ## [0.22.20] - 2026-05-30
 
 ### Added

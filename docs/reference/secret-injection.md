@@ -12,6 +12,7 @@ Secrets listed in `secret_injection` are automatically excluded from the cage's 
 | `env` | `string` | yes | Environment variable name holding the real secret (read by the proxy at startup). |
 | `placeholder` | `string` | yes | Token the cage sees and uses in requests (e.g. `"{{ANTHROPIC_API_KEY}}"`). |
 | `inject_to` | `list[string]` | no | Domains where placeholders are replaced with real values. If omitted, injection applies to all domains. |
+| `inject_body` | `bool` | no | When `false` (the default), placeholders are only substituted inside the HTTP `Authorization` request header. Set to `true` to also inject into the request URL (query string) and request body, and into WebSocket frames. See [Injection scope](#injection-scope). |
 | `source` | `string` | no | Where to load the secret from. See [Secret backends](#secret-backends). If omitted, set it via `agentcage secret set`. |
 | `transform` | `string` | no | Convert the underlying secret into a derived value at request time (e.g. mint a short-lived OAuth access token). See [Transforms](#transforms). |
 | `transform_config` | `mapping` | no | Per-transform options. Required keys depend on the transform. |
@@ -71,6 +72,14 @@ Existing values in the old backend are not migrated automatically; once the cage
 When `inject_to` is set for a rule, the proxy only injects the real value for requests to matching domains (subdomains are matched automatically). If the cage sends a placeholder to any other domain, the request is **flagged**.
 
 When `inject_to` is omitted, the real value is injected for all outbound requests and redacted from all inbound responses.
+
+## Injection scope
+
+By default secret injection is **strict**: the proxy only swaps a placeholder for its real value when the placeholder appears in the request's `Authorization` header. Placeholders left anywhere else — the URL/query string, the request body, or any other header — pass through unchanged. This keeps credentials confined to the standard auth channel and avoids accidentally writing secrets into request bodies that might be logged or echoed.
+
+Set `inject_body: true` on a rule to opt into the looser behavior, where placeholders are substituted in the URL, all request headers, the request body, and WebSocket frames. Use this only for APIs that genuinely carry the credential outside the `Authorization` header (for example a `?api_key=` query parameter or a JSON body field).
+
+Response redaction and literal-value blocking are unaffected by this toggle — real secret values are always redacted from responses and always blocked when found leaking outbound, regardless of `inject_body`.
 
 ## Literal value blocking
 

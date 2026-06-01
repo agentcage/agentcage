@@ -50,6 +50,10 @@ class SecretInjectionRule:
     source: str = ""
     transform: str = ""
     transform_config: dict = field(default_factory=dict)
+    # Strict by default: only substitute placeholders found in the HTTP
+    # Authorization header. Set ``inject_body: true`` to also inject into
+    # the request URL and body (the legacy, looser behavior).
+    inject_body: bool = False
 
 
 def validate_transform(name: str) -> None:
@@ -548,6 +552,7 @@ def load_config(path: str) -> Config:
                 source=source,
                 transform=transform,
                 transform_config=transform_config,
+                inject_body=bool(entry.get("inject_body", False)),
             ))
 
     # Remove injected secrets from podman_secrets and env — they are handled

@@ -57,8 +57,10 @@ def _injector_with_rules(rules):
 
 class TestInjectRequest:
     def test_replaces_placeholder_in_body(self):
+        # Body injection only happens when inject_body=True.
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         flow = _make_flow(content="body with {{KEY}} here")
         names = inj.inject_request(flow)
@@ -75,8 +77,10 @@ class TestInjectRequest:
         assert names == ["KEY"]
 
     def test_replaces_placeholder_in_url(self):
+        # URL injection only happens when inject_body=True.
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         flow = _make_flow(
             url="https://api.anthropic.com/v1?key={{KEY}}",
@@ -85,6 +89,38 @@ class TestInjectRequest:
         names = inj.inject_request(flow)
         assert flow.request.url == "https://api.anthropic.com/v1?key=real-secret"
         assert names == ["KEY"]
+
+    def test_strict_default_only_injects_auth_header(self):
+        """By default, only the Authorization header is injected."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://api.anthropic.com/v1?key={{KEY}}",
+            host="api.anthropic.com",
+            headers={"Authorization": "Bearer {{KEY}}", "X-Api-Key": "{{KEY}}"},
+            content="body with {{KEY}} here",
+        )
+        names = inj.inject_request(flow)
+        assert flow.request.headers["Authorization"] == "Bearer real-secret"
+        # URL, body, and non-auth headers keep the placeholder.
+        assert flow.request.url == "https://api.anthropic.com/v1?key={{KEY}}"
+        assert flow.request.headers["X-Api-Key"] == "{{KEY}}"
+        assert flow.request.content == b"body with {{KEY}} here"
+        assert names == ["KEY"]
+
+    def test_strict_default_no_auth_header_is_noop(self):
+        """Strict mode with no Authorization header injects nothing."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            host="api.anthropic.com",
+            content="body with {{KEY}} here",
+        )
+        names = inj.inject_request(flow)
+        assert flow.request.content == b"body with {{KEY}} here"
+        assert names == []
 
     def test_flags_placeholder_to_unauthorized_domain(self):
         inj = _injector_with_rules([
@@ -105,7 +141,8 @@ class TestInjectRequest:
     def test_inject_skips_unauthorized_domain(self):
         """Placeholder should be left in place for unauthorized domains."""
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         flow = _make_flow(
             url="https://evil.com/exfil",
@@ -119,8 +156,10 @@ class TestInjectRequest:
     def test_inject_mixed_rules(self):
         """Authorized rule gets injected, unauthorized rule's placeholder stays."""
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
-            InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com", inject_to=["other.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
+            InjectionRule("EMAIL", "{{EMAIL}}", "user@example.com",
+                          inject_to=["other.com"], inject_body=True),
         ])
         flow = _make_flow(
             url="https://api.anthropic.com/v1/messages",
@@ -162,7 +201,8 @@ class TestInjectRequest:
 
     def test_subdomain_matches_inject_to(self):
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         flow = _make_flow(
             url="https://api.anthropic.com/v1",
@@ -191,8 +231,10 @@ class TestInjectRequest:
 
     def test_multiple_rules(self):
         inj = _injector_with_rules([
-            InjectionRule("KEY1", "{{KEY1}}", "secret-1", inject_to=["anthropic.com"]),
-            InjectionRule("KEY2", "{{KEY2}}", "secret-2", inject_to=["anthropic.com"]),
+            InjectionRule("KEY1", "{{KEY1}}", "secret-1",
+                          inject_to=["anthropic.com"], inject_body=True),
+            InjectionRule("KEY2", "{{KEY2}}", "secret-2",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         flow = _make_flow(content="a={{KEY1}}&b={{KEY2}}")
         names = inj.inject_request(flow)
@@ -487,7 +529,8 @@ class TestRedactRequest:
     def test_non_redact_domain_still_injects(self):
         """Normal inject_to behavior unchanged for non-redact_to domains."""
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         inj.redact_to = ["matrix.example.com"]
         flow = _make_flow(content="body with {{KEY}} here")
@@ -608,7 +651,7 @@ class TestRedactRequestPostUpstream:
         """
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "sk-real-secret",
-                          inject_to=["anthropic.com"]),
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         flow = _make_flow(
             url="https://api.anthropic.com/v1?k={{KEY}}",
@@ -658,6 +701,9 @@ class TestRedactRequestPostUpstream:
                 "{{ANTHROPIC_API_KEY}}",
                 "sk-ant-api03-FAKE-TEST-VALUE-FOR-REDACTION-1234567890",
                 inject_to=["anthropic.com"],
+                # This case puts the placeholder in the URL/body, so it
+                # needs the opt-in body-injection path to inject+redact.
+                inject_body=True,
             ),
         ])
 
@@ -741,12 +787,24 @@ class TestConfigFormat:
 
 class TestInjectWsContent:
     def test_replaces_placeholder_for_authorized_domain(self):
+        # WebSocket frames have no Authorization header, so injection only
+        # happens when the rule opts into body injection.
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         content, names = inj.inject_ws_content(b"token={{KEY}}", "api.anthropic.com")
         assert content == b"token=real-secret"
         assert names == ["KEY"]
+
+    def test_strict_default_leaves_ws_placeholder(self):
+        """Without inject_body, WebSocket placeholders are left untouched."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        content, names = inj.inject_ws_content(b"token={{KEY}}", "api.anthropic.com")
+        assert content == b"token={{KEY}}"
+        assert names == []
 
     def test_skips_unauthorized_domain(self):
         inj = _injector_with_rules([
@@ -780,8 +838,10 @@ class TestInjectWsContent:
 
     def test_multiple_rules(self):
         inj = _injector_with_rules([
-            InjectionRule("K1", "{{K1}}", "secret-1", inject_to=["anthropic.com"]),
-            InjectionRule("K2", "{{K2}}", "secret-2", inject_to=["anthropic.com"]),
+            InjectionRule("K1", "{{K1}}", "secret-1",
+                          inject_to=["anthropic.com"], inject_body=True),
+            InjectionRule("K2", "{{K2}}", "secret-2",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         content, names = inj.inject_ws_content(b"a={{K1}}&b={{K2}}", "api.anthropic.com")
         assert content == b"a=secret-1&b=secret-2"
@@ -789,7 +849,8 @@ class TestInjectWsContent:
 
     def test_subdomain_matching(self):
         inj = _injector_with_rules([
-            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["anthropic.com"], inject_body=True),
         ])
         content, names = inj.inject_ws_content(b"{{KEY}}", "deep.sub.anthropic.com")
         assert content == b"real-secret"
@@ -1154,6 +1215,7 @@ class TestTransformRules:
             inject_to=["googleapis.com"],
             transform="google-jwt-bearer",
             transform_fn=lambda: "ya29.ws-token",
+            inject_body=True,
         )
         inj = _injector_with_rules([rule])
         content, names = inj.inject_ws_content(

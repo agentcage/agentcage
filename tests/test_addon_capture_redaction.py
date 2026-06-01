@@ -216,6 +216,9 @@ def test_capture_jsonl_does_not_contain_real_secret_after_inject(tmp_path):
         placeholder="{{ANTHROPIC_API_KEY}}",
         real_value=_FAKE_REAL,
         inject_to=["anthropic.com"],
+        # Placeholder is in the body, so the inject step needs the opt-in
+        # body-injection path; strict (default) mode would leave it alone.
+        inject_body=True,
     )
     addon = _build_addon_with_capture(tmp_path, rules=[rule])
 
@@ -243,6 +246,38 @@ def test_capture_jsonl_does_not_contain_real_secret_after_inject(tmp_path):
     assert "{{ANTHROPIC_API_KEY}}" in entry["outbound"]["request"]["body"]
     assert _FAKE_REAL not in entry["inbound"]["request"]["body"]
     assert _FAKE_REAL not in entry["outbound"]["request"]["body"]
+
+
+def test_strict_default_leaves_body_placeholder_uninjected(tmp_path):
+    """Strict mode (the default): a placeholder that lives only in the
+    request body is never swapped for the real value — it never reaches
+    the wire, so it cannot leak into capture.jsonl either. Opting into
+    body injection is what test_capture_jsonl_does_not_contain_real_secret
+    _after_inject covers."""
+    rule = InjectionRule(
+        name="ANTHROPIC_API_KEY",
+        placeholder="{{ANTHROPIC_API_KEY}}",
+        real_value=_FAKE_REAL,
+        inject_to=["anthropic.com"],
+        # inject_body defaults to False — strict mode.
+    )
+    addon = _build_addon_with_capture(tmp_path, rules=[rule])
+
+    flow = _make_flow(
+        body='{"model": "claude", "x-api-key": "{{ANTHROPIC_API_KEY}}"}',
+    )
+    addon.request(flow)
+    # The real value never went on the wire: body still holds the placeholder.
+    assert _FAKE_REAL.encode() not in flow.request.content
+    assert b"{{ANTHROPIC_API_KEY}}" in flow.request.content
+
+    _attach_response(flow)
+    addon.response(flow)
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert _FAKE_REAL not in cap_text
+    entry = json.loads(cap_text.splitlines()[0])
+    assert "{{ANTHROPIC_API_KEY}}" in entry["outbound"]["request"]["body"]
 
 
 def test_capture_jsonl_does_not_contain_real_secret_in_headers(tmp_path):
@@ -296,6 +331,9 @@ def test_redact_request_round_trip_through_addon_response(tmp_path):
         placeholder="{{ANTHROPIC_API_KEY}}",
         real_value=_FAKE_REAL,
         inject_to=["anthropic.com"],
+        # Exercises injection into BOTH the Authorization header and the
+        # body, so the rule opts into body injection.
+        inject_body=True,
     )
     addon = _build_addon_with_capture(tmp_path, rules=[rule])
 

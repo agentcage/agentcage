@@ -47,6 +47,9 @@ class InjectionRule:
     # block can detect raw key bytes leaking into outbound traffic.
     transform: str = ""
     transform_fn: Optional[Callable[[], str]] = None
+    # Strict by default: only inject into the HTTP Authorization header.
+    # When True, also inject into the request URL and body (legacy behavior).
+    inject_body: bool = False
 
 
 class SecretInjector:
@@ -102,6 +105,8 @@ class SecretInjector:
                 )
                 continue
 
+            inject_body = bool(entry.get("inject_body", False))
+
             transform_name = entry.get("transform", "") or ""
             transform_fn: Optional[Callable[[], str]] = None
             if transform_name:
@@ -126,6 +131,7 @@ class SecretInjector:
                     inject_to=inject_to,
                     transform=transform_name,
                     transform_fn=transform_fn,
+                    inject_body=inject_body,
                 )
             )
 
@@ -272,19 +278,36 @@ class SecretInjector:
             ph_bytes = ph.encode()
             value_bytes = value.encode()
 
-            flow.request.url = flow.request.url.replace(ph, value)
+            injected = False
 
-            for k in list(flow.request.headers.keys()):
-                v = flow.request.headers[k]
-                if ph in v:
-                    flow.request.headers[k] = v.replace(ph, value)
+            if rule.inject_body:
+                # Legacy/loose mode: inject into URL, all headers, and body.
+                if ph in flow.request.url:
+                    flow.request.url = flow.request.url.replace(ph, value)
+                    injected = True
 
-            if flow.request.content and ph_bytes in flow.request.content:
-                flow.request.content = flow.request.content.replace(
-                    ph_bytes, value_bytes
-                )
+                for k in list(flow.request.headers.keys()):
+                    v = flow.request.headers[k]
+                    if ph in v:
+                        flow.request.headers[k] = v.replace(ph, value)
+                        injected = True
 
-            names.append(rule.name)
+                if flow.request.content and ph_bytes in flow.request.content:
+                    flow.request.content = flow.request.content.replace(
+                        ph_bytes, value_bytes
+                    )
+                    injected = True
+            else:
+                # Strict mode (default): only inject into the HTTP
+                # Authorization header. Placeholders anywhere else (URL,
+                # body, other headers) are left untouched.
+                auth = flow.request.headers.get("Authorization")
+                if auth is not None and ph in auth:
+                    flow.request.headers["Authorization"] = auth.replace(ph, value)
+                    injected = True
+
+            if injected:
+                names.append(rule.name)
         return names
 
     def _redact_request(self, flow: http.HTTPFlow) -> list[str]:
@@ -517,6 +540,11 @@ class SecretInjector:
 
         names: list[str] = []
         for rule in self.rules:
+            # Strict mode only injects into the HTTP Authorization header,
+            # which has no equivalent in raw WebSocket frames — leave the
+            # placeholder in place unless the rule opted into body injection.
+            if not rule.inject_body:
+                continue
             ph_bytes = rule.placeholder.encode()
             if ph_bytes not in content:
                 continue

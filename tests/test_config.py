@@ -85,6 +85,28 @@ class TestLoadConfigFull:
         assert rule.env == "INJECTED_KEY"
         assert rule.placeholder == "{{INJECTED_KEY}}"
         assert rule.inject_to == ["api.example.com"]
+        # Strict by default — body injection is opt-in.
+        assert rule.inject_body is False
+
+    def test_secret_injection_inject_body_toggle(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: KEY1
+                placeholder: "{{KEY1}}"
+                inject_to: ["api.example.com"]
+                inject_body: true
+              - env: KEY2
+                placeholder: "{{KEY2}}"
+                inject_to: ["api.example.com"]
+        """))
+        cfg = load_config(str(p))
+        rules = {r.env: r for r in cfg.secret_injection}
+        assert rules["KEY1"].inject_body is True
+        assert rules["KEY2"].inject_body is False
 
     def test_injected_secret_removed_from_podman_secrets(self, full_yaml):
         cfg = load_config(full_yaml)
