@@ -857,6 +857,30 @@ class AppleContainerBackend:
         if not quiet:
             click.echo(f"Installed apple-container unit metadata to {dest}/")
 
+    def ensure_ready(self, *, quiet: bool = False) -> None:
+        """Start the `container` apiserver if it isn't already running.
+
+        The apiserver does not survive a reboot — it must be re-started each
+        boot with `container system start`. While it's down every `container`
+        subcommand fails (an XPC connection error), so a downed daemon used
+        to surface as "wrapped image not found" from the image probe in
+        start(). Bring it up here, mirroring the Lima backend which
+        auto-starts its VM in start() rather than making the user do it by
+        hand. Best-effort and idempotent: if it still won't come up,
+        check_prerequisites() reports it uniformly with the other unmet
+        prerequisites.
+        """
+        try:
+            if ac_cli.system_running():
+                return
+            if not quiet:
+                click.echo("Apple container apiserver not running — starting it…")
+            ac_cli.run(["system", "start", "--enable-kernel-install"], check=False)
+        except FileNotFoundError:
+            # `container` CLI not installed — check_prerequisites() reports
+            # this with an install hint; nothing to recover here.
+            pass
+
     def start(self, name: str, *, quiet: bool = False) -> None:
         """Start the cage's two sibling microVMs (egress + cage).
 
@@ -877,27 +901,20 @@ class AppleContainerBackend:
             )
         meta = json.loads(unit_path.read_text())
 
-        # The apiserver does not survive a reboot — `container system start`
-        # must be re-run each boot. When it is down, every `container`
-        # subcommand fails (an XPC connection error), so image_inspect()
-        # below would return None and we'd blame a missing image ("was
-        # build_artifacts() called?") when the real fix is starting the
-        # daemon. Bring it up ourselves, mirroring the Lima backend which
-        # auto-starts its VM in start() (vm.py) rather than making the user
-        # do it by hand. Only error if it still won't come up.
+        # Defensive backstop for direct/programmatic callers: the CLI gates
+        # build+start on ensure_ready() already, but start() may also be
+        # invoked outside that path (backup/restore). ensure_ready() is
+        # idempotent and best-effort; if the apiserver is still down after
+        # it, fail with an actionable message rather than the misleading
+        # "wrapped image not found" the image probe below would produce.
+        self.ensure_ready(quiet=quiet)
         if not ac_cli.system_running():
-            if not quiet:
-                click.echo("Apple container apiserver not running — starting it…")
-            ac_cli.run(
-                ["system", "start", "--enable-kernel-install"], check=False,
+            raise RuntimeError(
+                "Apple container apiserver is not running and could not be "
+                "started automatically — run "
+                "'container system start --enable-kernel-install' manually "
+                f"and retry (`agentcage cage start {name}`)"
             )
-            if not ac_cli.system_running():
-                raise RuntimeError(
-                    "Apple container apiserver is not running and could not be "
-                    "started automatically — run "
-                    "'container system start --enable-kernel-install' manually "
-                    f"and retry (`agentcage cage start {name}`)"
-                )
 
         wrapper_image = ac_wrapper.wrapped_image_name(name)
         if not ac_cli.image_inspect(wrapper_image):
