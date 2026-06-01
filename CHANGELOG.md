@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **apple-container: DNS no longer breaks after a host network change or restart.** The cage's DNS upstream (`server=/<apex>/<resolver-ip>` in the bind-mounted `dnsmasq.conf` / `dns-allowlist.conf`) is auto-detected from the host's `/etc/resolv.conf`, but was only re-rendered on `cage create` / `update` / `domain add|rm` — never on `start`. On a dev laptop that switched networks (Wi-Fi, VPN up/down) or rebooted on a different LAN, a plain `cage restart` (or autostart after reboot) came back forwarding DNS to a resolver IP that no longer existed: every uncached lookup timed out and the cage "couldn't reach the network", while `verify`/`status` still reported green (the egress proxy resolves via the vmnet gateway, so HTTPS *connect* still worked — only the cage's own dnsmasq was stuck). `start()` now re-renders the (bind-mounted, no-rebuild) egress config from the host's current resolver on every start, so restart self-heals across network changes. Best-effort: if no host resolver is detectable at start time, the previously-rendered config is kept and a warning is printed instead of failing the start.
+
 ## [0.22.20] - 2026-05-30
 
 ### Added

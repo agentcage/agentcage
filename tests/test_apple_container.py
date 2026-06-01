@@ -2626,3 +2626,83 @@ def test_wipe_staged_secrets_empties_the_bind_dir(tmp_path, monkeypatch):
 
     assert secrets_dir.is_dir()
     assert list(secrets_dir.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# start() re-renders DNS config from the current host resolver
+# ---------------------------------------------------------------------------
+class _HaltStart(Exception):
+    """Sentinel raised from a stubbed step to halt start() right after the
+    re-render, so the test needn't mock the whole egress bring-up."""
+
+
+def _prime_start(backend, tmp_path):
+    """Stub out everything start() touches BEFORE _stage_secrets so the
+    method runs from entry through the DNS re-render, then halts.
+
+    Returns the sentinel config that ``state.load_deployment_config`` is
+    patched to return, so the caller can assert it was threaded into
+    ``_render_egress_config``.
+    """
+    unit_dir = tmp_path / "units"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({"autostart": False}))
+    for sub in ("egress-cfg", "logs", "certs", "pub"):
+        (tmp_path / sub).mkdir()
+
+    backend.unit_dir = MagicMock(return_value=unit_dir)
+    backend.egress_config_dir = MagicMock(return_value=tmp_path / "egress-cfg")
+    backend.logs_dir = MagicMock(return_value=tmp_path / "logs")
+    backend.certs_dir = MagicMock(return_value=tmp_path / "certs")
+    backend.public_certs_dir = MagicMock(return_value=tmp_path / "pub")
+    # Halt right after the network-create step that follows the re-render.
+    backend._stage_secrets = MagicMock(side_effect=_HaltStart)
+
+    cfg_sentinel = MagicMock(name="loaded-config")
+    return cfg_sentinel
+
+
+def test_start_rerenders_egress_dns_config_from_current_host(tmp_path):
+    """Regression: 'cage cannot connect to the network after restarting'.
+
+    The bind-mounted dnsmasq.conf / dns-allowlist.conf pin the cage's DNS
+    upstream to the host resolver detected at the last create/update. On a
+    dev laptop that changed networks (or rebooted on a different LAN) since
+    then, a plain restart used to come back forwarding DNS to a dead
+    resolver IP. start() must re-render those (bind-mounted, no-rebuild)
+    files from the host's CURRENT resolver."""
+    backend = AppleContainerBackend()
+    cfg_sentinel = _prime_start(backend, tmp_path)
+    backend._render_egress_config = MagicMock(name="_render_egress_config")
+
+    with patch.object(ac_cli, "image_inspect", return_value=object()), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", return_value=MagicMock(returncode=0)), \
+         patch("agentcage.state.load_deployment_config",
+               return_value=cfg_sentinel):
+        with pytest.raises(_HaltStart):
+            backend.start("demo")
+
+    backend._render_egress_config.assert_called_once_with(cfg_sentinel, "demo")
+
+
+def test_start_tolerates_undetectable_host_resolver(tmp_path):
+    """The re-render is best-effort: if the host resolver can't be detected
+    at start time (_host_dns_servers raises), start() must NOT abort — it
+    keeps the previously-rendered config and continues, matching the
+    pre-fix behaviour of starting with whatever was on disk."""
+    backend = AppleContainerBackend()
+    cfg_sentinel = _prime_start(backend, tmp_path)
+    backend._render_egress_config = MagicMock(
+        side_effect=RuntimeError("could not detect usable DNS servers")
+    )
+
+    with patch.object(ac_cli, "image_inspect", return_value=object()), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", return_value=MagicMock(returncode=0)), \
+         patch("agentcage.state.load_deployment_config",
+               return_value=cfg_sentinel):
+        # Reaching the halt sentinel proves the render failure was swallowed
+        # rather than propagated out of start().
+        with pytest.raises(_HaltStart):
+            backend.start("demo")

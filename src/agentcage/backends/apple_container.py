@@ -926,6 +926,42 @@ class AppleContainerBackend:
                 f"egress config dir {egress_cfg_dir} missing — run `cage update`"
             )
 
+        # Re-render the bind-mounted egress config from the CURRENT host
+        # state before (re)starting the microVMs.
+        #
+        # dnsmasq.conf / dns-allowlist.conf encode the cage's DNS upstream
+        # as `server=/<apex>/<resolver-ip>`, where <resolver-ip> is the
+        # host's resolver auto-detected from /etc/resolv.conf at render
+        # time (config.dns_servers → _host_dns_servers()). These files are
+        # only re-rendered by build_artifacts() (create/update) and
+        # reload_domains() (domain add/rm) — NOT by start(). So a dev
+        # laptop that changed networks (Wi-Fi switch, VPN up/down, host
+        # reboot on a different LAN) since the last `cage update` comes
+        # back up forwarding DNS to a resolver IP that no longer exists:
+        # every uncached lookup times out and the cage "can't reach the
+        # network" even though verify/status report green. The configs are
+        # bind-mounted (not baked into the image), so re-rendering here
+        # picks up the live resolver with no rebuild — start/restart now
+        # self-heals across host network changes.
+        #
+        # Best-effort: if the host has no detectable resolver right now
+        # (_host_dns_servers raises), keep the previously-rendered files
+        # rather than failing a start that would otherwise have worked.
+        try:
+            from agentcage import state as _state
+
+            cfg = _state.load_deployment_config(name)
+            self._render_egress_config(cfg, name)
+        except Exception as exc:  # noqa: BLE001 - never let a refresh failure block start
+            if not quiet:
+                click.echo(
+                    f"warning: could not refresh DNS config for {name} from "
+                    f"the current host resolver ({exc}); starting with the "
+                    f"existing rendered config — if DNS fails inside the cage, "
+                    f"run `agentcage cage update {name}`",
+                    err=True,
+                )
+
         # Clear any stale readiness marker BEFORE the first container run.
         # The egress supervisor touches /var/log/agentcage/ready at end of
         # its step F; we poll for it below.
