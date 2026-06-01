@@ -877,6 +877,28 @@ class AppleContainerBackend:
             )
         meta = json.loads(unit_path.read_text())
 
+        # The apiserver does not survive a reboot — `container system start`
+        # must be re-run each boot. When it is down, every `container`
+        # subcommand fails (an XPC connection error), so image_inspect()
+        # below would return None and we'd blame a missing image ("was
+        # build_artifacts() called?") when the real fix is starting the
+        # daemon. Bring it up ourselves, mirroring the Lima backend which
+        # auto-starts its VM in start() (vm.py) rather than making the user
+        # do it by hand. Only error if it still won't come up.
+        if not ac_cli.system_running():
+            if not quiet:
+                click.echo("Apple container apiserver not running — starting it…")
+            ac_cli.run(
+                ["system", "start", "--enable-kernel-install"], check=False,
+            )
+            if not ac_cli.system_running():
+                raise RuntimeError(
+                    "Apple container apiserver is not running and could not be "
+                    "started automatically — run "
+                    "'container system start --enable-kernel-install' manually "
+                    f"and retry (`agentcage cage start {name}`)"
+                )
+
         wrapper_image = ac_wrapper.wrapped_image_name(name)
         if not ac_cli.image_inspect(wrapper_image):
             raise RuntimeError(

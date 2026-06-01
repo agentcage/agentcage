@@ -78,6 +78,49 @@ def test_prereqs_apiserver_stopped_distinct_from_missing():
     assert any("apiserver is not running" in s for s in issues)
 
 
+def test_start_auto_starts_apiserver_when_down(tmp_path, monkeypatch):
+    """The apiserver doesn't survive a reboot. Rather than make the user
+    run `container system start` by hand, start() brings it up itself
+    (mirroring the Lima backend's VM auto-start) and then proceeds."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+        },
+    )
+    # Down on the first probe, up after `system start` runs.
+    states = iter([False, True, True, True, True])
+    monkeypatch.setattr(ac_cli, "system_running", lambda: next(states))
+
+    backend.start("demo", quiet=True)
+
+    assert ["system", "start", "--enable-kernel-install"] in captured
+
+
+def test_start_errors_when_apiserver_wont_start(tmp_path, monkeypatch):
+    """If the daemon stays down even after we try to start it, raise an
+    actionable error — never the misleading 'wrapped image not found'."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(backend, "unit_dir", lambda: tmp_path)
+    (tmp_path / "pi01.json").write_text(json.dumps({"autostart": False}))
+
+    with patch.object(ac_cli, "system_running", return_value=False), \
+         patch.object(ac_cli, "run") as run, \
+         patch.object(ac_cli, "image_inspect") as image_inspect:
+        with pytest.raises(RuntimeError) as excinfo:
+            backend.start("pi01", quiet=True)
+
+    assert "apiserver is not running" in str(excinfo.value)
+    assert "container system start" in str(excinfo.value)
+    # We attempted the auto-start before giving up.
+    assert ["system", "start", "--enable-kernel-install"] in [
+        c.args[0] for c in run.call_args_list
+    ]
+    # Bailed before ever probing images.
+    image_inspect.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # config validation
 # ---------------------------------------------------------------------------
@@ -595,6 +638,8 @@ def _setup_start_test(tmp_path, monkeypatch, *, unit_meta):
     monkeypatch.setattr(
         backend, "public_certs_dir", lambda _n: public_certs_dir,
     )
+    # start() guards on the apiserver being up before probing images.
+    monkeypatch.setattr(ac_cli, "system_running", lambda: True)
     monkeypatch.setattr(
         ac_cli, "image_inspect", lambda _img: {"config": {}},
     )
