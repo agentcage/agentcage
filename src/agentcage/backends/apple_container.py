@@ -685,28 +685,46 @@ class AppleContainerBackend:
                 f"{(test.stderr or test.stdout or '').strip()}"
             )
 
-        # 2. SIGHUP the egress dnsmasq via its pidfile so it re-reads the
-        # allowlist.
+        # 2. Regenerate the egress's runtime servers-file from the updated
+        # bind-mounted allowlist, then SIGHUP. dnsmasq serves
+        # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders
+        # re-pointed at the egress's upstream = its default route = the
+        # vmnet gateway), NOT the bind-mounted file — same rewrite
+        # supervisor-egress.sh does at start. Without the regeneration the
+        # new apex lands in the bind-mounted file but the served file is
+        # unchanged. dns-allowlist.conf is pure `server=/<apex>/<ip>` lines,
+        # so a trailing-field sed safely swaps just the upstream. Guarded
+        # on the runtime file existing (absent → egress fell back to the
+        # baked config and is reading the bind-mounted file directly).
         ac_cli.run(
             ["exec", container, "sh", "-c",
+             'up=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
+             '[ -n "$up" ] && [ -f /run/agentcage/dns-allowlist.egress.conf ] && '
+             'sed "s#/[^/]*\\$#/$up#" /etc/agentcage/dns-allowlist.conf '
+             '> /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; '
              'kill -HUP "$(cat /home/acdns/dnsmasq.pid)"'],
             check=False,
         )
 
-        # 3. SIGHUP the CAGE-local dnsmasq too — this is the load-bearing
-        # one. The cage workload resolves via 127.0.0.1:53 served by a
-        # dnsmasq started in the cage by cage-init.sh stage A' (macOS vmnet
-        # drops inter-microVM UDP, so the cage can't query the egress
-        # dnsmasq). It reads the SAME bind-mounted allowlist (pidfile
-        # /run/agentcage/dnsmasq.pid). Without this SIGHUP the new domain
-        # lands in the file but the cage keeps resolving the old set.
-        # Best-effort: the cage dnsmasq is itself best-effort (skipped on
-        # bases without dnsmasq, cage-init.sh stage A'), so guard on the
-        # pidfile and never fail the reload.
+        # 3. Regenerate + SIGHUP the CAGE-local dnsmasq too — this is the
+        # load-bearing one. The cage workload resolves via 127.0.0.1:53
+        # served by a dnsmasq started in the cage by cage-init.sh stage A',
+        # which forwards the allowlisted apexes to the egress sibling (the
+        # cage's default route). It serves /run/agentcage/dns-allowlist.cage
+        # .conf, so we re-point that from the updated bind-mounted allowlist
+        # (same rewrite stage A' does), then SIGHUP via the pidfile. Guarded
+        # on the runtime file existing (absent → cage fell back to the baked
+        # config and reads the bind-mounted file). Best-effort throughout:
+        # the cage dnsmasq is itself optional (bases without dnsmasq), so
+        # never fail the reload.
         if self.is_running(name, "cage"):
             ac_cli.run(
                 ["exec", name, "sh", "-c",
                  'p=/run/agentcage/dnsmasq.pid; '
+                 'up=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
+                 '[ -n "$up" ] && [ -f /run/agentcage/dns-allowlist.cage.conf ] && '
+                 'sed "s#/[^/]*\\$#/$up#" /etc/agentcage/dns-allowlist.conf '
+                 '> /run/agentcage/dns-allowlist.cage.conf 2>/dev/null; '
                  '[ -f "$p" ] && kill -HUP "$(cat "$p")" || true'],
                 check=False,
             )
