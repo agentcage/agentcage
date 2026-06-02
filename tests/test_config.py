@@ -1,11 +1,23 @@
 """Tests for agentcage config parsing and validation."""
 
 import os
+import platform
 import textwrap
 
 import pytest
 
 from agentcage.config import Config, ContainerConfig, DomainConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, _VALID_LEVELS, load_config, validate_config
+
+# These assert that a valid config yields NO validation warnings. On macOS the
+# default isolation is apple-container, which legitimately warns (e.g.
+# `read_only` cannot be enforced — issue #120), so the "no warnings" assertion
+# only holds for the Linux/container default. macOS warning behavior is covered
+# by the apple-container tests.
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="assumes the Linux/container default isolation (no apple-container "
+           "validation warnings); runs on the Linux CI",
+)
 
 
 class TestLoadConfigMinimal:
@@ -558,6 +570,7 @@ class TestValidateLoggingLevels:
         with pytest.raises(ValueError, match="logging.dns"):
             validate_config(cfg)
 
+    @LINUX_ONLY
     def test_valid_levels_pass(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -624,6 +637,7 @@ class TestLoadConfigEdgeCases:
 
 
 class TestValidateConfig:
+    @LINUX_ONLY
     def test_valid_config(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         warnings = validate_config(cfg)
@@ -721,6 +735,7 @@ class TestValidateConfig:
         warnings = validate_config(cfg)
         assert any("NONEXISTENT_VAR_12345" in w for w in warnings)
 
+    @LINUX_ONLY
     def test_no_warn_for_set_env_var(self, tmp_path, monkeypatch):
         monkeypatch.setenv("EXISTING_VAR_TEST", "value")
         p = tmp_path / "config.yaml"
@@ -2022,9 +2037,13 @@ class TestAppleContainerSilentDrops:
             for w in warnings
         ), warnings
 
+    @LINUX_ONLY
     def test_container_isolation_no_silent_drop_warnings(self, tmp_path):
         """The whole batch of warnings is gated on isolation == apple-container.
-        Container backend honors all these fields, so no warnings emitted."""
+        Container backend honors all these fields, so no warnings emitted.
+
+        Gated to Linux: on macOS, validate_config rejects `container` isolation
+        outright (raising), so this container-only assertion can't run here."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: container-demo

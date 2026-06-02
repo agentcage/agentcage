@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import json
+import platform
 import textwrap
 from unittest.mock import MagicMock, patch, call, ANY
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from agentcage.cli import main, _stage_build_context
+
+# These drive `cage create/update` with the default/container isolation, which
+# resolves to the rootless-podman backend on Linux. On macOS the default is the
+# apple-container backend (container isolation is rejected; create/update gate
+# on the apple apiserver), so the Linux create/update flow under test only
+# applies on the Linux CI. apple-container's flow is covered by
+# tests/test_apple_container*.py.
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="Linux/container cage create+update flow; runs on the Linux CI",
+)
 
 
 def _runner():
@@ -26,6 +39,7 @@ class TestCageCreate:
         assert result.exit_code != 0
         assert "already exists" in result.output
 
+    @LINUX_ONLY
     @patch("agentcage.cli.systemd")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
@@ -121,6 +135,7 @@ class TestCageCreate:
         # The named volume is NOT flagged.
         assert "agentcage-named" not in result.output
 
+    @LINUX_ONLY
     @patch("agentcage.cli.systemd")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
@@ -270,6 +285,7 @@ class TestCageUpdate:
         assert "missing secrets" not in result.output
 
 
+@LINUX_ONLY
 class TestCageUpdateNoCache:
     """`agentcage cage update --no-cache` must propagate the flag down to
     the build-image step so podman gets `--no-cache` and rebuilds every
@@ -387,6 +403,7 @@ class TestCageUpdateNoCache:
         assert mock_build.call_args.kwargs.get("no_cache") is True
 
 
+@LINUX_ONLY
 class TestCageUpdateFreezesConfig:
     """`cage update` (without -c) treats cage.yaml + the staged Containerfile
     as frozen: it rebuilds the staged image and restarts, but never re-reads
@@ -495,6 +512,7 @@ class TestCageUpdateFreezesConfig:
         assert podman.pull.called
 
 
+@LINUX_ONLY
 class TestCageUpdatePreservesNetworkOctet:
     """`agentcage cage update` must reuse the cage's already-allocated network
     octet instead of re-deriving it from the cage-name hash.

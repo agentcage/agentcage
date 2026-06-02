@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import platform
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
+
+# These assert Linux distro-specific remediation hints (apt-get/dnf/pacman).
+# On macOS the doctor emits brew/macOS guidance instead, so gate them to the
+# Linux CI where the behavior under test actually applies.
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="Linux distro-specific behavior; exercised on the Linux CI",
+)
 
 from agentcage.doctor import (
     CheckResult,
@@ -86,18 +95,21 @@ class TestCheckPodman:
         assert r.level == "pass"
         assert "4.9.3" in r.message
 
+    @LINUX_ONLY
     def test_not_found(self):
         with patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
             r = check_podman("arch")
         assert r.level == "error"
         assert "pacman" in r.hint
 
+    @LINUX_ONLY
     def test_debian_hint(self):
         with patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
             r = check_podman("debian")
         assert r.level == "error"
         assert "apt-get" in r.hint
 
+    @LINUX_ONLY
     def test_fedora_hint(self):
         with patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
             r = check_podman("fedora")
@@ -127,6 +139,7 @@ class TestCheckLima:
         assert r.level == "pass"
         assert "1.0.2" in r.message
 
+    @LINUX_ONLY
     def test_not_found(self):
         with patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
             r = check_lima("arch")
@@ -368,6 +381,7 @@ class TestRunDoctor:
 # Distro-specific remediation hints
 # ---------------------------------------------------------------------------
 
+@LINUX_ONLY
 class TestRemediationHints:
     @pytest.mark.parametrize("distro,expected", [
         ("arch", "pacman"),
