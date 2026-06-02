@@ -207,6 +207,37 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # allowed domain × upstream pair). This closes the same non-A-record
   # exfil channel that the apple-container dnsmasq.conf.j2 closes.
   log "step B: container/vm path — applying allowlist flags inline"
+  # Transparent host-tracking upstream (matches the apple-container vmnet
+  # gateway behavior). Forward the allowlisted apexes to the egress's
+  # DEFAULT-ROUTE gateway, re-derived at runtime, IN ADDITION to the baked
+  # cfg.dns_servers. On rootless podman/netavark that gateway is served by
+  # aardvark-dns, which forwards to the host's CURRENT /etc/resolv.conf — so
+  # a host network change (Wi-Fi/VPN) is followed with NO restart or rebuild.
+  # (Verified empirically in Lima: aardvark tracks the host live for a
+  # running container, and the old "aardvark 502 race" did NOT reproduce
+  # over 600+ queries under heavy create/destroy churn — that race was about
+  # aardvark winning resolv.conf ORDERING for mitmproxy's getaddrinfo, NOT
+  # aardvark used as an explicit, allowlist-scoped dnsmasq upstream.)
+  # We keep the baked dns_servers as a SECOND per-zone upstream and add
+  # --all-servers so a degraded/absent gateway falls back instantly instead
+  # of stalling. Per-zone server= scoping + the --address=/#/ sinkhole are
+  # unchanged, so the allowlist still holds (the gateway only ever receives
+  # allowlisted-apex queries; everything else is sinkholed here). Derive from
+  # the DEFAULT ROUTE, not <eth0-subnet>.1: the egress is dual-homed and
+  # which NIC is eth0 is non-deterministic, and <name>-net is internal.
+  _gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
+  _servers_file=/etc/agentcage/dns-allowlist.conf
+  _all_servers=""
+  if [ -n "$_gw" ] && mkdir -p /run/agentcage 2>/dev/null \
+     && { sed "s#/[^/]*\$#/$_gw#" /etc/agentcage/dns-allowlist.conf; \
+          cat /etc/agentcage/dns-allowlist.conf; } \
+          > /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; then
+    _servers_file=/run/agentcage/dns-allowlist.egress.conf
+    _all_servers="--all-servers"
+    log "step B: forwarding allowlisted zones via default-route gateway ${_gw} (host-tracking) + baked-resolver fallback"
+  else
+    log "warn: could not derive default-route gateway; using baked resolver upstream (DNS may go stale on host network change)"
+  fi
   # ``--no-hosts``: dnsmasq must NOT honor /etc/hosts inside the egress
   # container. mitmproxy lives in the same container as dnsmasq in the
   # unified v0.22 shape, and the e2e harness patches /etc/hosts here so
@@ -233,8 +264,31 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
         --listen-address="$DNS_LISTEN_IP" \
         --port=53 \
         --address=/#/198.51.100.1 \
-        --servers-file=/etc/agentcage/dns-allowlist.conf \
+        --servers-file="$_servers_file" \
+        $_all_servers \
     &
+  # Point mitmproxy's OWN resolver (getaddrinfo via /etc/resolv.conf) at the
+  # same host-tracking gateway. mitmproxy re-resolves the SNI/Host on the
+  # upstream connection (verified: breaking only this resolver 502s every
+  # allowlisted host), so without this the cage stays stale after a host
+  # network change even though its own dnsmasq tracks the gateway. Rebuild
+  # resolv.conf from scratch each start (stateless — no accumulation across
+  # restarts): gateway first (primary, host-tracking), then the baked
+  # dns_servers (extracted from the allowlist file) as fallback. getaddrinfo
+  # checks /etc/hosts FIRST, so the e2e upstream mock is preserved. Needs the
+  # rw resolv bind (egress.container.j2). Matches the apple egress, whose
+  # resolv.conf is already the vmnet gateway.
+  if [ -n "$_gw" ]; then
+    # Explicit if/then/else (not `A && B || C`) — shellcheck SC2015: with the
+    # short-circuit form the warn branch would also run if `log` itself failed.
+    if { echo "nameserver $_gw"; \
+         awk -F/ '/^server=\//{print "nameserver " $3}' /etc/agentcage/dns-allowlist.conf | sort -u; \
+         echo "options edns0"; } > /etc/resolv.conf 2>/dev/null; then
+      log "step B: mitmproxy resolver = gateway ${_gw} (host-tracking) + baked dns_servers fallback"
+    else
+      log "warn: could not repoint /etc/resolv.conf at gateway; mitmproxy uses baked resolver (may go stale on host network change)"
+    fi
+  fi
 else
   # Smoke-test path: no per-cage config staged yet. Start dnsmasq with a
   # minimal inline default so the supervisor can still come up and the

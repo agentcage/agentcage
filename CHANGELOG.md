@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **container/vm: DNS now transparently tracks host network changes (no restart/rebuild).** The egress dnsmasq used to forward allowlisted zones to `cfg.dns_servers` (host resolver IPs baked at `cage update` time), and mitmproxy's own `/etc/resolv.conf` was pinned to the same baked IPs — so a Wi-Fi/VPN change left both stale until a full `cage update`. Now `supervisor-egress.sh` forwards each allowlisted apex to the egress's **default-route gateway** (derived at runtime via `ip route`; on rootless podman/netavark that's aardvark-dns, which forwards to the host's *current* resolver; on the Lima vm backend it exits via Lima's NAT), keeping `dns_servers` as a second per-zone upstream with `--all-servers` for instant fallback. mitmproxy's resolver is likewise rebuilt each start with the gateway as primary + `dns_servers` fallback (the egress `resolv.conf` bind is now `rw`); `getaddrinfo` checks `/etc/hosts` first so the e2e upstream mock is unaffected. This brings the Linux backends to parity with the apple-container vmnet-gateway behavior. (The old aardvark "intermittent forward → 502" concern was empirically disproven under churn — 600+ queries / 0 failures — and here the gateway is an explicit allowlist-scoped upstream with a deterministic fallback, not an implicit resolv.conf ordering winner.) Full transparency on the vm backend additionally requires modern podman + netavark (it currently provisions podman 4.9.3 / CNI).
+
 ## [0.22.20] - 2026-05-30
 
 ### Added

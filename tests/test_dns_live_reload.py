@@ -415,3 +415,56 @@ class TestAppleContainerBackendLiveReloads:
         backend.stop.assert_not_called()
         backend.build_artifacts.assert_not_called()
         backend.start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Linux (container/vm) transparent host-tracking DNS via the default-route
+# gateway — matches the apple-container vmnet-gateway behavior.
+# ---------------------------------------------------------------------------
+def _read_src(*parts):
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent
+            / "src" / "agentcage").joinpath(*parts).read_text()
+
+
+def test_supervisor_container_path_forwards_to_default_route_gateway():
+    """The container/vm egress dnsmasq forwards allowlisted zones to the
+    runtime DEFAULT-ROUTE gateway (host-tracking, like the apple vmnet
+    gateway) IN ADDITION to the baked cfg.dns_servers, with --all-servers so
+    a degraded gateway falls back instantly. Derived from the default route
+    (NOT eth0-subnet .1): the Linux egress is dual-homed and <name>-net is
+    internal."""
+    s = _read_src("data", "containers", "supervisor-egress.sh")
+    assert "ip route 2>/dev/null | awk '/^default/{print $3; exit}'" in s
+    assert 'sed "s#/[^/]*\\$#/$_gw#" /etc/agentcage/dns-allowlist.conf' in s
+    assert "/run/agentcage/dns-allowlist.egress.conf" in s
+    assert '_all_servers="--all-servers"' in s
+    assert "$_all_servers" in s
+
+
+def test_supervisor_points_mitmproxy_resolver_at_gateway():
+    """mitmproxy re-resolves the upstream SNI/Host, so its OWN resolver
+    (/etc/resolv.conf) must also track the host. The supervisor rebuilds it
+    each start: gateway first (host-tracking), then the baked dns_servers
+    (extracted from the allowlist) as fallback. Requires the rw resolv bind."""
+    s = _read_src("data", "containers", "supervisor-egress.sh")
+    assert 'echo "nameserver $_gw"' in s
+    assert "awk -F/ '/^server=\\//{print \"nameserver \" $3}' /etc/agentcage/dns-allowlist.conf" in s
+    assert "> /etc/resolv.conf" in s
+    # egress.container.j2 must mount resolv.conf rw so the supervisor can rewrite it
+    j2 = _read_src("templates", "egress.container.j2")
+    assert "resolv-egress-{{ name }}.conf:/etc/resolv.conf:rw,Z" in j2
+    assert ":/etc/resolv.conf:ro,Z" not in j2
+
+
+def test_update_dns_quadlet_regenerates_runtime_servers_file_for_linux():
+    """Live `domain add/rm` on container/vm regenerates the gateway-rewritten
+    runtime servers-file (which dnsmasq actually serves) from the updated
+    bind-mounted allowlist before the SIGHUP — else the new apex lands only in
+    the fallback source and the served set is stale."""
+    import inspect
+    from agentcage.cli import _update_dns_quadlet
+    src = inspect.getsource(_update_dns_quadlet)
+    assert "/run/agentcage/dns-allowlist.egress.conf" in src
+    assert "ip route" in src and "/^default/" in src
+    assert "kill -HUP" in src
