@@ -2667,6 +2667,10 @@ def _prime_start(backend, tmp_path):
     backend.logs_dir = MagicMock(return_value=tmp_path / "logs")
     backend.certs_dir = MagicMock(return_value=tmp_path / "certs")
     backend.public_certs_dir = MagicMock(return_value=tmp_path / "pub")
+    # start() now gates on the apiserver being up (ensure_ready +
+    # ac_cli.system_running) before doing any work; stub the readiness
+    # bring-up here and patch system_running True in the caller.
+    backend.ensure_ready = MagicMock()
     # Halt right after the network-create step that follows the re-render.
     backend._stage_secrets = MagicMock(side_effect=_HaltStart)
 
@@ -2687,7 +2691,8 @@ def test_start_rerenders_egress_dns_config_from_current_host(tmp_path):
     cfg_sentinel = _prime_start(backend, tmp_path)
     backend._render_egress_config = MagicMock(name="_render_egress_config")
 
-    with patch.object(ac_cli, "image_inspect", return_value=object()), \
+    with patch.object(ac_cli, "system_running", return_value=True), \
+         patch.object(ac_cli, "image_inspect", return_value=object()), \
          patch.object(ac_cli, "inspect", return_value=None), \
          patch.object(ac_cli, "run", return_value=MagicMock(returncode=0)), \
          patch("agentcage.state.load_deployment_config",
@@ -2709,7 +2714,8 @@ def test_start_tolerates_undetectable_host_resolver(tmp_path):
         side_effect=RuntimeError("could not detect usable DNS servers")
     )
 
-    with patch.object(ac_cli, "image_inspect", return_value=object()), \
+    with patch.object(ac_cli, "system_running", return_value=True), \
+         patch.object(ac_cli, "image_inspect", return_value=object()), \
          patch.object(ac_cli, "inspect", return_value=None), \
          patch.object(ac_cli, "run", return_value=MagicMock(returncode=0)), \
          patch("agentcage.state.load_deployment_config",
