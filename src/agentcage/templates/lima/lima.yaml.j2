@@ -7,16 +7,23 @@ mountType: virtiofs
 {% endif %}
 
 images:
-  # Pinned to an immutable dated path. The .../release/ symlink is mutable —
-  # Ubuntu republishes the 24.04 point release in place, which changes the
-  # image bytes and makes the digest check below fail fatally. Bump the
-  # release-YYYYMMDD path and BOTH digests together to update.
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release-20260321/ubuntu-24.04-server-cloudimg-amd64.img"
+  # Debian 13 "trixie" genericcloud. Trixie's apt repos ship podman 5.x with
+  # netavark as a hard dependency (and aardvark-dns alongside), so the vm
+  # backend gets the netavark/aardvark stack that agentcage's transparent
+  # host-tracking DNS requires — Ubuntu 24.04 only had podman 4.9 + CNI.
+  #
+  # Pinned to an immutable dated build dir. The .../latest/ symlink and the
+  # .../daily/ tree are mutable — Debian rotates/prunes dated dirs (≈weekly)
+  # and republishes 'latest' in place, which changes the image bytes and
+  # makes the digest check below fail fatally. Bump the YYYYMMDD-NNNN path and
+  # BOTH digests together to update. Debian publishes ONLY SHA512SUMS per
+  # dated dir (no SHA256SUMS), so these are sha512 digests (Lima supports it).
+  - location: "https://cloud.debian.org/images/cloud/trixie/20260601-2496/debian-13-genericcloud-amd64-20260601-2496.qcow2"
     arch: "x86_64"
-    digest: "sha256:5c3ddb00f60bc455dac0862fabe9d8bacec46c33ac1751143c5c3683404b110d"
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release-20260321/ubuntu-24.04-server-cloudimg-arm64.img"
+    digest: "sha512:61264ae6968d765e61cf5607a664ba63099ddfb66b8404aa737d06f89b39c8e0fbaa1517b13705909ff01686d32015a0147436662672b4dacc10b4a171d7993d"
+  - location: "https://cloud.debian.org/images/cloud/trixie/20260601-2496/debian-13-genericcloud-arm64-20260601-2496.qcow2"
     arch: "aarch64"
-    digest: "sha256:1ea801e659d2f5035ac294e0faab0aac9b6ba66753df933ba5c7beab0c689bd0"
+    digest: "sha512:d49b15db1d53aab1cb1ba36af119e6851933fdf33e64124bc3aae0677b7219658f237019bfe9db61a95b11d99e068e8554c6c3df08d46540e8e263f72dc5d1ab"
 
 cpus: {{ vcpus }}
 memory: "{{ mem_gb }}GiB"

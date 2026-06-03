@@ -9,23 +9,58 @@ export DEBIAN_FRONTEND=noninteractive
 # provisioning scripts.
 lima_user="{{ lima_user }}"
 
-# Install Podman and dependencies.
-# --no-install-recommends keeps the install lean: Ubuntu's `podman` recommends
-# pull in mail-transport-agent + assorted extras that ~50 MB on a fresh image
-# and nothing in agentcage uses. `socat` was previously in this list but is
-# not referenced anywhere in the agentcage codebase — dropped.
+# Install Podman 5 + the netavark/aardvark network stack.
+# --no-install-recommends keeps the image lean, but on Debian trixie
+# `netavark` is the only network backend podman *Depends* on — aardvark-dns
+# (in-container name resolution, REQUIRED for agentcage's transparent
+# host-tracking DNS), passt/pasta (podman 5's default rootless network
+# backend), dbus-user-session (user-service lingering) and catatonit (the init
+# shim podman runs as pid 1 inside containers) are merely *Recommends*, so they
+# MUST be named explicitly or they're silently dropped. nftables provides the
+# `nft` binary that netavark 1.14's default firewall driver shells out to (an
+# `iptables`-only host fails rootless `podman run` with "netavark: nftables
+# error: unable to execute nft"); iptables is kept for compatibility. uidmap
+# provides the newuidmap/newgidmap setuid helpers rootless podman needs.
+# slirp4netns and
+# fuse-overlayfs are intentionally omitted: pasta replaces slirp4netns, and the
+# trixie 6.12 guest kernel supports native rootless overlay (the fuse-overlayfs
+# mount_program forces a slow userspace path and stamps a sticky
+# .has-mount-program flag in the graphroot).
+# Use http apt mirrors instead of https. apt verifies every package via GPG
+# signatures on the Release file, so TLS adds nothing for integrity — but the
+# Debian genericcloud image defaults to https://deb.debian.org, and behind a
+# corporate TLS-inspection proxy (Netskope/Zscaler/etc.) the fresh VM doesn't
+# trust the proxy's MITM CA, so https apt dies with "certificate verify failed:
+# self-signed certificate in certificate chain" and NOTHING installs. http apt
+# passes straight through. (The previous Ubuntu base worked for exactly this
+# reason — its cloud image used http mirrors.) Rewrite the mirror lists and any
+# direct https sources before the first apt call.
+sed -i 's,https://,http://,g' \
+    /etc/apt/mirrors/*.list /etc/apt/sources.list.d/*.sources \
+    /etc/apt/sources.list 2>/dev/null || true
+
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-    podman fuse-overlayfs uidmap slirp4netns iptables
+    podman netavark aardvark-dns passt uidmap nftables iptables dbus-user-session catatonit
 
-# Configure Podman storage
+# Stamp the network backend to netavark BEFORE any podman command runs. podman
+# 5 already defaults to netavark when the binary is present, but the choice is
+# sticky (recorded in the graphroot on first use) and can't be changed later
+# without `podman system reset`. agentcage's transparent host-tracking DNS
+# requires netavark + aardvark-dns, so pin it deterministically.
 mkdir -p /etc/containers
-cat > /etc/containers/storage.conf <<'STOR'
-[storage]
-driver = "overlay"
-[storage.options.overlay]
-mount_program = "/usr/bin/fuse-overlayfs"
-STOR
+cat > /etc/containers/containers.conf <<'CONF'
+[network]
+network_backend = "netavark"
+CONF
+
+# Guarantee a rootless subuid/subgid delegation for the cage user. Debian's
+# adduser normally auto-allocates one, but Lima provisions the guest user via
+# cloud-init and the range isn't guaranteed; without it rootless podman fails
+# with "newuidmap: write to uid_map failed". Idempotent — only adds if missing.
+if ! grep -q "^${lima_user}:" /etc/subuid 2>/dev/null; then
+    usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$lima_user"
+fi
 
 # Allow unprivileged processes to bind ports >= 80 (needed for proxy reverse mode).
 # Setting to 80 instead of 0 blocks binding sensitive low ports (1-79, incl. SSH 22, DNS 53).

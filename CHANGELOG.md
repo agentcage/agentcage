@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **vm backend: provision modern podman 5 + netavark/aardvark (Debian 13 trixie).** The Lima vm backend was built on Ubuntu 24.04, which ships only podman 4.9.3 and — because `provision.sh` installs with `--no-install-recommends` and never named netavark — fell back to the CNI backend with no aardvark-dns. That left the vm backend without the netavark/aardvark gateway resolver the transparent host-tracking DNS relies on. The base is now **Debian 13 "trixie" genericcloud** (sha512-pinned; Debian publishes only SHA512SUMS), whose apt repos ship **podman 5.4.2 + netavark 1.14 + aardvark-dns 1.14**. `provision.sh` now installs `netavark aardvark-dns nftables passt dbus-user-session catatonit` explicitly (all Recommends that `--no-install-recommends` would otherwise drop; `nftables` provides the `nft` binary netavark 1.14's firewall driver requires), stamps `network_backend = "netavark"` before first podman run, drops the fuse-overlayfs storage override (native rootless overlay on the 6.12 kernel), and switches apt to http mirrors (GPG-signed, and corporate TLS-inspection proxies can't break it — the same reason the old Ubuntu base used http). Validated end-to-end on Apple Silicon (vz): fresh VM boots, rootless podman 5 on netavark resolves external names via the aardvark gateway.
+
 ## [0.22.20] - 2026-05-30
 
 ### Added
