@@ -320,6 +320,89 @@ def test_capture_jsonl_does_not_contain_real_secret_in_headers(tmp_path):
     assert outbound_auth == "Bearer {{ANTHROPIC_API_KEY}}"
 
 
+def test_strict_default_injects_anthropic_x_api_key_header(tmp_path):
+    """End-to-end regression guard (PR #251): Anthropic sends its key in the
+    ``x-api-key`` header, not ``Authorization``. Under the STRICT DEFAULT
+    (no inject_body), the addon must still swap the placeholder for the real
+    value on the wire — otherwise the literal placeholder reaches Anthropic
+    and the request 401s with 'invalid x-api-key'. The capture file must also
+    still show only the placeholder."""
+    rule = InjectionRule(
+        name="ANTHROPIC_API_KEY",
+        placeholder="{{ANTHROPIC_API_KEY}}",
+        real_value=_FAKE_REAL,
+        inject_to=["anthropic.com"],
+        # No inject_body — this is the strict default path.
+    )
+    addon = _build_addon_with_capture(tmp_path, rules=[rule])
+
+    flow = _make_flow(
+        headers={"x-api-key": "{{ANTHROPIC_API_KEY}}"},
+        body=b"",
+    )
+    addon.request(flow)
+    # On the wire upstream: the real key, so Anthropic accepts it.
+    assert flow.request.headers["x-api-key"] == _FAKE_REAL
+
+    _attach_response(flow)
+    addon.response(flow)
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert _FAKE_REAL not in cap_text, (
+        f"real-key bytes leaked via x-api-key into capture.jsonl: "
+        f"{cap_text[:500]!r}..."
+    )
+    entry = json.loads(cap_text.splitlines()[0])
+    outbound_key = next(
+        v for k, v in entry["outbound"]["request"]["headers"]
+        if k.lower() == "x-api-key"
+    )
+    assert outbound_key == "{{ANTHROPIC_API_KEY}}"
+
+
+def test_strict_inject_headers_keywordless_header_no_capture_leak(tmp_path):
+    """The ``inject_headers`` path is the second newly-injectable surface:
+    a credential header whose name has no auth/key/token keyword (Honeycomb's
+    ``X-Honeycomb-Team``). Pin the capture-no-leak invariant for it too —
+    inject puts the real value on the wire, redact_request scrubs it back, and
+    capture.jsonl shows only the placeholder. (Guards against a future
+    name-aware redaction refactor silently leaking inject_headers-only
+    credentials, since redaction is currently header-name-agnostic.)"""
+    rule = InjectionRule(
+        name="HONEYCOMB_API_KEY",
+        placeholder="{{HONEYCOMB_API_KEY}}",
+        real_value=_FAKE_REAL,
+        inject_to=["honeycomb.io"],
+        inject_headers=["X-Honeycomb-Team"],  # no keyword; no inject_body
+    )
+    addon = _build_addon_with_capture(tmp_path, rules=[rule])
+
+    flow = _make_flow(
+        url="https://api.honeycomb.io/1/events/ds",
+        host="api.honeycomb.io",
+        headers={"X-Honeycomb-Team": "{{HONEYCOMB_API_KEY}}"},
+        body=b"",
+    )
+    addon.request(flow)
+    # On the wire upstream: the real key, so Honeycomb accepts it.
+    assert flow.request.headers["X-Honeycomb-Team"] == _FAKE_REAL
+
+    _attach_response(flow)
+    addon.response(flow)
+
+    cap_text = (tmp_path / "capture.jsonl").read_text()
+    assert _FAKE_REAL not in cap_text, (
+        f"real-key bytes leaked via inject_headers into capture.jsonl: "
+        f"{cap_text[:500]!r}..."
+    )
+    entry = json.loads(cap_text.splitlines()[0])
+    outbound = next(
+        v for k, v in entry["outbound"]["request"]["headers"]
+        if k.lower() == "x-honeycomb-team"
+    )
+    assert outbound == "{{HONEYCOMB_API_KEY}}"
+
+
 def test_redact_request_round_trip_through_addon_response(tmp_path):
     """Full pipeline cross-check: after addon.request() the flow has
     the real value (inject was meant to put it on the wire), and after

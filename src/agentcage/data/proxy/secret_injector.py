@@ -33,6 +33,34 @@ _SECRETS_DIR = Path(
     os.environ.get("AGENTCAGE_SECRETS_DIR", "/home/acproxy/secrets")
 )
 
+# Strict (default) injection confines secret substitution to the "auth
+# channel": a placeholder is swapped for its real value only when it appears
+# in a *credential-bearing request header*, never in the URL/query string,
+# the request body, or a WebSocket frame (those keep the placeholder unless
+# the rule sets ``inject_body: true``). Keeping secrets out of bodies is the
+# PR #251 goal — bodies get logged and echoed downstream; the auth header
+# does not.
+#
+# Rather than enumerate specific vendor header names, we recognize a header
+# as credential-bearing when its name contains one of these keyword stems
+# (case-insensitive substring match). Almost every API's auth header does:
+#   authorization, x-api-key, api-key, apikey, x-goog-api-key, private-token,
+#   x-auth-token, x-auth-key, x-subscription-token, ocp-apim-subscription-key,
+#   dd-api-key, circle-token, x-algolia-api-key, fastly-key, x-figma-token,
+#   x-postmark-server-token, x-shopify-access-token, … all match.
+# (Surveyed against ~70 popular APIs; the only credential header found that
+# lacks any of these stems is Honeycomb's ``x-honeycomb-team`` — add headers
+# like that per-rule via ``inject_headers``.)
+#
+# This is safe because the match only ever has an effect when a rule's unique
+# ``{{PLACEHOLDER}}`` literally appears in the header — the cage only puts the
+# placeholder where its HTTP client sends the credential — so a broad match
+# can't inject a secret somewhere the agent didn't already place it. APIs that
+# carry the key in the URL query string (Google ``?key=``, SerpAPI
+# ``?api_key=``, Firebase ``?auth=``) or the request body (Plaid) are outside
+# the header channel and need ``inject_body: true``.
+AUTH_HEADER_KEYWORDS: tuple[str, ...] = ("auth", "key", "token")
+
 
 @dataclass
 class InjectionRule:
@@ -47,9 +75,25 @@ class InjectionRule:
     # block can detect raw key bytes leaking into outbound traffic.
     transform: str = ""
     transform_fn: Optional[Callable[[], str]] = None
-    # Strict by default: only inject into the HTTP Authorization header.
-    # When True, also inject into the request URL and body (legacy behavior).
+    # Strict by default: only inject into credential-bearing headers — those
+    # whose name matches the ``AUTH_HEADER_KEYWORDS`` heuristic or is listed in
+    # ``inject_headers``. When True, also inject into the request URL, every
+    # header, the body, and WebSocket frames (the legacy, looser behavior).
     inject_body: bool = False
+    # Extra request headers this rule treats as credential-bearing under the
+    # strict default — for auth headers whose name doesn't match the keyword
+    # heuristic (e.g. ``x-honeycomb-team``). Matched case-insensitively.
+    inject_headers: list[str] = field(default_factory=list)
+
+    def is_auth_header(self, name: str) -> bool:
+        """Whether ``name`` is a credential-bearing header this rule injects
+        into under the strict default. True when the (case-insensitive) header
+        name contains one of ``AUTH_HEADER_KEYWORDS`` or exactly matches an
+        ``inject_headers`` entry."""
+        n = name.lower()
+        if any(kw in n for kw in AUTH_HEADER_KEYWORDS):
+            return True
+        return any(n == extra.lower() for extra in self.inject_headers)
 
 
 class SecretInjector:
@@ -106,6 +150,9 @@ class SecretInjector:
                 continue
 
             inject_body = bool(entry.get("inject_body", False))
+            inject_headers = [
+                str(h).strip() for h in (entry.get("inject_headers") or [])
+            ]
 
             transform_name = entry.get("transform", "") or ""
             transform_fn: Optional[Callable[[], str]] = None
@@ -132,6 +179,7 @@ class SecretInjector:
                     transform=transform_name,
                     transform_fn=transform_fn,
                     inject_body=inject_body,
+                    inject_headers=inject_headers,
                 )
             )
 
@@ -298,13 +346,19 @@ class SecretInjector:
                     )
                     injected = True
             else:
-                # Strict mode (default): only inject into the HTTP
-                # Authorization header. Placeholders anywhere else (URL,
-                # body, other headers) are left untouched.
-                auth = flow.request.headers.get("Authorization")
-                if auth is not None and ph in auth:
-                    flow.request.headers["Authorization"] = auth.replace(ph, value)
-                    injected = True
+                # Strict mode (default): only inject into credential-bearing
+                # headers — those whose name contains "auth", "key", or
+                # "token" (Authorization, x-api-key, *-token, …), plus any
+                # explicit ``inject_headers``. Placeholders anywhere else —
+                # the URL, the body, or a non-credential header — are left
+                # untouched.
+                for k in list(flow.request.headers.keys()):
+                    if not rule.is_auth_header(k):
+                        continue
+                    v = flow.request.headers[k]
+                    if ph in v:
+                        flow.request.headers[k] = v.replace(ph, value)
+                        injected = True
 
             if injected:
                 names.append(rule.name)
@@ -540,9 +594,10 @@ class SecretInjector:
 
         names: list[str] = []
         for rule in self.rules:
-            # Strict mode only injects into the HTTP Authorization header,
-            # which has no equivalent in raw WebSocket frames — leave the
-            # placeholder in place unless the rule opted into body injection.
+            # Strict mode only injects into credential-bearing request
+            # headers, which have no equivalent in a raw WebSocket frame —
+            # leave the placeholder in place unless the rule opted into body
+            # injection (inject_body).
             if not rule.inject_body:
                 continue
             ph_bytes = rule.placeholder.encode()

@@ -50,10 +50,16 @@ class SecretInjectionRule:
     source: str = ""
     transform: str = ""
     transform_config: dict = field(default_factory=dict)
-    # Strict by default: only substitute placeholders found in the HTTP
-    # Authorization header. Set ``inject_body: true`` to also inject into
-    # the request URL and body (the legacy, looser behavior).
+    # Strict by default: only substitute placeholders found in a
+    # credential-bearing request header — one whose name contains "auth",
+    # "key", or "token" (Authorization, x-api-key, *-token, …). Set
+    # ``inject_body: true`` to also inject into the request URL and body
+    # (the legacy, looser behavior).
     inject_body: bool = False
+    # Extra request headers to treat as credential-bearing under the strict
+    # default — for auth headers whose name doesn't match the keyword
+    # heuristic (e.g. ``x-honeycomb-team``). Matched case-insensitively.
+    inject_headers: list[str] = field(default_factory=list)
 
 
 def validate_transform(name: str) -> None:
@@ -553,6 +559,9 @@ def load_config(path: str) -> Config:
                 transform=transform,
                 transform_config=transform_config,
                 inject_body=bool(entry.get("inject_body", False)),
+                inject_headers=[
+                    str(h).strip() for h in (entry.get("inject_headers") or [])
+                ],
             ))
 
     # Remove injected secrets from podman_secrets and env — they are handled

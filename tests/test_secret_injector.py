@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from secret_injector import SecretInjector, InjectionRule
+from secret_injector import SecretInjector, InjectionRule, AUTH_HEADER_KEYWORDS
 
 
 # ── Helpers ──────────────────────────────────────────────
@@ -90,24 +90,164 @@ class TestInjectRequest:
         assert flow.request.url == "https://api.anthropic.com/v1?key=real-secret"
         assert names == ["KEY"]
 
-    def test_strict_default_only_injects_auth_header(self):
-        """By default, only the Authorization header is injected."""
+    def test_strict_default_injects_credential_headers(self):
+        """By default, injection is confined to credential-bearing headers —
+        Authorization AND x-api-key (Anthropic) and friends — but never the
+        URL, the body, or a header with no auth/key/token in its name."""
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
         ])
         flow = _make_flow(
             url="https://api.anthropic.com/v1?key={{KEY}}",
             host="api.anthropic.com",
-            headers={"Authorization": "Bearer {{KEY}}", "X-Api-Key": "{{KEY}}"},
+            headers={
+                "Authorization": "Bearer {{KEY}}",
+                "X-Api-Key": "{{KEY}}",        # Anthropic's auth header
+                "X-Custom-Trace": "{{KEY}}",   # no auth/key/token → not a credential header
+            },
             content="body with {{KEY}} here",
         )
         names = inj.inject_request(flow)
+        # Both recognized auth headers get the real value...
         assert flow.request.headers["Authorization"] == "Bearer real-secret"
-        # URL, body, and non-auth headers keep the placeholder.
+        assert flow.request.headers["X-Api-Key"] == "real-secret"
+        # ...while the URL, body, and non-credential headers keep the placeholder.
+        # (Note: the *query param* `?key=` is not a header, so it is untouched
+        # even though "key" is a keyword — the heuristic only applies to headers.)
         assert flow.request.url == "https://api.anthropic.com/v1?key={{KEY}}"
-        assert flow.request.headers["X-Api-Key"] == "{{KEY}}"
+        assert flow.request.headers["X-Custom-Trace"] == "{{KEY}}"
         assert flow.request.content == b"body with {{KEY}} here"
         assert names == ["KEY"]
+
+    def test_strict_injects_x_api_key_regression(self):
+        """Regression guard (PR #251): Anthropic authenticates with the
+        ``x-api-key`` header, not ``Authorization``. The first strict
+        implementation injected only into ``Authorization``, so the literal
+        ``{{ANTHROPIC_API_KEY}}`` placeholder went upstream and the API
+        replied ``401 invalid x-api-key``. Strict mode must inject into
+        ``x-api-key`` (matched by the "key" keyword)."""
+        inj = _injector_with_rules([
+            InjectionRule("ANTHROPIC_API_KEY", "{{ANTHROPIC_API_KEY}}",
+                          "sk-ant-real", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(headers={"x-api-key": "{{ANTHROPIC_API_KEY}}"})
+        names = inj.inject_request(flow)
+        assert flow.request.headers["x-api-key"] == "sk-ant-real"
+        assert names == ["ANTHROPIC_API_KEY"]
+
+    # Real-world credential headers that all match the auth/key/token
+    # heuristic — surveyed across popular APIs. (Honeycomb's
+    # ``x-honeycomb-team`` is intentionally absent: it has no keyword and is
+    # covered by ``inject_headers`` instead — see test below.)
+    @pytest.mark.parametrize("header", [
+        "Authorization",            # OpenAI, GitHub, Stripe, … (auth)
+        "x-api-key",                # Anthropic, AWS API Gateway (key)
+        "api-key",                  # Azure OpenAI, Pinecone, Qdrant (key)
+        "apikey",                   # Supabase (key)
+        "x-goog-api-key",           # Google Gemini / Cloud (key)
+        "PRIVATE-TOKEN",            # GitLab (token)
+        "X-Auth-Token",             # OpenStack (auth, token)
+        "X-Auth-Key",               # Cloudflare legacy (auth, key)
+        "X-Subscription-Token",     # Brave Search (token)
+        "Ocp-Apim-Subscription-Key",  # Azure APIM / Bing (key)
+        "DD-API-KEY",               # Datadog (key)
+        "Circle-Token",             # CircleCI (token)
+        "X-Algolia-API-Key",        # Algolia (key)
+        "X-Figma-Token",            # Figma (token)
+        "Fastly-Key",               # Fastly (key)
+        "X-Postmark-Server-Token",  # Postmark (token)
+        "X-Shopify-Access-Token",   # Shopify Admin (token)
+    ])
+    def test_strict_injects_real_world_credential_headers(self, header):
+        """The keyword heuristic injects into the documented auth header of
+        popular APIs without naming any of them in code."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(headers={header: "{{KEY}}"})
+        names = inj.inject_request(flow)
+        assert flow.request.headers[header] == "real-secret"
+        assert names == ["KEY"]
+
+    @pytest.mark.parametrize("header,matches", [
+        ("X-Brand-New-Token", True),     # token
+        ("My-Secret-Key", True),         # key
+        ("X-Custom-Auth", True),         # auth
+        ("AUTHORIZATION", True),         # case-insensitive
+        ("x-honeycomb-team", False),     # no keyword
+        ("X-Trace-Id", False),
+        ("Content-Type", False),
+        ("X-Request-Id", False),
+    ])
+    def test_strict_keyword_heuristic(self, header, matches):
+        """The heuristic injects into any header whose name contains
+        auth/key/token (case-insensitive), and leaves all others alone — no
+        vendor-specific names involved."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(headers={header: "{{KEY}}"})
+        names = inj.inject_request(flow)
+        if matches:
+            assert flow.request.headers[header] == "real-secret"
+            assert names == ["KEY"]
+        else:
+            assert flow.request.headers[header] == "{{KEY}}"
+            assert names == []
+
+    @pytest.mark.parametrize("keyword", AUTH_HEADER_KEYWORDS)
+    def test_each_keyword_triggers_injection(self, keyword):
+        """Every keyword stem on its own marks a header as credential-bearing."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        header = f"X-Custom-{keyword}"
+        flow = _make_flow(headers={header: "{{KEY}}"})
+        names = inj.inject_request(flow)
+        assert flow.request.headers[header] == "real-secret"
+        assert names == ["KEY"]
+
+    def test_inject_headers_covers_keywordless_header(self):
+        """A credential header whose name has no auth/key/token keyword (e.g.
+        Honeycomb's ``x-honeycomb-team``) is injected only when listed in the
+        rule's ``inject_headers`` — and the keyword defaults still apply."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret",
+                          inject_to=["example.com"],
+                          inject_headers=["X-Honeycomb-Team"]),
+        ])
+        flow = _make_flow(
+            url="https://api.example.com/v1",
+            host="api.example.com",
+            headers={
+                "X-Honeycomb-Team": "{{KEY}}",      # opted-in, no keyword
+                "Authorization": "Bearer {{KEY}}",  # keyword default still applies
+            },
+        )
+        names = inj.inject_request(flow)
+        assert flow.request.headers["X-Honeycomb-Team"] == "real-secret"
+        assert flow.request.headers["Authorization"] == "Bearer real-secret"
+        assert names == ["KEY"]
+
+    def test_strict_credential_header_to_unauthorized_domain(self):
+        """The broadened header match must still defer to ``inject_to``: a
+        placeholder in a credential header heading to an unauthorized domain
+        is left in place (not injected) and is flagged by the policy check."""
+        inj = _injector_with_rules([
+            InjectionRule("KEY", "{{KEY}}", "real-secret", inject_to=["anthropic.com"]),
+        ])
+        flow = _make_flow(
+            url="https://evil.com/exfil",
+            host="evil.com",
+            headers={"x-api-key": "{{KEY}}"},
+        )
+        names = inj.inject_request(flow)
+        assert flow.request.headers["x-api-key"] == "{{KEY}}"
+        assert names == []
+        result = inj.check_injection_policy(flow)
+        assert result is not None
+        assert result.action == "flag"
+        assert "evil.com" in result.reason
 
     def test_strict_default_no_auth_header_is_noop(self):
         """Strict mode with no Authorization header injects nothing."""
@@ -322,6 +462,31 @@ class TestConfigure:
         assert inj.rules[0].real_value == "my-real-secret"
         assert inj.rules[0].placeholder == "{{TEST_KEY}}"
         assert inj.rules[0].inject_to == ["example.com"]
+
+    def test_loads_inject_headers(self, monkeypatch):
+        monkeypatch.setenv("TEST_KEY", "secret")
+        inj = SecretInjector()
+        inj.configure([
+            {"env": "TEST_KEY", "placeholder": "{{TEST_KEY}}",
+             "inject_headers": ["X-Honeycomb-Team"]},
+        ])
+        rule = inj.rules[0]
+        assert rule.inject_headers == ["X-Honeycomb-Team"]
+        # The keyword-less custom header is recognized (case-insensitively)...
+        assert rule.is_auth_header("x-honeycomb-team")
+        # ...and the keyword heuristic still applies on top of it.
+        assert rule.is_auth_header("Authorization")
+        assert rule.is_auth_header("x-api-key")
+
+    def test_default_rule_has_no_extra_inject_headers(self, monkeypatch):
+        monkeypatch.setenv("TEST_KEY", "secret")
+        inj = SecretInjector()
+        inj.configure([{"env": "TEST_KEY", "placeholder": "{{TEST_KEY}}"}])
+        rule = inj.rules[0]
+        assert rule.inject_headers == []
+        # With no extras, only the keyword heuristic decides.
+        assert rule.is_auth_header("x-api-key")
+        assert not rule.is_auth_header("x-honeycomb-team")
 
     def test_skips_missing_env_var(self, monkeypatch):
         monkeypatch.delenv("MISSING_KEY", raising=False)
@@ -787,8 +952,8 @@ class TestConfigFormat:
 
 class TestInjectWsContent:
     def test_replaces_placeholder_for_authorized_domain(self):
-        # WebSocket frames have no Authorization header, so injection only
-        # happens when the rule opts into body injection.
+        # WebSocket frames carry no headers (the auth channel), so injection
+        # only happens when the rule opts into body injection.
         inj = _injector_with_rules([
             InjectionRule("KEY", "{{KEY}}", "real-secret",
                           inject_to=["anthropic.com"], inject_body=True),

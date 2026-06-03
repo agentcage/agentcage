@@ -87,6 +87,50 @@ class TestLoadConfigFull:
         assert rule.inject_to == ["api.example.com"]
         # Strict by default — body injection is opt-in.
         assert rule.inject_body is False
+        # No extra auth headers by default — the built-in allow-list applies.
+        assert rule.inject_headers == []
+
+    def test_secret_injection_inject_headers(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: KEY1
+                placeholder: "{{KEY1}}"
+                inject_to: ["api.example.com"]
+                inject_headers: ["X-Acme-Token", "X-Acme-Secondary"]
+              - env: KEY2
+                placeholder: "{{KEY2}}"
+                inject_to: ["api.example.com"]
+        """))
+        cfg = load_config(str(p))
+        rules = {r.env: r for r in cfg.secret_injection}
+        assert rules["KEY1"].inject_headers == ["X-Acme-Token", "X-Acme-Secondary"]
+        assert rules["KEY2"].inject_headers == []
+
+    def test_secret_injection_inject_headers_null_and_trimmed(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: KEY1
+                placeholder: "{{KEY1}}"
+                inject_headers:
+              - env: KEY2
+                placeholder: "{{KEY2}}"
+                inject_headers: ["  X-Padded-Token  "]
+        """))
+        cfg = load_config(str(p))
+        rules = {r.env: r for r in cfg.secret_injection}
+        # `inject_headers:` (null) coerces to [].
+        assert rules["KEY1"].inject_headers == []
+        # Stray whitespace is stripped at load time (HTTP field-names can't
+        # contain whitespace) so it still matches the real header name.
+        assert rules["KEY2"].inject_headers == ["X-Padded-Token"]
 
     def test_secret_injection_inject_body_toggle(self, tmp_path):
         p = tmp_path / "config.yaml"
