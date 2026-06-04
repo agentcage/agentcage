@@ -100,6 +100,28 @@ class TestGenerateLimaConfig:
         docs = list(yaml.safe_load_all(output))
         assert len(docs) >= 1
 
+    def test_debian_trixie_base_with_netavark_stack(self):
+        """The vm backend must provision modern podman + netavark/aardvark
+        (Debian 13 trixie), not Ubuntu 24.04 + CNI — agentcage's transparent
+        host-tracking DNS needs aardvark serving the network gateway."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        # Debian trixie genericcloud base, sha512-pinned (Debian publishes only
+        # SHA512SUMS); arm64 image present for Apple Silicon.
+        assert "cloud.debian.org/images/cloud/trixie/" in output
+        assert "debian-13-genericcloud-arm64" in output
+        assert 'digest: "sha512:' in output
+        # netavark + aardvark-dns named explicitly (Recommends, else dropped by
+        # --no-install-recommends), backend pinned, and the harmful
+        # fuse-overlayfs mount_program override removed (native overlay on 6.12).
+        assert "netavark" in output and "aardvark-dns" in output
+        assert 'network_backend = "netavark"' in output
+        # The fuse-overlayfs storage override is removed (native overlay on the
+        # 6.12 kernel); the deleted block wrote /etc/containers/storage.conf.
+        # (fuse-overlayfs/mount_program still appear in an explanatory comment,
+        # so assert on the storage.conf path the override used to write.)
+        assert "/etc/containers/storage.conf" not in output
+
     def test_vmtype_qemu_on_linux(self):
         cfg = MockConfig(name="test-cage")
         with patch("agentcage.lima.provisioning.platform.system", return_value="Linux"):
@@ -243,9 +265,12 @@ class TestGenerateLimaConfig:
         parsed = yaml.safe_load(output)
         for img in parsed["images"]:
             assert "digest" in img, f"Image entry missing digest: {img}"
-            assert img["digest"].startswith("sha256:"), f"Digest not sha256: {img['digest']}"
-            # SHA-256 hex digest is 64 characters
-            assert len(img["digest"]) == len("sha256:") + 64, f"Invalid digest length: {img['digest']}"
+            # Debian publishes only SHA512SUMS, so the trixie images are
+            # sha512-pinned; accept either sha256 (64 hex) or sha512 (128 hex).
+            algo, _, hexd = img["digest"].partition(":")
+            assert algo in ("sha256", "sha512"), f"Unexpected digest algo: {img['digest']}"
+            expected = 64 if algo == "sha256" else 128
+            assert len(hexd) == expected, f"Invalid {algo} digest length: {img['digest']}"
 
     def test_containerd_disabled(self):
         cfg = MockConfig(name="test-cage")
