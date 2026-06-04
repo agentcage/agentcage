@@ -685,28 +685,46 @@ class AppleContainerBackend:
                 f"{(test.stderr or test.stdout or '').strip()}"
             )
 
-        # 2. SIGHUP the egress dnsmasq via its pidfile so it re-reads the
-        # allowlist.
+        # 2. Regenerate the egress's runtime servers-file from the updated
+        # bind-mounted allowlist, then SIGHUP. dnsmasq serves
+        # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders
+        # re-pointed at the egress's upstream = its default route = the
+        # vmnet gateway), NOT the bind-mounted file — same rewrite
+        # supervisor-egress.sh does at start. Without the regeneration the
+        # new apex lands in the bind-mounted file but the served file is
+        # unchanged. dns-allowlist.conf is pure `server=/<apex>/<ip>` lines,
+        # so a trailing-field sed safely swaps just the upstream. Guarded
+        # on the runtime file existing (absent → egress fell back to the
+        # baked config and is reading the bind-mounted file directly).
         ac_cli.run(
             ["exec", container, "sh", "-c",
+             'up=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
+             '[ -n "$up" ] && [ -f /run/agentcage/dns-allowlist.egress.conf ] && '
+             'sed "s#/[^/]*\\$#/$up#" /etc/agentcage/dns-allowlist.conf '
+             '> /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; '
              'kill -HUP "$(cat /home/acdns/dnsmasq.pid)"'],
             check=False,
         )
 
-        # 3. SIGHUP the CAGE-local dnsmasq too — this is the load-bearing
-        # one. The cage workload resolves via 127.0.0.1:53 served by a
-        # dnsmasq started in the cage by cage-init.sh stage A' (macOS vmnet
-        # drops inter-microVM UDP, so the cage can't query the egress
-        # dnsmasq). It reads the SAME bind-mounted allowlist (pidfile
-        # /run/agentcage/dnsmasq.pid). Without this SIGHUP the new domain
-        # lands in the file but the cage keeps resolving the old set.
-        # Best-effort: the cage dnsmasq is itself best-effort (skipped on
-        # bases without dnsmasq, cage-init.sh stage A'), so guard on the
-        # pidfile and never fail the reload.
+        # 3. Regenerate + SIGHUP the CAGE-local dnsmasq too — this is the
+        # load-bearing one. The cage workload resolves via 127.0.0.1:53
+        # served by a dnsmasq started in the cage by cage-init.sh stage A',
+        # which forwards the allowlisted apexes to the egress sibling (the
+        # cage's default route). It serves /run/agentcage/dns-allowlist.cage
+        # .conf, so we re-point that from the updated bind-mounted allowlist
+        # (same rewrite stage A' does), then SIGHUP via the pidfile. Guarded
+        # on the runtime file existing (absent → cage fell back to the baked
+        # config and reads the bind-mounted file). Best-effort throughout:
+        # the cage dnsmasq is itself optional (bases without dnsmasq), so
+        # never fail the reload.
         if self.is_running(name, "cage"):
             ac_cli.run(
                 ["exec", name, "sh", "-c",
                  'p=/run/agentcage/dnsmasq.pid; '
+                 'up=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
+                 '[ -n "$up" ] && [ -f /run/agentcage/dns-allowlist.cage.conf ] && '
+                 'sed "s#/[^/]*\\$#/$up#" /etc/agentcage/dns-allowlist.conf '
+                 '> /run/agentcage/dns-allowlist.cage.conf 2>/dev/null; '
                  '[ -f "$p" ] && kill -HUP "$(cat "$p")" || true'],
                 check=False,
             )
@@ -857,6 +875,30 @@ class AppleContainerBackend:
         if not quiet:
             click.echo(f"Installed apple-container unit metadata to {dest}/")
 
+    def ensure_ready(self, *, quiet: bool = False) -> None:
+        """Start the `container` apiserver if it isn't already running.
+
+        The apiserver does not survive a reboot — it must be re-started each
+        boot with `container system start`. While it's down every `container`
+        subcommand fails (an XPC connection error), so a downed daemon used
+        to surface as "wrapped image not found" from the image probe in
+        start(). Bring it up here, mirroring the Lima backend which
+        auto-starts its VM in start() rather than making the user do it by
+        hand. Best-effort and idempotent: if it still won't come up,
+        check_prerequisites() reports it uniformly with the other unmet
+        prerequisites.
+        """
+        try:
+            if ac_cli.system_running():
+                return
+            if not quiet:
+                click.echo("Apple container apiserver not running — starting it…")
+            ac_cli.run(["system", "start", "--enable-kernel-install"], check=False)
+        except FileNotFoundError:
+            # `container` CLI not installed — check_prerequisites() reports
+            # this with an install hint; nothing to recover here.
+            pass
+
     def start(self, name: str, *, quiet: bool = False) -> None:
         """Start the cage's two sibling microVMs (egress + cage).
 
@@ -876,6 +918,21 @@ class AppleContainerBackend:
                 f"run `agentcage cage create {name}` first"
             )
         meta = json.loads(unit_path.read_text())
+
+        # Defensive backstop for direct/programmatic callers: the CLI gates
+        # build+start on ensure_ready() already, but start() may also be
+        # invoked outside that path (backup/restore). ensure_ready() is
+        # idempotent and best-effort; if the apiserver is still down after
+        # it, fail with an actionable message rather than the misleading
+        # "wrapped image not found" the image probe below would produce.
+        self.ensure_ready(quiet=quiet)
+        if not ac_cli.system_running():
+            raise RuntimeError(
+                "Apple container apiserver is not running and could not be "
+                "started automatically — run "
+                "'container system start --enable-kernel-install' manually "
+                f"and retry (`agentcage cage start {name}`)"
+            )
 
         wrapper_image = ac_wrapper.wrapped_image_name(name)
         if not ac_cli.image_inspect(wrapper_image):
@@ -925,6 +982,42 @@ class AppleContainerBackend:
             raise RuntimeError(
                 f"egress config dir {egress_cfg_dir} missing — run `cage update`"
             )
+
+        # Re-render the bind-mounted egress config from the CURRENT host
+        # state before (re)starting the microVMs.
+        #
+        # dnsmasq.conf / dns-allowlist.conf encode the cage's DNS upstream
+        # as `server=/<apex>/<resolver-ip>`, where <resolver-ip> is the
+        # host's resolver auto-detected from /etc/resolv.conf at render
+        # time (config.dns_servers → _host_dns_servers()). These files are
+        # only re-rendered by build_artifacts() (create/update) and
+        # reload_domains() (domain add/rm) — NOT by start(). So a dev
+        # laptop that changed networks (Wi-Fi switch, VPN up/down, host
+        # reboot on a different LAN) since the last `cage update` comes
+        # back up forwarding DNS to a resolver IP that no longer exists:
+        # every uncached lookup times out and the cage "can't reach the
+        # network" even though verify/status report green. The configs are
+        # bind-mounted (not baked into the image), so re-rendering here
+        # picks up the live resolver with no rebuild — start/restart now
+        # self-heals across host network changes.
+        #
+        # Best-effort: if the host has no detectable resolver right now
+        # (_host_dns_servers raises), keep the previously-rendered files
+        # rather than failing a start that would otherwise have worked.
+        try:
+            from agentcage import state as _state
+
+            cfg = _state.load_deployment_config(name)
+            self._render_egress_config(cfg, name)
+        except Exception as exc:  # noqa: BLE001 - never let a refresh failure block start
+            if not quiet:
+                click.echo(
+                    f"warning: could not refresh DNS config for {name} from "
+                    f"the current host resolver ({exc}); starting with the "
+                    f"existing rendered config — if DNS fails inside the cage, "
+                    f"run `agentcage cage update {name}`",
+                    err=True,
+                )
 
         # Clear any stale readiness marker BEFORE the first container run.
         # The egress supervisor touches /var/log/agentcage/ready at end of

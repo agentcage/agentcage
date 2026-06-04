@@ -12,6 +12,8 @@ Secrets listed in `secret_injection` are automatically excluded from the cage's 
 | `env` | `string` | yes | Environment variable name holding the real secret (read by the proxy at startup). |
 | `placeholder` | `string` | yes | Token the cage sees and uses in requests (e.g. `"{{ANTHROPIC_API_KEY}}"`). |
 | `inject_to` | `list[string]` | no | Domains where placeholders are replaced with real values. If omitted, injection applies to all domains. |
+| `inject_body` | `bool` | no | When `false` (the default), placeholders are only substituted inside known credential-bearing request headers (the [auth-header allow-list](#injection-scope)). Set to `true` to also inject into the request URL (query string), every header, the request body, and WebSocket frames. See [Injection scope](#injection-scope). |
+| `inject_headers` | `list[string]` | no | Extra request headers — added to the built-in auth-header allow-list — to treat as credential-bearing under the strict default. Matched case-insensitively. Use for APIs whose auth header isn't a common convention. See [Injection scope](#injection-scope). |
 | `source` | `string` | no | Where to load the secret from. See [Secret backends](#secret-backends). If omitted, set it via `agentcage secret set`. |
 | `transform` | `string` | no | Convert the underlying secret into a derived value at request time (e.g. mint a short-lived OAuth access token). See [Transforms](#transforms). |
 | `transform_config` | `mapping` | no | Per-transform options. Required keys depend on the transform. |
@@ -71,6 +73,38 @@ Existing values in the old backend are not migrated automatically; once the cage
 When `inject_to` is set for a rule, the proxy only injects the real value for requests to matching domains (subdomains are matched automatically). If the cage sends a placeholder to any other domain, the request is **flagged**.
 
 When `inject_to` is omitted, the real value is injected for all outbound requests and redacted from all inbound responses.
+
+## Injection scope
+
+By default secret injection is **strict**: the proxy only swaps a placeholder for its real value when the placeholder appears in a **credential-bearing request header** (the auth channel). Placeholders left anywhere else — the URL/query string, the request body, or a non-credential header — pass through unchanged. This keeps credentials confined to the auth channel and avoids accidentally writing secrets into request bodies that might be logged or echoed.
+
+A request header is treated as credential-bearing when its name **contains `auth`, `key`, or `token`** (case-insensitive). This single heuristic covers the documented auth header of virtually every API without hard-coding vendor names — for example `Authorization`, `x-api-key` (**Anthropic**), `api-key` (Azure, Pinecone), `apikey` (Supabase), `x-goog-api-key` (Google), `private-token` (GitLab), `x-auth-key` (Cloudflare), `x-subscription-token` (Brave), `dd-api-key` (Datadog), `circle-token` (CircleCI), `x-figma-token`, `fastly-key`, `x-shopify-access-token`, and so on all match.
+
+> Anthropic's API authenticates with `x-api-key` (not `Authorization`). It matches on `key`, so `secret_injection` works against `api.anthropic.com` out of the box.
+
+If your API uses a credential header whose name has **none** of those keywords (e.g. Honeycomb's `X-Honeycomb-Team`), add it explicitly with `inject_headers` (matched case-insensitively; the keyword default still applies to your other headers):
+
+```yaml
+secret_injection:
+  - env: HONEYCOMB_API_KEY
+    placeholder: "{{HONEYCOMB_API_KEY}}"
+    inject_to: ["api.honeycomb.io"]
+    inject_headers: ["X-Honeycomb-Team"]
+```
+
+If the API carries the credential **outside any header** — a `?api_key=` query parameter (SerpAPI), `?auth=` / `?access_token=` (Firebase), or a JSON body field (Plaid) — header injection can't reach it (the keyword heuristic applies to header *names* only, not the URL or body). Set `inject_body: true` to substitute placeholders in the URL, every header, the request body, and WebSocket frames:
+
+```yaml
+secret_injection:
+  - env: SERPAPI_KEY
+    placeholder: "{{SERPAPI_KEY}}"
+    inject_to: ["serpapi.com"]
+    inject_body: true   # key travels as ?api_key=
+```
+
+> **Security note:** `inject_body: true` is looser by design — a placeholder anywhere in the body is replaced, including bodies that may be logged or echoed downstream. Prefer the header-based default (with `inject_headers` if needed) whenever the API supports a header credential.
+
+Response redaction and literal-value blocking are unaffected by these toggles — real secret values are always redacted from responses and always blocked when found leaking outbound, regardless of `inject_body` / `inject_headers`.
 
 ## Literal value blocking
 

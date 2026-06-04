@@ -25,6 +25,25 @@ LINUX_ONLY = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _bypass_backend_gate(monkeypatch):
+    """Neutralize the create/update/start prerequisite gate for these tests.
+
+    ``_ensure_backend_ready`` (auto-start the substrate + enforce
+    ``check_prerequisites``) is a cross-cutting glue step unit-tested on its
+    own (see test_apple_container.py). Here we only want it to resolve the
+    test's (mocked) backend without running enforcement on a MagicMock —
+    otherwise ``check_prerequisites`` returns a truthy Mock and trips the
+    gate. Resolve ``get_backend`` lazily so the per-test ``@patch`` mock is
+    the one returned.
+    """
+    import agentcage.cli as _cli
+    monkeypatch.setattr(
+        _cli, "_ensure_backend_ready",
+        lambda cfg, **kw: _cli.get_backend(cfg),
+    )
+
+
 def _runner():
     return CliRunner()
 

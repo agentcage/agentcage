@@ -15,6 +15,18 @@ class Backend(Protocol):
         """Return list of unmet prerequisite descriptions (empty = all OK)."""
         ...
 
+    def ensure_ready(self, *, quiet: bool = False) -> None:
+        """Best-effort bring-up of recoverable substrate before build/start.
+
+        Idempotent and non-fatal: backends that can auto-start their
+        substrate (e.g. apple-container's apiserver, which does not survive
+        a reboot) do so here so a downed daemon doesn't masquerade as a
+        missing image. Anything that *can't* be auto-recovered (wrong OS,
+        missing CLI) is left for ``check_prerequisites`` to report. Backends
+        with nothing to recover implement this as a no-op.
+        """
+        ...
+
     def build_artifacts(
         self, config: Config, deploy_name: str, *, quiet: bool = False,
         no_cache: bool = False, pull: bool = False,

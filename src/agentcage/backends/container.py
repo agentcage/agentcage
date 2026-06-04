@@ -46,6 +46,12 @@ class ContainerBackend:
             issues.append("Podman is not available")
         return issues
 
+    def ensure_ready(self, *, quiet: bool = False) -> None:
+        # Nothing to auto-recover: rootless podman's systemd socket
+        # activation brings the service up on demand when the quadlets
+        # start. A missing podman is reported by check_prerequisites().
+        return
+
     def build_artifacts(
         self, config: Config, deploy_name: str, *, quiet: bool = False,
         no_cache: bool = False, pull: bool = False,  # noqa: ARG002
