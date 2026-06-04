@@ -235,24 +235,21 @@ class TestEgressQuadlet:
         # `--servers-file=...`.
         assert "/etc/agentcage/dns-allowlist.conf:ro,Z" in content
 
-    def test_egress_resolv_conf_pinned_not_dns_directive(self, tmp_path):
-        """REGRESSION GUARD (egress DNS resolv.conf ordering race).
+    def test_egress_resolv_conf_bind_not_dns_directive(self, tmp_path):
+        """The egress must NOT use the podman `DNS=` directive for its own
+        upstream resolution (that race is real: podman injects aardvark as
+        the FIRST nameserver ahead of `DNS=` entries). Instead, the egress's
+        /etc/resolv.conf is a bind-mounted file (resolv-egress-<name>.conf,
+        seeded with config.dns_servers by services.write_resolv_files).
 
-        The egress must NOT use the podman `DNS=` directive for its own
-        upstream resolution. The egress joins two aardvark-dns-enabled
-        networks (<name>-net + podman); podman injects aardvark as the
-        FIRST nameserver ahead of any `DNS=` entries. mitmproxy resolves
-        allowlisted upstream hostnames via the egress's /etc/resolv.conf,
-        so when aardvark wins the order and intermittently fails to
-        forward external names (after rapid create/destroy churn) every
-        allowlisted host returns 502 Bad Gateway (mitmproxy "Name not
-        known").
-
-        The deterministic fix bind-mounts resolv-egress-<name>.conf
-        (written by services.provision_cage with only the configured
-        upstream resolvers) at /etc/resolv.conf, mirroring the cage's own
-        resolv-<name>.conf mount. aardvark is never consulted, so the
-        ordering race cannot happen.
+        The bind is now **rw** so supervisor-egress.sh can PREPEND the
+        egress's default-route gateway as the primary, host-tracking
+        resolver (keeping dns_servers as fallback) — mitmproxy re-resolves
+        the upstream, so its resolver must track host network changes, the
+        same as the apple egress. (The old aardvark "intermittent forward
+        502" fear was disproven under churn; and the gateway is the explicit
+        primary with a deterministic fallback, not an implicit ordering
+        winner.)
         """
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -266,10 +263,9 @@ class TestEgressQuadlet:
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="test")
         content = files["test-egress.container"]
-        # The deterministic resolv.conf is bind-mounted read-only at
-        # /etc/resolv.conf, sourced from the patches dir.
+        # resolv.conf is bind-mounted rw (supervisor prepends the gateway).
         assert (
-            "Volume=/patches/resolv-egress-test.conf:/etc/resolv.conf:ro,Z"
+            "Volume=/patches/resolv-egress-test.conf:/etc/resolv.conf:rw,Z"
             in content
         )
         # The racy `DNS=` directive must NOT appear — that's the whole

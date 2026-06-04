@@ -3573,17 +3573,28 @@ def _update_dns_quadlet(cfg) -> None:
             click.echo(err, err=True)
         sys.exit(1)
 
-    # SIGHUP dnsmasq via the pidfile the supervisor writes. The path is
-    # /home/acdns/dnsmasq.pid (pre-chowned dir, no runtime CAP_CHOWN
-    # needed). The `cat || true` makes the path failure loud rather than
-    # silent — bash's $(cat missing-file) returns empty, and `kill -HUP ""`
-    # exits 0 with nothing happening, so a future path drift would
-    # otherwise reproduce the silent-no-op bug this comment was added in
-    # response to.
+    # Regenerate the gateway-rewritten runtime servers-file (if the egress is
+    # using it) from the freshly-written allowlist, then SIGHUP. When a
+    # default-route gateway was derived at start, dnsmasq serves
+    # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders =
+    # gateway-primary + baked-fallback), NOT the bind-mounted file — so we must
+    # re-derive those lines from the updated allowlist before signaling, the
+    # same rewrite supervisor-egress.sh does at start. When that runtime file
+    # is absent (no gateway / fallback mode) dnsmasq reads the bind-mounted file
+    # directly, so a plain SIGHUP suffices.
+    #
+    # SIGHUP via the pidfile the supervisor writes at /home/acdns/dnsmasq.pid
+    # (pre-chowned dir, no runtime CAP_CHOWN). The `[ -n "$pid" ]` guard keeps a
+    # future path drift loud rather than a silent `kill -HUP ""` no-op.
     _runtime_exec([
         "sh", "-c",
-        'pid="$(cat /home/acdns/dnsmasq.pid)" && '
-        '[ -n "$pid" ] && kill -HUP "$pid"',
+        'rt=/run/agentcage/dns-allowlist.egress.conf; '
+        'if [ -f "$rt" ]; then '
+        'gw=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
+        '[ -n "$gw" ] && { sed "s#/[^/]*\\$#/$gw#" /etc/agentcage/dns-allowlist.conf; '
+        'cat /etc/agentcage/dns-allowlist.conf; } > "$rt" 2>/dev/null; '
+        'fi; '
+        'pid="$(cat /home/acdns/dnsmasq.pid)" && [ -n "$pid" ] && kill -HUP "$pid"',
     ])
 
 

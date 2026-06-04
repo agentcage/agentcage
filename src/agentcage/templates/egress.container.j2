@@ -6,23 +6,26 @@ ContainerName={{ name }}-egress
 Image=localhost/agentcage-egress:{{ agentcage_version }}
 Network={{ name }}-net.network:ip={{ ip_egress }}
 Network=podman
-# Pin the egress's OWN resolv.conf to the configured upstream resolvers
-# (config.dns_servers) and nothing else — do NOT use the racy `DNS=`
-# directive. The egress is on two aardvark-dns-enabled networks
-# ({{ name }}-net + podman), and podman injects aardvark as the FIRST
-# nameserver ahead of any `DNS=` entries. mitmproxy resolves allowlisted
-# upstream hostnames via this file; when aardvark wins the order and
-# intermittently fails to forward external names (degrades after rapid
-# create/destroy churn), mitmproxy returns "Name not known" → 502 Bad
-# Gateway for every allowlisted host. Bind-mounting a deterministic
-# resolv.conf that lists only the upstreams removes aardvark from the
-# egress's resolution path entirely, so the ordering race cannot happen.
-# The egress never needs aardvark name resolution: it only resolves real
-# upstream hostnames, and the cage's DNS goes through the egress's
-# bundled dnsmasq. Mirrors the cage's resolv-{{ name }}.conf bind and the
-# apple-container resolv.conf rewrite (CHANGELOG 0.22.11). The file is
-# written by services.write_resolv_files (resolv-egress-{{ name }}.conf).
-Volume={{ patches_host_dir }}/resolv-egress-{{ name }}.conf:/etc/resolv.conf:ro,Z
+# mitmproxy resolves allowlisted upstream hostnames via this file (it
+# re-resolves the SNI/Host on the upstream connection — empirically
+# confirmed: breaking only this resolver 502s every allowlisted host even
+# when the cage itself resolved fine). services.write_resolv_files seeds it
+# with config.dns_servers; supervisor-egress.sh then PREPENDS the egress's
+# default-route gateway as the primary nameserver (host-tracking — on
+# netavark that gateway is aardvark, which forwards to the host's CURRENT
+# resolver), keeping dns_servers as fallback. This makes mitmproxy track
+# host network changes with no restart, matching the apple-container egress
+# (whose resolv.conf is the vmnet gateway). getaddrinfo checks /etc/hosts
+# FIRST, so the e2e upstream mock is unaffected by the nameserver order.
+#
+# Historical note: an earlier version pinned this to dns_servers ONLY,
+# avoiding aardvark over a feared "wins resolv.conf ordering then
+# intermittently fails to forward → 502" race. That race did NOT reproduce
+# under heavy create/destroy churn (600+ queries, 0 failures, verified in
+# Lima on aardvark 1.4.0), and here the gateway is the PRIMARY with
+# dns_servers as a deterministic fallback, so a transient gateway hiccup
+# falls through instead of 502ing. Bind is rw so the supervisor can prepend.
+Volume={{ patches_host_dir }}/resolv-egress-{{ name }}.conf:/etc/resolv.conf:rw,Z
 Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 {% if dns_allowlist_enabled %}
 Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z
