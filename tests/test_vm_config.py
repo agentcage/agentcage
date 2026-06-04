@@ -1,5 +1,6 @@
 """Tests for VM/isolation config parsing and validation."""
 
+import platform
 import textwrap
 from unittest.mock import patch
 
@@ -7,8 +8,17 @@ import pytest
 
 from agentcage.config import VmConfig, load_config, validate_config
 
+# These assert the *Linux* default isolation (``container``). On macOS the
+# default is apple-container/vm (container is rejected), so the Linux-default
+# assertions only hold on the Linux CI.
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="asserts the Linux default isolation (container); macOS defaults differ",
+)
+
 
 class TestVmConfigDefaults:
+    @LINUX_ONLY
     def test_default_isolation_is_container(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         assert cfg.isolation == "container"
@@ -159,13 +169,19 @@ class TestVmValidation:
         warnings = validate_config(cfg)
         assert warnings == []
 
+    @LINUX_ONLY
     def test_container_mode_no_vm_required(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         warnings = validate_config(cfg)
         assert warnings == []
 
     def test_container_isolation_rejected_on_macos(self, minimal_yaml):
-        cfg = load_config(minimal_yaml)
+        # Pin the load to Linux so the default isolation is `container`
+        # regardless of the host OS (on a macOS host the default would be
+        # apple-container, making the first assertion misfire). The point of
+        # this test is the *validation* rejection under Darwin, below.
+        with patch("agentcage.config.platform.system", return_value="Linux"):
+            cfg = load_config(minimal_yaml)
         assert cfg.isolation == "container"
         with patch("agentcage.config.platform.system", return_value="Darwin"):
             with pytest.raises(ValueError, match="macOS"):
