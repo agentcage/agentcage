@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Secret injection is strict by default — credential-bearing headers only.** The proxy substitutes a placeholder for its real secret value only when the placeholder appears in a credential-bearing request header — one whose name contains `auth`, `key`, or `token` (case-insensitive). That single heuristic covers `Authorization`, `x-api-key` (Anthropic), `api-key` (Azure), `x-goog-api-key` (Google), `private-token` (GitLab), `x-subscription-token` (Brave), and virtually every other API's auth header without hard-coding vendor names. Placeholders left in the URL/query string, the request body, or a non-credential header pass through unchanged, confining credentials to the auth channel and keeping them out of bodies that may be logged or echoed. (The initial cut of this feature matched only `Authorization`, which broke header-key APIs such as Anthropic's `x-api-key`: requests went out carrying the literal placeholder and were rejected with `401 invalid x-api-key`.)
+
+### Added
+
+- **`secret_injection[].inject_headers` (list, default empty).** Extra request headers to treat as credential-bearing under the strict default — for auth headers whose name has none of the `auth`/`key`/`token` keywords (e.g. Honeycomb's `inject_headers: ["X-Honeycomb-Team"]`). Matched case-insensitively; the keyword heuristic still applies to your other headers.
+- **`secret_injection[].inject_body` toggle (default `false`).** Set `inject_body: true` on a rule to also substitute placeholders in the request URL, every header, the body, and WebSocket frames. Use this for APIs that carry the credential outside a header (e.g. a `?api_key=` query parameter or a JSON body field). Response redaction and literal-value blocking are unaffected by the toggle.
+
 ## [0.22.20] - 2026-05-30
 
 ### Added
