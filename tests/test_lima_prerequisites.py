@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import platform
 from unittest.mock import patch
 
 import pytest
 
 from agentcage.lima.prerequisites import check_prerequisites, detect_platform
+
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="exercises the Linux limactl prerequisite path; runs on the Linux CI",
+)
 
 
 class TestDetectPlatform:
@@ -35,6 +41,7 @@ class TestCheckPrerequisites:
         assert any("limactl" in i for i in issues)
         assert any("https://" in i for i in issues)
 
+    @LINUX_ONLY
     def test_limactl_available_on_linux(self):
         with patch("shutil.which", return_value="/usr/bin/limactl"), \
              patch("platform.system", return_value="Linux"):

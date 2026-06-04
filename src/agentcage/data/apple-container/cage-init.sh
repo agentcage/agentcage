@@ -63,16 +63,27 @@ done
 # apple-container's default /etc/resolv.conf points the cage at the
 # vmnet host gateway (<subnet>.1) whose recursive resolver answers
 # arbitrary queries — that's a DNS-tunnel exfil channel that bypasses
-# the egress filter (the apex-scoped dnsmasq lives in the egress
-# sibling microVM, not the host). The egress sibling's dnsmasq is
-# unreachable from this microVM because macOS vmnet drops inter-
-# microVM UDP at the framework layer (see apple/container source —
-# NonisolatedInterfaceStrategy.swift uses VMNET_SHARED_MODE for NAT;
-# TCP and ICMP get state-tracked through, UDP between peer microVMs
-# is not forwarded). The fix is a local dnsmasq inside this microVM,
-# listening only on loopback, with the same per-cage
-# `domains.allow`-scoped recursion config the egress sibling uses.
-# The conf file is bind-mounted in from the host's egress-config dir.
+# the egress filter. We run a local dnsmasq inside this microVM,
+# listening only on loopback, scoped to the cage's `domains.allow`
+# apexes (per-zone `server=` for allowed zones, `address=/#/` sinkhole
+# for the rest), and repoint /etc/resolv.conf at it.
+#
+# Upstream: the per-zone forwarders point at the EGRESS SIBLING
+# (AGENTCAGE_EGRESS_IP), NOT directly at a resolver. apple-container
+# requires macOS 26+ (see apple_container/prerequisites.py), where
+# inter-microVM UDP is delivered, so the cage can reach the egress's
+# dnsmasq over UDP :53. Routing every lookup through the egress keeps it
+# the single network chokepoint for ALL egress traffic, DNS included;
+# the egress in turn forwards to the vmnet gateway, which apple-container
+# NATs to the host's CURRENT /etc/resolv.conf — so DNS follows host
+# network changes (Wi-Fi/VPN) transparently, with no restart or rebuild.
+#
+# The bind-mounted dnsmasq.conf / dns-allowlist.conf encode the apex list
+# but carry the host-resolver IP baked at `cage update` time (used as the
+# upstream by the egress only). We strip those baked `server=` upstreams
+# and regenerate per-zone forwarders pointing at the egress, keeping the
+# sinkhole + options. The conf file is bind-mounted from the egress-config
+# dir.
 #
 # Best-effort: the wrapper Containerfile installs dnsmasq-base; bases
 # without a package manager (distroless, etc.) skip the install and
@@ -106,9 +117,30 @@ if command -v dnsmasq >/dev/null 2>&1 \
   # the wrapper Containerfile lets uid 201 still bind :53.
   # --log-facility=- — log to stderr (no /var/log/agentcage/ in the
   # cage; that mount only exists in the egress sibling).
+  # Re-point the per-zone upstreams at the egress sibling. Strip the baked
+  # `server=` upstreams from the conf (keep the `address=/#/` sinkhole +
+  # options), and regenerate a servers-file whose forwarders target the
+  # egress. The apex list is read from the bind-mounted servers-file
+  # (preferred) or the conf. AGENTCAGE_EGRESS_IP equals the cage's default
+  # route (set in stage B); deriving from the route keeps the same value
+  # available to `domain add/rm`'s live SIGHUP (see reload_domains).
+  _cage_conf=/etc/agentcage/dnsmasq.conf
+  _cage_servers="${AGENTCAGE_DNS_SERVERS_FILE:-}"
+  if [ -n "${AGENTCAGE_EGRESS_IP:-}" ] \
+     && grep -v '^server=/' /etc/agentcage/dnsmasq.conf \
+          > /run/agentcage/dnsmasq.cage.conf 2>/dev/null \
+     && awk -F/ -v up="${AGENTCAGE_EGRESS_IP}" '/^server=\//{print "server=/" $2 "/" up}' \
+          "${AGENTCAGE_DNS_SERVERS_FILE:-/etc/agentcage/dnsmasq.conf}" \
+          > /run/agentcage/dns-allowlist.cage.conf 2>/dev/null; then
+    _cage_conf=/run/agentcage/dnsmasq.cage.conf
+    _cage_servers=/run/agentcage/dns-allowlist.cage.conf
+    log "stage A': forwarding allowlisted zones via egress sibling ${AGENTCAGE_EGRESS_IP} (host-tracking, transparent across host network changes)"
+  else
+    log "warn: AGENTCAGE_EGRESS_IP unset or config rewrite failed — using baked resolver upstream (DNS may go stale on host network change)"
+  fi
   /usr/sbin/dnsmasq \
-    --conf-file=/etc/agentcage/dnsmasq.conf \
-    ${AGENTCAGE_DNS_SERVERS_FILE:+--servers-file="${AGENTCAGE_DNS_SERVERS_FILE}"} \
+    --conf-file="${_cage_conf}" \
+    ${_cage_servers:+--servers-file="${_cage_servers}"} \
     --bind-interfaces \
     --except-interface=eth0 \
     --user=acdns \

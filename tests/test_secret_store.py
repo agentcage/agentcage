@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import platform
 from unittest.mock import MagicMock
 
 import pytest
 
 from agentcage.config import SecretsConfig
+
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="asserts keychain is unavailable on Linux; on macOS the keychain "
+           "backend resolves (covered by the keychain-target tests)",
+)
 from agentcage.secret_store import (
     PlaintextStore,
     SecretStoreError,
@@ -44,6 +51,7 @@ def test_explicit_plaintext(monkeypatch):
     assert isinstance(store, PlaintextStore)
 
 
+@LINUX_ONLY
 def test_keychain_on_linux_raises(monkeypatch):
     _backend(monkeypatch, "systemd-creds")
     with pytest.raises(SecretStoreError):
