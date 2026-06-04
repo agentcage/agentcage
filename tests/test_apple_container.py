@@ -364,13 +364,25 @@ def test_stage_build_context_writes_cage_init(tmp_path):
         'iptables -A OUTPUT -d "${_apple_host_gw}" -p udp ! --dport 53 -j DROP'
         not in cage_init
     )
-    # CTF F2 (0.22.6): stage A' must launch a local dnsmasq scoped to
-    # the cage's `domains.allow` apexes and point /etc/resolv.conf at
-    # 127.0.0.1. Apple's vmnet drops inter-microVM UDP, so the egress
-    # sibling's dnsmasq on .2:53 is unreachable; the only fix is a
-    # local resolver. Verified against apple/container source.
+    # stage A' launches a local dnsmasq scoped to the cage's
+    # `domains.allow` apexes and points /etc/resolv.conf at 127.0.0.1.
+    # apple-container requires macOS 26+ (apple_container/prerequisites.py),
+    # where inter-microVM UDP IS delivered — so the cage forwards the
+    # allowlisted apexes to the EGRESS sibling (AGENTCAGE_EGRESS_IP),
+    # keeping the egress the single chokepoint for ALL egress traffic, DNS
+    # included. (The pre-macOS-26 claim that "vmnet drops inter-microVM UDP
+    # so the cage must self-resolve" no longer holds — verified empirically
+    # against apple/container on macOS 26.)
     assert "stage A': starting local dnsmasq" in cage_init
-    assert "--conf-file=/etc/agentcage/dnsmasq.conf" in cage_init
+    # It reads the bind-mounted conf as the SOURCE, strips the baked
+    # `server=` upstreams (host-resolver IP, used by the egress only), and
+    # serves a runtime conf + servers-file whose per-zone forwarders point
+    # at the egress — so a host network change is followed transparently
+    # (the egress chases the host-tracking vmnet gateway).
+    assert "/etc/agentcage/dnsmasq.conf" in cage_init
+    assert "grep -v '^server=/'" in cage_init
+    assert "/run/agentcage/dns-allowlist.cage.conf" in cage_init
+    assert 'up="${AGENTCAGE_EGRESS_IP}"' in cage_init
     # Conf says `listen-address=0.0.0.0`; `--except-interface=eth0`
     # whittles that down to just lo. Direct `--listen-address=127.0.0.1`
     # on the cmdline would conflict because dnsmasq treats listen-
@@ -2733,3 +2745,134 @@ def test_wipe_staged_secrets_empties_the_bind_dir(tmp_path, monkeypatch):
 
     assert secrets_dir.is_dir()
     assert list(secrets_dir.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# start() re-renders DNS config from the current host resolver
+# ---------------------------------------------------------------------------
+class _HaltStart(Exception):
+    """Sentinel raised from a stubbed step to halt start() right after the
+    re-render, so the test needn't mock the whole egress bring-up."""
+
+
+def _prime_start(backend, tmp_path):
+    """Stub out everything start() touches BEFORE _stage_secrets so the
+    method runs from entry through the DNS re-render, then halts.
+
+    Returns the sentinel config that ``state.load_deployment_config`` is
+    patched to return, so the caller can assert it was threaded into
+    ``_render_egress_config``.
+    """
+    unit_dir = tmp_path / "units"
+    unit_dir.mkdir()
+    (unit_dir / "demo.json").write_text(json.dumps({"autostart": False}))
+    for sub in ("egress-cfg", "logs", "certs", "pub"):
+        (tmp_path / sub).mkdir()
+
+    backend.unit_dir = MagicMock(return_value=unit_dir)
+    backend.egress_config_dir = MagicMock(return_value=tmp_path / "egress-cfg")
+    backend.logs_dir = MagicMock(return_value=tmp_path / "logs")
+    backend.certs_dir = MagicMock(return_value=tmp_path / "certs")
+    backend.public_certs_dir = MagicMock(return_value=tmp_path / "pub")
+    # start() now gates on the apiserver being up (ensure_ready +
+    # ac_cli.system_running) before doing any work; stub the readiness
+    # bring-up here and patch system_running True in the caller.
+    backend.ensure_ready = MagicMock()
+    # Halt right after the network-create step that follows the re-render.
+    backend._stage_secrets = MagicMock(side_effect=_HaltStart)
+
+    cfg_sentinel = MagicMock(name="loaded-config")
+    return cfg_sentinel
+
+
+def test_start_rerenders_egress_dns_config_from_current_host(tmp_path):
+    """Regression: 'cage cannot connect to the network after restarting'.
+
+    The bind-mounted dnsmasq.conf / dns-allowlist.conf pin the cage's DNS
+    upstream to the host resolver detected at the last create/update. On a
+    dev laptop that changed networks (or rebooted on a different LAN) since
+    then, a plain restart used to come back forwarding DNS to a dead
+    resolver IP. start() must re-render those (bind-mounted, no-rebuild)
+    files from the host's CURRENT resolver."""
+    backend = AppleContainerBackend()
+    cfg_sentinel = _prime_start(backend, tmp_path)
+    backend._render_egress_config = MagicMock(name="_render_egress_config")
+
+    with patch.object(ac_cli, "system_running", return_value=True), \
+         patch.object(ac_cli, "image_inspect", return_value=object()), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", return_value=MagicMock(returncode=0)), \
+         patch("agentcage.state.load_deployment_config",
+               return_value=cfg_sentinel):
+        with pytest.raises(_HaltStart):
+            backend.start("demo")
+
+    backend._render_egress_config.assert_called_once_with(cfg_sentinel, "demo")
+
+
+def test_start_tolerates_undetectable_host_resolver(tmp_path):
+    """The re-render is best-effort: if the host resolver can't be detected
+    at start time (_host_dns_servers raises), start() must NOT abort — it
+    keeps the previously-rendered config and continues, matching the
+    pre-fix behaviour of starting with whatever was on disk."""
+    backend = AppleContainerBackend()
+    cfg_sentinel = _prime_start(backend, tmp_path)
+    backend._render_egress_config = MagicMock(
+        side_effect=RuntimeError("could not detect usable DNS servers")
+    )
+
+    with patch.object(ac_cli, "system_running", return_value=True), \
+         patch.object(ac_cli, "image_inspect", return_value=object()), \
+         patch.object(ac_cli, "inspect", return_value=None), \
+         patch.object(ac_cli, "run", return_value=MagicMock(returncode=0)), \
+         patch("agentcage.state.load_deployment_config",
+               return_value=cfg_sentinel):
+        # Reaching the halt sentinel proves the render failure was swallowed
+        # rather than propagated out of start().
+        with pytest.raises(_HaltStart):
+            backend.start("demo")
+
+
+# ---------------------------------------------------------------------------
+# DNS routes through the egress to the host-tracking vmnet gateway
+# ---------------------------------------------------------------------------
+def _read_data_file(*parts):
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent
+            / "src" / "agentcage" / "data").joinpath(*parts).read_text()
+
+
+def test_egress_dnsmasq_listens_explicitly_and_forwards_to_gateway():
+    """apple-container egress dnsmasq must bind an explicit listen address
+    and forward allowlisted zones to the vmnet gateway.
+
+    The bind-mounted conf says ``listen-address=0.0.0.0``; a wildcard
+    listener in this microVM shape opens the :53 socket but does not answer
+    the cage sibling's queries (the container/vm path already documents
+    this). The supervisor must strip the conf's listen-address and pass an
+    explicit ``--listen-address`` (the egress eth0 IP) so the cage can
+    resolve THROUGH the egress, and re-point the per-zone forwarders at the
+    host-tracking vmnet gateway (<subnet>.1) instead of the host-resolver IP
+    baked at ``cage update`` time — so DNS follows host network changes with
+    no restart."""
+    script = _read_data_file("containers", "supervisor-egress.sh")
+    assert '--listen-address="${_eth0_ip}"' in script
+    assert "grep -vE '^(server=/|listen-address=)'" in script
+    assert 'print $1"."$2"."$3".1"' in script  # derive <subnet>.1 gateway
+    assert "/run/agentcage/dns-allowlist.egress.conf" in script
+
+
+def test_reload_domains_regenerates_runtime_servers_before_sighup():
+    """Live `domain add/rm` must regenerate the runtime servers-file the
+    dnsmasq instances actually serve (/run/agentcage/dns-allowlist.{cage,
+    egress}.conf), re-pointing apexes at each VM's default-route upstream,
+    BEFORE the SIGHUP — otherwise the new apex lands only in the
+    bind-mounted file and the served set is stale."""
+    import inspect
+    src = inspect.getsource(AppleContainerBackend.reload_domains)
+    # both instances re-point at their default route (cage→egress,
+    # egress→gateway) and rewrite the served runtime file before SIGHUP
+    assert "/run/agentcage/dns-allowlist.egress.conf" in src
+    assert "/run/agentcage/dns-allowlist.cage.conf" in src
+    assert 'ip route' in src and '/^default/' in src
+    assert "kill -HUP" in src

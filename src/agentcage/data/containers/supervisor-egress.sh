@@ -187,16 +187,65 @@ fi
 log "step B: starting dnsmasq (uid 201, CapBnd={net_bind_service}, prlimit --as=256M)"
 if [ -f /etc/agentcage/dnsmasq.conf ]; then
   # apple-container path: per-cage dnsmasq.conf bind-mounted by the
-  # backend (handles allowlist scoping + sinkhole + filter-AAAA).
-  prlimit --as=$((256 * 1024 * 1024)) -- \
-    setpriv --reuid=acdns --regid=acdns --clear-groups \
-            --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
-    /opt/agentcage/dns-audit.sh \
-      /usr/sbin/dnsmasq -k \
-        --pid-file="$DNSMASQ_PID_FILE" \
-        --conf-file=/etc/agentcage/dnsmasq.conf \
-        --servers-file=/etc/agentcage/dns-allowlist.conf \
-    &
+  # backend (handles allowlist scoping + sinkhole + filter-AAAA). Two
+  # adjustments vs. the bind-mounted config, both required for the cage
+  # to resolve THROUGH this egress (the single network chokepoint):
+  #
+  # (1) LISTEN: the conf says `listen-address=0.0.0.0`, but a wildcard
+  #     dnsmasq listener in this microVM shape opens the socket yet does
+  #     not answer queries arriving from the cage sibling (same failure
+  #     the container/vm path below documents). Bind this egress's own
+  #     eth0 IP explicitly (+ loopback) so the cage's lookups get
+  #     answered. We strip the conf's `listen-address` line and pass
+  #     `--listen-address` on the cmdline instead (the two are additive;
+  #     a wildcard + specific pair triggers EADDRINUSE).
+  #
+  # (2) UPSTREAM: re-point the per-zone forwarders at the apple vmnet
+  #     gateway (<subnet>.1) instead of the host-resolver IP baked at
+  #     `cage update` time. The gateway is a host-tracking recursive
+  #     resolver (apple-container NATs it to the host's CURRENT resolver),
+  #     so DNS survives host network changes (Wi-Fi/VPN) with no restart.
+  _eth0_ip=$(ip -o -4 addr show eth0 2>/dev/null \
+    | awk '/inet / {sub(/\/.*/,"",$4); print $4; exit}')
+  _gw=$(printf '%s\n' "${_eth0_ip}" \
+    | awk -F. 'NF==4 {print $1"."$2"."$3".1"}')
+  mkdir -p /run/agentcage
+  if [ -n "${_eth0_ip}" ] && [ -n "${_gw}" ] \
+     && grep -vE '^(server=/|listen-address=)' /etc/agentcage/dnsmasq.conf \
+          > /run/agentcage/dnsmasq.egress.conf 2>/dev/null \
+     && awk -F/ -v up="${_gw}" '/^server=\//{print "server=/" $2 "/" up}' \
+          /etc/agentcage/dns-allowlist.conf \
+          > /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; then
+    chmod 0644 /run/agentcage/dnsmasq.egress.conf /run/agentcage/dns-allowlist.egress.conf
+    log "step B: apple-container path — dnsmasq listen ${_eth0_ip}, forwarding allowlisted zones to vmnet gateway ${_gw} (host-tracking)"
+    prlimit --as=$((256 * 1024 * 1024)) -- \
+      setpriv --reuid=acdns --regid=acdns --clear-groups \
+              --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
+      /opt/agentcage/dns-audit.sh \
+        /usr/sbin/dnsmasq -k \
+          --pid-file="$DNSMASQ_PID_FILE" \
+          --conf-file=/run/agentcage/dnsmasq.egress.conf \
+          --servers-file=/run/agentcage/dns-allowlist.egress.conf \
+          --listen-address="${_eth0_ip}" \
+          --listen-address=127.0.0.1 \
+          --bind-interfaces \
+      &
+  else
+    # Fallback: could not derive the eth0 IP / gateway or rewrite the
+    # config. Start with the baked config as before (cage resolves via
+    # its own local dnsmasq, which forwards here; a stale baked upstream
+    # is recoverable with `cage update`).
+    log "warn: egress DNS rewrite failed (eth0=${_eth0_ip:-?} gw=${_gw:-?}); using baked config"
+    prlimit --as=$((256 * 1024 * 1024)) -- \
+      setpriv --reuid=acdns --regid=acdns --clear-groups \
+              --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
+      /opt/agentcage/dns-audit.sh \
+        /usr/sbin/dnsmasq -k \
+          --pid-file="$DNSMASQ_PID_FILE" \
+          --conf-file=/etc/agentcage/dnsmasq.conf \
+          --servers-file=/etc/agentcage/dns-allowlist.conf \
+      &
+  fi
 elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # container/vm path: no per-cage dnsmasq.conf is rendered (the Quadlet
   # template bind-mounts only dns-allowlist.conf). Match legacy
