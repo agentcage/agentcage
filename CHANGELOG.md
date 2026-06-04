@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.21] - 2026-06-04
+
 ### Changed
 
 - **Secret injection is strict by default — credential-bearing headers only.** The proxy substitutes a placeholder for its real secret value only when the placeholder appears in a credential-bearing request header — one whose name contains `auth`, `key`, or `token` (case-insensitive). That single heuristic covers `Authorization`, `x-api-key` (Anthropic), `api-key` (Azure), `x-goog-api-key` (Google), `private-token` (GitLab), `x-subscription-token` (Brave), and virtually every other API's auth header without hard-coding vendor names. Placeholders left in the URL/query string, the request body, or a non-credential header pass through unchanged, confining credentials to the auth channel and keeping them out of bodies that may be logged or echoed. (The initial cut of this feature matched only `Authorization`, which broke header-key APIs such as Anthropic's `x-api-key`: requests went out carrying the literal placeholder and were rejected with `401 invalid x-api-key`.)
