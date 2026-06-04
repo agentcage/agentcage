@@ -78,6 +78,111 @@ def test_prereqs_apiserver_stopped_distinct_from_missing():
     assert any("apiserver is not running" in s for s in issues)
 
 
+def test_start_auto_starts_apiserver_when_down(tmp_path, monkeypatch):
+    """The apiserver doesn't survive a reboot. Rather than make the user
+    run `container system start` by hand, start() brings it up itself
+    (mirroring the Lima backend's VM auto-start) and then proceeds."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+        },
+    )
+    # Down on the first probe, up after `system start` runs.
+    states = iter([False, True, True, True, True])
+    monkeypatch.setattr(ac_cli, "system_running", lambda: next(states))
+
+    backend.start("demo", quiet=True)
+
+    assert ["system", "start", "--enable-kernel-install"] in captured
+
+
+def test_start_errors_when_apiserver_wont_start(tmp_path, monkeypatch):
+    """If the daemon stays down even after we try to start it, raise an
+    actionable error — never the misleading 'wrapped image not found'."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(backend, "unit_dir", lambda: tmp_path)
+    (tmp_path / "pi01.json").write_text(json.dumps({"autostart": False}))
+
+    with patch.object(ac_cli, "system_running", return_value=False), \
+         patch.object(ac_cli, "run") as run, \
+         patch.object(ac_cli, "image_inspect") as image_inspect:
+        with pytest.raises(RuntimeError) as excinfo:
+            backend.start("pi01", quiet=True)
+
+    assert "apiserver is not running" in str(excinfo.value)
+    assert "container system start" in str(excinfo.value)
+    # We attempted the auto-start before giving up.
+    assert ["system", "start", "--enable-kernel-install"] in [
+        c.args[0] for c in run.call_args_list
+    ]
+    # Bailed before ever probing images.
+    image_inspect.assert_not_called()
+
+
+def test_ensure_ready_starts_apiserver_when_down():
+    """ensure_ready() is the recoverable-substrate step the CLI runs before
+    build/start: a downed apiserver gets `container system start`."""
+    backend = AppleContainerBackend()
+    states = iter([False, True])  # down, then up after start
+    with patch.object(ac_cli, "system_running", side_effect=lambda: next(states)), \
+         patch.object(ac_cli, "run") as run:
+        backend.ensure_ready(quiet=True)
+    assert ["system", "start", "--enable-kernel-install"] in [
+        c.args[0] for c in run.call_args_list
+    ]
+
+
+def test_ensure_ready_noop_when_apiserver_already_running():
+    """If the daemon is already up, ensure_ready() must not touch it."""
+    backend = AppleContainerBackend()
+    with patch.object(ac_cli, "system_running", return_value=True), \
+         patch.object(ac_cli, "run") as run:
+        backend.ensure_ready(quiet=True)
+    run.assert_not_called()
+
+
+def test_ensure_ready_swallows_missing_cli():
+    """When the `container` CLI isn't installed, ensure_ready() has nothing
+    to recover and must not raise — check_prerequisites() reports the
+    missing CLI with an install hint instead."""
+    backend = AppleContainerBackend()
+    with patch.object(ac_cli, "system_running", return_value=False), \
+         patch.object(ac_cli, "run", side_effect=FileNotFoundError):
+        backend.ensure_ready(quiet=True)  # no exception
+
+
+def test_ensure_backend_ready_gate_recovers_then_passes():
+    """The CLI gate auto-recovers the substrate, then proceeds when no
+    prerequisites are unmet — returning the backend for reuse."""
+    from agentcage import cli
+    backend = MagicMock()
+    backend.check_prerequisites.return_value = []
+    cfg = Config(name="t", isolation="apple-container")
+    with patch.object(cli, "get_backend", return_value=backend):
+        result = cli._ensure_backend_ready(cfg)
+    backend.ensure_ready.assert_called_once()
+    assert result is backend
+
+
+def test_ensure_backend_ready_gate_aborts_on_unmet_prereqs():
+    """Whatever ensure_ready() couldn't fix (reported by check_prerequisites)
+    aborts the command with a non-zero exit and the issue text — this is the
+    path that turns a downed-and-unstartable apiserver into an actionable
+    message instead of the misleading 'image not found'."""
+    from agentcage import cli
+    backend = MagicMock()
+    backend.check_prerequisites.return_value = [
+        "Apple container apiserver is not running — run 'container system start'",
+    ]
+    cfg = Config(name="t", isolation="apple-container")
+    with patch.object(cli, "get_backend", return_value=backend):
+        with pytest.raises(SystemExit) as excinfo:
+            cli._ensure_backend_ready(cfg)
+    assert excinfo.value.code == 1
+
+
 # ---------------------------------------------------------------------------
 # config validation
 # ---------------------------------------------------------------------------
@@ -607,6 +712,8 @@ def _setup_start_test(tmp_path, monkeypatch, *, unit_meta):
     monkeypatch.setattr(
         backend, "public_certs_dir", lambda _n: public_certs_dir,
     )
+    # start() guards on the apiserver being up before probing images.
+    monkeypatch.setattr(ac_cli, "system_running", lambda: True)
     monkeypatch.setattr(
         ac_cli, "image_inspect", lambda _img: {"config": {}},
     )

@@ -175,6 +175,13 @@ class VmBackend:
     def check_prerequisites(self, config: Config) -> list[str]:
         return lima_prerequisites.check_prerequisites()
 
+    def ensure_ready(self, *, quiet: bool = False) -> None:
+        # The Lima VM (this backend's substrate) is created and started
+        # on demand inside start(); there's nothing to bring up ahead of
+        # it here. A missing limactl/QEMU is reported by
+        # check_prerequisites().
+        return
+
     def build_artifacts(
         self, config: Config, deploy_name: str, *, quiet: bool = False,
         no_cache: bool = False, pull: bool = False,  # noqa: ARG002
