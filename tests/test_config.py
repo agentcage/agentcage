@@ -1,11 +1,23 @@
 """Tests for agentcage config parsing and validation."""
 
 import os
+import platform
 import textwrap
 
 import pytest
 
 from agentcage.config import Config, ContainerConfig, DomainConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, _VALID_LEVELS, load_config, validate_config
+
+# These assert that a valid config yields NO validation warnings. On macOS the
+# default isolation is apple-container, which legitimately warns (e.g.
+# `read_only` cannot be enforced — issue #120), so the "no warnings" assertion
+# only holds for the Linux/container default. macOS warning behavior is covered
+# by the apple-container tests.
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="assumes the Linux/container default isolation (no apple-container "
+           "validation warnings); runs on the Linux CI",
+)
 
 
 class TestLoadConfigMinimal:
@@ -85,6 +97,72 @@ class TestLoadConfigFull:
         assert rule.env == "INJECTED_KEY"
         assert rule.placeholder == "{{INJECTED_KEY}}"
         assert rule.inject_to == ["api.example.com"]
+        # Strict by default — body injection is opt-in.
+        assert rule.inject_body is False
+        # No extra auth headers by default — the built-in allow-list applies.
+        assert rule.inject_headers == []
+
+    def test_secret_injection_inject_headers(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: KEY1
+                placeholder: "{{KEY1}}"
+                inject_to: ["api.example.com"]
+                inject_headers: ["X-Acme-Token", "X-Acme-Secondary"]
+              - env: KEY2
+                placeholder: "{{KEY2}}"
+                inject_to: ["api.example.com"]
+        """))
+        cfg = load_config(str(p))
+        rules = {r.env: r for r in cfg.secret_injection}
+        assert rules["KEY1"].inject_headers == ["X-Acme-Token", "X-Acme-Secondary"]
+        assert rules["KEY2"].inject_headers == []
+
+    def test_secret_injection_inject_headers_null_and_trimmed(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: KEY1
+                placeholder: "{{KEY1}}"
+                inject_headers:
+              - env: KEY2
+                placeholder: "{{KEY2}}"
+                inject_headers: ["  X-Padded-Token  "]
+        """))
+        cfg = load_config(str(p))
+        rules = {r.env: r for r in cfg.secret_injection}
+        # `inject_headers:` (null) coerces to [].
+        assert rules["KEY1"].inject_headers == []
+        # Stray whitespace is stripped at load time (HTTP field-names can't
+        # contain whitespace) so it still matches the real header name.
+        assert rules["KEY2"].inject_headers == ["X-Padded-Token"]
+
+    def test_secret_injection_inject_body_toggle(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: KEY1
+                placeholder: "{{KEY1}}"
+                inject_to: ["api.example.com"]
+                inject_body: true
+              - env: KEY2
+                placeholder: "{{KEY2}}"
+                inject_to: ["api.example.com"]
+        """))
+        cfg = load_config(str(p))
+        rules = {r.env: r for r in cfg.secret_injection}
+        assert rules["KEY1"].inject_body is True
+        assert rules["KEY2"].inject_body is False
 
     def test_injected_secret_removed_from_podman_secrets(self, full_yaml):
         cfg = load_config(full_yaml)
@@ -558,6 +636,7 @@ class TestValidateLoggingLevels:
         with pytest.raises(ValueError, match="logging.dns"):
             validate_config(cfg)
 
+    @LINUX_ONLY
     def test_valid_levels_pass(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -624,6 +703,7 @@ class TestLoadConfigEdgeCases:
 
 
 class TestValidateConfig:
+    @LINUX_ONLY
     def test_valid_config(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
         warnings = validate_config(cfg)
@@ -721,6 +801,7 @@ class TestValidateConfig:
         warnings = validate_config(cfg)
         assert any("NONEXISTENT_VAR_12345" in w for w in warnings)
 
+    @LINUX_ONLY
     def test_no_warn_for_set_env_var(self, tmp_path, monkeypatch):
         monkeypatch.setenv("EXISTING_VAR_TEST", "value")
         p = tmp_path / "config.yaml"
@@ -2022,9 +2103,13 @@ class TestAppleContainerSilentDrops:
             for w in warnings
         ), warnings
 
+    @LINUX_ONLY
     def test_container_isolation_no_silent_drop_warnings(self, tmp_path):
         """The whole batch of warnings is gated on isolation == apple-container.
-        Container backend honors all these fields, so no warnings emitted."""
+        Container backend honors all these fields, so no warnings emitted.
+
+        Gated to Linux: on macOS, validate_config rejects `container` isolation
+        outright (raising), so this container-only assertion can't run here."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: container-demo

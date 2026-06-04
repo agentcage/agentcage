@@ -17,7 +17,25 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
+
+
+@pytest.fixture(autouse=True)
+def _bypass_backend_gate(monkeypatch):
+    """Neutralize the create/update/start prerequisite gate for these tests.
+
+    ``_ensure_backend_ready`` is unit-tested on its own (see
+    test_apple_container.py); here we only want it to resolve the test's
+    (mocked) backend without enforcing ``check_prerequisites`` on a
+    MagicMock. ``get_backend`` is looked up lazily so the per-test
+    ``@patch`` mock is the one returned.
+    """
+    import agentcage.cli as _cli
+    monkeypatch.setattr(
+        _cli, "_ensure_backend_ready",
+        lambda cfg, **kw: _cli.get_backend(cfg),
+    )
 
 from agentcage.cli import main
 

@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import platform
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from agentcage.cli import main
+
+# These drive `secret set/rm` through the host's default secret backend
+# (systemd-creds / podman secrets on Linux). On macOS the default backend is
+# the Keychain and the Linux tooling is absent, so gate them to the Linux CI;
+# macOS backend resolution is covered by tests/test_secret_store.py.
+LINUX_ONLY = pytest.mark.skipif(
+    platform.system() != "Linux",
+    reason="host default secret backend is Linux-specific here; runs on Linux CI",
+)
 
 
 def _runner():
@@ -23,6 +34,7 @@ def _mock_container_config():
 
 
 class TestSecretSet:
+    @LINUX_ONLY
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_set_creates_secret(self, mock_state, MockPodman):
@@ -36,6 +48,7 @@ class TestSecretSet:
         podman.secret_create.assert_called_once_with("myapp.API_KEY", "s3cret")
         assert "myapp.API_KEY" in result.output
 
+    @LINUX_ONLY
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_set_replaces_existing(self, mock_state, MockPodman):
@@ -103,6 +116,7 @@ class TestSecretFailClosed:
         assert "refusing to store" in result.output
         podman.secret_create.assert_not_called()
 
+    @LINUX_ONLY
     @patch("agentcage.secret_resolver.detect_default_backend", return_value="podman")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
@@ -204,6 +218,7 @@ class TestSecretList:
 
 
 class TestSecretRm:
+    @LINUX_ONLY
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_rm_removes_secret(self, mock_state, MockPodman):

@@ -66,6 +66,33 @@ def _is_apple_container(cfg) -> bool:
     return getattr(cfg, "isolation", None) == "apple-container"
 
 
+def _ensure_backend_ready(cfg, *, quiet: bool = False):
+    """Resolve the backend, auto-recover its substrate, and gate on prereqs.
+
+    Brings up anything recoverable (``ensure_ready`` — e.g. apple-container's
+    apiserver, which dies on reboot) *before* checking prerequisites, so a
+    daemon we can restart ourselves never trips the gate. Whatever is still
+    unmet (wrong OS, missing CLI, a daemon that refused to start) is reported
+    uniformly and aborts the command — the diagnostics already lived in each
+    backend's ``check_prerequisites`` but nothing on the build/start path ran
+    them, so a downed apiserver surfaced as a misleading "image not found".
+    Returns the backend so callers can reuse it.
+    """
+    backend = get_backend(cfg)
+    backend.ensure_ready(quiet=quiet)
+    issues = backend.check_prerequisites(cfg)
+    if issues:
+        click.echo(
+            f"error: prerequisites for the '{getattr(cfg, 'isolation', '?')}' "
+            "backend are not met:",
+            err=True,
+        )
+        for issue in issues:
+            click.echo(f"  - {issue}", err=True)
+        sys.exit(1)
+    return backend
+
+
 def _apple_secret_names(cfg, name: str) -> set[str]:
     """Names of secrets stored for an apple-container cage via its backend
     (macOS keychain, or the legacy pending_secrets.json under plaintext)."""
@@ -778,6 +805,11 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
     from agentcage.quadlets import collect_used_octets
     used_octets = collect_used_octets()
 
+    # Auto-recover the backend substrate (apple-container's apiserver dies on
+    # reboot) and gate on prerequisites before building — build_artifacts
+    # would otherwise fail with a confusing image error if the daemon is down.
+    _ensure_backend_ready(cfg)
+
     try:
         _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets,
                            no_cache=no_cache, pull=pull)
@@ -989,6 +1021,9 @@ def cage_update(name: str | None, config_path: str | None,
     from agentcage.quadlets import collect_used_octets as _collect_update
     _existing_meta = state.load_metadata(name) or {}
     _existing_octet = _existing_meta.get("network_octet")
+    # Bring up the backend substrate (apple-container's apiserver dies on
+    # reboot) and gate on prerequisites before the rebuild/restart.
+    _ensure_backend_ready(cfg)
     _build_and_deploy(
         cfg,
         config_host_path,
@@ -1723,7 +1758,7 @@ def cage_start(name: str):
         state.save_proxy_config(name)
         state.save_dns_allowlist(name)
 
-    backend = get_backend(cfg)
+    backend = _ensure_backend_ready(cfg)
     backend.start(name)
     click.echo(f"Started cage '{name}'")
 
@@ -3538,17 +3573,28 @@ def _update_dns_quadlet(cfg) -> None:
             click.echo(err, err=True)
         sys.exit(1)
 
-    # SIGHUP dnsmasq via the pidfile the supervisor writes. The path is
-    # /home/acdns/dnsmasq.pid (pre-chowned dir, no runtime CAP_CHOWN
-    # needed). The `cat || true` makes the path failure loud rather than
-    # silent — bash's $(cat missing-file) returns empty, and `kill -HUP ""`
-    # exits 0 with nothing happening, so a future path drift would
-    # otherwise reproduce the silent-no-op bug this comment was added in
-    # response to.
+    # Regenerate the gateway-rewritten runtime servers-file (if the egress is
+    # using it) from the freshly-written allowlist, then SIGHUP. When a
+    # default-route gateway was derived at start, dnsmasq serves
+    # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders =
+    # gateway-primary + baked-fallback), NOT the bind-mounted file — so we must
+    # re-derive those lines from the updated allowlist before signaling, the
+    # same rewrite supervisor-egress.sh does at start. When that runtime file
+    # is absent (no gateway / fallback mode) dnsmasq reads the bind-mounted file
+    # directly, so a plain SIGHUP suffices.
+    #
+    # SIGHUP via the pidfile the supervisor writes at /home/acdns/dnsmasq.pid
+    # (pre-chowned dir, no runtime CAP_CHOWN). The `[ -n "$pid" ]` guard keeps a
+    # future path drift loud rather than a silent `kill -HUP ""` no-op.
     _runtime_exec([
         "sh", "-c",
-        'pid="$(cat /home/acdns/dnsmasq.pid)" && '
-        '[ -n "$pid" ] && kill -HUP "$pid"',
+        'rt=/run/agentcage/dns-allowlist.egress.conf; '
+        'if [ -f "$rt" ]; then '
+        'gw=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
+        '[ -n "$gw" ] && { sed "s#/[^/]*\\$#/$gw#" /etc/agentcage/dns-allowlist.conf; '
+        'cat /etc/agentcage/dns-allowlist.conf; } > "$rt" 2>/dev/null; '
+        'fi; '
+        'pid="$(cat /home/acdns/dnsmasq.pid)" && [ -n "$pid" ] && kill -HUP "$pid"',
     ])
 
 

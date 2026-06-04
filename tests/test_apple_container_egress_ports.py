@@ -130,6 +130,7 @@ def _start_with_meta(tmp_path, meta_extra: dict) -> list[str]:
          patch.object(AppleContainerBackend, "_wait_supervisor_ready"), \
          patch.object(AppleContainerBackend, "_container_ip", return_value="10.0.0.2"), \
          patch("agentcage.backends.apple_container.ac_cli.run", side_effect=fake_run), \
+         patch("agentcage.backends.apple_container.ac_cli.system_running", return_value=True), \
          patch("agentcage.backends.apple_container.ac_cli.inspect", return_value=None), \
          patch("agentcage.backends.apple_container.ac_cli.image_inspect", return_value={"ok": 1}), \
          patch("agentcage.backends.apple_container.ac_wrapper.wrapped_image_name",
