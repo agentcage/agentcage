@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **openclaw scaffold: restore the `/app/node_modules/openclaw` self-reference symlink on openclaw 2026.6+ base images.** The scaffold links `/app` (package name `openclaw`) under `node_modules` so a bundled extension's `import "openclaw/..."` resolves to the running openclaw root. openclaw 2026.6 now ships a *real* (hoisted, often older — e.g. `2026.5.28` under a `2026.6.1` root) `/app/node_modules/openclaw` directory, which `ln -sfn` cannot overwrite, so the symlink was silently never created and `import "openclaw"` resolved to the stale nested copy. The scaffold now `rm -rf`s the path before linking, so the symlink always points at the single running version. Fixes the E2E Phase 8.7 regression (red on `master` since the base image rebuilt).
+
 ## [0.22.21] - 2026-06-04
 
 ### Changed
