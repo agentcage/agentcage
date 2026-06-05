@@ -51,7 +51,15 @@ RUN if [ -d /app/extensions/matrix ] && [ -f /app/extensions/matrix/package.json
 # import walks up and resolves via /app/package.json's exports map.
 # Safe on older bases: they don't have the bundled extension tree, the
 # symlink just goes unused.
+#
+# `rm -rf` first: openclaw 2026.6+ ships a REAL /app/node_modules/openclaw
+# (a hoisted, often *older* nested copy of the package — e.g. 2026.5.28
+# under a 2026.6.1 root). `ln -sfn` cannot replace an existing directory, so
+# without removing it the symlink is never created and `import "openclaw"`
+# resolves to that stale nested copy instead of the running root. Remove it
+# so the symlink always points at /app (the single running version).
 RUN mkdir -p /app/node_modules \
+ && rm -rf /app/node_modules/openclaw \
  && ln -sfn /app /app/node_modules/openclaw
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
