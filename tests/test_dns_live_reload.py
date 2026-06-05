@@ -440,17 +440,38 @@ def test_supervisor_container_path_forwards_to_default_route_gateway():
     assert "/run/agentcage/dns-allowlist.egress.conf" in s
     assert '_all_servers="--all-servers"' in s
     assert "$_all_servers" in s
+    # --all-servers is UNCONDITIONAL (not gated on deriving a gateway): dnsmasq
+    # must prefer a positive answer over a public resolver's NXDOMAIN so a
+    # split-horizon apex resolves, and mitmproxy now resolves through this
+    # dnsmasq, so the correctness must hold even when no gateway is derived.
+    assert '_all_servers=""' not in s
 
 
-def test_supervisor_points_mitmproxy_resolver_at_gateway():
+def test_supervisor_points_mitmproxy_resolver_at_local_dnsmasq():
     """mitmproxy re-resolves the upstream SNI/Host, so its OWN resolver
-    (/etc/resolv.conf) must also track the host. The supervisor rebuilds it
-    each start: gateway first (host-tracking), then the baked dns_servers
-    (extracted from the allowlist) as fallback. Requires the rw resolv bind."""
+    (/etc/resolv.conf) must track the host AND resolve split-horizon names.
+    The supervisor rebuilds it each start to point at the egress's local
+    dnsmasq (the cage-facing DNS_LISTEN_IP), which forwards to the
+    default-route gateway + baked dns_servers in parallel (--all-servers) and
+    prefers a positive answer — so a public resolver's NXDOMAIN can't shadow a
+    split-horizon apex and a dead gateway adds no latency. A flat resolv.conf
+    of upstream nameservers cannot: glibc getaddrinfo queries them
+    sequentially and stops at the first definitive answer (NXDOMAIN included).
+    Requires the rw resolv bind."""
     s = _read_src("data", "containers", "supervisor-egress.sh")
-    assert 'echo "nameserver $_gw"' in s
-    assert "awk -F/ '/^server=\\//{print \"nameserver \" $3}' /etc/agentcage/dns-allowlist.conf" in s
+    # resolv.conf is a single nameserver pointing at the local dnsmasq
+    # (loopback when DNS_LISTEN_IP is the 0.0.0.0 wildcard).
+    assert '_resolver_ip="$DNS_LISTEN_IP"' in s
+    assert 'echo "nameserver $_resolver_ip"' in s
     assert "> /etc/resolv.conf" in s
+    # Regression guard (split-DNS): mitmproxy's resolv.conf must NOT be rebuilt
+    # as a flat list of upstream nameservers again. The old code wrote
+    # `nameserver $_gw` + the dns_servers piped through `sort -u`; the sort
+    # reordered the operator's deliberate dns_servers order (a public
+    # NXDOMAIN-ing resolver could sort ahead of a split-horizon one) and broke
+    # MagicDNS-homed cages.
+    assert 'echo "nameserver $_gw"' not in s
+    assert "dns-allowlist.conf | sort" not in s
     # egress.container.j2 must mount resolv.conf rw so the supervisor can rewrite it
     j2 = _read_src("templates", "egress.container.j2")
     assert "resolv-egress-{{ name }}.conf:/etc/resolv.conf:rw,Z" in j2

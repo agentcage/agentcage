@@ -276,16 +276,22 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # which NIC is eth0 is non-deterministic, and <name>-net is internal.
   _gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
   _servers_file=/etc/agentcage/dns-allowlist.conf
-  _all_servers=""
+  # --all-servers is UNCONDITIONAL. dnsmasq then queries every per-zone
+  # upstream in parallel and prefers a positive answer over a public
+  # resolver's NXDOMAIN — which is what lets a split-horizon apex (one only a
+  # specific upstream, e.g. a Tailscale-MagicDNS resolver, can answer) resolve
+  # even when a public dns_server is also configured for that zone. mitmproxy
+  # now resolves THROUGH this dnsmasq (the resolv.conf step below), so this
+  # correctness covers the egress's own getaddrinfo, not just the cage's.
+  _all_servers="--all-servers"
   if [ -n "$_gw" ] && mkdir -p /run/agentcage 2>/dev/null \
      && { sed "s#/[^/]*\$#/$_gw#" /etc/agentcage/dns-allowlist.conf; \
           cat /etc/agentcage/dns-allowlist.conf; } \
           > /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; then
     _servers_file=/run/agentcage/dns-allowlist.egress.conf
-    _all_servers="--all-servers"
     log "step B: forwarding allowlisted zones via default-route gateway ${_gw} (host-tracking) + baked-resolver fallback"
   else
-    log "warn: could not derive default-route gateway; using baked resolver upstream (DNS may go stale on host network change)"
+    log "warn: could not derive default-route gateway; forwarding allowlisted zones to the baked dns_servers only (DNS may go stale on host network change)"
   fi
   # ``--no-hosts``: dnsmasq must NOT honor /etc/hosts inside the egress
   # container. mitmproxy lives in the same container as dnsmasq in the
@@ -317,26 +323,38 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
         $_all_servers \
     &
   # Point mitmproxy's OWN resolver (getaddrinfo via /etc/resolv.conf) at the
-  # same host-tracking gateway. mitmproxy re-resolves the SNI/Host on the
-  # upstream connection (verified: breaking only this resolver 502s every
-  # allowlisted host), so without this the cage stays stale after a host
-  # network change even though its own dnsmasq tracks the gateway. Rebuild
-  # resolv.conf from scratch each start (stateless — no accumulation across
-  # restarts): gateway first (primary, host-tracking), then the baked
-  # dns_servers (extracted from the allowlist file) as fallback. getaddrinfo
-  # checks /etc/hosts FIRST, so the e2e upstream mock is preserved. Needs the
-  # rw resolv bind (egress.container.j2). Matches the apple egress, whose
-  # resolv.conf is already the vmnet gateway.
-  if [ -n "$_gw" ]; then
-    # Explicit if/then/else (not `A && B || C`) — shellcheck SC2015: with the
-    # short-circuit form the warn branch would also run if `log` itself failed.
-    if { echo "nameserver $_gw"; \
-         awk -F/ '/^server=\//{print "nameserver " $3}' /etc/agentcage/dns-allowlist.conf | sort -u; \
-         echo "options edns0"; } > /etc/resolv.conf 2>/dev/null; then
-      log "step B: mitmproxy resolver = gateway ${_gw} (host-tracking) + baked dns_servers fallback"
-    else
-      log "warn: could not repoint /etc/resolv.conf at gateway; mitmproxy uses baked resolver (may go stale on host network change)"
-    fi
+  # egress's local dnsmasq — NOT a flat list of upstream nameservers.
+  # mitmproxy re-resolves the SNI/Host on the upstream connection (verified:
+  # breaking only this resolver 502s every allowlisted host), so its resolver
+  # must (a) track the host and (b) resolve split-horizon names. dnsmasq does
+  # both: it forwards each allowlisted apex to the default-route gateway
+  # (host-tracking) AND the baked dns_servers in parallel (--all-servers) and
+  # prefers a positive answer over a public resolver's NXDOMAIN.
+  #
+  # A flat /etc/resolv.conf cannot do this. glibc getaddrinfo queries
+  # nameservers SEQUENTIALLY and stops at the first definitive answer
+  # (NXDOMAIN included), so for a split-horizon apex — one only a specific
+  # upstream can resolve, e.g. a Tailscale-MagicDNS homeserver that only
+  # 100.100.100.100 answers — resolution dies the instant a public resolver
+  # listed ahead of it NXDOMAINs, and a dead default-route gateway (CNI /
+  # older podman, no aardvark-dns) stalls every lookup the full glibc timeout.
+  # The previous code built `gateway` + `dns_servers | sort -u`: the sort also
+  # discarded the operator's deliberate dns_servers order (a public resolver
+  # could sort ahead of the split-horizon one), which broke MagicDNS-homed
+  # cages outright. Routing through dnsmasq sidesteps all of it.
+  #
+  # mitmproxy is in this same container, so it reaches dnsmasq on its own
+  # cage-facing listen IP (DNS_LISTEN_IP); fall back to loopback when that is
+  # the 0.0.0.0 wildcard. getaddrinfo still checks /etc/hosts FIRST, so the
+  # e2e upstream mock is preserved. Needs the rw resolv bind
+  # (egress.container.j2). dnsmasq is already started above.
+  _resolver_ip="$DNS_LISTEN_IP"
+  [ "$_resolver_ip" = "0.0.0.0" ] && _resolver_ip="127.0.0.1"
+  if { echo "nameserver $_resolver_ip"; \
+       echo "options edns0"; } > /etc/resolv.conf 2>/dev/null; then
+    log "step B: mitmproxy resolver = local dnsmasq ($_resolver_ip) — host-tracking + split-horizon-safe via --all-servers"
+  else
+    log "warn: could not repoint /etc/resolv.conf at local dnsmasq ($_resolver_ip)"
   fi
 else
   # Smoke-test path: no per-cage config staged yet. Start dnsmasq with a
