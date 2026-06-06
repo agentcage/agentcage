@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.22] - 2026-06-06
+
 ### Fixed
 
 - **container/vm: egress DNS no longer breaks split-horizon / Tailscale-MagicDNS upstreams (regression from 0.22.21).** 0.22.21's transparent-DNS work rebuilt the egress mitmproxy `/etc/resolv.conf` as the default-route gateway followed by the `dns_servers` piped through `sort -u`. The `sort -u` discarded the operator's deliberate `dns_servers` order, so a public resolver (`1.1.1.1`/`8.8.8.8`) could land ahead of a split-horizon one (e.g. a Tailscale `100.100.100.100` that alone resolves a `*.ts.net` MagicDNS homeserver). Because glibc `getaddrinfo` queries nameservers sequentially and stops at the first definitive answer, the public resolver's `NXDOMAIN` killed resolution and the cage 502'd every request to the internal upstream (`[Errno -2] Name or service not known`); a dead default-route gateway (CNI / older podman, no aardvark-dns) additionally stalled every lookup the full glibc timeout. mitmproxy's resolver now points at the egress's **own dnsmasq** instead of a flat upstream list — dnsmasq forwards each allowlisted apex to the gateway *and* the `dns_servers` in parallel (`--all-servers`, now unconditional) and prefers a positive answer over a public resolver's `NXDOMAIN`, so split-horizon names resolve, host-tracking is preserved, and a dead gateway adds no latency. `getaddrinfo` still checks `/etc/hosts` first, so the e2e upstream mock is unaffected.
