@@ -242,14 +242,14 @@ class TestEgressQuadlet:
         /etc/resolv.conf is a bind-mounted file (resolv-egress-<name>.conf,
         seeded with config.dns_servers by services.write_resolv_files).
 
-        The bind is now **rw** so supervisor-egress.sh can PREPEND the
-        egress's default-route gateway as the primary, host-tracking
-        resolver (keeping dns_servers as fallback) — mitmproxy re-resolves
-        the upstream, so its resolver must track host network changes, the
-        same as the apple egress. (The old aardvark "intermittent forward
-        502" fear was disproven under churn; and the gateway is the explicit
-        primary with a deterministic fallback, not an implicit ordering
-        winner.)
+        The bind is now **rw** so supervisor-egress.sh can REWRITE it each
+        start to point mitmproxy's resolver at the egress's local dnsmasq
+        (which forwards to the default-route gateway + dns_servers in parallel
+        via --all-servers). mitmproxy re-resolves the upstream, so its
+        resolver must track host network changes AND resolve split-horizon
+        names — routing through dnsmasq gives both, where a flat list of
+        upstream nameservers cannot (glibc getaddrinfo stops at the first
+        NXDOMAIN).
         """
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -263,7 +263,8 @@ class TestEgressQuadlet:
         cfg = load_config(str(p))
         files = generate_quadlets(cfg, "/c.yaml", "/patches", deploy_name="test")
         content = files["test-egress.container"]
-        # resolv.conf is bind-mounted rw (supervisor prepends the gateway).
+        # resolv.conf is bind-mounted rw (supervisor rewrites it to point at
+        # the local dnsmasq).
         assert (
             "Volume=/patches/resolv-egress-test.conf:/etc/resolv.conf:rw,Z"
             in content
