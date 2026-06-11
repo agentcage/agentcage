@@ -42,9 +42,65 @@ class SecretsConfig:
     allow_plaintext: bool = False
 
 
+def generate_placeholder(env: str) -> str:
+    """Return an entropic placeholder token for *env*.
+
+    Format: ``{{placeholder_<env_lowercase>_<16 hex chars>}}`` (64 bits of
+    entropy). Guessable placeholders like ``{{GH_TOKEN}}`` are an accidental-
+    substitution hazard: any file the agent sends outbound that happens to
+    contain that literal text (template files, docs) would get the real
+    secret injected. The random suffix makes a collision with legitimate
+    content vanishingly unlikely. The token must stay inside ``{{...}}``
+    delimiters — the proxy matches placeholders as literal strings.
+    """
+    import secrets as _secrets
+    return "{{placeholder_%s_%s}}" % (env.lower(), _secrets.token_hex(8))
+
+
+def fill_raw_placeholders(raw: dict, prev_raw: dict | None = None) -> bool:
+    """Generate entropic placeholders for rules that omit ``placeholder:``.
+
+    Mutates *raw* (a parsed cage.yaml dict) in place; returns True if any
+    rule was filled. When *prev_raw* is given (``cage update -c`` / ``cage
+    edit``), a placeholder already persisted for the same env is carried
+    over so the token stays stable across updates — regenerating would
+    desynchronize processes still holding the old token in their env.
+
+    The filled dict is persisted into the stored cage.yaml (the single
+    source of truth) so every consumer — quadlet rendering, proxy config,
+    ``secret list`` — sees the same value.
+    """
+    def _rules(d: dict) -> list:
+        si = d.get("secret_injection") or []
+        rules = si.get("rules", []) if isinstance(si, dict) else si
+        return rules if isinstance(rules, list) else []
+
+    prev = {}
+    if prev_raw:
+        prev = {
+            e.get("env"): e.get("placeholder", "")
+            for e in _rules(prev_raw) if isinstance(e, dict)
+        }
+    changed = False
+    for entry in _rules(raw):
+        if not isinstance(entry, dict):
+            continue
+        env = entry.get("env", "")
+        if not env or entry.get("placeholder"):
+            continue
+        entry["placeholder"] = prev.get(env) or generate_placeholder(env)
+        changed = True
+    return changed
+
+
 @dataclass
 class SecretInjectionRule:
     env: str
+    # Empty means "not yet generated": rules may omit ``placeholder:`` in
+    # cage.yaml, and the CLI persists a generated token into the stored
+    # config at declare time (create/update/edit) — see
+    # config.fill_raw_placeholders. Consumers that render or inject
+    # placeholders skip rules whose placeholder is still empty.
     placeholder: str
     inject_to: list[str] = field(default_factory=list)
     source: str = ""
@@ -542,8 +598,11 @@ def load_config(path: str) -> Config:
 
     for entry in si_rules:
         env_name = entry.get("env", "")
-        placeholder = entry.get("placeholder", "")
-        if env_name and placeholder:
+        # placeholder is optional: an omitted/empty placeholder is filled
+        # with a generated entropic token when the rule is persisted to a
+        # cage's stored config (config.fill_raw_placeholders).
+        placeholder = entry.get("placeholder", "") or ""
+        if env_name:
             validate_env_name(env_name)
             source = entry.get("source", "")
             validate_source(source)
@@ -1184,6 +1243,19 @@ def validate_config(config: Config) -> list[str]:
             "connectivity (the proxy's filter:FORWARD policy is DROP "
             "and no ports are allowed through)"
         )
+
+    # Warn about guessable placeholders — the bare {{ENV_NAME}} convention
+    # is an accidental-substitution hazard (any outbound content containing
+    # the literal text gets the real secret injected). Explicit placeholders
+    # stay supported for APIs that validate credential format client-side.
+    for rule in config.secret_injection:
+        if rule.placeholder == "{{%s}}" % rule.env:
+            warnings.append(
+                f"secret_injection[{rule.env!r}]: placeholder "
+                f"'{rule.placeholder}' is guessable — omit `placeholder:` "
+                f"to auto-generate an entropic token, or pick a value "
+                f"unlikely to appear in outbound content"
+            )
 
     # Warn about passthrough implications
     if config.domains.passthrough:

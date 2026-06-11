@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Secret-injection placeholders are now entropic by default.** `secret_injection` rules may omit `placeholder:` — agentcage generates `{{placeholder_<env_lowercase>_<16 hex chars>}}` (64 bits of entropy) and persists it into the cage's stored config the first time the rule is deployed (`cage create`, `cage update -c`, `cage edit`, `agentcage run`). The token is carried over by `env` name on subsequent updates, so it stays stable for long-running cage processes. Rationale: the proxy substitutes placeholders as literal strings, so a guessable placeholder like `{{GH_TOKEN}}` is an accidental-substitution hazard — outbound content that legitimately contains that text (template files, docs, CI config) would get the real secret injected into it. Explicit `placeholder:` values remain fully supported (some clients validate credential format before sending); `validate_config` now warns when an explicit placeholder uses the bare `{{ENV_NAME}}` convention. All bundled scaffolds generate entropic placeholders at render time, and `agentcage secret list` grew a `PLACEHOLDER` column so the generated token is discoverable. Existing cages are untouched — their stored placeholders keep working as-is.
+
 ## [0.22.22] - 2026-06-06
 
 ### Fixed

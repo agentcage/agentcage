@@ -83,33 +83,35 @@ container:
 
 # ── Secret injection ──
 # API keys are swapped by the proxy — the cage only sees placeholders.
+# Placeholders are generated decoy tokens, unique per cage — entropy keeps
+# real outbound content from ever colliding with one.
 # Create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
 secret_injection:
   # Core AI provider
   - env: ANTHROPIC_API_KEY
-    placeholder: "{%raw%}{{ANTHROPIC_API_KEY}}{%endraw%}"
+    placeholder: "{{ placeholder('ANTHROPIC_API_KEY') }}"
     inject_to:
       - anthropic.com
 
   # Uncomment providers as needed:
   #- env: OPENAI_API_KEY
-  #  placeholder: "{%raw%}{{OPENAI_API_KEY}}{%endraw%}"
+  #  placeholder: "{{ placeholder('OPENAI_API_KEY') }}"
   #  inject_to:
   #    - openai.com
   #- env: OPENROUTER_API_KEY
-  #  placeholder: "{%raw%}{{OPENROUTER_API_KEY}}{%endraw%}"
+  #  placeholder: "{{ placeholder('OPENROUTER_API_KEY') }}"
   #  inject_to:
   #    - openrouter.ai
 
   # Web search
   #- env: BRAVE_API_KEY
-  #  placeholder: "{%raw%}{{BRAVE_API_KEY}}{%endraw%}"
+  #  placeholder: "{{ placeholder('BRAVE_API_KEY') }}"
   #  inject_to:
   #    - search.brave.com
 
   # Web scraping
   #- env: FIRECRAWL_API_KEY
-  #  placeholder: "{%raw%}{{FIRECRAWL_API_KEY}}{%endraw%}"
+  #  placeholder: "{{ placeholder('FIRECRAWL_API_KEY') }}"
   #  inject_to:
   #    - firecrawl.dev
 

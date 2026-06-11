@@ -15,7 +15,8 @@ register_cage "$CAGE"
 echo "Creating secrets cage..."
 export E2E_PORT_SECRETS="$SECRET_PORT"
 create_cage "$CONFIGS/secrets.yaml" \
-  --set-secret MY_API_KEY=test-secret-value-12345 >/dev/null
+  --set-secret MY_API_KEY=test-secret-value-12345 \
+  --set-secret MY_AUTO_KEY=auto-secret-value-67890 >/dev/null
 start_mock "$CAGE" httpbin.org
 if ! wait_ready "$BASE" 120; then
   e2e_fail "3.0" "Setup" "secrets cage not ready"
@@ -48,6 +49,17 @@ if [ "$OUTPUT" = "{{MY_API_KEY}}" ]; then
   e2e_pass "3.2" "Placeholder in cage env"
 else
   e2e_fail "3.2" "Placeholder in cage env" "got '$OUTPUT', expected '{{MY_API_KEY}}'"
+fi
+
+# 3.2b: Entropic placeholder generated for a rule declared without `placeholder:`
+# (cage create persists {{placeholder_my_auto_key_<16hex>}} into the stored
+# config and the cage env carries it).
+e2e_timer_start
+OUTPUT=$(podman exec "${CAGE}-cage" printenv MY_AUTO_KEY 2>&1) || true
+if echo "$OUTPUT" | grep -Eq '^\{\{placeholder_my_auto_key_[0-9a-f]{16}\}\}$'; then
+  e2e_pass "3.2b" "Entropic placeholder in cage env"
+else
+  e2e_fail "3.2b" "Entropic placeholder in cage env" "got '$OUTPUT', expected {{placeholder_my_auto_key_<16hex>}}"
 fi
 
 # 3.3: Injection on outbound — send placeholder, then poll audit for injection record.

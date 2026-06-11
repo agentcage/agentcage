@@ -66,7 +66,7 @@ claude setup-token                                  # on the host — mints a to
 agentcage secret set myagent CLAUDE_CODE_OAUTH_TOKEN # paste the token
 ```
 
-Then uncomment the `CLAUDE_CODE_OAUTH_TOKEN` block under `secret_injection` in `cage.yaml`, and remove the `ANTHROPIC_API_KEY` rule (Claude Code prefers the API key when both are set). Claude Code sends the placeholder `{{CLAUDE_CODE_OAUTH_TOKEN}}` as a bearer token, and the proxy swaps it for the real value en route to `anthropic.com` — the real token never enters the cage.
+Then uncomment the `CLAUDE_CODE_OAUTH_TOKEN` block under `secret_injection` in `cage.yaml`, and remove the `ANTHROPIC_API_KEY` rule (Claude Code prefers the API key when both are set). Claude Code sends the generated placeholder token (run `agentcage secret list <cage>` to see it) as a bearer token, and the proxy swaps it for the real value en route to `anthropic.com` — the real token never enters the cage.
 
 This is the best option for persistent and headless cages: the token is long-lived, so there is no per-session refresh that could collide with your host login.
 
@@ -77,7 +77,7 @@ agentcage secret set myagent ANTHROPIC_API_KEY
 agentcage cage create -c cage.yaml
 ```
 
-The scaffold uses `secret_injection` for the API key. Claude Code sends the placeholder `{{ANTHROPIC_API_KEY}}` in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
+The scaffold uses `secret_injection` for the API key. Claude Code sends a generated placeholder token (e.g. `{{placeholder_anthropic_api_key_9f3a1c0b7d2e4a85}}`) in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
 
 #### 3. Start a session
 

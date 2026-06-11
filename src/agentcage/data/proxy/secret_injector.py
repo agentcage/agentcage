@@ -123,6 +123,16 @@ class SecretInjector:
         for entry in rules_list:
             env_name = entry.get("env", "")
             placeholder = entry.get("placeholder", "")
+            if not placeholder:
+                # A rule whose placeholder was never generated (the CLI
+                # fills omitted placeholders at declare time). An empty
+                # placeholder must never reach matching: `"" in text` is
+                # always True and `text.replace("", v)` corrupts content.
+                log.warning(
+                    "secret_injection: rule %s has no placeholder, "
+                    "skipping", env_name,
+                )
+                continue
             inject_to = [d.lower() for d in entry.get("inject_to", [])]
 
             real_value = os.environ.get(env_name, "")

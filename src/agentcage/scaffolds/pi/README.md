@@ -61,7 +61,7 @@ agentcage secret set myagent ANTHROPIC_API_KEY
 agentcage cage create -c cage.yaml
 ```
 
-The scaffold uses `secret_injection` for the API key. Pi sends the placeholder `{{ANTHROPIC_API_KEY}}` in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
+The scaffold uses `secret_injection` for the API key. Pi sends a generated placeholder token (e.g. `{{placeholder_anthropic_api_key_9f3a1c0b7d2e4a85}}`) in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
 
 **API key (OpenAI):**
 

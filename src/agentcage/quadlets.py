@@ -349,8 +349,12 @@ def generate_quadlets(
         expanded_volumes.append(expanded)
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
 
-    # Build cage placeholder list: (env_name, placeholder_value)
-    cage_placeholders = [(r.env, r.placeholder) for r in config.secret_injection]
+    # Build cage placeholder list: (env_name, placeholder_value). Rules
+    # whose placeholder hasn't been generated yet (config.fill_raw_placeholders
+    # runs at declare time) are skipped rather than rendered as empty env.
+    cage_placeholders = [
+        (r.env, r.placeholder) for r in config.secret_injection if r.placeholder
+    ]
 
     # Proxy secrets: split by backend for quadlet generation.
     # A rule gets a decrypt ExecStartPre if:

@@ -711,6 +711,10 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
 
     # Save state
     state.save_deployment(name, config_path)
+    # Rules may omit `placeholder:` — persist generated entropic tokens
+    # into the stored config and reload so quadlets/proxy see them.
+    if state.fill_placeholders(name):
+        cfg = state.load_deployment_config(name)
     from agentcage.init import infer_scaffold_from_image
     metadata = {"agentcage_version": version("agentcage")}
     scaffold_name = infer_scaffold_from_image(cfg.container.image)
@@ -894,7 +898,12 @@ def cage_update(name: str | None, config_path: str | None,
             click.echo(f"error: cage '{name}' does not exist", err=True)
             sys.exit(1)
         _ensure_v022_cage(name)
+        # Capture the previous stored config before it's overwritten so
+        # already-generated placeholders carry over (stable across updates).
+        prev_raw = state.load_raw_config(name)
         state.save_deployment(name, config_path)
+        if state.fill_placeholders(name, prev_raw=prev_raw):
+            cfg = state.load_deployment_config(name)
         # Copy the Containerfile and its sibling build inputs into the state
         # dir so future updates can rebuild (Containerfiles may COPY files
         # and whole directory trees from the build context)
@@ -915,6 +924,7 @@ def cage_update(name: str | None, config_path: str | None,
         # base images (--pull), and restarts. To change config, edit it
         # explicitly via `cage edit` or supply a new config with
         # `cage update -c <file>`.
+        state.fill_placeholders(name)
         cfg = state.load_deployment_config(name)
         try:
             warnings = validate_config(cfg)
@@ -1627,6 +1637,14 @@ def cage_edit(name: str):
         click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
         click.echo(f"  Original config at {config_path} is unchanged.", err=True)
         sys.exit(1)
+
+    # Fill omitted secret-injection placeholders before rendering so the
+    # diff below shows the generated token and validation sees the final
+    # config. Carry-over from the pre-edit config keeps already-generated
+    # placeholders stable when the user leaves `placeholder:` off a rule
+    # that already had one.
+    from agentcage.config import fill_raw_placeholders
+    fill_raw_placeholders(edited_raw, prev_raw=original_raw)
 
     # Re-render so we can validate via the real loader (writes to a tempfile
     # because load_config takes a path, not a dict).
@@ -3239,7 +3257,7 @@ def secret():
 
 
 def _render_secret_list(cfg, present_keys: set[str]) -> bool:
-    """Print the NAME/TYPE/STATUS table for a cage's secrets.
+    """Print the NAME/TYPE/STATUS/PLACEHOLDER table for a cage's secrets.
 
     Renders the *union* of declared (``cage.yaml``) and actually-stored
     secrets so a value set via ``secret set`` for a key with no matching
@@ -3251,12 +3269,15 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     """
     expected = _expected_secrets(cfg)
     injection_names = {r.env for r in cfg.secret_injection}
+    # Placeholders are decoy tokens (never sensitive) — show them so a
+    # generated value is discoverable without opening the stored cage.yaml.
+    placeholders = {r.env: r.placeholder for r in cfg.secret_injection}
     # Declared secrets first (preserving config order), then any stored
     # keys that aren't declared anywhere.
     expected_set = set(expected)
     orphans = sorted(k for k in present_keys if k not in expected_set)
 
-    click.echo(f"{'NAME':<30} {'TYPE':<12} STATUS")
+    click.echo(f"{'NAME':<30} {'TYPE':<12} {'STATUS':<8} PLACEHOLDER")
     any_missing = False
     for key in expected:
         stype = "injection" if key in injection_names else "direct"
@@ -3265,7 +3286,10 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
         else:
             status = "MISSING"
             any_missing = True
-        click.echo(f"{key:<30} {stype:<12} {status}")
+        click.echo(
+            f"{key:<30} {stype:<12} {status:<8} "
+            f"{placeholders.get(key, '')}".rstrip()
+        )
     for key in orphans:
         # Stored at rest but not referenced by the config — staged at
         # start() but never injected/redacted. Surface it so it can be
