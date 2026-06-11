@@ -72,6 +72,19 @@ def push_config_files(name: str, inst: LimaInstance) -> None:
             f"{shlex.quote(_abs(vm_local_dns_allowlist_path(name)))}",
         ])
 
+    placeholders_env = state.placeholders_env_path(name)
+    if placeholders_env.is_file():
+        from agentcage.quadlets import (
+            vm_local_cage_env_dir, vm_local_placeholders_env_path,
+        )
+        inst.exec(["mkdir", "-p", _abs(vm_local_cage_env_dir(name))])
+        encoded = base64.b64encode(placeholders_env.read_bytes()).decode()
+        inst.exec([
+            "bash", "-c",
+            f"echo '{encoded}' | base64 -d > "
+            f"{shlex.quote(_abs(vm_local_placeholders_env_path(name)))}",
+        ])
+
 
 VM_SERVICE_STARTUP_DELAY_S = 5
 VM_SERVICE_STARTUP_POLL_INTERVAL_S = 0.1

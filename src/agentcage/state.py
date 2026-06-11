@@ -149,13 +149,85 @@ def save_proxy_config(name: str) -> str:
 
     Strips container, dns_servers, name, and other keys that the proxy
     does not need, so the full config is not exposed inside the proxy container.
+
+    Also refreshes ``cage-env/placeholders.env`` (see
+    :func:`save_placeholders_env`) — both files are cage.yaml-derived state
+    the containers mount, and every deploy/restart path that needs one
+    needs the other, so they are regenerated together to stay in lockstep.
     """
     raw = load_raw_config(name)
     proxy_cfg = {k: v for k, v in raw.items() if k in _PROXY_KEYS}
     p = _deploy_dir(name) / "proxy-config.yaml"
     with open(p, "w") as f:
         yaml.safe_dump(proxy_cfg, f, default_flow_style=False, sort_keys=False)
+    save_placeholders_env(name)
     return str(p)
+
+
+def cage_env_dir(name: str) -> Path:
+    """Host directory bind-mounted read-only into the cage at /run/agentcage/env.
+
+    Holds only non-sensitive cage-facing derived files (placeholders are
+    decoy tokens). A directory — not a single-file mount — so in-place
+    rewrites always propagate regardless of inode churn. Path-only (no
+    mkdir): quadlet rendering composes this path without side effects;
+    :func:`save_placeholders_env` creates it on write.
+    """
+    return _deploy_dir(name) / "cage-env"
+
+
+def placeholders_env_path(name: str) -> Path:
+    """Path of the env-file holding the cage's placeholder variables."""
+    return cage_env_dir(name) / "placeholders.env"
+
+
+def save_placeholders_env(name: str) -> str:
+    """Write ``ENV=PLACEHOLDER`` lines derived from the stored cage.yaml.
+
+    The cage quadlet references this file via ``EnvironmentFile=`` (read by
+    podman at container creation, so every restart — not just ``cage
+    update`` — picks up placeholder changes) and bind-mounts its parent
+    directory at ``/run/agentcage/env`` for in-cage consumers.
+
+    Derived from the *raw* stored config (not ``load_config``) so it works
+    in contexts where full validation would fail, mirroring
+    ``save_proxy_config``. Rules without a placeholder are skipped — the
+    CLI fills omitted placeholders at declare time. Written in place (no
+    rename) so bind mounts keep tracking the same inode.
+    """
+    raw = load_raw_config(name)
+    si = raw.get("secret_injection") or []
+    rules = si.get("rules", []) if isinstance(si, dict) else si
+    lines = []
+    for entry in rules if isinstance(rules, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        env, placeholder = entry.get("env"), entry.get("placeholder")
+        if env and placeholder:
+            lines.append(f"{env}={placeholder}")
+    p = placeholders_env_path(name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
+        f.write("".join(line + "\n" for line in lines))
+    return str(p)
+
+
+def runtime_secrets_dir(name: str) -> Path:
+    """Per-cage tmpfs staging dir for real secret values.
+
+    Matches the ``%t/agentcage/<name>/secrets`` path the egress quadlet
+    mounts (systemd expands ``%t`` to ``$XDG_RUNTIME_DIR``): the egress
+    ``ExecStartPre`` stages declared secrets here at every start, and the
+    proxy reads them via the bind mount at ``/home/acproxy/secrets``.
+    tmpfs only — real values never touch persistent disk unencrypted.
+    Mounted into the egress exclusively, never the cage.
+    """
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    d = Path(base) / "agentcage" / name / "secrets"
+    d.mkdir(parents=True, exist_ok=True)
+    for sub in (d, d.parent, d.parent.parent):
+        sub.chmod(0o700)
+    return d
 
 
 def dns_allowlist_path(name: str) -> Path:

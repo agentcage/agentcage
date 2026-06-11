@@ -203,18 +203,30 @@ class TestQuadletEmptyPlaceholderGuard:
         """))
         return load_config(str(p))
 
-    def test_empty_placeholder_not_rendered(self, tmp_path, patch_state_dirs):
+    def test_empty_placeholder_renders_no_env_delivery(
+        self, tmp_path, patch_state_dirs,
+    ):
+        """A rule whose placeholder was never generated must not produce an
+        EnvironmentFile reference (the derived file would hold no line for
+        it anyway) nor any baked Environment= line."""
         from agentcage.quadlets import generate_quadlets
         cfg = self._cfg(tmp_path)
         units = generate_quadlets(
             cfg, str(tmp_path / "proxy-config.yaml"), str(tmp_path), "guardtest",
         )
         cage_unit = units["guardtest-cage.container"]
-        assert 'Environment="MY_KEY="' not in cage_unit
         assert 'Environment="MY_KEY=' not in cage_unit
+        assert "EnvironmentFile=" not in cage_unit
+        assert "/run/agentcage/env" not in cage_unit
 
-    def test_filled_placeholder_rendered(self, tmp_path, patch_state_dirs):
+    def test_filled_placeholder_delivered_via_env_file(
+        self, tmp_path, patch_state_dirs,
+    ):
+        """Placeholders are delivered via EnvironmentFile + a cage-env dir
+        mount — podman re-reads the file at container creation, so a plain
+        `cage restart` applies placeholder changes."""
         from agentcage.quadlets import generate_quadlets
+        state = patch_state_dirs
         p = tmp_path / "cage.yaml"
         p.write_text(textwrap.dedent("""\
             name: guardtest
@@ -230,10 +242,22 @@ class TestQuadletEmptyPlaceholderGuard:
             cfg, str(tmp_path / "proxy-config.yaml"), str(tmp_path), "guardtest",
         )
         cage_unit = units["guardtest-cage.container"]
+        env_path = str(state.placeholders_env_path("guardtest"))
+        assert f"EnvironmentFile={env_path}" in cage_unit
         assert (
-            'Environment="MY_KEY={{placeholder_my_key_0123456789abcdef}}"'
+            f"Volume={state.cage_env_dir('guardtest')}:/run/agentcage/env:ro,Z"
             in cage_unit
         )
+        assert 'Environment="MY_KEY=' not in cage_unit
+        # The egress stages the secret value into the tmpfs dir at start
+        # and mounts it where the injector's file fallback looks.
+        egress_unit = units["guardtest-egress.container"]
+        assert (
+            "Volume=%t/agentcage/guardtest/secrets:/home/acproxy/secrets:ro,Z"
+            in egress_unit
+        )
+        assert "podman secret inspect --showsecret" in egress_unit
+        assert '"%t/agentcage/guardtest/secrets/MY_KEY"' in egress_unit
 
 
 class TestInjectorEmptyPlaceholderGuard:

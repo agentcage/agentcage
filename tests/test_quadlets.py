@@ -721,8 +721,13 @@ class TestCageQuadlet:
         assert f"ip={addrs['ip_cage']}" in content
         # Podman secrets (INJECTED_KEY removed, MY_API_KEY kept)
         assert "Secret=MY_API_KEY,type=env" in content
-        # Cage placeholder for injected secret
-        assert 'Environment="INJECTED_KEY={{INJECTED_KEY}}"' in content
+        # Cage placeholders are delivered via EnvironmentFile (re-read by
+        # podman at every container creation, so `cage restart` picks up
+        # placeholder changes), not baked Environment= lines.
+        assert 'Environment="INJECTED_KEY=' not in content
+        assert "EnvironmentFile=" in content
+        assert "/cage-env/placeholders.env" in content
+        assert ":/run/agentcage/env:ro,Z" in content
         # User env
         assert 'Environment="STATIC_VAR=hello"' in content
         # User is empty → no User= line
@@ -750,7 +755,9 @@ class TestCageQuadlet:
         assert "Image=ghcr.io/openclaw/openclaw:latest" in content
         assert "Exec=/usr/local/bin/entrypoint.sh" in content
         assert "Secret=OPENCLAW_GATEWAY_PASSWORD,type=env" in content
-        assert 'Environment="ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}"' in content
+        assert 'Environment="ANTHROPIC_API_KEY=' not in content
+        assert "EnvironmentFile=" in content
+        assert "/cage-env/placeholders.env" in content
         assert 'Environment="OPENCLAW_DISABLE_BONJOUR=1"' in content
         assert "Volume=openclaw-state:/home/node/.openclaw:rw" in content
         assert "PodmanArgs=--memory=4g" in content

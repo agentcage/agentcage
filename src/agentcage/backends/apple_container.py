@@ -1230,7 +1230,23 @@ class AppleContainerBackend:
         # value for an env, we skip the -e flag entirely so the
         # placeholder doesn't end up leaking through to upstream as a
         # literal string (matches legacy single-VM start() behavior).
-        placeholders = meta.get("secret_env_placeholders") or {}
+        #
+        # Prefer the LIVE stored config over the metadata snapshot baked
+        # at create/update time, so a plain restart picks up placeholder
+        # changes (parity with the container/vm backends' EnvironmentFile
+        # delivery). Metadata remains the fallback for robustness.
+        placeholders = dict(meta.get("secret_env_placeholders") or {})
+        try:
+            from agentcage import state as _state_mod
+            raw = _state_mod.load_raw_config(name)
+            si = raw.get("secret_injection") or []
+            rules = si.get("rules", []) if isinstance(si, dict) else si
+            for entry in rules if isinstance(rules, list) else []:
+                if isinstance(entry, dict) and entry.get("env") \
+                        and entry.get("placeholder"):
+                    placeholders[entry["env"]] = entry["placeholder"]
+        except FileNotFoundError:
+            pass
         for env_name in staged_envs:
             ph = placeholders.get(env_name)
             if not ph:

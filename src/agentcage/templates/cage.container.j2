@@ -43,9 +43,16 @@ Secret={{ secret }},type=env
 {% for key, val in env.items() %}
 Environment="{{ key }}={{ val }}"
 {% endfor %}
-{% for key, val in cage_placeholders %}
-Environment="{{ key }}={{ val }}"
-{% endfor %}
+{% if placeholders_env_path %}
+{# Secret-injection placeholders. An EnvironmentFile (not baked
+   Environment= lines) so podman re-reads it at every container creation:
+   a plain `cage restart` picks up placeholder changes without a quadlet
+   regeneration. The parent dir is also mounted for in-cage consumers
+   (shells can source /run/agentcage/env/placeholders.env). Placeholders
+   are decoy tokens — never sensitive. #}
+EnvironmentFile={{ placeholders_env_path }}
+Volume={{ cage_env_dir }}:/run/agentcage/env:ro,Z
+{% endif %}
 {% if userns %}
 UserNS={{ userns }}
 {% endif %}
