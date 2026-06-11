@@ -378,6 +378,11 @@ def execute(
 
     # Save deployment state
     state.save_deployment(cage_name, str(config_path))
+    # Scaffold templates render entropic placeholders at render time, but a
+    # user scaffold may still omit `placeholder:` — persist generated tokens
+    # and reload so quadlets/proxy see them.
+    if state.fill_placeholders(cage_name):
+        cfg = state.load_deployment_config(cage_name)
     meta = state.load_metadata(cage_name)
     meta["scaffold"] = scaffold
     meta["lifecycle"] = cfg.lifecycle

@@ -1,5 +1,6 @@
 """Tests for scaffold listing, rendering, and metadata loading."""
 
+import re
 import textwrap
 from pathlib import Path
 
@@ -160,11 +161,15 @@ class TestCodingAgentScaffolds:
     def test_claude_code_oauth_token_rule_present_but_inactive(self):
         """The CLAUDE_CODE_OAUTH_TOKEN injection rule ships commented out —
         present as guidance, but not active (an active rule would make
-        `cage create` demand the secret). The placeholder must render
-        literally, not be expanded by Jinja."""
+        `cage create` demand the secret). The placeholder renders as a
+        concrete entropic token even inside the comment, so uncommenting
+        the rule yields a ready-to-use config."""
         cfg_text = render_config("test-cc", scaffold="claude-code")
         assert "#- env: CLAUDE_CODE_OAUTH_TOKEN" in cfg_text
-        assert "{{CLAUDE_CODE_OAUTH_TOKEN}}" in cfg_text
+        assert re.search(
+            r"\{\{placeholder_claude_code_oauth_token_[0-9a-f]{16}\}\}",
+            cfg_text,
+        )
         parsed = yaml.safe_load(cfg_text)
         active = [s["env"] for s in parsed.get("secret_injection", [])]
         assert active == ["ANTHROPIC_API_KEY"]

@@ -72,7 +72,7 @@ container:
 # Uncomment for GitHub push over HTTPS or any other host you want to inject to.
 #secret_injection:
 #  - env: GITHUB_TOKEN
-#    placeholder: "{%raw%}{{GITHUB_TOKEN}}{%endraw%}"
+#    placeholder: "{{ placeholder('GITHUB_TOKEN') }}"
 #    inject_to:
 #      - github.com
 

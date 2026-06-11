@@ -53,7 +53,7 @@ This builds the proxy and DNS images, generates systemd quadlet files, and start
 agentcage secret set myagent OPENAI_API_KEY
 ```
 
-The scaffold uses `secret_injection` for the API key. Codex sends the placeholder `{{OPENAI_API_KEY}}` in API calls, and the proxy swaps it for the real value when forwarding to `openai.com`. No real secret enters the cage.
+The scaffold uses `secret_injection` for the API key. Codex sends a generated placeholder token (e.g. `{{placeholder_openai_api_key_9f3a1c0b7d2e4a85}}`) in API calls, and the proxy swaps it for the real value when forwarding to `openai.com`. No real secret enters the cage.
 
 #### 4. Start a session
 

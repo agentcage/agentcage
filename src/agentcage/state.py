@@ -84,6 +84,24 @@ def save_raw_config(name: str, raw: dict) -> None:
         yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
 
 
+def fill_placeholders(name: str, prev_raw: dict | None = None) -> bool:
+    """Fill omitted secret-injection placeholders in a stored cage.yaml.
+
+    Persists a generated entropic token for every rule that omits
+    ``placeholder:`` (see :func:`agentcage.config.fill_raw_placeholders`).
+    Returns True if the stored config was rewritten — callers must then
+    reload their Config so downstream rendering sees the filled values.
+    Note: rewriting goes through yaml.safe_dump and drops YAML comments;
+    this only happens when at least one rule actually omits a placeholder.
+    """
+    from agentcage.config import fill_raw_placeholders
+    raw = load_raw_config(name)
+    if fill_raw_placeholders(raw, prev_raw):
+        save_raw_config(name, raw)
+        return True
+    return False
+
+
 # Keys from cage.yaml that the proxy addon actually reads
 _PROXY_KEYS = frozenset({
     "domains", "secrets", "max_request_body", "entropy", "content_type",

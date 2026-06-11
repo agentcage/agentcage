@@ -82,10 +82,12 @@ container:
 
 # ── Secret injection ──
 # API keys are swapped by the proxy — the cage only sees placeholders.
+# Placeholders are generated decoy tokens, unique per cage — entropy keeps
+# real outbound content from ever colliding with one.
 # Create each secret:  agentcage secret set {{ name }} ANTHROPIC_API_KEY
 secret_injection:
   - env: ANTHROPIC_API_KEY
-    placeholder: "{%raw%}{{ANTHROPIC_API_KEY}}{%endraw%}"
+    placeholder: "{{ placeholder('ANTHROPIC_API_KEY') }}"
     inject_to:
       - anthropic.com
 
@@ -97,13 +99,13 @@ secret_injection:
   # If you enable this, remove the ANTHROPIC_API_KEY rule above — Claude Code
   # prefers the API key when both are set.
   #- env: CLAUDE_CODE_OAUTH_TOKEN
-  #  placeholder: "{%raw%}{{CLAUDE_CODE_OAUTH_TOKEN}}{%endraw%}"
+  #  placeholder: "{{ placeholder('CLAUDE_CODE_OAUTH_TOKEN') }}"
   #  inject_to:
   #    - anthropic.com
 
   # Uncomment for GitHub push via HTTPS:
   #- env: GITHUB_TOKEN
-  #  placeholder: "{%raw%}{{GITHUB_TOKEN}}{%endraw%}"
+  #  placeholder: "{{ placeholder('GITHUB_TOKEN') }}"
   #  inject_to:
   #    - github.com
 

@@ -74,10 +74,12 @@ domains:
 
 # ── Secret injection ──
 # API keys are swapped by the proxy — the cage only sees placeholders.
+# Placeholders are generated decoy tokens, unique per cage — entropy keeps
+# real outbound content from ever colliding with one.
 # Create each secret first:  agentcage secret set {{ name }} MY_API_KEY
 # secret_injection:
 #   - env: MY_API_KEY
-#     placeholder: "{%raw%}{{MY_API_KEY}}{%endraw%}"
+#     placeholder: "{{ placeholder('MY_API_KEY') }}"
 #     inject_to:
 #       - api.example.com
 

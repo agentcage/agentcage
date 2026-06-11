@@ -248,14 +248,17 @@ else
     "/app/node_modules/openclaw symlink missing or target package.json unreadable"
 fi
 
-# 8.8a: cage env has literal placeholder (not the real sentinel)
+# 8.8a: cage env has a literal entropic placeholder (not the real sentinel).
+# The scaffold generates {{placeholder_anthropic_api_key_<16hex>}} at render
+# time, so the exact token differs per cage — assert the format, not a fixed
+# literal.
 e2e_timer_start
-if podman exec "${CAGE}-cage" env 2>/dev/null | grep -q 'ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}'; then
-  e2e_pass "8.8a" "cage env has literal placeholder"
+actual=$(podman exec "${CAGE}-cage" printenv ANTHROPIC_API_KEY 2>/dev/null || echo 'not set')
+if echo "$actual" | grep -Eq '^\{\{placeholder_anthropic_api_key_[0-9a-f]{16}\}\}$'; then
+  e2e_pass "8.8a" "cage env has literal entropic placeholder"
 else
-  actual=$(podman exec "${CAGE}-cage" env 2>/dev/null | grep '^ANTHROPIC_API_KEY=' || echo 'not set')
-  e2e_fail "8.8a" "cage env has literal placeholder" \
-    "expected ANTHROPIC_API_KEY={{ANTHROPIC_API_KEY}}, got: $actual"
+  e2e_fail "8.8a" "cage env has literal entropic placeholder" \
+    "expected {{placeholder_anthropic_api_key_<16hex>}}, got: $actual"
 fi
 
 # 8.8b: proxy records an injection attempt on the injected domain.
@@ -267,11 +270,12 @@ fi
 # we care about: "proxy stopped attempting injection on configured
 # domains."
 e2e_timer_start
-# Trigger a fresh flow to httpbin.org with the placeholder.
+# Trigger a fresh flow to httpbin.org with the placeholder. The cage env
+# already holds the generated token — expand $ANTHROPIC_API_KEY in-cage.
 agentcage cage exec "$CAGE" -- sh -c \
   'curl --retry 3 --retry-delay 5 -sS -o /dev/null -x "$HTTPS_PROXY" \
     --max-time 15 \
-    -H "Authorization: Bearer {{ANTHROPIC_API_KEY}}" \
+    -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
     https://httpbin.org/headers' >/dev/null 2>&1 || true
 # The audit log lags the wire by ~1s; poll with a modest deadline.
 FOUND=false
@@ -297,7 +301,7 @@ e2e_timer_start
 agentcage cage exec "$CAGE" -- sh -c \
   'curl --retry 3 --retry-delay 5 -sS -o /dev/null -x "$HTTPS_PROXY" \
     --max-time 15 \
-    -H "Authorization: Bearer {{ANTHROPIC_API_KEY}}" \
+    -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
     https://postman-echo.com/headers' >/dev/null 2>&1 || true
 LEAKED=false
 for _ in $(seq 1 10); do

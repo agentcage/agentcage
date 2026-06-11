@@ -62,16 +62,18 @@ container:
 
 # ── Secret injection ──
 # API keys are swapped by the proxy — the cage only sees placeholders.
+# Placeholders are generated decoy tokens, unique per cage — entropy keeps
+# real outbound content from ever colliding with one.
 # Create each secret:  agentcage secret set {{ name }} OPENAI_API_KEY
 secret_injection:
   - env: OPENAI_API_KEY
-    placeholder: "{%raw%}{{OPENAI_API_KEY}}{%endraw%}"
+    placeholder: "{{ placeholder('OPENAI_API_KEY') }}"
     inject_to:
       - openai.com
 
   # Uncomment for GitHub push via HTTPS:
   #- env: GITHUB_TOKEN
-  #  placeholder: "{%raw%}{{GITHUB_TOKEN}}{%endraw%}"
+  #  placeholder: "{{ placeholder('GITHUB_TOKEN') }}"
   #  inject_to:
   #    - github.com
 

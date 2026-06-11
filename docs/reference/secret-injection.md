@@ -10,7 +10,7 @@ Secrets listed in `secret_injection` are automatically excluded from the cage's 
 | Setting | Type | Required | Description |
 |---------|------|----------|-------------|
 | `env` | `string` | yes | Environment variable name holding the real secret (read by the proxy at startup). |
-| `placeholder` | `string` | yes | Token the cage sees and uses in requests (e.g. `"{{ANTHROPIC_API_KEY}}"`). |
+| `placeholder` | `string` | no | Token the cage sees and uses in requests. **Omit it** (recommended) and agentcage generates an entropic token like `{{placeholder_anthropic_api_key_9f3a1c0b7d2e4a85}}`, persisted into the cage's stored config at create/update/edit time. See [Placeholder entropy](#placeholder-entropy). |
 | `inject_to` | `list[string]` | no | Domains where placeholders are replaced with real values. If omitted, injection applies to all domains. |
 | `inject_body` | `bool` | no | When `false` (the default), placeholders are only substituted inside known credential-bearing request headers (the [auth-header allow-list](#injection-scope)). Set to `true` to also inject into the request URL (query string), every header, the request body, and WebSocket frames. See [Injection scope](#injection-scope). |
 | `inject_headers` | `list[string]` | no | Extra request headers — added to the built-in auth-header allow-list — to treat as credential-bearing under the strict default. Matched case-insensitively. Use for APIs whose auth header isn't a common convention. See [Injection scope](#injection-scope). |
@@ -31,27 +31,51 @@ The `source` field controls where agentcage loads the secret value from.
 | *(absent)* | | Set the secret via `agentcage secret set` or `--set-secret`. On Linux with systemd 250+, `agentcage secret set` encrypts with systemd-creds automatically. |
 
 ```yaml
-# 1Password via command backend
+# 1Password via command backend (placeholder omitted → auto-generated)
 secret_injection:
   - env: ANTHROPIC_API_KEY
-    placeholder: "{{ANTHROPIC_API_KEY}}"
     inject_to: ["api.anthropic.com"]
     source: "cmd:op read op://Private/anthropic/credential --no-newline"
 
 # Host environment variable (CI/CD)
 secret_injection:
   - env: OPENAI_API_KEY
-    placeholder: "{{OPENAI_API_KEY}}"
     inject_to: ["api.openai.com"]
     source: "env:OPENAI_API_KEY"
 
 # Explicit systemd-creds (auto-detected on Linux)
 secret_injection:
   - env: ANTHROPIC_API_KEY
-    placeholder: "{{ANTHROPIC_API_KEY}}"
     inject_to: ["api.anthropic.com"]
     source: "systemd-creds:"
 ```
+
+## Placeholder entropy
+
+When a rule omits `placeholder:`, agentcage generates
+`{{placeholder_<env_lowercase>_<16 hex chars>}}` (64 bits of entropy) and
+persists it into the cage's stored config the first time the rule is deployed
+(`cage create`, `cage update -c`, `cage edit`, or `agentcage run`). The token
+stays stable across updates — it is carried over by `env` name rather than
+regenerated, so long-running processes inside the cage keep working.
+
+Why entropy matters: the proxy substitutes the placeholder as a **literal
+string** wherever injection applies. A guessable placeholder like
+`{{GH_TOKEN}}` is an accidental-substitution hazard — if a file the agent
+sends outbound legitimately contains that text (a template file, docs, CI
+config), the real secret would be injected into it. A random suffix makes
+such collisions vanishingly unlikely. `agentcage cage create` warns when an
+explicit placeholder uses the bare `{{ENV_NAME}}` convention.
+
+Explicit `placeholder:` values remain fully supported — some clients validate
+credential format before sending (e.g. a `ghp_`-prefixed fake to pass a
+client-side check). To see the generated token for a cage, run
+`agentcage secret list <cage>` (placeholders are decoys, never sensitive).
+
+> **Note:** filling an omitted placeholder rewrites the stored `cage.yaml`
+> (under `~/.config/agentcage/cages/<name>/`), which normalizes the YAML and
+> drops comments in that file. Configs generated from scaffolds already carry
+> a generated placeholder, so they are stored untouched.
 
 > **Security note:** The `cmd:` backend runs shell commands with the privileges of the user running agentcage. This is the same trust boundary as Containerfile execution. If your `cage.yaml` comes from an untrusted source, review `source: "cmd:..."` entries before running `cage create`.
 

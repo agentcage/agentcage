@@ -120,13 +120,26 @@ def scaffold_source(name: str) -> str:
     return "built-in"
 
 
+def _add_template_globals(env: SandboxedEnvironment) -> SandboxedEnvironment:
+    """Install helpers available to config templates.
+
+    ``placeholder("ENV")`` renders an entropic secret-injection placeholder
+    token at template-render time, so the generated cage.yaml carries a
+    concrete, unguessable value (and the stored config never needs a
+    comment-stripping rewrite to fill it in).
+    """
+    from agentcage.config import generate_placeholder
+    env.globals["placeholder"] = generate_placeholder
+    return env
+
+
 def _make_env() -> SandboxedEnvironment:
-    return SandboxedEnvironment(
+    return _add_template_globals(SandboxedEnvironment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
         keep_trailing_newline=True,
         trim_blocks=True,
         lstrip_blocks=True,
-    )
+    ))
 
 
 def _scaffold_search_dirs() -> list[Path]:
@@ -183,12 +196,12 @@ def render_config(
 
     scaffold_file = scaffold_dir / "cage.yaml.j2"
     if scaffold_file.exists():
-        env = SandboxedEnvironment(
+        env = _add_template_globals(SandboxedEnvironment(
             loader=FileSystemLoader(str(scaffold_dir)),
             keep_trailing_newline=True,
             trim_blocks=True,
             lstrip_blocks=True,
-        )
+        ))
         tmpl = env.get_template("cage.yaml.j2")
     else:
         tmpl = env.get_template(f"presets/{scaffold}.yaml.j2")

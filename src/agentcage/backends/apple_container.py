@@ -775,8 +775,12 @@ class AppleContainerBackend:
         # it on the wire. ``secret_envs`` kept (list of env names) for
         # backward compat with cages last started on 0.21.0 or earlier.
         secret_envs = [r.env for r in (config.secret_injection or [])]
+        # Skip rules whose placeholder hasn't been generated yet (the CLI
+        # fills omitted placeholders at declare time) — an empty placeholder
+        # must not become `-e ENV=` on the cage.
         secret_env_placeholders = {
-            r.env: r.placeholder for r in (config.secret_injection or [])
+            r.env: r.placeholder
+            for r in (config.secret_injection or []) if r.placeholder
         }
         # Protocol-relay credential env names — must reach the mitmproxy
         # process inside the cage (where the relay's _resolve_credential
