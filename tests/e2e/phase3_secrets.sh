@@ -62,6 +62,30 @@ else
   e2e_fail "3.2b" "Entropic placeholder in cage env" "got '$OUTPUT', expected {{placeholder_my_auto_key_<16hex>}}"
 fi
 
+# 3.2c: Derived placeholders.env exists and carries the generated token
+# (cage quadlet reads it via EnvironmentFile=; regenerated with
+# proxy-config.yaml on every deploy/restart).
+e2e_timer_start
+DEPLOY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agentcage/cages/$CAGE"
+if grep -Eq '^MY_AUTO_KEY=\{\{placeholder_my_auto_key_[0-9a-f]{16}\}\}$' \
+     "$DEPLOY_DIR/cage-env/placeholders.env" 2>/dev/null; then
+  e2e_pass "3.2c" "placeholders.env derived file"
+else
+  e2e_fail "3.2c" "placeholders.env derived file" \
+    "missing or wrong content in $DEPLOY_DIR/cage-env/placeholders.env"
+fi
+
+# 3.2d: Egress staged secret value file (tmpfs, mounted at
+# /home/acproxy/secrets) holds the real value — the file channel that
+# live secret updates will use.
+e2e_timer_start
+OUTPUT=$(podman exec "${CAGE}-egress" cat /home/acproxy/secrets/MY_API_KEY 2>&1) || true
+if [ "$OUTPUT" = "test-secret-value-12345" ]; then
+  e2e_pass "3.2d" "Egress staged secret value file"
+else
+  e2e_fail "3.2d" "Egress staged secret value file" "got '$OUTPUT'"
+fi
+
 # 3.3: Injection on outbound — send placeholder, then poll audit for injection record.
 # Setup already verified the data path is working via wait_data_path, so we
 # can proceed straight into the injection loop.
@@ -90,6 +114,23 @@ else
   CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/fetch?url=http://httpbin.org/get" 2>/dev/null || true)
   echo "        proxy chain probe: $BASE/fetch → ${CODE:-000}" >&2
   dump_cage_diagnostics "$CAGE" "3.3 failure"
+fi
+
+# 3.3b: Placeholder change applies on plain `cage restart` — no `cage
+# update` / quadlet regeneration needed. The cage quadlet reads
+# placeholders via EnvironmentFile=, which podman re-reads at container
+# creation; `cage restart` regenerates the derived file from cage.yaml.
+e2e_timer_start
+NEW_PH="{{placeholder_my_api_key_e2e0000000000001}}"
+sed -i "s/{{MY_API_KEY}}/$NEW_PH/g" "$DEPLOY_DIR/cage.yaml"
+agentcage cage restart "$CAGE" >/dev/null 2>&1
+wait_ready "$BASE" 60 >/dev/null || true
+OUTPUT=$(podman exec "${CAGE}-cage" printenv MY_API_KEY 2>&1) || true
+if [ "$OUTPUT" = "$NEW_PH" ]; then
+  e2e_pass "3.3b" "Placeholder change applied by restart (no update)"
+else
+  e2e_fail "3.3b" "Placeholder change applied by restart (no update)" \
+    "got '$OUTPUT', expected '$NEW_PH'"
 fi
 
 # 3.4: Set new secret

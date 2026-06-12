@@ -324,6 +324,10 @@ def _restart_cage(name: str, cfg=None):
       DNS-layer allowlist filtering. Mounted into the dnsmasq sidecar; not
       part of the systemd unit, so updating it doesn't require a
       daemon-reload — just a service restart, which we're about to do anyway.
+    - ``cage-env/placeholders.env`` (via ``save_proxy_config``) — the
+      cage quadlet's ``EnvironmentFile=``; podman re-reads it at container
+      creation, so the restart below applies placeholder changes without
+      a quadlet regeneration.
 
     The DNS quadlet itself no longer has to change (its content no longer
     depends on the domain list — the allowlist lives in a bind-mounted

@@ -131,11 +131,48 @@ Secret={{ deploy_name }}.{{ secret }},type=env,target={{ secret }}
 Secret={{ secret }},type=env
 {% endif %}
 {% endfor %}
+{% if proxy_secrets %}
+{# Staged secret-value files (tmpfs; %t = XDG_RUNTIME_DIR, expanded by
+   systemd on the host and inside the Lima VM alike). Mounted RO into the
+   egress ONLY — never the cage. ExecStartPre below re-stages the files at
+   every start; the proxy's secret_injector falls back to (and will prefer)
+   these files, which is what makes live secret updates possible without
+   recreating the container. #}
+Volume=%t/agentcage/{{ name }}/secrets:/home/acproxy/secrets:ro,Z
+{% endif %}
 
 [Service]
 {% for cred in creds_secrets %}
 ExecStartPre=/bin/bash -o pipefail -c 'podman secret rm "{{ deploy_name }}.{{ cred }}" 2>/dev/null || true; systemd-creds {{ creds_scope_flag }}decrypt --name "{{ cred }}" "{{ creds_dir }}/{{ cred }}.cred" - | podman secret create "{{ deploy_name }}.{{ cred }}" -'
 {% endfor %}
+{% if proxy_secrets %}
+{# Stage secret values as 0600 files in the tmpfs dir mounted above. Runs
+   after the creds loop so systemd-creds-backed values are already in the
+   podman store; `podman secret inspect --showsecret` (podman >= 4.7) is
+   the uniform read path. `-` prefix: a single unstageable secret (e.g.
+   pre-4.7 podman) must not block egress start — the Secret= env channel
+   above still carries the boot-time value; only live updates need files.
+   On inspect failure the staged file is REMOVED, never left empty: a
+   plain `cmd > file` redirect creates the file before the command runs,
+   and an existing-but-empty staged file is a tombstone to the injector —
+   on pre-4.7 podman that would silently disable every rule instead of
+   falling back to the env channel. Tombstones are exclusively
+   `secret rm`'s job (staged live, never at boot).
+   The final chown maps the files to acproxy (uid 200) through the
+   rootless user namespace so the mitmproxy process can read them. #}
+ExecStartPre=/bin/bash -c 'umask 077; mkdir -p "%t/agentcage/{{ name }}/secrets"'
+{% if rootless %}
+{# Reclaim ownership from the acproxy subuid (set by the chown below on the
+   previous start) so this start's staging — which runs as the host user —
+   can overwrite the files. uid 0 inside the user namespace == the host
+   user. Best-effort: on first start there is nothing to reclaim. #}
+ExecStartPre=-/bin/bash -c 'podman unshare chown -R 0:0 "%t/agentcage/{{ name }}/secrets"'
+{% endif %}
+{% for secret in proxy_secrets %}
+ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/{{ name }}/secrets/{{ secret }}"; if v=$(podman secret inspect --showsecret --format "{{"{{"}}.SecretData{{"}}"}}" "{% if deploy_name %}{{ deploy_name }}.{% endif %}{{ secret }}" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
+{% endfor %}
+ExecStartPre=-/bin/bash -c '{% if rootless %}podman unshare chown -R 200:200{% else %}chown -R 200:200{% endif %} "%t/agentcage/{{ name }}/secrets"'
+{% endif %}
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 200:200 "$mp"'
 ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-public-certs-{{ name }} --format "{{"{{"}}.Mountpoint{{"}}"}}") && {% if rootless %}podman unshare chown{% else %}chown{% endif %} 200:200 "$mp"'
 {% if capture_enabled %}

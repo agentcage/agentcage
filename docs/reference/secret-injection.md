@@ -77,6 +77,25 @@ client-side check). To see the generated token for a cage, run
 > drops comments in that file. Configs generated from scaffolds already carry
 > a generated placeholder, so they are stored untouched.
 
+## How placeholders and values reach the containers
+
+Placeholders are delivered to the cage via a derived env-file —
+`<state>/<name>/cage-env/placeholders.env`, referenced by the cage quadlet's
+`EnvironmentFile=` and bind-mounted (directory) at `/run/agentcage/env`.
+Podman re-reads the file at every container creation, and the file is
+regenerated from the stored `cage.yaml` on every deploy **and restart** — so
+a placeholder change applies with a plain `agentcage cage restart`, no
+`cage update` needed. The same directory is visible inside the cage, so
+in-cage shells can `source /run/agentcage/env/placeholders.env`.
+
+Real secret values are staged by the egress service at every start as 0600
+files in a per-cage tmpfs directory (`$XDG_RUNTIME_DIR/agentcage/<name>/secrets`),
+bind-mounted read-only into the **egress only** at `/home/acproxy/secrets`
+(the cage never sees them). Staging uses `podman secret inspect --showsecret`
+and is best-effort on podman older than 4.7 — the `Secret=` env channel still
+carries the boot-time value there; only live value updates depend on the
+file channel.
+
 > **Security note:** The `cmd:` backend runs shell commands with the privileges of the user running agentcage. This is the same trust boundary as Containerfile execution. If your `cage.yaml` comes from an untrusted source, review `source: "cmd:..."` entries before running `cage create`.
 
 ## Migrating between backends
