@@ -3451,11 +3451,22 @@ def secret_rm(name: str, key: str):
     podman = _podman_for_cage(name)
     full_name = f"{name}.{key}"
 
-    if not podman.secret_exists(full_name):
+    # systemd-creds-backed secrets live as a .cred blob in the state dir;
+    # the podman store entry only materializes when the egress decrypt
+    # ExecStartPre runs at start. Remove BOTH: a lingering .cred would
+    # resurrect the secret (and its staged value) on the next egress
+    # start, and a secret set live on a running cage (zero-restart) may
+    # not have a store entry yet at all.
+    cred_file = state.deployment_dir(name) / "creds" / f"{key}.cred"
+    had_cred = cred_file.is_file()
+    had_store = podman.secret_exists(full_name)
+    if not had_cred and not had_store:
         click.echo(f"error: secret '{full_name}' does not exist", err=True)
         sys.exit(1)
-
-    podman.secret_remove(full_name)
+    if had_store:
+        podman.secret_remove(full_name)
+    if had_cred:
+        cred_file.unlink()
     click.echo(f"Secret '{full_name}' removed.")
 
     # Empty value = tombstone: the injector skips the rule instead of

@@ -315,6 +315,72 @@ class TestSecretSetLiveFlow:
         assert mock_stage.call_args.args[1:] == ("c1", "MY_KEY", "")
         mock_restart.assert_not_called()
 
+    @patch("agentcage.cli._restart_cage")
+    @patch("agentcage.services.stage_secret_value")
+    @patch("agentcage.services.cage_has_live_secret_channel", return_value=True)
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.get_backend")
+    def test_rm_removes_cred_blob_without_store_entry(
+        self, mock_backend, mock_podman, _channel, mock_stage,
+        mock_restart, patch_state_dirs,
+    ):
+        """systemd-creds-backed secret set live on a running cage: the
+        podman store entry doesn't exist yet (it only materializes at the
+        egress decrypt ExecStartPre). `secret rm` must still succeed,
+        delete the .cred blob — a lingering blob resurrects the secret on
+        the next egress start — and stage the tombstone."""
+        from click.testing import CliRunner
+        from agentcage.cli import main
+        state = patch_state_dirs
+        d = state.deployment_dir("c1")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "cage.yaml").write_text(textwrap.dedent("""\
+            name: c1
+            container:
+              image: localhost/test:latest
+            dns_servers: ["1.1.1.1"]
+        """))
+        meta = state.load_metadata("c1")
+        meta["agentcage_version"] = "0.22.22"
+        state.save_metadata("c1", meta)
+        cred = d / "creds" / "MY_KEY.cred"
+        cred.parent.mkdir(parents=True, exist_ok=True)
+        cred.write_bytes(b"encrypted-blob")
+        mock_backend.return_value.is_running.return_value = True
+        mock_podman.return_value.secret_exists.return_value = False
+
+        result = CliRunner().invoke(main, ["secret", "rm", "c1", "MY_KEY"])
+        assert result.exit_code == 0, result.output
+        assert not cred.exists()
+        mock_podman.return_value.secret_remove.assert_not_called()
+        assert mock_stage.call_args.args[1:] == ("c1", "MY_KEY", "")
+        mock_restart.assert_not_called()
+
+    @patch("agentcage.cli._podman_for_cage")
+    @patch("agentcage.cli.get_backend")
+    def test_rm_nonexistent_secret_still_errors(
+        self, mock_backend, mock_podman, patch_state_dirs,
+    ):
+        from click.testing import CliRunner
+        from agentcage.cli import main
+        state = patch_state_dirs
+        d = state.deployment_dir("c1")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "cage.yaml").write_text(textwrap.dedent("""\
+            name: c1
+            container:
+              image: localhost/test:latest
+            dns_servers: ["1.1.1.1"]
+        """))
+        meta = state.load_metadata("c1")
+        meta["agentcage_version"] = "0.22.22"
+        state.save_metadata("c1", meta)
+        mock_podman.return_value.secret_exists.return_value = False
+
+        result = CliRunner().invoke(main, ["secret", "rm", "c1", "NOPE"])
+        assert result.exit_code == 1
+        assert "does not exist" in result.output
+
 
 class TestAddonReloadReconfiguresInjector:
     """Regression (#261 CI, e2e 3.4e): the injector is NOT part of the
