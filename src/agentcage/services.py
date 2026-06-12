@@ -343,6 +343,74 @@ def build_and_deploy(
     backend.start(cfg.name, quiet=quiet)
 
 
+def cage_has_live_secret_channel(name: str, cfg) -> bool:
+    """True if the cage's installed egress unit mounts the staged-secrets dir.
+
+    Cages deployed before the tmpfs staging channel existed have quadlets
+    without the ``/home/acproxy/secrets`` mount — a live-staged value can
+    never reach their proxy, so callers must fall back to the restart path
+    (and a ``cage update`` adopts the new shape). apple-container has its
+    own staging lifecycle tied to ``start()`` and is handled separately.
+    """
+    if cfg.isolation not in ("container", "vm"):
+        return False
+    backend = get_backend(cfg)
+    unit_dir = backend.unit_dir()
+    for candidate in (
+        unit_dir / f"{name}-egress.container",
+        unit_dir / "quadlets" / f"{name}-egress.container",  # vm layout
+    ):
+        try:
+            if candidate.is_file():
+                return "/home/acproxy/secrets" in candidate.read_text()
+        except OSError:
+            continue
+    return False
+
+
+_STAGE_WRITE_SCRIPT = (
+    # Runs inside `podman unshare` so uid 0 == the host user and the
+    # chown maps to the in-container acproxy uid through the rootless
+    # user namespace. Overwrites files the previous egress start chowned
+    # to the acproxy subuid (plain host-user writes would get EACCES).
+    'umask 077; mkdir -p "$(dirname "$1")"; cat > "$1" && chown 200:200 "$1"'
+)
+
+
+def stage_secret_value(cfg, name: str, key: str, value: str) -> None:
+    """Write *value* into the cage's staged-secrets tmpfs file, live.
+
+    The egress quadlet mounts the staging dir read-only at
+    ``/home/acproxy/secrets``; the proxy's secret_injector prefers staged
+    files over its (frozen) process env and re-reads them on the next
+    proxy-config.yaml mtime bump — callers pair this with
+    ``state.save_proxy_config``. An empty *value* writes a tombstone:
+    the injector skips the rule instead of falling back to the stale env.
+
+    Raises on failure — callers fall back to the restart path.
+    """
+    import subprocess
+    if cfg.isolation == "vm":
+        from agentcage.lima.instance import LimaInstance
+        inst = LimaInstance(name)
+        runtime_dir = inst.exec(
+            ["sh", "-c", 'echo "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"'],
+        ).stdout.strip()
+        target = f"{runtime_dir}/agentcage/{name}/secrets/{key}"
+        inst.exec(
+            ["podman", "unshare", "sh", "-c", _STAGE_WRITE_SCRIPT, "_", target],
+            input=value,
+        )
+        return
+    target = state.runtime_secrets_dir(name) / key
+    subprocess.run(
+        ["podman", "unshare", "sh", "-c", _STAGE_WRITE_SCRIPT, "_", str(target)],
+        input=value.encode(),
+        check=True,
+        capture_output=True,
+    )
+
+
 def restart_cage(name: str, cfg=None):
     """Restart all services for a cage using the appropriate backend.
 

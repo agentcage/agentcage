@@ -3364,14 +3364,66 @@ def secret_set(name: str, key: str):
 
     _store_secret(podman, cfg, name, key, value, source_scheme=source_scheme)
 
-    # Auto-reload if cage is running
-    if state.deployment_exists(name):
-        cfg = state.load_deployment_config(name)
-        cage_name = cfg.name
-        backend = get_backend(cfg)
-        if backend.is_running(cage_name, "cage"):
-            click.echo(f"Restarting cage '{cage_name}'...")
-            _restart_cage(cage_name, cfg)
+    _apply_secret_live_or_restart(name, key, value)
+
+
+def _apply_secret_live_or_restart(name: str, key: str, value: str) -> None:
+    """Make a just-stored secret value take effect on a running cage.
+
+    Preferred path (zero restart): write the value into the egress's
+    staged-secrets tmpfs file and bump proxy-config.yaml's mtime — the
+    proxy hot-reloads on the next request and the injector prefers staged
+    files over its frozen process env. An empty *value* stages a tombstone
+    (``secret rm``): the rule stops injecting instead of resurrecting the
+    stale env value.
+
+    Falls back to the restart path when the cage's installed quadlets
+    predate the staging channel (a ``cage update`` adopts it) or when
+    staging fails. Stopped cages need nothing — the next start re-stages
+    from the store.
+    """
+    if not state.deployment_exists(name):
+        return
+    cfg = state.load_deployment_config(name)
+    cage_name = cfg.name
+    backend = get_backend(cfg)
+    if not backend.is_running(cage_name, "cage"):
+        return
+
+    from agentcage.services import (
+        cage_has_live_secret_channel, stage_secret_value,
+    )
+    if cage_has_live_secret_channel(cage_name, cfg):
+        try:
+            stage_secret_value(cfg, cage_name, key, value)
+            # Bump the proxy config's mtime so the addon reconfigures its
+            # inspectors (and re-reads staged files) on the next request.
+            state.save_proxy_config(cage_name)
+            if cfg.isolation == "vm":
+                # The proxy polls the VM-local copy, not the host file.
+                from agentcage.backends.vm import push_config_files
+                push_config_files(cage_name, LimaInstance(cage_name))
+            click.echo(
+                f"Secret applied to running cage '{cage_name}' without a "
+                f"restart (already-running processes keep their current "
+                f"environment; new connections pick it up immediately)."
+            )
+            return
+        except Exception as e:
+            click.echo(
+                f"warning: live secret apply failed ({e}); "
+                f"falling back to restart",
+                err=True,
+            )
+    elif cfg.isolation in ("container", "vm"):
+        click.echo(
+            f"note: this cage was deployed before live secret updates; "
+            f"run 'agentcage cage update {cage_name}' once to apply future "
+            f"secret changes without a restart.",
+            err=True,
+        )
+    click.echo(f"Restarting cage '{cage_name}'...")
+    _restart_cage(cage_name, cfg)
 
 
 @secret.command("rm")
@@ -3406,14 +3458,9 @@ def secret_rm(name: str, key: str):
     podman.secret_remove(full_name)
     click.echo(f"Secret '{full_name}' removed.")
 
-    # Auto-reload if cage is running
-    if state.deployment_exists(name):
-        cfg = state.load_deployment_config(name)
-        cage_name = cfg.name
-        backend = get_backend(cfg)
-        if backend.is_running(cage_name, "cage"):
-            click.echo(f"Restarting cage '{cage_name}'...")
-            _restart_cage(cage_name, cfg)
+    # Empty value = tombstone: the injector skips the rule instead of
+    # falling back to the stale value frozen in the egress process env.
+    _apply_secret_live_or_restart(name, key, "")
 
 
 # ── domain group ─────────────────────────────────────────

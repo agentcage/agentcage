@@ -133,13 +133,55 @@ else
     "got '$OUTPUT', expected '$NEW_PH'"
 fi
 
-# 3.4: Set new secret
+# 3.4: Set new secret on a running cage — applied LIVE, zero restart.
+# The value is staged into the egress's tmpfs file channel and the proxy
+# hot-reloads on the next request; neither container is recreated.
 e2e_timer_start
-echo "new-value" | agentcage secret set "$CAGE" MY_API_KEY >/dev/null 2>&1
-if wait_ready "$BASE" 60; then
-  e2e_pass "3.4" "Set new secret (cage restarted)"
+CAGE_STARTED=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
+EGRESS_STARTED=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-egress" 2>/dev/null)
+SET_OUTPUT=$(echo "new-value" | agentcage secret set "$CAGE" MY_API_KEY 2>&1) || true
+CAGE_STARTED_2=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
+EGRESS_STARTED_2=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-egress" 2>/dev/null)
+if echo "$SET_OUTPUT" | grep -q "without a restart" \
+   && [ "$CAGE_STARTED" = "$CAGE_STARTED_2" ] \
+   && [ "$EGRESS_STARTED" = "$EGRESS_STARTED_2" ]; then
+  e2e_pass "3.4" "Set new secret (applied live, zero restart)"
 else
-  e2e_fail "3.4" "Set new secret" "cage did not restart"
+  e2e_fail "3.4" "Set new secret (applied live, zero restart)" \
+    "output: $SET_OUTPUT; cage $CAGE_STARTED -> $CAGE_STARTED_2; egress $EGRESS_STARTED -> $EGRESS_STARTED_2"
+fi
+
+# 3.4b: The staged value file carries the new value (host-side check via
+# podman unshare — the file is owned by the acproxy subuid).
+e2e_timer_start
+STAGED=$(podman unshare cat "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agentcage/$CAGE/secrets/MY_API_KEY" 2>&1) || true
+if [ "$STAGED" = "new-value" ]; then
+  e2e_pass "3.4b" "Staged value file updated live"
+else
+  e2e_fail "3.4b" "Staged value file updated live" "got '$STAGED'"
+fi
+
+# 3.4c: Proxy injects with the NEW value/rules on the next request — a
+# fresh secrets_injected audit entry appears after the live apply.
+e2e_timer_start
+COUNT_BEFORE=$(agentcage cage audit "$CAGE" --json-lines -n 200 2>/dev/null | grep -c "secrets_injected" || true)
+FOUND=false
+DEADLINE=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$DEADLINE" ]; do
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    -d "{\"key\":\"$NEW_PH\"}" "$BASE/check-secret" >/dev/null 2>&1 || true
+  sleep 2
+  COUNT_AFTER=$(agentcage cage audit "$CAGE" --json-lines -n 200 2>/dev/null | grep -c "secrets_injected" || true)
+  if [ "${COUNT_AFTER:-0}" -gt "${COUNT_BEFORE:-0}" ]; then
+    FOUND=true
+    break
+  fi
+done
+if [ "$FOUND" = true ]; then
+  e2e_pass "3.4c" "Injection live after zero-restart secret set"
+else
+  e2e_fail "3.4c" "Injection live after zero-restart secret set" \
+    "no new secrets_injected entry within 60s (before=$COUNT_BEFORE after=$COUNT_AFTER)"
 fi
 
 # 3.5: Remove secret

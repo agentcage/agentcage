@@ -557,11 +557,13 @@ class TestConfigure:
         ])
         assert len(inj.rules) == 0
 
-    def test_env_takes_precedence_over_file(self, monkeypatch, tmp_path):
-        """When BOTH env and file are present, env wins. This matches the
-        container/podman backend's behavior (Quadlet `Secret=type=env`
-        sets the env var; the file path is the fallback for backends
-        that can't do env-based secret injection)."""
+    def test_staged_file_takes_precedence_over_env(self, monkeypatch, tmp_path):
+        """When BOTH env and file are present, the staged file wins. The
+        process env is frozen at container creation, so only the file can
+        carry a live value change (`agentcage secret set` on a running
+        cage re-stages the file and bumps the config mtime); preferring
+        env would pin the boot-time value forever. The env remains the
+        fallback when no file was staged (pre-staging cages, podman < 4.7)."""
         monkeypatch.setenv("DUAL_KEY", "from-env")
         secrets_dir = tmp_path / "secrets"
         secrets_dir.mkdir()
@@ -574,7 +576,7 @@ class TestConfigure:
             {"env": "DUAL_KEY", "placeholder": "{{DUAL_KEY}}"},
         ])
         assert len(inj.rules) == 1
-        assert inj.rules[0].real_value == "from-env"
+        assert inj.rules[0].real_value == "from-file"
 
 
 # ── Domain matching ──────────────────────────────────────

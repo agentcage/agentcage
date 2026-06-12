@@ -96,6 +96,32 @@ and is best-effort on podman older than 4.7 — the `Secret=` env channel still
 carries the boot-time value there; only live value updates depend on the
 file channel.
 
+## Live updates: `secret set` without a restart
+
+On the container and vm backends, `agentcage secret set` on a **running**
+cage applies the new value live: the value is re-staged into the tmpfs file
+channel and the proxy hot-reloads its rules on the next request — neither
+container is recreated. The proxy prefers staged files over its (frozen)
+process environment, so the change is effective for all subsequent requests
+within moments. `agentcage secret rm` works the same way, staging an empty
+tombstone file so injection and redaction stop immediately instead of
+falling back to the stale value frozen in the egress environment.
+
+Notes and limits:
+
+- Already-running processes inside the cage keep their current environment
+  (placeholders are decoys, so this only matters if you also changed the
+  placeholder — see above; a `cage restart` refreshes it).
+- Cages deployed before this feature lack the staging mount in their
+  quadlets; `secret set` detects that and falls back to the old
+  restart behavior. Run `agentcage cage update <cage>` once to adopt the
+  live channel.
+- apple-container keeps the restart-on-set behavior for now (its staging
+  lifecycle is tied to `start()`).
+- Long-lived connections (websockets, streaming responses) opened before
+  the change keep their original values until re-established — same
+  semantics as every other proxy hot-reloaded setting.
+
 > **Security note:** The `cmd:` backend runs shell commands with the privileges of the user running agentcage. This is the same trust boundary as Containerfile execution. If your `cage.yaml` comes from an untrusted source, review `source: "cmd:..."` entries before running `cage create`.
 
 ## Migrating between backends
