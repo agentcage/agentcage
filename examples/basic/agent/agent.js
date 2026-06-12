@@ -124,10 +124,24 @@ async function handleFetch(req, res) {
 async function handleCheckSecret(req, res) {
   const body = await readBody(req);
 
+  // Optional auth channel: a JSON body with an "auth" field is also sent
+  // as `Authorization: Bearer <auth>` so the strict (header-only) secret
+  // injection path can be exercised end-to-end. The raw body is forwarded
+  // unchanged either way (covers the inject_body path).
+  const headers = { "Content-Type": "application/json" };
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed.auth === "string" && parsed.auth) {
+      headers["Authorization"] = `Bearer ${parsed.auth}`;
+    }
+  } catch {
+    // not JSON — forward as-is with no auth header
+  }
+
   try {
     const upstream = await fetch("http://httpbin.org/post", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body,
     });
     const text = await upstream.text();

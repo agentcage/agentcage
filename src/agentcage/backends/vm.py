@@ -731,8 +731,18 @@ class VmBackend:
         # gid avoids a minor leak on busybox/scratch images that lack a
         # uid 1000 entry in /etc/passwd (default gid would be 0).
         spec = "0:0" if as_root else "1000:1000"
+        # Same as ContainerBackend.exec_argv: cage sessions carry the
+        # current placeholders (decoy tokens) read from the stored config
+        # at exec time, so secrets declared after the cage started are
+        # usable in new sessions without a restart.
+        env_flags: list[str] = []
+        if service == "cage":
+            from agentcage.services import current_placeholders
+            for env_name, placeholder in current_placeholders(name):
+                env_flags += ["--env", f"{env_name}={placeholder}"]
         return ["limactl", "shell", "--workdir", "/", inst.name, "--",
-                "podman", "exec", "-u", spec, *flags, f"{name}-{service}", *cmd]
+                "podman", "exec", "-u", spec, *flags, *env_flags,
+                f"{name}-{service}", *cmd]
 
     def logs_argv(
         self,

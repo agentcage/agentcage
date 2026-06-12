@@ -107,17 +107,38 @@ within moments. `agentcage secret rm` works the same way, staging an empty
 tombstone file so injection and redaction stop immediately instead of
 falling back to the stale value frozen in the egress environment.
 
+### Adding a brand-new secret in one command
+
+```bash
+agentcage secret set mycage NEW_API_KEY --declare --inject-to api.example.com
+```
+
+`--declare` appends a `secret_injection` rule (entropic placeholder) to the
+stored cage.yaml, stores the value, stages it live, and converges the
+quadlet unit files — all without restarting. New `cage exec` / `cage shell`
+sessions carry the placeholder immediately: exec sessions read the current
+placeholders from the stored config at exec time, so even secrets declared
+after the cage container started are usable in a fresh session. Omitting
+`--inject-to` makes the rule inject for **all** allowed domains — the CLI
+warns; scope it when you can. `--placeholder` overrides the generated
+token. Without `--declare`, setting an undeclared key stores an inert
+orphan value (the CLI now says so and points at `--declare`).
+
+`secret set` also quietly regenerates and reinstalls the cage's quadlets
+(no restart) so a crash-restart or reboot comes up with the new secret's
+`Secret=`/staging lines — the unit files never drift from `cage.yaml`.
+
 Notes and limits:
 
-- Already-running processes inside the cage keep their current environment
-  (placeholders are decoys, so this only matters if you also changed the
-  placeholder — see above; a `cage restart` refreshes it).
-- Cages deployed before this feature lack the staging mount in their
-  quadlets; `secret set` detects that and falls back to the old
-  restart behavior. Run `agentcage cage update <cage>` once to adopt the
-  live channel.
+- Already-running processes inside the cage keep their current environment;
+  the boot process (PID 1) picks up new placeholders on the next restart
+  via the `EnvironmentFile=` channel. New exec sessions are current always.
+- Cages whose **running** egress predates the staging mount fall back to a
+  restart — which adopts the freshly converged units, so the *next*
+  `secret set` goes live.
 - apple-container keeps the restart-on-set behavior for now (its staging
-  lifecycle is tied to `start()`).
+  lifecycle is tied to `start()`); exec-time placeholder injection works
+  there too.
 - Long-lived connections (websockets, streaming responses) opened before
   the change keep their original values until re-established — same
   semantics as every other proxy hot-reloaded setting.

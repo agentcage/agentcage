@@ -254,7 +254,7 @@ Manage cage-scoped secrets.
 | Command | Description |
 |---------|-------------|
 | `secret list NAME` | List secrets for a cage (with status if cage exists) |
-| `secret set NAME KEY` | Set a secret (prompts for value or reads stdin) |
+| `secret set NAME KEY [--declare] [--placeholder P] [--inject-to D]` | Set a secret (prompts for value or reads stdin). Applies live to a running cage — no restart. `--declare` adds a `secret_injection` rule for a brand-new KEY (entropic placeholder; `--inject-to` scopes it) |
 | `secret rm NAME KEY` | Remove a secret |
 | `secret migrate NAME` | Migrate a cage's secrets to a different storage backend |
 

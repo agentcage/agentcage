@@ -343,28 +343,55 @@ def build_and_deploy(
     backend.start(cfg.name, quiet=quiet)
 
 
-def cage_has_live_secret_channel(name: str, cfg) -> bool:
-    """True if the cage's installed egress unit mounts the staged-secrets dir.
+def current_placeholders(name: str) -> list[tuple[str, str]]:
+    """(env, placeholder) pairs from a cage's stored config, live.
 
-    Cages deployed before the tmpfs staging channel existed have quadlets
-    without the ``/home/acproxy/secrets`` mount — a live-staged value can
-    never reach their proxy, so callers must fall back to the restart path
-    (and a ``cage update`` adopts the new shape). apple-container has its
-    own staging lifecycle tied to ``start()`` and is handled separately.
+    Read from the raw stored cage.yaml at call time — exec sessions built
+    from this see placeholders declared *after* the cage container started,
+    which is what makes new secrets usable without a restart. Rules whose
+    placeholder was never filled are skipped.
+    """
+    try:
+        raw = state.load_raw_config(name)
+    except FileNotFoundError:
+        return []
+    si = raw.get("secret_injection") or []
+    rules = si.get("rules", []) if isinstance(si, dict) else si
+    pairs: list[tuple[str, str]] = []
+    for entry in rules if isinstance(rules, list) else []:
+        if isinstance(entry, dict) and entry.get("env") \
+                and entry.get("placeholder"):
+            pairs.append((entry["env"], entry["placeholder"]))
+    return pairs
+
+
+def cage_has_live_secret_channel(name: str, cfg) -> bool:
+    """True if the RUNNING egress container mounts the staged-secrets dir.
+
+    Inspects the live container rather than the installed unit files:
+    units may have been converged (regenerated + installed without a
+    restart) after the container started, in which case the running egress
+    still lacks the ``/home/acproxy/secrets`` mount and a live-staged
+    value could never reach its proxy — callers must fall back to the
+    restart path, which also adopts the converged units. apple-container
+    has its own staging lifecycle tied to ``start()`` and is handled
+    separately.
     """
     if cfg.isolation not in ("container", "vm"):
         return False
-    backend = get_backend(cfg)
-    unit_dir = backend.unit_dir()
-    for candidate in (
-        unit_dir / f"{name}-egress.container",
-        unit_dir / "quadlets" / f"{name}-egress.container",  # vm layout
-    ):
-        try:
-            if candidate.is_file():
-                return "/home/acproxy/secrets" in candidate.read_text()
-        except OSError:
-            continue
+    try:
+        if cfg.isolation == "vm":
+            from agentcage.lima.podman import VmPodman
+            podman = VmPodman(name)
+        else:
+            podman = Podman()
+        info = podman.container_inspect(f"{name}-egress")
+    except Exception:
+        return False
+    for mount in (info.get("Mounts") or []):
+        if isinstance(mount, dict) \
+                and mount.get("Destination") == "/home/acproxy/secrets":
+            return True
     return False
 
 

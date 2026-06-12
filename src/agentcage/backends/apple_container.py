@@ -1694,9 +1694,27 @@ class AppleContainerBackend:
         else:
             spec = "0:0" if as_root else "1000:1000"
 
+        # Cage sessions get the current secret-injection placeholders
+        # (decoy tokens) read from the stored config at exec time — same
+        # behavior as the container/vm backends. Apple's `container exec`
+        # has no --env flag, so chain through env(1); with the setpriv
+        # wrap, "$@" receives [env, K=V, ..., cmd] and env exec's the
+        # command after the uid drop.
+        env_prefix: list[str] = []
+        if service in ("cage", ""):
+            from agentcage.services import current_placeholders
+            pairs = [
+                f"{env_name}={placeholder}"
+                for env_name, placeholder in current_placeholders(name)
+            ]
+            if pairs:
+                env_prefix = ["env", *pairs]
         if spec is not None:
-            return [binary, "exec", "-u", spec, *flags, target, *wrap, *cmd]
-        return [binary, "exec", *flags, target, *wrap, *cmd]
+            return [
+                binary, "exec", "-u", spec, *flags, target,
+                *wrap, *env_prefix, *cmd,
+            ]
+        return [binary, "exec", *flags, target, *wrap, *env_prefix, *cmd]
 
     def logs_argv(
         self,
