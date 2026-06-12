@@ -374,6 +374,15 @@ class Agentcage:
             if inspector.name in legacy_map and legacy_map[inspector.name] is not None:
                 inspector.configure(legacy_map[inspector.name])
 
+        # Reconfigure the secret injector too — it is NOT part of the
+        # inspector chain (inspectors must see placeholders, injection
+        # happens after them), so the loop above never reaches it. Without
+        # this, rules declared after start never load and `secret set`'s
+        # re-staged values are never re-read: configure() re-reads the
+        # staged value files, which is the entire live-update mechanism.
+        # An empty/removed secret_injection section clears the rules.
+        self.injector.configure(self.cfg.get("secret_injection") or [])
+
         # Update rate-limit settings
         rl_cfg = self.cfg.get("rate_limit") or {}
         self._rl_rate = float(rl_cfg.get("requests_per_second", 10))

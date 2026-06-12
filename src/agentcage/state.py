@@ -226,7 +226,15 @@ def runtime_secrets_dir(name: str) -> Path:
     d = Path(base) / "agentcage" / name / "secrets"
     d.mkdir(parents=True, exist_ok=True)
     for sub in (d, d.parent, d.parent.parent):
-        sub.chmod(0o700)
+        try:
+            sub.chmod(0o700)
+        except PermissionError:
+            # Once the egress has started, the secrets dir is owned by the
+            # acproxy subuid (the quadlet chowns it for in-container
+            # readability) — the host user can no longer chmod it. Modes
+            # were already set 0700 at creation (here or by the quadlet's
+            # `umask 077; mkdir -p` ExecStartPre).
+            break
     return d
 
 

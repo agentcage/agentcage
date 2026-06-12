@@ -221,12 +221,15 @@ class TestSecretRm:
     @LINUX_ONLY
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
-    def test_rm_removes_secret(self, mock_state, MockPodman):
+    def test_rm_removes_secret(self, mock_state, MockPodman, tmp_path):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = True
         podman.container_running.return_value = False
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_container_config()
+        # Real path: secret_rm probes deployment_dir()/creds/<KEY>.cred on
+        # the filesystem — a MagicMock path would read as an existing blob.
+        mock_state.deployment_dir.return_value = tmp_path
 
         result = _runner().invoke(main, ["secret", "rm", "myapp", "API_KEY"])
         assert result.exit_code == 0
@@ -234,11 +237,12 @@ class TestSecretRm:
 
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
-    def test_rm_nonexistent_fails(self, mock_state, MockPodman):
+    def test_rm_nonexistent_fails(self, mock_state, MockPodman, tmp_path):
         podman = MockPodman.return_value
         podman.secret_exists.return_value = False
         mock_state.deployment_exists.return_value = True
         mock_state.load_deployment_config.return_value = _mock_container_config()
+        mock_state.deployment_dir.return_value = tmp_path
 
         result = _runner().invoke(main, ["secret", "rm", "myapp", "API_KEY"])
         assert result.exit_code != 0

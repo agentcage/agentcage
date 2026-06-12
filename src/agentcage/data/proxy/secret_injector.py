@@ -135,27 +135,37 @@ class SecretInjector:
                 continue
             inject_to = [d.lower() for d in entry.get("inject_to", [])]
 
-            real_value = os.environ.get(env_name, "")
-            if not real_value:
-                # Fallback: read from the bind-mounted secrets dir. Used by
-                # the apple-container backend, which stages secrets as 0600
-                # files at /home/acproxy/secrets/<env-name> rather than
-                # injecting them as env vars on the egress process.
-                # Without this fallback the addon silently no-ops and every
-                # outbound request sends the literal {{PLACEHOLDER}}
-                # upstream, getting 401'd.
-                secret_file = _SECRETS_DIR / env_name
-                try:
-                    if secret_file.is_file():
-                        real_value = secret_file.read_text().rstrip("\n")
-                except OSError as e:
-                    log.warning(
-                        "secret_injection: failed reading %s: %s",
-                        secret_file, e,
-                    )
+            # Value resolution — staged file first, env fallback.
+            #
+            # The bind-mounted secrets dir (/home/acproxy/secrets, staged by
+            # the egress ExecStartPre and re-written live by `agentcage
+            # secret set`) is authoritative WHEN the file exists: the
+            # process env is frozen at container creation, so only the file
+            # can carry a value change without a container restart. An
+            # EXISTING-but-EMPTY file is a tombstone (`secret rm` / failed
+            # staging of a deleted store entry): the rule is skipped rather
+            # than falling back to a stale env value. Only a MISSING file
+            # falls back to the env channel (pre-staging cages, podman <
+            # 4.7 where --showsecret is unavailable).
+            real_value = ""
+            staged = False
+            secret_file = _SECRETS_DIR / env_name
+            try:
+                if secret_file.is_file():
+                    staged = True
+                    real_value = secret_file.read_text().rstrip("\n")
+            except OSError as e:
+                log.warning(
+                    "secret_injection: failed reading %s: %s",
+                    secret_file, e,
+                )
+            if not staged:
+                real_value = os.environ.get(env_name, "")
             if not real_value:
                 log.warning(
-                    "secret_injection: env var %s not set, skipping rule", env_name
+                    "secret_injection: no value for %s (%s), skipping rule",
+                    env_name,
+                    "staged file is empty" if staged else "env var not set",
                 )
                 continue
 
