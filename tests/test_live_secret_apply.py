@@ -142,6 +142,22 @@ class TestStageSecretValue:
         # The value must travel via stdin, never argv (visible in /proc).
         assert "v1" not in " ".join(argv)
 
+    def test_container_staging_does_no_host_fs_ops(
+        self, tmp_path, monkeypatch,
+    ):
+        """Regression (#260 CI): after the egress's first start the staging
+        dir is owned by the acproxy subuid (quadlet `podman unshare chown
+        -R 200:200`), so any host-side mkdir/chmod EPERMs — every
+        filesystem operation must happen inside `podman unshare`."""
+        from agentcage import services
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        cfg = MagicMock()
+        cfg.isolation = "container"
+        with patch("subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            services.stage_secret_value(cfg, "c1", "MY_KEY", "v1")
+        assert list(tmp_path.iterdir()) == []
+
     def test_vm_backend_writes_via_guest_exec(self, monkeypatch):
         from agentcage import services
         cfg = MagicMock()

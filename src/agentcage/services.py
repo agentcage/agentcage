@@ -402,7 +402,13 @@ def stage_secret_value(cfg, name: str, key: str, value: str) -> None:
             input=value,
         )
         return
-    target = state.runtime_secrets_dir(name) / key
+    # Path-only composition — deliberately NOT state.runtime_secrets_dir(),
+    # whose mkdir/chmod runs as the host user: once the egress has started,
+    # the staging dir is owned by the acproxy subuid (the quadlet's
+    # `podman unshare chown -R 200:200`) and a host-side chmod EPERMs.
+    # The unshare script below mkdir -p's with the right identity.
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    target = Path(base) / "agentcage" / name / "secrets" / key
     subprocess.run(
         ["podman", "unshare", "sh", "-c", _STAGE_WRITE_SCRIPT, "_", str(target)],
         input=value.encode(),
