@@ -1718,6 +1718,21 @@ def cage_edit(name: str):
     if "domains" in live:
         _update_dns_quadlet(cfg)
 
+    if "secret_injection" in live:
+        # Rules hot-reload at the proxy (save_proxy_config above bumped the
+        # mtime) and new exec sessions read placeholders from the stored
+        # config — but the unit files and the boot-time env only converge
+        # via a quadlet refresh. No restart: running containers untouched.
+        try:
+            _refresh_units(name, cfg)
+        except Exception as e:
+            click.echo(f"warning: quadlet refresh failed: {e}", err=True)
+        click.echo(
+            "  secret_injection: proxy rules apply on the next request; "
+            "new exec sessions see the updated placeholders. Restart the "
+            "cage to refresh the boot process's environment."
+        )
+
     # Tell the operator what just happened and what (if anything) they
     # still need to do. Be specific about which fields fall into which
     # bucket so the next command is obvious.
@@ -3327,15 +3342,77 @@ def secret_list(name: str):
         sys.exit(1)
 
 
+def _declare_injection_rule(
+    name: str, key: str, placeholder: str, inject_to: tuple[str, ...],
+) -> bool:
+    """Append a secret_injection rule for *key* to the stored cage.yaml.
+
+    Returns True if a rule was added; False if one already exists (the
+    existing rule is left untouched — edit it via ``cage edit``). The
+    placeholder defaults to a generated entropic token.
+    """
+    raw = state.load_raw_config(name)
+    si = raw.get("secret_injection")
+    if isinstance(si, dict):
+        rules = si.setdefault("rules", [])
+    else:
+        if si is None:
+            raw["secret_injection"] = si = []
+        rules = si
+    for entry in rules:
+        if isinstance(entry, dict) and entry.get("env") == key:
+            click.echo(
+                f"note: a secret_injection rule for '{key}' already exists; "
+                f"edit it via 'agentcage cage edit {name}'.",
+                err=True,
+            )
+            return False
+    from agentcage.config import generate_placeholder
+    entry = {"env": key, "placeholder": placeholder or generate_placeholder(key)}
+    if inject_to:
+        entry["inject_to"] = list(inject_to)
+    rules.append(entry)
+    state.save_raw_config(name, raw)
+    click.echo(
+        f"Declared secret_injection rule for '{key}' "
+        f"(placeholder {entry['placeholder']})."
+    )
+    if not inject_to:
+        click.echo(
+            "note: no --inject-to given — the real value will be injected "
+            "for ALL allowed domains. Add domains to scope it.",
+            err=True,
+        )
+    return True
+
+
 @secret.command("set")
 @click.argument("name")
 @click.argument("key")
-def secret_set(name: str, key: str):
+@click.option("--declare", is_flag=True,
+              help="Declare a secret_injection rule for KEY if none exists "
+                   "(entropic placeholder, persisted to the stored "
+                   "cage.yaml) — makes a brand-new secret usable in one "
+                   "command.")
+@click.option("--placeholder", "placeholder_opt", default="",
+              help="Explicit placeholder for the declared rule "
+                   "(implies --declare).")
+@click.option("--inject-to", "inject_to", multiple=True,
+              help="Domain(s) the declared rule injects to (implies "
+                   "--declare). Repeatable. Omitted = all domains.")
+def secret_set(name: str, key: str, declare: bool, placeholder_opt: str,
+               inject_to: tuple[str, ...]):
     """Set a secret for a cage."""
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist — create it first with 'cage create'", err=True)
         sys.exit(1)
     _ensure_v022_cage(name)
+
+    if placeholder_opt or inject_to:
+        declare = True
+    if declare:
+        _declare_injection_rule(name, key, placeholder_opt, inject_to)
+
     cfg = state.load_deployment_config(name)
 
     # Read value from TTY or stdin
@@ -3364,11 +3441,79 @@ def secret_set(name: str, key: str):
 
     _store_secret(podman, cfg, name, key, value, source_scheme=source_scheme)
 
+    if rule is None and not declare and key not in _expected_secrets(cfg):
+        click.echo(
+            f"note: '{key}' has no secret_injection rule — the value is "
+            f"stored but never injected (orphan). Re-run with --declare "
+            f"(optionally --inject-to <domain>) to declare one.",
+            err=True,
+        )
+
     _apply_secret_live_or_restart(name, key, value)
+
+
+def _installed_unit_matches(unit_dir, fname: str, content: str) -> bool:
+    """True if *fname* exists under *unit_dir* with exactly *content*."""
+    for candidate in (unit_dir / fname, unit_dir / "quadlets" / fname):
+        try:
+            if candidate.is_file():
+                return candidate.read_text() == content
+        except OSError:
+            continue
+    return False
+
+
+def _refresh_units(name: str, cfg) -> None:
+    """Converge a cage's quadlets with stored state — no restart, and no
+    work when nothing changed.
+
+    The point is convergence: a secret declared or removed a moment ago
+    gets its ``Secret=`` / staging lines into the unit files so any future
+    boot — including systemd crash recovery and the fallback restart in
+    :func:`_apply_secret_live_or_restart` — comes up consistent with
+    cage.yaml. Image builds are skipped (quadlets reference images by
+    name); the network octet is pinned from metadata exactly like ``cage
+    update`` so regenerated static IPs stay inside the existing podman
+    network. apple-container is excluded — its generate_units output is a
+    metadata snapshot tied to the build pipeline, and its start() already
+    reads live state.
+
+    Crucially, ``install_units`` (and its global ``systemctl
+    daemon-reload``) only runs when the regenerated unit content actually
+    differs from what's on disk. ``secret set`` for an already-declared
+    secret changes no unit file, so the common path does zero
+    daemon-reloads — which also avoids racing a concurrent ``cage
+    create``'s daemon-reload/unit-start on the same user systemd instance
+    (e2e phases 3/5/6 run in parallel).
+    """
+    if cfg.isolation not in ("container", "vm"):
+        return
+    backend = get_backend(cfg)
+    from agentcage.quadlets import collect_used_octets
+    from agentcage.services import patches_work_dir
+    octet = (state.load_metadata(name) or {}).get("network_octet")
+    units = backend.generate_units(
+        cfg,
+        state.save_proxy_config(name),
+        patches_work_dir(),
+        name,
+        used_octets=collect_used_octets(exclude=name),
+        network_octet=octet,
+    )
+    unit_dir = backend.unit_dir()
+    if all(
+        _installed_unit_matches(unit_dir, fname, content)
+        for fname, content in units.items()
+    ):
+        return
+    backend.install_units(units, quiet=True)
 
 
 def _apply_secret_live_or_restart(name: str, key: str, value: str) -> None:
     """Make a just-stored secret value take effect on a running cage.
+
+    First converges the unit files with the stored config (no restart) so
+    future boots are consistent regardless of which path applies below.
 
     Preferred path (zero restart): write the value into the egress's
     staged-secrets tmpfs file and bump proxy-config.yaml's mtime — the
@@ -3377,15 +3522,20 @@ def _apply_secret_live_or_restart(name: str, key: str, value: str) -> None:
     (``secret rm``): the rule stops injecting instead of resurrecting the
     stale env value.
 
-    Falls back to the restart path when the cage's installed quadlets
-    predate the staging channel (a ``cage update`` adopts it) or when
-    staging fails. Stopped cages need nothing — the next start re-stages
-    from the store.
+    Falls back to the restart path when the RUNNING egress predates the
+    staging channel (the restart adopts the just-converged units, so the
+    next ``secret set`` goes live) or when staging fails. Stopped cages
+    need nothing beyond convergence — the next start re-stages from the
+    store.
     """
     if not state.deployment_exists(name):
         return
     cfg = state.load_deployment_config(name)
     cage_name = cfg.name
+    try:
+        _refresh_units(cage_name, cfg)
+    except Exception as e:
+        click.echo(f"warning: quadlet refresh failed: {e}", err=True)
     backend = get_backend(cfg)
     if not backend.is_running(cage_name, "cage"):
         return
@@ -3396,8 +3546,9 @@ def _apply_secret_live_or_restart(name: str, key: str, value: str) -> None:
     if cage_has_live_secret_channel(cage_name, cfg):
         try:
             stage_secret_value(cfg, cage_name, key, value)
-            # Bump the proxy config's mtime so the addon reconfigures its
-            # inspectors (and re-reads staged files) on the next request.
+            # Bump the proxy config's mtime AFTER staging so the addon's
+            # next-request reload reads the new file content (a pre-stage
+            # bump could reload first and then never re-trigger).
             state.save_proxy_config(cage_name)
             if cfg.isolation == "vm":
                 # The proxy polls the VM-local copy, not the host file.
@@ -3415,13 +3566,6 @@ def _apply_secret_live_or_restart(name: str, key: str, value: str) -> None:
                 f"falling back to restart",
                 err=True,
             )
-    elif cfg.isolation in ("container", "vm"):
-        click.echo(
-            f"note: this cage was deployed before live secret updates; "
-            f"run 'agentcage cage update {cage_name}' once to apply future "
-            f"secret changes without a restart.",
-            err=True,
-        )
     click.echo(f"Restarting cage '{cage_name}'...")
     _restart_cage(cage_name, cfg)
 

@@ -184,6 +184,51 @@ else
     "no new secrets_injected entry within 60s (before=$COUNT_BEFORE after=$COUNT_AFTER)"
 fi
 
+# 3.4d: Brand-new secret end-to-end with ZERO restart — one command
+# declares the rule (entropic placeholder), stores the value, stages it
+# live, and converges the quadlets. New exec sessions carry the
+# placeholder immediately (exec-time injection); the proxy injects on
+# the next request.
+e2e_timer_start
+CAGE_STARTED_3=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
+echo "brand-new-value-777" | agentcage secret set "$CAGE" BRAND_NEW_KEY \
+  --declare --inject-to httpbin.org >/dev/null 2>&1 || true
+CAGE_STARTED_4=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
+NEW_KEY_PH=$(agentcage cage exec "$CAGE" -- printenv BRAND_NEW_KEY 2>/dev/null | tr -d '\r') || true
+if [ "$CAGE_STARTED_3" = "$CAGE_STARTED_4" ] \
+   && echo "$NEW_KEY_PH" | grep -Eq '^\{\{placeholder_brand_new_key_[0-9a-f]{16}\}\}$'; then
+  e2e_pass "3.4d" "New secret declared+usable live (exec env, no restart)"
+else
+  e2e_fail "3.4d" "New secret declared+usable live (exec env, no restart)" \
+    "placeholder='$NEW_KEY_PH' restart=$([ "$CAGE_STARTED_3" != "$CAGE_STARTED_4" ] && echo yes || echo no)"
+fi
+
+# 3.4e: ...and the proxy injects the brand-new secret's value on the wire.
+# The rule is strict (header-only): the agent's /check-secret sends the
+# "auth" body field as an Authorization bearer header, which is where the
+# proxy substitutes the placeholder. Fresh secrets_injected audit entry =
+# proof the live-applied rule + value are active.
+e2e_timer_start
+COUNT_BEFORE=$(agentcage cage audit "$CAGE" --json-lines -n 300 2>/dev/null | grep -c "secrets_injected" || true)
+FOUND=false
+DEADLINE=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$DEADLINE" ]; do
+  curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
+    -d "{\"auth\":\"$NEW_KEY_PH\"}" "$BASE/check-secret" >/dev/null 2>&1 || true
+  sleep 2
+  COUNT_AFTER=$(agentcage cage audit "$CAGE" --json-lines -n 300 2>/dev/null | grep -c "secrets_injected" || true)
+  if [ "${COUNT_AFTER:-0}" -gt "${COUNT_BEFORE:-0}" ]; then
+    FOUND=true
+    break
+  fi
+done
+if [ "$FOUND" = true ]; then
+  e2e_pass "3.4e" "New secret injected on the wire without restart"
+else
+  e2e_fail "3.4e" "New secret injected on the wire without restart" \
+    "no new secrets_injected entry within 60s (before=$COUNT_BEFORE after=$COUNT_AFTER)"
+fi
+
 # 3.5: Remove secret
 e2e_timer_start
 agentcage secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true

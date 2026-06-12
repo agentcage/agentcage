@@ -73,52 +73,53 @@ class TestLiveChannelDetection:
         cfg.isolation = isolation
         return cfg
 
-    def test_detects_staging_mount_in_unit(self, tmp_path):
+    def test_detects_staging_mount_on_running_egress(self):
+        """Detection inspects the RUNNING container, not the installed
+        unit files — units may have been converged after the container
+        started, and a live-staged value can only reach a proxy whose
+        container actually has the mount."""
         from agentcage.services import cage_has_live_secret_channel
         cfg = self._cfg()
-        backend = MagicMock()
-        backend.unit_dir.return_value = tmp_path
-        (tmp_path / "c1-egress.container").write_text(
-            "Volume=%t/agentcage/c1/secrets:/home/acproxy/secrets:ro,Z\n"
-        )
-        with patch("agentcage.services.get_backend", return_value=backend):
+        podman = MagicMock()
+        podman.container_inspect.return_value = {
+            "Mounts": [{"Destination": "/home/acproxy/secrets"}],
+        }
+        with patch("agentcage.services.Podman", return_value=podman):
             assert cage_has_live_secret_channel("c1", cfg) is True
+        podman.container_inspect.assert_called_once_with("c1-egress")
 
-    def test_pre_feature_unit_lacks_channel(self, tmp_path):
+    def test_pre_feature_container_lacks_channel(self):
         from agentcage.services import cage_has_live_secret_channel
         cfg = self._cfg()
-        backend = MagicMock()
-        backend.unit_dir.return_value = tmp_path
-        (tmp_path / "c1-egress.container").write_text(
-            "Secret=c1.MY_KEY,type=env\n"
-        )
-        with patch("agentcage.services.get_backend", return_value=backend):
+        podman = MagicMock()
+        podman.container_inspect.return_value = {
+            "Mounts": [{"Destination": "/etc/agentcage/config.yaml"}],
+        }
+        with patch("agentcage.services.Podman", return_value=podman):
             assert cage_has_live_secret_channel("c1", cfg) is False
 
-    def test_missing_unit_means_no_channel(self, tmp_path):
+    def test_inspect_failure_means_no_channel(self):
         from agentcage.services import cage_has_live_secret_channel
         cfg = self._cfg()
-        backend = MagicMock()
-        backend.unit_dir.return_value = tmp_path
-        with patch("agentcage.services.get_backend", return_value=backend):
+        podman = MagicMock()
+        podman.container_inspect.side_effect = RuntimeError("no container")
+        with patch("agentcage.services.Podman", return_value=podman):
             assert cage_has_live_secret_channel("c1", cfg) is False
 
-    def test_apple_container_not_live(self, tmp_path):
+    def test_apple_container_not_live(self):
         from agentcage.services import cage_has_live_secret_channel
         assert cage_has_live_secret_channel(
             "c1", self._cfg("apple-container"),
         ) is False
 
-    def test_vm_quadlets_subdir_layout(self, tmp_path):
+    def test_vm_uses_guest_podman(self):
         from agentcage.services import cage_has_live_secret_channel
         cfg = self._cfg("vm")
-        backend = MagicMock()
-        backend.unit_dir.return_value = tmp_path
-        (tmp_path / "quadlets").mkdir()
-        (tmp_path / "quadlets" / "c1-egress.container").write_text(
-            "Volume=%t/agentcage/c1/secrets:/home/acproxy/secrets:ro,Z\n"
-        )
-        with patch("agentcage.services.get_backend", return_value=backend):
+        podman = MagicMock()
+        podman.container_inspect.return_value = {
+            "Mounts": [{"Destination": "/home/acproxy/secrets"}],
+        }
+        with patch("agentcage.lima.podman.VmPodman", return_value=podman):
             assert cage_has_live_secret_channel("c1", cfg) is True
 
 

@@ -265,7 +265,20 @@ class ContainerBackend:
         """
         flags = ["-it"] if interactive else []
         spec = "0:0" if as_root else "1000:1000"
-        return ["podman", "exec", "-u", spec, *flags, f"{name}-{service}", *cmd]
+        # Cage sessions get the CURRENT secret-injection placeholders from
+        # the stored config (decoy tokens, never sensitive): a secret
+        # declared after the cage container started is usable in a new
+        # exec/shell session without any restart. PID 1's env refreshes
+        # via EnvironmentFile= on the next restart.
+        env_flags: list[str] = []
+        if service == "cage":
+            from agentcage.services import current_placeholders
+            for env_name, placeholder in current_placeholders(name):
+                env_flags += ["--env", f"{env_name}={placeholder}"]
+        return [
+            "podman", "exec", "-u", spec, *flags, *env_flags,
+            f"{name}-{service}", *cmd,
+        ]
 
     def logs_argv(
         self,
