@@ -152,6 +152,12 @@ ExecStartPre=/bin/bash -o pipefail -c 'podman secret rm "{{ deploy_name }}.{{ cr
    the uniform read path. `-` prefix: a single unstageable secret (e.g.
    pre-4.7 podman) must not block egress start — the Secret= env channel
    above still carries the boot-time value; only live updates need files.
+   On inspect failure the staged file is REMOVED, never left empty: a
+   plain `cmd > file` redirect creates the file before the command runs,
+   and an existing-but-empty staged file is a tombstone to the injector —
+   on pre-4.7 podman that would silently disable every rule instead of
+   falling back to the env channel. Tombstones are exclusively
+   `secret rm`'s job (staged live, never at boot).
    The final chown maps the files to acproxy (uid 200) through the
    rootless user namespace so the mitmproxy process can read them. #}
 ExecStartPre=/bin/bash -c 'umask 077; mkdir -p "%t/agentcage/{{ name }}/secrets"'
@@ -163,7 +169,7 @@ ExecStartPre=/bin/bash -c 'umask 077; mkdir -p "%t/agentcage/{{ name }}/secrets"
 ExecStartPre=-/bin/bash -c 'podman unshare chown -R 0:0 "%t/agentcage/{{ name }}/secrets"'
 {% endif %}
 {% for secret in proxy_secrets %}
-ExecStartPre=-/bin/bash -o pipefail -c 'umask 077; podman secret inspect --showsecret --format "{{"{{"}}.SecretData{{"}}"}}" "{% if deploy_name %}{{ deploy_name }}.{% endif %}{{ secret }}" > "%t/agentcage/{{ name }}/secrets/{{ secret }}"'
+ExecStartPre=-/bin/bash -c 'umask 077; f="%t/agentcage/{{ name }}/secrets/{{ secret }}"; if v=$(podman secret inspect --showsecret --format "{{"{{"}}.SecretData{{"}}"}}" "{% if deploy_name %}{{ deploy_name }}.{% endif %}{{ secret }}" 2>/dev/null); then printf %%s "$v" > "$f"; else rm -f "$f"; fi'
 {% endfor %}
 ExecStartPre=-/bin/bash -c '{% if rootless %}podman unshare chown -R 200:200{% else %}chown -R 200:200{% endif %} "%t/agentcage/{{ name }}/secrets"'
 {% endif %}

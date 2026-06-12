@@ -178,7 +178,15 @@ class TestEgressStaging:
             "ExecStartPre=/bin/bash -c 'umask 077; mkdir -p"
             ' "%t/agentcage/stagetest/secrets"' in egress
         )
-        assert "ExecStartPre=-/bin/bash -o pipefail -c 'umask 077;" in egress
+        assert "ExecStartPre=-/bin/bash -c 'umask 077; f=" in egress
+        # On inspect failure the staged file is removed, never left empty:
+        # an empty file is a tombstone to the injector, which on pre-4.7
+        # podman (no --showsecret) would disable every rule instead of
+        # falling back to the env channel. printf's format must be %%s in
+        # the unit text — bare %s is a systemd specifier (user shell) and
+        # would be expanded before the shell ever runs.
+        assert egress.count('then printf %%s "$v" > "$f"; else rm -f "$f"; fi') == 2
+        assert 'printf %s' not in egress
         # acproxy (uid 200) must be able to read the 0600 files
         assert 'chown -R 200:200" "%t/agentcage/stagetest/secrets"' in egress \
             or "chown -R 200:200" in egress
