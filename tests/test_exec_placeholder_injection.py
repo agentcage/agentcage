@@ -27,7 +27,7 @@ def _seed(state, name, rules_yaml=""):
 RULES = """\
 secret_injection:
   - env: MY_KEY
-    placeholder: "{{placeholder_my_key_0123456789abcdef}}"
+    placeholder: "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"
 """
 
 
@@ -38,7 +38,7 @@ class TestCurrentPlaceholders:
         state = patch_state_dirs
         _seed(state, "c1", RULES)
         assert current_placeholders("c1") == [
-            ("MY_KEY", "{{placeholder_my_key_0123456789abcdef}}"),
+            ("MY_KEY", "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"),
         ]
 
     def test_missing_cage_returns_empty(self, patch_state_dirs):
@@ -61,7 +61,7 @@ class TestExecArgvInjection:
         backend = ContainerBackend()
         argv = backend.exec_argv("c1", "cage", ["bash"])
         joined = " ".join(argv)
-        assert "--env MY_KEY={{placeholder_my_key_0123456789abcdef}}" in joined
+        assert "--env MY_KEY=agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef" in joined
         # env flags must precede the container name
         assert argv.index("--env") < argv.index("c1-cage")
 
@@ -80,7 +80,7 @@ class TestExecArgvInjection:
         backend = VmBackend()
         argv = backend.exec_argv("c1", "cage", ["bash"])
         joined = " ".join(argv)
-        assert "--env MY_KEY={{placeholder_my_key_0123456789abcdef}}" in joined
+        assert "--env MY_KEY=agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef" in joined
 
     def test_no_rules_leaves_argv_unchanged(self, patch_state_dirs):
         from agentcage.backends.container import ContainerBackend
@@ -207,7 +207,7 @@ class TestSecretSetDeclare:
         rules = raw["secret_injection"]
         assert rules[0]["env"] == "NEW_KEY"
         assert re.match(
-            r"^\{\{placeholder_new_key_[0-9a-f]{16}\}\}$",
+            r"^agentcage:secret:NEW_KEY:[0-9a-f]{32}$",
             rules[0]["placeholder"],
         )
         assert "Declared secret_injection rule" in result.output
@@ -257,7 +257,7 @@ class TestSecretSetDeclare:
         rules = state.load_raw_config("c1")["secret_injection"]
         assert len(rules) == 1
         assert rules[0]["placeholder"] == \
-            "{{placeholder_my_key_0123456789abcdef}}"
+            "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"
         assert "already exists" in result.output
 
     @patch("agentcage.cli._apply_secret_live_or_restart")

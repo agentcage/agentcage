@@ -77,7 +77,7 @@ agentcage secret set myagent ANTHROPIC_API_KEY
 agentcage cage create -c cage.yaml
 ```
 
-The scaffold uses `secret_injection` for the API key. Claude Code sends a generated placeholder token (e.g. `{{placeholder_anthropic_api_key_9f3a1c0b7d2e4a85}}`) in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
+The scaffold uses `secret_injection` for the API key. Claude Code sends a generated placeholder token (e.g. `agentcage:secret:ANTHROPIC_API_KEY:9f3c1a7e8b204d56c1e0a4f7b2d8369a`) in API calls, and the proxy swaps it for the real value when forwarding to `anthropic.com`. No real secret enters the cage.
 
 #### 3. Start a session
 

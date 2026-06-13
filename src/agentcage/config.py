@@ -42,19 +42,24 @@ class SecretsConfig:
     allow_plaintext: bool = False
 
 
+PLACEHOLDER_PREFIX = "agentcage:secret:"
+
+
 def generate_placeholder(env: str) -> str:
     """Return an entropic placeholder token for *env*.
 
-    Format: ``{{placeholder_<env_lowercase>_<16 hex chars>}}`` (64 bits of
-    entropy). Guessable placeholders like ``{{GH_TOKEN}}`` are an accidental-
+    Format: ``agentcage:secret:<ENV>:<32 hex chars>`` (128 bits of entropy).
+    Guessable placeholders like ``{{GH_TOKEN}}`` are an accidental-
     substitution hazard: any file the agent sends outbound that happens to
     contain that literal text (template files, docs) would get the real
     secret injected. The random suffix makes a collision with legitimate
-    content vanishingly unlikely. The token must stay inside ``{{...}}``
-    delimiters — the proxy matches placeholders as literal strings.
+    content vanishingly unlikely, and the ``agentcage:secret:`` prefix makes
+    a placeholder self-identifying (see :func:`validate_config`). The proxy
+    matches placeholders as literal strings, so the token can be any stable
+    string — no delimiters required.
     """
     import secrets as _secrets
-    return "{{placeholder_%s_%s}}" % (env.lower(), _secrets.token_hex(8))
+    return "%s%s:%s" % (PLACEHOLDER_PREFIX, env, _secrets.token_hex(16))
 
 
 def fill_raw_placeholders(raw: dict, prev_raw: dict | None = None) -> bool:
@@ -1244,17 +1249,22 @@ def validate_config(config: Config) -> list[str]:
             "and no ports are allowed through)"
         )
 
-    # Warn about guessable placeholders — the bare {{ENV_NAME}} convention
-    # is an accidental-substitution hazard (any outbound content containing
-    # the literal text gets the real secret injected). Explicit placeholders
-    # stay supported for APIs that validate credential format client-side.
+    # Warn about placeholders that aren't in the canonical
+    # ``agentcage:secret:<ENV>:<hex>`` shape. A placeholder is matched as a
+    # literal string in outbound content, so a guessable value like
+    # ``{{GH_TOKEN}}`` — or any string an outbound payload might legitimately
+    # contain — is an accidental-substitution hazard. The canonical prefix is
+    # also self-identifying: tooling can recognize an agentcage placeholder on
+    # sight. Existing cages keep working (this is a warning, not a hard
+    # error); `agentcage secret rotate-placeholders` mints a conforming token.
     for rule in config.secret_injection:
-        if rule.placeholder == "{{%s}}" % rule.env:
+        if rule.placeholder and not rule.placeholder.startswith(PLACEHOLDER_PREFIX):
             warnings.append(
                 f"secret_injection[{rule.env!r}]: placeholder "
-                f"'{rule.placeholder}' is guessable — omit `placeholder:` "
-                f"to auto-generate an entropic token, or pick a value "
-                f"unlikely to appear in outbound content"
+                f"'{rule.placeholder}' is not in the '{PLACEHOLDER_PREFIX}*' "
+                f"form — omit `placeholder:` to auto-generate an entropic "
+                f"token, or run `agentcage secret rotate-placeholders` to "
+                f"mint one"
             )
 
     # Warn about passthrough implications

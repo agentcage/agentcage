@@ -23,7 +23,7 @@ from agentcage.config import (
     validate_config,
 )
 
-TOKEN_RE = re.compile(r"^\{\{placeholder_[a-z0-9_]+_[0-9a-f]{16}\}\}$")
+TOKEN_RE = re.compile(r"^agentcage:secret:[A-Za-z0-9_]+:[0-9a-f]{32}$")
 
 
 class TestGeneratePlaceholder:
@@ -31,7 +31,8 @@ class TestGeneratePlaceholder:
     def test_format(self):
         tok = generate_placeholder("GH_TOKEN")
         assert TOKEN_RE.match(tok)
-        assert tok.startswith("{{placeholder_gh_token_")
+        # Env name preserved verbatim (not lowercased) after the prefix.
+        assert tok.startswith("agentcage:secret:GH_TOKEN:")
 
     def test_unique_per_call(self):
         assert generate_placeholder("KEY") != generate_placeholder("KEY")
@@ -53,12 +54,12 @@ class TestFillRawPlaceholders:
 
     def test_carry_over_from_prev(self):
         prev = {"secret_injection": [
-            {"env": "GH_TOKEN", "placeholder": "{{placeholder_gh_token_aaaaaaaaaaaaaaaa}}"},
+            {"env": "GH_TOKEN", "placeholder": "agentcage:secret:GH_TOKEN:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         ]}
         raw = {"secret_injection": [{"env": "GH_TOKEN"}, {"env": "NEW_KEY"}]}
         assert fill_raw_placeholders(raw, prev_raw=prev) is True
         rules = raw["secret_injection"]
-        assert rules[0]["placeholder"] == "{{placeholder_gh_token_aaaaaaaaaaaaaaaa}}"
+        assert rules[0]["placeholder"] == "agentcage:secret:GH_TOKEN:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         assert TOKEN_RE.match(rules[1]["placeholder"])
         assert rules[1]["placeholder"] != rules[0]["placeholder"]
 
@@ -113,20 +114,23 @@ class TestParserAcceptsOmittedPlaceholder:
         assert "MY_KEY" not in cfg.container.podman_secrets
         assert "MY_KEY" not in cfg.container.env
 
-    def test_guessable_placeholder_warns(self, tmp_path):
-        cfg = self._load(tmp_path, """\
-            name: test
-            container:
-              image: localhost/test:latest
-            dns_servers: ["1.1.1.1"]
-            secret_injection:
-              - env: GH_TOKEN
-                placeholder: "{{GH_TOKEN}}"
-        """)
-        warnings = validate_config(cfg)
-        assert any("guessable" in w for w in warnings)
+    def test_nonconforming_placeholder_warns(self, tmp_path):
+        """Any placeholder outside the agentcage:secret:* form warns —
+        guessable bare {{ENV}}, a custom credential-format fake, anything."""
+        for bad in ("{{GH_TOKEN}}", "ghp_fakefakefake", "sk-test-0001"):
+            cfg = self._load(tmp_path, f"""\
+                name: test
+                container:
+                  image: localhost/test:latest
+                dns_servers: ["1.1.1.1"]
+                secret_injection:
+                  - env: GH_TOKEN
+                    placeholder: "{bad}"
+            """)
+            warnings = validate_config(cfg)
+            assert any("agentcage:secret:" in w for w in warnings), bad
 
-    def test_entropic_placeholder_does_not_warn(self, tmp_path):
+    def test_conforming_placeholder_does_not_warn(self, tmp_path):
         cfg = self._load(tmp_path, """\
             name: test
             container:
@@ -134,10 +138,10 @@ class TestParserAcceptsOmittedPlaceholder:
             dns_servers: ["1.1.1.1"]
             secret_injection:
               - env: GH_TOKEN
-                placeholder: "{{placeholder_gh_token_0123456789abcdef}}"
+                placeholder: "agentcage:secret:GH_TOKEN:0123456789abcdef0123456789abcdef"
         """)
         warnings = validate_config(cfg)
-        assert not any("guessable" in w for w in warnings)
+        assert not any("agentcage:secret:" in w for w in warnings)
 
 
 class TestStateFillPlaceholders:
@@ -235,7 +239,7 @@ class TestQuadletEmptyPlaceholderGuard:
             dns_servers: ["1.1.1.1"]
             secret_injection:
               - env: MY_KEY
-                placeholder: "{{placeholder_my_key_0123456789abcdef}}"
+                placeholder: "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"
         """))
         cfg = load_config(str(p))
         units = generate_quadlets(
@@ -277,7 +281,7 @@ class TestInjectorEmptyPlaceholderGuard:
         inj = SecretInjector()
         inj.configure([
             {"env": "MY_KEY",
-             "placeholder": "{{placeholder_my_key_0123456789abcdef}}"},
+             "placeholder": "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"},
         ])
         assert len(inj.rules) == 1
 
@@ -370,10 +374,10 @@ class TestSecretListPlaceholderColumn:
             dns_servers: ["1.1.1.1"]
             secret_injection:
               - env: MY_KEY
-                placeholder: "{{placeholder_my_key_0123456789abcdef}}"
+                placeholder: "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"
         """))
         cfg = load_config(str(p))
         _render_secret_list(cfg, {"MY_KEY"})
         out = capsys.readouterr().out
         assert "PLACEHOLDER" in out
-        assert "{{placeholder_my_key_0123456789abcdef}}" in out
+        assert "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef" in out
