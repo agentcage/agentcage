@@ -77,6 +77,29 @@ client-side check). To see the generated token for a cage, run
 > drops comments in that file. Configs generated from scaffolds already carry
 > a generated placeholder, so they are stored untouched.
 
+### Rotating a placeholder
+
+To retire a placeholder — because it leaked, or to migrate a legacy
+static/guessable one like `{{GH_TOKEN}}` to an entropic token — run:
+
+```bash
+agentcage secret rotate-placeholders <cage>            # all injection rules
+agentcage secret rotate-placeholders <cage> GH_TOKEN   # just this one
+```
+
+This mints a fresh `{{placeholder_<env>_<16hex>}}` for each targeted rule,
+persists it to the stored `cage.yaml`, and restarts a running cage so the old
+placeholder stops injecting and the cage process picks up the new one. (A
+placeholder change can't apply zero-restart the way a *value* change can — the
+token is baked into the cage process's environment at start.) A stopped cage
+is just updated in place; the next start picks it up.
+
+> **Note:** rotation fixes the **live cage**, not a `cage.yaml` you track
+> elsewhere. Because an explicit, non-empty `placeholder:` always wins, the
+> next `cage update -c` from a source file that still pins the old token
+> reintroduces it. For a durable migration, also delete the `placeholder:`
+> line from your source config so agentcage generates and preserves the token.
+
 ## How placeholders and values reach the containers
 
 Placeholders are delivered to the cage via a derived env-file —

@@ -256,6 +256,7 @@ Manage cage-scoped secrets.
 | `secret list NAME` | List secrets for a cage (with status if cage exists) |
 | `secret set NAME KEY [--declare] [--placeholder P] [--inject-to D]` | Set a secret (prompts for value or reads stdin). Applies live to a running cage — no restart. `--declare` adds a `secret_injection` rule for a brand-new KEY (entropic placeholder; `--inject-to` scopes it) |
 | `secret rm NAME KEY` | Remove a secret |
+| `secret rotate-placeholders NAME [KEY...]` | Mint fresh entropic placeholders for all (or named) `secret_injection` rules — retire a compromised placeholder or migrate a legacy static one. Restarts a running cage to apply |
 | `secret migrate NAME` | Migrate a cage's secrets to a different storage backend |
 
 Aliases: `ls` → `list`.

@@ -229,6 +229,27 @@ else
     "no new secrets_injected entry within 60s (before=$COUNT_BEFORE after=$COUNT_AFTER)"
 fi
 
+# 3.4f: rotate-placeholders mints a fresh entropic token and applies it.
+# MY_AUTO_KEY already carries a generated placeholder (3.2b); rotation must
+# replace it with a *different* entropic token, visible in the cage env
+# (the rotate restarts the running cage so PID 1 picks it up).
+e2e_timer_start
+OLD_PH=$(agentcage cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d '\r') || true
+agentcage secret rotate-placeholders "$CAGE" MY_AUTO_KEY >/dev/null 2>&1 || true
+if wait_ready "$BASE" 60; then
+  NEW_PH=$(agentcage cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d '\r') || true
+  if echo "$NEW_PH" | grep -Eq '^\{\{placeholder_my_auto_key_[0-9a-f]{16}\}\}$' \
+     && [ "$NEW_PH" != "$OLD_PH" ]; then
+    e2e_pass "3.4f" "rotate-placeholders mints+applies a fresh token"
+  else
+    e2e_fail "3.4f" "rotate-placeholders mints+applies a fresh token" \
+      "old='$OLD_PH' new='$NEW_PH'"
+  fi
+else
+  e2e_fail "3.4f" "rotate-placeholders mints+applies a fresh token" \
+    "cage did not come back after rotate"
+fi
+
 # 3.5: Remove secret
 e2e_timer_start
 agentcage secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
