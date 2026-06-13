@@ -3618,6 +3618,90 @@ def secret_rm(name: str, key: str):
     _apply_secret_live_or_restart(name, key, "")
 
 
+def _injection_rules(raw: dict) -> list:
+    """Return the secret_injection rule list from a raw cage.yaml dict.
+
+    Handles both the bare-list and ``{rules: [...]}`` mapping forms (and
+    returns the live list so callers can mutate it in place). Mirrors the
+    helper in :func:`agentcage.config.fill_raw_placeholders`.
+    """
+    si = raw.get("secret_injection") or []
+    rules = si.get("rules", []) if isinstance(si, dict) else si
+    return rules if isinstance(rules, list) else []
+
+
+@secret.command("rotate-placeholders")
+@click.argument("name")
+@click.argument("keys", nargs=-1)
+def secret_rotate_placeholders(name: str, keys: tuple[str, ...]):
+    """Mint fresh entropic placeholders for a cage's injection rules.
+
+    Rotates every secret_injection rule's placeholder, or only the named
+    KEYS. Use this to retire a compromised placeholder or migrate a legacy
+    static/guessable one (e.g. ``{{GH_TOKEN}}``) to an entropic token. The
+    new tokens are persisted to the stored cage.yaml; a running cage is
+    restarted so the old placeholders stop injecting and the cage process
+    picks up the new ones.
+
+    Note: this fixes the live cage, not a cage.yaml you track elsewhere. If
+    your source config pins an explicit placeholder, the next ``cage update
+    -c`` reintroduces it — drop the ``placeholder:`` line from your source
+    so agentcage owns (and preserves) the generated token instead.
+    """
+    if not state.deployment_exists(name):
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    _ensure_v022_cage(name)
+
+    raw = state.load_raw_config(name)
+    rules = [r for r in _injection_rules(raw) if isinstance(r, dict) and r.get("env")]
+    by_env = {r["env"]: r for r in rules}
+
+    if keys:
+        missing = [k for k in keys if k not in by_env]
+        if missing:
+            click.echo(
+                f"error: no secret_injection rule for: {', '.join(missing)}",
+                err=True,
+            )
+            sys.exit(1)
+        targets = [by_env[k] for k in keys]
+    else:
+        targets = rules
+        if not targets:
+            click.echo(f"Cage '{name}' has no secret_injection rules to rotate.")
+            return
+
+    from agentcage.config import generate_placeholder
+    rotations = []
+    for rule in targets:
+        old = rule.get("placeholder", "")
+        new = generate_placeholder(rule["env"])
+        rule["placeholder"] = new
+        rotations.append((rule["env"], old, new))
+    state.save_raw_config(name, raw)
+
+    click.echo(f"Rotated {len(rotations)} placeholder(s) for '{name}':")
+    for env, old, new in rotations:
+        click.echo(f"  {env}  {old or '(unset)'}  →  {new}")
+
+    cfg = state.load_deployment_config(name)
+    if _is_apple_container(cfg):
+        _apple_restart_if_running(name, cfg)
+        return
+    backend = get_backend(cfg)
+    if backend.is_running(cfg.name, "cage"):
+        click.echo(
+            f"Restarting cage '{cfg.name}' to apply — the old "
+            f"placeholder(s) stop injecting now."
+        )
+        _restart_cage(cfg.name, cfg)
+    else:
+        click.echo(
+            "Cage is not running — the new placeholders apply on next start."
+        )
+
+
 # ── domain group ─────────────────────────────────────────
 
 

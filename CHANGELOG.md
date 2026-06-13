@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`agentcage secret rotate-placeholders <cage> [KEY ...]`** — mint fresh entropic placeholders for all (or only the named) `secret_injection` rules. Use it to retire a compromised placeholder or migrate a legacy static/guessable one (`{{GH_TOKEN}}`) to an entropic token. The new tokens are persisted to the stored `cage.yaml` and a running cage is restarted so the old placeholders stop injecting and the cage process picks up the new ones (a placeholder change can't apply zero-restart the way a value change can — the token is baked into the cage process's environment at start). Rotation fixes the live cage, not a `cage.yaml` tracked elsewhere: since an explicit non-empty `placeholder:` always wins, drop the `placeholder:` line from a source config you `cage update -c` from so agentcage owns and preserves the generated token.
+
 ## [0.23.0] - 2026-06-12
 
 ### Added
