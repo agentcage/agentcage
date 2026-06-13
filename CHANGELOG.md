@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Secret-injection placeholders now use the `agentcage:secret:<ENV>:<32 hex>` format** (e.g. `agentcage:secret:ANTHROPIC_API_KEY:9f3c1a7e8b204d56c1e0a4f7b2d8369a`) instead of the `{{placeholder_<env>_<16 hex>}}` brace form. The suffix is now 128 bits of entropy (was 64), and the `agentcage:secret:` prefix makes a placeholder self-identifying. `validate_config` (run by `cage create`/`update`/`edit`) now **warns when any `secret_injection` placeholder is not in the `agentcage:secret:*` form** — including the old brace form and arbitrary custom values — and points at `agentcage secret rotate-placeholders` to mint a conforming token. This is a warning, not a hard error: existing cages keep working unchanged (their stored placeholders are still matched verbatim), and explicit placeholders are still accepted for clients that validate credential format before sending. Newly generated placeholders (omitted `placeholder:`, scaffolds, `rotate-placeholders`, `secret set --declare`) all use the new format.
+
 ### Added
 
 - **`agentcage secret rotate-placeholders <cage> [KEY ...]`** — mint fresh entropic placeholders for all (or only the named) `secret_injection` rules. Use it to retire a compromised placeholder or migrate a legacy static/guessable one (`{{GH_TOKEN}}`) to an entropic token. The new tokens are persisted to the stored `cage.yaml` and a running cage is restarted so the old placeholders stop injecting and the cage process picks up the new ones (a placeholder change can't apply zero-restart the way a value change can — the token is baked into the cage process's environment at start). Rotation fixes the live cage, not a `cage.yaml` tracked elsewhere: since an explicit non-empty `placeholder:` always wins, drop the `placeholder:` line from a source config you `cage update -c` from so agentcage owns and preserves the generated token.

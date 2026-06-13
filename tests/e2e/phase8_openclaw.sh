@@ -249,16 +249,16 @@ else
 fi
 
 # 8.8a: cage env has a literal entropic placeholder (not the real sentinel).
-# The scaffold generates {{placeholder_anthropic_api_key_<16hex>}} at render
+# The scaffold generates agentcage:secret:ANTHROPIC_API_KEY:<32hex> at render
 # time, so the exact token differs per cage — assert the format, not a fixed
 # literal.
 e2e_timer_start
 actual=$(podman exec "${CAGE}-cage" printenv ANTHROPIC_API_KEY 2>/dev/null || echo 'not set')
-if echo "$actual" | grep -Eq '^\{\{placeholder_anthropic_api_key_[0-9a-f]{16}\}\}$'; then
+if echo "$actual" | grep -Eq '^agentcage:secret:ANTHROPIC_API_KEY:[0-9a-f]{32}$'; then
   e2e_pass "8.8a" "cage env has literal entropic placeholder"
 else
   e2e_fail "8.8a" "cage env has literal entropic placeholder" \
-    "expected {{placeholder_anthropic_api_key_<16hex>}}, got: $actual"
+    "expected agentcage:secret:ANTHROPIC_API_KEY:<32hex>, got: $actual"
 fi
 
 # 8.8b: proxy records an injection attempt on the injected domain.

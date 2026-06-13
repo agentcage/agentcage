@@ -20,7 +20,7 @@ def injector(monkeypatch, tmp_path):
     return si.SecretInjector(), tmp_path
 
 
-RULE = {"env": "MY_KEY", "placeholder": "{{placeholder_my_key_0123456789abcdef}}"}
+RULE = {"env": "MY_KEY", "placeholder": "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"}
 
 
 class TestInjectorFilePrecedence:
@@ -199,7 +199,7 @@ class TestSecretSetLiveFlow:
             dns_servers: ["1.1.1.1"]
             secret_injection:
               - env: MY_KEY
-                placeholder: "{{placeholder_my_key_0123456789abcdef}}"
+                placeholder: "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"
         """))
         meta = state.load_metadata("c1")
         meta["agentcage_version"] = "0.22.22"
@@ -410,7 +410,7 @@ class TestAddonReloadReconfiguresInjector:
         monkeypatch.setattr(si, "_SECRETS_DIR", secrets_dir)
         cfg_path = tmp_path / "config.yaml"
         rule_a = {"env": "KEY_A",
-                  "placeholder": "{{placeholder_key_a_0123456789abcdef}}"}
+                  "placeholder": "agentcage:secret:KEY_A:0123456789abcdef0123456789abcdef"}
         self._write_cfg(cfg_path, [rule_a])
         (secrets_dir / "KEY_A").write_text("a-v1\n")
         monkeypatch.setattr(addon_mod, "CONFIG_PATH", str(cfg_path))
@@ -423,7 +423,7 @@ class TestAddonReloadReconfiguresInjector:
         # Live update: new rule declared + value staged + existing value
         # re-staged; the config rewrite bumps the mtime.
         rule_b = {"env": "KEY_B",
-                  "placeholder": "{{placeholder_key_b_fedcba9876543210}}"}
+                  "placeholder": "agentcage:secret:KEY_B:fedcba9876543210fedcba9876543210"}
         (secrets_dir / "KEY_A").write_text("a-v2\n")
         (secrets_dir / "KEY_B").write_text("b-v1\n")
         self._write_cfg(cfg_path, [rule_a, rule_b])
@@ -448,7 +448,7 @@ class TestAddonReloadReconfiguresInjector:
         monkeypatch.setattr(si, "_SECRETS_DIR", secrets_dir)
         cfg_path = tmp_path / "config.yaml"
         rule = {"env": "KEY_A",
-                "placeholder": "{{placeholder_key_a_0123456789abcdef}}"}
+                "placeholder": "agentcage:secret:KEY_A:0123456789abcdef0123456789abcdef"}
         self._write_cfg(cfg_path, [rule])
         (secrets_dir / "KEY_A").write_text("a-v1\n")
         monkeypatch.setattr(addon_mod, "CONFIG_PATH", str(cfg_path))

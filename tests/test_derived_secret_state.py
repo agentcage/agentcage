@@ -27,9 +27,9 @@ CFG = """\
     dns_servers: ["1.1.1.1"]
     secret_injection:
       - env: KEY_A
-        placeholder: "{{{{placeholder_key_a_0123456789abcdef}}}}"
+        placeholder: "agentcage:secret:KEY_A:0123456789abcdef0123456789abcdef"
       - env: KEY_B
-        placeholder: "{{{{placeholder_key_b_fedcba9876543210}}}}"
+        placeholder: "agentcage:secret:KEY_B:fedcba9876543210fedcba9876543210"
       - env: NOT_FILLED
 """
 
@@ -41,8 +41,8 @@ class TestSavePlaceholdersEnv:
         _seed(state, "c1", CFG.format(name="c1"))
         path = state.save_placeholders_env("c1")
         content = open(path).read()
-        assert "KEY_A={{placeholder_key_a_0123456789abcdef}}\n" in content
-        assert "KEY_B={{placeholder_key_b_fedcba9876543210}}\n" in content
+        assert "KEY_A=agentcage:secret:KEY_A:0123456789abcdef0123456789abcdef\n" in content
+        assert "KEY_B=agentcage:secret:KEY_B:fedcba9876543210fedcba9876543210\n" in content
         assert "NOT_FILLED" not in content
 
     def test_rewrite_in_place_keeps_inode(self, patch_state_dirs):
@@ -103,7 +103,7 @@ class TestVmLocalPlaceholderPaths:
             dns_servers: ["1.1.1.1"]
             secret_injection:
               - env: MY_KEY
-                placeholder: "{{placeholder_my_key_0123456789abcdef}}"
+                placeholder: "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"
         """))
         cfg = load_config(str(p))
         units = generate_quadlets(
@@ -154,9 +154,9 @@ class TestEgressStaging:
             dns_servers: ["1.1.1.1"]
             secret_injection:
               - env: KEY_A
-                placeholder: "{{placeholder_key_a_0123456789abcdef}}"
+                placeholder: "agentcage:secret:KEY_A:0123456789abcdef0123456789abcdef"
               - env: KEY_B
-                placeholder: "{{placeholder_key_b_fedcba9876543210}}"
+                placeholder: "agentcage:secret:KEY_B:fedcba9876543210fedcba9876543210"
         """))
         cfg = load_config(str(p))
         units = generate_quadlets(

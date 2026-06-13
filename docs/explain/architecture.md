@@ -42,7 +42,7 @@ Custom inspectors plug into the same chain with the same allow / flag / block co
 
 Secret injection keeps real secret values out of the cage entirely.
 
-The cage gets a placeholder — a generated decoy token like `{{placeholder_anthropic_api_key_9f3a1c0b7d2e4a85}}` (entropic so real outbound content never collides with it; see [Secret injection](../reference/secret-injection.md#placeholder-entropy)). The agent uses the placeholder in headers, query strings, or bodies as if it were the real value. Before the inspector chain runs, the proxy checks two invariants:
+The cage gets a placeholder — a generated decoy token like `agentcage:secret:ANTHROPIC_API_KEY:9f3c1a7e8b204d56c1e0a4f7b2d8369a` (entropic so real outbound content never collides with it; see [Secret injection](../reference/secret-injection.md#placeholder-entropy)). The agent uses the placeholder in headers, query strings, or bodies as if it were the real value. Before the inspector chain runs, the proxy checks two invariants:
 
 1. **Literal value blocking.** If a real secret value appears in a request to a host outside that secret's `inject_to` list, the request is blocked. The cage should never know the real value, so its presence indicates the agent learned the secret outside the placeholder system.
 2. **Placeholder routing.** If a placeholder is heading to a domain not in that secret's `inject_to` list, the request is flagged but still goes through.

@@ -167,7 +167,7 @@ class TestCodingAgentScaffolds:
         cfg_text = render_config("test-cc", scaffold="claude-code")
         assert "#- env: CLAUDE_CODE_OAUTH_TOKEN" in cfg_text
         assert re.search(
-            r"\{\{placeholder_claude_code_oauth_token_[0-9a-f]{16}\}\}",
+            r"agentcage:secret:CLAUDE_CODE_OAUTH_TOKEN:[0-9a-f]{32}",
             cfg_text,
         )
         parsed = yaml.safe_load(cfg_text)

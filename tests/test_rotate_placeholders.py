@@ -14,7 +14,7 @@ from click.testing import CliRunner
 
 from agentcage.cli import main
 
-TOKEN_RE = re.compile(r"^\{\{placeholder_[a-z0-9_]+_[0-9a-f]{16}\}\}$")
+TOKEN_RE = re.compile(r"^agentcage:secret:[A-Za-z0-9_]+:[0-9a-f]{32}$")
 
 
 def _seed(state, name, body: str):
@@ -163,11 +163,11 @@ class TestRotatePlaceholders:
         mock_backend.return_value.is_running.return_value = False
 
         before = validate_config(load_config(str(state.stored_config_path("c1"))))
-        assert any("guessable" in w for w in before)
+        assert any("agentcage:secret:" in w for w in before)
 
         result = CliRunner().invoke(
             main, ["secret", "rotate-placeholders", "c1"],
         )
         assert result.exit_code == 0, result.output
         after = validate_config(load_config(str(state.stored_config_path("c1"))))
-        assert not any("guessable" in w for w in after)
+        assert not any("agentcage:secret:" in w for w in after)

@@ -52,14 +52,14 @@ else
 fi
 
 # 3.2b: Entropic placeholder generated for a rule declared without `placeholder:`
-# (cage create persists {{placeholder_my_auto_key_<16hex>}} into the stored
+# (cage create persists agentcage:secret:MY_AUTO_KEY:<32hex> into the stored
 # config and the cage env carries it).
 e2e_timer_start
 OUTPUT=$(podman exec "${CAGE}-cage" printenv MY_AUTO_KEY 2>&1) || true
-if echo "$OUTPUT" | grep -Eq '^\{\{placeholder_my_auto_key_[0-9a-f]{16}\}\}$'; then
+if echo "$OUTPUT" | grep -Eq '^agentcage:secret:MY_AUTO_KEY:[0-9a-f]{32}$'; then
   e2e_pass "3.2b" "Entropic placeholder in cage env"
 else
-  e2e_fail "3.2b" "Entropic placeholder in cage env" "got '$OUTPUT', expected {{placeholder_my_auto_key_<16hex>}}"
+  e2e_fail "3.2b" "Entropic placeholder in cage env" "got '$OUTPUT', expected agentcage:secret:MY_AUTO_KEY:<32hex>"
 fi
 
 # 3.2c: Derived placeholders.env exists and carries the generated token
@@ -67,7 +67,7 @@ fi
 # proxy-config.yaml on every deploy/restart).
 e2e_timer_start
 DEPLOY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agentcage/cages/$CAGE"
-if grep -Eq '^MY_AUTO_KEY=\{\{placeholder_my_auto_key_[0-9a-f]{16}\}\}$' \
+if grep -Eq '^MY_AUTO_KEY=agentcage:secret:MY_AUTO_KEY:[0-9a-f]{32}$' \
      "$DEPLOY_DIR/cage-env/placeholders.env" 2>/dev/null; then
   e2e_pass "3.2c" "placeholders.env derived file"
 else
@@ -121,8 +121,8 @@ fi
 # placeholders via EnvironmentFile=, which podman re-reads at container
 # creation; `cage restart` regenerates the derived file from cage.yaml.
 e2e_timer_start
-NEW_PH="{{placeholder_my_api_key_e2e0000000000001}}"
-sed -i "s/{{MY_API_KEY}}/$NEW_PH/g" "$DEPLOY_DIR/cage.yaml"
+NEW_PH="agentcage:secret:MY_API_KEY:e2e0000000000001e2e0000000000001"
+sed -i "s#{{MY_API_KEY}}#$NEW_PH#g" "$DEPLOY_DIR/cage.yaml"
 agentcage cage restart "$CAGE" >/dev/null 2>&1
 wait_ready "$BASE" 60 >/dev/null || true
 OUTPUT=$(podman exec "${CAGE}-cage" printenv MY_API_KEY 2>&1) || true
@@ -196,7 +196,7 @@ echo "brand-new-value-777" | agentcage secret set "$CAGE" BRAND_NEW_KEY \
 CAGE_STARTED_4=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
 NEW_KEY_PH=$(agentcage cage exec "$CAGE" -- printenv BRAND_NEW_KEY 2>/dev/null | tr -d '\r') || true
 if [ "$CAGE_STARTED_3" = "$CAGE_STARTED_4" ] \
-   && echo "$NEW_KEY_PH" | grep -Eq '^\{\{placeholder_brand_new_key_[0-9a-f]{16}\}\}$'; then
+   && echo "$NEW_KEY_PH" | grep -Eq '^agentcage:secret:BRAND_NEW_KEY:[0-9a-f]{32}$'; then
   e2e_pass "3.4d" "New secret declared+usable live (exec env, no restart)"
 else
   e2e_fail "3.4d" "New secret declared+usable live (exec env, no restart)" \
@@ -238,7 +238,7 @@ OLD_PH=$(agentcage cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d
 agentcage secret rotate-placeholders "$CAGE" MY_AUTO_KEY >/dev/null 2>&1 || true
 if wait_ready "$BASE" 60; then
   NEW_PH=$(agentcage cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d '\r') || true
-  if echo "$NEW_PH" | grep -Eq '^\{\{placeholder_my_auto_key_[0-9a-f]{16}\}\}$' \
+  if echo "$NEW_PH" | grep -Eq '^agentcage:secret:MY_AUTO_KEY:[0-9a-f]{32}$' \
      && [ "$NEW_PH" != "$OLD_PH" ]; then
     e2e_pass "3.4f" "rotate-placeholders mints+applies a fresh token"
   else

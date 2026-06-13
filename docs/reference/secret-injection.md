@@ -10,7 +10,7 @@ Secrets listed in `secret_injection` are automatically excluded from the cage's 
 | Setting | Type | Required | Description |
 |---------|------|----------|-------------|
 | `env` | `string` | yes | Environment variable name holding the real secret (read by the proxy at startup). |
-| `placeholder` | `string` | no | Token the cage sees and uses in requests. **Omit it** (recommended) and agentcage generates an entropic token like `{{placeholder_anthropic_api_key_9f3a1c0b7d2e4a85}}`, persisted into the cage's stored config at create/update/edit time. See [Placeholder entropy](#placeholder-entropy). |
+| `placeholder` | `string` | no | Token the cage sees and uses in requests. **Omit it** (recommended) and agentcage generates an entropic token like `agentcage:secret:ANTHROPIC_API_KEY:9f3c1a7e8b204d56c1e0a4f7b2d8369a`, persisted into the cage's stored config at create/update/edit time. See [Placeholder entropy](#placeholder-entropy). |
 | `inject_to` | `list[string]` | no | Domains where placeholders are replaced with real values. If omitted, injection applies to all domains. |
 | `inject_body` | `bool` | no | When `false` (the default), placeholders are only substituted inside known credential-bearing request headers (the [auth-header allow-list](#injection-scope)). Set to `true` to also inject into the request URL (query string), every header, the request body, and WebSocket frames. See [Injection scope](#injection-scope). |
 | `inject_headers` | `list[string]` | no | Extra request headers — added to the built-in auth-header allow-list — to treat as credential-bearing under the strict default. Matched case-insensitively. Use for APIs whose auth header isn't a common convention. See [Injection scope](#injection-scope). |
@@ -53,24 +53,28 @@ secret_injection:
 ## Placeholder entropy
 
 When a rule omits `placeholder:`, agentcage generates
-`{{placeholder_<env_lowercase>_<16 hex chars>}}` (64 bits of entropy) and
-persists it into the cage's stored config the first time the rule is deployed
-(`cage create`, `cage update -c`, `cage edit`, or `agentcage run`). The token
-stays stable across updates — it is carried over by `env` name rather than
+`agentcage:secret:<ENV>:<32 hex chars>` (128 bits of entropy) and persists it
+into the cage's stored config the first time the rule is deployed (`cage
+create`, `cage update -c`, `cage edit`, or `agentcage run`). The token stays
+stable across updates — it is carried over by `env` name rather than
 regenerated, so long-running processes inside the cage keep working.
 
-Why entropy matters: the proxy substitutes the placeholder as a **literal
-string** wherever injection applies. A guessable placeholder like
-`{{GH_TOKEN}}` is an accidental-substitution hazard — if a file the agent
-sends outbound legitimately contains that text (a template file, docs, CI
-config), the real secret would be injected into it. A random suffix makes
-such collisions vanishingly unlikely. `agentcage cage create` warns when an
-explicit placeholder uses the bare `{{ENV_NAME}}` convention.
+Why this shape: the proxy substitutes the placeholder as a **literal string**
+wherever injection applies. A guessable placeholder like `{{GH_TOKEN}}` is an
+accidental-substitution hazard — if a file the agent sends outbound
+legitimately contains that text (a template file, docs, CI config), the real
+secret would be injected into it. The random 128-bit suffix makes such
+collisions vanishingly unlikely, and the `agentcage:secret:` prefix makes a
+placeholder self-identifying — tooling can recognize one on sight.
+`agentcage cage create` (and `update`/`edit`) warns when a placeholder is not
+in the `agentcage:secret:*` form.
 
-Explicit `placeholder:` values remain fully supported — some clients validate
+Explicit `placeholder:` values are still accepted — some clients validate
 credential format before sending (e.g. a `ghp_`-prefixed fake to pass a
-client-side check). To see the generated token for a cage, run
-`agentcage secret list <cage>` (placeholders are decoys, never sensitive).
+client-side check) — but they trip the validation warning above; prefer the
+generated token unless a client-side check forces your hand. To see the
+generated token for a cage, run `agentcage secret list <cage>` (placeholders
+are decoys, never sensitive).
 
 > **Note:** filling an omitted placeholder rewrites the stored `cage.yaml`
 > (under `~/.config/agentcage/cages/<name>/`), which normalizes the YAML and
@@ -87,7 +91,7 @@ agentcage secret rotate-placeholders <cage>            # all injection rules
 agentcage secret rotate-placeholders <cage> GH_TOKEN   # just this one
 ```
 
-This mints a fresh `{{placeholder_<env>_<16hex>}}` for each targeted rule,
+This mints a fresh `agentcage:secret:<ENV>:<32hex>` for each targeted rule,
 persists it to the stored `cage.yaml`, and restarts a running cage so the old
 placeholder stops injecting and the cage process picks up the new one. (A
 placeholder change can't apply zero-restart the way a *value* change can — the
