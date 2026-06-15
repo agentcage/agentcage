@@ -1476,3 +1476,114 @@ class TestConfigureWithTransform:
             assert len(inj.rules) == 0
         finally:
             _REGISTRY.pop("test-broken", None)
+
+
+# ── Basic-auth (base64) injection / redaction — git over HTTPS ──────────────
+#
+# git sends `Authorization: Basic base64("x-access-token:<secret>")`, so the
+# placeholder/secret never appears verbatim in the header. These tests guard
+# the base64-aware path that lets git-over-HTTPS auth work (regression: the
+# literal-only matcher injected for api.github.com `token`/`Bearer` but not for
+# github.com git endpoints, so private `git pull` failed with "invalid
+# credentials").
+
+import base64 as _b64
+
+from secret_injector import _rewrite_basic_auth
+
+
+def _basic(userinfo: str) -> str:
+    return "Basic " + _b64.b64encode(userinfo.encode()).decode()
+
+
+def _decode_basic(value: str) -> str:
+    return _b64.b64decode(value.split(" ", 1)[1]).decode()
+
+
+def _gh_rule(placeholder="agentcage:secret:GH_TOKEN:deadbeef",
+             real="ghp_realtokenvalue000000000000000000000000"):
+    return InjectionRule(
+        name="GH_TOKEN", placeholder=placeholder, real_value=real,
+        inject_to=["github.com"],
+    )
+
+
+class TestRewriteBasicAuthHelper:
+    def test_substitutes_inside_basic(self):
+        rule = _gh_rule()
+        v = _basic(f"x-access-token:{rule.placeholder}")
+        out, changed = _rewrite_basic_auth(v, rule.placeholder, rule.real_value)
+        assert changed is True
+        assert _decode_basic(out) == f"x-access-token:{rule.real_value}"
+
+    def test_non_basic_unchanged(self):
+        v = f"Bearer agentcage:secret:GH_TOKEN:deadbeef"
+        out, changed = _rewrite_basic_auth(v, "agentcage:secret:GH_TOKEN:deadbeef", "X")
+        assert (out, changed) == (v, False)
+
+    def test_invalid_base64_unchanged(self):
+        v = "Basic not!!base64!!"
+        out, changed = _rewrite_basic_auth(v, "anything", "X")
+        assert (out, changed) == (v, False)
+
+    def test_needle_absent_unchanged(self):
+        v = _basic("user:somethingelse")
+        out, changed = _rewrite_basic_auth(v, "agentcage:secret:GH_TOKEN:deadbeef", "X")
+        assert (out, changed) == (v, False)
+
+
+class TestBasicAuthInjection:
+    def test_injects_into_basic_auth_header(self):
+        rule = _gh_rule()
+        inj = _injector_with_rules([rule])
+        flow = _make_flow(
+            url="https://github.com/TrueLayer/repo.git/info/refs",
+            host="github.com",
+            headers={"Authorization": _basic(f"x-access-token:{rule.placeholder}")},
+        )
+        names = inj.inject_request(flow)
+        assert names == ["GH_TOKEN"]
+        assert _decode_basic(flow.request.headers["Authorization"]) == (
+            f"x-access-token:{rule.real_value}"
+        )
+
+    def test_bearer_literal_path_still_works(self):
+        rule = _gh_rule()
+        inj = _injector_with_rules([rule])
+        flow = _make_flow(
+            url="https://github.com/x", host="github.com",
+            headers={"Authorization": f"token {rule.placeholder}"},
+        )
+        names = inj.inject_request(flow)
+        assert names == ["GH_TOKEN"]
+        assert flow.request.headers["Authorization"] == f"token {rule.real_value}"
+
+    def test_unauthorized_domain_not_injected(self):
+        rule = _gh_rule()
+        inj = _injector_with_rules([rule])
+        ph_header = _basic(f"x-access-token:{rule.placeholder}")
+        flow = _make_flow(
+            url="https://evil.example/x", host="evil.example",
+            headers={"Authorization": ph_header},
+        )
+        names = inj.inject_request(flow)
+        assert names == []
+        assert flow.request.headers["Authorization"] == ph_header  # untouched
+
+
+class TestBasicAuthRedaction:
+    def test_redact_request_scrubs_basic_auth(self):
+        # After injection the real token rides base64-encoded in the Basic
+        # header; redact_request must restore placeholder form so capture.jsonl
+        # never serializes the raw token (even base64-encoded).
+        rule = _gh_rule()
+        inj = _injector_with_rules([rule])
+        flow = _make_flow(
+            url="https://github.com/x", host="github.com",
+            headers={"Authorization": _basic(f"x-access-token:{rule.real_value}")},
+        )
+        names = inj.redact_request(flow)
+        assert names == ["GH_TOKEN"]
+        assert _decode_basic(flow.request.headers["Authorization"]) == (
+            f"x-access-token:{rule.placeholder}"
+        )
