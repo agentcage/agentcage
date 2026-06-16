@@ -26,6 +26,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g --ignore-scripts @anthropic-ai/claude-code \
     && node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs
 
+# agentcage introspection: bake a short "you are sandboxed" brief into Claude
+# Code's user memory (~/.claude/CLAUDE.md) so the agent discovers it is caged
+# with zero setup. AGENTS.md ships alongside this Containerfile.
+#
+# Delivered as a plain, writable, node-owned file — deliberately NOT a
+# read-only bind mount over ~/.claude/CLAUDE.md (that makes the runtime create
+# ~/.claude root-owned, breaking `claude login`, settings, and history) and
+# NOT an `@import` (a Claude-Code-only directive). Claude keeps full ownership
+# of ~/.claude, so it still saves credentials and its own appended memories
+# there. The same one-line pattern works for any agent — just change the
+# destination to that agent's memory file.
+RUN mkdir -p /home/node/.claude
+COPY AGENTS.md /home/node/.claude/CLAUDE.md
+RUN chown -R node:node /home/node/.claude
+
 # node:22-slim already has user node (1000:1000)
 USER node
 WORKDIR /workspace

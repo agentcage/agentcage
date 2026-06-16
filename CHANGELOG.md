@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Claude Code scaffold ships a "you are sandboxed" brief in Claude's user memory.** An agent waking up inside a cage has no built-in way to know it is sandboxed — so a blocked fetch or a placeholder-looking API key sends it down the wrong debugging path. The `claude-code` scaffold image now bakes a short brief (`AGENTS.md`, shipped next to the `Containerfile`) into `~/.claude/CLAUDE.md`, which Claude Code reads as user memory automatically. It's a scaffold feature, not a core one: where the brief lives and what format it takes is agent-specific. Delivered as a plain, writable, node-owned file — deliberately not a read-only mount over `~/.claude` (which would create the dir root-owned and break `claude login`) and not an `@import` (a Claude-Code-only directive) — so the same one-line `COPY` pattern works for any agent and Claude keeps full ownership of `~/.claude`. Edit `AGENTS.md` or drop the `COPY` line to customize/disable.
+- **`AGENTCAGE_VERSION` is now injected into the cage on the apple-container backend too.** The container/vm backends already baked it into `cage.container.j2`; apple-container now also passes `-e AGENTCAGE_VERSION=<version>` to `container run`, so an agent can detect at runtime that it is inside a cage (and which version) regardless of isolation mode.
+
 ## [0.24.1] - 2026-06-16
 
 ### Fixed

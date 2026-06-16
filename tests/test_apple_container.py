@@ -2876,3 +2876,18 @@ def test_reload_domains_regenerates_runtime_servers_before_sighup():
     assert "/run/agentcage/dns-allowlist.cage.conf" in src
     assert 'ip route' in src and '/^default/' in src
     assert "kill -HUP" in src
+
+
+def test_start_injects_agentcage_version_env(tmp_path, monkeypatch):
+    """The cage VM gets AGENTCAGE_VERSION so an agent can detect it's
+    sandboxed (parity with the container/vm backends' cage.container.j2)."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": "", "memory": "",
+            "lifecycle": "interactive",
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert any(a.startswith("AGENTCAGE_VERSION=") for a in cage_argv)

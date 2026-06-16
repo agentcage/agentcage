@@ -1219,6 +1219,10 @@ class AppleContainerBackend:
             # from `-p` when its HTTPS call fails verification.
             "-e", "SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem",
             "-e", "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem",
+            # Expose the running agentcage version to the cage workload so an
+            # agent can detect it's sandboxed (and which version). Parity
+            # with the container/vm backends' cage.container.j2.
+            "-e", f"AGENTCAGE_VERSION={_agentcage_version()}",
         ]
         # User-defined env from cage.yaml.
         for env_k, env_v in (meta.get("env") or {}).items():
