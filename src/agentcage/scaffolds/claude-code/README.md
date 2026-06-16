@@ -127,6 +127,19 @@ The scaffold mounts two paths from the host:
 
 `~/.claude.json` (Claude Code's global UX config — model choice, theme, etc.) is **not** mounted by default; uncomment the line in `cage.yaml` if you want host preferences to follow you into the cage. Git config and SSH known hosts mounts are commented out -- uncomment them if you need git push. Remove the `~/.claude` mount to fully isolate the cage from host state.
 
+### Sandbox brief (introspection)
+
+The image bakes a short "you are running inside agentcage" brief into
+`~/.claude/CLAUDE.md`, so Claude Code reads it as user memory automatically and
+knows up front that egress is proxied, secrets are placeholders, and a failed
+`fetch` usually means the host isn't allowlisted. agentcage stages one canonical `AGENTS.md` brief into the build context (it is
+not committed per-scaffold); remove the `COPY AGENTS.md` line from the
+`Containerfile` to drop it, or edit `src/agentcage/scaffolds/AGENTS.md` upstream
+to change it for every scaffold at once. It's delivered as a
+plain, writable file Claude owns — not a read-only mount — so `claude login`,
+settings, and Claude's own appended memories still work. The agentcage version
+is also available in the cage at `$AGENTCAGE_VERSION`.
+
 ### Secret injection
 
 The scaffold pre-configures secret injection for the Anthropic API key. Two more

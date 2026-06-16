@@ -122,6 +122,19 @@ The scaffold mounts two paths from the host:
 
 Remove the `~/.pi` mount to fully isolate the cage from host state. Git config and SSH known hosts mounts are commented out in `cage.yaml` -- uncomment them if you need git push.
 
+### Sandbox brief (introspection)
+
+The image bakes a short "you are running inside agentcage" brief into
+`~/.pi/agent/AGENTS.md`, so Pi loads it as a global context file automatically
+and knows up front that egress is proxied, secrets are placeholders, and a
+failed `fetch` usually means the host isn't allowlisted. agentcage stages one
+canonical `AGENTS.md` brief into the build context (it is not committed
+per-scaffold); remove the `COPY AGENTS.md` line from the `Containerfile` to drop
+it, or edit `src/agentcage/scaffolds/AGENTS.md` upstream to change it for every
+scaffold at once. It's a plain, writable file Pi owns — not a read-only mount —
+so Pi's own state/session writes still work. The agentcage version is also
+available at `$AGENTCAGE_VERSION`.
+
 ### Secret injection
 
 The scaffold pre-configures secret injection for the Anthropic API key. Two more rules ship commented out in `cage.yaml`:

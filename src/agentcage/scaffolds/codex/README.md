@@ -103,6 +103,19 @@ The scaffold mounts two paths from the host:
 
 Remove the `~/.codex` mount to fully isolate the cage from host state. Git config and SSH known hosts mounts are commented out in `cage.yaml` -- uncomment them if you need git push.
 
+### Sandbox brief (introspection)
+
+The image bakes a short "you are running inside agentcage" brief into
+`~/.codex/AGENTS.md`, so Codex reads it as global guidance automatically and
+knows up front that egress is proxied, secrets are placeholders, and a failed
+`fetch` usually means the host isn't allowlisted. agentcage stages one
+canonical `AGENTS.md` brief into the build context (it is not committed
+per-scaffold); remove the `COPY AGENTS.md` line from the `Containerfile` to drop
+it, or edit `src/agentcage/scaffolds/AGENTS.md` upstream to change it for every
+scaffold at once. It's a plain, writable file Codex owns — not a read-only
+mount — so Codex's own config/auth writes still work. The agentcage version is
+also available at `$AGENTCAGE_VERSION`.
+
 ### Secret injection
 
 The scaffold pre-configures secret injection for the OpenAI API key. To enable GitHub push via HTTPS, uncomment the `GITHUB_TOKEN` block in `cage.yaml` and set the secret:
