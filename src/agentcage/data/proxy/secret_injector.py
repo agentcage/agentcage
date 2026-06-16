@@ -8,6 +8,8 @@ inspector chain.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import os
 from dataclasses import dataclass, field
@@ -60,6 +62,37 @@ _SECRETS_DIR = Path(
 # ``?api_key=``, Firebase ``?auth=``) or the request body (Plaid) are outside
 # the header channel and need ``inject_body: true``.
 AUTH_HEADER_KEYWORDS: tuple[str, ...] = ("auth", "key", "token")
+
+
+def _rewrite_basic_auth(value: str, find: str, replace: str) -> tuple[str, bool]:
+    """Rewrite ``find`` → ``replace`` inside an HTTP **Basic** credential.
+
+    A literal substring match can't reach a placeholder (or a real secret)
+    carried in ``Authorization: Basic base64("user:<secret>")`` — git over
+    HTTPS sends exactly this, base64-encoding the token so it never appears
+    verbatim in the header value. (The ``Bearer``/``token`` channel used by
+    REST clients carries the credential in cleartext, which the literal match
+    already handles.)
+
+    Decode the base64, substitute in the decoded ``user:pass`` text, and
+    re-encode. Returns ``(new_value, changed)``; ``(value, False)`` when the
+    header isn't Basic, isn't decodable base64/UTF-8, or doesn't contain
+    ``find`` — so the caller's literal path stays authoritative for every
+    other case.
+    """
+    parts = value.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "basic":
+        return value, False
+    try:
+        decoded = base64.b64decode(parts[1].strip(), validate=True).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return value, False
+    if find not in decoded:
+        return value, False
+    new_b64 = base64.b64encode(
+        decoded.replace(find, replace).encode("utf-8")
+    ).decode("ascii")
+    return f"{parts[0]} {new_b64}", True
 
 
 @dataclass
@@ -229,12 +262,18 @@ class SecretInjector:
         return False
 
     def _find_placeholder(self, flow: http.HTTPFlow, rule: InjectionRule) -> bool:
-        """Check if a rule's placeholder is present in the flow."""
+        """Check if a rule's placeholder is present in the flow.
+
+        Also detects a placeholder carried base64-encoded inside an
+        ``Authorization: Basic`` header (git over HTTPS) — otherwise the
+        per-rule gate in ``inject_request`` would skip the rule before the
+        Basic-aware header substitution ever runs.
+        """
         ph = rule.placeholder
         if ph in flow.request.url:
             return True
         for v in flow.request.headers.values():
-            if ph in v:
+            if ph in v or _rewrite_basic_auth(v, ph, ph)[1]:
                 return True
         if flow.request.content and ph.encode() in flow.request.content:
             return True
@@ -379,6 +418,14 @@ class SecretInjector:
                     if ph in v:
                         flow.request.headers[k] = v.replace(ph, value)
                         injected = True
+                        continue
+                    # git-over-HTTPS sends the token base64-encoded inside
+                    # `Authorization: Basic ...`, where the literal match
+                    # above can't see it. Decode/substitute/re-encode.
+                    new_v, changed = _rewrite_basic_auth(v, ph, value)
+                    if changed:
+                        flow.request.headers[k] = new_v
+                        injected = True
 
             if injected:
                 names.append(rule.name)
@@ -416,6 +463,11 @@ class SecretInjector:
                 v = flow.request.headers[k]
                 if real in v:
                     flow.request.headers[k] = v.replace(real, ph)
+                    found = True
+                    continue
+                new_v, changed = _rewrite_basic_auth(v, real, ph)
+                if changed:
+                    flow.request.headers[k] = new_v
                     found = True
 
             # Redact body
@@ -481,6 +533,11 @@ class SecretInjector:
                 if real in v:
                     flow.request.headers[k] = v.replace(real, ph)
                     found = True
+                    continue
+                new_v, changed = _rewrite_basic_auth(v, real, ph)
+                if changed:
+                    flow.request.headers[k] = new_v
+                    found = True
 
             # Redact body — only when the bytes are actually present;
             # avoid touching ``flow.request.content`` otherwise so we
@@ -526,6 +583,11 @@ class SecretInjector:
                 v = flow.response.headers[k]
                 if real in v:
                     flow.response.headers[k] = v.replace(real, ph)
+                    found = True
+                    continue
+                new_v, changed = _rewrite_basic_auth(v, real, ph)
+                if changed:
+                    flow.response.headers[k] = new_v
                     found = True
 
             # Redact response body
