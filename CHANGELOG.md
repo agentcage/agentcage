@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-06-16
+
 ### Added
 
 - **Scaffolds bake a "you are sandboxed" brief into each agent's memory file.** An agent waking up inside a cage has no built-in way to know it is sandboxed — so a blocked fetch or a placeholder-looking API key sends it down the wrong debugging path. The `claude-code`, `codex`, and `pi` scaffold images now bake a short brief into the agent's own memory file — `~/.claude/CLAUDE.md` (Claude Code), `~/.codex/AGENTS.md` (Codex), `~/.pi/agent/AGENTS.md` (Pi) — which each agent reads automatically. It's a scaffold feature, not a core one: where the brief lives and what format it takes is agent-specific. Delivered as a plain, writable, node-owned file — deliberately not a read-only mount over the agent's home dir (which would create it root-owned and break the agent's own auth/state writes, e.g. `claude login`) and not an `@import` (a Claude-Code-only directive) — so the same one-line `COPY` pattern works for every agent. There is a **single canonical brief** (`src/agentcage/scaffolds/AGENTS.md`); scaffolds `COPY AGENTS.md` but don't each ship a copy — agentcage stages the canonical brief into a scaffold's build context at build time (non-clobbering, only when the `Containerfile` references it). Edit the one file to change the brief everywhere, or drop the `COPY` line in a scaffold to disable.
