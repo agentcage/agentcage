@@ -21,7 +21,8 @@ RUN npm install -g --ignore-scripts @openai/codex
 
 # agentcage introspection: bake a short "you are sandboxed" brief into Codex's
 # global guidance file (~/.codex/AGENTS.md) so the agent discovers it is caged
-# with zero setup. AGENTS.md ships alongside this Containerfile.
+# with zero setup. agentcage stages the canonical AGENTS.md brief into the
+# build context (see agentcage.scaffold_brief) — it is not committed per-scaffold.
 #
 # Delivered as a plain, writable, node-owned file — deliberately NOT a
 # read-only bind mount over ~/.codex (that makes the runtime create ~/.codex

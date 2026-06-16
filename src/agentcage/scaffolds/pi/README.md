@@ -127,11 +127,13 @@ Remove the `~/.pi` mount to fully isolate the cage from host state. Git config a
 The image bakes a short "you are running inside agentcage" brief into
 `~/.pi/agent/AGENTS.md`, so Pi loads it as a global context file automatically
 and knows up front that egress is proxied, secrets are placeholders, and a
-failed `fetch` usually means the host isn't allowlisted. The brief ships as
-`AGENTS.md` next to the `Containerfile`; edit it (or remove the
-`COPY AGENTS.md` line) and rebuild to change or drop it. It's a plain, writable
-file Pi owns — not a read-only mount — so Pi's own state/session writes still
-work. The agentcage version is also available at `$AGENTCAGE_VERSION`.
+failed `fetch` usually means the host isn't allowlisted. agentcage stages one
+canonical `AGENTS.md` brief into the build context (it is not committed
+per-scaffold); remove the `COPY AGENTS.md` line from the `Containerfile` to drop
+it, or edit `src/agentcage/scaffolds/AGENTS.md` upstream to change it for every
+scaffold at once. It's a plain, writable file Pi owns — not a read-only mount —
+so Pi's own state/session writes still work. The agentcage version is also
+available at `$AGENTCAGE_VERSION`.
 
 ### Secret injection
 

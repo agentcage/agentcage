@@ -21,7 +21,8 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 # agentcage introspection: bake a short "you are sandboxed" brief into Pi's
 # global context file (~/.pi/agent/AGENTS.md) so the agent discovers it is
-# caged with zero setup. AGENTS.md ships alongside this Containerfile.
+# caged with zero setup. agentcage stages the canonical AGENTS.md brief into
+# the build context (see agentcage.scaffold_brief) — not committed per-scaffold.
 #
 # Delivered as a plain, writable, node-owned file — deliberately NOT a
 # read-only bind mount over ~/.pi (that makes the runtime create ~/.pi

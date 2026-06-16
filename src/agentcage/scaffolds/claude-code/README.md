@@ -132,9 +132,10 @@ The scaffold mounts two paths from the host:
 The image bakes a short "you are running inside agentcage" brief into
 `~/.claude/CLAUDE.md`, so Claude Code reads it as user memory automatically and
 knows up front that egress is proxied, secrets are placeholders, and a failed
-`fetch` usually means the host isn't allowlisted. The brief ships as
-`AGENTS.md` next to the `Containerfile`; edit that file (or remove the
-`COPY AGENTS.md` line) and rebuild to change or drop it. It's delivered as a
+`fetch` usually means the host isn't allowlisted. agentcage stages one canonical `AGENTS.md` brief into the build context (it is
+not committed per-scaffold); remove the `COPY AGENTS.md` line from the
+`Containerfile` to drop it, or edit `src/agentcage/scaffolds/AGENTS.md` upstream
+to change it for every scaffold at once. It's delivered as a
 plain, writable file Claude owns — not a read-only mount — so `claude login`,
 settings, and Claude's own appended memories still work. The agentcage version
 is also available in the cage at `$AGENTCAGE_VERSION`.

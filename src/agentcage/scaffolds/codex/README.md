@@ -108,11 +108,13 @@ Remove the `~/.codex` mount to fully isolate the cage from host state. Git confi
 The image bakes a short "you are running inside agentcage" brief into
 `~/.codex/AGENTS.md`, so Codex reads it as global guidance automatically and
 knows up front that egress is proxied, secrets are placeholders, and a failed
-`fetch` usually means the host isn't allowlisted. The brief ships as
-`AGENTS.md` next to the `Containerfile`; edit it (or remove the
-`COPY AGENTS.md` line) and rebuild to change or drop it. It's a plain, writable
-file Codex owns — not a read-only mount — so Codex's own config/auth writes
-still work. The agentcage version is also available at `$AGENTCAGE_VERSION`.
+`fetch` usually means the host isn't allowlisted. agentcage stages one
+canonical `AGENTS.md` brief into the build context (it is not committed
+per-scaffold); remove the `COPY AGENTS.md` line from the `Containerfile` to drop
+it, or edit `src/agentcage/scaffolds/AGENTS.md` upstream to change it for every
+scaffold at once. It's a plain, writable file Codex owns — not a read-only
+mount — so Codex's own config/auth writes still work. The agentcage version is
+also available at `$AGENTCAGE_VERSION`.
 
 ### Secret injection
 

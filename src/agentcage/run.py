@@ -405,6 +405,10 @@ def execute(
             for f in containerfile_src.parent.iterdir():
                 if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
                     shutil.copy2(str(f), str(dest_dir / f.name))
+            # Provide the canonical sandbox brief (scaffolds COPY AGENTS.md
+            # but don't each ship a copy — see agentcage.scaffold_brief).
+            from agentcage.scaffold_brief import stage_scaffold_brief
+            stage_scaffold_brief(containerfile_src, dest_dir, scaffold)
 
     # Run scaffold setup (build images) and deploy
     try:
