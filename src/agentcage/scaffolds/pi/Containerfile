@@ -19,6 +19,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # https://pi.dev/docs/latest — it skips lifecycle hooks that pi does not need.
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
+# agentcage introspection: bake a short "you are sandboxed" brief into Pi's
+# global context file (~/.pi/agent/AGENTS.md) so the agent discovers it is
+# caged with zero setup. AGENTS.md ships alongside this Containerfile.
+#
+# Delivered as a plain, writable, node-owned file — deliberately NOT a
+# read-only bind mount over ~/.pi (that makes the runtime create ~/.pi
+# root-owned, breaking Pi's own state/session writes). Pi keeps full
+# ownership of ~/.pi.
+RUN mkdir -p /home/node/.pi/agent
+COPY AGENTS.md /home/node/.pi/agent/AGENTS.md
+RUN chown -R node:node /home/node/.pi
+
 # node:22-slim already has user node (1000:1000)
 USER node
 WORKDIR /workspace
