@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-06-16
+
+### Fixed
+
+- **Secret-injection now reaches credentials carried base64-encoded inside `Authorization: Basic` headers (git over HTTPS).** git sends its credential as `Authorization: Basic base64("x-access-token:<placeholder>")`, so the placeholder never appears verbatim in the header and the literal-substring injector skipped it — a private `git pull`/`clone`/`ls-remote` went out carrying the literal placeholder and GitHub rejected it with `invalid credentials` (silently logged as `allowed` in the audit log; the failure was an auth rejection at GitHub, not a blocked request). A new base64-aware path decodes the `Basic` blob, substitutes the `user:pass`, and re-encodes — wired into the strict-mode injection loop, the per-rule `_find_placeholder` gate, and **all** redaction paths (so the real token can't leak base64-encoded into the world-readable `capture.jsonl`). Non-`Basic` and undecodable header values fall through to the existing literal behavior unchanged. The `token`/`Bearer` cleartext channel (REST clients, the `gh` CLI) was already handled and is unaffected.
+
 ## [0.24.0] - 2026-06-15
 
 ### Changed
