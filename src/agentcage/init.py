@@ -286,6 +286,7 @@ def run_scaffold_setup(
     if isolation in (None, "container"):
         from agentcage.podman import Podman
         from agentcage.registry import resolve_build_args
+        from agentcage.scaffold_brief import stage_scaffold_brief
 
         podman = Podman()
         for entry in meta.get("build", []):
@@ -301,13 +302,24 @@ def run_scaffold_setup(
                 _echo(f"Build arg {key}: {new}")
 
             if "containerfile" in entry:
-                containerfile = str(scaffold_dir / entry["containerfile"])
                 _echo(f"Building {image}...")
-                podman.build_image(
-                    image, containerfile, str(scaffold_dir),
-                    cap_add=entry.get("cap_add"), build_args=build_args,
-                    quiet=quiet,
-                )
+                # Build from a staged copy of the scaffold dir so the canonical
+                # sandbox brief (scaffolds/AGENTS.md, one level up) can be
+                # dropped into the build context for the Containerfile's
+                # `COPY AGENTS.md` (see agentcage.scaffold_brief). Building
+                # directly from scaffold_dir misses it — the brief is
+                # deliberately not shipped per-scaffold — so `COPY AGENTS.md`
+                # fails the build. Mirrors the deployment-dir staging in
+                # cli.cage_create / run.execute.
+                with tempfile.TemporaryDirectory() as ctx:
+                    shutil.copytree(scaffold_dir, ctx, dirs_exist_ok=True)
+                    ctx_cf = str(Path(ctx) / entry["containerfile"])
+                    stage_scaffold_brief(Path(ctx_cf), Path(ctx), scaffold)
+                    podman.build_image(
+                        image, ctx_cf, ctx,
+                        cap_add=entry.get("cap_add"), build_args=build_args,
+                        quiet=quiet,
+                    )
             elif "git" in entry:
                 git_url = entry["git"]
                 depth = entry.get("depth", 1)

@@ -109,3 +109,38 @@ def test_stage_does_not_clobber_existing_brief(tmp_path):
     (dest / "AGENTS.md").write_text("custom brief")
     assert stage_scaffold_brief(cf, dest, scaffold="claude-code") is False
     assert (dest / "AGENTS.md").read_text() == "custom brief"
+
+
+# ── scaffold base-image build sees the brief ─────────────────────────────────
+#
+# Regression: `run_scaffold_setup` built the `agentcage-scaffold-<name>` image
+# straight from the package scaffold dir, which does NOT contain AGENTS.md (the
+# brief lives one level up and is staged in, not shipped per-scaffold). So the
+# Containerfile's `COPY AGENTS.md` failed the build with exit 125 — a fresh
+# claude-code/codex/pi cage couldn't build at all. The build must run against a
+# context that has the brief staged in.
+
+@pytest.mark.parametrize("scaffold", sorted(SCAFFOLD_WIRING))
+def test_run_scaffold_setup_stages_brief_into_build_context(scaffold, monkeypatch):
+    from agentcage import init as init_mod
+
+    captured = {}
+
+    class _FakePodman:
+        def image_exists(self, image):
+            return False  # force the build path
+
+        def build_image(self, image, containerfile, context, **kwargs):
+            brief = Path(context) / "AGENTS.md"
+            captured["has_brief"] = brief.is_file()
+            captured["brief_text"] = brief.read_text() if brief.is_file() else None
+            # the Containerfile must live in the same context we build from
+            captured["cf_in_context"] = Path(containerfile).parent == Path(context)
+
+    monkeypatch.setattr("agentcage.podman.Podman", lambda: _FakePodman())
+    init_mod.run_scaffold_setup(
+        scaffold, "demo", "/tmp/unused", quiet=True, isolation="container",
+    )
+    assert captured.get("has_brief") is True
+    assert captured.get("brief_text") == CANONICAL_BRIEF.read_text()
+    assert captured.get("cf_in_context") is True
