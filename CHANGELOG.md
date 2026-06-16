@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-06-16
+
+### Fixed
+
+- **Fresh `claude-code`/`codex`/`pi` cages build again — the sandbox brief is now staged into the scaffold base-image build.** The brief feature added in 0.25.0 wired `AGENTS.md` staging into the deployment-dir build (`cage create`/`update`) but not into the scaffold base-image build that `agentcage init` and `agentcage run` run first. That build used the scaffold's own dir as its context, where the canonical brief (`scaffolds/AGENTS.md`, deliberately not shipped per-scaffold) is absent, so the Containerfile's `COPY AGENTS.md` failed with exit 125 and a fresh agent cage couldn't build at all. The scaffold base image is now built from a temp staged copy of the scaffold dir with the brief dropped in, matching the deployment-dir path. Cages built from the `openclaw` scaffold (e.g. via `cage create`) were unaffected.
+
 ## [0.25.0] - 2026-06-16
 
 ### Added
