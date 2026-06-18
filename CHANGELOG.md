@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cage start` on the apple-container backend now self-heals missing unit metadata instead of dying with misleading advice.** The apple-container unit metadata (`~/.config/agentcage/apple-container/<name>.json`) is the argv recipe `start()` reads to assemble `container run`, but it's a *derived* file only `cage create`/`update`/`import` ever wrote — `cage start` never regenerated it. If that file went missing while the cage registry (`cages/<name>/cage.yaml`) and built image were still intact (e.g. an interrupted update, or an out-of-band cleanup of the `apple-container/` dir), `start()` hard-failed with `apple-container unit metadata missing … run \`agentcage cage create <name>\` first` — but `cage create` *refuses* on an existing cage (`error: cage already exists, use update`), so following the hint just produced a second error. `cage start` now regenerates and reinstalls the unit metadata from the stored `cage.yaml` before starting, giving apple-container the same "edits made while stopped take effect on next start" reconcile the container/vm path already had, and self-healing the missing-file case. The fallback error message in `start()` now points at `cage update` (the command that actually works).
+
 ## [0.25.1] - 2026-06-16
 
 ### Fixed

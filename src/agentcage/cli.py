@@ -1802,6 +1802,20 @@ def cage_start(name: str):
         # itself only needs rewriting on the (rare) migration case.
         state.save_proxy_config(name)
         state.save_dns_allowlist(name)
+    else:
+        # apple-container: regenerate the unit metadata from the stored
+        # cage.yaml before starting. This file is the argv recipe start()
+        # reads, and it's a derived artifact only create/update/import ever
+        # wrote — start() itself never did. Regenerating here gives
+        # apple-container the same "edits made while stopped take effect on
+        # next start" reconcile the container/vm branch above gets, AND it
+        # self-heals a missing/cleaned metadata file (registry + image
+        # intact) instead of hard-failing in start() — which used to point
+        # at `cage create`, a command that refuses on an existing cage.
+        ac_backend = get_backend(cfg)
+        ac_backend.install_units(
+            ac_backend.generate_units(cfg, "", "", name), quiet=True,
+        )
 
     backend = _ensure_backend_ready(cfg)
     backend.start(name)

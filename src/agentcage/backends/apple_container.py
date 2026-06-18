@@ -919,7 +919,8 @@ class AppleContainerBackend:
         if not unit_path.exists():
             raise RuntimeError(
                 f"apple-container unit metadata missing at {unit_path}; "
-                f"run `agentcage cage create {name}` first"
+                f"run `agentcage cage update {name}` to regenerate it "
+                f"from the stored cage.yaml"
             )
         meta = json.loads(unit_path.read_text())
 
