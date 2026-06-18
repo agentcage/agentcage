@@ -856,6 +856,32 @@ class TestCageStartRestartAppleContainer:
         mock_restart.assert_called_once()
         assert result.exit_code == 0
 
+    @patch("agentcage.services.restart_cage")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._ensure_patches")
+    @patch("agentcage.cli.state")
+    def test_restart_regenerates_unit_metadata_from_config(
+        self, mock_state, mock_ensure_patches, mock_get_backend, mock_restart_cage,
+    ):
+        """Regression: `cage restart` on apple-container must regenerate the
+        unit metadata from the stored cage.yaml too. restart is stop + start,
+        and start() reads that derived file — so a missing/cleaned metadata
+        file would make restart hard-fail exactly like start. Mirrors the
+        start case so the self-heal + stopped-edit reconcile is symmetric."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        backend = MagicMock()
+        backend.generate_units.return_value = {"demo.json": "{}"}
+        mock_get_backend.return_value = backend
+
+        result = _runner().invoke(main, ["cage", "restart", "demo"])
+
+        backend.generate_units.assert_called_once()
+        backend.install_units.assert_called_once()
+        # The real service restart is delegated (and mocked here).
+        mock_restart_cage.assert_called_once()
+        assert result.exit_code == 0
+
 
 # ── secret list/set/rm: operate on pending_secrets.json ──
 

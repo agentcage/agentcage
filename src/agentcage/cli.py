@@ -94,6 +94,27 @@ def _ensure_backend_ready(cfg, *, quiet: bool = False):
     return backend
 
 
+def _reinstall_apple_units(backend, cfg, name: str) -> None:
+    """Regenerate + reinstall the apple-container unit metadata from cage.yaml.
+
+    The metadata (``~/.config/agentcage/apple-container/<name>.json``) is the
+    argv recipe the apple-container backend's ``start()`` reads, and it's a
+    *derived* artifact only ``create``/``update``/``import`` ever wrote — the
+    start/restart path never regenerated it. Doing it here, before bringing the
+    cage up, gives apple-container the same "edits made while stopped take
+    effect on next start" reconcile the container/vm path gets from
+    ``save_proxy_config`` / ``save_dns_allowlist``, AND self-heals a
+    missing/cleaned metadata file (registry + image intact) instead of
+    hard-failing in ``start()`` — which used to point at ``cage create``, a
+    command that refuses on an existing cage. The ``config_host_path`` /
+    ``patches_host_dir`` generator args are ignored by the apple-container
+    backend (it bakes absolute paths at create time), so we pass empty strings.
+    """
+    backend.install_units(
+        backend.generate_units(cfg, "", "", name), quiet=True,
+    )
+
+
 def _apple_secret_names(cfg, name: str) -> set[str]:
     """Names of secrets stored for an apple-container cage via its backend
     (macOS keychain, or the legacy pending_secrets.json under plaintext)."""
@@ -334,11 +355,19 @@ def _restart_cage(name: str, cfg=None):
     depends on the domain list — the allowlist lives in a bind-mounted
     sidecar file). Delegates the actual service restart to
     :func:`agentcage.services.restart_cage`.
+
+    On apple-container the two files above don't drive the backend; its
+    derived artifact is the unit metadata, which we regenerate from cage.yaml
+    here so a restart applies stopped-time edits and self-heals a missing
+    metadata file — mirroring ``cage start`` (``restart`` is stop + start,
+    which would otherwise hit the same missing-metadata failure).
     """
     if cfg is None:
         cfg = state.load_deployment_config(name)
     state.save_proxy_config(name)
     state.save_dns_allowlist(name)
+    if _is_apple_container(cfg):
+        _reinstall_apple_units(get_backend(cfg), cfg, name)
     from agentcage.services import restart_cage
     restart_cage(name, cfg)
 
@@ -1802,22 +1831,13 @@ def cage_start(name: str):
         # itself only needs rewriting on the (rare) migration case.
         state.save_proxy_config(name)
         state.save_dns_allowlist(name)
-    else:
-        # apple-container: regenerate the unit metadata from the stored
-        # cage.yaml before starting. This file is the argv recipe start()
-        # reads, and it's a derived artifact only create/update/import ever
-        # wrote — start() itself never did. Regenerating here gives
-        # apple-container the same "edits made while stopped take effect on
-        # next start" reconcile the container/vm branch above gets, AND it
-        # self-heals a missing/cleaned metadata file (registry + image
-        # intact) instead of hard-failing in start() — which used to point
-        # at `cage create`, a command that refuses on an existing cage.
-        ac_backend = get_backend(cfg)
-        ac_backend.install_units(
-            ac_backend.generate_units(cfg, "", "", name), quiet=True,
-        )
 
     backend = _ensure_backend_ready(cfg)
+    if _is_apple_container(cfg):
+        # apple-container has no host-side derived files; its analog is the
+        # unit metadata, which we regenerate from cage.yaml before start so
+        # stopped-time edits apply and a missing/cleaned file self-heals.
+        _reinstall_apple_units(backend, cfg, name)
     backend.start(name)
     click.echo(f"Started cage '{name}'")
 
