@@ -814,6 +814,32 @@ class TestCageStartRestartAppleContainer:
         assert result.exit_code == 0
 
     @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._ensure_patches")
+    @patch("agentcage.cli.state")
+    def test_start_regenerates_unit_metadata_from_config(
+        self, mock_state, mock_ensure_patches, mock_get_backend,
+    ):
+        """Regression: `cage start` on apple-container must regenerate the
+        unit metadata from the stored cage.yaml before start(). The metadata
+        is a derived file only create/update ever wrote; if it's missing
+        (registry + image intact) start() would otherwise hard-fail. We
+        install it on every start so a cleaned/missing file self-heals and
+        edits made while stopped take effect."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        backend = MagicMock()
+        backend.generate_units.return_value = {"demo.json": "{}"}
+        mock_get_backend.return_value = backend
+
+        result = _runner().invoke(main, ["cage", "start", "demo"])
+
+        backend.generate_units.assert_called_once()
+        backend.install_units.assert_called_once()
+        # Units are (re)installed before the cage is brought up.
+        backend.start.assert_called_once_with("demo")
+        assert result.exit_code == 0
+
+    @patch("agentcage.cli.get_backend")
     @patch("agentcage.cli._restart_cage")
     @patch("agentcage.cli._ensure_patches")
     @patch("agentcage.cli.state")
@@ -828,6 +854,32 @@ class TestCageStartRestartAppleContainer:
 
         mock_ensure_patches.assert_not_called()
         mock_restart.assert_called_once()
+        assert result.exit_code == 0
+
+    @patch("agentcage.services.restart_cage")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._ensure_patches")
+    @patch("agentcage.cli.state")
+    def test_restart_regenerates_unit_metadata_from_config(
+        self, mock_state, mock_ensure_patches, mock_get_backend, mock_restart_cage,
+    ):
+        """Regression: `cage restart` on apple-container must regenerate the
+        unit metadata from the stored cage.yaml too. restart is stop + start,
+        and start() reads that derived file — so a missing/cleaned metadata
+        file would make restart hard-fail exactly like start. Mirrors the
+        start case so the self-heal + stopped-edit reconcile is symmetric."""
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config("apple-container")
+        backend = MagicMock()
+        backend.generate_units.return_value = {"demo.json": "{}"}
+        mock_get_backend.return_value = backend
+
+        result = _runner().invoke(main, ["cage", "restart", "demo"])
+
+        backend.generate_units.assert_called_once()
+        backend.install_units.assert_called_once()
+        # The real service restart is delegated (and mocked here).
+        mock_restart_cage.assert_called_once()
         assert result.exit_code == 0
 
 
