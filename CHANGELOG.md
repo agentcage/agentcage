@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.3] - 2026-06-22
+
 ### Fixed
 
 - **`agentcage run` no longer dies at startup on macOS hosts whose `/etc/resolv.conf` holds only a loopback resolver.** DNS auto-detection (`_host_dns_servers`) read `/etc/resolv.conf`, dropped loopback addresses (unreachable from inside containers), and — when nothing usable remained — fell back to systemd-resolved's `/run/systemd/resolve/resolv.conf`. That fallback is Linux-only. On a Mac running a local resolver (Cloudflare WARP, a corporate VPN client, dnsmasq, Little Snitch, etc.), `/etc/resolv.conf` points at `127.0.0.1`, the systemd path doesn't exist, and startup hard-failed with `Could not detect usable DNS servers`. macOS doesn't consult `/etc/resolv.conf` for resolution anyway (the file itself says so) — the source of truth is the System Configuration framework. Detection now falls back to `scutil --dns` on macOS, parsing the real upstream `nameserver[N]` entries (deduped, loopback dropped), before raising. Setting `dns_servers` explicitly in the config still bypasses auto-detection entirely.
