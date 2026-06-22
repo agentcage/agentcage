@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.4] - 2026-06-22
+
+### Fixed
+
+- **Cages start again on macOS with Apple's `container` CLI v1.0.0.** The 1.0.0 release reshuffled the `container inspect` JSON: the run **state** and the **networks** list — previously top-level fields (`status` == `"running"`, top-level `networks`) — are now nested under a `status` object (`status.state`, `status.networks`). The apple-container backend read the old locations, so `_wait_supervisor_ready` compared a dict to `"running"` and aborted the deploy with a spurious *"egress sibling exited before becoming ready"* (while the printed status literally said `state: 'running'`), `_container_ip` found no `networks` and `start()` raised *"could not resolve IP of \<name\>-egress"*, and `is_running` always returned `False` so `cage status`/`verify` misreported. Schema knowledge is now centralized in two helpers (`container_state` / `container_networks`) that prefer the nested 1.0 location and fall back to the pre-1.0 top-level fields; all three call sites route through them. Pre-1.0 `container` installs are unaffected.
+
 ## [0.25.3] - 2026-06-22
 
 ### Fixed
