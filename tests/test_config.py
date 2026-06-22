@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from agentcage.config import Config, ContainerConfig, DomainConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, _VALID_LEVELS, load_config, validate_config
+from agentcage.config import Config, ContainerConfig, DomainConfig, LoggingConfig, _host_dns_servers, _RESOLVED_CONF, _scutil_dns_servers, _VALID_LEVELS, load_config, validate_config
 
 # These assert that a valid config yields NO validation warnings. On macOS the
 # default isolation is apple-container, which legitimately warns (e.g.
@@ -818,8 +818,16 @@ class TestValidateConfig:
 
 
 class TestHostDnsServers:
-    def _patch_resolv(self, monkeypatch, tmp_path, etc_text, resolved_text=None):
-        """Mock /etc/resolv.conf and optionally _RESOLVED_CONF."""
+    def _patch_resolv(
+        self, monkeypatch, tmp_path, etc_text, resolved_text=None,
+        scutil_servers=(), system="Linux",
+    ):
+        """Mock /etc/resolv.conf, _RESOLVED_CONF, scutil, and platform.
+
+        Defaults to Linux with no scutil upstreams so the existing
+        resolv.conf/systemd-resolved tests stay deterministic regardless of
+        the host the suite runs on (notably real macOS dev machines).
+        """
         etc_file = tmp_path / "etc-resolv.conf"
         etc_file.write_text(etc_text)
         resolved_file = None
@@ -838,6 +846,11 @@ class TestHostDnsServers:
             return _real_open(path, *a, **kw)
 
         monkeypatch.setattr("builtins.open", _fake_open)
+        monkeypatch.setattr(
+            "agentcage.config._scutil_dns_servers",
+            lambda: list(scutil_servers),
+        )
+        monkeypatch.setattr("agentcage.config.platform.system", lambda: system)
 
     def test_parses_resolv_conf(self, tmp_path, monkeypatch):
         self._patch_resolv(
@@ -861,6 +874,8 @@ class TestHostDnsServers:
                 raise OSError("No such file")
             return _real_open(path, *a, **kw)
         monkeypatch.setattr("builtins.open", _fake_open)
+        monkeypatch.setattr("agentcage.config._scutil_dns_servers", list)
+        monkeypatch.setattr("agentcage.config.platform.system", lambda: "Linux")
         with pytest.raises(RuntimeError, match="Could not detect usable DNS"):
             _host_dns_servers()
 
@@ -902,6 +917,73 @@ class TestHostDnsServers:
         )
         with pytest.raises(RuntimeError, match="Could not detect usable DNS"):
             _host_dns_servers()
+
+    def test_macos_loopback_falls_back_to_scutil(self, tmp_path, monkeypatch):
+        """macOS with a loopback /etc/resolv.conf reads upstreams from scutil."""
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="nameserver 127.0.0.1\nsearch localdomain\n",
+            scutil_servers=["192.168.1.1", "8.8.8.8"],
+            system="Darwin",
+        )
+        assert _host_dns_servers() == ["192.168.1.1", "8.8.8.8"]
+
+    def test_macos_resolv_conf_wins_over_scutil(self, tmp_path, monkeypatch):
+        """A usable /etc/resolv.conf short-circuits before scutil is consulted."""
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="nameserver 9.9.9.9\n",
+            scutil_servers=["192.168.1.1"],
+            system="Darwin",
+        )
+        assert _host_dns_servers() == ["9.9.9.9"]
+
+    def test_macos_no_scutil_servers_raises(self, tmp_path, monkeypatch):
+        """macOS loopback + scutil yields nothing → actionable error."""
+        self._patch_resolv(
+            monkeypatch, tmp_path,
+            etc_text="nameserver 127.0.0.1\n",
+            scutil_servers=[],
+            system="Darwin",
+        )
+        with pytest.raises(RuntimeError, match="scutil --dns"):
+            _host_dns_servers()
+
+
+class TestScutilDnsServers:
+    def _patch_scutil(self, monkeypatch, stdout, exc=None):
+        import subprocess as _subprocess
+
+        def _fake_run(*a, **kw):
+            if exc is not None:
+                raise exc
+            return _subprocess.CompletedProcess(a[0], 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr("agentcage.config.subprocess.run", _fake_run)
+
+    def test_parses_and_dedupes(self, monkeypatch):
+        self._patch_scutil(
+            monkeypatch,
+            stdout=(
+                "resolver #1\n"
+                "  nameserver[0] : 192.168.1.1\n"
+                "  nameserver[1] : 8.8.8.8\n"
+                "resolver #2\n"
+                "  nameserver[0] : 192.168.1.1\n"
+            ),
+        )
+        assert _scutil_dns_servers() == ["192.168.1.1", "8.8.8.8"]
+
+    def test_filters_loopback(self, monkeypatch):
+        self._patch_scutil(
+            monkeypatch,
+            stdout="  nameserver[0] : 127.0.0.1\n  nameserver[1] : 1.1.1.1\n",
+        )
+        assert _scutil_dns_servers() == ["1.1.1.1"]
+
+    def test_missing_binary_returns_empty(self, monkeypatch):
+        self._patch_scutil(monkeypatch, stdout="", exc=FileNotFoundError("scutil"))
+        assert _scutil_dns_servers() == []
 
 
 class TestDomainConfigNewFormat:
