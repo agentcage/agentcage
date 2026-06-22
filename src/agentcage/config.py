@@ -6,6 +6,7 @@ import ipaddress
 import os
 import platform
 import re
+import subprocess
 from dataclasses import dataclass, field
 
 import yaml
@@ -449,14 +450,47 @@ def _read_nameservers(path: str) -> list[str]:
 # /etc/resolv.conf points at the 127.0.0.53 stub listener.
 _RESOLVED_CONF = "/run/systemd/resolve/resolv.conf"
 
+# macOS does not consult /etc/resolv.conf for resolution (the file even says
+# so) — the System Configuration framework is the source of truth, exposed
+# via `scutil --dns`. Its output lists upstreams as `nameserver[N] : <addr>`.
+_SCUTIL_NS_RE = re.compile(r"^\s*nameserver\[\d+\]\s*:\s*(\S+)")
+
+
+def _scutil_dns_servers() -> list[str]:
+    """Return non-loopback upstream nameservers from `scutil --dns` (macOS).
+
+    macOS may leave /etc/resolv.conf pointing at a loopback resolver (a local
+    VPN client, dnsmasq, Cloudflare WARP, etc.), which is unreachable from
+    inside containers. `scutil --dns` reports the real upstreams. Returns an
+    empty list if scutil is unavailable or yields nothing usable.
+    """
+    try:
+        out = subprocess.run(
+            ["scutil", "--dns"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    seen: dict[str, None] = {}
+    for line in out.splitlines():
+        m = _SCUTIL_NS_RE.match(line)
+        if m and not _is_loopback(m.group(1)):
+            # scutil repeats each resolver across resolver scopes; dedupe
+            # while preserving first-seen order.
+            seen.setdefault(m.group(1), None)
+    return list(seen)
+
 
 def _host_dns_servers() -> list[str]:
-    """Read nameservers from /etc/resolv.conf.
+    """Detect the host's usable upstream DNS servers.
 
     Loopback addresses (e.g. 127.0.0.53 from systemd-resolved) are filtered
     out because they are unreachable from inside containers.  When all
-    nameservers are loopback, the real upstreams are read from
-    /run/systemd/resolve/resolv.conf.
+    nameservers in /etc/resolv.conf are loopback, the real upstreams are read
+    from /run/systemd/resolve/resolv.conf (systemd-resolved) on Linux, or from
+    `scutil --dns` on macOS.
 
     Raises RuntimeError if no usable DNS servers can be found.  Set
     ``dns_servers`` explicitly in the config to avoid auto-detection.
@@ -471,6 +505,18 @@ def _host_dns_servers() -> list[str]:
     resolved = [s for s in resolved if not _is_loopback(s)]
     if resolved:
         return resolved
+    # On macOS /etc/resolv.conf is not authoritative; ask the System
+    # Configuration framework for the real upstreams.
+    if platform.system() == "Darwin":
+        scutil = _scutil_dns_servers()
+        if scutil:
+            return scutil
+        raise RuntimeError(
+            "Could not detect usable DNS servers: /etc/resolv.conf contains "
+            "only loopback addresses and `scutil --dns` reported no usable "
+            "upstream resolvers. Set dns_servers explicitly in your agentcage "
+            "config."
+        )
     raise RuntimeError(
         "Could not detect usable DNS servers: /etc/resolv.conf contains only "
         "loopback addresses (e.g. 127.0.0.53 from systemd-resolved) and "
