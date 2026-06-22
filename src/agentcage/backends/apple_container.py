@@ -1415,29 +1415,29 @@ class AppleContainerBackend:
     def _container_ip(self, name: str) -> str | None:
         """Return the IPv4 address Apple's network plugin assigned to *name*.
 
-        Apple's `container inspect` (CLI v0.12.x) returns a list (one
-        entry per container). The IP lives under
-        ``networks[].ipv4Address`` (CIDR-form, e.g. ``192.168.64.5/24``);
-        we strip the mask. Returns None if no address is populated yet
-        (still booting — caller should poll briefly).
+        Apple's `container inspect` returns a list (one entry per
+        container). The IP lives under ``networks[].ipv4Address``
+        (CIDR-form, e.g. ``192.168.64.5/24``); we strip the mask. The
+        ``networks`` list sat at the top level pre-1.0 and moved under the
+        nested ``status`` object in v1.0.0 — ``ac_cli.container_networks``
+        absorbs both. Returns None if no address is populated yet (still
+        booting — caller should poll briefly).
         """
         data = ac_cli.inspect(name)
         if not data:
             return None
-        networks = data.get("networks") or data.get("Networks") or []
-        if isinstance(networks, list):
-            for net in networks:
-                # Apple's schema (verified empirically against v0.12.3):
-                # `ipv4Address` is the populated field. Defensively also
-                # check `address`/`Address` for older/newer schema variants.
-                addr = (
-                    net.get("ipv4Address")
-                    or net.get("address")
-                    or net.get("Address")
-                    or ""
-                ).strip()
-                if addr:
-                    return addr.split("/", 1)[0]
+        for net in ac_cli.container_networks(data):
+            # Apple's schema (verified empirically against v0.12.3 and
+            # v1.0.0): `ipv4Address` is the populated field. Defensively
+            # also check `address`/`Address` for other schema variants.
+            addr = (
+                net.get("ipv4Address")
+                or net.get("address")
+                or net.get("Address")
+                or ""
+            ).strip()
+            if addr:
+                return addr.split("/", 1)[0]
         # Fallback: some schemas put the IP at `network.address`.
         n = data.get("network") or {}
         addr = (n.get("ipv4Address") or n.get("address") or n.get("Address") or "").strip()
@@ -1467,11 +1467,11 @@ class AppleContainerBackend:
             if marker.exists():
                 return
             data = ac_cli.inspect(egress_name)
-            status = (data or {}).get("status") or (data or {}).get("Status")
-            if data is not None and status not in ("running", None):
+            state = ac_cli.container_state(data)
+            if data is not None and state not in ("running", None):
                 raise RuntimeError(
                     f"egress sibling {egress_name!r} exited before becoming "
-                    f"ready (status={status!r}); see `container logs {egress_name}`"
+                    f"ready (state={state!r}); see `container logs {egress_name}`"
                 )
             time.sleep(self._READY_POLL_INTERVAL_S)
         raise RuntimeError(
@@ -1556,8 +1556,7 @@ class AppleContainerBackend:
         data = ac_cli.inspect(target)
         if not data:
             return False
-        status = data.get("status") or data.get("Status")
-        return status == "running"
+        return ac_cli.container_state(data) == "running"
 
     def service_names(self, name: str) -> list[str]:  # noqa: ARG002
         """The 2-microVM model has two addressable services.

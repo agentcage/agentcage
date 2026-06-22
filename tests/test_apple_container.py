@@ -1620,6 +1620,130 @@ def test_start_raises_when_supervisor_dies_before_ready(tmp_path, monkeypatch):
         backend.start("demo", quiet=True)
 
 
+@pytest.mark.parametrize(
+    "data, expected",
+    [
+        # Pre-1.0 schema: top-level string.
+        ({"status": "running"}, "running"),
+        ({"status": "stopped"}, "stopped"),
+        ({"Status": "running"}, "running"),
+        # container 1.0.0 schema: state nested under the status object,
+        # alongside networks / startedDate.
+        ({"status": {"state": "running", "networks": []}}, "running"),
+        ({"status": {"state": "stopped"}}, "stopped"),
+        ({"status": {"State": "running"}}, "running"),
+        # Degenerate / absent.
+        ({}, None),
+        (None, None),
+        ({"status": {}}, None),
+    ],
+)
+def test_container_state_handles_both_inspect_schemas(data, expected):
+    """`container_state` normalizes both the pre-1.0 top-level string
+    `status` and the 1.0+ nested `status.state` schema. Regression for the
+    1.0.0 breaking change that made every cage look stopped."""
+    assert ac_cli.container_state(data) == expected
+
+
+def test_wait_supervisor_ready_accepts_container_1_0_running_status(
+    tmp_path, monkeypatch
+):
+    """Regression: with container 1.0's nested `status` object, a *running*
+    egress must NOT trip the death-detector. Pre-fix, `status` was a dict
+    that never equalled "running", so the wait raised a spurious
+    "exited before becoming ready" on the first poll."""
+    monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 1.0)
+    backend = AppleContainerBackend()
+    marker = tmp_path / "ready"
+
+    # Egress reports the new nested-running schema; marker appears after a
+    # couple of polls (mirrors the supervisor finishing steps A-F).
+    calls = {"n": 0}
+
+    def fake_inspect(_name):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            marker.touch()
+        return {"status": {"state": "running", "networks": [],
+                           "startedDate": "2026-06-22T11:02:42Z"}}
+
+    monkeypatch.setattr(ac_cli, "inspect", fake_inspect)
+    # Must return cleanly (no RuntimeError).
+    backend._wait_supervisor_ready("demo", marker)
+
+
+def test_wait_supervisor_ready_detects_death_with_nested_status(
+    tmp_path, monkeypatch
+):
+    """A genuinely-dead egress under the 1.0 nested schema
+    (`status.state == "stopped"`) must still raise."""
+    monkeypatch.setattr(AppleContainerBackend, "_READY_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(AppleContainerBackend, "_READY_TIMEOUT_S", 1.0)
+    backend = AppleContainerBackend()
+    marker = tmp_path / "ready"  # never created
+    monkeypatch.setattr(
+        ac_cli, "inspect",
+        lambda _n: {"status": {"state": "stopped"}},
+    )
+    with pytest.raises(RuntimeError, match="exited before becoming ready"):
+        backend._wait_supervisor_ready("demo", marker)
+
+
+@pytest.mark.parametrize(
+    "data, expected_ips",
+    [
+        # Pre-1.0: networks at top level.
+        ({"networks": [{"ipv4Address": "192.168.64.5/24"}]}, ["192.168.64.5/24"]),
+        # container 1.0.0: networks nested under status.
+        (
+            {"status": {"state": "running",
+                        "networks": [{"ipv4Address": "192.168.67.2/24"}]}},
+            ["192.168.67.2/24"],
+        ),
+        ({"status": {"networks": []}}, []),
+        ({}, []),
+        (None, []),
+    ],
+)
+def test_container_networks_handles_both_inspect_schemas(data, expected_ips):
+    """`container_networks` finds the network list whether it sits at the
+    top level (pre-1.0) or nested under `status` (1.0+)."""
+    nets = ac_cli.container_networks(data)
+    assert [n["ipv4Address"] for n in nets] == expected_ips
+
+
+def test_container_ip_reads_nested_container_1_0_networks(monkeypatch):
+    """Regression: `_container_ip` must find the egress gateway IP under the
+    1.0 nested `status.networks` schema. Pre-fix it read top-level
+    `networks` (absent in 1.0), so `start()` raised "could not resolve IP"
+    even though the egress had an address."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(
+        ac_cli, "inspect",
+        lambda _n: {"status": {"state": "running", "networks": [
+            {"ipv4Address": "192.168.67.2/24",
+             "ipv4Gateway": "192.168.67.1"}]}},
+    )
+    assert backend._container_ip("demo-egress") == "192.168.67.2"
+
+
+def test_is_running_reads_nested_container_1_0_state(monkeypatch):
+    """`is_running` must read `status.state` under the 1.0 schema; pre-fix
+    it compared the whole dict to "running" and always returned False."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(
+        ac_cli, "inspect",
+        lambda _n: {"status": {"state": "running", "networks": []}},
+    )
+    assert backend.is_running("demo", "egress") is True
+    monkeypatch.setattr(
+        ac_cli, "inspect",
+        lambda _n: {"status": {"state": "stopped"}},
+    )
+    assert backend.is_running("demo", "egress") is False
+
+
 # test_supervisor_touches_ready_marker_before_capsh removed in PR 3:
 # supervisor.sh is gone. The ready-marker invariant moved to the egress
 # image's supervisor-egress.sh (tested in tests/test_egress_image.py).

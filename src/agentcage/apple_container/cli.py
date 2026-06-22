@@ -92,6 +92,50 @@ def inspect(name: str) -> dict | None:
         return None
 
 
+def container_state(data: dict | None) -> str | None:
+    """Run state from an :func:`inspect` result, tolerating both schemas.
+
+    Apple's `container` CLI changed the `container inspect` JSON shape in
+    v1.0.0: the run state used to be a top-level string field (``status``
+    == ``"running"``) and is now nested under an object
+    (``status.state`` == ``"running"``, alongside ``networks`` /
+    ``startedDate``). Reading ``data["status"]`` directly and comparing it
+    to ``"running"`` therefore silently broke against 1.0 — a dict never
+    equals ``"running"``, so every cage looked stopped and the egress
+    readiness wait raised a spurious "exited before becoming ready".
+
+    Return the normalised state string (``"running"`` / ``"stopped"`` /
+    ...) or ``None`` when ``data`` is empty or carries no state field.
+    """
+    if not data:
+        return None
+    status = data.get("status") or data.get("Status")
+    if isinstance(status, dict):
+        return status.get("state") or status.get("State")
+    return status
+
+
+def container_networks(data: dict | None) -> list:
+    """Network entries from an :func:`inspect` result, tolerating both schemas.
+
+    Same v1.0.0 reshuffle as :func:`container_state`: the ``networks`` list
+    used to sit at the top level and now lives under the nested ``status``
+    object (``status.networks``), alongside ``state`` / ``startedDate``.
+    Reading top-level ``networks`` therefore returned ``[]`` against 1.0 and
+    the cage could never learn the egress sibling's gateway IP. Returns the
+    list (possibly empty), preferring the nested location.
+    """
+    if not data:
+        return []
+    status = data.get("status")
+    if isinstance(status, dict):
+        nets = status.get("networks") or status.get("Networks")
+        if isinstance(nets, list) and nets:
+            return nets
+    nets = data.get("networks") or data.get("Networks")
+    return nets if isinstance(nets, list) else []
+
+
 def image_inspect(image: str) -> dict | None:
     """Return the parsed JSON image inspect result, or None if absent."""
     try:
