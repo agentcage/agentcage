@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dns_upstream: direct` — apple-container DNS escape hatch for Cloudflare WARP and other unreachable host resolvers.** On apple-container the egress normally rewrites DNS upstreams to the vmnet gateway at startup — a host-tracking resolver that follows host network changes with no rebuild. But that gateway proxies to whatever resolver the host uses, and some resolvers are unreachable from inside the microVM: **Cloudflare WARP** repoints the system at a loopback DNS proxy (`127.0.2.2`/`127.0.2.3`), and locked-down corporate DNS can behave the same way. The result was cages that couldn't resolve anything (and, because the apple-container path never repointed mitmproxy's own resolver at the in-egress dnsmasq the way the container/vm path does, every allowlisted host `502`'d). Setting `dns_upstream: direct` in `cage.yaml` makes the egress forward allowlisted zones straight to the configured `dns_servers` **and** repoints mitmproxy's resolver at the in-egress dnsmasq, bypassing the vmnet gateway entirely — mirroring the `--dns 1.1.1.1` remedy Docker/Lima/Colima document for WARP. Set `dns_servers` explicitly when using it (auto-detection can't read the host's real upstreams behind a loopback resolver). The trade-off is losing host-tracking: after a host DNS change, run `agentcage cage update <name>`. Default (`gateway`) is unchanged; other backends ignore the setting (their egress already queries `dns_servers` as a parallel `--all-servers` upstream). See [docs/reference/configuration.md](docs/reference/configuration.md).
 ## [0.32.0] - 2026-08-18
 
 ### Added

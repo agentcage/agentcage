@@ -417,6 +417,19 @@ class Config:
     inspectors: list[dict] = field(default_factory=list)
     protocol_relays: list[ProtocolRelay] = field(default_factory=list)
     dns_servers: list[str] = field(default_factory=list)
+    # apple-container only: how the egress forwards allowlisted DNS zones.
+    # "gateway" (default) rewrites the per-zone upstreams to the vmnet
+    # gateway at egress startup — a host-tracking recursive resolver that
+    # follows host network changes (Wi-Fi/VPN) with no rebuild. "direct"
+    # forwards straight to ``dns_servers`` instead AND repoints the egress's
+    # own resolver (mitmproxy's getaddrinfo) at the in-egress dnsmasq,
+    # bypassing the vmnet gateway entirely. Needed when the host's resolver
+    # is unreachable from the microVM — Cloudflare WARP and other
+    # loopback/NetworkExtension resolvers, or locked-down corporate DNS.
+    # Trades host-tracking for reachability: a host DNS change then needs
+    # ``cage update``. Other isolation backends ignore this (their egress
+    # already queries dns_servers as a parallel `--all-servers` upstream).
+    dns_upstream: str = "gateway"
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
@@ -810,6 +823,7 @@ def load_config(path: str) -> Config:
 
     # DNS servers (default to host resolvers if not specified)
     cfg.dns_servers = list(raw.get("dns_servers") or _host_dns_servers())
+    cfg.dns_upstream = str(raw.get("dns_upstream", "gateway") or "gateway").strip().lower()
 
     # Domains
     dom_raw = raw.get("domains") or {}
@@ -999,6 +1013,12 @@ def validate_config(config: Config) -> list[str]:
                 f"current arch is {platform.machine()}"
             )
 
+    if config.dns_upstream not in ("gateway", "direct"):
+        raise ValueError(
+            "dns_upstream must be 'gateway' or 'direct' "
+            f"(got: {config.dns_upstream!r})"
+        )
+
     if config.isolation == "vm":
         vm = config.vm
         if vm.vcpus < 1:
@@ -1149,6 +1169,13 @@ def validate_config(config: Config) -> list[str]:
         )
 
     warnings = []
+
+    if config.dns_upstream == "direct" and config.isolation != "apple-container":
+        warnings.append(
+            "dns_upstream: direct only affects the apple-container backend; "
+            f"on {config.isolation!r} the egress already queries dns_servers "
+            "as a parallel upstream (--all-servers), so this is a no-op"
+        )
 
     def _is_scaffold_default_tmpfs(entries: list[str]) -> bool:
         """A single entry whose target is /tmp matches the stock scaffold

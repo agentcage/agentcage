@@ -881,6 +881,58 @@ class TestValidateConfig:
         assert warnings == []
 
 
+class TestDnsUpstream:
+    """dns_upstream knob (apple-container DNS escape hatch for WARP etc.)."""
+
+    def _yaml(self, tmp_path, *extra, isolation="apple-container"):
+        p = tmp_path / "config.yaml"
+        lines = [
+            "name: dns-demo",
+            f"isolation: {isolation}",
+            "dns_servers:",
+            "  - 1.1.1.1",
+            "container:",
+            "  image: localhost/test:latest",
+            *extra,
+        ]
+        p.write_text("\n".join(lines) + "\n")
+        return str(p)
+
+    def _validate_apple(self, cfg):
+        from unittest.mock import patch
+        with patch("agentcage.config.platform.system", return_value="Darwin"), \
+             patch("agentcage.config.platform.machine", return_value="arm64"):
+            return validate_config(cfg)
+
+    def test_default_is_gateway(self, tmp_path):
+        cfg = load_config(self._yaml(tmp_path))
+        assert cfg.dns_upstream == "gateway"
+
+    def test_direct_parsed_and_valid(self, tmp_path):
+        cfg = load_config(self._yaml(tmp_path, "dns_upstream: direct"))
+        assert cfg.dns_upstream == "direct"
+        # Valid on apple-container; must not emit the non-apple no-op warning.
+        warnings = self._validate_apple(cfg)
+        assert not any("dns_upstream" in w for w in warnings)
+
+    def test_normalized_case_and_whitespace(self, tmp_path):
+        cfg = load_config(self._yaml(tmp_path, "dns_upstream: '  DIRECT  '"))
+        assert cfg.dns_upstream == "direct"
+
+    def test_invalid_value_raises(self, tmp_path):
+        cfg = load_config(self._yaml(tmp_path, "dns_upstream: bogus"))
+        with pytest.raises(ValueError, match="dns_upstream must be"):
+            self._validate_apple(cfg)
+
+    @LINUX_ONLY
+    def test_direct_on_non_apple_backend_warns_noop(self, tmp_path):
+        cfg = load_config(
+            self._yaml(tmp_path, "dns_upstream: direct", isolation="container")
+        )
+        warnings = validate_config(cfg)
+        assert any("only affects the apple-container backend" in w for w in warnings)
+
+
 class TestHostDnsServers:
     def _patch_resolv(
         self, monkeypatch, tmp_path, etc_text, resolved_text=None,

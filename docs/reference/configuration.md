@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-05-28 -->
+<!-- owner: @luca  last-reviewed: 2026-06-24 -->
 # Configuration
 
 The top-level settings, container block, hardening, and restart policy for `cage.yaml`. Pair with the per-feature pages under `docs/reference/` for everything else.
@@ -36,6 +36,23 @@ dns_servers:
   - 1.1.1.1
   - 8.8.8.8
 ```
+
+### DNS upstream mode (apple-container)
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `dns_upstream` | `string` | `gateway` | `gateway` or `direct`. apple-container only. |
+
+*Since 0.26.0.* `dns_upstream` controls how the apple-container egress reaches upstream DNS. `gateway` (default) forwards to the vmnet gateway, which tracks host network changes (Wi-Fi/VPN) without a rebuild. Set `direct` when the host runs a resolver the microVM can't reach — Cloudflare WARP and other loopback/NetworkExtension resolvers, or locked-down corporate DNS — which shows up as cages failing to resolve, or allowlisted hosts returning `502`. `direct` forwards to `dns_servers` and resolves the proxy through the in-egress dnsmasq, bypassing the gateway. See [Architecture](../explain/architecture.md) for how egress DNS flows.
+
+```yaml
+dns_servers:
+  - 1.1.1.1
+  - 8.8.8.8
+dns_upstream: direct
+```
+
+Set `dns_servers` explicitly with `direct` — auto-detection can't read the host's real upstreams behind a loopback resolver. The trade-off is losing live host-tracking: after the host's DNS changes, run `agentcage cage update <name>`. Other backends ignore this setting (their egress already queries `dns_servers` as a parallel `--all-servers` upstream).
 
 ## Container settings
 

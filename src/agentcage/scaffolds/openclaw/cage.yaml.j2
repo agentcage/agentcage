@@ -80,6 +80,14 @@ container:
 #   - 100.100.100.100
 #   - 1.1.1.1
 #   - 8.8.8.8
+#
+# apple-container only — dns_upstream: gateway (default) | direct
+# Default ("gateway") follows the host's resolver live (Wi-Fi/VPN changes
+# need no rebuild). Set "direct" if cages can't resolve because the host
+# runs a resolver the microVM can't reach — Cloudflare WARP and other
+# loopback resolvers, or locked-down corporate DNS. Direct forwards
+# straight to dns_servers above (set them explicitly), losing host-tracking.
+# dns_upstream: direct
 
 # ── Secret injection ──
 # API keys are swapped by the proxy — the cage only sees placeholders.

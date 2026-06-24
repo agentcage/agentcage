@@ -224,8 +224,51 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
     | awk '/inet / {sub(/\/.*/,"",$4); print $4; exit}')
   _gw=$(printf '%s\n' "${_eth0_ip}" \
     | awk -F. 'NF==4 {print $1"."$2"."$3".1"}')
+  #
+  # (3) DIRECT-MODE ESCAPE HATCH (AGENTCAGE_DNS_DIRECT, from
+  #     `dns_upstream: direct`): some hosts run a resolver the vmnet gateway
+  #     can't reach from inside the microVM — Cloudflare WARP and other
+  #     loopback/NetworkExtension resolvers (scutil shows 127.0.2.x),
+  #     locked-down corporate DNS. There the host-tracking gateway rewrite in
+  #     (2) makes every lookup time out. Direct mode skips the rewrite and
+  #     forwards allowlisted zones straight to the baked dns_servers, and (see
+  #     below) repoints mitmproxy's own resolver at this dnsmasq too. Trades
+  #     host-tracking for reachability: a host DNS change then needs
+  #     `cage update`.
   mkdir -p /run/agentcage
-  if [ -n "${_eth0_ip}" ] && [ -n "${_gw}" ] \
+  if [ -n "${AGENTCAGE_DNS_DIRECT:-}" ] && [ -n "${_eth0_ip}" ] \
+     && grep -vE '^(server=/|listen-address=)' /etc/agentcage/dnsmasq.conf \
+          > /run/agentcage/dnsmasq.egress.conf 2>/dev/null \
+     && cp /etc/agentcage/dns-allowlist.conf \
+          /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; then
+    # Keep the eth0 listen-address fix (so the cage's lookups are answered)
+    # but leave the upstream as the operator's dns_servers — no gateway rewrite.
+    chmod 0644 /run/agentcage/dnsmasq.egress.conf /run/agentcage/dns-allowlist.egress.conf
+    log "step B: apple-container path — DNS DIRECT mode: forwarding allowlisted zones to configured dns_servers (vmnet-gateway rewrite disabled), listen ${_eth0_ip}"
+    prlimit --as=$((256 * 1024 * 1024)) -- \
+      setpriv --reuid=acdns --regid=acdns --clear-groups \
+              --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
+      /opt/agentcage/dns-audit.sh \
+        /usr/sbin/dnsmasq -k \
+          --pid-file="$DNSMASQ_PID_FILE" \
+          --conf-file=/run/agentcage/dnsmasq.egress.conf \
+          --servers-file=/run/agentcage/dns-allowlist.egress.conf \
+          --listen-address="${_eth0_ip}" \
+          --listen-address=127.0.0.1 \
+          --bind-interfaces \
+      &
+    # mitmproxy (uid 200) resolves upstream Host headers via the egress's OWN
+    # /etc/resolv.conf, which on apple-container defaults to the vmnet gateway
+    # — the same resolver WARP makes unreachable. The gateway path (2) leaves
+    # resolv.conf untouched (it works there), but direct mode MUST repoint it
+    # at this dnsmasq on loopback or mitmproxy still 502s every allowlisted
+    # host. The egress microVM owns a writable /etc/resolv.conf (no bind).
+    if printf 'nameserver 127.0.0.1\noptions edns0\n' > /etc/resolv.conf 2>/dev/null; then
+      log "step B: DNS DIRECT mode — mitmproxy resolver = local dnsmasq (127.0.0.1)"
+    else
+      log "warn: DNS DIRECT mode — could not repoint /etc/resolv.conf at local dnsmasq"
+    fi
+  elif [ -n "${_eth0_ip}" ] && [ -n "${_gw}" ] \
      && grep -vE '^(server=/|listen-address=)' /etc/agentcage/dnsmasq.conf \
           > /run/agentcage/dnsmasq.egress.conf 2>/dev/null \
      && awk -F/ -v up="${_gw}" '/^server=\//{print "server=/" $2 "/" up}' \

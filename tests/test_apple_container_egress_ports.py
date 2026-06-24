@@ -265,3 +265,55 @@ class TestStartEgressArgvPortEnv:
             "allow_icmp": True,
         })
         assert _env_value(argv, "ALLOW_ICMP") == "1"
+
+# ── dns_upstream: Config → metadata → egress AGENTCAGE_DNS_DIRECT ──
+
+
+class TestGenerateUnitsDnsUpstream:
+    def test_default_gateway_persisted(self, tmp_path):
+        cfg = _config(tmp_path, """\
+            name: demo
+            container:
+              image: test:latest
+        """)
+        meta = json.loads(
+            AppleContainerBackend().generate_units(
+                cfg, "/c.yaml", "/patches", "demo",
+            )["demo.json"]
+        )
+        assert meta["dns_upstream"] == "gateway"
+
+    def test_direct_persisted(self, tmp_path):
+        cfg = _config(tmp_path, """\
+            name: demo
+            dns_servers:
+              - 1.1.1.1
+            dns_upstream: direct
+            container:
+              image: test:latest
+        """)
+        meta = json.loads(
+            AppleContainerBackend().generate_units(
+                cfg, "/c.yaml", "/patches", "demo",
+            )["demo.json"]
+        )
+        assert meta["dns_upstream"] == "direct"
+
+
+class TestStartEgressDnsUpstreamEnv:
+    def test_direct_emits_env(self, tmp_path):
+        """dns_upstream: direct → egress gets AGENTCAGE_DNS_DIRECT=1, which
+        flips supervisor-egress.sh to skip the vmnet-gateway rewrite."""
+        argv = _start_with_meta(tmp_path, {"dns_upstream": "direct"})
+        assert _env_value(argv, "AGENTCAGE_DNS_DIRECT") == "1"
+
+    def test_gateway_omits_env(self, tmp_path):
+        """Default mode emits nothing — the host-tracking path is unchanged."""
+        argv = _start_with_meta(tmp_path, {"dns_upstream": "gateway"})
+        assert _env_value(argv, "AGENTCAGE_DNS_DIRECT") is None
+
+    def test_legacy_metadata_omits_env(self, tmp_path):
+        """A cage created before this feature has no dns_upstream key →
+        treated as gateway, no env var emitted (no behavior change)."""
+        argv = _start_with_meta(tmp_path, {})
+        assert _env_value(argv, "AGENTCAGE_DNS_DIRECT") is None

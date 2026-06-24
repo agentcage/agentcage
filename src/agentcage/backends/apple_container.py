@@ -873,6 +873,15 @@ class AppleContainerBackend:
                 # start() emits it as ALLOW_ICMP=0/1; the supervisor
                 # installs the FORWARD accept rule only when "1".
                 "allow_icmp": bool(config.ports.icmp.allow),
+                # DNS upstream mode (see Config.dns_upstream). "direct" makes
+                # the egress forward allowlisted zones straight to dns_servers
+                # and resolve mitmproxy via the in-egress dnsmasq, bypassing
+                # the vmnet gateway — for hosts whose resolver is unreachable
+                # from the microVM (Cloudflare WARP etc.). start() turns
+                # "direct" into `-e AGENTCAGE_DNS_DIRECT=1` on the egress.
+                "dns_upstream": str(
+                    getattr(config, "dns_upstream", "gateway") or "gateway"
+                ),
             },
             indent=2,
             sort_keys=True,
@@ -1118,6 +1127,15 @@ class AppleContainerBackend:
             "-e", "AGENTCAGE_AUDIT_LOG=/var/log/agentcage/audit.jsonl",
             "-e", "AGENTCAGE_CAPTURE=/var/log/agentcage/capture.jsonl",
         ]
+        # DNS upstream mode. When the operator set `dns_upstream: direct`
+        # (persisted into metadata by generate_units), tell supervisor-egress.sh
+        # to forward allowlisted zones straight to the baked dns_servers and
+        # repoint mitmproxy's resolver at the in-egress dnsmasq — skipping the
+        # vmnet-gateway rewrite that is unreachable behind Cloudflare WARP and
+        # similar loopback resolvers. Default ("gateway") emits nothing, so the
+        # host-tracking path and legacy metadata without the key are unchanged.
+        if str(meta.get("dns_upstream") or "gateway") == "direct":
+            egress_argv += ["-e", "AGENTCAGE_DNS_DIRECT=1"]
         # Egress port policy. generate_units() persisted these three int
         # lists (from cage.yaml's nested ``ports.*`` via the shared
         # _effective_port_policy). supervisor-egress.sh Step A turns them
