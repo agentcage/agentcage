@@ -260,6 +260,7 @@ def scaffold_name_prefix(scaffold: str) -> str:
 def run_scaffold_setup(
     scaffold: str, name: str, dest: str, *, quiet: bool = False,
     isolation: str | None = None,
+    no_cache: bool = False, pull: bool = False,
 ) -> None:
     """Execute build/provision steps from scaffold.yaml.
 
@@ -269,6 +270,11 @@ def run_scaffold_setup(
     CLI) at cage create time, so we skip the host build loop entirely.
     When *isolation* is ``None`` we preserve the legacy behavior (run the
     build loop) for existing callers that don't pass isolation.
+
+    ``no_cache``/``pull`` come from ``agentcage run --no-cache/--pull``.
+    They map to ``podman build --no-cache`` / ``--pull=always`` and also
+    bypass the "image already exists, skipping build" short-circuit — a
+    forced rebuild that found a cached image and skipped would be a no-op.
     """
     meta = load_scaffold_meta(scaffold)
     if meta is None:
@@ -291,7 +297,7 @@ def run_scaffold_setup(
         podman = Podman()
         for entry in meta.get("build", []):
             image = entry["image"]
-            if podman.image_exists(image):
+            if podman.image_exists(image) and not (no_cache or pull):
                 _echo(f"Image {image} already exists, skipping build.")
                 continue
 
@@ -318,7 +324,7 @@ def run_scaffold_setup(
                     podman.build_image(
                         image, ctx_cf, ctx,
                         cap_add=entry.get("cap_add"), build_args=build_args,
-                        quiet=quiet,
+                        quiet=quiet, no_cache=no_cache, pull=pull,
                     )
             elif "git" in entry:
                 git_url = entry["git"]
@@ -334,7 +340,7 @@ def run_scaffold_setup(
                     podman.build_image(
                         image, None, tmpdir,
                         cap_add=entry.get("cap_add"), build_args=build_args,
-                        quiet=quiet,
+                        quiet=quiet, no_cache=no_cache, pull=pull,
                     )
     elif meta.get("build"):
         _echo(

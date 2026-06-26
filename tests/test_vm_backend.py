@@ -87,6 +87,57 @@ class TestBuildArtifacts:
         captured = capsys.readouterr()
         assert "not running" in captured.out.lower()
 
+    def _egress_build_call(self, *, no_cache: bool, pull: bool):
+        """Run build_artifacts inside a mocked VM and return the egress
+        `podman build` exec call as a string."""
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = True
+        mock_inst.name = "agentcage-testcage"
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)):
+            backend.build_artifacts(
+                _make_config(), "testcage", no_cache=no_cache, pull=pull,
+            )
+        build_calls = [
+            c for c in mock_inst.exec.call_args_list
+            if "podman" in str(c) and "build" in str(c)
+        ]
+        assert len(build_calls) == 1
+        return str(build_calls[0])
+
+    def test_no_cache_and_pull_reach_egress_build(self):
+        # The flags must force a clean egress rebuild inside the VM — the
+        # bug this fixes was vm.build_artifacts dropping them entirely.
+        egress = self._egress_build_call(no_cache=True, pull=True)
+        assert "--no-cache" in egress
+        assert "--pull=always" in egress
+
+    def test_egress_build_omits_flags_by_default(self):
+        egress = self._egress_build_call(no_cache=False, pull=False)
+        assert "--no-cache" not in egress
+        assert "--pull=always" not in egress
+
+    def test_cage_image_build_receives_flags(self):
+        # When the scaffold ships a Containerfile, the in-VM cage build must
+        # also get the flags (threaded via build_flags).
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = True
+        mock_inst.name = "agentcage-testcage"
+        config = _make_config()
+        config.container.build.containerfile = "Containerfile"
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch.object(backend, "_build_cage_image_in_vm") as mock_build:
+            backend.build_artifacts(config, "testcage", no_cache=True, pull=True)
+
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["build_flags"] == [
+            "--no-cache", "--pull=always",
+        ]
+
 
 class TestGenerateUnits:
     def test_returns_lima_yaml_and_quadlets(self):

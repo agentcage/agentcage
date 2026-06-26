@@ -54,12 +54,14 @@ class ContainerBackend:
 
     def build_artifacts(
         self, config: Config, deploy_name: str, *, quiet: bool = False,
-        no_cache: bool = False, pull: bool = False,  # noqa: ARG002
+        no_cache: bool = False, pull: bool = False,
     ) -> None:
         # The container backend builds/pulls the user image separately in
-        # cli (_build_container_image + podman.pull), which already honor
-        # --no-cache/--pull; this builds only the static helper/proxy
-        # images, so the flags are accepted for protocol parity and ignored.
+        # cli (_build_container_image + podman.pull) and, for `agentcage
+        # run`, via run_scaffold_setup — all of which honor --no-cache/--pull.
+        # This builds the static helper/egress image; --no-cache/--pull are
+        # forwarded here too so a forced clean rebuild rebuilds the egress
+        # proxy as well, matching the vm and apple-container backends.
         data_dir = Path(__file__).resolve().parent.parent / "data"
         containers_dir = str(data_dir / "containers")
         build_context = str(data_dir)
@@ -82,6 +84,8 @@ class ContainerBackend:
                 cap_add=["CAP_CHOWN", "CAP_FOWNER", "CAP_SETUID", "CAP_SETGID",
                          "CAP_DAC_OVERRIDE", "CAP_SETFCAP"],
                 quiet=quiet,
+                no_cache=no_cache,
+                pull=pull,
             )
 
     def generate_units(
