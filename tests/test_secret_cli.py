@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from agentcage.cli import main
+from tests.markers import REQUIRES_PODMAN
 
 # These drive `secret set/rm` through the host's default secret backend
 # (systemd-creds / podman secrets on Linux). On macOS the default backend is
@@ -35,6 +36,7 @@ def _mock_container_config():
 
 class TestSecretSet:
     @LINUX_ONLY
+    @REQUIRES_PODMAN
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_set_creates_secret(self, mock_state, MockPodman):
@@ -49,6 +51,7 @@ class TestSecretSet:
         assert "myapp.API_KEY" in result.output
 
     @LINUX_ONLY
+    @REQUIRES_PODMAN
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_set_replaces_existing(self, mock_state, MockPodman):
@@ -117,6 +120,7 @@ class TestSecretFailClosed:
         podman.secret_create.assert_not_called()
 
     @LINUX_ONLY
+    @REQUIRES_PODMAN
     @patch("agentcage.secret_resolver.detect_default_backend", return_value="podman")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
@@ -219,6 +223,7 @@ class TestSecretList:
 
 class TestSecretRm:
     @LINUX_ONLY
+    @REQUIRES_PODMAN
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_rm_removes_secret(self, mock_state, MockPodman, tmp_path):

@@ -29,6 +29,28 @@ sys.modules.setdefault("mitmproxy.proxy", _proxy)
 sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_dns(monkeypatch):
+    """Stub host DNS auto-detection for the whole unit suite.
+
+    ``load_config()`` calls ``_host_dns_servers()`` whenever a config omits
+    ``dns_servers``. On a host whose ``/etc/resolv.conf`` only lists loopback
+    resolvers (systemd-resolved stubs, a local DNS proxy, a sandbox, etc.)
+    and which has no ``/run/systemd/resolve/resolv.conf``, that raises — so
+    every test that loads a config without pinning ``dns_servers`` would fail
+    for reasons unrelated to what it asserts. Pin a deterministic upstream
+    here so the unit suite never depends on the host resolver.
+
+    Tests that specifically exercise detection (``test_*dns*`` /
+    ``TestHostDnsServers``) re-``monkeypatch`` ``_host_dns_servers`` or the
+    lower-level ``_read_nameservers`` / ``_scutil_dns_servers`` in their own
+    body; those later setattrs override this one and are restored normally.
+    """
+    monkeypatch.setattr(
+        "agentcage.config._host_dns_servers", lambda: ["1.1.1.1"]
+    )
+
+
 @pytest.fixture
 def patch_state_dirs(tmp_path, monkeypatch):
     """Redirect agentcage.state's filesystem roots into tmp_path. Prevents

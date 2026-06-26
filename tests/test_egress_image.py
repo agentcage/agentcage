@@ -12,12 +12,13 @@ is ~120MB) so the container-required tests share a module-scope fixture.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
+
+from tests.markers import REQUIRES_PODMAN
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,11 +28,7 @@ IMAGE_TAG = "agentcage-egress:test"
 CONTAINER_NAME = "egress-smoke"
 
 
-def _have_podman() -> bool:
-    return shutil.which("podman") is not None
-
-
-pytestmark = pytest.mark.skipif(not _have_podman(), reason="podman not available")
+pytestmark = REQUIRES_PODMAN
 
 
 def _podman(*args: str, check: bool = True, timeout: int = 600) -> subprocess.CompletedProcess[str]:
