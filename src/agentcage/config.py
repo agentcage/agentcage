@@ -1091,6 +1091,23 @@ def validate_config(config: Config) -> list[str]:
 
     warnings = []
 
+    # Surface the fail-closed default-deny posture so an operator who omitted
+    # (or emptied) the domains policy isn't surprised that egress is fully
+    # blocked. Previously an omitted `domains:` section silently fell open and
+    # allowed every host at L7; the DomainInspector now default-denies, and
+    # this is the loud heads-up that goes with it.
+    if config.domains.mode not in ("allowlist", "blocklist"):
+        warnings.append(
+            "no domains policy configured: all outbound hosts are blocked at "
+            "the proxy (default-deny). Add a domains.allow list (or "
+            "domains.block for blocklist mode) to permit egress."
+        )
+    elif config.domains.mode == "allowlist" and not config.domains.allow:
+        warnings.append(
+            "domains.allow is empty: all outbound hosts are blocked at the "
+            "proxy (default-deny)."
+        )
+
     def _is_scaffold_default_tmpfs(entries: list[str]) -> bool:
         """A single entry whose target is /tmp matches the stock scaffold
         default (``tmpfs: ["/tmp:rw,noexec,nosuid,size=256M"]``). On

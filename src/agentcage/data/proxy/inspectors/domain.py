@@ -35,8 +35,18 @@ class DomainInspector(Inspector):
     def inspect_request(
         self, ctx: InspectionContext
     ) -> Optional[InspectionResult]:
-        if not self.mode:
-            return None
+        if self.mode not in ("allowlist", "blocklist"):
+            # Fail closed. A cage with no recognizable domain policy — an
+            # omitted or empty `domains:` section yields mode=None/"" — must
+            # default-deny rather than silently allow every host (the L7
+            # fail-open hole). The operator is warned loudly at create time;
+            # see config.validate_config.
+            return InspectionResult(
+                inspector=self.name,
+                action="block",
+                reason=f"no domain allowlist configured (default-deny): {ctx.host}",
+                severity="error",
+            )
         matched = self._matches(ctx.host)
         if self.mode == "allowlist" and not matched:
             return InspectionResult(
