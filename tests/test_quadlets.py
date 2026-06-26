@@ -98,6 +98,31 @@ class TestEgressQuadlet:
         assert "AddCapability=SETPCAP" in content
         assert "AddCapability=KILL" in content
 
+    def test_egress_chowns_private_certs_but_not_public_certs(self, minimal_yaml):
+        """The private certs volume (/home/acproxy/.mitmproxy) is written by
+        mitmproxy AS acproxy, so the egress chowns its mountpoint to 200:200.
+        The public-certs volume is the opposite: written ONLY by the uid-0
+        supervisor (Step E ``install``s the public CA cert into it) and mounted
+        ``:ro`` by the cage, so its mountpoint must stay root-owned.
+
+        REGRESSION GUARD: #211 added an ExecStartPre that chowned the
+        public-certs mountpoint to 200:200. On hardened hosts
+        (``default_capabilities = []``) the supervisor runs as uid 0 without
+        CAP_DAC_OVERRIDE/CAP_FOWNER; once it no longer owned the dir, ``install``
+        could not unlink+rewrite the existing cert on restart — ``install:
+        cannot remove ...: Permission denied`` crashed the egress (and with it
+        the cage) on every start after the first.
+        """
+        cfg = load_config(minimal_yaml)
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        # Private certs volume IS chowned to acproxy.
+        assert "podman volume inspect agentcage-certs-test --format" in content
+        assert '200:200 "$mp"' in content
+        # Public-certs volume mountpoint must NOT be chowned (no inspect+chown
+        # ExecStartPre targeting it).
+        assert "agentcage-public-certs-test --format" not in content
+
     def test_egress_port_policy_default(self, minimal_yaml):
         """A cage with no `ports:` override gets the default policy —
         tcp.allow=[80,443], no passthrough, no UDP. The supervisor reads
@@ -192,19 +217,15 @@ class TestEgressQuadlet:
         assert "Volume=test-certs.volume:/home/acproxy/.mitmproxy:Z" in content
 
     def test_egress_public_certs_volume(self, minimal_yaml):
-        """Egress also mounts the public-certs volume RW so
-        supervisor-egress.sh Step E can publish mitmproxy-ca-cert.pem
-        there. Cage will mount the SAME volume read-only at /certs."""
+        """Egress mounts the public-certs volume RW so supervisor-egress.sh
+        Step E can publish mitmproxy-ca-cert.pem there. The cage mounts the
+        SAME volume read-only at /certs. The mountpoint is intentionally NOT
+        chowned to acproxy — see
+        test_egress_chowns_private_certs_but_not_public_certs for why."""
         cfg = load_config(minimal_yaml)
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-egress.container"]
         assert "Volume=test-public-certs.volume:/home/acproxy/public-certs:Z" in content
-        # Chown ExecStartPre for the public-certs mountpoint mirrors the
-        # private-certs one — uid 200 = acproxy inside the egress image.
-        assert (
-            "podman volume inspect agentcage-public-certs-test" in content
-            and "200:200" in content
-        )
 
     def test_egress_config_bind(self, minimal_yaml):
         """The proxy-config bind source is the host path passed to

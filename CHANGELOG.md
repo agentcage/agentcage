@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The egress — and with it the cage — crashed on every restart after the first, on hardened rootless podman (`default_capabilities = []`).** The egress quadlet ran an `ExecStartPre` that chowned the `agentcage-public-certs-<name>` volume mountpoint to `acproxy` (uid 200), mirroring the chown of the *private* certs volume. But unlike the private volume (written by mitmproxy *as* acproxy), the public-certs volume is written **only** by the supervisor, which runs as uid 0 and publishes the public CA cert with `install -m 0644` (`supervisor-egress.sh` Step E). On a host whose `containers.conf` sets `default_capabilities = []`, container uid 0 holds none of `CAP_DAC_OVERRIDE` / `CAP_FOWNER`, so once the directory was acproxy-owned the supervisor could no longer `unlink()` the existing cert to rewrite it — `install: cannot remove '/home/acproxy/public-certs/mitmproxy-ca-cert.pem': Permission denied`, exit 1, and systemd tore the dependent cage down. The first `cage create` came up (nothing to overwrite yet), but every subsequent `cage start` / `cage restart` / `cage update` (e.g. after editing a workspace mount path) failed. The chown is removed: the public-certs dir stays root-owned, the uid-0 supervisor overwrites it freely, and the `0644` cert is still world-readable for the cage's `:ro` `/certs` mount — so the cage→egress trust boundary (CTF F6/F9) is unaffected. The apple-container backend was never affected (it `chmod 1777`s the dir instead of chowning it). Regressed in 0.22.10 ([#211](https://github.com/agentcage/agentcage/issues/211)).
+
 ## [0.25.5] - 2026-06-26
 
 ### Fixed
