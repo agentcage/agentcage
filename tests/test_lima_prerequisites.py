@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from agentcage.lima.prerequisites import check_prerequisites, detect_platform
+from tests.markers import REQUIRES_KVM
 
 LINUX_ONLY = pytest.mark.skipif(
     platform.system() != "Linux",
@@ -42,6 +43,7 @@ class TestCheckPrerequisites:
         assert any("https://" in i for i in issues)
 
     @LINUX_ONLY
+    @REQUIRES_KVM
     def test_limactl_available_on_linux(self):
         with patch("shutil.which", return_value="/usr/bin/limactl"), \
              patch("platform.system", return_value="Linux"):

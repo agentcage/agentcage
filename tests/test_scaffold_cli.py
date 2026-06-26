@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from click.testing import CliRunner
 
 from agentcage.cli import main
+from tests.markers import REQUIRES_PODMAN
 
 
 def _runner():
@@ -37,6 +38,7 @@ class TestInitWithScaffold:
         assert result.exit_code != 0
         assert "unknown scaffold" in result.output
 
+    @REQUIRES_PODMAN
     @patch("agentcage.registry.resolve_latest_tag", return_value="2026.2.24")
     def test_openclaw_scaffold_creates_file(self, mock_resolve, tmp_path):
         dest = tmp_path / "cage.yaml"
