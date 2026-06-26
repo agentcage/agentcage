@@ -840,6 +840,32 @@ def test_start_argv_injects_proxy_ca_env_vars(tmp_path, monkeypatch):
     assert "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" in cage_argv
 
 
+def test_start_cage_mounts_certs_read_only(tmp_path, monkeypatch):
+    """CTF (#275, 0.25.4): the public-cert dir must be bound at /certs
+    read-only. The uid-1000 workload is told to TRUST this CA via
+    SSL_CERT_FILE / NODE_EXTRA_CA_CERTS; a writable virtiofs mount let it
+    tamper with, replace, or persist host-backed files under /certs,
+    violating the cage->egress trust boundary. Mirrors the quadlet
+    backend's `:/certs:ro,Z` (cage.container.j2)."""
+    public_certs_dir = tmp_path / "public-certs"
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+        },
+    )
+
+    backend.start("demo", quiet=True)
+
+    cage_argv = _cage_run_argv(captured)
+    # The cage sees /certs read-only — never a writable bind.
+    assert f"{public_certs_dir}:/certs:ro" in cage_argv
+    assert f"{public_certs_dir}:/certs" not in cage_argv
+    certs_binds = [a for a in cage_argv if a.endswith((":/certs", ":/certs:ro"))]
+    assert certs_binds == [f"{public_certs_dir}:/certs:ro"]
+
+
 def test_start_cage_binds_dnsmasq_conf_for_local_resolver(tmp_path, monkeypatch):
     """CTF F2 (0.22.6): the cage's local dnsmasq (cage-init.sh stage A')
     reads the same dnsmasq.conf the egress sibling does, bind-mounted
@@ -902,8 +928,9 @@ def test_start_cage_bind_excludes_ca_private_key(tmp_path, monkeypatch):
     certs_dir = str(tmp_path / "certs")
     public_certs_dir = str(tmp_path / "public-certs")
 
-    # Cage's /certs MUST come from public_certs_dir.
-    assert f"{public_certs_dir}:/certs" in cage_argv
+    # Cage's /certs MUST come from public_certs_dir (and be read-only;
+    # see test_start_cage_mounts_certs_read_only / #275).
+    assert f"{public_certs_dir}:/certs:ro" in cage_argv
     # Cage MUST NOT mount certs_dir anywhere (any guest path) — that
     # would re-introduce the CA-private-key leak. Anchor on the host
     # path so an empty certs_dir name (unlikely tmp_path collision)
