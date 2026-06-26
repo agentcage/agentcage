@@ -16,6 +16,7 @@ Example configs: [`basic/cage.yaml`](../../examples/basic/) and [`openclaw/cage.
 | `log_allowed` | `bool` | `false` | Log allowed requests to the proxy journal. |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit. |
 | `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container. |
+| `git_hooks_mask` | `bool` | `true` | Security ([#170](https://github.com/agentcage/agentcage/issues/170)): mask existing Git hook directories discovered under writable host binds and warn when host-trusted workspace files (active Git hooks, `.git/config`, `.gitattributes`, `.gitmodules`, `.lfsconfig`, `.claude/settings.json`) are created/modified/removed while the cage runs. Set `false` to opt out. |
 
 ### VM settings
 

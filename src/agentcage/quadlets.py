@@ -14,6 +14,11 @@ from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 from agentcage.config import Config
+from agentcage.git_hooks_guard import (
+    discover_git_hooks_masks,
+    render_guard_baseline_command,
+    render_guard_check_command,
+)
 
 
 def cage_network_addrs(
@@ -370,6 +375,33 @@ def generate_quadlets(
             continue
 
         expanded_volumes.append(expanded)
+
+    # Security (#170): mask every existing Git hooks directory reachable via
+    # writable host binds, including nested repos and extra mounted repos. The
+    # guard deliberately only emits masks for paths that already exist on the
+    # host; runtimes create absent mountpoints through the parent bind, which
+    # would litter clean projects. A lightweight stop-time tamper check watches
+    # for newly-created hooks and adjacent host-trusted config surfaces.
+    git_guard = discover_git_hooks_masks(
+        expanded_volumes, enabled=config.git_hooks_mask
+    )
+    cage_tmpfs = list(cc.tmpfs)
+    for mask in git_guard.masks:
+        cage_tmpfs.append(mask.tmpfs_spec)
+    if git_guard.masks:
+        click.echo(
+            "masking Git hooks under writable host binds: "
+            + ", ".join(mask.cage_path for mask in git_guard.masks)
+            + ". Disable with `git_hooks_mask: false`.",
+            err=True,
+        )
+    guard_baseline_command = render_guard_baseline_command(
+        name, git_guard.watch_roots if config.git_hooks_mask else ()
+    )
+    guard_check_command = render_guard_check_command(
+        name, git_guard.watch_roots if config.git_hooks_mask else ()
+    )
+
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
 
     # Cage placeholders are delivered via an EnvironmentFile (read by podman
@@ -657,7 +689,7 @@ def generate_quadlets(
         patches_host_dir=patches_host_dir,
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
-        tmpfs=cc.tmpfs,
+        tmpfs=cage_tmpfs,
         podman_secrets=cage_podman_secrets,
         placeholders_env_path=placeholders_env_path,
         cage_env_dir=cage_env_dir,
@@ -679,6 +711,8 @@ def generate_quadlets(
         deploy_name=deploy_name,
         nested_containers=nested_containers,
         lifecycle=lifecycle,
+        guard_baseline_command=guard_baseline_command,
+        guard_check_command=guard_check_command,
     )
 
     return files

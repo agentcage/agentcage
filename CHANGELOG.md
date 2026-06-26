@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Harden writable workspace binds against the `.git/hooks` cage→host pivot ([#170](https://github.com/agentcage/agentcage/issues/170)). agentcage now discovers and masks every existing Git hooks directory under writable host binds (including nested repos and additional mounted repos) and emits stop-time warnings if active hooks or adjacent host-trusted files such as `.git/config`, `.gitattributes`, `.gitmodules`, `.lfsconfig`, or `.claude/settings.json` are created, removed, or modified while the cage runs. The mask is only applied to paths that already exist on the host to avoid runtime mountpoint litter in clean projects. Set `git_hooks_mask: false` to opt out.
 ## [0.32.0] - 2026-08-18
 
 ### Added

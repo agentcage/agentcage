@@ -56,6 +56,11 @@ from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
+from agentcage.git_hooks_guard import (
+    diff_tamper_state,
+    discover_git_hooks_masks,
+    snapshot_tamper_state,
+)
 from agentcage.quadlets import _effective_port_policy
 
 
@@ -848,6 +853,10 @@ class AppleContainerBackend:
                 # already-absolute paths, so start() re-running it is a safe
                 # revalidation, not a re-expansion.
                 "volumes": self._user_volume_argv(config.container.volumes),
+                # Security (#170): opt-out for Git hook masks and workspace
+                # tamper warnings. Existence checks happen at start() against
+                # live host state so nested/new repos are discovered then.
+                "git_hooks_mask": bool(config.git_hooks_mask),
                 # User-defined ``container.env:`` entries. Apple's
                 # `container run` accepts `-e KEY=VAL` like podman. The
                 # container backend wires these via quadlets.py:338;
@@ -1288,8 +1297,25 @@ class AppleContainerBackend:
         # _user_volume_argv here is an idempotent revalidation, NOT a
         # re-expansion: absolute paths have no `~`/`$VAR` left to resolve, so
         # this no longer depends on PROJECT_DIR being in the start() env.
-        for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
+        cage_volumes = self._user_volume_argv(meta.get("volumes") or [])
+        for vol_entry in cage_volumes:
             cage_argv += ["--volume", vol_entry]
+        git_guard = discover_git_hooks_masks(
+            cage_volumes, enabled=bool(meta.get("git_hooks_mask", True))
+        )
+        if git_guard.watch_roots:
+            self._write_workspace_guard_baseline(name, git_guard.watch_roots)
+        for mask in git_guard.masks:
+            # Apple `container run --tmpfs` takes a bare path only (no
+            # `:rw,size=...` options; those are treated as literal path text).
+            cage_argv += ["--tmpfs", mask.cage_path]
+        if git_guard.masks and not quiet:
+            click.echo(
+                "masking Git hooks under writable host binds: "
+                + ", ".join(mask.cage_path for mask in git_guard.masks)
+                + ". Disable with `git_hooks_mask: false`.",
+                err=True,
+            )
         # Apple's --cpus / --memory normalization (uppercase suffix, ceil
         # fractions). Backward-compat fallback to pre-0.20.6 `mem_mb` int.
         cpus_raw = meta.get("cpus")
@@ -1505,9 +1531,37 @@ class AppleContainerBackend:
             f"for the supervisor's last step"
         )
 
+    def _workspace_guard_baseline_path(self, name: str) -> Path:
+        return self._state_dir(name) / "workspace-guard-baseline.json"
+
+    def _write_workspace_guard_baseline(self, name: str, roots: tuple[str, ...]) -> None:
+        path = self._workspace_guard_baseline_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"roots": list(roots), "snapshot": snapshot_tamper_state(roots)}
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+    def _check_workspace_guard(self, name: str) -> None:
+        path = self._workspace_guard_baseline_path(name)
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text())
+            roots = tuple(str(r) for r in (payload.get("roots") or []))
+            before = dict(payload.get("snapshot") or {})
+            after = snapshot_tamper_state(roots)
+            for warning in diff_tamper_state(before, after):
+                click.echo(
+                    f"agentcage warning: host-trusted workspace file {warning} "
+                    "while cage was running",
+                    err=True,
+                )
+        finally:
+            path.unlink(missing_ok=True)
+
     def stop(self, name: str) -> None:
         """Stop both microVMs (cage + egress)."""
         ac_cli.run(["stop", name], check=False)
+        self._check_workspace_guard(name)
         ac_cli.run(["stop", f"{name}-egress"], check=False)
 
     def restart(self, name: str) -> None:
