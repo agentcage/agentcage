@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.5] - 2026-06-26
+
+### Fixed
+
+- **The apple-container cage can no longer write to its `/certs` mount.** The cage workload received the public MITM CA cert directory at `/certs` as a **writable** `virtiofs` mount — the `container run` argv used `--volume {public_certs_dir}:/certs` without a `:ro` suffix, so a uid-1000 (`node`) workload could create, modify, or delete files under the directory holding the very CA cert it is told to trust via `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`. This was **not** a private-key exposure — only the public `mitmproxy-ca-cert.pem` lives there; the full mitmproxy dir with `mitmproxy-ca.pem` has been egress-only since 0.22.6 — but it gave the workload a host-backed persistence/tamper surface and violated the cage→egress trust boundary. The bind is now mounted `:ro`, matching the container/vm backend's `:/certs:ro,Z` (`cage.container.j2`); the egress sibling keeps its writable `public-certs` bind so it can still copy the public cert in. ([#275](https://github.com/agentcage/agentcage/issues/275))
+
 ## [0.25.4] - 2026-06-22
 
 ### Fixed
