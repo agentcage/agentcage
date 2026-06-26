@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-06-26
+
 ### Added
 
 - **`agentcage run` accepts `--no-cache` and `--pull`, matching `agentcage cage create`.** Previously the only way to force a clean rebuild of a `run` cage's agent image was to manually `podman rmi` the `agentcage-scaffold-<name>` tag, because `run`'s scaffold build short-circuited on "image already exists". `--no-cache` now maps to `podman build --no-cache` (ignore the layer cache) and `--pull` to `--pull=always` (re-fetch the `FROM` base), and both bypass the skip-if-present check so a forced rebuild actually rebuilds.
