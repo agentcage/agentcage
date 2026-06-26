@@ -58,6 +58,37 @@ If the egress sibling goes down, the cage gets connection errors — not unfilte
 
 By default, the cage runs with a read-only root filesystem, all Linux capabilities dropped, and no-new-privileges. The egress runs as a non-root user. Nested containers (`nested_containers: true`, `container` mode only) relax several of these defaults to enable podman-in-podman; network-level protections still apply, and inner-container traffic is forced through the same egress filter.
 
+## Workspace mount hardening
+
+Scaffolds bind-mount the project directory at `/workspace:rw` so the agent can
+edit your code. That directory also contains host-trusted, executable-on-the-host
+configuration — most dangerously `.git/hooks/`. A malicious in-cage agent that
+writes `/workspace/.git/hooks/pre-commit` would have that script run as **you**,
+on the **host**, the next time you `git commit` outside any cage — a full
+cage→host pivot via an everyday action ([#170]).
+
+agentcage masks `/workspace/.git/hooks` with an ephemeral tmpfs (a bare
+`--tmpfs` on the apple-container backend). In-cage writes there land in the
+overlay and vanish when the cage stops; your real `.git/hooks` is never touched.
+The mask is applied **only when `/workspace` is a host bind that already
+contains `.git/hooks`** — masking an absent path would make the runtime create
+the mountpoint *through* the bind, littering non-repo projects with a stray
+`.git/` (see `docs/spikes/2026-06-tmpfs-workspace-mask-spike.md`). It is enforced
+across all isolation modes and is on by default; set `git_hooks_mask: false` per
+cage to opt out (then cage-side hook edits persist to the host repo). One
+consequence: cage-side `git commit` no longer fires host-installed hooks (e.g. a
+`pre-commit` framework), which most agents don't rely on.
+
+This closes the most direct pivot, not the whole class. Other in-workspace
+surfaces an agent can still write — `.git/config` (`core.sshCommand`,
+`remote.origin.url`), `.gitattributes` smudge/clean filters, project-local agent
+config such as `.claude/settings.json` ([#173]), `Makefile` / `package.json`
+lifecycle scripts — remain the operator's responsibility to review before
+running them on the host.
+
+[#170]: https://github.com/agentcage/agentcage/issues/170
+[#173]: https://github.com/agentcage/agentcage/issues/173
+
 ## Supply chain
 
 Container base images are pinned by digest. Python runtime deps are minimal. Custom inspector paths and bind-mount paths are validated. Cage names are pattern-checked before they reach generated unit files. Templates render in a sandboxed environment.

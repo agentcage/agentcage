@@ -16,6 +16,7 @@ Example configs: [`basic/cage.yaml`](../../examples/basic/) and [`openclaw/cage.
 | `log_allowed` | `bool` | `false` | Log allowed requests to the proxy journal. |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit. |
 | `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container. |
+| `git_hooks_mask` | `bool` | `true` | Security ([#170](https://github.com/agentcage/agentcage/issues/170)): mask `/workspace/.git/hooks` with an ephemeral tmpfs so an in-cage agent can't plant git hooks that run on the host. Applied only when `/workspace` is a host bind that already contains `.git/hooks` (a real git repo) — never litters non-repo projects. Enforced on all isolation backends. Set `false` to opt out (then cage-side hook edits persist to the host repo, and cage-side `git commit` fires host-installed hooks). See [Security model](../explain/security-model.md#workspace-mount-hardening). |
 
 ### VM settings
 

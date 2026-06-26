@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A cage can no longer plant git hooks that run on the host (`.git/hooks` cage→host pivot, [#170]).** Every scaffold bind-mounts the project directory at `/workspace:rw`, which includes `.git/hooks/`. A malicious in-cage agent could write `.git/hooks/pre-commit` (or `post-checkout`, etc.); the next `git` command the operator ran **on the host** would execute it as the host user. agentcage now masks `/workspace/.git/hooks` with an ephemeral tmpfs (a bare `--tmpfs` on the apple-container backend), so in-cage writes there never reach the host repo. The mask is applied **only when `/workspace` is a host bind that already contains `.git/hooks`** (a real git repo) — a spike (`docs/spikes/2026-06-tmpfs-workspace-mask-spike.md`) showed that masking an absent path makes the runtime `mkdir` the mountpoint *through* the bind, littering non-repo projects with a stray `.git/`. It is enforced across the container, vm, and apple-container backends, and prints a one-line notice at `cage create`/`update`/`start`. Opt out per cage with `git_hooks_mask: false` (then cage-side hook edits persist to the host repo). Note: cage-side `git commit` no longer triggers host-installed hooks (e.g. a `pre-commit` framework), which most agents don't rely on. The related `.claude/settings.json` cage→cage vector ([#173]) is **not** addressed here — the spike showed masking is the wrong tool for it (the dangerous case is a *fresh* project with no `.claude`, which can't be masked without littering); it is tracked separately.
+
+[#170]: https://github.com/agentcage/agentcage/issues/170
+[#173]: https://github.com/agentcage/agentcage/issues/173
+
 ## [0.25.4] - 2026-06-22
 
 ### Fixed

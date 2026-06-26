@@ -840,6 +840,97 @@ def test_start_argv_injects_proxy_ca_env_vars(tmp_path, monkeypatch):
     assert "NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem" in cage_argv
 
 
+def _make_home_repo(with_hooks: bool):
+    """Create a project dir under $HOME (apple backend rejects mounts outside
+    $HOME). Returns its path; caller is responsible for cleanup."""
+    import tempfile
+    from pathlib import Path
+    d = Path(tempfile.mkdtemp(prefix="agentcage-ghm-apple-", dir=Path.home()))
+    if with_hooks:
+        (d / ".git" / "hooks").mkdir(parents=True)
+    return d
+
+
+def test_start_argv_masks_git_hooks_for_real_repo(tmp_path, monkeypatch):
+    """#170: when /workspace is a host bind of a real git repo, the cage VM
+    gets a BARE `--tmpfs /workspace/.git/hooks` (Apple takes no `:opts`),
+    so an in-cage agent can't plant host-side git hooks."""
+    import shutil
+    proj = _make_home_repo(with_hooks=True)
+    try:
+        backend, captured = _setup_start_test(
+            tmp_path, monkeypatch,
+            unit_meta={
+                "name": "demo", "user_image": "x",
+                "cpus": "", "memory": "", "lifecycle": "interactive",
+                "volumes": [f"{proj}:/workspace"],
+                "git_hooks_mask": True,
+            },
+        )
+        backend.start("demo", quiet=True)
+        cage_argv = _cage_run_argv(captured)
+        assert "--tmpfs" in cage_argv
+        idx = cage_argv.index("--tmpfs")
+        # Bare path, no `:opts` (Apple reads options as a literal dir name).
+        assert cage_argv[idx + 1] == "/workspace/.git/hooks"
+    finally:
+        shutil.rmtree(proj, ignore_errors=True)
+
+
+def test_start_argv_no_git_hooks_mask_for_non_repo(tmp_path, monkeypatch):
+    """#170 litter guard: a /workspace bind with no .git/hooks gets no tmpfs
+    mask (masking an absent path would mkdir a stray .git/ on the host)."""
+    import shutil
+    proj = _make_home_repo(with_hooks=False)
+    try:
+        backend, captured = _setup_start_test(
+            tmp_path, monkeypatch,
+            unit_meta={
+                "name": "demo", "user_image": "x",
+                "cpus": "", "memory": "", "lifecycle": "interactive",
+                "volumes": [f"{proj}:/workspace"],
+                "git_hooks_mask": True,
+            },
+        )
+        backend.start("demo", quiet=True)
+        assert "/workspace/.git/hooks" not in _cage_run_argv(captured)
+    finally:
+        shutil.rmtree(proj, ignore_errors=True)
+
+
+def test_start_argv_git_hooks_mask_opt_out(tmp_path, monkeypatch):
+    """#170: `git_hooks_mask: false` (persisted as meta flag) suppresses the
+    mask even for a real repo."""
+    import shutil
+    proj = _make_home_repo(with_hooks=True)
+    try:
+        backend, captured = _setup_start_test(
+            tmp_path, monkeypatch,
+            unit_meta={
+                "name": "demo", "user_image": "x",
+                "cpus": "", "memory": "", "lifecycle": "interactive",
+                "volumes": [f"{proj}:/workspace"],
+                "git_hooks_mask": False,
+            },
+        )
+        backend.start("demo", quiet=True)
+        assert "/workspace/.git/hooks" not in _cage_run_argv(captured)
+    finally:
+        shutil.rmtree(proj, ignore_errors=True)
+
+
+def test_generate_units_persists_git_hooks_mask_default_true():
+    """#170: the opt-out flag flows into the unit JSON; default is True."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
+    assert json.loads(units["deploy.json"])["git_hooks_mask"] is True
+
+    cfg.git_hooks_mask = False
+    units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
+    assert json.loads(units["deploy.json"])["git_hooks_mask"] is False
+
+
 def test_start_cage_binds_dnsmasq_conf_for_local_resolver(tmp_path, monkeypatch):
     """CTF F2 (0.22.6): the cage's local dnsmasq (cage-init.sh stage A')
     reads the same dnsmasq.conf the egress sibling does, bind-mounted

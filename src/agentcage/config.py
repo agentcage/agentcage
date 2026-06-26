@@ -392,6 +392,12 @@ class Config:
     # control which cages come back after a reboot. Other isolation
     # backends ignore this. See docs/apple-container.md.
     apple_container_autostart: bool = False
+    # Security (#170): mask /workspace/.git/hooks with an ephemeral tmpfs so an
+    # in-cage agent can't plant git hooks that run on the host. Applied only
+    # when /workspace is a host bind that already contains .git/hooks (a real
+    # git repo) — never litters non-repo projects. Set False to opt out (then
+    # cage-side git hook edits persist to the host repo). All backends honor it.
+    git_hooks_mask: bool = True
 
 
 def default_isolation() -> str:
@@ -875,6 +881,9 @@ def load_config(path: str) -> Config:
 
     # apple-container only: opt-in launchd autostart at user login.
     cfg.apple_container_autostart = bool(raw.get("apple_container_autostart", False))
+
+    # Security (#170): /workspace/.git/hooks masking, on by default.
+    cfg.git_hooks_mask = bool(raw.get("git_hooks_mask", True))
 
     # Help text
     cfg.help = str(raw.get("help", "") or "")

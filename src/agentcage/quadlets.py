@@ -14,6 +14,11 @@ from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 from agentcage.config import Config
+from agentcage.git_hooks_mask import (
+    GIT_HOOKS_TMPFS_SPEC,
+    git_hooks_mask_path,
+    workspace_host_dir,
+)
 
 
 def cage_network_addrs(
@@ -357,6 +362,24 @@ def generate_quadlets(
             continue
 
         expanded_volumes.append(expanded)
+
+    # Security (#170): mask /workspace/.git/hooks with an ephemeral tmpfs so an
+    # in-cage agent can't plant git hooks that fire on the host. Computed from
+    # the resolved volumes (host bind at /workspace, with an existing .git/hooks
+    # — see git_hooks_mask module for the litter guard). Appended to the cage's
+    # tmpfs list so it renders as a Tmpfs= line in the cage quadlet.
+    cage_tmpfs = list(cc.tmpfs)
+    mask_path = git_hooks_mask_path(
+        workspace_host_dir(expanded_volumes), enabled=config.git_hooks_mask
+    )
+    if mask_path:
+        cage_tmpfs.append(GIT_HOOKS_TMPFS_SPEC)
+        click.echo(
+            f"masking {mask_path} — host git repo detected; in-cage edits "
+            f"won't reach the host. Disable with `git_hooks_mask: false`.",
+            err=True,
+        )
+
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
 
     # Cage placeholders are delivered via an EnvironmentFile (read by podman
@@ -604,7 +627,7 @@ def generate_quadlets(
         patches_host_dir=patches_host_dir,
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
-        tmpfs=cc.tmpfs,
+        tmpfs=cage_tmpfs,
         podman_secrets=cc.podman_secrets,
         placeholders_env_path=placeholders_env_path,
         cage_env_dir=cage_env_dir,

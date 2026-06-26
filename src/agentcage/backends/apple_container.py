@@ -49,6 +49,7 @@ from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
+from agentcage.git_hooks_mask import git_hooks_mask_path, workspace_host_dir
 from agentcage.quadlets import _effective_port_policy
 
 
@@ -856,6 +857,11 @@ class AppleContainerBackend:
                     k: os.path.expandvars(str(v))
                     for k, v in (config.container.env or {}).items()
                 },
+                # Security (#170): whether to mask /workspace/.git/hooks. The
+                # actual host-existence check happens in start() against live
+                # state (the repo may appear/vanish between create and start),
+                # so we persist only the operator's opt-out flag here.
+                "git_hooks_mask": bool(config.git_hooks_mask),
                 # Egress port policy (see _effective_port_policy above). Three
                 # lists of ints; start() space-joins them onto the egress argv
                 # as INSPECTED_TCP_PORTS / PASSTHROUGH_TCP_PORTS / ALLOW_UDP_PORTS.
@@ -1263,8 +1269,28 @@ class AppleContainerBackend:
         # _user_volume_argv here is an idempotent revalidation, NOT a
         # re-expansion: absolute paths have no `~`/`$VAR` left to resolve, so
         # this no longer depends on PROJECT_DIR being in the start() env.
-        for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
+        cage_volumes = self._user_volume_argv(meta.get("volumes") or [])
+        for vol_entry in cage_volumes:
             cage_argv += ["--volume", vol_entry]
+        # Security (#170): mask /workspace/.git/hooks with a tmpfs so an in-cage
+        # agent can't plant git hooks that fire on the host. Apple's `container
+        # run --tmpfs` takes a BARE path only (it reads `:opts` as a literal
+        # directory name — see the spike), so pass GIT_HOOKS_CAGE_PATH with no
+        # options. Existence is checked here against live host state to avoid
+        # mkdir-littering a clean project (same guard as the quadlet path).
+        mask_path = git_hooks_mask_path(
+            workspace_host_dir(cage_volumes),
+            enabled=bool(meta.get("git_hooks_mask", True)),
+        )
+        if mask_path:
+            cage_argv += ["--tmpfs", mask_path]
+            if not quiet:
+                click.echo(
+                    f"masking {mask_path} — host git repo detected; in-cage "
+                    f"edits won't reach the host. Disable with "
+                    f"`git_hooks_mask: false`.",
+                    err=True,
+                )
         # Apple's --cpus / --memory normalization (uppercase suffix, ceil
         # fractions). Backward-compat fallback to pre-0.20.6 `mem_mb` int.
         cpus_raw = meta.get("cpus")
