@@ -1196,7 +1196,13 @@ class AppleContainerBackend:
             # cert for any allowlisted host. Bind public_certs_dir
             # instead — egress's Step E copies only the public cert
             # there. The full mitmproxy dir is now egress-only.
-            "--volume", f"{public_certs_dir}:/certs",
+            #
+            # CTF (#275, 0.25.4): mount :ro so the uid-1000 workload can
+            # only read the public CA cert it's told to trust via
+            # SSL_CERT_FILE / NODE_EXTRA_CA_CERTS — not tamper with,
+            # replace, or persist host-backed files under /certs. Matches
+            # the quadlet backend's `:/certs:ro,Z` (cage.container.j2).
+            "--volume", f"{public_certs_dir}:/certs:ro",
             # CTF F2 (0.22.6): the cage's local dnsmasq (cage-init stage A')
             # reads the same allowlist-scoped config the egress sibling
             # uses, bind-mounted from the host's egress-config dir. macOS
