@@ -586,21 +586,37 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
                    "limitation of the single-microVM architecture.")
 @click.option("--time", "show_timing", is_flag=True,
               help="Echo per-phase wall times and print a summary on completion.")
+@click.option("--no-cache", is_flag=True,
+              help="Force a full image rebuild (ignore podman's layer cache).")
+@click.option("--pull", is_flag=True,
+              help="Force re-pull of the base image from the registry.")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 def run(scaffold: str, project_dir: str | None, name: str | None,
         secrets: tuple[str, ...], verbose: bool, isolation: str | None,
         as_root: bool,
         show_timing: bool,
+        no_cache: bool, pull: bool,
         extra_args: tuple[str, ...]):
     """Run a coding agent in a sandboxed cage.
 
     \b
     Examples:
-      agentcage run claude-code
-      agentcage run codex --project /path/to/repo
-      agentcage run codex -s OPENAI_API_KEY=sk-...
-      agentcage run claude-code --isolation vm
-      agentcage run codex --name my-session -- codex --help
+      agentcage run claude-code -s ANTHROPIC_API_KEY
+      agentcage run codex --project /path/to/repo -s OPENAI_API_KEY=sk-...
+      agentcage run claude-code --isolation vm -s ANTHROPIC_API_KEY
+      agentcage run claude-code --no-cache --pull -s ANTHROPIC_API_KEY
+      agentcage run codex --name my-session -s OPENAI_API_KEY -- codex --help
+
+    \b
+    Secrets: every secret a scaffold declares is required. `run` aborts
+    before starting the cage if one is missing — supply it with `-s KEY`
+    (prompts) / `-s KEY=VALUE`, or via a configured `source:`. There is no
+    "optional secret": an agent that would otherwise authenticate without a
+    key (e.g. claude-code's interactive OAuth `/login`) still needs one here,
+    or must be run from a persistent cage built with `agentcage init` whose
+    config you can edit. `--no-cache`/`--pull` force a clean rebuild (ignore
+    the layer cache / re-pull the base image) across every isolation backend
+    — container, vm, and apple-container alike.
     """
     from agentcage.run import execute
     if show_timing:
@@ -611,6 +627,8 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
         isolation=isolation,
         as_root=as_root,
         show_timing=show_timing,
+        no_cache=no_cache,
+        pull=pull,
     )
     sys.exit(exit_code)
 

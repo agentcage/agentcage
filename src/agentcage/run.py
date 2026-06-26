@@ -44,7 +44,12 @@ from agentcage.init import (
     scaffold_name_prefix,
 )
 from agentcage.podman import Podman
-from agentcage.services import build_and_deploy, check_port_availability, destroy_cage
+from agentcage.services import (
+    build_and_deploy,
+    check_port_availability,
+    check_secrets,
+    destroy_cage,
+)
 
 # Word lists for auto-generated cage names (Docker-style)
 _ADJECTIVES = [
@@ -297,6 +302,8 @@ def execute(
     isolation: str | None = None,
     as_root: bool = False,
     show_timing: bool = False,
+    no_cache: bool = False,
+    pull: bool = False,
 ) -> int:
     """Create a cage from a scaffold, run an interactive session, and clean up.
 
@@ -363,6 +370,42 @@ def execute(
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
 
+    # Fail fast on missing secrets — mirror `agentcage cage create` so a
+    # `run` cage never starts silently without the credentials its agent
+    # needs (its proxy would forward the unswapped placeholder and the
+    # agent would fail to authenticate, with no clear signal). Secrets
+    # passed via --set-secret, or resolvable from a configured source
+    # (env:/cmd:/systemd-creds:), are not "missing". On vm/apple-container
+    # without host podman there is no host secret store to check against,
+    # so skip — matching create.
+    #
+    # This runs FIRST (before the volume-dir and port checks) so a missing
+    # secret aborts before any host filesystem is touched, matching create's
+    # secrets-then-ports order. Every scaffold-declared secret_injection rule
+    # is mandatory — there is no "optional secret" concept — so an agent that
+    # authenticates without a key (e.g. claude-code via interactive OAuth
+    # /login) must still be given one here, or be launched from a persistent
+    # cage created with `agentcage init` + an edited config. See the run
+    # command help and docs/reference/secret-injection.md.
+    secret_keys_being_set = {s.split("=", 1)[0] for s in secrets}
+    if cfg.isolation == "container" or shutil.which("podman"):
+        missing = [
+            k for k in check_secrets(Podman(), cage_name, cfg)
+            if k not in secret_keys_being_set
+        ]
+        if missing:
+            output.step_fail(f"Missing secrets for cage '{cage_name}':")
+            for key in missing:
+                click.echo(f"  {key}", err=True)
+            click.echo("Provide them with --set-secret, e.g.:", err=True)
+            click.echo(
+                f"  agentcage run {scaffold}"
+                + "".join(f" -s {k}=VALUE" for k in missing),
+                err=True,
+            )
+            shutil.rmtree(str(config_dir), ignore_errors=True)
+            return 1
+
     # Create missing bind-mount directories so state persists for any
     # scaffold whose user has opted into host bind-mounts (e.g. a
     # commented-out ~/.<agent> mount the user has chosen to enable).
@@ -374,6 +417,7 @@ def execute(
     if unavailable:
         for spec, _bind, port in unavailable:
             output.step_fail(f"Port {port} is already in use ({spec})")
+        shutil.rmtree(str(config_dir), ignore_errors=True)
         return 1
 
     # Save deployment state
@@ -421,25 +465,18 @@ def execute(
 
         # Resolve secrets from configured backends (env:, cmd:, systemd-creds:).
         # Container mode only — matches `agentcage cage create`; on the VM
-        # backend the VM bridges its own secrets after it starts.
+        # backend the VM bridges its own secrets after it starts. The
+        # pre-flight check above already verified every expected secret is
+        # available, so no rules are stripped here (an injection rule whose
+        # secret is missing would have failed the run) — strict=True surfaces
+        # any resolve-time failure loudly, caught by this block's cleanup.
         if cfg.isolation == "container":
             from agentcage.secret_resolver import resolve_and_populate
-            provided_keys |= resolve_and_populate(
+            resolve_and_populate(
                 podman, cfg, cage_name,
                 state.deployment_dir(cage_name),
                 skip_keys=provided_keys,
-                strict=False,  # agentcage run has its own cleanup on failure
             )
-
-        # Strip secret injection rules for secrets not provided —
-        # keeps only rules whose secrets were passed via --set-secret
-        # or resolved from a configured source.
-        cfg.secret_injection = [
-            r for r in cfg.secret_injection if r.env in provided_keys
-        ]
-        cfg.container.podman_secrets = [
-            s for s in cfg.container.podman_secrets if s in provided_keys
-        ]
 
         from agentcage.quadlets import collect_used_octets
         used_octets = collect_used_octets(exclude=cage_name)
@@ -455,6 +492,7 @@ def execute(
             if cfg.isolation == "container":
                 run_scaffold_setup(
                     scaffold, cage_name, str(config_path),
+                    no_cache=no_cache, pull=pull,
                 )
             build_and_deploy(
                 cfg,
@@ -462,6 +500,8 @@ def execute(
                 deploy_name=cage_name,
                 podman=podman,
                 used_octets=used_octets,
+                no_cache=no_cache,
+                pull=pull,
             )
         else:
             with output.Spinner("Starting cage..."):
@@ -472,6 +512,7 @@ def execute(
                     run_scaffold_setup(
                         scaffold, cage_name, str(config_path),
                         quiet=True,
+                        no_cache=no_cache, pull=pull,
                     )
                 build_and_deploy(
                     cfg,
@@ -480,6 +521,8 @@ def execute(
                     podman=podman,
                     used_octets=used_octets,
                     quiet=True,
+                    no_cache=no_cache,
+                    pull=pull,
                 )
         output.step_done(output.dim(cage_name))
     except subprocess.CalledProcessError as e:

@@ -43,6 +43,12 @@ agentcage run SCAFFOLD [options] [-- EXTRA_ARGS...]
 | `-s, --set-secret` | repeatable | | Set a secret (`KEY=VALUE` or `KEY` to prompt) |
 | `-v, --verbose` | flag | | Enable verbose output |
 | `--isolation` | `container` \| `vm` | `container` | Isolation backend |
+| `--no-cache` | flag | | Force a full image rebuild, ignoring podman's layer cache (all backends) |
+| `--pull` | flag | | Force a re-pull of the base image from the registry (all backends) |
+
+Like `cage create`, `run` fails with an actionable error (before starting the cage) if a required secret is missing — provide it with `-s KEY=VALUE` or a configured `source:`. Every scaffold-declared secret is mandatory; there is no "optional secret". To run an agent that authenticates without an API key (e.g. claude-code via interactive OAuth login), create a persistent cage with `agentcage init` and edit its config instead.
+
+`--no-cache`/`--pull` behave consistently across the `container`, `vm`, and `apple-container` backends — they rebuild the scaffold/agent image, the shared egress image, and (on `vm`) the in-VM cage image.
 
 ## doctor
 

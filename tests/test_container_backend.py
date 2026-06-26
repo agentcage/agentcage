@@ -76,6 +76,24 @@ class TestBuildArtifacts:
                 f"unexpected legacy image build: {tags}"
             )
 
+    def test_no_cache_and_pull_forwarded_to_egress_build(self):
+        # The egress build used to drop these flags; a forced clean rebuild
+        # must now rebuild the egress image too, like the vm/apple backends.
+        backend = ContainerBackend()
+        with patch.object(backend._podman, "build_image") as mock_build:
+            backend.build_artifacts(
+                _make_config(), "testcage", no_cache=True, pull=True,
+            )
+        assert mock_build.call_args.kwargs["no_cache"] is True
+        assert mock_build.call_args.kwargs["pull"] is True
+
+    def test_egress_build_defaults_no_force(self):
+        backend = ContainerBackend()
+        with patch.object(backend._podman, "build_image") as mock_build:
+            backend.build_artifacts(_make_config(), "testcage")
+        assert mock_build.call_args.kwargs.get("no_cache") is False
+        assert mock_build.call_args.kwargs.get("pull") is False
+
 
 # ---------------------------------------------------------------------------
 # generate_units

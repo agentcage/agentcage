@@ -52,15 +52,20 @@ The installer detects your platform and installs the right backend (Podman on Li
 One command builds the image, creates a temporary cage, and drops you into an interactive session. The cage is torn down when you exit; audit logs are preserved.
 
 ```bash
-# Run Claude Code in a sandbox
-agentcage run claude-code
+# Run Claude Code in a sandbox (-s prompts for the value if no =VALUE given)
+agentcage run claude-code -s ANTHROPIC_API_KEY
 
 # Run OpenAI Codex in a sandbox
-agentcage run codex
+agentcage run codex -s OPENAI_API_KEY
 
 # Pass secrets and a project directory
 agentcage run claude-code -s ANTHROPIC_API_KEY --project ~/myrepo
+
+# Force a clean rebuild (re-pull the base image, ignore the layer cache)
+agentcage run claude-code -s ANTHROPIC_API_KEY --no-cache --pull
 ```
+
+Required secrets are enforced up front: `run` aborts before starting the cage if a scaffold's declared secret (e.g. `ANTHROPIC_API_KEY`) isn't supplied via `-s` or resolvable from a configured `source:`. Every declared secret is mandatory — to run an agent that authenticates without an API key (e.g. claude-code via interactive OAuth login), create a persistent cage with `agentcage init` and edit its config. `--no-cache`/`--pull` force a clean rebuild consistently across the `container`, `vm`, and `apple-container` backends.
 
 ### Persistent cage
 

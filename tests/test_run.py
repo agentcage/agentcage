@@ -11,6 +11,7 @@ from agentcage.run import (
     _resolve_exec_cmd,
     _stage_set_secrets,
     _vm_podman_prefix,
+    execute,
     generate_name,
 )
 
@@ -193,3 +194,107 @@ class TestGenerateName:
         # Should have adjective-noun after prefix
         parts = name.split("-")
         assert len(parts) >= 3
+
+
+class TestExecuteMissingSecrets:
+    """`agentcage run` must fail fast on a missing required secret, mirroring
+    `agentcage cage create`. The pre-fix behaviour silently stripped the
+    injection rule and started a cage whose proxy forwarded the unswapped
+    placeholder — the agent then failed to authenticate with no clear signal.
+    """
+
+    @patch("agentcage.run.build_and_deploy")
+    @patch("agentcage.run.run_scaffold_setup")
+    @patch("agentcage.run.check_port_availability", return_value=[])
+    @patch("agentcage.run.check_secrets", return_value=["ANTHROPIC_API_KEY"])
+    @patch("agentcage.run.Podman")
+    def test_aborts_before_build_when_secret_missing(
+        self, _podman, _check, _ports, mock_setup, mock_deploy,
+        patch_state_dirs, tmp_path, capsys,
+    ):
+        code = execute(
+            "claude-code",
+            project_dir=str(tmp_path),
+            name="claude-test-missing-secret",
+            isolation="container",
+        )
+        assert code == 1
+        # Aborted before building or deploying anything.
+        mock_setup.assert_not_called()
+        mock_deploy.assert_not_called()
+        err = capsys.readouterr().err
+        assert "ANTHROPIC_API_KEY" in err
+        assert "--set-secret" in err
+
+    @patch("agentcage.run.build_and_deploy")
+    @patch("agentcage.run.run_scaffold_setup")
+    @patch("agentcage.run.check_port_availability", return_value=[])
+    @patch("agentcage.run.check_secrets", return_value=["ANTHROPIC_API_KEY"])
+    @patch("agentcage.run.Podman")
+    def test_set_secret_satisfies_missing_requirement(
+        self, _podman, _check, _ports, mock_setup, mock_deploy,
+        patch_state_dirs, tmp_path,
+    ):
+        # check_secrets reports the key absent from the store, but it was
+        # supplied via --set-secret, so the run must get PAST the gate.
+        mock_deploy.side_effect = RuntimeError("stop after gate")
+        code = execute(
+            "claude-code",
+            project_dir=str(tmp_path),
+            name="claude-test-setsecret",
+            isolation="container",
+            secrets=("ANTHROPIC_API_KEY=sk-test",),
+        )
+        # RuntimeError aborts the build, but reaching build_and_deploy proves
+        # the secret gate let it through.
+        assert code == 1
+        mock_deploy.assert_called_once()
+
+
+class TestExecuteForwardsBuildFlags:
+    """--no-cache / --pull must reach both image-build paths (the scaffold
+    agent image via run_scaffold_setup and the helper images via
+    build_and_deploy), matching `agentcage cage create`."""
+
+    @patch("agentcage.run.build_and_deploy")
+    @patch("agentcage.run.run_scaffold_setup")
+    @patch("agentcage.run.check_port_availability", return_value=[])
+    @patch("agentcage.run.check_secrets", return_value=[])
+    @patch("agentcage.run.Podman")
+    def test_no_cache_and_pull_reach_build_paths(
+        self, _podman, _check, _ports, mock_setup, mock_deploy,
+        patch_state_dirs, tmp_path,
+    ):
+        mock_deploy.side_effect = RuntimeError("stop after build")
+        code = execute(
+            "claude-code",
+            project_dir=str(tmp_path),
+            name="claude-test-flags",
+            isolation="container",
+            no_cache=True,
+            pull=True,
+        )
+        assert code == 1
+        assert mock_setup.call_args.kwargs["no_cache"] is True
+        assert mock_setup.call_args.kwargs["pull"] is True
+        assert mock_deploy.call_args.kwargs["no_cache"] is True
+        assert mock_deploy.call_args.kwargs["pull"] is True
+
+    @patch("agentcage.run.build_and_deploy")
+    @patch("agentcage.run.run_scaffold_setup")
+    @patch("agentcage.run.check_port_availability", return_value=[])
+    @patch("agentcage.run.check_secrets", return_value=[])
+    @patch("agentcage.run.Podman")
+    def test_flags_default_false(
+        self, _podman, _check, _ports, mock_setup, mock_deploy,
+        patch_state_dirs, tmp_path,
+    ):
+        mock_deploy.side_effect = RuntimeError("stop after build")
+        execute(
+            "claude-code",
+            project_dir=str(tmp_path),
+            name="claude-test-noflags",
+            isolation="container",
+        )
+        assert mock_setup.call_args.kwargs["no_cache"] is False
+        assert mock_deploy.call_args.kwargs["pull"] is False

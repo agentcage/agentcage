@@ -197,13 +197,16 @@ class VmBackend:
 
     def build_artifacts(
         self, config: Config, deploy_name: str, *, quiet: bool = False,
-        no_cache: bool = False, pull: bool = False,  # noqa: ARG002
+        no_cache: bool = False, pull: bool = False,
     ) -> None:
-        """Build the egress image inside the VM.
+        """Build the egress and cage images inside the VM.
 
-        ``no_cache``/``pull`` are accepted for protocol parity; the VM
-        backend builds/pulls the user image inside the VM via the cli
-        path, so they are not used here.
+        ``no_cache``/``pull`` come from ``--no-cache``/``--pull`` and are
+        honored for every build/pull step inside the VM — the egress image,
+        the scaffold cage image, and a direct image pull — so a forced clean
+        rebuild actually rebuilds, matching the container and apple-container
+        backends. They map to ``podman build --no-cache`` / ``--pull=always``
+        (and ``podman pull`` always re-fetches from the registry).
 
         The build context (package data directory) is copied into the VM
         via ``limactl copy`` since the home directory is not mounted
@@ -233,11 +236,19 @@ class VmBackend:
                 check=True,
             )
 
+        # --no-cache / --pull map to the same podman build flags inside the
+        # VM as on the host (see Podman.build_image).
+        build_flags = []
+        if no_cache:
+            build_flags.append("--no-cache")
+        if pull:
+            build_flags.append("--pull=always")
+
         version = _pkg_version("agentcage")
         click.echo(f"Building egress image inside VM (agentcage-egress:{version})...")
         with Phase("build.egress", cage=deploy_name):
             inst.exec([
-                "podman", "build",
+                "podman", "build", *build_flags,
                 "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
                 "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
                 "--cap-add=CAP_DAC_OVERRIDE", "--cap-add=CAP_SETFCAP",
@@ -251,7 +262,10 @@ class VmBackend:
             if config.container.build.containerfile:
                 # Scaffold image — copy Containerfile and build inside the VM
                 with Phase("build.cage", cage=deploy_name):
-                    self._build_cage_image_in_vm(config, deploy_name, inst, vm_build_dir)
+                    self._build_cage_image_in_vm(
+                        config, deploy_name, inst, vm_build_dir,
+                        build_flags=build_flags,
+                    )
             else:
                 click.echo(f"Pulling {config.container.image} inside VM...")
                 with Phase("pull.cage", cage=deploy_name):
@@ -345,8 +359,14 @@ class VmBackend:
 
     def _build_cage_image_in_vm(
         self, config: Config, deploy_name: str, inst: LimaInstance, vm_build_dir: str,
+        *, build_flags: list[str] | None = None,
     ) -> None:
-        """Build a scaffold's cage image inside the VM."""
+        """Build a scaffold's cage image inside the VM.
+
+        ``build_flags`` carries the resolved ``--no-cache``/``--pull=always``
+        podman build flags from ``build_artifacts`` so a forced clean rebuild
+        rebuilds the cage image too.
+        """
         from agentcage import state as _state
 
         # Resolve the Containerfile from the state dir (copied there during run/create)
@@ -374,7 +394,7 @@ class VmBackend:
 
         click.echo(f"Building {config.container.image} inside VM...")
         build_cmd = [
-            "podman", "build",
+            "podman", "build", *(build_flags or []),
             "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
             "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
             "--cap-add=CAP_DAC_OVERRIDE", "--cap-add=CAP_SETFCAP",
