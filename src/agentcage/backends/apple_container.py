@@ -869,6 +869,10 @@ class AppleContainerBackend:
                 "inspected_tcp_ports": inspected_tcp,
                 "passthrough_tcp_ports": passthrough_tcp,
                 "allow_udp_ports": allow_udp,
+                # Outbound ICMP echo-request opt-in (ports.icmp.allow).
+                # start() emits it as ALLOW_ICMP=0/1; the supervisor
+                # installs the FORWARD accept rule only when "1".
+                "allow_icmp": bool(config.ports.icmp.allow),
             },
             indent=2,
             sort_keys=True,
@@ -1145,6 +1149,13 @@ class AppleContainerBackend:
             udp_with_dns.append(53)
         egress_argv += [
             "-e", f"ALLOW_UDP_PORTS={' '.join(str(p) for p in udp_with_dns)}",
+        ]
+        # Outbound ICMP echo-request: off unless ports.icmp.allow opted in.
+        # Legacy metadata (created before this knob) has no key → default 0,
+        # matching the supervisor's locked-down default.
+        allow_icmp = bool(meta.get("allow_icmp", False))
+        egress_argv += [
+            "-e", f"ALLOW_ICMP={1 if allow_icmp else 0}",
         ]
         # Egress is small — 512M is plenty. We don't normalize here
         # because the value is internal, not operator-supplied.

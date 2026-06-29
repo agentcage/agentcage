@@ -134,6 +134,25 @@ class TestEgressQuadlet:
         assert 'Environment="INSPECTED_TCP_PORTS=80 443"' in content
         assert 'Environment="PASSTHROUGH_TCP_PORTS="' in content
         assert 'Environment="ALLOW_UDP_PORTS="' in content
+        # ICMP is off by default — the supervisor installs no echo-request rule.
+        assert 'Environment="ALLOW_ICMP=0"' in content
+
+    def test_egress_icmp_allow_opt_in(self, tmp_path):
+        """ports.icmp.allow: true emits ALLOW_ICMP=1 so the supervisor
+        installs the FORWARD echo-request ACCEPT rule."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              icmp:
+                allow: true
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert 'Environment="ALLOW_ICMP=1"' in content
 
     def test_egress_port_policy_custom(self, tmp_path):
         """Operator-supplied ports.tcp.allow / passthrough / udp.allow

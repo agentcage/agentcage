@@ -73,6 +73,35 @@ class TestGenerateUnitsPortPolicy:
         assert meta["passthrough_tcp_ports"] == [22]
         assert meta["allow_udp_ports"] == [123, 5353]
 
+    def test_icmp_off_by_default_persisted(self, tmp_path):
+        """A cage with no ``ports.icmp`` override persists allow_icmp=False."""
+        cfg = _config(tmp_path, """\
+            name: demo
+            container:
+              image: test:latest
+        """)
+        units = AppleContainerBackend().generate_units(
+            cfg, "/c.yaml", "/patches", "demo",
+        )
+        meta = json.loads(units["demo.json"])
+        assert meta["allow_icmp"] is False
+
+    def test_icmp_allow_persisted(self, tmp_path):
+        """ports.icmp.allow: true persists allow_icmp=True into metadata."""
+        cfg = _config(tmp_path, """\
+            name: demo
+            container:
+              image: test:latest
+            ports:
+              icmp:
+                allow: true
+        """)
+        units = AppleContainerBackend().generate_units(
+            cfg, "/c.yaml", "/patches", "demo",
+        )
+        meta = json.loads(units["demo.json"])
+        assert meta["allow_icmp"] is True
+
 
 # ── start(): metadata → egress run argv env ─────────────────
 
@@ -211,3 +240,28 @@ class TestStartEgressArgvPortEnv:
         assert _env_value(argv, "INSPECTED_TCP_PORTS") == ""
         assert _env_value(argv, "PASSTHROUGH_TCP_PORTS") == ""
         assert _env_value(argv, "ALLOW_UDP_PORTS") == "53"
+
+    def test_icmp_off_by_default_env(self, tmp_path):
+        """No allow_icmp in metadata → ALLOW_ICMP=0 (locked-down default,
+        matching a cage created before the knob existed)."""
+        argv = _start_with_meta(tmp_path, {
+            "inspected_tcp_ports": [80, 443],
+            "passthrough_tcp_ports": [],
+            "allow_udp_ports": [],
+        })
+        assert _env_value(argv, "ALLOW_ICMP") == "0"
+
+    def test_icmp_legacy_metadata_defaults_off(self, tmp_path):
+        """A pre-knob cage (no allow_icmp key at all) emits ALLOW_ICMP=0."""
+        argv = _start_with_meta(tmp_path, {})
+        assert _env_value(argv, "ALLOW_ICMP") == "0"
+
+    def test_icmp_allow_env_honored(self, tmp_path):
+        """allow_icmp=True in metadata → ALLOW_ICMP=1 on the egress argv."""
+        argv = _start_with_meta(tmp_path, {
+            "inspected_tcp_ports": [80, 443],
+            "passthrough_tcp_ports": [],
+            "allow_udp_ports": [],
+            "allow_icmp": True,
+        })
+        assert _env_value(argv, "ALLOW_ICMP") == "1"

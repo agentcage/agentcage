@@ -80,11 +80,16 @@ fi
 INSPECTED_TCP_PORTS="${INSPECTED_TCP_PORTS-80 443}"
 PASSTHROUGH_TCP_PORTS="${PASSTHROUGH_TCP_PORTS-}"
 ALLOW_UDP_PORTS="${ALLOW_UDP_PORTS-}"
+# Outbound ICMP echo-request (`ping`) is OFF by default. Set ALLOW_ICMP=1
+# (from cage.yaml's ``ports.icmp.allow: true``) to install the FORWARD
+# accept rule. Unset → "0": a cage created before this knob, or the
+# smoke-test path with no env, gets the locked-down default.
+ALLOW_ICMP="${ALLOW_ICMP-0}"
 if [ -f /etc/agentcage/iptables.env ]; then
   # shellcheck disable=SC1091
   . /etc/agentcage/iptables.env
 fi
-log "step A: iptables setup (inspected=[$INSPECTED_TCP_PORTS] passthrough=[$PASSTHROUGH_TCP_PORTS] udp=[$ALLOW_UDP_PORTS])"
+log "step A: iptables setup (inspected=[$INSPECTED_TCP_PORTS] passthrough=[$PASSTHROUGH_TCP_PORTS] udp=[$ALLOW_UDP_PORTS] icmp=[$ALLOW_ICMP])"
 
 for port in $INSPECTED_TCP_PORTS; do
   # No ``-i <iface>`` selector: podman's CNI does NOT deterministically
@@ -108,8 +113,18 @@ iptables -P FORWARD DROP \
   || die "iptables FORWARD DROP policy failed" 11
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT \
   || die "iptables FORWARD established/related accept failed" 12
-iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT \
-  || die "iptables FORWARD icmp echo-request accept failed" 13
+# Outbound ICMP echo-request is opt-in (ports.icmp.allow). When disabled
+# the default-DROP FORWARD policy blocks it for every in-cage uid,
+# including --as-root (which has CAP_NET_RAW but no route to alter this
+# chain). PMTUD is unaffected either way — frag-needed errors are RELATED
+# to an existing flow and ride the ESTABLISHED,RELATED rule above.
+if [ "$ALLOW_ICMP" = "1" ]; then
+  iptables -A FORWARD -p icmp --icmp-type echo-request -j ACCEPT \
+    || die "iptables FORWARD icmp echo-request accept failed" 13
+  log "step A: ICMP echo-request egress ALLOWED (ports.icmp.allow)"
+else
+  log "step A: ICMP echo-request egress blocked by default-deny policy"
+fi
 
 for port in $PASSTHROUGH_TCP_PORTS; do
   iptables -A FORWARD -p tcp --dport "$port" -j ACCEPT \

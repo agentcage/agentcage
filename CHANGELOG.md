@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ports.icmp.allow` knob gates outbound ICMP echo-request (`ping`).** A new boolean under `ports:` controls whether the egress installs the `filter:FORWARD -p icmp --icmp-type echo-request ACCEPT` rule. It is plumbed through both backends identically to the existing TCP/UDP port policy (`config.py` → `quadlets._effective_port_policy` siblings → `egress.container.j2` / apple-container metadata → `ALLOW_ICMP` env → `supervisor-egress.sh`).
+
+### Changed
+
+- **Outbound ICMP echo-request is now off by default (was unconditionally allowed).** `ping` from inside a cage previously worked unconditionally — the egress always installed an echo-request ACCEPT rule with no config knob. ICMP egress is now opt-in via `ports.icmp.allow: true`, matching the default-deny posture of every other protocol. When disabled, the default-deny `filter:FORWARD` policy drops outbound echo-request for **every** in-cage privilege level, including `agentcage cage exec --as-root` (which holds `CAP_NET_RAW` but routes through the egress sibling and cannot alter its FORWARD chain). Path-MTU discovery is unaffected — `fragmentation-needed` errors are `RELATED` to an existing flow and ride the `ESTABLISHED,RELATED` rule regardless. **Migration:** existing cages that rely on outbound `ping` must add `ports.icmp.allow: true` and re-run `agentcage cage update`.
+
 ## [0.27.1] - 2026-06-29
 
 ### Fixed

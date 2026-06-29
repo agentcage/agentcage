@@ -89,6 +89,11 @@ Sysctl=net.ipv4.ip_forward=1
 Environment="INSPECTED_TCP_PORTS={{ inspected_tcp_ports|join(' ') }}"
 Environment="PASSTHROUGH_TCP_PORTS={{ passthrough_tcp_ports|join(' ') }}"
 Environment="ALLOW_UDP_PORTS={{ allow_udp_ports|join(' ') }}"
+# Outbound ICMP echo-request (`ping`) is opt-in via cage.yaml's
+# ``ports.icmp.allow`` (default false → "0"). The supervisor installs the
+# FORWARD accept rule only when this is "1"; otherwise the default-deny
+# policy drops echo-request for every in-cage uid.
+Environment="ALLOW_ICMP={{ 1 if allow_icmp else 0 }}"
 # Bind mitmproxy's regular (forward) proxy to the egress's cage-net IP
 # only. The egress sits on TWO networks — its own ``{{ name }}-net``
 # (cage-facing) AND the default ``podman`` network (host-facing, used
