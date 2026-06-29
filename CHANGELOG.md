@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Corrected the `--as-root` docs/help — root cannot bypass the egress filter on apple-container.** The `agentcage run` / `cage exec` / `cage shell` `--as-root` help text, the `apple_container.py` module docstring, and `docs/explain/isolation-modes.md` all claimed that an `--as-root` (`container exec --user 0`) session "re-acquires `CAP_NET_ADMIN`" and could "rewrite its default route to skip the egress sibling" / "disable iptables and read injected secrets" — described as a known limitation of a "single-microVM architecture." None of this is true on the current 2-microVM backend with Apple `container` 1.0.0. An exec session is granted only the **default OCI capability set** (`CapEff` `a80425fb`, no `CAP_NET_ADMIN`), so as uid 0 `iptables -F` returns EPERM, `ip route replace/del default` returns "Operation not permitted," and non-allowlisted egress (arbitrary ports, direct `:53`, and HTTP to non-allowlisted hosts → 403) stays blocked while allowlisted traffic works. Verified end-to-end on a ubuntu cage. Docs now state that even root remains confined behind the egress sibling; no behavior changed.
+
 ## [0.26.0] - 2026-06-26
 
 ### Added

@@ -45,8 +45,6 @@ For the threat-by-threat matrix, see [Security model](security-model.md).
 
 **vm — host bind mounts are restricted.** Paths under blocked directories like `~/.ssh` or `~/.aws` are rejected, and the path must exist on the host before `cage create`. Mounts are read-only by default.
 
-**apple-container — `--as-root` can bypass egress.** A `cage exec --user 0` session inside the cage microVM can re-acquire `CAP_NET_ADMIN` and rewrite its default route to skip the egress sibling. It still cannot read cleartext secrets (those live in the separate egress microVM). For hardened `--as-root` sessions, use `vm`.
-
 **apple-container — most edits need `cage update`.** Allowlist, command, env, secret-injection rules, capture, and autostart are baked into the wrapper image at build time. `domain add / rm` auto-rebuilds; other edits need an explicit `cage update`.
 
 **apple-container — `cage backup --include-secrets` is unsupported.** Secrets are provided once at `cage create` and never reconciled into a portable backup. The backup manifest records the env-var names; re-set them on the restore host with `--set-secret`.

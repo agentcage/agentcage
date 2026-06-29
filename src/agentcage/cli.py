@@ -577,13 +577,8 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
               default=None,
               help="Isolation backend (default: auto-detect from platform).")
 @click.option("--as-root", is_flag=True,
-              help="Run the session as root inside the cage (debug only — "
-                   "bypasses the cage's egress filter via CAP_NET_ADMIN). "
-                   "Default is the cage workload's uid 1000 user. "
-                   "NOTE: on apple-container the egress filter and secret "
-                   "store share the cage's microVM, so --as-root can "
-                   "disable iptables and read injected secrets — a known "
-                   "limitation of the single-microVM architecture.")
+              help="Run the session as root (uid 0) instead of the "
+                   "workload's uid 1000 user (debug only).")
 @click.option("--time", "show_timing", is_flag=True,
               help="Echo per-phase wall times and print a summary on completion.")
 @click.option("--no-cache", is_flag=True,
@@ -2216,13 +2211,8 @@ def _logs_apple_container(name, services, lines, no_follow, min_level=None, cfg=
               type=click.Choice(["cage", "egress"]),
               help="Container service to exec into.", show_default=True)
 @click.option("--as-root", is_flag=True,
-              help="Run the command as root inside the cage (debug only — "
-                   "bypasses the cage's egress filter via CAP_NET_ADMIN). "
-                   "Default is the cage workload's uid 1000 user. "
-                   "NOTE: on apple-container the egress filter and secret "
-                   "store share the cage's microVM, so --as-root can "
-                   "disable iptables and read injected secrets — a known "
-                   "limitation of the single-microVM architecture.")
+              help="Run the command as root (uid 0) instead of the "
+                   "workload's uid 1000 user (debug only).")
 @click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
 def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
     """Run a command inside a cage container.
@@ -2306,13 +2296,8 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
               type=click.Choice(["cage", "egress"]),
               help="Container service to shell into.", show_default=True)
 @click.option("--as-root", is_flag=True,
-              help="Open the shell as root (debug only — bypasses the "
-                   "cage's egress filter via CAP_NET_ADMIN). Default is "
-                   "the cage workload's uid 1000 user. "
-                   "NOTE: on apple-container the egress filter and secret "
-                   "store share the cage's microVM, so --as-root can "
-                   "disable iptables and read injected secrets — a known "
-                   "limitation of the single-microVM architecture.")
+              help="Open the shell as root (uid 0) instead of the "
+                   "workload's uid 1000 user (debug only).")
 def cage_shell(name: str, service: str, as_root: bool):
     """Open an interactive shell in a cage container."""
     if not state.deployment_exists(name):
