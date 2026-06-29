@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-06-29
+
 ### Added
 
 - **`agentcage cage run` is now the canonical command; `agentcage run` is a top-level alias of it.** `run` was the only cage lifecycle verb that lived outside the `cage` group, while its siblings (`create`, `exec`, `shell`, `logs`, `status`, …) all sit under `cage` with short top-level aliases. `run` now follows the same shape: the command is registered under `cage`, and `agentcage run` resolves to it via the existing `_BannerGroup` alias mechanism (shown as `run → cage run` in `agentcage --help`). No flags or behavior changed — `agentcage run <scaffold>` works exactly as before.
