@@ -125,11 +125,18 @@ class TestEnsureVolumeDirs:
 
 
 class TestStageSetSecrets:
-    """--set-secret values: host Podman in container mode, staged file in VM mode."""
+    """--set-secret values: host Podman (container), staged file (VM),
+    or the configured at-rest store (apple-container → keychain)."""
+
+    @staticmethod
+    def _cfg(isolation):
+        from types import SimpleNamespace
+        return SimpleNamespace(isolation=isolation)
 
     def test_vm_mode_writes_pending_file(self, tmp_path):
         with patch("agentcage.run.state.deployment_dir", return_value=tmp_path):
-            keys = _stage_set_secrets("my-cage", ("API_KEY=secret123",), "vm", None)
+            keys = _stage_set_secrets(
+                "my-cage", ("API_KEY=secret123",), self._cfg("vm"), None)
         assert keys == {"API_KEY"}
         pending = tmp_path / "pending_secrets.json"
         assert json.loads(pending.read_text()) == [["API_KEY", "secret123"]]
@@ -138,14 +145,15 @@ class TestStageSetSecrets:
 
     def test_vm_mode_no_secrets_writes_nothing(self, tmp_path):
         with patch("agentcage.run.state.deployment_dir", return_value=tmp_path):
-            keys = _stage_set_secrets("my-cage", (), "vm", None)
+            keys = _stage_set_secrets("my-cage", (), self._cfg("vm"), None)
         assert keys == set()
         assert not (tmp_path / "pending_secrets.json").exists()
 
     def test_container_mode_uses_host_podman(self):
         podman = MagicMock()
         podman.secret_exists.return_value = False
-        keys = _stage_set_secrets("my-cage", ("API_KEY=v",), "container", podman)
+        keys = _stage_set_secrets(
+            "my-cage", ("API_KEY=v",), self._cfg("container"), podman)
         assert keys == {"API_KEY"}
         podman.secret_create.assert_called_once_with("my-cage.API_KEY", "v")
 
@@ -155,8 +163,24 @@ class TestStageSetSecrets:
         with patch("agentcage.run.state.deployment_dir") as dd:
             import tempfile
             dd.return_value = __import__("pathlib").Path(tempfile.mkdtemp())
-            _stage_set_secrets("c", ("K=V",), "vm", podman)
+            _stage_set_secrets("c", ("K=V",), self._cfg("vm"), podman)
         podman.secret_create.assert_not_called()
+
+    def test_apple_container_persists_via_store_not_pending_file(self, tmp_path):
+        # Regression: apple-container's backend re-stages secrets from the
+        # configured at-rest store (keychain) at start(), so `run` must
+        # persist there — NOT pending_secrets.json, which the keychain-backed
+        # backend never reads (the secret would be silently orphaned).
+        cfg = self._cfg("apple-container")
+        with patch("agentcage.cli._store_secret") as store, \
+             patch("agentcage.run.state.deployment_dir", return_value=tmp_path):
+            keys = _stage_set_secrets(
+                "my-cage", ("ANTHROPIC_API_KEY=sk-abc",), cfg, None)
+        assert keys == {"ANTHROPIC_API_KEY"}
+        store.assert_called_once_with(
+            None, cfg, "my-cage", "ANTHROPIC_API_KEY", "sk-abc")
+        # The legacy plaintext file must NOT be written for apple-container.
+        assert not (tmp_path / "pending_secrets.json").exists()
 
 
 class TestGenerateName:

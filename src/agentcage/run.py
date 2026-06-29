@@ -206,16 +206,21 @@ def _ensure_volume_dirs(volumes: list[str]) -> None:
 
 
 def _stage_set_secrets(
-    cage_name: str, secrets: tuple[str, ...], isolation: str, podman,
+    cage_name: str, secrets: tuple[str, ...], cfg, podman,
 ) -> set[str]:
     """Stage ``--set-secret`` values and return the set of provided keys.
 
     Container mode writes them straight to the host Podman store. The VM
     backend has no host Podman, so values are staged to
     ``pending_secrets.json`` in the deployment dir (mode 0600) — the VM
-    backend reads it and creates the secrets inside the VM. This mirrors
-    what ``agentcage cage create`` already does for VM cages.
+    backend reads it and creates the secrets inside the VM. The
+    apple-container backend re-stages secrets at every start() from the
+    cage's configured at-rest store (macOS keychain by default), so its
+    values must be persisted via that store — NOT the legacy
+    ``pending_secrets.json``, which the keychain-backed backend never
+    reads. All three paths mirror ``agentcage cage create``.
     """
+    isolation = cfg.isolation
     parsed: list[tuple[str, str]] = []
     for spec in secrets:
         if "=" in spec:
@@ -225,16 +230,19 @@ def _stage_set_secrets(
             val = click.prompt(f"Value for {key}", hide_input=True)
         parsed.append((key, val))
 
-    if isolation in ("vm", "apple-container"):
-        # Neither backend has access to host podman on macOS. Stage to a
-        # per-cage pending_secrets.json (0600) and let the backend pick
-        # it up at start time. VM backend reads the file and creates
-        # podman secrets INSIDE the VM (then unlinks the file).
-        # apple-container backend reads the file at every start() to
-        # resolve `secret_injection` rules — the 0600 plaintext file IS
-        # the persistence mechanism (no host podman; Keychain is a
-        # follow-up, see #120). Values are NEVER read from the host
-        # shell's environment for the apple-container backend.
+    if isolation == "apple-container":
+        # Persist via the configured backend (keychain by default; encrypted
+        # at rest). The apple-container backend reads these back through
+        # `resolve_store` at start() — writing pending_secrets.json here
+        # would be silently ignored unless the cage opted into the plaintext
+        # backend. Matches `agentcage cage create` exactly.
+        from agentcage.cli import _store_secret
+        for key, val in parsed:
+            _store_secret(None, cfg, cage_name, key, val)
+    elif isolation == "vm":
+        # VM backend has no host podman. Stage to a per-cage
+        # pending_secrets.json (0600); the VM backend reads the file and
+        # creates podman secrets INSIDE the VM (then unlinks the file).
         if parsed:
             secrets_file = state.deployment_dir(cage_name) / "pending_secrets.json"
             # 0o600 — staged secret values must not be world-readable.
@@ -461,7 +469,7 @@ def execute(
         # Set secrets passed via --set-secret. Container mode writes the
         # host Podman store; VM mode stages them for the VM backend (there
         # is no host Podman on macOS).
-        provided_keys = _stage_set_secrets(cage_name, secrets, cfg.isolation, podman)
+        provided_keys = _stage_set_secrets(cage_name, secrets, cfg, podman)
 
         # Resolve secrets from configured backends (env:, cmd:, systemd-creds:).
         # Container mode only — matches `agentcage cage create`; on the VM
