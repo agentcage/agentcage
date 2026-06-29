@@ -2066,7 +2066,11 @@ class TestAppleContainerSilentDrops:
             "container.userns" in w for w in warnings
         ), warnings
 
-    def test_add_capabilities_warns(self, tmp_path):
+    def test_add_capabilities_does_not_warn(self, tmp_path):
+        """add_capabilities is inert on apple-container (the workload runs
+        as uid 1000 with an empty cap set regardless), and every stock
+        package-manager scaffold sets it unconditionally — so warning here
+        fired on every default cage. No warning should be emitted."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
@@ -2077,7 +2081,9 @@ class TestAppleContainerSilentDrops:
                 - NET_ADMIN
         """))
         _, warnings = self._validate_under_apple(str(p))
-        assert any("container.add_capabilities" in w for w in warnings), warnings
+        assert not any(
+            "container.add_capabilities" in w for w in warnings
+        ), warnings
 
     def test_drop_capabilities_custom_warns(self, tmp_path):
         p = tmp_path / "config.yaml"

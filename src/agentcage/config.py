@@ -1174,10 +1174,15 @@ def validate_config(config: Config) -> list[str]:
              bool(config.container.userns) and config.container.userns != "keep-id",
              "user namespace remap (the supervisor drops to a fixed uid 1000 — "
              "no remap layer)"),
-            ("container.add_capabilities", bool(config.container.add_capabilities),
-             "extra capabilities — the supervisor hard-drops ALL capabilities "
-             "before exec'ing the cage workload at stage 90, so requested caps "
-             "are dropped too"),
+            # container.add_capabilities is intentionally NOT warned about.
+            # The cage workload always runs as uid 1000 with an empty cap
+            # set (cage-init.sh Stage D capsh-drops ALL caps before exec),
+            # so added caps are inert on this backend regardless. But every
+            # stock package-manager scaffold (ubuntu/debian/arch/openclaw)
+            # sets add_capabilities unconditionally for the container
+            # backend's build/install path, so warning here fired on every
+            # default apple-container cage — pure noise on the common path,
+            # like the read_only / tmpfs warnings tuned down below.
             ("container.drop_capabilities",
              list(config.container.drop_capabilities) != ["ALL"],
              "custom drop list — the supervisor unconditionally drops ALL caps; "
