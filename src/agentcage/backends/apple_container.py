@@ -18,17 +18,24 @@ capsh-drops to uid 1000 and exec's the user's CMD.
 
 Threat model — workload (uid 1000) cannot:
   * read /home/acproxy/secrets/* (not in cage VM's namespace at all)
-  * modify iptables (no binary in cage wrapper)
+  * modify iptables (no NET_ADMIN in CapEff/CapPrm at uid 1000 — the
+    nft/iptables netlink ops require it)
   * change routes (no NET_ADMIN in CapEff/CapPrm at uid 1000)
   * see other UIDs' processes (kernel namespace gives this for free —
     no need for the legacy supervisor.sh's hidepid=2 remount)
 
-Known residual: cage VM is started with --cap-add CAP_NET_ADMIN (needed
-for cage-init's `ip route replace`). `container exec --user 0 <cage>`
-re-acquires NET_ADMIN per the spike on Apple's runtime; an operator with
---as-root can `ip route replace default via <host-bridge-ip>` to bypass
-the egress sibling. Workload threat is unaffected. Tracked for v0.23 via
-macOS pf rules.
+--as-root is also confined: the cage VM is started with --cap-add
+CAP_NET_ADMIN (needed for cage-init's stage-B `ip route replace`), but
+capsh drops it before the workload runs, and a later operator
+`container exec --user 0 <cage>` does NOT inherit it — Apple's
+`container` 1.0.0 grants an exec session only the DEFAULT OCI capability
+set (CapEff a80425fb: chown, setuid, net_bind_service, net_raw, …; no
+NET_ADMIN). Verified end-to-end on a ubuntu cage (container 1.0.0): as
+uid 0, `iptables -F` returns EPERM, `ip route replace/del default`
+returns "Operation not permitted", and non-allowlisted egress (arbitrary
+ports, direct :53, 403'd HTTP) stays blocked — even root cannot bypass
+the egress sibling. The exec path's `setpriv --bounding-set=-net_admin`
+wrap is defense-in-depth on top of that.
 """
 
 from __future__ import annotations
@@ -1182,10 +1189,11 @@ class AppleContainerBackend:
 
         # 5. Cage VM. CAP_NET_ADMIN is needed for cage-init's `ip route
         # replace default via <egress_ip>`. capsh drops it before the
-        # workload runs, so uid 1000 has no caps — but `cage exec --user 0`
-        # re-acquires NET_ADMIN per the spike (known residual; see module
-        # docstring). The cage VM has NO secrets bind, NO config bind,
-        # NO mitmproxy/dnsmasq/iptables.
+        # workload runs, so uid 1000 has no caps. `cage exec --user 0`
+        # does NOT re-acquire it either: container 1.0.0 hands exec
+        # sessions only the default OCI cap set (no NET_ADMIN), so even
+        # --as-root can't change routes/iptables (see module docstring).
+        # The cage VM has NO secrets bind, NO config bind.
         cage_argv = [
             "run", "-d", "--name", name,
             "--cap-add", "CAP_NET_ADMIN",
@@ -1602,10 +1610,12 @@ class AppleContainerBackend:
             it's stripped from uid 1000's CapEff by the uid 0→1000
             transition that `container exec -u` performs.
           * ``as_root=True``           → ``-u 0:0``. Operator debug
-            path. Image USER (root on the slim wrapper) applies. Per
-            the spike on Apple's runtime, --user 0 RE-acquires
-            NET_ADMIN — operator with --as-root can change the cage's
-            default route. Workload-uid-1000 is unaffected.
+            path. Image USER (root on the slim wrapper) applies, but
+            `container exec -u 0` on Apple `container` 1.0.0 grants only
+            the DEFAULT OCI cap set (no CAP_NET_ADMIN), so even this
+            session cannot change the cage's default route or touch
+            iptables — `ip route replace` / `iptables -F` return EPERM.
+            Verified on a ubuntu cage; see the module docstring.
 
         The legacy capsh wrap is gone: with no iptables/dnsmasq inside
         the cage VM and no secrets bind-mount, there's no
