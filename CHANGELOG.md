@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-06-29
+
 ### Added
 
 - **`ports.icmp.allow` knob gates outbound ICMP echo-request (`ping`).** A new boolean under `ports:` controls whether the egress installs the `filter:FORWARD -p icmp --icmp-type echo-request ACCEPT` rule. It is plumbed through both backends identically to the existing TCP/UDP port policy (`config.py` → `quadlets._effective_port_policy` siblings → `egress.container.j2` / apple-container metadata → `ALLOW_ICMP` env → `supervisor-egress.sh`).
