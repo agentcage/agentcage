@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-06-29
+
 ### Changed
 
 - **`container.add_capabilities` no longer emits a "silently has no effect on apple-container" warning.** The warning fired on every default apple-container cage: every stock package-manager scaffold (ubuntu/debian/arch/openclaw) sets `add_capabilities` unconditionally for the *container* backend's package-install path, so an operator running `agentcage run ubuntu` saw the noise without having opted into anything. The field is genuinely inert on apple-container — the cage workload always runs as uid 1000 with an empty capability set (`cage-init.sh` Stage D capsh-`--drop=all`s before exec, and the backend never threads `add_capabilities` into `container run`) — but that inertness is harmless rather than a misconfiguration, so it doesn't warrant a warning on the common path. This mirrors the earlier tuning of the `read_only` / `tmpfs` warnings, which were narrowed for the same reason. (The warning's old text also referenced a non-existent "stage 90" from the retired single-VM supervisor.)
