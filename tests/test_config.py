@@ -1174,6 +1174,55 @@ class TestPortsConfig:
         cfg = load_config(minimal_yaml)
         assert cfg.ports.udp.allow == []
 
+    def test_default_icmp_allow_is_false(self, minimal_yaml):
+        """ICMP echo-request (ping) is off by default — opt-in only."""
+        cfg = load_config(minimal_yaml)
+        assert cfg.ports.icmp.allow is False
+
+    def test_custom_icmp_allow_true(self, tmp_path):
+        """ports.icmp.allow: true opts the cage into outbound ping."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              icmp:
+                allow: true
+        """))
+        cfg = load_config(str(p))
+        assert cfg.ports.icmp.allow is True
+        validate_config(cfg)
+
+    def test_icmp_allow_non_bool_rejected(self, tmp_path):
+        """ports.icmp.allow must be a boolean, not a string/int (YAML
+        ``yes`` parses to bool; ``"yes"`` / 1 do not)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              icmp:
+                allow: 1
+        """))
+        with pytest.raises(ValueError, match="ports.icmp.allow must be a boolean"):
+            load_config(str(p))
+
+    def test_icmp_not_a_mapping_rejected(self, tmp_path):
+        """ports.icmp must be a mapping with an 'allow' key, not a bare
+        boolean (a common mistake: ``ports.icmp: true``)."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            ports:
+              icmp: true
+        """))
+        with pytest.raises(ValueError, match="ports.icmp must be a mapping"):
+            load_config(str(p))
+
     def test_custom_tcp_allow(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\

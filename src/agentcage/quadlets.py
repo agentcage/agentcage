@@ -559,6 +559,7 @@ def generate_quadlets(
         inspected_tcp_ports=_inspected_tcp,
         passthrough_tcp_ports=_passthrough_tcp,
         allow_udp_ports=_allow_udp,
+        allow_icmp=config.ports.icmp.allow,
     )
 
     # Nested containers support

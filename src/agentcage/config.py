@@ -265,16 +265,38 @@ class UdpPortsConfig:
 
 
 @dataclass
+class IcmpPortsConfig:
+    """Outbound ICMP (echo-request / ``ping``) egress policy.
+
+    - ``allow`` — when true, the egress installs a ``filter:FORWARD
+      -p icmp --icmp-type echo-request ACCEPT`` rule so the cage can
+      ``ping`` out for diagnostics; replies ride the ``ESTABLISHED,RELATED``
+      rule. When false (the default) no such rule is installed and the
+      default-deny FORWARD policy drops outbound echo-request — for every
+      in-cage privilege level, including ``--as-root`` (which holds
+      ``CAP_NET_RAW`` but cannot reach the egress's FORWARD chain).
+
+    Defaults to false: ICMP is OFF unless explicitly opted in. This does
+    NOT affect path-MTU discovery — the ICMP ``fragmentation-needed``
+    errors arrive as ``RELATED`` to an existing TCP flow and ride the
+    ``ESTABLISHED,RELATED`` rule regardless of this knob.
+    """
+    allow: bool = False
+
+
+@dataclass
 class PortsConfig:
     """Cage egress port policy, split by protocol.
 
     Layered on a default-deny filter:FORWARD policy (always installed,
     no opt-out flag): every cage drops L4 traffic not explicitly allowed
-    here. Outbound ICMP echo-request is always permitted for diagnostics.
-    A separate ip6tables -P FORWARD DROP failsafe blocks all IPv6 forwarding.
+    here. Outbound ICMP echo-request is opt-in via ``ports.icmp.allow``
+    (default false). A separate ip6tables -P FORWARD DROP failsafe blocks
+    all IPv6 forwarding.
     """
     tcp: TcpPortsConfig = field(default_factory=TcpPortsConfig)
     udp: UdpPortsConfig = field(default_factory=UdpPortsConfig)
+    icmp: IcmpPortsConfig = field(default_factory=IcmpPortsConfig)
 
 
 @dataclass
@@ -826,7 +848,7 @@ def load_config(path: str) -> Config:
     pt_raw = raw.get("ports") or {}
     if not isinstance(pt_raw, dict):
         raise ValueError(
-            f"ports must be a mapping with 'tcp' and/or 'udp' keys "
+            f"ports must be a mapping with 'tcp', 'udp', and/or 'icmp' keys "
             f"(got: {pt_raw!r})"
         )
     pt = PortsConfig()
@@ -870,6 +892,21 @@ def load_config(path: str) -> Config:
                 f"(got: {raw_udp_allow!r})"
             )
         pt.udp.allow = list(raw_udp_allow)
+
+    icmp_raw = pt_raw.get("icmp") or {}
+    if not isinstance(icmp_raw, dict):
+        raise ValueError(
+            f"ports.icmp must be a mapping with an 'allow' boolean "
+            f"(got: {icmp_raw!r}). To allow outbound ping, use "
+            f"'ports.icmp.allow: true'"
+        )
+    if "allow" in icmp_raw:
+        raw_icmp_allow = icmp_raw["allow"]
+        if not isinstance(raw_icmp_allow, bool):
+            raise ValueError(
+                f"ports.icmp.allow must be a boolean (got: {raw_icmp_allow!r})"
+            )
+        pt.icmp.allow = raw_icmp_allow
 
     cfg.ports = pt
 

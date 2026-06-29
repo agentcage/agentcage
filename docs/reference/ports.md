@@ -5,7 +5,7 @@ The proxy container's default-deny `filter:FORWARD` policy and the `ports.tcp` /
 
 `ports.tcp.allow` lists TCP destination ports the cage may reach (audited via mitmdump unless also in `passthrough`). `ports.tcp.passthrough` is the subset that bypasses mitmdump — auto-merged into the effective TCP allow set if not listed in `tcp.allow`. `ports.udp.allow` lists UDP destination ports; UDP is never inspected (mitmdump is HTTP-only).
 
-Inspected TCP ports = `tcp.allow - tcp.passthrough`. Outbound ICMP echo-request is always permitted for diagnostics. IPv6 forwarding is dropped by an `ip6tables -P FORWARD DROP` failsafe. There is no opt-out flag for the default-deny posture; every cage gets it on next `agentcage cage update`.
+Inspected TCP ports = `tcp.allow - tcp.passthrough`. Outbound ICMP echo-request (`ping`) is **off by default** and opt-in via `ports.icmp.allow: true`. IPv6 forwarding is dropped by an `ip6tables -P FORWARD DROP` failsafe. There is no opt-out flag for the default-deny posture; every cage gets it on next `agentcage cage update`.
 
 *Since 0.15.0* — pre-0.15 anything not in the audit list was silently L3-forwarded uninspected, so an agent that resolved an allowed hostname could exfiltrate over any port (NTP, custom binary protocols, QUIC) with the audit pipeline blind. Cages that talk *only* on the default `tcp.allow` (`[80, 443]`) keep working unchanged. Cages that depend on outbound on any other port — NTP (`123/udp`), Postgres (`5432/tcp`), IMAP (`993/tcp`), QUIC/HTTP3 (`443/udp`) — must add those ports or lose connectivity. DNS is unaffected: cages talk to the sidecar dns container directly on the same subnet and never traverse the proxy's FORWARD chain.
 
@@ -25,7 +25,7 @@ Each cage netns has a default route via the proxy container's IP. Inside the pro
 │         (inspected_tcp = tcp.allow - tcp.passthrough)         │
 │   filter:FORWARD                                              │
 │     -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT      │
-│     -p icmp --icmp-type echo-request -j ACCEPT                │
+│     -p icmp --icmp-type echo-request -j ACCEPT  (icmp.allow)  │
 │     -p tcp --dport <tcp.passthrough> -j ACCEPT                │
 │     -p udp --dport <udp.allow>       -j ACCEPT                │
 │   policy: DROP                                                │
@@ -121,13 +121,25 @@ Per-entry rules apply to all three lists: integers only (YAML strings, booleans,
 
 ## ICMP and IPv6
 
-ICMP echo-request is always allowed outbound — `ping` from inside the cage works for diagnostics, and replies ride the `ESTABLISHED,RELATED` rule. There's no config knob; the rule is unconditional. Any other ICMP type (unsolicited echo-reply, unreachables, redirects) is dropped by the default policy.
+Outbound ICMP echo-request (`ping`) is **off by default** and gated by a config knob:
+
+```yaml
+ports:
+  icmp:
+    allow: true   # default false — install the FORWARD echo-request ACCEPT rule
+```
+
+When `allow` is false (the default) the egress installs no echo-request rule, so the default-deny `filter:FORWARD` policy drops outbound `ping` for **every** in-cage privilege level — including `agentcage cage exec --as-root`, which holds `CAP_NET_RAW` but routes through the egress sibling and cannot alter its FORWARD chain (no `CAP_NET_ADMIN`, separate microVM). When `allow` is true the rule is installed and replies ride the `ESTABLISHED,RELATED` rule. Any other ICMP type (unsolicited echo-reply, unreachables, redirects) is always dropped by the default policy.
+
+This knob does **not** affect path-MTU discovery: ICMP `fragmentation-needed` errors arrive as `RELATED` to an existing TCP flow and ride the `ESTABLISHED,RELATED` rule regardless of `icmp.allow`.
+
+> **Behavior change (since 0.28.0).** ICMP echo-request was unconditionally allowed before this release. Existing cages lose outbound `ping` on their next `agentcage cage update` unless they add `ports.icmp.allow: true`. The change is intentional: ICMP egress is now opt-in, matching the default-deny posture of every other protocol.
 
 IPv6 is uncovered. The proxy installs an `ip6tables -P FORWARD DROP` failsafe so any IPv6 traffic the cage attempts is dropped. Today's podman networks are IPv4-only (`10.89.x.0/24`), so this is a latent-gap failsafe rather than active filtering.
 
 ## Disabling transparent capture
 
-Setting `ports.tcp.allow: []` removes the `nat:PREROUTING` REDIRECTs entirely. The cage relies solely on the L7 path (apps that honor `HTTP_PROXY` send `CONNECT` requests to mitmdump on `:8080`). Validation emits a warning when this is detected. If `tcp.allow`, `tcp.passthrough`, and `udp.allow` are all empty, the cage has zero outbound TCP/UDP — only ICMP echo and `ESTABLISHED,RELATED` traverse. Validation surfaces this as a warning so the posture is visible.
+Setting `ports.tcp.allow: []` removes the `nat:PREROUTING` REDIRECTs entirely. The cage relies solely on the L7 path (apps that honor `HTTP_PROXY` send `CONNECT` requests to mitmdump on `:8080`). Validation emits a warning when this is detected. If `tcp.allow`, `tcp.passthrough`, and `udp.allow` are all empty, the cage has zero outbound TCP/UDP — only `ESTABLISHED,RELATED` (and outbound ICMP echo when `icmp.allow: true`) traverse. Validation surfaces this as a warning so the posture is visible.
 
 ## Trade-offs
 
