@@ -7,7 +7,7 @@ Reference for every `agentcage` command, subcommand, and flag. Pair with [Config
 agentcage <command> [args] [options]
 ```
 
-Top-level commands: `run`, `init`, `doctor`. Command groups: `cage`, `secret`, `domain`, `scaffold`.
+Top-level commands: `run` (alias of `cage run`), `init`, `doctor`. Command groups: `cage`, `secret`, `domain`, `scaffold`.
 
 ## init
 
@@ -30,6 +30,8 @@ agentcage init [NAME] [options]
 ## run
 
 Create a sandboxed cage from a scaffold, open an interactive session, and stop the cage on exit. The cage state is preserved after exit for auditing — use `cage prune` to clean up.
+
+The canonical command is `agentcage cage run`; `agentcage run` is a top-level alias of it (like `agentcage exec` / `agentcage shell`). Both forms take the same arguments.
 
 ```bash
 agentcage run SCAFFOLD [options] [-- EXTRA_ARGS...]
@@ -65,6 +67,7 @@ Manage cages.
 | Command | Description |
 |---------|-------------|
 | `cage create -c CONFIG` | Build images, generate quadlets, install, and start a new cage |
+| `cage run SCAFFOLD` | Create a cage from a scaffold, open an interactive session, and stop on exit (top-level alias: `agentcage run` — see [run](#run)) |
 | `cage update NAME [-c CONFIG]` | Rebuild images and restart an existing cage |
 | `cage edit NAME` | Edit a cage's stored config in `$EDITOR` with validation and live-reload |
 | `cage list` | List all cages with status |
@@ -85,7 +88,7 @@ Manage cages.
 
 Aliases: `ls`/`ps`/`status` → `list`, `rm`/`delete` → `destroy`, `reload` → `restart`, `describe`/`inspect` → `show`, `config` → `edit`, `update` → `update`.
 
-> **Note**: `agentcage` also supports dropping the `cage` group prefix for all standard cage commands and these aliases (e.g. `agentcage ls`, `agentcage start`, `agentcage stop`, `agentcage update`, `agentcage logs` function as their `cage` equivalents).
+> **Note**: `agentcage` also supports dropping the `cage` group prefix for all standard cage commands and these aliases (e.g. `agentcage run`, `agentcage ls`, `agentcage start`, `agentcage stop`, `agentcage update`, `agentcage logs` function as their `cage` equivalents).
 
 ### cage create
 
