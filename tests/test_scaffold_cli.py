@@ -230,6 +230,24 @@ class TestRunCommand:
         assert result.exit_code == 0
         assert "scaffold" in result.output.lower() or "SCAFFOLD" in result.output
 
+    def test_cage_run_help(self):
+        """`run` is canonically `cage run`; the subcommand resolves and
+        carries the same SCAFFOLD argument as the top-level alias."""
+        result = _runner().invoke(main, ["cage", "run", "--help"])
+        assert result.exit_code == 0
+        assert "scaffold" in result.output.lower() or "SCAFFOLD" in result.output
+
+    def test_run_is_alias_of_cage_run(self):
+        """Top-level `run` and `cage run` resolve to the same command."""
+        from agentcage.cli import cage, main as main_grp
+        top = main_grp.get_command(None, "run")
+        sub = cage.get_command(None, "run")
+        assert top is not None and top is sub
+
+    def test_run_listed_in_top_level_aliases(self):
+        result = _runner().invoke(main, ["--help"])
+        assert "run → cage run" in result.output
+
     def test_cage_help_shows_prune(self):
         result = _runner().invoke(main, ["cage", "--help"])
         assert "prune" in result.output

@@ -398,6 +398,7 @@ class _BannerGroup(click.Group):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._global_aliases = {
+            "run": ("run", "cage run"),
             "ls": ("cage_list", "cage list"),
             "rm": ("cage_destroy", "cage destroy"),
             "delete": ("cage_destroy", "cage destroy"),
@@ -563,7 +564,7 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
 # ── run ──────────────────────────────────────────────────
 
 
-@main.command(context_settings={"ignore_unknown_options": True})
+@click.command("run", context_settings={"ignore_unknown_options": True})
 @click.argument("scaffold")
 @click.option("--project", "project_dir", default=None, type=click.Path(exists=True),
               help="Project directory to mount (default: current directory).")
@@ -634,6 +635,13 @@ def run(scaffold: str, project_dir: str | None, name: str | None,
 @main.group(cls=AliasGroup, aliases={"ls": "list", "rm": "destroy", "ps": "list", "reload": "restart", "delete": "destroy", "describe": "show", "inspect": "show", "config": "edit"})
 def cage():
     """Manage cages."""
+
+
+# `agentcage run` is a top-level alias of `agentcage cage run` (wired via
+# _BannerGroup._global_aliases, same mechanism as exec / shell / logs). The
+# canonical command lives under the cage group; the `run` Command object is
+# defined above (@click.command("run")) and registered here.
+cage.add_command(run, "run")
 
 
 @cage.command("create")
