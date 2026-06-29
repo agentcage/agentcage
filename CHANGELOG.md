@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-06-29
+
+### Fixed
+
+- **`agentcage run` now injects `--set-secret` values on apple-container.** `agentcage run` (and its `cage run` alias) staged apple-container secrets to the legacy `pending_secrets.json` plaintext file, but the apple-container backend re-stages secrets at `start()` from the cage's configured at-rest store — the macOS keychain under the default `auto` backend — and never reads `pending_secrets.json` unless the cage opted into the plaintext backend. With an unlocked login keychain the typed value was orphaned: the start-time lookup returned nothing and the cage warned `secret_injection env '…' not provided via --set-secret; placeholder will NOT be substituted`, so the agent failed to authenticate. `agentcage cage create` was unaffected because it already persisted apple-container secrets through the keychain; `run` was never migrated off the pre-keychain code path. `run` now routes apple-container secrets through the same store as `create` (VM `pending_secrets.json` and container host-Podman paths are unchanged). ([#288](https://github.com/agentcage/agentcage/pull/288))
+
 ## [0.27.0] - 2026-06-29
 
 ### Added
