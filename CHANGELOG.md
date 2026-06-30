@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The `secrets` inspector accepts an `action: block | flag` knob, matching the `entropy` and `content-type` inspectors.** A detected secret can now either hard-block (403, the default) or be flagged — recorded in the audit log while the request proceeds — so operators can run secret detection in observe-only mode (e.g. while triaging a noisy false positive) without disabling the whole defense-in-depth layer. Previously the only escape valves were disabling the inspector entirely (`enabled: false`) or per-secret `allow_to_domains` exemptions. The default behavior is unchanged: detected secrets still block.
+
 ## [0.28.0] - 2026-06-29
 
 ### Added

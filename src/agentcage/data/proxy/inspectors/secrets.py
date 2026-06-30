@@ -95,6 +95,13 @@ class SecretsInspector(Inspector):
 
     def configure(self, config: dict) -> None:
         self.enabled = config.get("enabled", True)
+        # "block" (default) returns a hard 403 on a detected secret;
+        # "flag" records the detection in the audit log and lets the
+        # request through.  Any other value falls back to "block".
+        # ``action_explicit`` lets callers tell an operator-chosen action
+        # apart from the default.
+        self.action_explicit = "action" in config
+        self.action = "flag" if config.get("action") == "flag" else "block"
         self.patterns: dict[str, re.Pattern] = {}
         self.allow_to_domains: dict[str, list[str]] = {}
         if self.enabled:
@@ -154,7 +161,7 @@ class SecretsInspector(Inspector):
                         continue
                     return InspectionResult(
                         inspector=self.name,
-                        action="block",
+                        action=self.action,
                         reason=f"secret detected: {pat_name}",
                         severity="critical",
                         metadata={"pattern": pat_name},

@@ -35,11 +35,12 @@ All built-in scaffolds list `- name: entropy` under `inspectors:`, so cages crea
 
 ## Secrets inspector
 
-The `secrets` inspector pattern-matches outbound traffic against known secret formats. Detected secrets always result in a **block** (403 response). Use `allow_to_domains` to exempt specific secrets when sent to their legitimate API endpoints.
+The `secrets` inspector pattern-matches outbound traffic against known secret formats. By default a detected secret results in a **block** (403 response). Set `action: flag` to record the detection in the audit log and let the request proceed instead. Use `allow_to_domains` to exempt specific secrets when sent to their legitimate API endpoints.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable/disable secret scanning. |
+| `action` | `string` | `"block"` | `"block"` (return 403) or `"flag"` (allow but record in the audit log). Any other value falls back to `"block"`. |
 | `builtin_allow_to_domains` | `bool` | `true` | Include built-in secret-to-domain mappings (e.g. `anthropic_key` → `anthropic.com`). Set to `false` to require all exemptions to be explicit. |
 | `allow_to_domains` | `map[string, list]` | `{}` | Pattern name to list of domains where that secret type is allowed. Merged with built-in mappings (user entries win). |
 | `extra_patterns` | `list[object]` | `[]` | Additional patterns — each entry needs `name` plus either `pattern` (regex) or `env` (exact-match from env var). |

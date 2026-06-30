@@ -143,6 +143,33 @@ class TestSecretsInspector:
         ctx = _ctx(body_text="sk-abcdefghijklmnopqrstuvwxyz")
         assert s.inspect_request(ctx) is None
 
+    def test_default_action_is_block(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True})
+        assert s.action == "block"
+        assert s.action_explicit is False
+        ctx = _ctx(body_text="access_key=AKIAIOSFODNN7EXAMPLE")
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "block"
+        assert "aws_access_key" in r.reason
+
+    def test_flag_action_flags(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True, "action": "flag"})
+        assert s.action == "flag"
+        assert s.action_explicit is True
+        ctx = _ctx(body_text="access_key=AKIAIOSFODNN7EXAMPLE")
+        r = s.inspect_request(ctx)
+        assert r is not None
+        assert r.action == "flag"
+
+    def test_unknown_action_falls_back_to_block(self):
+        s = SecretsInspector()
+        s.configure({"enabled": True, "action": "warn"})
+        assert s.action == "block"
+        assert s.action_explicit is True
+
     def test_extra_patterns(self):
         s = SecretsInspector()
         s.configure({
