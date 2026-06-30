@@ -36,7 +36,7 @@ Three patterns cover most cases:
 
 - **`domain not in allowlist`** — `agentcage domain add myapp example.com`. Subdomains match automatically; the change hot-reloads.
 - **`port not in ports.tcp.allow`** — the cage tried a port outside the inspected set (default `[80, 443]`). Add the port to `ports.tcp.allow` or `ports.tcp.passthrough` in `cage.yaml`, then `cage update myapp`.
-- **Reason from the `secrets` inspector** — a real secret value or pattern (e.g. `sk-ant-…`) appeared on the wire. The block is intentional; see the next section.
+- **Reason from the `secrets` inspector** — a real secret value or pattern (e.g. `sk-ant-…`) appeared on the wire. On HTTP egress the secrets inspector defaults to `flag` (logged, not blocked), so this shows up as a *blocked* decision only when you've set `secrets: { action: block }`, or on an SMTP relay (which blocks by default). See the next section.
 
 For a single host you suspect is wrong:
 
@@ -68,7 +68,7 @@ agentcage cage audit myapp --decision blocked --host api.example.com --since 1h
 ```
 
 - **`domain`** — destination not on the allowlist. `domain add` it.
-- **`secrets`** — a known secret pattern matched. Add the destination to that secret's `allow_to_domains` in `cage.yaml`, or move the secret to `secret_injection` with `inject_to: ["api.example.com"]` if you actively want it injected for this host.
+- **`secrets`** — a known secret pattern matched (only blocks when `secrets.action` is `block` — the HTTP default is `flag` — or on an SMTP relay). Add the destination to that secret's `allow_to_domains` in `cage.yaml`, or move the secret to `secret_injection` with `inject_to: ["api.example.com"]` if you actively want it injected for this host.
 - **`body-size`** — body exceeded `max_request_body` (default 10 MB). Raise the cap in `cage.yaml`.
 - **`entropy` / `content-type`** — the body tripped an exfiltration heuristic. Tune the inspector or scope it to specific content types. See [Inspectors](../reference/inspectors.md).
 

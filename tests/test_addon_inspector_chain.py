@@ -197,3 +197,120 @@ def test_no_inspectors_is_passthrough(tmp_path):
 
     assert not _was_blocked(flow)
     assert _audit_decisions(tmp_path) == ["allowed"]
+
+
+# ── Relay inspector chain ────────────────────────────────
+
+
+def _addon_with_inspectors(cfg, inspectors):
+    addon = Agentcage()
+    addon.cfg = cfg
+    addon.inspectors = inspectors
+    return addon
+
+
+def _secret_ctx():
+    """An InspectionContext carrying a leaked AWS key in the body."""
+    from inspectors.base import InspectionContext
+
+    return InspectionContext(
+        url="https://relay.local/",
+        host="relay.local",
+        method="POST",
+        headers=[],
+        content_type="text/plain",
+        body_bytes=b"access_key=AKIAIOSFODNN7EXAMPLE",
+        body_text="access_key=AKIAIOSFODNN7EXAMPLE",
+        body_size=31,
+    )
+
+
+def _relay_secrets(addon):
+    """The secrets entry in the relay chain (a wrapper, name == 'secrets')."""
+    return next(i for i in addon._build_relay_inspectors() if i.name == "secrets")
+
+
+def test_relay_chain_strips_domain_inspector():
+    """DomainInspector is HTTP-host shaped and must not run on relay
+    (SMTP) traffic."""
+    from inspectors.domain import DomainInspector
+    from inspectors.secrets import SecretsInspector
+
+    dom = DomainInspector()
+    dom.configure({})
+    sec = SecretsInspector()
+    sec.configure({"enabled": True})
+    addon = _addon_with_inspectors({"secrets": {}}, [dom, sec])
+
+    chain = addon._build_relay_inspectors()
+
+    assert not any(isinstance(i, DomainInspector) for i in chain)
+    assert any(i.name == "secrets" for i in chain)
+
+
+def test_relay_secrets_defaults_to_block_when_http_flags():
+    """HTTP egress defaults the secrets inspector to flag; the relay view
+    must still hard-block by default (email body is a deliberate exfil
+    channel)."""
+    from inspectors.secrets import SecretsInspector
+
+    sec = SecretsInspector()
+    sec.configure({"enabled": True})  # -> action "flag" (new HTTP default)
+    assert sec.inspect_request(_secret_ctx()).action == "flag"
+    addon = _addon_with_inspectors({"secrets": {}}, [sec])
+
+    relay_sec = _relay_secrets(addon)
+    assert relay_sec.inspect_request(_secret_ctx()).action == "block"
+    # The shared HTTP instance still flags (verdict unchanged for HTTP).
+    assert sec.inspect_request(_secret_ctx()).action == "flag"
+
+
+def test_relay_secrets_honors_explicit_flag_action():
+    """An explicit secrets.action: flag wins everywhere — the relay does
+    not override it back to block."""
+    from inspectors.secrets import SecretsInspector
+
+    sec = SecretsInspector()
+    sec.configure({"enabled": True, "action": "flag"})
+    addon = _addon_with_inspectors({"secrets": {"action": "flag"}}, [sec])
+
+    assert _relay_secrets(addon).inspect_request(_secret_ctx()).action == "flag"
+
+
+def test_relay_secrets_tracks_hot_reload_of_shared_instance():
+    """The relay wrapper delegates to the live shared instance, so an
+    allow_to_domains exemption added on hot-reload (reconfigure in place)
+    is honoured on the relay path too — no stale clone."""
+    from inspectors.secrets import SecretsInspector
+
+    sec = SecretsInspector()
+    sec.configure({"enabled": True})
+    addon = _addon_with_inspectors({"secrets": {}}, [sec])
+    relay_sec = _relay_secrets(addon)
+
+    # Before reload: a leaked AWS key to relay.local is caught (blocked).
+    assert relay_sec.inspect_request(_secret_ctx()).action == "block"
+
+    # Operator edits config and the addon reconfigures in place.
+    sec.configure({"enabled": True, "allow_to_domains": {"aws_access_key": ["relay.local"]}})
+
+    # The same wrapper now reflects the new exemption (abstains).
+    assert relay_sec.inspect_request(_secret_ctx()) is None
+
+
+def test_relay_secrets_honors_action_from_inspectors_list():
+    """action set via the `inspectors:` list (not the top-level `secrets:`
+    block) is still honoured by the relay — explicitness is read from the
+    configured instance, not re-parsed from one config path."""
+    from inspectors.secrets import SecretsInspector
+
+    sec = SecretsInspector()
+    # Simulates _load_custom_inspectors reconfiguring the built-in with the
+    # inspectors-list `config:` section.
+    sec.configure({"enabled": True, "action": "flag"})
+    addon = _addon_with_inspectors(
+        {"inspectors": [{"name": "secrets", "config": {"action": "flag"}}]},
+        [sec],
+    )
+
+    assert _relay_secrets(addon).inspect_request(_secret_ctx()).action == "flag"

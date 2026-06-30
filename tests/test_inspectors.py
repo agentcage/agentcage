@@ -92,7 +92,7 @@ class TestSecretsInspector:
         )
         r = s.inspect_request(ctx)
         assert r is not None
-        assert r.action == "block"
+        assert r.action == "flag"
         assert "anthropic_key" in r.reason
 
     def test_detects_anthropic_key_in_url(self):
@@ -143,31 +143,31 @@ class TestSecretsInspector:
         ctx = _ctx(body_text="sk-abcdefghijklmnopqrstuvwxyz")
         assert s.inspect_request(ctx) is None
 
-    def test_default_action_is_block(self):
+    def test_default_action_is_flag(self):
         s = SecretsInspector()
         s.configure({"enabled": True})
-        assert s.action == "block"
+        assert s.action == "flag"
         assert s.action_explicit is False
         ctx = _ctx(body_text="access_key=AKIAIOSFODNN7EXAMPLE")
         r = s.inspect_request(ctx)
         assert r is not None
-        assert r.action == "block"
+        assert r.action == "flag"
         assert "aws_access_key" in r.reason
 
-    def test_flag_action_flags(self):
+    def test_block_action_blocks(self):
         s = SecretsInspector()
-        s.configure({"enabled": True, "action": "flag"})
-        assert s.action == "flag"
+        s.configure({"enabled": True, "action": "block"})
+        assert s.action == "block"
         assert s.action_explicit is True
         ctx = _ctx(body_text="access_key=AKIAIOSFODNN7EXAMPLE")
         r = s.inspect_request(ctx)
         assert r is not None
-        assert r.action == "flag"
+        assert r.action == "block"
 
-    def test_unknown_action_falls_back_to_block(self):
+    def test_unknown_action_falls_back_to_flag(self):
         s = SecretsInspector()
         s.configure({"enabled": True, "action": "warn"})
-        assert s.action == "block"
+        assert s.action == "flag"
         assert s.action_explicit is True
 
     def test_extra_patterns(self):
@@ -340,7 +340,7 @@ class TestSecretsInspector:
         )
         r = s.inspect_request(ctx)
         assert r is not None
-        assert r.action == "block"
+        assert r.action == "flag"
         assert "brave_api_key" in r.reason
 
     def test_secret_in_header_still_detected_on_binary_body(self):
@@ -485,7 +485,7 @@ class TestSecretsInspector:
         )
         r = s.inspect_request(ctx)
         assert r is not None
-        assert r.action == "block"
+        assert r.action == "flag"
         assert "google_oauth_access_token" in r.reason
 
     # ── Tightened pattern tests ──
@@ -571,7 +571,7 @@ class TestSecretsInspector:
         r = s.inspect_request(ctx)
         elapsed = time.monotonic() - t0
         assert r is not None
-        assert r.action == "block"
+        assert r.action == "flag"
         # Should complete in well under 1 second even on slow hardware
         assert elapsed < 1.0
 
@@ -694,7 +694,7 @@ class TestSecretsInspector:
         )
         r = s.inspect_request(ctx)
         assert r is not None
-        assert r.action == "block"
+        assert r.action == "flag"
         assert "github_token" in r.reason
 
     def test_detects_secret_in_duplicate_header(self):
@@ -710,7 +710,7 @@ class TestSecretsInspector:
         )
         r = s.inspect_request(ctx)
         assert r is not None
-        assert r.action == "block"
+        assert r.action == "flag"
         assert "anthropic_key" in r.reason
 
     def test_detects_secret_in_repeated_header_value(self):

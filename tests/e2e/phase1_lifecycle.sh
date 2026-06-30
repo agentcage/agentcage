@@ -43,10 +43,30 @@ assert_http 200 "$BASE/" "1.1" "Health check"
 assert_http 200 "$BASE/fetch?url=http://httpbin.org/get" "1.2" "Allowed domain (httpbin.org)"
 assert_http_any "403|502" "$BASE/fetch?url=http://evil.com/exfil" "1.3" "Blocked domain (evil.com)"
 
-# Secret detection — use a pattern that matches the anthropic_key regex
-assert_http_any "403|502" "$BASE/check-secret" "1.4" "Secret leak blocked" \
+# Secret detection — use a pattern that matches the anthropic_key regex.
+# The default action on HTTP egress is flag: the request is forwarded
+# and the detection lands in the audit log as a flagged decision.
+assert_http 200 "$BASE/check-secret" "1.4" "Secret leak flagged (default)" \
   -X POST -H "Content-Type: application/json" \
   -d '{"key":"sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+
+# Poll until the flagged decision shows up in the audit log (up to 10s)
+_flag_deadline=$((SECONDS + 10))
+_flag_found=""
+while [ "$SECONDS" -lt "$_flag_deadline" ]; do
+  if agentcage cage audit "$CAGE" -d flagged --json-lines -n 20 2>/dev/null \
+      | grep -q anthropic_key; then
+    _flag_found=1
+    break
+  fi
+  sleep 1
+done
+if [ -n "$_flag_found" ]; then
+  e2e_pass "1.4b" "Secret detection recorded as flagged in audit log"
+else
+  e2e_fail "1.4b" "Secret detection recorded as flagged in audit log" \
+    "no flagged anthropic_key entry in audit log"
+fi
 
 assert_http 200 "$BASE/check-secret" "1.5" "Clean POST allowed" \
   -X POST -H "Content-Type: application/json" \

@@ -1,6 +1,7 @@
 """agentcage — mitmproxy traffic inspection with pluggable inspectors."""
 
 import asyncio
+import dataclasses
 import json
 import os
 import sys
@@ -38,6 +39,42 @@ _BUILTIN_INSPECTORS: dict[str, type[Inspector]] = {
     "entropy": EntropyInspector,
     "content-type": ContentTypeInspector,
 }
+
+
+class _RelaySecretsInspector:
+    """Relay-channel view of the shared :class:`SecretsInspector`.
+
+    Protocol relays (SMTP) keep blocking leaked secrets by default even
+    though HTTP egress now defaults to ``flag`` — an email body is a
+    deliberate, operator-invisible exfil channel. This wrapper delegates
+    all detection to the live shared instance (so hot-reloaded config and
+    config supplied via the ``inspectors:`` list are both honoured) and
+    only rewrites a default ``flag`` verdict to ``block``. When the
+    operator set ``action`` explicitly, their choice is passed through
+    unchanged so it applies everywhere.
+    """
+
+    name = "secrets"
+
+    def __init__(self, inner: SecretsInspector) -> None:
+        self._inner = inner
+
+    def _adjust(
+        self, result: Optional[InspectionResult]
+    ) -> Optional[InspectionResult]:
+        if result is None or self._inner.action_explicit:
+            return result
+        return dataclasses.replace(result, action="block")
+
+    def inspect_request(
+        self, ctx: InspectionContext
+    ) -> Optional[InspectionResult]:
+        return self._adjust(self._inner.inspect_request(ctx))
+
+    def inspect_response(
+        self, ctx: InspectionContext
+    ) -> Optional[InspectionResult]:
+        return self._adjust(self._inner.inspect_response(ctx))
 
 
 # ── Orchestrator ─────────────────────────────────────────
@@ -161,16 +198,7 @@ class Agentcage:
         from relays import get as _get_relay
         from relays._validate import validate_relay_entry
 
-        # Inspector chain for relays. The DomainInspector is HTTP-host
-        # shaped (matches against URL host) and doesn't translate to
-        # protocol-relay traffic; the equivalent gate for SMTP is the
-        # recipient_allowlist policy. Strip it so SMTP DATA inspection
-        # doesn't try to enforce HTTP-style domain rules on email
-        # recipients.
-        relay_inspectors = [
-            i for i in getattr(self, "inspectors", []) or []
-            if not isinstance(i, DomainInspector)
-        ]
+        relay_inspectors = self._build_relay_inspectors()
 
         self._relays: list = []
         loop = asyncio.get_event_loop()
@@ -229,6 +257,40 @@ class Agentcage:
                 f"agentcage: scheduled relay {entry.get('name')} "
                 f"({rtype})"
             )
+
+    def _build_relay_inspectors(self) -> list:
+        """Build the inspector chain handed to protocol relays.
+
+        Two relay-specific adjustments to the shared HTTP chain:
+
+        * The ``DomainInspector`` is HTTP-host shaped (matches against URL
+          host) and doesn't translate to protocol-relay traffic; the
+          equivalent gate for SMTP is the ``recipient_allowlist`` policy.
+          It's stripped so SMTP DATA inspection doesn't try to enforce
+          HTTP-style domain rules on email recipients.
+
+        * The ``secrets`` inspector defaults to **block** for relays even
+          though HTTP egress now defaults to ``flag``. An email body is a
+          deliberate, operator-invisible exfil channel, so a leaked secret
+          there should be stopped rather than merely logged. An explicit
+          ``secrets.action`` in config still wins and applies everywhere.
+
+        The secrets adjustment is a thin wrapper that *delegates* to the
+        shared instance rather than a separate copy, so live config edits
+        (``allow_to_domains``, ``extra_patterns``, ``enabled``, ...) keep
+        flowing into the relay path on hot-reload, and config supplied via
+        the ``inspectors:`` list is honoured the same as the top-level
+        ``secrets:`` block.
+        """
+        out: list = []
+        for i in getattr(self, "inspectors", []) or []:
+            if isinstance(i, DomainInspector):
+                continue
+            if isinstance(i, SecretsInspector):
+                out.append(_RelaySecretsInspector(i))
+            else:
+                out.append(i)
+        return out
 
     def _on_relay_start_done(self, task: "asyncio.Task", name: str) -> None:
         """Surface ``relay.start()`` exceptions instead of letting Python
