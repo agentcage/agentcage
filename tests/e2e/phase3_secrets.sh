@@ -255,6 +255,46 @@ e2e_timer_start
 agentcage secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
 e2e_pass "3.5" "Remove secret"
 
+# 3.5b: Converged egress quadlet must not reference the removed store
+# entry (issue #262) — `secret rm` re-converges units store-aware, so
+# the dangling `Secret=<cage>.MY_API_KEY` line is dropped.
+e2e_timer_start
+QUADLET="$HOME/.config/containers/systemd/${CAGE}-egress.container"
+if [ -f "$QUADLET" ] && ! grep -q "Secret=${CAGE}.MY_API_KEY" "$QUADLET"; then
+  e2e_pass "3.5b" "Quadlet drops Secret= for removed entry"
+else
+  e2e_fail "3.5b" "Quadlet drops Secret= for removed entry" \
+    "dangling Secret=${CAGE}.MY_API_KEY still in $QUADLET"
+fi
+
+# 3.5c: Cage still BOOTS after the rm (issue #262) — the gap that hid
+# the start-limit-hit failure: nothing re-checked the secrets cage's
+# health after phase 3.5. A dangling Secret= makes podman fail the
+# egress with `no secret with name or ID ...` on the next start.
+e2e_timer_start
+systemctl --user reset-failed "${CAGE}-egress" >/dev/null 2>&1 || true
+agentcage cage restart "$CAGE" >/dev/null 2>&1 || true
+if wait_ready "$BASE" 90; then
+  e2e_pass "3.5c" "Cage boots after secret rm (no start-limit-hit)"
+else
+  e2e_fail "3.5c" "Cage boots after secret rm (no start-limit-hit)" \
+    "cage did not come back after restart following secret rm"
+  dump_cage_diagnostics "$CAGE" "3.5c failure"
+fi
+repatch_mock "$CAGE" httpbin.org || true
+
+# 3.5d: `secret set` re-adds the Secret= line — units track store
+# reality in both directions (rm drops, set re-adds).
+e2e_timer_start
+echo "revived-value" | agentcage secret set "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
+if grep -q "Secret=${CAGE}.MY_API_KEY" "$QUADLET" 2>/dev/null; then
+  e2e_pass "3.5d" "secret set re-adds Secret= line"
+else
+  e2e_fail "3.5d" "secret set re-adds Secret= line" \
+    "Secret=${CAGE}.MY_API_KEY not back in $QUADLET after set"
+fi
+agentcage secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
+
 # 3.6: Missing secret warning
 e2e_timer_start
 OUTPUT=$(agentcage secret list "$CAGE" 2>&1) || true

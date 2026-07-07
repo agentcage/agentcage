@@ -9,6 +9,7 @@ import pytest
 
 from agentcage.backends.container import ContainerBackend
 from agentcage.config import Config, ContainerConfig
+from agentcage.podman import secret_env_names
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +22,31 @@ def _make_config(name: str = "testcage") -> Config:
     cfg.container = ContainerConfig()
     cfg.container.image = "localhost/test:latest"
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# secret_env_names (agentcage.podman helper — issue #262)
+# ---------------------------------------------------------------------------
+
+class TestSecretEnvNames:
+    def test_strips_deploy_prefix(self):
+        podman = MagicMock()
+        podman.secret_list.return_value = [
+            {"Name": "myapp.API_KEY"}, {"Name": "myapp.TOKEN"},
+        ]
+        assert secret_env_names(podman, "myapp") == {"API_KEY", "TOKEN"}
+        podman.secret_list.assert_called_once_with(prefix="myapp.")
+
+    def test_bare_names_without_deploy_name(self):
+        podman = MagicMock()
+        podman.secret_list.return_value = [{"Name": "API_KEY"}]
+        assert secret_env_names(podman, "") == {"API_KEY"}
+        podman.secret_list.assert_called_once_with(prefix="")
+
+    def test_empty_store(self):
+        podman = MagicMock()
+        podman.secret_list.return_value = []
+        assert secret_env_names(podman, "myapp") == set()
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +131,7 @@ class TestGenerateUnits:
         info_data = {"host": {"security": {"rootless": True}}}
 
         with patch.object(backend._podman, "info", return_value=info_data), \
+             patch.object(backend._podman, "secret_list", return_value=[]), \
              patch("agentcage.backends.container.generate_quadlets", return_value={
                  "test-cage.container": "[Container]\nImage=test",
                  "test-egress.container": "[Container]\nImage=egress",
@@ -116,6 +143,42 @@ class TestGenerateUnits:
         assert "test-cage.container" in units
         assert "test-egress.container" in units
         mock_gen.assert_called_once()
+
+    def test_passes_store_secret_env_names(self):
+        """Issue #262: generate_units must pass the env-name set of the
+        cage's store entries so quadlet generation can skip Secret=
+        directives that would not resolve at boot (`secret rm` leftovers)."""
+        backend = ContainerBackend()
+        info_data = {"host": {"security": {"rootless": True}}}
+        listed = [{"Name": "test.API_KEY"}, {"Name": "test.OTHER"}]
+
+        with patch.object(backend._podman, "info", return_value=info_data), \
+             patch.object(backend._podman, "secret_list", return_value=listed) as mock_ls, \
+             patch("agentcage.backends.container.generate_quadlets",
+                   return_value={}) as mock_gen:
+            backend.generate_units(
+                _make_config(), "/c.yaml", "/patches", "test"
+            )
+
+        mock_ls.assert_called_once_with(prefix="test.")
+        assert mock_gen.call_args.kwargs["store_secrets"] == {"API_KEY", "OTHER"}
+
+    def test_store_query_failure_falls_back_to_none(self):
+        """A store query failure must not drop Secret= lines — pass None
+        (legacy emit-all) instead of an empty set."""
+        backend = ContainerBackend()
+        info_data = {"host": {"security": {"rootless": True}}}
+
+        with patch.object(backend._podman, "info", return_value=info_data), \
+             patch.object(backend._podman, "secret_list",
+                          side_effect=RuntimeError("podman down")), \
+             patch("agentcage.backends.container.generate_quadlets",
+                   return_value={}) as mock_gen:
+            backend.generate_units(
+                _make_config(), "/c.yaml", "/patches", "test"
+            )
+
+        assert mock_gen.call_args.kwargs["store_secrets"] is None
 
 
 # ---------------------------------------------------------------------------

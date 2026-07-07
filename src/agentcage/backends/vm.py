@@ -302,6 +302,25 @@ class VmBackend:
         # in-memory config; the on-disk cage.yaml is untouched.
         if config.container.timeout_start_sec < self.VM_MIN_TIMEOUT_START_SEC:
             config.container.timeout_start_sec = self.VM_MIN_TIMEOUT_START_SEC
+        # Store-aware Secret= emission (issue #262): the podman secret
+        # store for VM cages lives INSIDE the guest, so it can only be
+        # queried while the Lima instance is running (`secret set`/`rm`
+        # convergence, `cage update` on a live cage). When the guest is
+        # unreachable — initial create (the VM doesn't exist yet; values
+        # arrive via pending_secrets.json after first start) or a stopped
+        # VM — pass None to keep the legacy emit-everything behavior
+        # rather than dropping every directive against an empty view.
+        store_secrets = None
+        try:
+            inst = LimaInstance(deploy_name or config.name)
+            if inst.exists() and inst.is_running():
+                from agentcage.lima.podman import VmPodman
+                from agentcage.podman import secret_env_names
+                store_secrets = secret_env_names(
+                    VmPodman(deploy_name or config.name), deploy_name
+                )
+        except Exception:
+            store_secrets = None
         # Also generate quadlets (these will be installed inside the VM)
         quadlets = generate_quadlets(
             config,
@@ -310,6 +329,7 @@ class VmBackend:
             deploy_name,
             used_octets=used_octets,
             network_octet=network_octet,
+            store_secrets=store_secrets,
         )
         # Return both: Lima YAML and quadlets bundled together
         result: dict[str, str] = {"lima.yaml": lima_yaml}

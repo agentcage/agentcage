@@ -18,6 +18,23 @@ def filter_secrets_by_prefix(lines: list[str], prefix: str) -> list[dict]:
     return secrets
 
 
+def secret_env_names(podman_like, deploy_name: str) -> set[str]:
+    """Env-name set (deploy prefix stripped) of store entries for a cage.
+
+    *podman_like* is any object with the ``secret_list(prefix=...)``
+    interface (host :class:`Podman` or the VM-routed ``VmPodman``).
+    Secrets are stored as ``{deploy_name}.{ENV}`` when a deploy name is
+    set, bare ``ENV`` otherwise; callers of
+    :func:`agentcage.quadlets.generate_quadlets` want the env-name set
+    for the store-aware ``Secret=`` gate (issue #262).
+    """
+    prefix = f"{deploy_name}." if deploy_name else ""
+    names = [s["Name"] for s in podman_like.secret_list(prefix=prefix)]
+    if prefix:
+        return {n[len(prefix):] for n in names}
+    return set(names)
+
+
 def _podman_cmd() -> list[str]:
     """Return the base command for running podman.
 
