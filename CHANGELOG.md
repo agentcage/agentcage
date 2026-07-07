@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-07-07
+
 ### Fixed
 
 - **`cage create/update --pull` no longer fails when the cage's Containerfile builds on a `localhost/` base image.** Apple `container build --pull` re-resolves *every* `FROM` from a registry; a `localhost/` base (e.g. a two-stage scaffold whose cage image sits on a locally-built base) has no registry source, so BuildKit's resolver got `POSIXErrorCode 61 / Connection refused`. The apple-container backend now suppresses `--pull` for the staged-Containerfile build whenever any `FROM` references a `localhost/` ref — the same "never pull a local-only ref" philosophy already applied to the user image. `--no-cache` still forces a full rebuild, which is where a local base's freshness comes from. `--pull` is unchanged for genuinely-remote bases.
