@@ -28,6 +28,42 @@ import click
 from agentcage.apple_container import cli as ac_cli
 
 
+def _base_image_refs(containerfile: Path) -> list[str]:
+    """Return the external base-image refs from a Containerfile's ``FROM``
+    lines, excluding intra-file multi-stage aliases and the ``scratch``
+    pseudo-base.
+
+    A ``FROM <ref> AS <name>`` defines a stage alias; a later ``FROM <name>``
+    that references it is not a registry pull, so such refs are dropped.
+    Leading build flags (``FROM --platform=... <ref>``) are skipped so the
+    real ref is found.
+
+    Used to decide whether ``--pull`` can be honored: a ``localhost/`` base has
+    no registry source, so passing ``--pull`` to ``container build`` makes
+    BuildKit try to fetch it and fail with ECONNREFUSED (POSIXErrorCode 61).
+    """
+    stage_aliases: set[str] = set()
+    refs: list[str] = []
+    try:
+        lines = containerfile.read_text().splitlines()
+    except OSError:
+        return refs
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = [t for t in line.split() if not t.startswith("--")]
+        if len(tokens) < 2 or tokens[0].upper() != "FROM":
+            continue
+        ref = tokens[1]
+        alias = tokens[3] if len(tokens) >= 4 and tokens[2].upper() == "AS" else None
+        if ref not in stage_aliases and ref.lower() != "scratch":
+            refs.append(ref)
+        if alias:
+            stage_aliases.add(alias)
+    return refs
+
+
 def build_image_from_staged(
     image: str,
     containerfile: Path,
@@ -49,6 +85,14 @@ def build_image_from_staged(
     does (untagged registry refs get a concrete tag), so ``--pull`` fetches a
     fresh base without mutating the frozen cage.yaml. ``no_cache`` / ``pull``
     map to ``container build --no-cache`` / ``--pull``.
+
+    ``--pull`` is suppressed when any ``FROM`` in the Containerfile references a
+    ``localhost/`` base (e.g. a two-stage scaffold whose cage image is built on
+    a locally-built base). Such a ref has no registry source, and Apple
+    ``container build --pull`` applies globally to every stage, so BuildKit
+    would try to fetch it and fail with ECONNREFUSED (POSIXErrorCode 61). The
+    local base's freshness comes from the ``--no-cache`` rebuild instead — the
+    same philosophy the backend applies to a ``localhost/`` user image.
     """
     from agentcage.registry import resolve_build_args
 
@@ -65,10 +109,19 @@ def build_image_from_staged(
         f"{' (no-cache)' if no_cache else ''} (apple-container)..."
     )
 
+    effective_pull = pull
+    if pull and any(r.startswith("localhost/") for r in _base_image_refs(containerfile)):
+        effective_pull = False
+        _echo(
+            "Skipping --pull: Containerfile has a local-only ('localhost/') "
+            "base image with no registry source; --no-cache still forces a "
+            "full rebuild."
+        )
+
     argv = ["build", "-t", image, "-f", str(containerfile)]
     if no_cache:
         argv.append("--no-cache")
-    if pull:
+    if effective_pull:
         argv.append("--pull")
     for k, v in resolved_args.items():
         argv += ["--build-arg", f"{k}={v}"]

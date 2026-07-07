@@ -2805,6 +2805,68 @@ def test_build_image_from_staged_passes_flags_and_build_args(tmp_path):
     assert builds[0][-1] == str(tmp_path)  # context dir
 
 
+def test_build_image_from_staged_drops_pull_for_localhost_base(tmp_path):
+    """`--pull` is suppressed when a `FROM` references a `localhost/` base:
+    it has no registry source, and `container build --pull` applies globally,
+    so BuildKit would fail with ECONNREFUSED trying to fetch it. `--no-cache`
+    is still forwarded to force the rebuild."""
+    cf = tmp_path / "Containerfile"
+    cf.write_text("FROM localhost/agentcage-truelayer-base:latest\nRUN true\n")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch("agentcage.registry.resolve_build_args", return_value=({}, [])):
+        ac_scaffold.build_image_from_staged(
+            "localhost/agentcage-truelayer-pi:latest", cf, tmp_path,
+            None, quiet=True, no_cache=True, pull=True,
+        )
+
+    builds = [a for a in calls if a[:1] == ["build"]]
+    assert builds, "image must be built from the staged Containerfile"
+    assert "--no-cache" in builds[0]
+    assert "--pull" not in builds[0]
+
+
+def test_build_image_from_staged_keeps_pull_for_remote_base(tmp_path):
+    """`--pull` is honored when every `FROM` is a genuinely-remote ref
+    (a real registry pull the operator asked for)."""
+    cf = tmp_path / "Containerfile"
+    cf.write_text("FROM docker.io/library/debian:bookworm\nRUN true\n")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "run", side_effect=fake_run), \
+         patch("agentcage.registry.resolve_build_args", return_value=({}, [])):
+        ac_scaffold.build_image_from_staged(
+            "localhost/agentcage-scaffold-debian:latest", cf, tmp_path,
+            None, quiet=True, no_cache=False, pull=True,
+        )
+
+    builds = [a for a in calls if a[:1] == ["build"]]
+    assert builds
+    assert "--pull" in builds[0]
+
+
+def test_base_image_refs_ignores_multistage_aliases(tmp_path):
+    """A `FROM <alias>` that references an earlier `FROM ... AS <alias>` stage
+    is not a base ref; `--platform` flags and `scratch` are also excluded."""
+    cf = tmp_path / "Containerfile"
+    cf.write_text(
+        "FROM --platform=linux/arm64 docker.io/library/debian:bookworm AS build\n"
+        "RUN true\n"
+        "FROM build\n"
+        "FROM scratch\n"
+    )
+    assert ac_scaffold._base_image_refs(cf) == ["docker.io/library/debian:bookworm"]
+
+
 def test_build_artifacts_threads_no_cache_and_pull_to_all_builders(tmp_path):
     """`build_artifacts(no_cache=True, pull=True)` propagates both flags to
     the egress build, the staged-Containerfile build, and the wrapper build
