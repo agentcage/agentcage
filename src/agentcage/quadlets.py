@@ -308,9 +308,9 @@ def generate_quadlets(
             stopped). When a set is given, ``Secret=`` emission becomes
             *store-aware* (issue #262): a store-backed reference whose
             entry is absent — and that will not be materialized before
-            container start by a decrypt ``ExecStartPre`` (``.cred`` blob /
-            ``systemd-creds:`` source) or by the start path's
-            ``resolve_and_populate`` (``env:`` / ``cmd:`` source) — is
+            container start by a decrypt ``ExecStartPre`` (present ``.cred``
+            blob, including ``systemd-creds:`` sources) or by the start
+            path's ``resolve_and_populate`` (``env:`` / ``cmd:`` source) — is
             skipped instead of rendered as an unresolvable directive that
             fails the next boot with ``start-limit-hit``. ``None`` keeps
             the legacy emit-everything behavior.
@@ -416,13 +416,13 @@ def generate_quadlets(
         Always true when *store_secrets* is None (store state unknown —
         keep the legacy behavior). Otherwise true when the entry is in
         the store now, or a pre-start channel materializes it: the
-        decrypt ExecStartPre (``systemd-creds:`` source / ``.cred``
-        blob) or the start path's resolve_and_populate (``env:`` /
-        ``cmd:`` source).
+        decrypt ExecStartPre (present ``.cred`` blob, including
+        ``systemd-creds:`` sources) or the start path's
+        resolve_and_populate (``env:`` / ``cmd:`` source).
         """
         if store_secrets is None:
             return True
-        if has_cred_file or scheme in ("systemd-creds", "env", "cmd"):
+        if has_cred_file or scheme in ("env", "cmd"):
             return True
         return env_name in store_secrets
 

@@ -31,22 +31,31 @@ def _make_config(name: str = "testcage") -> Config:
 class TestSecretEnvNames:
     def test_strips_deploy_prefix(self):
         podman = MagicMock()
-        podman.secret_list.return_value = [
+        podman.secret_list_strict.return_value = [
             {"Name": "myapp.API_KEY"}, {"Name": "myapp.TOKEN"},
         ]
         assert secret_env_names(podman, "myapp") == {"API_KEY", "TOKEN"}
-        podman.secret_list.assert_called_once_with(prefix="myapp.")
+        podman.secret_list_strict.assert_called_once_with(prefix="myapp.")
 
     def test_bare_names_without_deploy_name(self):
         podman = MagicMock()
-        podman.secret_list.return_value = [{"Name": "API_KEY"}]
+        podman.secret_list_strict.return_value = [{"Name": "API_KEY"}]
         assert secret_env_names(podman, "") == {"API_KEY"}
-        podman.secret_list.assert_called_once_with(prefix="")
+        podman.secret_list_strict.assert_called_once_with(prefix="")
 
     def test_empty_store(self):
         podman = MagicMock()
-        podman.secret_list.return_value = []
+        podman.secret_list_strict.return_value = []
         assert secret_env_names(podman, "myapp") == set()
+
+    def test_falls_back_to_lenient_secret_list(self):
+        """A podman-like object without secret_list_strict (e.g. a legacy
+        stub) falls back to secret_list."""
+        podman = MagicMock()
+        del podman.secret_list_strict
+        podman.secret_list.return_value = [{"Name": "myapp.KEY"}]
+        assert secret_env_names(podman, "myapp") == {"KEY"}
+        podman.secret_list.assert_called_once_with(prefix="myapp.")
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +162,8 @@ class TestGenerateUnits:
         listed = [{"Name": "test.API_KEY"}, {"Name": "test.OTHER"}]
 
         with patch.object(backend._podman, "info", return_value=info_data), \
-             patch.object(backend._podman, "secret_list", return_value=listed) as mock_ls, \
+             patch.object(backend._podman, "secret_list_strict",
+                          return_value=listed) as mock_ls, \
              patch("agentcage.backends.container.generate_quadlets",
                    return_value={}) as mock_gen:
             backend.generate_units(
@@ -170,7 +180,7 @@ class TestGenerateUnits:
         info_data = {"host": {"security": {"rootless": True}}}
 
         with patch.object(backend._podman, "info", return_value=info_data), \
-             patch.object(backend._podman, "secret_list",
+             patch.object(backend._podman, "secret_list_strict",
                           side_effect=RuntimeError("podman down")), \
              patch("agentcage.backends.container.generate_quadlets",
                    return_value={}) as mock_gen:

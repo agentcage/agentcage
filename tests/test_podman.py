@@ -265,12 +265,35 @@ class TestSecretList:
             result = p.secret_list()
         assert result == []
 
-    def test_command_failure(self):
+    def test_command_failure_lenient(self):
+        """secret_list is lenient: a transient podman failure returns []
+        (cage show / secret list / destroy_resources rely on this so a
+        daemon hiccup never crashes them). The store-aware path uses
+        secret_list_strict instead."""
         p = Podman()
         with patch("agentcage.podman.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stdout="")
-            result = p.secret_list()
-        assert result == []
+            mock_run.return_value = MagicMock(
+                returncode=1, stdout="", stderr="daemon unavailable"
+            )
+            assert p.secret_list() == []
+
+    def test_strict_raises_on_failure(self):
+        """secret_list_strict raises so the store-aware Secret= gate can
+        distinguish a transient failure from a genuinely empty store and
+        fall back to legacy emit-everything (issue #262)."""
+        p = Podman()
+        with patch("agentcage.podman.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1, stdout="", stderr="daemon unavailable"
+            )
+            with pytest.raises(RuntimeError, match="podman secret ls failed"):
+                p.secret_list_strict()
+
+    def test_strict_empty_on_success(self):
+        p = Podman()
+        with patch("agentcage.podman.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="")
+            assert p.secret_list_strict() == []
 
 
 class TestSecretRead:

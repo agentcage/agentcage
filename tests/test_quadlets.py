@@ -538,9 +538,10 @@ class TestStoreAwareSecretEmission:
     `no secret with name or ID ...` → start-limit-hit. With
     ``store_secrets`` passed (the env-name set actually present in the
     store), generation must skip store-backed references whose entry is
-    absent — unless a pre-start channel materializes them (`.cred` blob /
-    `systemd-creds:` decrypt ExecStartPre, or `env:`/`cmd:` resolution on
-    the start path). ``store_secrets=None`` keeps legacy emit-all."""
+    absent — unless a pre-start channel materializes them (a present
+    `.cred` blob, including `systemd-creds:` decrypt ExecStartPre, or
+    `env:`/`cmd:` resolution on the start path). ``store_secrets=None``
+    keeps legacy emit-all."""
 
     def _cfg(self, tmp_path, body: str):
         p = tmp_path / "config.yaml"
@@ -623,9 +624,10 @@ class TestStoreAwareSecretEmission:
         assert "Secret=myapp.ENV_KEY,type=env,target=ENV_KEY" in content
         assert "Secret=myapp.CMD_KEY,type=env,target=CMD_KEY" in content
 
-    def test_systemd_creds_source_survives_empty_store(self, tmp_path):
-        """systemd-creds: rules get a decrypt ExecStartPre that creates
-        the store entry before the container starts — keep the line."""
+    def test_systemd_creds_source_without_blob_is_dropped(self, tmp_path):
+        """After `secret rm` the .cred blob is gone too. An explicit
+        systemd-creds: rule must not keep an unresolvable Secret= / decrypt
+        ExecStartPre solely because of its scheme."""
         cfg = self._cfg(tmp_path, """\
             name: test
             container:
@@ -640,13 +642,14 @@ class TestStoreAwareSecretEmission:
             store_secrets=set(),
         )
         content = files["test-egress.container"]
-        assert "Secret=myapp.API_KEY,type=env,target=API_KEY" in content
-        assert "systemd-creds" in content and "decrypt" in content
+        assert "Secret=myapp.API_KEY" not in content
+        assert "systemd-creds" not in content
 
     def test_cred_blob_survives_empty_store(self, tmp_path, patch_state_dirs):
         """A .cred blob (auto-encrypted `secret set` on a systemd-creds
-        host) is materialized by the decrypt ExecStartPre — keep the
-        line even without an explicit source: and an empty store."""
+        host, or an explicit systemd-creds: source with a stored blob) is
+        materialized by the decrypt ExecStartPre — keep the line even
+        without a store entry."""
         state = patch_state_dirs
         creds_dir = state.deployment_dir("myapp") / "creds"
         creds_dir.mkdir(parents=True)
@@ -665,6 +668,7 @@ class TestStoreAwareSecretEmission:
         )
         content = files["test-egress.container"]
         assert "Secret=myapp.API_KEY,type=env,target=API_KEY" in content
+        assert "systemd-creds" in content and "decrypt" in content
 
     def test_relay_credentials_gated_by_store(self, tmp_path):
         cfg = self._cfg(tmp_path, """\
