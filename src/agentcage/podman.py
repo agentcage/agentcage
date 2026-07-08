@@ -18,6 +18,45 @@ def filter_secrets_by_prefix(lines: list[str], prefix: str) -> list[dict]:
     return secrets
 
 
+def _parse_secret_list(r, prefix: str = "") -> list[dict]:
+    """Lenient parse of a ``podman secret ls`` result: ``[]`` on failure
+    or empty output. Used by the lenient :meth:`Podman.secret_list` /
+    :meth:`VmPodman.secret_list` so ``cage show`` / ``secret list`` /
+    ``destroy_resources`` survive a transient podman hiccup. The store-
+    aware path (issue #262) uses the raising ``secret_list_strict``
+    variants instead.
+    """
+    if r.returncode != 0 or not r.stdout.strip():
+        return []
+    return filter_secrets_by_prefix(r.stdout.strip().splitlines(), prefix)
+
+
+def secret_env_names(podman_like, deploy_name: str) -> set[str]:
+    """Env-name set (deploy prefix stripped) of store entries for a cage.
+
+    *podman_like* is any object with the ``secret_list(prefix=...)``
+    interface (host :class:`Podman` or the VM-routed ``VmPodman``).
+    Secrets are stored as ``{deploy_name}.{ENV}`` when a deploy name is
+    set, bare ``ENV`` otherwise; callers of
+    :func:`agentcage.quadlets.generate_quadlets` want the env-name set
+    for the store-aware ``Secret=`` gate (issue #262).
+    """
+    prefix = f"{deploy_name}." if deploy_name else ""
+    # Use the strict variant when available so a transient podman failure
+    # propagates as an exception (the caller's try/except falls back to
+    # ``None`` = legacy emit-everything) instead of an empty set, which
+    # would drop every Secret= directive. Lenient wrappers fall through
+    # to secret_list().
+    list_fn = (
+        getattr(podman_like, "secret_list_strict", None)
+        or podman_like.secret_list
+    )
+    names = [s["Name"] for s in list_fn(prefix=prefix)]
+    if prefix:
+        return {n[len(prefix):] for n in names}
+    return set(names)
+
+
 def _podman_cmd() -> list[str]:
     """Return the base command for running podman.
 
@@ -177,13 +216,43 @@ class Podman:
         return json.loads(r.stdout)[0]
 
     def secret_list(self, prefix: str = "") -> list[dict]:
-        """List podman secrets, optionally filtered by name prefix."""
+        """List podman secrets, optionally filtered by name prefix.
+
+        Lenient: returns ``[]`` on a non-zero exit so ``cage show`` /
+        ``secret list`` / ``destroy_resources`` survive a transient
+        podman hiccup. The store-aware ``Secret=`` emission path
+        (issue #262) uses the raising :meth:`secret_list_strict` instead.
+        """
         r = subprocess.run(
             [*_podman_cmd(), "secret", "ls", "--noheading",
              "--format", "{{.Name}}"],
             capture_output=True, text=True,
         )
-        if r.returncode != 0 or not r.stdout.strip():
+        return _parse_secret_list(r, prefix)
+
+    def secret_list_strict(self, prefix: str = "") -> list[dict]:
+        """List secrets, raising on a ``podman secret ls`` failure.
+
+        Unlike :meth:`secret_list`, which returns ``[]`` on a non-zero
+        exit (the lenient behavior ``cage show`` / ``secret list`` /
+        ``destroy_resources`` rely on so a transient podman hiccup never
+        crashes them), this raises ``RuntimeError`` so the store-aware
+        ``Secret=`` emission path (issue #262) can distinguish a
+        genuinely-empty store from an unqueryable one and fall back to
+        the legacy emit-everything behavior instead of dropping every
+        directive against an empty view.
+        """
+        r = subprocess.run(
+            [*_podman_cmd(), "secret", "ls", "--noheading",
+             "--format", "{{.Name}}"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(
+                "podman secret ls failed: "
+                f"{(r.stderr or r.stdout or '').strip()}"
+            )
+        if not r.stdout.strip():
             return []
         return filter_secrets_by_prefix(r.stdout.strip().splitlines(), prefix)
 

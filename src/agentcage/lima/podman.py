@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from agentcage.lima.instance import LimaInstance
-from agentcage.podman import filter_secrets_by_prefix
+from agentcage.podman import _parse_secret_list, filter_secrets_by_prefix
 
 
 class VmPodman:
@@ -25,7 +25,28 @@ class VmPodman:
             ["podman", "secret", "ls", "--noheading", "--format", "{{.Name}}"],
             check=False,
         )
-        if r.returncode != 0 or not r.stdout.strip():
+        return _parse_secret_list(r, prefix)
+
+    def secret_list_strict(self, prefix: str = "") -> list[dict]:
+        """List secrets, raising on a guest ``podman secret ls`` failure.
+
+        Mirrors :meth:`agentcage.podman.Podman.secret_list_strict`: lets
+        the store-aware ``Secret=`` emission path (issue #262) fall back
+        to legacy emit-everything on a transient failure instead of
+        dropping every directive against an empty view. The VM backend
+        already guards the call with ``inst.is_running()`` so a stopped
+        guest never reaches here, but an in-flight failure still can.
+        """
+        r = self._inst.exec(
+            ["podman", "secret", "ls", "--noheading", "--format", "{{.Name}}"],
+            check=False,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(
+                "podman secret ls failed in VM: "
+                f"{(r.stderr or r.stdout or '').strip()}"
+            )
+        if not r.stdout.strip():
             return []
         return filter_secrets_by_prefix(r.stdout.strip().splitlines(), prefix)
 

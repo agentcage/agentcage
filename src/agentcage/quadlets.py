@@ -285,6 +285,7 @@ def generate_quadlets(
     rootless: bool = True,
     used_octets: set[int] | None = None,
     network_octet: int | None = None,
+    store_secrets: set[str] | None = None,
 ) -> dict[str, str]:
     """Return {filename: content} for all 5 quadlet files.
 
@@ -301,6 +302,18 @@ def generate_quadlets(
             podman network is created once at cage-create time and re-deriving
             a different octet on update would generate quadlets whose static
             IPs don't fall in the existing ``<name>-net`` subnet.
+        store_secrets: Env-name set (deploy prefix stripped) of secrets
+            currently present in the podman secret store, or ``None`` when
+            the store cannot be queried (e.g. VM backend with the guest
+            stopped). When a set is given, ``Secret=`` emission becomes
+            *store-aware* (issue #262): a store-backed reference whose
+            entry is absent — and that will not be materialized before
+            container start by a decrypt ``ExecStartPre`` (present ``.cred``
+            blob, including ``systemd-creds:`` sources) or by the start
+            path's ``resolve_and_populate`` (``env:`` / ``cmd:`` source) — is
+            skipped instead of rendered as an unresolvable directive that
+            fails the next boot with ``start-limit-hit``. ``None`` keeps
+            the legacy emit-everything behavior.
     """
     env = _make_env()
     name = config.name
@@ -395,11 +408,36 @@ def generate_quadlets(
     # the proxy container starts.
     from agentcage import state as _state_mod
     _state_creds_dir = _state_mod.deployment_dir(deploy_name or name) / "creds"
+
+    def _boot_resolvable(env_name: str, scheme: str, has_cred_file: bool) -> bool:
+        """True when a ``Secret=`` reference to *env_name* will resolve
+        at container start (issue #262 store-aware gate).
+
+        Always true when *store_secrets* is None (store state unknown —
+        keep the legacy behavior). Otherwise true when the entry is in
+        the store now, or a pre-start channel materializes it: the
+        decrypt ExecStartPre (present ``.cred`` blob, including
+        ``systemd-creds:`` sources) or the start path's
+        resolve_and_populate (``env:`` / ``cmd:`` source).
+        """
+        if store_secrets is None:
+            return True
+        if has_cred_file or scheme in ("env", "cmd"):
+            return True
+        return env_name in store_secrets
+
     proxy_secrets = []
     creds_secrets = []
     for r in config.secret_injection:
         scheme = (r.source or "").partition(":")[0]
         has_cred_file = (_state_creds_dir / f"{r.env}.cred").exists()
+        if not _boot_resolvable(r.env, scheme, has_cred_file):
+            # `secret rm` removed the store entry but the declared rule
+            # stays in cage.yaml — rendering the directive anyway would
+            # make the next egress boot fail with an unresolvable
+            # `Secret=`. Skip it; the next `secret set` re-converges the
+            # units and the line comes back.
+            continue
         if scheme == "systemd-creds" or has_cred_file:
             creds_secrets.append(r.env)
         proxy_secrets.append(r.env)
@@ -416,9 +454,23 @@ def generate_quadlets(
             if not arg or arg in proxy_secrets:
                 continue
             has_cred_file = (_state_creds_dir / f"{arg}.cred").exists()
+            if not _boot_resolvable(arg, scheme, has_cred_file):
+                continue
             if scheme == "systemd-creds" or has_cred_file:
                 creds_secrets.append(arg)
             proxy_secrets.append(arg)
+
+    # Direct podman_secrets on the cage container hit the same boot
+    # failure when their store entry was `secret rm`'d — gate them with
+    # the same store-aware rule (no source: concept here; a .cred blob
+    # is materialized by the egress decrypt ExecStartPre, which runs
+    # before the cage starts).
+    cage_podman_secrets = [
+        s for s in cc.podman_secrets
+        if _boot_resolvable(
+            s, "", (_state_creds_dir / f"{s}.cred").exists()
+        )
+    ]
 
     # Parse ports into structured forwards for proxy reverse mode
     inbound_forwards = []
@@ -606,7 +658,7 @@ def generate_quadlets(
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
         tmpfs=cc.tmpfs,
-        podman_secrets=cc.podman_secrets,
+        podman_secrets=cage_podman_secrets,
         placeholders_env_path=placeholders_env_path,
         cage_env_dir=cage_env_dir,
         env=expanded_env,

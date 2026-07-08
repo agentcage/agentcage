@@ -11,7 +11,7 @@ import click
 from agentcage import systemd
 from agentcage._timing import Phase
 from agentcage.config import Config
-from agentcage.podman import Podman
+from agentcage.podman import Podman, secret_env_names
 from agentcage.quadlets import generate_quadlets
 
 
@@ -98,6 +98,16 @@ class ContainerBackend:
         network_octet: int | None = None,
     ) -> dict[str, str]:
         rootless = self._podman.info().get("host", {}).get("security", {}).get("rootless", True)
+        # Store-aware Secret= emission (issue #262): pass the env-name set
+        # of secrets actually present in the podman store so a `secret
+        # rm`'d entry drops its quadlet directive instead of failing the
+        # next boot with an unresolvable Secret= (start-limit-hit). The
+        # info() call above already proved podman is reachable; on a
+        # query failure fall back to None (= legacy emit-everything).
+        try:
+            store_secrets = secret_env_names(self._podman, deploy_name)
+        except Exception:
+            store_secrets = None
         return generate_quadlets(
             config,
             config_host_path,
@@ -106,6 +116,7 @@ class ContainerBackend:
             rootless=rootless,
             used_octets=used_octets,
             network_octet=network_octet,
+            store_secrets=store_secrets,
         )
 
     def unit_dir(self) -> Path:

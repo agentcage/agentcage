@@ -531,6 +531,210 @@ class TestEgressQuadlet:
         assert '--name "API_KEY"' in decrypt_line
 
 
+class TestStoreAwareSecretEmission:
+    """Issue #262: `secret rm` removes the podman store entry but the
+    declared secret_injection rule stays in cage.yaml — blindly rendering
+    `Secret=<cage>.<KEY>` makes the next egress boot fail with
+    `no secret with name or ID ...` → start-limit-hit. With
+    ``store_secrets`` passed (the env-name set actually present in the
+    store), generation must skip store-backed references whose entry is
+    absent — unless a pre-start channel materializes them (a present
+    `.cred` blob, including `systemd-creds:` decrypt ExecStartPre, or
+    `env:`/`cmd:` resolution on the start path). ``store_secrets=None``
+    keeps legacy emit-all."""
+
+    def _cfg(self, tmp_path, body: str):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent(body))
+        return load_config(str(p))
+
+    def test_missing_store_entry_drops_secret_line(self, tmp_path):
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+            store_secrets=set(),
+        )
+        content = files["test-egress.container"]
+        assert "Secret=myapp.API_KEY" not in content
+
+    def test_present_store_entry_keeps_secret_line(self, tmp_path):
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+              - env: GONE_KEY
+                placeholder: "{{GONE_KEY}}"
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+            store_secrets={"API_KEY"},
+        )
+        content = files["test-egress.container"]
+        assert "Secret=myapp.API_KEY,type=env,target=API_KEY" in content
+        assert "Secret=myapp.GONE_KEY" not in content
+
+    def test_none_store_keeps_legacy_emit_all(self, tmp_path):
+        """Store state unknown (VM guest stopped, store unqueryable) →
+        emit everything, exactly as before the fix."""
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+        )
+        content = files["test-egress.container"]
+        assert "Secret=myapp.API_KEY,type=env,target=API_KEY" in content
+
+    def test_env_and_cmd_sources_survive_empty_store(self, tmp_path):
+        """env:/cmd: sources are resolved into the store by the start
+        path's resolve_and_populate before units launch — their Secret=
+        lines must stay even when the store is empty at generation."""
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: ENV_KEY
+                placeholder: "{{ENV_KEY}}"
+                source: "env:MY_VAR"
+              - env: CMD_KEY
+                placeholder: "{{CMD_KEY}}"
+                source: "cmd:echo hi"
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+            store_secrets=set(),
+        )
+        content = files["test-egress.container"]
+        assert "Secret=myapp.ENV_KEY,type=env,target=ENV_KEY" in content
+        assert "Secret=myapp.CMD_KEY,type=env,target=CMD_KEY" in content
+
+    def test_systemd_creds_source_without_blob_is_dropped(self, tmp_path):
+        """After `secret rm` the .cred blob is gone too. An explicit
+        systemd-creds: rule must not keep an unresolvable Secret= / decrypt
+        ExecStartPre solely because of its scheme."""
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+                source: "systemd-creds:"
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+            store_secrets=set(),
+        )
+        content = files["test-egress.container"]
+        assert "Secret=myapp.API_KEY" not in content
+        assert "systemd-creds" not in content
+
+    def test_cred_blob_survives_empty_store(self, tmp_path, patch_state_dirs):
+        """A .cred blob (auto-encrypted `secret set` on a systemd-creds
+        host, or an explicit systemd-creds: source with a stored blob) is
+        materialized by the decrypt ExecStartPre — keep the line even
+        without a store entry."""
+        state = patch_state_dirs
+        creds_dir = state.deployment_dir("myapp") / "creds"
+        creds_dir.mkdir(parents=True)
+        (creds_dir / "API_KEY.cred").write_bytes(b"blob")
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: API_KEY
+                placeholder: "{{API_KEY}}"
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+            store_secrets=set(),
+        )
+        content = files["test-egress.container"]
+        assert "Secret=myapp.API_KEY,type=env,target=API_KEY" in content
+        assert "systemd-creds" in content and "decrypt" in content
+
+    def test_relay_credentials_gated_by_store(self, tmp_path):
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            protocol_relays:
+              - name: migadu-imap
+                type: imap
+                listen: "127.0.0.1:1143"
+                upstream:
+                  host: imap.migadu.com
+                  port: 993
+                auth:
+                  type: imap-login
+                  user_source: "podman:MIGADU_USER"
+                  password_source: "podman:MIGADU_PASSWORD"
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+            store_secrets={"MIGADU_USER"},
+        )
+        content = files["test-egress.container"]
+        assert "Secret=myapp.MIGADU_USER,type=env,target=MIGADU_USER" in content
+        assert "Secret=myapp.MIGADU_PASSWORD" not in content
+
+    def test_cage_podman_secrets_gated_by_store(self, tmp_path):
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+              podman_secrets:
+                - KEEP_ME
+                - RM_ME
+        """)
+        files = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="myapp",
+            store_secrets={"KEEP_ME"},
+        )
+        content = files["test-cage.container"]
+        assert "Secret=myapp.KEEP_ME,type=env,target=KEEP_ME" in content
+        assert "Secret=myapp.RM_ME" not in content
+
+    def test_rm_then_set_round_trip(self, tmp_path):
+        """The converge cycle: rm drops the line, the next set re-adds
+        it — units always track store reality."""
+        cfg = self._cfg(tmp_path, """\
+            name: test
+            container:
+              image: test:latest
+            secret_injection:
+              - env: BRAND_KEY
+                placeholder: "{{BRAND_KEY}}"
+        """)
+        after_rm = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="optest",
+            store_secrets=set(),
+        )["test-egress.container"]
+        assert "Secret=optest.BRAND_KEY" not in after_rm
+        after_set = generate_quadlets(
+            cfg, "/c.yaml", "/patches", deploy_name="optest",
+            store_secrets={"BRAND_KEY"},
+        )["test-egress.container"]
+        assert "Secret=optest.BRAND_KEY,type=env,target=BRAND_KEY" in after_set
+
+
 class TestVmLocalEgressConfigPaths:
     """VM backend: the egress quadlet must bind-mount a VM-local copy of
     proxy-config.yaml and dns-allowlist.conf — NOT the host path under

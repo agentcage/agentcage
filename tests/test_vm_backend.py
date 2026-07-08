@@ -164,12 +164,75 @@ class TestGenerateUnits:
             "testcage",
             used_octets=None,
             network_octet=None,
+            store_secrets=None,
         )
 
         assert "lima.yaml" in units
         assert units["lima.yaml"] == "lima: yaml content"
         assert "quadlets/testcage-cage.container" in units
         assert "quadlets/testcage-net.network" in units
+
+    def test_store_secrets_queried_from_running_guest(self):
+        """Issue #262: for VM cages the podman secret store lives inside
+        the guest — when the Lima instance is running, generate_units
+        must pass the guest store's env-name set so `secret rm` leftovers
+        drop their Secret= directive."""
+        backend = VmBackend()
+        config = _make_config()
+        inst = MagicMock()
+        inst.exists.return_value = True
+        inst.is_running.return_value = True
+        vm_podman = MagicMock()
+        vm_podman.secret_list_strict.return_value = [{"Name": "testcage.API_KEY"}]
+
+        with patch("agentcage.backends.vm.generate_lima_config", return_value="y"), \
+             patch("agentcage.backends.vm.LimaInstance", return_value=inst), \
+             patch("agentcage.lima.podman.VmPodman", return_value=vm_podman), \
+             patch("agentcage.backends.vm.generate_quadlets",
+                   return_value={}) as mock_q:
+            backend.generate_units(config, "", "", "testcage")
+
+        vm_podman.secret_list_strict.assert_called_once_with(prefix="testcage.")
+        assert mock_q.call_args.kwargs["store_secrets"] == {"API_KEY"}
+
+    def test_store_secrets_none_when_guest_stopped(self):
+        """Guest not running → store unqueryable → None (legacy emit-all;
+        also the initial-create path where pending secrets land only
+        after the VM first starts)."""
+        backend = VmBackend()
+        config = _make_config()
+        inst = MagicMock()
+        inst.exists.return_value = True
+        inst.is_running.return_value = False
+
+        with patch("agentcage.backends.vm.generate_lima_config", return_value="y"), \
+             patch("agentcage.backends.vm.LimaInstance", return_value=inst), \
+             patch("agentcage.backends.vm.generate_quadlets",
+                   return_value={}) as mock_q:
+            backend.generate_units(config, "", "", "testcage")
+
+        assert mock_q.call_args.kwargs["store_secrets"] is None
+
+    def test_store_secrets_none_when_guest_query_fails(self):
+        """Guest running but `podman secret ls` fails → None (legacy
+        emit-all), NOT an empty set, which would drop every Secret= line
+        (issue #262)."""
+        backend = VmBackend()
+        config = _make_config()
+        inst = MagicMock()
+        inst.exists.return_value = True
+        inst.is_running.return_value = True
+        vm_podman = MagicMock()
+        vm_podman.secret_list_strict.side_effect = RuntimeError("guest podman down")
+
+        with patch("agentcage.backends.vm.generate_lima_config", return_value="y"), \
+             patch("agentcage.backends.vm.LimaInstance", return_value=inst), \
+             patch("agentcage.lima.podman.VmPodman", return_value=vm_podman), \
+             patch("agentcage.backends.vm.generate_quadlets",
+                   return_value={}) as mock_q:
+            backend.generate_units(config, "", "", "testcage")
+
+        assert mock_q.call_args.kwargs["store_secrets"] is None
 
     def test_quadlet_keys_prefixed_correctly(self):
         backend = VmBackend()
