@@ -68,7 +68,7 @@ assert_output_contains "7.5" "List command" "$CAGE" \
 assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "7.6" "Allowed domain" --max-time 10
 assert_http_any "403|502" "$BASE/fetch?url=https://evil.com/exfil" "7.7" "Blocked domain" --max-time 10
 
-assert_http_any "403|502" "$BASE/check-secret" "7.8" "Secret detection" \
+assert_http 200 "$BASE/check-secret" "7.8" "Secret detection (flagged, default)" \
   --max-time 10 -X POST -H "Content-Type: application/json" \
   -d '{"key":"sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 

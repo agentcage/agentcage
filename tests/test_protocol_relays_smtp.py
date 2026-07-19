@@ -977,7 +977,7 @@ class TestInspectorIntegration:
                 recorder, "agent@example.com", "real-app-password",
             )
             insp = SecretsInspector()
-            insp.configure({"enabled": True})
+            insp.configure({"enabled": True, "action": "block"})
             try:
                 async with _running_relay(
                     _relay_entry(up_port), inspectors=[insp]
@@ -1026,7 +1026,7 @@ class TestAllowlistInspectorBypass:
             )
             from inspectors.secrets import SecretsInspector
             insp = SecretsInspector()
-            insp.configure({"enabled": True})
+            insp.configure({"enabled": True, "action": "block"})
             entries: list[dict] = []
             try:
                 async with _running_relay(
@@ -1076,7 +1076,7 @@ class TestAllowlistInspectorBypass:
             )
             from inspectors.secrets import SecretsInspector
             insp = SecretsInspector()
-            insp.configure({"enabled": True})
+            insp.configure({"enabled": True, "action": "block"})
             try:
                 async with _running_relay(
                     _relay_entry(
@@ -1118,7 +1118,7 @@ class TestAllowlistInspectorBypass:
             )
             from inspectors.secrets import SecretsInspector
             insp = SecretsInspector()
-            insp.configure({"enabled": True})
+            insp.configure({"enabled": True, "action": "block"})
             try:
                 # No recipient_allowlist => bypass cannot trigger.
                 async with _running_relay(

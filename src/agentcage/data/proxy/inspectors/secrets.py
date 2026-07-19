@@ -95,13 +95,14 @@ class SecretsInspector(Inspector):
 
     def configure(self, config: dict) -> None:
         self.enabled = config.get("enabled", True)
-        # "block" (default) returns a hard 403 on a detected secret;
-        # "flag" records the detection in the audit log and lets the
-        # request through.  Any other value falls back to "block".
-        # ``action_explicit`` lets callers tell an operator-chosen action
-        # apart from the default.
+        # "flag" (default on HTTP egress) records the detection in the
+        # audit log and lets the request through; "block" returns a hard
+        # 403.  Any other value falls back to the "flag" default.
+        # ``action_explicit`` lets the relay chain tell an operator-chosen
+        # action apart from the default so it can apply its own
+        # block-by-default only when unset.
         self.action_explicit = "action" in config
-        self.action = "flag" if config.get("action") == "flag" else "block"
+        self.action = "block" if config.get("action") == "block" else "flag"
         self.patterns: dict[str, re.Pattern] = {}
         self.allow_to_domains: dict[str, list[str]] = {}
         if self.enabled:

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The `secrets` inspector now defaults to `flag` on HTTP egress (was an unconditional hard block).** A leaked-credential pattern in an outbound HTTP request is now recorded in the audit log and forwarded rather than blocked with a 403. **Protocol relays (SMTP) still default to `block`** — an email body is a deliberate, operator-invisible exfil channel — and an explicit `secrets.action` in config overrides both defaults everywhere. Operators who relied on the old hard-block behavior on HTTP should set `secrets: { action: block }`. Unrecognized `action` values fall back to `flag`.
+
 ## [0.29.1] - 2026-07-07
 
 ### Fixed
