@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-19
+
 ### Changed
 
 - **The `secrets` inspector now defaults to `flag` on HTTP egress (was an unconditional hard block).** A leaked-credential pattern in an outbound HTTP request is now recorded in the audit log and forwarded rather than blocked with a 403. **Protocol relays (SMTP) still default to `block`** — an email body is a deliberate, operator-invisible exfil channel — and an explicit `secrets.action` in config overrides both defaults everywhere. Operators who relied on the old hard-block behavior on HTTP should set `secrets: { action: block }`. Unrecognized `action` values fall back to `flag`.
+
+### Fixed
+
+- **`agentcage secret rm` no longer bricks the next boot.** Removing a secret deleted the podman store entry but regenerated quadlets kept rendering `Secret=<cage>.<KEY>,type=env`, so the next egress start failed with `no secret with name or ID …` (start-limit-hit) until the value was re-set. `Secret=` emission is now store-aware at generation time: a directive is skipped only when the store entry is absent and nothing materializes it before container start. The same gate covers protocol-relay credentials and the cage container's direct `podman_secrets`.
 
 ## [0.29.1] - 2026-07-07
 
