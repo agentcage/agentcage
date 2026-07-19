@@ -113,11 +113,14 @@ regression that this phase is blind to.
 Things phase 8's logic *assumes* about the environment — if any of
 these stop holding, assertions could pass for the wrong reason.
 
-- **setproctitle renames survive.** 8.4 relies on `pgrep -f '^openclaw$'`
-  matching exactly the openclaw process's cmdline. If openclaw stops
-  renaming argv[0] and instead runs as `node openclaw.mjs gateway`, the
-  pgrep returns empty and 8.4 bails with "could not find openclaw
-  process" — a *correct* failure, but the message will mislead.
+- **setproctitle renames survive.** 8.4 relies on
+  `pgrep -f '^openclaw($|-gateway)'` matching the openclaw process's
+  cmdline — upstream retitled it from `openclaw` to `openclaw-gateway`
+  (padded argv) in the 2026-07 images, which is why the pattern accepts
+  both. If openclaw stops renaming argv[0] and instead runs as
+  `node openclaw.mjs gateway`, the pgrep returns empty and 8.4 bails
+  with "could not find openclaw process" — a *correct* failure, but the
+  message will mislead.
 - **commands.restart defaults to true.** 8.4 sends an external SIGUSR1
   via `pkill`. openclaw's handler (see `isRestartEnabled` in
   `dist/commands.flags-*.js`) authorizes the restart unless config sets

@@ -177,7 +177,8 @@ else
 fi
 
 # 8.4: self-restart on SIGUSR1 (log-line witness + readiness probe).
-# Openclaw 2026.5+ runs as a single "openclaw" process and handles SIGUSR1
+# Openclaw 2026.5+ runs as a single retitled process — "openclaw" until
+# the 2026-07 images, "openclaw-gateway" since — and handles SIGUSR1
 # with an in-process restart in containers (deliberate — keeps PID 1
 # alive). The PID never changes; the gateway tears down its server,
 # reinitializes, and starts listening again. We witness this via two
@@ -189,7 +190,7 @@ fi
 e2e_timer_start
 # `pgrep` exits 1 on no-match — wrap in `|| true` so `set -e` doesn't
 # kill the phase before we can report 8.4 as a failure.
-OPENCLAW_PID=$(podman exec "${CAGE}-cage" pgrep -f '^openclaw$' 2>/dev/null | head -1 || true)
+OPENCLAW_PID=$(podman exec "${CAGE}-cage" pgrep -f '^openclaw($|-gateway)' 2>/dev/null | head -1 || true)
 if [ -z "$OPENCLAW_PID" ]; then
   e2e_fail "8.4" "self-restart SIGUSR1" "could not find openclaw process before signal"
 else
@@ -197,7 +198,7 @@ else
   # the signal. Avoids matching a "received SIGUSR1" from an earlier
   # restart in the same container.
   LOG_BEFORE=$(podman logs "${CAGE}-cage" 2>&1 | wc -l | tr -d ' ')
-  podman exec "${CAGE}-cage" pkill -USR1 -f '^openclaw$' 2>/dev/null || true
+  podman exec "${CAGE}-cage" pkill -USR1 -f '^openclaw($|-gateway)' 2>/dev/null || true
   RESTART_LOGGED=""
   for _ in $(seq 1 30); do
     sleep 1
