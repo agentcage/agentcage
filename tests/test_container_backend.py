@@ -457,3 +457,61 @@ class TestExecArgv:
         assert argv == [
             "podman", "exec", "-u", "1000:1000", "foo-egress", "cat", "/etc/hosts",
         ]
+
+
+class TestAuditSourceSelection:
+    """Where `cage audit` reads from depends on the driver podman picked.
+
+    Podman only uses `journald` when it can actually write there — which
+    needs a conmon built with journald support — and falls back to
+    `k8s-file` silently otherwise. Reading the wrong source is invisible:
+    the proxy stays healthy and `cage audit` just prints nothing.
+    """
+
+    def _backend(self, driver: str | None):
+        backend = ContainerBackend()
+        inspect = MagicMock()
+        if driver is None:
+            inspect.side_effect = RuntimeError("no such container")
+        else:
+            inspect.return_value = {"HostConfig": {"LogConfig": {"Type": driver}}}
+        backend._podman.container_inspect = inspect
+        return backend
+
+    def test_journald_driver_reads_the_journal(self):
+        argv = self._backend("journald").audit_argv("mycage")
+        assert argv[0] == "journalctl"
+        assert "-u" in argv and "mycage-egress" in argv
+
+    @pytest.mark.parametrize("driver", ["k8s-file", "json-file", "K8s-File"])
+    def test_file_drivers_read_podman_logs(self, driver):
+        argv = self._backend(driver).audit_argv("mycage")
+        assert "journalctl" not in argv
+        assert "logs" in argv
+        assert argv[-3:] == ["--tail", "10000", "mycage-egress"]
+
+    def test_unreadable_container_falls_back_to_the_journal(self):
+        """A destroyed cage has no container to inspect, but the journal
+        may still hold its history — `podman logs` certainly won't."""
+        argv = self._backend(None).audit_argv("mycage")
+        assert argv[0] == "journalctl"
+
+    def test_follow_maps_onto_each_reader(self):
+        assert "-f" in self._backend("journald").audit_argv("c", follow=True)
+        assert "-f" in self._backend("k8s-file").audit_argv("c", follow=True)
+
+    def test_since_is_native_only_on_the_journal_reader(self):
+        """podman logs takes Go durations / RFC3339, not journalctl's
+        "10 minutes ago", so --since is dropped there and the CLI applies
+        AuditFilter.since post-parse instead."""
+        journal = self._backend("journald").audit_argv("c", since="10 minutes ago")
+        assert "--since" in journal
+
+        podman = self._backend("k8s-file").audit_argv("c", since="10 minutes ago")
+        assert "--since" not in podman
+        assert "10 minutes ago" not in podman
+
+    def test_audit_reads_journal_predicate(self):
+        assert self._backend("journald").audit_reads_journal("c") is True
+        assert self._backend("k8s-file").audit_reads_journal("c") is False
+        assert self._backend(None).audit_reads_journal("c") is True
