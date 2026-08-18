@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **IMAP relays gained `policy.write_mode` and `policy.folder_denylist`.** The previous choice was binary — `readonly: true` blocks `MOVE`/`COPY`/`STORE` along with everything else, `readonly: false` permits `EXPUNGE` — which left no way to express the common case of letting an agent tidy a mailbox without ever destroying anything in it. `write_mode: organise` permits reads, `MOVE`, `COPY` and flagging, while refusing `EXPUNGE`, `UID EXPUNGE`, `CLOSE`, `APPEND`, `DELETE`, `CREATE`, `RENAME`, the ACL/metadata setters, and any `STORE` that would **add** the `\Deleted` flag (removing it is allowed — that un-deletes). `CLOSE` is refused because RFC 3501 §6.4.2 makes it expunge `\Deleted` messages as a side effect, so blocking `EXPUNGE` alone would leave the destructive path open behind an innocuous verb; refusing the flag as well means an expunge reached by any other route has nothing to reap. `folder_denylist` names mailboxes that may never be selected and wins over `folder_allowlist`, matched case-insensitively because servers disagree on the case of special-use names and failing open is the wrong direction here. Since `MOVE`/`COPY` destinations are not policed, `folder_denylist: [Trash]` with `write_mode: organise` yields an agent that can file mail into Trash but cannot open Trash to purge it. `readonly` keeps working and maps onto `write_mode` (`true` → `none`, `false`/absent → `full`); setting both to contradicting values is a config error rather than a precedence puzzle.
+
 ## [0.31.0] - 2026-08-18
 
 ### Added

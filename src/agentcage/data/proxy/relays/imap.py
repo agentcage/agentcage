@@ -47,6 +47,34 @@ _DENY_COMMANDS_READONLY = frozenset({
     "COPY",
 })
 
+# Commands denied in write_mode "organise": everything that destroys mail
+# or restructures the mailbox. MOVE/COPY/STORE are deliberately absent —
+# filing and flagging are the point of this mode.
+#
+# CLOSE is in here for a reason that is easy to miss: RFC 3501 §6.4.2 makes
+# CLOSE expunge every \Deleted message in the selected mailbox as a side
+# effect. Denying EXPUNGE while allowing CLOSE would leave the destructive
+# path wide open behind an innocuous-looking verb.
+#
+# CREATE/RENAME/DELETE are denied too: organising means moving mail between
+# folders that already exist, not restructuring someone's mailbox. APPEND is
+# denied because it injects new messages — the way you would fabricate mail.
+_DENY_COMMANDS_ORGANISE = frozenset({
+    "EXPUNGE",
+    "CLOSE",
+    "APPEND",
+    "DELETE",
+    "CREATE",
+    "RENAME",
+    "SETMETADATA",
+    "SETACL",
+    "DELETEACL",
+})
+
+# UID variants denied in "organise". UID STORE/COPY/MOVE stay allowed; the
+# \Deleted flag is filtered separately by _store_adds_deleted().
+_UID_DENY_ORGANISE = frozenset({"EXPUNGE"})
+
 # UID is a prefix that turns the next token into a UID-aware variant.
 # UID FETCH and UID SEARCH are reads (and clients use them for everything
 # because UIDs are stable across reconnects); the rest mutate state.
@@ -142,8 +170,25 @@ class _RelayConfig:
         self.password_source: str = str(auth.get("password_source") or "")
         policy = entry.get("policy") or {}
         self.readonly: bool = bool(policy.get("readonly", False))
+        # write_mode is the expressive form; readonly is the older boolean
+        # and still works. An explicit write_mode wins; otherwise readonly
+        # maps onto it, so existing configs behave exactly as before.
+        #   none     - no writes at all (readonly: true)
+        #   organise - file and flag mail, but never destroy it
+        #   full     - no restrictions (readonly: false / absent)
+        mode = str(policy.get("write_mode") or "").strip().lower()
+        if not mode:
+            mode = "none" if self.readonly else "full"
+        self.write_mode: str = mode
         self.folder_allowlist: list[str] = list(
             policy.get("folder_allowlist") or []
+        )
+        # Denied outright, and denial wins over the allowlist. Useful for
+        # carving one folder out of otherwise-full access — e.g. keeping an
+        # agent out of Trash so that "delete" can only ever mean "move to
+        # Trash" and never "purge what is already there".
+        self.folder_denylist: list[str] = list(
+            policy.get("folder_denylist") or []
         )
         self.conn_rate_limit: str = str(
             policy.get("conn_rate_limit") or "30/min"
@@ -198,14 +243,15 @@ class ImapRelay:
             self._handle_client, host or "0.0.0.0", int(port_s)
         )
         log.info(
-            "imap relay %s listening on %s -> %s:%d (readonly=%s, "
-            "folders=%s)",
+            "imap relay %s listening on %s -> %s:%d (write=%s, "
+            "folders=%s, denied=%s)",
             self._cfg.name,
             self._cfg.listen,
             self._cfg.upstream_host,
             self._cfg.upstream_port,
-            self._cfg.readonly,
+            self._cfg.write_mode,
             self._cfg.folder_allowlist or "(any)",
+            self._cfg.folder_denylist or "(none)",
         )
 
     async def stop(self) -> None:
@@ -586,36 +632,53 @@ class ImapRelay:
             })
             return (tag, "already authenticated (relay handled login)", b"OK")
 
-        # Readonly policy.
-        if self._cfg.readonly:
+        # Write policy.
+        if self._cfg.write_mode != "full":
+            sub = (
+                effective_cmd.split(" ", 1)[1]
+                if cmd == "UID" and " " in effective_cmd
+                else ""
+            )
             denied = False
-            if cmd in _DENY_COMMANDS_READONLY:
-                denied = True
-            elif cmd == "UID":
-                sub = effective_cmd.split(" ", 1)[1] if " " in effective_cmd else ""
-                if sub in _UID_WRITE_SUBCOMMANDS:
-                    denied = True
+            reason = ""
+            wire = "readonly" if self._cfg.write_mode == "none" else "write_mode organise"
+
+            if self._cfg.write_mode == "none":
+                if cmd in _DENY_COMMANDS_READONLY or sub in _UID_WRITE_SUBCOMMANDS:
+                    denied, reason = True, "readonly policy"
+            else:  # organise
+                if cmd in _DENY_COMMANDS_ORGANISE or sub in _UID_DENY_ORGANISE:
+                    denied, reason = True, "write_mode organise"
+                elif cmd == "STORE" or sub == "STORE":
+                    # Filing and flagging are allowed; marking mail deleted
+                    # is not. Refusing the flag — rather than only the
+                    # EXPUNGE that reaps it — means there is never anything
+                    # for an expunge to destroy.
+                    args = parts[2] if len(parts) >= 3 else b""
+                    if _store_adds_deleted(args):
+                        denied = True
+                        reason = "write_mode organise (\\Deleted flag)"
+
             if denied:
                 log.warning(
-                    "imap relay %s: blocked %s (readonly policy)",
-                    self._cfg.name, effective_cmd,
+                    "imap relay %s: blocked %s (%s)",
+                    self._cfg.name, effective_cmd, reason,
                 )
                 self._audit_log({
                     "kind": "imap_command",
                     "relay": self._cfg.name,
                     "command": effective_cmd,
                     "decision": "blocked",
-                    "reason": "readonly policy",
+                    "reason": reason,
                 })
                 return (
                     tag,
-                    f"{effective_cmd} not permitted (readonly)",
+                    f"{effective_cmd} not permitted ({wire})",
                     b"NO",
                 )
 
-        if (
-            cmd in _MAILBOX_ARG_COMMANDS
-            and self._cfg.folder_allowlist
+        if cmd in _MAILBOX_ARG_COMMANDS and (
+            self._cfg.folder_allowlist or self._cfg.folder_denylist
         ):
             args = parts[2] if len(parts) >= 3 else b""
             mailbox = _extract_mailbox(args)
@@ -632,11 +695,11 @@ class ImapRelay:
                     "reason": "mailbox not parseable",
                 })
                 return (tag, f"{cmd} mailbox not parseable", b"NO")
-            if not self._mailbox_allowed(mailbox):
+            reason = self._mailbox_denial_reason(mailbox)
+            if reason is not None:
                 log.warning(
-                    "imap relay %s: blocked %s on %s "
-                    "(not in folder_allowlist)",
-                    self._cfg.name, cmd, mailbox,
+                    "imap relay %s: blocked %s on %s (%s)",
+                    self._cfg.name, cmd, mailbox, reason,
                 )
                 self._audit_log({
                     "kind": "imap_command",
@@ -644,13 +707,9 @@ class ImapRelay:
                     "command": cmd,
                     "mailbox": mailbox,
                     "decision": "blocked",
-                    "reason": "not in folder_allowlist",
+                    "reason": reason,
                 })
-                return (
-                    tag,
-                    f"{cmd} {mailbox} not in folder_allowlist",
-                    b"NO",
-                )
+                return (tag, f"{cmd} {mailbox} {reason}", b"NO")
 
         # Allowed-command logging. Per-command volume can be high under
         # IDLE/sync flows, so default to DEBUG and only emit at INFO
@@ -674,8 +733,52 @@ class ImapRelay:
             )
         return None
 
-    def _mailbox_allowed(self, mailbox: str) -> bool:
-        return mailbox in self._cfg.folder_allowlist
+    def _mailbox_denial_reason(self, mailbox: str) -> Optional[str]:
+        """Why this mailbox may not be selected, or None if it may.
+
+        Denial wins over the allowlist: a folder named in both is denied.
+        Matching is case-insensitive because IMAP servers differ on the
+        case they report for special-use mailboxes, and a denylist that
+        misses ``trash`` because the server said ``Trash`` would fail
+        open — the wrong direction for this list to be wrong in.
+        """
+        lowered = mailbox.lower()
+        if any(lowered == d.lower() for d in self._cfg.folder_denylist):
+            return "denied by folder_denylist"
+        if (
+            self._cfg.folder_allowlist
+            and not any(
+                lowered == a.lower() for a in self._cfg.folder_allowlist
+            )
+        ):
+            return "not in folder_allowlist"
+        return None
+
+
+_STORE_OP_RE = re.compile(
+    rb"(?P<op>[+-]?)FLAGS(?:\.SILENT)?(?P<flags>.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _store_adds_deleted(args: bytes) -> bool:
+    r"""True when a STORE would ADD the ``\Deleted`` flag.
+
+    ``\Deleted`` is what makes a later EXPUNGE (or CLOSE) destroy mail, so
+    in "organise" mode it is the flag to refuse rather than the commands
+    that act on it. Refusing the flag means EXPUNGE and CLOSE have nothing
+    to reap even if some other path reaches them.
+
+    ``-FLAGS (\Deleted)`` *removes* the flag — that un-deletes a message
+    and is always allowed. Only ``FLAGS`` (set exactly) and ``+FLAGS`` (add)
+    can introduce it.
+    """
+    m = _STORE_OP_RE.search(args)
+    if not m:
+        return False
+    if m.group("op") == b"-":
+        return False
+    return b"\\DELETED" in m.group("flags").upper()
 
 
 def _quote(value: str) -> bytes:
