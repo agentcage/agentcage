@@ -44,7 +44,6 @@ import asyncio
 import logging
 import os
 import re
-import ssl
 import time
 from base64 import b64encode
 from email import message_from_bytes
@@ -53,6 +52,7 @@ from typing import Callable, Optional
 
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.util import shannon_entropy
+from relays._tls import upstream_connect_kwargs
 
 log = logging.getLogger("agentcage.relays.smtp")
 
@@ -129,6 +129,12 @@ class _SmtpConfig:
         self.upstream_host: str = str(upstream.get("host") or "")
         self.upstream_port: int = int(upstream.get("port") or 0)
         self.upstream_tls: bool = bool(upstream.get("tls", True))
+        # Pinned PEM + SNI/hostname override for upstreams no public CA
+        # signs (private CA, Proton Mail Bridge). See relays._tls.
+        self.upstream_ca_pem: str = str(upstream.get("ca_pem") or "")
+        self.upstream_tls_servername: str = str(
+            upstream.get("tls_servername") or ""
+        )
 
         auth = entry.get("auth") or {}
         self.auth_type: str = str(auth.get("type") or "smtp-plain")
@@ -896,13 +902,14 @@ class SmtpRelay:
         return None
 
     async def _connect_upstream(self) -> "_UpstreamSmtp":
-        ssl_ctx = (
-            ssl.create_default_context() if self._cfg.upstream_tls else None
-        )
         reader, writer = await asyncio.open_connection(
             self._cfg.upstream_host,
             self._cfg.upstream_port,
-            ssl=ssl_ctx,
+            **upstream_connect_kwargs(
+                tls=self._cfg.upstream_tls,
+                ca_pem=self._cfg.upstream_ca_pem,
+                tls_servername=self._cfg.upstream_tls_servername,
+            ),
         )
         upstream = _UpstreamSmtp(
             reader, writer, self._cfg.name, self._user, self._password,

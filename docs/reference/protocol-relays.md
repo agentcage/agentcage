@@ -13,11 +13,57 @@ Credential brokers for non-HTTP protocols (IMAP, SMTP) that mirror what [secret 
 | `upstream.host` | `string` | yes | Real upstream server hostname. |
 | `upstream.port` | `int` | yes | Real upstream port (e.g. 993 for IMAPS, 465 for SMTPS). |
 | `upstream.tls` | `bool` | no | Whether to use TLS upstream. Default `true`. |
+| `upstream.ca_file` | `string` | no | Path on the **host** to a PEM certificate, added to the proxy's CA store for this upstream. For upstreams no public CA signs. Read at deploy time. Requires `tls: true`. |
+| `upstream.ca_pem` | `string` | no | The same certificate inline, for config that has to be self-contained. Mutually exclusive with `ca_file`. Requires `tls: true`. |
+| `upstream.tls_servername` | `string` | no | Name sent in SNI and checked against the upstream certificate, when it differs from `upstream.host`. Required when `host` is an IP literal. Requires `tls: true`. |
 | `auth.type` | `string` | yes | Auth scheme. `imap-login` for IMAP; `smtp-plain` for SMTP. |
 | `auth.user_source` | `string` | yes | Source for the username. Same scheme grammar as `secret_injection.source` (`env:`, `cmd:`, `systemd-creds:`, `podman:`). |
 | `auth.password_source` | `string` | yes | Source for the password, same grammar. |
 
 > **Note:** Secrets named in `auth.user_source` / `auth.password_source` are automatically stripped from the cage's `podman_secrets` and `env` blocks the same way `secret_injection.env` is — they exist only in the proxy.
+
+## Upstreams no public CA signs
+
+By default the relay verifies the upstream against the proxy container's system CA store, which is what a public mail host needs. Two kinds of upstream can't be reached that way:
+
+- a **self-hosted mail server** behind a private CA, and
+- a **local decrypting daemon** — Proton Mail Bridge, Hydroxide, a Gmail OAuth shim — which mints its own self-signed certificate at setup and listens on a container or loopback address.
+
+For these, point `upstream.ca_file` at the certificate on the host:
+
+```yaml
+protocol_relays:
+  - name: bridge-imap
+    type: imap
+    listen: "0.0.0.0:1243"
+    upstream:
+      host: 10.88.0.5          # the bridge daemon's container address
+      port: 1143
+      tls: true
+      tls_servername: bridge.local
+      ca_file: ~/.config/protonmail/bridge-v3/cert.pem
+    auth:
+      type: imap-login
+      user_source: "podman:BRIDGE_USER"
+      password_source: "podman:BRIDGE_PASSWORD"
+    policy:
+      readonly: true
+      folder_allowlist: [INBOX]
+```
+
+`~` and `$VARS` are expanded. `upstream.ca_pem` takes the same certificate inline instead, for config that has to be self-contained; setting both is an error rather than a silent precedence rule.
+
+Four properties worth being explicit about:
+
+**The path is read on the host, at deploy time.** The relay runs inside the proxy container, where a host path means nothing, so the CLI reads the file and hands the proxy the contents in `proxy-config.yaml`. That file is rewritten on every deploy and restart path, so a daemon that regenerates its certificate is picked up by `agentcage cage restart` with no config edit. Bind-mounting the file instead would pin an inode — a certificate that gets *replaced* rather than rewritten would be missed — and would need separate plumbing in each of the three backends.
+
+**A missing or non-PEM file fails the deploy.** Better a refused deploy than a relay that can't verify its upstream at 3am and reports only `certificate verify failed`.
+
+**The certificate is added to the system store, not substituted for it.** A relay with an extra anchor still trusts every public CA, so one relay's private certificate is never the reason another can't reach a normal mail host. The trade-off is that this is not pinning: a public CA that mis-issues for the same name still satisfies the check.
+
+**Verification and hostname checking stay on.** There is deliberately no "skip verification" knob: the relay hands the upstream real credentials, so an unverified upstream is an unauthenticated one. This is why `tls_servername` exists — when you point a relay at an IP literal, no certificate can name it, so add the certificate and supply the name it *does* carry. (If the certificate already has an IP SAN for the address you dial, you don't need the override.)
+
+Setting any of these alongside `tls: false` is a config error rather than a no-op: a CA sitting next to a plaintext connection reads as "verified" in review while verifying nothing.
 
 ## IMAP policy
 

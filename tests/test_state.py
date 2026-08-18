@@ -152,6 +152,117 @@ class TestSaveProxyConfig:
         assert proxy_cfg["protocol_relays"][0]["name"] == "migadu-imap"
 
 
+class TestResolveRelayCaFiles:
+    """`upstream.ca_file` is a host path; the relay runs in the proxy
+    container. The CLI reads it at deploy time and hands the proxy the
+    contents, so a rotated certificate is picked up by `cage restart`
+    with no config edit and no per-backend bind-mount plumbing."""
+
+    PEM = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "MIIBfakeexamplecertificatebody\n"
+        "-----END CERTIFICATE-----\n"
+    )
+
+    def _cfg(self, ca_file) -> dict:
+        return {
+            "protocol_relays": [{
+                "name": "bridge-imap",
+                "type": "imap",
+                "upstream": {"host": "10.88.0.5", "port": 1143,
+                             "tls": True, "ca_file": str(ca_file)},
+            }]
+        }
+
+    def test_reads_the_file_into_ca_pem(self, tmp_path, _patch_state_dirs):
+        state = _patch_state_dirs
+        cert = tmp_path / "bridge.pem"
+        cert.write_text(self.PEM)
+
+        out = state.resolve_relay_ca_files(self._cfg(cert))
+        upstream = out["protocol_relays"][0]["upstream"]
+
+        assert upstream["ca_pem"] == self.PEM
+        # The path is consumed, not forwarded: it would be meaningless
+        # inside the proxy container and invites a stale second source.
+        assert "ca_file" not in upstream
+
+    def test_expands_user_and_vars(self, tmp_path, _patch_state_dirs, monkeypatch):
+        state = _patch_state_dirs
+        cert = tmp_path / "bridge.pem"
+        cert.write_text(self.PEM)
+        monkeypatch.setenv("CERT_HOME", str(tmp_path))
+
+        out = state.resolve_relay_ca_files(self._cfg("$CERT_HOME/bridge.pem"))
+        assert out["protocol_relays"][0]["upstream"]["ca_pem"] == self.PEM
+
+    def test_missing_file_fails_at_deploy(self, tmp_path, _patch_state_dirs):
+        """Better a refused deploy than a relay that can't verify its
+        upstream at 3am and says only 'certificate verify failed'."""
+        state = _patch_state_dirs
+        with pytest.raises(ValueError, match="cannot read"):
+            state.resolve_relay_ca_files(self._cfg(tmp_path / "absent.pem"))
+
+    def test_non_pem_file_fails_at_deploy(self, tmp_path, _patch_state_dirs):
+        state = _patch_state_dirs
+        junk = tmp_path / "notacert.pem"
+        junk.write_text("this is not a certificate\n")
+        with pytest.raises(ValueError, match="no PEM certificate"):
+            state.resolve_relay_ca_files(self._cfg(junk))
+
+    def test_relays_without_ca_file_are_untouched(self, _patch_state_dirs):
+        state = _patch_state_dirs
+        cfg = {"protocol_relays": [
+            {"name": "migadu-imap",
+             "upstream": {"host": "imap.migadu.com", "port": 993}},
+        ]}
+        assert state.resolve_relay_ca_files(cfg) == cfg
+
+    def test_does_not_mutate_the_stored_cage_config(
+        self, tmp_path, _patch_state_dirs
+    ):
+        """The rewrite must not leak back into cage.yaml — the operator
+        wrote a path and should keep seeing a path, not a wall of PEM."""
+        state = _patch_state_dirs
+        cert = tmp_path / "bridge.pem"
+        cert.write_text(self.PEM)
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(textwrap.dedent(f"""\
+            name: myapp
+            container:
+              image: node:22-slim
+            domains:
+              allow:
+                - example.com
+            protocol_relays:
+              - name: bridge-imap
+                type: imap
+                listen: "0.0.0.0:1243"
+                upstream:
+                  host: 10.88.0.5
+                  port: 1143
+                  tls: true
+                  ca_file: "{cert}"
+                auth:
+                  type: imap-login
+                  user_source: "podman:BRIDGE_USER"
+                  password_source: "podman:BRIDGE_PASSWORD"
+        """))
+        state.save_deployment("myapp", str(cfg))
+        proxy_path = state.save_proxy_config("myapp")
+
+        with open(proxy_path) as f:
+            proxy_cfg = yaml.safe_load(f)
+        relay_upstream = proxy_cfg["protocol_relays"][0]["upstream"]
+        assert relay_upstream["ca_pem"] == self.PEM
+        assert "ca_file" not in relay_upstream
+
+        stored = state.load_raw_config("myapp")
+        stored_upstream = stored["protocol_relays"][0]["upstream"]
+        assert stored_upstream["ca_file"] == str(cert)
+        assert "ca_pem" not in stored_upstream
+
+
 class TestSaveDnsAllowlist:
     """save_dns_allowlist writes dnsmasq's --servers-file format from cage.yaml."""
 

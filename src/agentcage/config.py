@@ -310,6 +310,18 @@ class RelayUpstream:
     host: str
     port: int
     tls: bool = True
+    # Path to a PEM certificate on the host, added to the proxy's system
+    # CA store for this upstream. For upstreams no public CA signs: a
+    # private-CA mail server, or a local decrypting daemon like Proton
+    # Mail Bridge that mints its own self-signed certificate. Read at
+    # deploy time and delivered to the proxy as ``ca_pem``.
+    ca_file: str = ""
+    # The resolved inline form ``ca_file`` becomes, and what the relay
+    # actually loads. Accepted directly in config too.
+    ca_pem: str = ""
+    # Name presented in SNI and checked against the certificate, when it
+    # differs from ``host`` — required whenever ``host`` is an IP literal.
+    tls_servername: str = ""
 
 
 @dataclass
@@ -724,6 +736,9 @@ def load_config(path: str) -> Config:
             host=str(up_raw.get("host", "")),
             port=int(up_raw.get("port", 0) or 0),
             tls=bool(up_raw.get("tls", True)),
+            ca_file=str(up_raw.get("ca_file", "") or ""),
+            ca_pem=str(up_raw.get("ca_pem", "") or ""),
+            tls_servername=str(up_raw.get("tls_servername", "") or ""),
         )
         auth_raw = entry.get("auth") or {}
         auth = RelayAuth(
