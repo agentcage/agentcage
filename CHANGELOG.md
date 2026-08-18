@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-18
+
 ### Added
 
 - **Protocol relays can now reach an upstream whose certificate no public CA signed, via `upstream.ca_file`.** The relay built its upstream TLS context from the proxy container's system CA store with no override, so a relay could only ever point at a publicly-trusted mail host — a self-hosted server behind a private CA, or a local decrypting daemon like Proton Mail Bridge that mints its own self-signed certificate, was unreachable. `upstream.ca_file` is a path on the host (`~` and `$VARS` expanded); the CLI reads it at deploy time and hands the proxy the contents, because the relay runs inside the proxy container where a host path means nothing. proxy-config.yaml is rewritten on every deploy and restart path, so a regenerated certificate is picked up by `cage restart` with no config edit. A missing or non-PEM file fails the deploy rather than surfacing later as `certificate verify failed`. `upstream.ca_pem` accepts the same certificate inline for self-contained config; setting both is an error rather than a silent precedence rule. The certificate is **added** to the system store rather than replacing it, so one relay's private CA is never the reason another relay can't reach a normal mail host. `upstream.tls_servername` supplies the name checked against the certificate when the relay dials an IP literal that no certificate can name. Verification and hostname checking stay on in every configuration — there is deliberately no "skip verification" mode, since the relay hands the upstream real credentials. Any of these alongside `tls: false` is rejected at config load rather than silently ignored.
@@ -14,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`cage audit` no longer returns nothing when podman puts the egress on a file log driver.** The audit reader was hard-wired to `journalctl --user -u <cage>-egress`, but podman only selects the `journald` driver when it can actually write there — which requires a conmon built with journald support — and falls back to `k8s-file` silently otherwise. Under that fallback the proxy stayed healthy, kept detecting and recording, and `cage audit` printed an empty stream: silent audit loss, with nothing anywhere to indicate the trail had gone missing. The container backend now reads back the driver podman actually chose and reads `podman logs` when the journal never received the output, keeping `journalctl` (which spans container recreation) wherever journald is in use. `--since` is applied post-parse on this path, matching how apple-container's tail-based reader has always handled it. `cage logs` hits the same wall and now warns, naming the `podman logs` command to use, rather than printing a near-empty stream. Surfaced by e2e `1.4b`/`8.8b` failing on GitHub's runners after their image stopped preinstalling podman.
+
 ## [0.30.0] - 2026-07-19
 
 ### Changed
@@ -80,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The egress — and with it the cage — crashed on every restart after the first, on hardened rootless podman (`default_capabilities = []`).** The egress quadlet ran an `ExecStartPre` that chowned the `agentcage-public-certs-<name>` volume mountpoint to `acproxy` (uid 200), mirroring the chown of the *private* certs volume. But unlike the private volume (written by mitmproxy *as* acproxy), the public-certs volume is written **only** by the supervisor, which runs as uid 0 and publishes the public CA cert with `install -m 0644` (`supervisor-egress.sh` Step E). On a host whose `containers.conf` sets `default_capabilities = []`, container uid 0 holds none of `CAP_DAC_OVERRIDE` / `CAP_FOWNER`, so once the directory was acproxy-owned the supervisor could no longer `unlink()` the existing cert to rewrite it — `install: cannot remove '/home/acproxy/public-certs/mitmproxy-ca-cert.pem': Permission denied`, exit 1, and systemd tore the dependent cage down. The first `cage create` came up (nothing to overwrite yet), but every subsequent `cage start` / `cage restart` / `cage update` (e.g. after editing a workspace mount path) failed. The chown is removed: the public-certs dir stays root-owned, the uid-0 supervisor overwrites it freely, and the `0644` cert is still world-readable for the cage's `:ro` `/certs` mount — so the cage→egress trust boundary (CTF F6/F9) is unaffected. The apple-container backend was never affected (it `chmod 1777`s the dir instead of chowning it). Regressed in 0.22.10 ([#211](https://github.com/agentcage/agentcage/issues/211)).
+
 ## [0.25.5] - 2026-06-26
 
 ### Fixed
