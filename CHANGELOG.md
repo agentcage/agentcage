@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cage audit` no longer returns nothing when podman puts the egress on a file log driver.** The audit reader was hard-wired to `journalctl --user -u <cage>-egress`, but podman only selects the `journald` driver when it can actually write there — which requires a conmon built with journald support — and falls back to `k8s-file` silently otherwise. Under that fallback the proxy stayed healthy, kept detecting and recording, and `cage audit` printed an empty stream: silent audit loss, with nothing anywhere to indicate the trail had gone missing. The container backend now reads back the driver podman actually chose and reads `podman logs` when the journal never received the output, keeping `journalctl` (which spans container recreation) wherever journald is in use. `--since` is applied post-parse on this path, matching how apple-container's tail-based reader has always handled it. `cage logs` hits the same wall and now warns, naming the `podman logs` command to use, rather than printing a near-empty stream. Surfaced by e2e `1.4b`/`8.8b` failing on GitHub's runners after their image stopped preinstalling podman.
+
 ## [0.30.0] - 2026-07-19
 
 ### Changed

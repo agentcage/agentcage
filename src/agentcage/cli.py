@@ -2030,7 +2030,30 @@ def _classify_line(service: str, line: str) -> str:
 
 
 def _logs_container(name, services, lines, no_follow, min_level=None, since=None):
-    """Exec into journalctl with one -u per host-level service unit."""
+    """Exec into journalctl with one -u per host-level service unit.
+
+    Only sees container output while podman is on the journald log
+    driver. Under a file driver the output never reaches the journal, so
+    warn instead of printing a near-empty stream and letting the operator
+    conclude the cage is quiet — `podman logs` is the reader there, and it
+    takes one container at a time.
+    """
+    from agentcage.backends.container import ContainerBackend
+    backend = ContainerBackend()
+    file_backed = [
+        svc for svc in services
+        if backend.container_log_driver(f"{name}-{svc}")
+        in backend._FILE_LOG_DRIVERS
+    ]
+    if file_backed:
+        click.echo(
+            f"warning: {', '.join(f'{name}-{s}' for s in file_backed)} "
+            f"log to a file driver, not the journal — output below will be "
+            f"incomplete. Read it with: "
+            f"podman logs {name}-{file_backed[0]}",
+            err=True,
+        )
+
     units = [f"{name}-{svc}" for svc in services]
     cmd = ["journalctl", "--user"]
     for u in units:
@@ -2611,21 +2634,25 @@ def cage_audit(name, decisions, directions, hosts, inspectors, severity,
             )
             sys.exit(1)
 
-        # apple-container's tail-based audit_argv has no native time index,
-        # so honor --since by post-parse filtering (parity with the
-        # journalctl --since the container/vm backends apply natively).
-        # parse_since (reused from har.py) supports the same 1h/30m/7d/ISO
-        # formats as _normalize_since does for journalctl.
-        if since:
-            from agentcage.har import parse_since
-            since_dt = parse_since(since)
-            if since_dt is None:
-                click.echo(
-                    f"error: could not parse --since '{since}' "
-                    f"(use 1h, 30m, 7d, or an ISO date)",
-                    err=True,
-                )
-                sys.exit(1)
+    # Post-parse time filtering, applied on every backend rather than
+    # only where the reader lacks a native time index.
+    #
+    # apple-container's tail has never had one. The container backend has
+    # one only while its egress is on the journald log driver: when podman
+    # falls back to a file driver, `cage audit` reads `podman logs`, whose
+    # time syntax is not journalctl's, so --since is not forwarded there.
+    # Filtering here covers both, and is a harmless no-op where journalctl
+    # already excluded the same entries.
+    if since:
+        from agentcage.har import parse_since
+        since_dt = parse_since(since)
+        if since_dt is None:
+            click.echo(
+                f"error: could not parse --since '{since}' "
+                f"(use 1h, 30m, 7d, or an ISO date)",
+                err=True,
+            )
+            sys.exit(1)
 
     filt = AuditFilter(
         decisions=list(decisions),

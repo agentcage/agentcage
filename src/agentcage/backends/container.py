@@ -11,7 +11,7 @@ import click
 from agentcage import systemd
 from agentcage._timing import Phase
 from agentcage.config import Config
-from agentcage.podman import Podman, secret_env_names
+from agentcage.podman import Podman, _podman_cmd, secret_env_names
 from agentcage.quadlets import generate_quadlets
 
 
@@ -319,6 +319,39 @@ class ContainerBackend:
             argv += ["-n", str(lines)]
         return argv
 
+    # Log drivers that keep container output in a file podman owns
+    # rather than in the systemd journal. `journalctl -u <unit>` shows
+    # nothing for these.
+    _FILE_LOG_DRIVERS = frozenset({"k8s-file", "json-file"})
+
+    def container_log_driver(self, container: str) -> str:
+        """Resolved podman log driver for *container*, ``""`` if unknown.
+
+        Podman selects ``journald`` only when it can actually write there
+        — which needs a conmon built with journald support — and falls
+        back to ``k8s-file`` silently otherwise. The choice is made per
+        container at run time, so it can only be read back, not derived
+        from config.
+        """
+        try:
+            info = self._podman.container_inspect(container)
+        except Exception:
+            return ""
+        log_cfg = (info.get("HostConfig") or {}).get("LogConfig") or {}
+        return str(log_cfg.get("Type") or "").lower()
+
+    def audit_reads_journal(self, name: str) -> bool:
+        """Whether this cage's audit stream is readable from the journal.
+
+        ``False`` means the egress landed on a file-based driver and the
+        audit trail has to be read back through ``podman logs`` instead.
+        An unreadable container (destroyed, never started) reports
+        ``True``: the journal is then the only place history could still
+        live.
+        """
+        driver = self.container_log_driver(f"{name}-egress")
+        return driver not in self._FILE_LOG_DRIVERS
+
     def audit_argv(
         self,
         name: str,
@@ -326,16 +359,44 @@ class ContainerBackend:
         since: str | None = None,
         follow: bool = False,
     ) -> list[str]:
-        """``journalctl`` for the egress unit. Audit JSON lines are
-        emitted by the mitmproxy addon to stderr (= journal stream).
+        """Read the egress's audit stream.
+
+        Audit JSON lines are emitted by the mitmproxy addon to stderr;
         dnsmasq audit lines flow through the same stream (the supervisor
-        wraps both processes under tini/PID 1)."""
-        argv = ["journalctl", "--user",
-                "-u", f"{name}-egress", "-o", "cat"]
-        if since:
-            argv += ["--since", since]
+        wraps both processes under tini/PID 1). Where that stderr *lands*
+        depends on the log driver podman picked, so the source is chosen
+        to match:
+
+        * ``journald`` — ``journalctl`` on the unit. Preferred: it spans
+          container recreation, so `cage restart` doesn't truncate the
+          audit history.
+        * ``k8s-file`` / ``json-file`` — ``podman logs``, the only reader
+          for output the journal never received. Bounded to the current
+          container generation, which is all that driver retains anyway.
+
+        Reading the wrong one is silent: the proxy looks healthy and
+        `cage audit` simply prints nothing.
+        """
+        if self.audit_reads_journal(name):
+            argv = ["journalctl", "--user",
+                    "-u", f"{name}-egress", "-o", "cat"]
+            if since:
+                argv += ["--since", since]
+            if follow:
+                argv.append("-f")
+            else:
+                argv += ["-n", "10000"]  # over-read; many lines aren't audit
+            return argv
+
+        # `podman logs` has no journalctl-compatible time syntax (it takes
+        # Go durations / RFC3339, not "10 minutes ago"), so `since` is not
+        # forwarded. The CLI applies AuditFilter.since post-parse on every
+        # backend, which covers this path exactly as it covers
+        # apple-container's tail.
+        argv = [*_podman_cmd(), "logs"]
         if follow:
             argv.append("-f")
         else:
-            argv += ["-n", "10000"]  # over-read; many lines aren't audit
+            argv += ["--tail", "10000"]
+        argv.append(f"{name}-egress")
         return argv
