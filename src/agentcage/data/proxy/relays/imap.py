@@ -26,6 +26,8 @@ import ssl
 import time
 from typing import Callable, Optional
 
+from relays._tls import upstream_connect_kwargs
+
 log = logging.getLogger("agentcage.relays.imap")
 
 
@@ -129,6 +131,12 @@ class _RelayConfig:
         self.upstream_host: str = str(upstream.get("host") or "")
         self.upstream_port: int = int(upstream.get("port") or 0)
         self.upstream_tls: bool = bool(upstream.get("tls", True))
+        # Pinned PEM + SNI/hostname override for upstreams no public CA
+        # signs (private CA, Proton Mail Bridge). See relays._tls.
+        self.upstream_ca_pem: str = str(upstream.get("ca_pem") or "")
+        self.upstream_tls_servername: str = str(
+            upstream.get("tls_servername") or ""
+        )
         auth = entry.get("auth") or {}
         self.user_source: str = str(auth.get("user_source") or "")
         self.password_source: str = str(auth.get("password_source") or "")
@@ -261,14 +269,15 @@ class ImapRelay:
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
     ) -> None:
-        ssl_ctx = (
-            ssl.create_default_context() if self._cfg.upstream_tls else None
-        )
         try:
             upstream_reader, upstream_writer = await asyncio.open_connection(
                 self._cfg.upstream_host,
                 self._cfg.upstream_port,
-                ssl=ssl_ctx,
+                **upstream_connect_kwargs(
+                    tls=self._cfg.upstream_tls,
+                    ca_pem=self._cfg.upstream_ca_pem,
+                    tls_servername=self._cfg.upstream_tls_servername,
+                ),
             )
         except (OSError, ssl.SSLError) as e:
             log.warning(

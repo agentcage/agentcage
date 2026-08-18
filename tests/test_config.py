@@ -305,6 +305,70 @@ class TestProtocolRelaysParser:
         assert relay.policy.readonly is True
         assert relay.policy.folder_allowlist == ["INBOX", "Sent"]
         assert relay.policy.conn_rate_limit == "30/min"
+        # Opt-in: an unset ca_file/ca_pem means just the proxy's system
+        # CA store, which is what a public mail host needs.
+        assert relay.upstream.ca_file == ""
+        assert relay.upstream.ca_pem == ""
+        assert relay.upstream.tls_servername == ""
+
+    def test_parses_upstream_ca_file(self, tmp_path):
+        """The operator-facing form: a path plus an SNI override, for an
+        upstream no public CA signs."""
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: bridge-imap
+                type: imap
+                listen: "0.0.0.0:1243"
+                upstream:
+                  host: 10.88.0.5
+                  port: 1143
+                  tls: true
+                  tls_servername: bridge.local
+                  ca_file: ~/.config/protonmail/bridge-v3/cert.pem
+                auth:
+                  type: imap-login
+                  user_source: "systemd-creds:MIGADU_USER"
+                  password_source: "systemd-creds:MIGADU_PASSWORD"
+        """).replace("\n", "\n            "))
+        cfg = load_config(str(p))
+        relay = cfg.protocol_relays[0]
+        assert relay.upstream.ca_file == (
+            "~/.config/protonmail/bridge-v3/cert.pem"
+        )
+        # Left unexpanded here on purpose: expansion belongs at deploy,
+        # where state.resolve_relay_ca_files reads the file.
+        assert relay.upstream.ca_pem == ""
+        assert relay.upstream.tls_servername == "bridge.local"
+
+    def test_parses_inline_upstream_certificate(self, tmp_path):
+        """Inline PEM + SNI override for an upstream no public CA signs."""
+        p = self._yaml(tmp_path, textwrap.dedent("""\
+            protocol_relays:
+              - name: bridge-imap
+                type: imap
+                listen: "0.0.0.0:1243"
+                upstream:
+                  host: 10.88.0.5
+                  port: 1143
+                  tls: true
+                  tls_servername: bridge.local
+                  ca_pem: |
+                    -----BEGIN CERTIFICATE-----
+                    MIIBfakeexamplecertificatebody
+                    -----END CERTIFICATE-----
+                auth:
+                  type: imap-login
+                  user_source: "systemd-creds:MIGADU_USER"
+                  password_source: "systemd-creds:MIGADU_PASSWORD"
+        """).replace("\n", "\n            "))
+        cfg = load_config(str(p))
+        relay = cfg.protocol_relays[0]
+        assert relay.upstream.host == "10.88.0.5"
+        assert relay.upstream.tls_servername == "bridge.local"
+        assert relay.upstream.ca_pem.startswith("-----BEGIN CERTIFICATE-----")
+        assert relay.upstream.ca_pem.rstrip().endswith(
+            "-----END CERTIFICATE-----"
+        )
 
     def test_strips_relay_secrets_from_podman_and_env(self, tmp_path):
         p = self._yaml(tmp_path, textwrap.dedent("""\

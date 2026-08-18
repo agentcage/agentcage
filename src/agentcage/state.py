@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -157,11 +158,60 @@ def save_proxy_config(name: str) -> str:
     """
     raw = load_raw_config(name)
     proxy_cfg = {k: v for k, v in raw.items() if k in _PROXY_KEYS}
+    # deepcopy: the ca_file -> ca_pem rewrite must not leak back into the
+    # in-memory raw config (and from there into a cage.yaml rewrite),
+    # which would replace the operator's path with a wall of PEM.
+    proxy_cfg = resolve_relay_ca_files(copy.deepcopy(proxy_cfg))
     p = _deploy_dir(name) / "proxy-config.yaml"
     with open(p, "w") as f:
         yaml.safe_dump(proxy_cfg, f, default_flow_style=False, sort_keys=False)
     save_placeholders_env(name)
     return str(p)
+
+
+def resolve_relay_ca_files(proxy_cfg: dict) -> dict:
+    """Read each relay's ``upstream.ca_file`` and inline it as ``ca_pem``.
+
+    The relay runs inside the proxy container, where a host path means
+    nothing. Rather than bind-mount the file — which pins an inode, so a
+    daemon that *replaces* its certificate on reinstall would be missed
+    anyway, and which needs separate plumbing in the container, vm, and
+    apple-container backends — the CLI reads it here and hands the proxy
+    the contents. proxy-config.yaml is rewritten on every deploy and
+    restart path, so a rotated certificate is picked up by
+    ``cage restart`` with no config edit.
+
+    Mutates and returns *proxy_cfg*. Raises ``ValueError`` with an
+    actionable message if a declared file is missing or unreadable —
+    failing at deploy beats a relay that cannot verify its upstream at
+    3am and says only "certificate verify failed".
+    """
+    for relay in proxy_cfg.get("protocol_relays") or []:
+        if not isinstance(relay, dict):
+            continue
+        upstream = relay.get("upstream")
+        if not isinstance(upstream, dict):
+            continue
+        ca_file = upstream.pop("ca_file", "") or ""
+        if not ca_file:
+            continue
+        path = Path(os.path.expanduser(os.path.expandvars(str(ca_file))))
+        try:
+            pem = path.read_text()
+        except OSError as e:
+            raise ValueError(
+                f"protocol_relays[{relay.get('name', '?')}]."
+                f"upstream.ca_file: cannot read {str(path)!r}: "
+                f"{e.strerror or e}"
+            ) from e
+        if "-----BEGIN CERTIFICATE-----" not in pem:
+            raise ValueError(
+                f"protocol_relays[{relay.get('name', '?')}]."
+                f"upstream.ca_file: {str(path)!r} holds no PEM certificate "
+                f"(expected a '-----BEGIN CERTIFICATE-----' block)"
+            )
+        upstream["ca_pem"] = pem
+    return proxy_cfg
 
 
 def cage_env_dir(name: str) -> Path:

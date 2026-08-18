@@ -69,6 +69,56 @@ def validate_relay_entry(
             f"port in [1, 65535]"
         )
 
+    tls = bool(upstream.get("tls", True))
+    ca_file = upstream.get("ca_file", "") or ""
+    if not isinstance(ca_file, str):
+        raise ValueError(
+            f"protocol_relays[{name}].upstream.ca_file must be a path "
+            f"string (got {type(ca_file).__name__})"
+        )
+    ca_pem = upstream.get("ca_pem", "") or ""
+    if not isinstance(ca_pem, str):
+        raise ValueError(
+            f"protocol_relays[{name}].upstream.ca_pem must be a PEM "
+            f"string (got {type(ca_pem).__name__})"
+        )
+    if ca_pem and "-----BEGIN CERTIFICATE-----" not in ca_pem:
+        raise ValueError(
+            f"protocol_relays[{name}].upstream.ca_pem does not look like "
+            f"PEM — expected a '-----BEGIN CERTIFICATE-----' block. To "
+            f"point at a file on disk, use upstream.ca_file."
+        )
+    # ca_file is the operator-facing form; the CLI reads it and hands the
+    # proxy the resolved ca_pem. Both set at once is ambiguous about
+    # which one wins, so say so instead of picking silently.
+    if ca_file and ca_pem:
+        raise ValueError(
+            f"protocol_relays[{name}].upstream sets both ca_file and "
+            f"ca_pem; use one. ca_file is read at deploy time and becomes "
+            f"ca_pem in the proxy's config."
+        )
+    servername = upstream.get("tls_servername", "") or ""
+    if not isinstance(servername, str):
+        raise ValueError(
+            f"protocol_relays[{name}].upstream.tls_servername must be a "
+            f"string (got {type(servername).__name__})"
+        )
+    # These only mean something on a TLS connection. Silently ignoring
+    # them on a plaintext upstream would read as "the certificate is
+    # verified" in a config review when nothing is verified at all.
+    if not tls:
+        for key, value in (
+            ("ca_file", ca_file),
+            ("ca_pem", ca_pem),
+            ("tls_servername", servername),
+        ):
+            if value:
+                raise ValueError(
+                    f"protocol_relays[{name}].upstream.{key} requires "
+                    f"upstream.tls: true (got tls: false, which connects "
+                    f"in plaintext and verifies nothing)"
+                )
+
     auth = entry.get("auth") or {}
     if not isinstance(auth, dict):
         raise ValueError(f"protocol_relays[{name}].auth must be a mapping")

@@ -907,6 +907,75 @@ class TestSharedValidation:
             "upstream": {"host": "imap.example.com", "port": 993},
         })  # no exception
 
+    def _entry(self, **upstream) -> dict:
+        entry = {
+            "name": "r", "type": "imap", "listen": "127.0.0.1:1143",
+            "upstream": {"host": "imap.example.com", "port": 993},
+        }
+        entry["upstream"].update(upstream)
+        return entry
+
+    def test_validate_rejects_ca_pem_that_is_a_path(self):
+        """The commonest mistake: `ca_pem: /certs/bridge.pem`. The error
+        points at ca_file rather than letting a path be loaded as PEM and
+        fail at connect time instead of config time.
+        """
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="does not look like"):
+            validate_relay_entry(self._entry(ca_pem="/certs/bridge.pem"))
+
+    def test_validate_rejects_non_string_ca_pem(self):
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="must be a PEM string"):
+            validate_relay_entry(self._entry(ca_pem=["cert"]))
+
+    def test_validate_rejects_pin_on_plaintext_upstream(self):
+        """A CA next to `tls: false` reads as "verified" in review but
+        verifies nothing — reject rather than silently ignore.
+        """
+        from relays._validate import validate_relay_entry
+        pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+        with pytest.raises(ValueError, match="requires upstream.tls: true"):
+            validate_relay_entry(self._entry(tls=False, ca_pem=pem))
+
+    def test_validate_rejects_servername_on_plaintext_upstream(self):
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="requires upstream.tls: true"):
+            validate_relay_entry(
+                self._entry(tls=False, tls_servername="bridge.local")
+            )
+
+    def test_validate_rejects_non_string_ca_file(self):
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="must be a path string"):
+            validate_relay_entry(self._entry(ca_file=["/certs/x.pem"]))
+
+    def test_validate_rejects_ca_file_and_ca_pem_together(self):
+        """Ambiguous about which wins — say so rather than pick silently."""
+        from relays._validate import validate_relay_entry
+        pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+        with pytest.raises(ValueError, match="both ca_file and ca_pem"):
+            validate_relay_entry(self._entry(ca_file="/c.pem", ca_pem=pem))
+
+    def test_validate_rejects_ca_file_on_plaintext_upstream(self):
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="requires upstream.tls: true"):
+            validate_relay_entry(self._entry(tls=False, ca_file="/c.pem"))
+
+    def test_validate_passes_upstream_with_ca_file(self):
+        from relays._validate import validate_relay_entry
+        validate_relay_entry(
+            self._entry(ca_file="/certs/bridge.pem",
+                        tls_servername="bridge.local")
+        )  # no exception
+
+    def test_validate_passes_upstream_with_extra_ca(self):
+        from relays._validate import validate_relay_entry
+        pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+        validate_relay_entry(
+            self._entry(ca_pem=pem, tls_servername="bridge.local")
+        )  # no exception
+
 
 
 # ── A2: idle timeout in pre-bridge phase ────────────────
