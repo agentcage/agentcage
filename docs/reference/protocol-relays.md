@@ -90,9 +90,17 @@ the common case of "let it tidy my mail but never destroy any".
 | `full` | no restrictions. Identical to `readonly: false`. |
 
 `organise` refuses `EXPUNGE`, `UID EXPUNGE`, `CLOSE`, `APPEND`, `DELETE`,
-`CREATE`, `RENAME`, `SETMETADATA`, `SETACL`, `DELETEACL` — and any `STORE`
-that would **add** the `\Deleted` flag. `-FLAGS (\Deleted)` is allowed: taking
-the flag off un-deletes a message.
+`RENAME`, `SETMETADATA`, `SETACL`, `DELETEACL` — and any `STORE` that would
+**add** the `\Deleted` flag. `-FLAGS (\Deleted)` is allowed: taking the flag
+off un-deletes a message.
+
+`CREATE` **is** permitted. The line the mode draws is "refuse what destroys,
+permit what is recoverable", and a new folder can simply be deleted again;
+requiring the mailbox owner to hand-create every destination first defeats the
+point. `DELETE` and `RENAME` fail the same test and stay refused — `DELETE`
+removes a folder and whatever is filed in it, and `RENAME` silently breaks
+server-side filters that refer to folders by name, with nothing about the
+result looking broken.
 
 Two details make that list what it is rather than just "block EXPUNGE":
 

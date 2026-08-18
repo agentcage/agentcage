@@ -1083,6 +1083,7 @@ class TestWriteModeOrganise:
         b'a1 STORE 1 +FLAGS (\\Seen)\r\n',
         b'a1 UID STORE 5 +FLAGS.SILENT (\\Flagged)\r\n',
         b'a1 STORE 1 -FLAGS (\\Deleted)\r\n',   # un-deleting is fine
+        b'a1 CREATE "Folders/Investments"\r\n',  # making a folder is recoverable
     ])
     def test_filing_and_flagging_pass_through(self, command):
         async def _check(port, recorder):
@@ -1106,7 +1107,6 @@ class TestWriteModeOrganise:
         (b"a1 CLOSE\r\n", "CLOSE"),
         (b'a1 APPEND "INBOX" {3}\r\n', "APPEND"),
         (b'a1 DELETE "Archive"\r\n', "DELETE"),
-        (b'a1 CREATE "New"\r\n', "CREATE"),
         (b'a1 RENAME "a" "b"\r\n', "RENAME"),
     ])
     def test_destructive_commands_refused(self, command, label):

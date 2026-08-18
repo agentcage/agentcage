@@ -56,15 +56,24 @@ _DENY_COMMANDS_READONLY = frozenset({
 # effect. Denying EXPUNGE while allowing CLOSE would leave the destructive
 # path wide open behind an innocuous-looking verb.
 #
-# CREATE/RENAME/DELETE are denied too: organising means moving mail between
-# folders that already exist, not restructuring someone's mailbox. APPEND is
-# denied because it injects new messages — the way you would fabricate mail.
+# CREATE is deliberately NOT here. The line this mode draws is "refuse what
+# destroys, permit what is recoverable", and making a folder is recoverable —
+# you can delete it again. Filing mail into folders is most of what organising
+# means, and requiring the mailbox owner to hand-create every destination
+# first defeats the point of the mode.
+#
+# DELETE and RENAME stay denied, on the same test. DELETE removes a folder and
+# whatever is filed in it. RENAME looks harmless but is not: server-side
+# filters and rules refer to folders by name, so a rename can silently stop
+# incoming mail being sorted, and nothing about the result looks broken.
+#
+# APPEND is denied because it injects new messages — the way you would
+# fabricate mail in someone's mailbox.
 _DENY_COMMANDS_ORGANISE = frozenset({
     "EXPUNGE",
     "CLOSE",
     "APPEND",
     "DELETE",
-    "CREATE",
     "RENAME",
     "SETMETADATA",
     "SETACL",
