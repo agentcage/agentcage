@@ -19,6 +19,10 @@ from typing import Callable, Optional
 
 KNOWN_RELAY_TYPES = frozenset({"imap", "smtp"})
 
+# IMAP write policy. "organise" permits filing and flagging but
+# refuses anything that destroys mail — see relays/imap.py.
+_WRITE_MODES = frozenset({"none", "organise", "full"})
+
 
 def validate_relay_type(name: str) -> None:
     if name not in KNOWN_RELAY_TYPES:
@@ -117,6 +121,34 @@ def validate_relay_entry(
                     f"protocol_relays[{name}].upstream.{key} requires "
                     f"upstream.tls: true (got tls: false, which connects "
                     f"in plaintext and verifies nothing)"
+                )
+
+    policy = entry.get("policy") or {}
+    if isinstance(policy, dict):
+        mode = policy.get("write_mode")
+        if mode is not None:
+            if not isinstance(mode, str) or mode.lower() not in _WRITE_MODES:
+                raise ValueError(
+                    f"protocol_relays[{name}].policy.write_mode must be one "
+                    f"of {', '.join(sorted(_WRITE_MODES))} (got {mode!r})"
+                )
+            # readonly is the older spelling of the same thing. Both set and
+            # disagreeing is ambiguous, and guessing which the operator meant
+            # is exactly the wrong call for a policy that gates writes.
+            if "readonly" in policy:
+                implied = "none" if policy.get("readonly") else "full"
+                if implied != mode.lower():
+                    raise ValueError(
+                        f"protocol_relays[{name}].policy sets readonly="
+                        f"{policy.get('readonly')!r} and write_mode={mode!r}, "
+                        f"which contradict. Use write_mode alone."
+                    )
+        for key in ("folder_allowlist", "folder_denylist"):
+            value = policy.get(key)
+            if value is not None and not isinstance(value, list):
+                raise ValueError(
+                    f"protocol_relays[{name}].policy.{key} must be a list "
+                    f"(got {type(value).__name__})"
                 )
 
     auth = entry.get("auth") or {}

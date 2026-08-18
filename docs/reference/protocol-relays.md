@@ -71,9 +71,70 @@ For `type: imap`:
 
 | Setting | Type | Required | Description |
 |---------|------|----------|-------------|
-| `policy.readonly` | `bool` | no | If `true`, block APPEND/DELETE/STORE/EXPUNGE/CREATE/RENAME/MOVE/COPY plus the write subcommands of UID. Default `false`. |
+| `policy.write_mode` | `string` | no | `none` \| `organise` \| `full`. See below. Defaults to whatever `readonly` implies. |
+| `policy.readonly` | `bool` | no | Older spelling of the same thing: `true` == `write_mode: none`. Blocks APPEND/DELETE/STORE/EXPUNGE/CREATE/RENAME/MOVE/COPY plus the write subcommands of UID. Default `false`. |
 | `policy.folder_allowlist` | `list[string]` | no | If non-empty, restrict SELECT/EXAMINE/STATUS to these mailbox names. LIST/LSUB always pass through (metadata only). Default `[]` (no filter). |
+| `policy.folder_denylist` | `list[string]` | no | Mailboxes that may never be selected. Denial wins over the allowlist. Case-insensitive. Default `[]`. |
 | `policy.conn_rate_limit` | `string` | no | Connection rate cap, e.g. `"30/min"`. Default `"30/min"`. |
+
+### Write modes
+
+`write_mode` chooses how much an agent may change, and exists because the two
+booleans on offer before — read everything or write everything — did not cover
+the common case of "let it tidy my mail but never destroy any".
+
+| mode | permits |
+|------|---------|
+| `none` | reads only. Identical to `readonly: true`, which still works. |
+| `organise` | reads, plus `MOVE`, `COPY` and flagging. Refuses anything that destroys mail or restructures the mailbox. |
+| `full` | no restrictions. Identical to `readonly: false`. |
+
+`organise` refuses `EXPUNGE`, `UID EXPUNGE`, `CLOSE`, `APPEND`, `DELETE`,
+`RENAME`, `SETMETADATA`, `SETACL`, `DELETEACL` — and any `STORE` that would
+**add** the `\Deleted` flag. `-FLAGS (\Deleted)` is allowed: taking the flag
+off un-deletes a message.
+
+`CREATE` **is** permitted. The line the mode draws is "refuse what destroys,
+permit what is recoverable", and a new folder can simply be deleted again;
+requiring the mailbox owner to hand-create every destination first defeats the
+point. `DELETE` and `RENAME` fail the same test and stay refused — `DELETE`
+removes a folder and whatever is filed in it, and `RENAME` silently breaks
+server-side filters that refer to folders by name, with nothing about the
+result looking broken.
+
+Two details make that list what it is rather than just "block EXPUNGE":
+
+- **`CLOSE` expunges.** RFC 3501 §6.4.2 has `CLOSE` silently remove every
+  `\Deleted` message in the selected mailbox. Denying `EXPUNGE` while allowing
+  `CLOSE` would leave the destructive path open behind an innocuous verb.
+- **The flag is refused, not just the reap.** With `\Deleted` unsettable there
+  is nothing for an expunge to destroy even if one is reached another way. It
+  also means the client gets a clear refusal at the point of the mistake
+  rather than a surprise later.
+
+Setting `readonly` and `write_mode` to contradicting values is a config error,
+not a precedence puzzle.
+
+### Keeping an agent out of one folder
+
+`folder_denylist` names mailboxes that may never be `SELECT`ed, and wins over
+`folder_allowlist`. The motivating case is Trash:
+
+```yaml
+policy:
+  write_mode: organise
+  folder_denylist: [Trash]
+```
+
+**`MOVE` and `COPY` destinations are deliberately not checked** — only
+`SELECT`, `EXAMINE` and `STATUS` take a mailbox argument the policy inspects.
+So an agent under this config can still file a message *into* Trash, but cannot
+open Trash and act on what is already there. Combined with `organise`, "delete"
+can only ever mean "move to Trash", and the mail stays recoverable.
+
+Matching is case-insensitive: servers disagree about the case of special-use
+mailbox names, and a denylist that missed `trash` because the server said
+`Trash` would fail open.
 
 ### IMAP behavior
 

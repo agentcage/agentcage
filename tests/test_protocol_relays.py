@@ -1031,3 +1031,246 @@ class TestImapIdleTimeout:
                 await silent.wait_closed()
 
         _run(_go())
+
+
+# ── write_mode: organise ─────────────────────────────────
+
+
+class TestWriteModeOrganise:
+    """`organise` lets an agent file and flag mail but never destroy it.
+
+    The motivating case: an assistant reading someone else's mailbox should
+    be able to tidy it — move to folders, move to Trash, mark read — while
+    being unable to remove anything permanently, because that failure is
+    silent and irreversible.
+    """
+
+    def _relay(self, upstream_port: int, **policy):
+        entry = _relay_entry(upstream_port)
+        entry["policy"] = {**entry.get("policy", {}), **policy}
+        return entry
+
+    def _send(self, upstream_port, command: bytes, **policy):
+        """Send one command through the relay, return its tagged response."""
+        async def _go():
+            entry = self._relay(upstream_port, **policy)
+            async with _running_relay(entry) as (_, port):
+                async with _imap_client(port) as (reader, writer):
+                    await reader.readline()  # PREAUTH
+                    writer.write(command)
+                    await writer.drain()
+                    return await _read_until_tag(reader, b"a1")
+        return _run(_go())
+
+    def _with_upstream(self, fn):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password")
+            try:
+                return await fn(port, recorder)
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        return _run(_go())
+
+    # -- allowed in organise --------------------------------------------
+
+    @pytest.mark.parametrize("command", [
+        b'a1 MOVE 1 "Trash"\r\n',
+        b'a1 UID MOVE 5 "Folders/Bills"\r\n',
+        b'a1 COPY 1 "Archive"\r\n',
+        b'a1 STORE 1 +FLAGS (\\Seen)\r\n',
+        b'a1 UID STORE 5 +FLAGS.SILENT (\\Flagged)\r\n',
+        b'a1 STORE 1 -FLAGS (\\Deleted)\r\n',   # un-deleting is fine
+        b'a1 CREATE "Folders/Investments"\r\n',  # making a folder is recoverable
+    ])
+    def test_filing_and_flagging_pass_through(self, command):
+        async def _check(port, recorder):
+            entry = self._relay(port, write_mode="organise")
+            async with _running_relay(entry) as (_, p):
+                async with _imap_client(p) as (reader, writer):
+                    await reader.readline()
+                    writer.write(command)
+                    await writer.drain()
+                    await asyncio.sleep(0.05)
+            return recorder.commands
+        cmds = self._with_upstream(_check)
+        # reached the upstream rather than being forged back by the relay
+        assert any(command.split(b" ", 1)[1] in c for c in cmds), cmds
+
+    # -- denied in organise ---------------------------------------------
+
+    @pytest.mark.parametrize("command,label", [
+        (b"a1 EXPUNGE\r\n", "EXPUNGE"),
+        (b"a1 UID EXPUNGE 5\r\n", "UID EXPUNGE"),
+        (b"a1 CLOSE\r\n", "CLOSE"),
+        (b'a1 APPEND "INBOX" {3}\r\n', "APPEND"),
+        (b'a1 DELETE "Archive"\r\n', "DELETE"),
+        (b'a1 RENAME "a" "b"\r\n', "RENAME"),
+    ])
+    def test_destructive_commands_refused(self, command, label):
+        def _check(port, recorder):
+            async def _inner():
+                entry = self._relay(port, write_mode="organise")
+                async with _running_relay(entry) as (_, p):
+                    async with _imap_client(p) as (reader, writer):
+                        await reader.readline()
+                        writer.write(command)
+                        await writer.drain()
+                        return await _read_until_tag(reader, b"a1")
+            return _inner()
+        line = self._with_upstream(lambda port, rec: _check(port, rec))
+        assert b"NO" in line, (label, line)
+        assert b"organise" in line, (label, line)
+
+    def test_close_is_refused_because_it_expunges(self):
+        """RFC 3501 §6.4.2: CLOSE expunges \\Deleted as a side effect.
+
+        Denying EXPUNGE while allowing CLOSE would leave the destructive
+        path open behind an innocuous verb, so this is not merely tidiness.
+        """
+        def _check(port, recorder):
+            async def _inner():
+                entry = self._relay(port, write_mode="organise")
+                async with _running_relay(entry) as (_, p):
+                    async with _imap_client(p) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 CLOSE\r\n")
+                        await writer.drain()
+                        line = await _read_until_tag(reader, b"a1")
+                await asyncio.sleep(0.05)
+                return line, recorder.commands
+            return _inner()
+        line, cmds = self._with_upstream(lambda p, r: _check(p, r))
+        assert b"NO" in line
+        assert not any(b"CLOSE" in c for c in cmds), "CLOSE reached upstream"
+
+    @pytest.mark.parametrize("command", [
+        b"a1 STORE 1 +FLAGS (\\Deleted)\r\n",
+        b"a1 STORE 1 FLAGS (\\Deleted \\Seen)\r\n",
+        b"a1 UID STORE 5 +FLAGS.SILENT (\\Deleted)\r\n",
+        b"a1 store 1 +flags (\\deleted)\r\n",          # case-insensitive
+    ])
+    def test_setting_the_deleted_flag_is_refused(self, command):
+        """Refusing the flag, not just EXPUNGE, means an expunge reached by
+        any other route has nothing to reap."""
+        def _check(port, recorder):
+            async def _inner():
+                entry = self._relay(port, write_mode="organise")
+                async with _running_relay(entry) as (_, p):
+                    async with _imap_client(p) as (reader, writer):
+                        await reader.readline()
+                        writer.write(command)
+                        await writer.drain()
+                        return await _read_until_tag(reader, b"a1")
+            return _inner()
+        line = self._with_upstream(lambda p, r: _check(p, r))
+        assert b"NO" in line, line
+        assert b"Deleted" in line or b"organise" in line, line
+
+
+class TestFolderDenylist:
+    def _entry(self, upstream_port, **policy):
+        entry = _relay_entry(upstream_port)
+        entry["policy"] = {**entry.get("policy", {}), **policy}
+        return entry
+
+    def _select(self, mailbox: bytes, **policy):
+        async def _go():
+            recorder = FakeUpstreamRecorder()
+            upstream, port = await _start_fake_upstream(
+                recorder, "real-user@example.com", "real-app-password")
+            try:
+                async with _running_relay(self._entry(port, **policy)) as (_, p):
+                    async with _imap_client(p) as (reader, writer):
+                        await reader.readline()
+                        writer.write(b"a1 SELECT " + mailbox + b"\r\n")
+                        await writer.drain()
+                        return await _read_until_tag(reader, b"a1")
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+        return _run(_go())
+
+    def test_denied_folder_refused(self):
+        line = self._select(b'"Trash"', folder_denylist=["Trash"])
+        assert b"NO" in line and b"folder_denylist" in line, line
+
+    def test_other_folders_still_selectable(self):
+        line = self._select(b'"INBOX"', folder_denylist=["Trash"])
+        assert b"OK" in line, line
+
+    def test_denylist_is_case_insensitive(self):
+        """Servers disagree on the case of special-use mailbox names; a
+        denylist that missed `trash` because the server said `Trash` would
+        fail open, which is the wrong direction for this list."""
+        line = self._select(b'"trash"', folder_denylist=["Trash"])
+        assert b"NO" in line, line
+
+    def test_denylist_beats_allowlist(self):
+        line = self._select(
+            b'"Trash"',
+            folder_allowlist=["INBOX", "Trash"],
+            folder_denylist=["Trash"],
+        )
+        assert b"NO" in line and b"folder_denylist" in line, line
+
+
+class TestWriteModeValidation:
+    def _entry(self, **policy) -> dict:
+        return {
+            "name": "r", "type": "imap", "listen": "127.0.0.1:1143",
+            "upstream": {"host": "imap.example.com", "port": 993},
+            "policy": policy,
+        }
+
+    def test_rejects_unknown_mode(self):
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="write_mode must be one of"):
+            validate_relay_entry(self._entry(write_mode="readonlyish"))
+
+    def test_rejects_contradicting_readonly(self):
+        """readonly: true + write_mode: full is ambiguous. Guessing which
+        the operator meant is the wrong call for a policy gating writes."""
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="contradict"):
+            validate_relay_entry(self._entry(readonly=True, write_mode="full"))
+
+    def test_allows_consistent_pair(self):
+        from relays._validate import validate_relay_entry
+        validate_relay_entry(self._entry(readonly=True, write_mode="none"))
+
+    def test_rejects_non_list_denylist(self):
+        from relays._validate import validate_relay_entry
+        with pytest.raises(ValueError, match="folder_denylist must be a list"):
+            validate_relay_entry(self._entry(folder_denylist="Trash"))
+
+    def test_accepts_organise(self):
+        from relays._validate import validate_relay_entry
+        validate_relay_entry(
+            self._entry(write_mode="organise", folder_denylist=["Trash"])
+        )
+
+
+class TestWriteModeDefaults:
+    """Existing configs must behave exactly as before."""
+
+    def _cfg(self, **policy):
+        from relays.imap import _RelayConfig
+        return _RelayConfig({
+            "name": "r", "type": "imap", "listen": "127.0.0.1:0",
+            "upstream": {"host": "h", "port": 1}, "policy": policy,
+        })
+
+    def test_readonly_true_maps_to_none(self):
+        assert self._cfg(readonly=True).write_mode == "none"
+
+    def test_readonly_false_maps_to_full(self):
+        assert self._cfg(readonly=False).write_mode == "full"
+
+    def test_absent_policy_maps_to_full(self):
+        assert self._cfg().write_mode == "full"
+
+    def test_explicit_write_mode_wins(self):
+        assert self._cfg(write_mode="organise").write_mode == "organise"

@@ -356,7 +356,12 @@ class RelayPolicy:
 
     # IMAP
     readonly: bool = False
+    # "none" | "organise" | "full". Empty means "derive from readonly",
+    # which the proxy does, so old configs are untouched.
+    write_mode: str = ""
     folder_allowlist: list[str] = field(default_factory=list)
+    # Denied outright; denial wins over the allowlist.
+    folder_denylist: list[str] = field(default_factory=list)
 
     # SMTP
     sender_allowlist: list[str] = field(default_factory=list)
@@ -772,7 +777,9 @@ def load_config(path: str) -> Config:
             ),
             idle_timeout_seconds=int(pol_raw.get("idle_timeout_seconds", 0)),
             readonly=bool(pol_raw.get("readonly", False)),
+            write_mode=str(pol_raw.get("write_mode", "") or ""),
             folder_allowlist=list(pol_raw.get("folder_allowlist") or []),
+            folder_denylist=list(pol_raw.get("folder_denylist") or []),
             sender_allowlist=list(pol_raw.get("sender_allowlist") or []),
             recipient_allowlist=recipient_allowlist,
             max_message_bytes=int(
