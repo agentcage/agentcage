@@ -2471,6 +2471,19 @@ def _apple_container_capture_path(name: str) -> Path:
     return AppleContainerBackend().logs_dir(name) / "capture.jsonl"
 
 
+# The proxy addon writes audit JSON to *stderr*. `journalctl` merges both
+# container streams into its stdout, but `podman logs` preserves the
+# separation — container stderr comes back on podman's stderr. Reading only
+# stdout there yields an empty audit trail from a reader that exited 0, so
+# both streams are merged for every audit reader. Non-JSON noise (a
+# journalctl warning, a podman error) is dropped by extract_audit_json.
+_AUDIT_POPEN_KWARGS = {
+    "stdout": subprocess.PIPE,
+    "stderr": subprocess.STDOUT,
+    "text": True,
+}
+
+
 def _build_audit_journal_cmd(
     name: str, cfg, *, since: str | None = None, follow: bool = False,
 ) -> list[str]:
@@ -2494,7 +2507,7 @@ def _build_audit_journal_cmd(
 def _audit_batch(name, cfg, filt, lines, since, as_json, no_color):
     """Read historical audit entries, filter, and output."""
     cmd = _build_audit_journal_cmd(name, cfg, since=since)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(cmd, **_AUDIT_POPEN_KWARGS)
     entries = []
     try:
         for raw_line in proc.stdout:
@@ -2523,7 +2536,7 @@ def _audit_batch(name, cfg, filt, lines, since, as_json, no_color):
 def _audit_follow(name, cfg, filt, as_json, no_color):
     """Stream audit entries in real time."""
     cmd = _build_audit_journal_cmd(name, cfg, follow=True)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(cmd, **_AUDIT_POPEN_KWARGS)
 
     if not as_json:
         click.echo(format_table_header())
@@ -2548,7 +2561,7 @@ def _audit_follow(name, cfg, filt, as_json, no_color):
 def _audit_summary(name, cfg, filt, since):
     """Compute and display summary statistics."""
     cmd = _build_audit_journal_cmd(name, cfg, since=since)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(cmd, **_AUDIT_POPEN_KWARGS)
     entries = []
     try:
         for raw_line in proc.stdout:
