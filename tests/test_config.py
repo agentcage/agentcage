@@ -714,7 +714,8 @@ class TestValidateLoggingLevels:
               cage: info
         """))
         cfg = load_config(str(p))
-        warnings = validate_config(cfg)
+        # Ignore the default-deny notice these domain-less fixtures now emit.
+        warnings = [w for w in validate_config(cfg) if "default-deny" not in w]
         assert warnings == []
 
 
@@ -770,7 +771,8 @@ class TestValidateConfig:
     @LINUX_ONLY
     def test_valid_config(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
-        warnings = validate_config(cfg)
+        # Ignore the default-deny notice this domain-less fixture now emits.
+        warnings = [w for w in validate_config(cfg) if "default-deny" not in w]
         assert warnings == []
 
     def test_missing_name(self, tmp_path):
@@ -877,7 +879,8 @@ class TestValidateConfig:
                 MY_KEY: "${EXISTING_VAR_TEST}"
         """))
         cfg = load_config(str(p))
-        warnings = validate_config(cfg)
+        # Ignore the default-deny notice this domain-less fixture now emits.
+        warnings = [w for w in validate_config(cfg) if "default-deny" not in w]
         assert warnings == []
 
 
@@ -1152,6 +1155,47 @@ class TestDomainConfigNewFormat:
         assert cfg.domains.block == []
         assert cfg.domains.passthrough == []
         assert cfg.domains.list == []
+
+    def test_no_domains_section_warns_default_deny(self, tmp_path):
+        # An omitted domains policy now fails closed at L7; the operator must
+        # be told loudly that egress is fully blocked by default.
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any("no domains policy configured" in w for w in warnings)
+        assert any("default-deny" in w for w in warnings)
+
+    def test_empty_allowlist_warns_default_deny(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow: []
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert any("domains.allow is empty" in w for w in warnings)
+
+    def test_allowlist_with_entries_does_not_warn_default_deny(self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - github.com
+        """))
+        cfg = load_config(str(p))
+        warnings = validate_config(cfg)
+        assert not any("default-deny" in w for w in warnings)
 
     def test_validation_allow_and_block_error(self, tmp_path):
         p = tmp_path / "config.yaml"
