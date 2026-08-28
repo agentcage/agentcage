@@ -18,6 +18,60 @@ set -eu
 log() { printf '[egress-supervisor] %s\n' "$*" >&2; }
 die() { log "FATAL: $1"; exit "${2:-99}"; }
 
+#-- Pre-create proxy log files at mode 0640 owned by their service user ----
+# Regression fix for #186. On the apple-container backend the egress
+# sibling bind-mounts the host per-cage logs_dir into the egress microVM
+# at /var/log/agentcage, and virtiofs *identity-maps* the host owner into
+# the guest: a file owned by acproxy (uid 200) on the host is owned by
+# uid 200 inside the cage VM too. With the logs_dir chmod'd 1777 (sticky,
+# world-writable so uid 200/201 can drop files in) and the daemons'
+# default umask 022, the files they create land at 0644 — i.e. "others"
+# (which includes the cage workload, uid 1000) get read access, and for
+# the group-writable dnsmasq.log even rw. The untrusted workload can then
+# read AND forge/truncate audit.jsonl, capture.jsonl, proxy.log and
+# dnsmasq.log, defeating `agentcage cage audit` as a forensic primitive.
+#
+# The dir stays 1777 (the service users must be able to enter it and the
+# sticky bit prevents cross-uid *deletion*); what matters is the FILE
+# modes. We pre-create each log file at 0640 owned by its service user
+# BEFORE the daemon starts, so when the daemon opens the file for append
+# it keeps the 0640 mode (open(..., O_APPEND) never changes an existing
+# file's mode) and "others" — the cage workload via virtiofs — gets
+# nothing.
+#
+# First create (fresh boot): the file is created ALREADY owned by the
+# service user by running install(1) under `setpriv --reuid/--regid` for
+# that user. The 1777 dir lets any uid create here, so no caps are needed;
+# install -m 0640 sets the mode atomically at create time (no
+# chmod-after-create race window). Creating as the service user directly
+# sidesteps chown entirely, so there is no root-owned-0640 window during
+# which the daemon couldn't write, and no chown-failure edge case under
+# hardened rootless podman.
+#
+# Restart (file already exists, owned by the service user from a prior
+# boot): tighten the mode in place with chmod 0640. The service user keeps
+# rw as the owner; root needs CAP_FOWNER for this, which PID-1 root has.
+#
+# All steps are best-effort: if setpriv/install is unavailable in a
+# minimal smoke-test image we simply leave creation to the daemon (which
+# falls back to its 0644 default — only the degraded, non-virtiofs path
+# where the threat model doesn't apply).
+_ensure_log() {
+  _el_file="$1"; _el_user="$2"
+  if [ -e "$_el_file" ]; then
+    # Restart: tighten the existing file to 0640 in place.
+    chmod 0640 "$_el_file" 2>/dev/null || true
+  else
+    # First create: make the file owned by the service user at 0640 in
+    # one shot (umask 0027 is belt-and-suspenders alongside install -m).
+    (
+      umask 0027
+      setpriv --reuid="$_el_user" --regid="$_el_user" --clear-groups -- \
+        /usr/bin/install -m 0640 /dev/null "$_el_file"
+    ) 2>/dev/null || true
+  fi
+}
+
 # dnsmasq writes its pidfile here. We use /home/acdns/ — pre-chowned to
 # acdns at image build time (Containerfile.egress) — instead of /run or
 # /var/run because:
@@ -199,6 +253,10 @@ fi
 # TODO(measurement): --as=256M for dnsmasq covers a 10k-entry allowlist
 # with headroom (eyeballed from the apple-container supervisor's working
 # set). Provisional — tune after measurement in a follow-up PR.
+# Pre-create dnsmasq.log at 0640 owned by acdns so the cage workload
+# (uid 1000, via virtiofs identity-mapping) cannot read or forge it.
+# See _ensure_log above (#186).
+_ensure_log /var/log/agentcage/dnsmasq.log acdns
 log "step B: starting dnsmasq (uid 201, CapBnd={net_bind_service}, prlimit --as=256M)"
 if [ -f /etc/agentcage/dnsmasq.conf ]; then
   # apple-container path: per-cage dnsmasq.conf bind-mounted by the
@@ -415,6 +473,15 @@ ss -lnup 2>/dev/null | grep -q ':53 ' \
 # TODO(measurement): --as=2G for mitmproxy covers PyInstaller's ~700MB
 # mmap overhead plus runtime working set with headroom. Provisional —
 # tune after measurement in a follow-up PR.
+# Pre-create the mitmproxy-owned log files at 0640 owned by acproxy so
+# the cage workload (uid 1000, via virtiofs identity-mapping) cannot
+# read or forge audit entries / capture bodies / the proxy log. mitmproxy
+# opens these for append, which preserves the pre-set 0640 mode. proxy.log
+# is defense-in-depth for the legacy single-VM redirect path and any
+# future redirect of mitmproxy output. See _ensure_log above (#186).
+_ensure_log /var/log/agentcage/audit.jsonl acproxy
+_ensure_log /var/log/agentcage/capture.jsonl acproxy
+_ensure_log /var/log/agentcage/proxy.log acproxy
 log "step D: starting mitmproxy (uid 200, CapBnd=0, prlimit --as=2G)"
 
 # Build reverse-mode flags for inbound port forwards (legacy proxy's
