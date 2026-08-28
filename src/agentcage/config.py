@@ -1293,6 +1293,44 @@ def validate_config(config: Config) -> list[str]:
                     f"{field_path}: silently has no effect on apple-container "
                     f"({summary}). See issue #120 for the parity plan."
                 )
+        # The generic ``container.tmpfs`` warning above is harmless-
+        # parity noise for most tmpfs targets (an extra /run, /var/cache
+        # overlay that the RW rootfs already covers functionally). But the
+        # #170 / #173 workspace executable-config masks are SECURITY
+        # controls, not /tmp-parity convenience: without them a caged agent
+        # can plant a host git hook (#170 cage→host pivot) or a project
+        # .claude/settings.json hooks block (#173 cage→cage injection).
+        # An operator who has learned to ignore the generic tmpfs warning
+        # as "harmless /tmp parity" would silently be running an OPEN
+        # cage→host pivot on apple-container. Call out those specific
+        # dropped entries by name so the residual exposure is unmissable,
+        # instead of folding them into the generic ``container.tmpfs``
+        # warning an operator may already tune out.
+        if config.container.tmpfs:
+            for entry in config.container.tmpfs:
+                target = entry.split(":", 1)[0]
+                if target == "/workspace/.git/hooks/":
+                    warnings.append(
+                        f"container.tmpfs: SECURITY-RELEVANT drop on "
+                        f"apple-container — the #170 cage→host git-hook "
+                        f"pivot mask (/workspace/.git/hooks/) is NOT "
+                        f"applied on apple-container — a caged agent can "
+                        f"still plant a host git hook that the next "
+                        f"host-side `git commit` runs as the host user. "
+                        f"The pivot remains exploitable. "
+                        f"See #120 for tmpfs parity."
+                    )
+                elif target == "/workspace/.claude/":
+                    warnings.append(
+                        f"container.tmpfs: SECURITY-RELEVANT drop on "
+                        f"apple-container — the #173 cage→cage "
+                        f"hooks-injection mask (/workspace/.claude/) is "
+                        f"NOT applied on apple-container — a caged agent "
+                        f"can still plant a project .claude/settings.json "
+                        f"`hooks` block that Claude Code in another cage "
+                        f"honors on launch. The injection chain remains "
+                        f"exploitable. See #120 for tmpfs parity."
+                    )
         # secret_injection.transform now runs end-to-end on apple-container
         # — the in-cage mitmproxy addon loads the same data/proxy/transforms
         # registry the container backend uses. KNOWN_TRANSFORMS is the

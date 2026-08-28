@@ -238,3 +238,207 @@ class TestInferScaffoldFromImage:
     def test_similar_but_wrong_prefix_returns_none(self):
         """'scaffold' without the 'agentcage-' prefix should not match."""
         assert infer_scaffold_from_image("localhost/scaffold-openclaw:latest") is None
+
+
+class TestWorkspaceExecutableConfigMasks:
+    """Regression guards for the workspace executable-config tmpfs masks
+    (#170, #173).
+
+    Every scaffold that bind-mounts ``${PROJECT_DIR}:/workspace:rw`` exposes
+    the host's ``.git/hooks/`` (a cage→host git-hook pivot, #170) and the
+    claude-code scaffold additionally exposes the project-local
+    ``.claude/settings.json`` (a cage→cage hooks-injection chain, #173) to
+    cage writes. The fix is a ``tmpfs:`` entry per affected scaffold that
+    overlays the bind-mounted path with an empty, transient tmpfs.
+
+    ``openclaw`` is intentionally exempt: it mounts ``/workspace`` from a
+    Podman named volume (``{{ name }}-workspace``), not a host bind-mount,
+    so there is no host ``.git``/``.claude`` tree for a caged agent to reach
+    or pivot to.
+    """
+
+    # Scaffolds that bind-mount ${PROJECT_DIR}:/workspace:rw — must mask
+    # the host's .git/hooks/ (#170). openclaw uses a named volume, not a
+    # bind-mount, so it is excluded.
+    _WORKSPACE_BINDMOUNT_SCAFFOLDS = [
+        "arch",
+        "busybox",
+        "claude-code",
+        "codex",
+        "debian",
+        "pi",
+        "ubuntu",
+    ]
+
+    @pytest.mark.parametrize("scaffold", _WORKSPACE_BINDMOUNT_SCAFFOLDS)
+    def test_git_hooks_mask_present(self, scaffold):
+        """Every workspace-bind-mount scaffold must tmpfs-mask
+        /workspace/.git/hooks/ so a caged agent can't plant a git hook that
+        the next host-side `git commit` runs as the host user (#170)."""
+        cfg_text = render_config("demo", scaffold=scaffold)
+        assert "${PROJECT_DIR}:/workspace:rw" in cfg_text, (
+            f"{scaffold} no longer bind-mounts ${{PROJECT_DIR}}:/workspace:rw — "
+            "update the mask set if the mount shape changed"
+        )
+        tmpfs = yaml.safe_load(cfg_text)["container"]["tmpfs"]
+        masks = [e for e in tmpfs if e.split(":", 1)[0] == "/workspace/.git/hooks/"]
+        assert masks, (
+            f"{scaffold} mounts the workspace RW but is missing the "
+            "/workspace/.git/hooks/ tmpfs mask (#170)"
+        )
+        # The mask must be noexec so even transient cage-written binaries land
+        # on a non-executable mount.
+        assert "noexec" in masks[0], (
+            f"{scaffold} .git/hooks mask is missing noexec: {masks[0]!r}"
+        )
+
+    def test_claude_code_dotclaude_mask_present(self):
+        """The claude-code scaffold must tmpfs-mask /workspace/.claude/ so a
+        caged agent can't plant a malicious .claude/settings.json `hooks`
+        block that Claude Code in another cage honors on launch (#173)."""
+        cfg_text = render_config("demo", scaffold="claude-code")
+        tmpfs = yaml.safe_load(cfg_text)["container"]["tmpfs"]
+        masks = [e for e in tmpfs if e.split(":", 1)[0] == "/workspace/.claude/"]
+        assert masks, (
+            "claude-code is missing the /workspace/.claude/ tmpfs mask (#173)"
+        )
+        assert "noexec" in masks[0], (
+            f"claude-code .claude mask is missing noexec: {masks[0]!r}"
+        )
+
+    def test_openclaw_exempt_from_git_hooks_mask(self):
+        """openclaw mounts /workspace from a Podman named volume, not a host
+        bind-mount, so there is no host .git/hooks/ to pivot to. It must NOT
+        gain the bind-mount-driven .git/hooks mask — and must not accidentally
+        start bind-mounting ${PROJECT_DIR} either."""
+        cfg_text = render_config("demo", scaffold="openclaw")
+        assert "${PROJECT_DIR}:/workspace" not in cfg_text, (
+            "openclaw now bind-mounts ${PROJECT_DIR}:/workspace — re-evaluate "
+            "whether it needs the #170/.git/hooks mask"
+        )
+        tmpfs = yaml.safe_load(cfg_text)["container"]["tmpfs"]
+        assert not any(
+            e.split(":", 1)[0] == "/workspace/.git/hooks/" for e in tmpfs
+        ), "openclaw (named-volume workspace) gained a spurious .git/hooks mask"
+
+    @pytest.mark.parametrize("scaffold", ["codex", "pi"])
+    def test_other_agent_scaffolds_no_dotclaude_mask(self, scaffold):
+        """codex/pi don't read a project-level executable-config file the way
+        Claude Code reads .claude/settings.json `hooks`, so they get the
+        .git/hooks mask only — not the .claude/ mask. This pins that decision:
+        if a codex/pi project-local executable-config surface is later
+        identified, add the analogous mask here rather than blanket-masking."""
+        cfg_text = render_config("demo", scaffold=scaffold)
+        tmpfs = yaml.safe_load(cfg_text)["container"]["tmpfs"]
+        assert not any(
+            "/workspace/.claude/" in e for e in tmpfs
+        ), f"{scaffold} should not carry the claude-code .claude/ mask"
+
+    def test_claude_code_home_dotclaude_not_masked(self):
+        """The claude-code scaffold masks the PROJECT-level
+        ``/workspace/.claude/`` (#173) but must NOT mask the cage's own
+        HOME ``~/.claude`` (``/home/node/.claude``). The home tree holds
+        ``CLAUDE.md``, login credentials (``.credentials.json`` from an
+        in-cage ``claude login``), and in-cage settings — masking it would
+        break ``claude login`` / credential persistence. This pins the core
+        distinction so a future mask-list edit can't silently widen the
+        project-level mask onto the cage home."""
+        cfg_text = render_config("demo", scaffold="claude-code")
+        tmpfs = yaml.safe_load(cfg_text)["container"]["tmpfs"]
+        assert not any(
+            e.split(":", 1)[0] == "/home/node/.claude"
+            or e.split(":", 1)[0] == "/home/node/.claude/"
+            for e in tmpfs
+        ), (
+            "claude-code tmpfs must not mask the cage HOME ~/.claude "
+            "(/home/node/.claude) — only the project-level "
+            "/workspace/.claude/. Masking HOME breaks claude login/creds."
+        )
+
+    def test_apple_container_git_hooks_drop_warns_security_relevant(
+        self, tmp_path
+    ):
+        """On apple-container the #170 /workspace/.git/hooks/ mask is silently
+        dropped (tmpfs parity tracked in #120). The generic tmpfs warning is
+        harmless-parity noise an operator may tune out, so a security control
+        being dropped must call out the residual exposure by name: a caged
+        agent can still plant a host git hook. The warning must NOT read as
+        generic /tmp-parity gap."""
+        import platform as _platform
+        from unittest import mock
+        from agentcage.config import load_config, validate_config
+        cfg_text = render_config("demo", scaffold="claude-code")
+        p = tmp_path / "cage.yaml"
+        p.write_text(cfg_text)
+        cfg = load_config(str(p))
+        cfg.isolation = "apple-container"
+        with mock.patch.object(_platform, "system", return_value="Darwin"), \
+             mock.patch.object(_platform, "machine", return_value="arm64"):
+            warnings = validate_config(cfg)
+        git_hook_warns = [w for w in warnings if "/workspace/.git/hooks/" in w]
+        assert git_hook_warns, (
+            "apple-container validation must warn about the dropped "
+            "/workspace/.git/hooks/ mask (#170)"
+        )
+        assert any("SECURITY-RELEVANT" in w for w in git_hook_warns), (
+            "the .git/hooks tmpfs drop warning must be flagged "
+            "SECURITY-RELEVANT, not generic /tmp parity noise"
+        )
+        assert any("pivot" in w and "exploitable" in w for w in git_hook_warns), (
+            "the .git/hooks drop warning must name the cage→host pivot "
+            "and that it remains exploitable"
+        )
+
+    def test_apple_container_dotclaude_drop_warns_security_relevant(
+        self, tmp_path
+    ):
+        """Symmetric to the git-hooks case: on apple-container the #173
+        /workspace/.claude/ mask is dropped, leaving the cage→cage
+        hooks-injection chain open. The warning must call out the
+        hooks-injection exposure by name, not fold it into generic tmpfs
+        parity noise."""
+        import platform as _platform
+        from unittest import mock
+        from agentcage.config import load_config, validate_config
+        cfg_text = render_config("demo", scaffold="claude-code")
+        p = tmp_path / "cage.yaml"
+        p.write_text(cfg_text)
+        cfg = load_config(str(p))
+        cfg.isolation = "apple-container"
+        with mock.patch.object(_platform, "system", return_value="Darwin"), \
+             mock.patch.object(_platform, "machine", return_value="arm64"):
+            warnings = validate_config(cfg)
+        claude_warns = [w for w in warnings if "/workspace/.claude/" in w]
+        assert claude_warns, (
+            "apple-container validation must warn about the dropped "
+            "/workspace/.claude/ mask (#173)"
+        )
+        assert any("SECURITY-RELEVANT" in w for w in claude_warns), (
+            "the .claude/ tmpfs drop warning must be flagged "
+            "SECURITY-RELEVANT, not generic /tmp parity noise"
+        )
+        assert any("hooks-injection" in w and "exploitable" in w
+                   for w in claude_warns), (
+            "the .claude/ drop warning must name the cage→cage "
+            "hooks-injection chain and that it remains exploitable"
+        )
+
+    def test_apple_container_plain_tmp_warning_not_security_flagged(self):
+        """A plain /tmp tmpfs entry (the stock scaffold default) dropped on
+        apple-container must stay a generic parity warning — it must NOT be
+        mis-flagged SECURITY-RELEVANT, otherwise operators learn to treat
+        the security flag as noise too. Pins the specificity of Major 1."""
+        import platform as _platform
+        from unittest import mock
+        from agentcage.config import Config, validate_config
+        cfg = Config(name="t", isolation="apple-container")
+        cfg.container.image = "alpine:3.20"
+        cfg.container.tmpfs = ["/tmp:rw,noexec,nosuid,size=256M"]
+        with mock.patch.object(_platform, "system", return_value="Darwin"), \
+             mock.patch.object(_platform, "machine", return_value="arm64"):
+            warnings = validate_config(cfg)
+        tmp_warns = [w for w in warnings if "container.tmpfs" in w]
+        assert not any("SECURITY-RELEVANT" in w for w in tmp_warns), (
+            "a plain /tmp tmpfs drop must not be flagged SECURITY-RELEVANT: "
+            + " | ".join(tmp_warns)
+        )

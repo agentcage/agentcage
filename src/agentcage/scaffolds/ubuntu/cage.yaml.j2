@@ -59,6 +59,12 @@ container:
 
   tmpfs:
     - "/tmp:rw,noexec,nosuid,size=64M"
+    # Mask the host's .git/hooks/ so a caged agent can't plant a git hook
+    # (pre-commit, post-checkout, …) that the next host-side `git commit`
+    # runs as the host user — a cage→host pivot (#170). tmpfs overlays the
+    # bind-mounted path: the cage sees an empty, transient .git/hooks/
+    # (writes vanish on stop); the host's hooks are untouched.
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
 
   # Resource limits — test cages are small
   memory: "1g"

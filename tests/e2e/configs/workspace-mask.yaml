@@ -1,0 +1,25 @@
+# Test cage config for the #170/.git/hooks tmpfs-mask e2e check (phase 6.11).
+#
+# Bind-mounts a throwaway host project dir at /workspace:rw and applies the
+# same /workspace/.git/hooks/ noexec-tmpfs mask the claude-code/codex/pi/
+# arch/busybox/debian/ubuntu scaffolds ship, so a caged agent's write to
+# /workspace/.git/hooks/pre-commit must NOT reach the host. Uses the same
+# node:22-slim base the other hardened-cage configs use (no scaffold build).
+name: e2e-mask
+
+container:
+  image: "node:22-slim"
+  command: ["sleep", "infinity"]
+  volumes:
+    - "${E2E_MASK_PROJECT_DIR}:/workspace:rw"
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=256M"
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
+  user: "1000:1000"
+  userns: "keep-id"
+
+domains:
+  allow:
+    - example.com
+
+log_allowed: true

@@ -73,6 +73,20 @@ container:
 
   tmpfs:
     - "/tmp:rw,noexec,nosuid,size=256M"
+    # Mask the host's .git/hooks/ so a caged agent can't plant a git hook
+    # (pre-commit, post-checkout, …) that the next host-side `git commit`
+    # runs as the host user — a cage→host pivot (#170). tmpfs overlays the
+    # bind-mounted path: the cage sees an empty, transient .git/hooks/
+    # (writes vanish on stop); the host's hooks are untouched.
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
+    # Mask the project-local .claude/ so a caged agent can't plant a
+    # malicious .claude/settings.json `hooks` block that Claude Code in
+    # another cage honors on launch — a cage→cage hooks-injection chain
+    # (#173). This is the PROJECT-level .claude/ under /workspace (read
+    # from the RW bind-mount), not the cage's own ~/.claude home (which
+    # holds CLAUDE.md, login creds, and in-cage settings). Project-level
+    # Claude config/commands/subagents must be baked into the cage image.
+    - "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M"
 
   # Resource limits
   memory: "8g"
