@@ -166,13 +166,15 @@ class TestVmValidation:
               mem_mb: 2048
         """))
         cfg = load_config(str(p))
-        warnings = validate_config(cfg)
+        # Ignore the default-deny notice this domain-less fixture now emits.
+        warnings = [w for w in validate_config(cfg) if "default-deny" not in w]
         assert warnings == []
 
     @LINUX_ONLY
     def test_container_mode_no_vm_required(self, minimal_yaml):
         cfg = load_config(minimal_yaml)
-        warnings = validate_config(cfg)
+        # Ignore the default-deny notice this domain-less fixture now emits.
+        warnings = [w for w in validate_config(cfg) if "default-deny" not in w]
         assert warnings == []
 
     def test_container_isolation_rejected_on_macos(self, minimal_yaml):
@@ -198,4 +200,6 @@ class TestVmValidation:
         cfg = load_config(str(p))
         with patch("agentcage.config.platform.system", return_value="Darwin"):
             warnings = validate_config(cfg)
+        # Ignore the default-deny notice this domain-less fixture now emits.
+        warnings = [w for w in warnings if "default-deny" not in w]
         assert warnings == []

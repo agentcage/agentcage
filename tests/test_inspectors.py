@@ -73,10 +73,36 @@ class TestDomainInspector:
         d.configure({"mode": "blocklist", "list": ["evil.com"]})
         assert d.inspect_request(_ctx(host="api.anthropic.com")) is None
 
-    def test_no_mode_allows_everything(self):
+    def test_no_mode_defaults_to_deny(self):
+        # Omitted/empty `domains:` section → fail closed (default-deny),
+        # not fail open. Regression guard for the L7 allowlist fail-open.
         d = DomainInspector()
         d.configure({})
-        assert d.inspect_request(_ctx(host="anything.example.com")) is None
+        r = d.inspect_request(_ctx(host="anything.example.com"))
+        assert r is not None
+        assert r.action == "block"
+        assert "anything.example.com" in r.reason
+
+    def test_empty_mode_string_defaults_to_deny(self):
+        d = DomainInspector()
+        d.configure({"mode": ""})
+        r = d.inspect_request(_ctx(host="anything.example.com"))
+        assert r is not None
+        assert r.action == "block"
+
+    def test_unknown_mode_defaults_to_deny(self):
+        d = DomainInspector()
+        d.configure({"mode": "bogus"})
+        r = d.inspect_request(_ctx(host="anything.example.com"))
+        assert r is not None
+        assert r.action == "block"
+
+    def test_empty_allowlist_blocks_everything(self):
+        d = DomainInspector()
+        d.configure({"allow": []})
+        r = d.inspect_request(_ctx(host="anything.example.com"))
+        assert r is not None
+        assert r.action == "block"
 
 
 # ── SecretsInspector ─────────────────────────────────────
