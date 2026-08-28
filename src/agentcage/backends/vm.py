@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import os
 import shlex
 import shutil
@@ -298,10 +299,12 @@ class VmBackend:
     ) -> dict[str, str]:
         """Generate Lima YAML as the primary 'unit', plus quadlet files for inside the VM."""
         lima_yaml = generate_lima_config(config)
-        # Floor the cage's TimeoutStartSec for VM-mode cages. Mutates the
-        # in-memory config; the on-disk cage.yaml is untouched.
-        if config.container.timeout_start_sec < self.VM_MIN_TIMEOUT_START_SEC:
-            config.container.timeout_start_sec = self.VM_MIN_TIMEOUT_START_SEC
+        # Floor the cage's TimeoutStartSec for VM-mode cages on an effective
+        # copy. Keeping the caller's parsed config unchanged makes repeated
+        # unit generation deterministic (including update fingerprints).
+        effective_config = copy.deepcopy(config)
+        if effective_config.container.timeout_start_sec < self.VM_MIN_TIMEOUT_START_SEC:
+            effective_config.container.timeout_start_sec = self.VM_MIN_TIMEOUT_START_SEC
         # Store-aware Secret= emission (issue #262): the podman secret
         # store for VM cages lives INSIDE the guest, so it can only be
         # queried while the Lima instance is running (`secret set`/`rm`
@@ -323,7 +326,7 @@ class VmBackend:
             store_secrets = None
         # Also generate quadlets (these will be installed inside the VM)
         quadlets = generate_quadlets(
-            config,
+            effective_config,
             config_host_path,
             patches_host_dir,
             deploy_name,
