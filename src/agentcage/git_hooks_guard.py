@@ -199,7 +199,9 @@ def discover_git_hooks_masks(expanded_volumes: list[str], *, enabled: bool) -> G
             if cage_path in seen_cage_paths:
                 continue
             seen_cage_paths.add(cage_path)
-            masks.append(GitHooksMask(host_path=dirpath, cage_path=cage_path))
+            masks.append(
+                GitHooksMask(host_path=os.path.realpath(dirpath), cage_path=cage_path)
+            )
     return GitHooksGuardPlan(binds=binds, masks=tuple(masks))
 
 
