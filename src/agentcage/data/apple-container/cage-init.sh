@@ -288,12 +288,40 @@ if [ -n "${AGENTCAGE_NONPERSISTENT_COPIES:-}" ]; then
       mkdir -p "${target}"
       (cd "${lower}" && tar cf - .) | (cd "${target}" && tar xpf -) 2>/dev/null \
         || log "warn: failed to seed non-persistent mount ${target} from ${lower}"
+      # `tar xp` replays the HOST source's ownership and modes into the
+      # fresh tmpfs, and this stage runs as root. An ordinary host source
+      # (0755, not owned by uid 1000) therefore lands root-owned and the
+      # uid-1000 workload of stage D cannot write a single byte into it —
+      # the exact opposite of what `np` promises ("writable in the cage;
+      # changes discarded"). Hand the ephemeral copy to the cage user.
+      #
+      # Only the tmpfs ${target} is chowned; ${lower} is the read-only
+      # host bind and is never touched. `-h` chowns symlinks themselves
+      # rather than their referents, so a symlink inside the seeded tree
+      # (e.g. ./evil -> /etc/shadow, replayed verbatim from the host
+      # source) cannot redirect the chown at a path outside ${target}.
+      chown -Rh 1000:1000 "${target}" 2>/dev/null \
+        || log "warn: failed to chown non-persistent mount ${target} to uid 1000 — the cage workload may not be able to write to it"
     elif [ -f "${lower}" ]; then
       # A file target must remain a file: creating ${target} itself as a
       # directory would make cp place the source at ${target}/lower.
-      mkdir -p "$(dirname "${target}")"
+      np_parent=$(dirname "${target}")
+      # Only a parent this stage invents may be handed to the cage user;
+      # an image-provided parent (e.g. /home/node/.config) keeps its own
+      # ownership. A parent we create would otherwise be root-owned 0755,
+      # which blocks the write-to-temp-then-rename save path most config
+      # writers use even though the seeded file itself is writable.
+      np_new_parent=0
+      [ -d "${np_parent}" ] || np_new_parent=1
+      mkdir -p "${np_parent}"
       cp -f "${lower}" "${target}" 2>/dev/null \
         || log "warn: failed to seed non-persistent file mount ${target} from ${lower}"
+      if [ "${np_new_parent}" -eq 1 ]; then
+        chown 1000:1000 "${np_parent}" 2>/dev/null \
+          || log "warn: failed to chown non-persistent mount parent ${np_parent} to uid 1000"
+      fi
+      chown -h 1000:1000 "${target}" 2>/dev/null \
+        || log "warn: failed to chown non-persistent file mount ${target} to uid 1000 — the cage workload may not be able to write to it"
     fi
   done
 fi
