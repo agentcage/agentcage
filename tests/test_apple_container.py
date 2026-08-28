@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2138,8 +2140,117 @@ def test_start_routes_np_file_to_exact_target_without_tmpfs(tmp_path, monkeypatc
         Path(__file__).parents[1]
         / "src/agentcage/data/apple-container/cage-init.sh"
     ).read_text()
-    assert 'mkdir -p "$(dirname "${target}")"' in init_script
+    assert 'np_parent=$(dirname "${target}")' in init_script
+    assert 'mkdir -p "${np_parent}"' in init_script
     assert 'cp -f "${lower}" "${target}"' in init_script
+
+
+# ---------------------------------------------------------------------------
+# cage-init.sh stage C' — non-persistent seed ownership
+# ---------------------------------------------------------------------------
+
+def _stage_c_prime_script():
+    """Return cage-init.sh's stage C' block as a standalone POSIX-sh script.
+
+    Stage C' is the only part of cage-init that can be exercised off-VM: it
+    is pure filesystem work driven by AGENTCAGE_NONPERSISTENT_COPIES. Slicing
+    it out (rather than asserting on source text) lets the tests below run the
+    real control flow — which branch chowns what — against a temp dir.
+    """
+    text = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "agentcage" / "data" / "apple-container" / "cage-init.sh"
+    ).read_text()
+    start = text.index("#-- Stage C'. Per-bind non-persistent mounts")
+    end = text.index("#-- Stage D.", start)
+    return "set -eu\nlog() { printf '%s\\n' \"$*\" >&2; }\n" + text[start:end]
+
+
+def _run_stage_c_prime(tmp_path, copies):
+    """Run stage C' with a recording `chown` stub; return its arg lines.
+
+    chown(1) to uid 1000 needs root, which the test suite is not. The stub
+    keeps the assertions about *which paths are handed to the cage user*
+    honest without needing privileges, and keeps the on-disk seeding real.
+    """
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    log = tmp_path / "chown.log"
+    stub = bindir / "chown"
+    stub.write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> {log}\n')
+    stub.chmod(0o755)
+
+    script = tmp_path / "stage_c_prime.sh"
+    script.write_text(_stage_c_prime_script())
+    env = dict(os.environ)
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    env["AGENTCAGE_NONPERSISTENT_COPIES"] = "\n".join(
+        f"{lower}\t{target}" for lower, target in copies
+    )
+    proc = subprocess.run(
+        ["sh", str(script)], env=env, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_cage_init_hands_np_directory_seed_to_the_cage_user(tmp_path):
+    """REGRESSION (#311): `tar xp` replays the host source's root-owned 0755
+    modes into the tmpfs, so the uid-1000 workload could not write to an `np`
+    mount at all — `echo x > /mnt/xfer/test2` returned EACCES, defeating the
+    documented "writable in the cage; changes discarded" contract. The seeded
+    tree must be chowned to uid 1000."""
+    lower = tmp_path / "lower"
+    (lower / "sub").mkdir(parents=True)
+    (lower / "sub" / "f.txt").write_text("hi")
+    target = tmp_path / "target"
+
+    chowns = _run_stage_c_prime(tmp_path, [(lower, target)])
+
+    assert (target / "sub" / "f.txt").read_text() == "hi"
+    assert chowns == [f"-Rh 1000:1000 {target}"]
+    # The read-only host bind is the operator's real data — never chowned
+    # through, not even via -R on a path that contains it.
+    assert not any(str(lower) in line for line in chowns)
+
+
+def test_cage_init_np_directory_chown_does_not_follow_symlinks(tmp_path):
+    """The seeded tree is a verbatim copy of a host directory, so it can
+    contain a symlink to an absolute path outside the mount (/etc/shadow).
+    chown must carry -h so it retargets the link, not the referent."""
+    assert "chown -Rh 1000:1000" in _stage_c_prime_script()
+
+
+def test_cage_init_hands_np_file_seed_and_invented_parent_to_the_cage_user(tmp_path):
+    """A single-file np source is copied to its exact target. The copy must be
+    owned by uid 1000, and so must a parent directory this stage invents —
+    otherwise the root-owned 0755 parent blocks the write-temp-then-rename
+    save path that config writers use."""
+    lower = tmp_path / "settings.json"
+    lower.write_text("{}")
+    target = tmp_path / "cage" / "config" / "settings.json"
+
+    chowns = _run_stage_c_prime(tmp_path, [(lower, target)])
+
+    assert target.read_text() == "{}"
+    assert chowns == [
+        f"1000:1000 {target.parent}",
+        f"-h 1000:1000 {target}",
+    ]
+
+
+def test_cage_init_np_file_seed_leaves_a_preexisting_parent_alone(tmp_path):
+    """A parent that already exists belongs to the image (e.g.
+    /home/node/.config or /etc) — seeding one file into it must not rewrite
+    that directory's ownership."""
+    lower = tmp_path / "settings.json"
+    lower.write_text("{}")
+    target = tmp_path / "existing" / "settings.json"
+    target.parent.mkdir()
+
+    chowns = _run_stage_c_prime(tmp_path, [(lower, target)])
+
+    assert chowns == [f"-h 1000:1000 {target}"]
 
 
 def test_unit_json_bakes_env_var_so_mount_survives_restart(tmp_path, monkeypatch):

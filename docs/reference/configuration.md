@@ -98,6 +98,12 @@ semantics:
 - **Apple container, file source:** the file is copied to its exact target in
   the fresh cage filesystem.
 
+On Apple container the seeded copy is handed to the cage workload user (uid
+1000) so the mount is writable regardless of who owns the host source; file
+modes are otherwise preserved from the host. The copy runs during cage
+startup, so a `cage exec` issued in the first seconds after `cage start` can
+observe the target still empty.
+
 Use an ordinary `ro` bind instead if the cage does not need to edit the data.
 Use `container.tmpfs` for empty scratch space that does not need initial
 contents from the host.
