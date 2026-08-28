@@ -20,6 +20,7 @@ fall through to the Host header as before.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import types
@@ -186,7 +187,7 @@ def test_matching_sni_and_host_passes(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni="api.anthropic.com",
                       host_header="api.anthropic.com")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert not _was_blocked(flow)
 
 
@@ -196,7 +197,7 @@ def test_mismatched_sni_and_host_is_blocked(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni="evil.example",
                       host_header="api.anthropic.com")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert _was_blocked(flow)
     reason = _block_reason(flow)
     assert "SNI/Host header mismatch" in reason
@@ -212,7 +213,7 @@ def test_mismatched_sni_and_host_reversed_is_blocked(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni="api.anthropic.com",
                       host_header="evil.example")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert _was_blocked(flow)
 
 
@@ -224,7 +225,7 @@ def test_http_without_sni_falls_through(tmp_path):
     flow = _make_flow(sni=None,
                       host_header="api.anthropic.com",
                       url="http://api.anthropic.com/v1/messages")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert not _was_blocked(flow)
 
 
@@ -234,7 +235,7 @@ def test_case_insensitive_match(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni="Api.Anthropic.COM",
                       host_header="api.anthropic.com")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert not _was_blocked(flow)
 
 
@@ -245,7 +246,7 @@ def test_port_in_host_header_is_stripped(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni="api.anthropic.com",
                       host_header="api.anthropic.com:443")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert not _was_blocked(flow)
 
 
@@ -255,7 +256,7 @@ def test_trailing_dot_tolerated(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni="api.anthropic.com.",
                       host_header="api.anthropic.com")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert not _was_blocked(flow)
 
 
@@ -265,7 +266,7 @@ def test_bytes_sni_is_decoded(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni=b"api.anthropic.com",
                       host_header="api.anthropic.com")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert not _was_blocked(flow)
 
 
@@ -276,7 +277,7 @@ def test_bytes_sni_mismatch_is_decoded_and_blocked(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni=b"evil.example",
                       host_header="api.anthropic.com")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert _was_blocked(flow)
 
 
@@ -288,7 +289,7 @@ def test_subdomain_is_not_treated_as_match(tmp_path):
     addon = _build_addon(tmp_path)
     flow = _make_flow(sni="anthropic.com",
                       host_header="api.anthropic.com")
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert _was_blocked(flow)
 
 
@@ -302,5 +303,5 @@ def test_reverse_proxy_flow_skips_the_check(tmp_path):
     flow = _make_flow(sni="evil.example",
                       host_header="api.anthropic.com",
                       reverse_mode=True)
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert not _was_blocked(flow)
