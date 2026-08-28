@@ -44,6 +44,10 @@ from agentcage.init import (
     scaffold_name_prefix,
 )
 from agentcage.podman import Podman
+from agentcage.volume_mounts import (
+    is_non_persistent_volume,
+    validate_non_persistent_volume,
+)
 from agentcage.services import (
     build_and_deploy,
     check_port_availability,
@@ -420,13 +424,11 @@ def execute(
     # Without this, a login inside the cage never round-trips to the host.
     # An inline ``np`` bind is intentionally non-persistent, so do not create
     # a host directory for it merely to seed an empty lower layer.
-    def _has_np_option(volume: str) -> bool:
-        parts = volume.split(":", 2)
-        return len(parts) == 3 and "np" in parts[2].split(",")
-
+    for volume in cfg.container.volumes:
+        validate_non_persistent_volume(volume)
     _ensure_volume_dirs([
         volume for volume in cfg.container.volumes
-        if not _has_np_option(volume)
+        if not is_non_persistent_volume(volume)
     ])
 
     # Check port availability

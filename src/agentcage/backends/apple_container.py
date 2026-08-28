@@ -57,6 +57,11 @@ from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
 from agentcage.quadlets import _effective_port_policy
+from agentcage.volume_mounts import (
+    is_non_persistent_volume,
+    split_volume_spec,
+    validate_non_persistent_volume,
+)
 
 
 # Shared agentcage-egress image is built once per host (tagged with the
@@ -227,6 +232,7 @@ class AppleContainerBackend:
         out: list[str] = []
         home = os.path.realpath(os.path.expanduser("~"))
         for v in raw_entries:
+            validate_non_persistent_volume(v)
             if ":" not in v:
                 click.echo(
                     f"warning: skipping volume {v!r} on apple-container "
@@ -1294,12 +1300,11 @@ class AppleContainerBackend:
         # passed directly through unchanged.
         copies: list[str] = []
         for idx, vol_entry in enumerate(raw_volume_entries):
-            parts = vol_entry.split(":", 2)
-            if len(parts) < 2:
+            validate_non_persistent_volume(vol_entry)
+            host_src, target, _opts = split_volume_spec(vol_entry)
+            if not target:
                 continue
-            host_src, target = parts[0], parts[1]
-            opts = parts[2].split(",") if len(parts) == 3 else []
-            if "np" not in opts:
+            if not is_non_persistent_volume(vol_entry):
                 cage_argv += ["--volume", vol_entry]
                 continue
             lower = f"/run/agentcage/mounts/vol-{idx}/lower"

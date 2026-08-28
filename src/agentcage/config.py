@@ -14,6 +14,7 @@ import yaml
 from agentcage.data.proxy.relays._validate import (
     validate_relay_entry,
 )
+from agentcage.volume_mounts import validate_non_persistent_volume
 
 
 KNOWN_TRANSFORMS = frozenset({"google-jwt-bearer"})
@@ -961,6 +962,8 @@ def validate_config(config: Config) -> list[str]:
         )
     if not config.container.image:
         raise ValueError("container.image is required in config")
+    for volume in config.container.volumes:
+        validate_non_persistent_volume(volume)
     if not re.match(
         r'^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(@sha256:[a-f0-9]{64})?$',
         config.container.image,

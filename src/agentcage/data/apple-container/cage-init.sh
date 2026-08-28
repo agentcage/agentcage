@@ -284,11 +284,14 @@ if [ -n "${AGENTCAGE_NONPERSISTENT_COPIES:-}" ]; then
     if [ -z "${lower}" ] || [ -z "${target}" ]; then
       continue
     fi
-    mkdir -p "${target}"
     if [ -d "${lower}" ]; then
+      mkdir -p "${target}"
       (cd "${lower}" && tar cf - .) | (cd "${target}" && tar xpf -) 2>/dev/null \
         || log "warn: failed to seed non-persistent mount ${target} from ${lower}"
     elif [ -f "${lower}" ]; then
+      # A file target must remain a file: creating ${target} itself as a
+      # directory would make cp place the source at ${target}/lower.
+      mkdir -p "$(dirname "${target}")"
       cp -f "${lower}" "${target}" 2>/dev/null \
         || log "warn: failed to seed non-persistent file mount ${target} from ${lower}"
     fi

@@ -12,6 +12,12 @@ import click
 from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
+from agentcage.volume_mounts import (
+    is_non_persistent_volume,
+    validate_non_persistent_volume,
+    volume_options,
+)
+
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "lima"
 
 # Directories that must NEVER be mounted into the VM, even if a user volume
@@ -71,6 +77,7 @@ def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
     mounts: list[dict] = []
 
     for vol in volumes:
+        validate_non_persistent_volume(vol)
         host_part = vol.split(":")[0]
         # Expand ~ and ${VARS} (e.g. ${PROJECT_DIR}) before resolving.
         expanded = os.path.expandvars(os.path.expanduser(host_part))
@@ -119,9 +126,8 @@ def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
         # Determine writable from volume opts (default read-only for safety).
         # An inline ``np`` bind is only an overlay lowerdir for podman in the
         # VM, so it must be shared read-only with Lima as well.
-        parts = vol.split(":", 2)
-        opts = parts[2].lower().split(",") if len(parts) == 3 else []
-        writable = "rw" in opts and "np" not in opts
+        opts = volume_options(vol)
+        writable = "rw" in opts and not is_non_persistent_volume(vol)
 
         mounts.append({"location": host_path, "writable": writable})
 

@@ -15,6 +15,12 @@ from jinja2 import FileSystemLoader
 from jinja2.sandbox import SandboxedEnvironment
 
 from agentcage.config import Config
+from agentcage.volume_mounts import (
+    is_non_persistent_volume,
+    split_volume_spec,
+    validate_non_persistent_volume,
+    volume_options,
+)
 
 
 def cage_network_addrs(
@@ -255,22 +261,6 @@ def vm_local_placeholders_env_path(name: str) -> str:
 # /home/acdns/dnsmasq.pid)``. See cli.py:_update_dns_quadlet.
 
 
-def _split_volume_spec(spec: str) -> tuple[str, str, str]:
-    """Split a Docker/Podman-style volume spec into source/target/options.
-
-    agentcage only accepts path-like host bind sources for ``container.volumes``;
-    named volumes are carried in ``container.named_volumes``. The parser keeps
-    drive-letter edge cases out of scope because Linux/VM paths are POSIX and
-    apple-container volume parsing is separate.
-    """
-    parts = spec.split(":", 2)
-    if len(parts) < 2:
-        return spec, "", ""
-    if len(parts) == 2:
-        return parts[0], parts[1], ""
-    return parts[0], parts[1], parts[2]
-
-
 def _non_persistent_overlay_mount(
     volume_spec: str,
     *,
@@ -284,7 +274,7 @@ def _non_persistent_overlay_mount(
     user's runtime tmpfs instead of in container storage. The host source is
     never mounted writable, while the cage still sees a writable target.
     """
-    source, target, options = _split_volume_spec(volume_spec)
+    source, target, options = split_volume_spec(volume_spec)
     if not source or not target:
         return None
 
@@ -376,10 +366,10 @@ def generate_quadlets(
     for v in cc.volumes:
         # Split inline options first: ``np`` is agentcage-only and must not
         # reach podman. All other mount options are preserved.
-        source, target, raw_opts = _split_volume_spec(v)
-        option_list = [o for o in raw_opts.split(",") if o]
-        is_np = "np" in option_list
-        kept_opts = [o for o in option_list if o != "np"]
+        validate_non_persistent_volume(v)
+        source, target, _raw_opts = split_volume_spec(v)
+        is_np = is_non_persistent_volume(v)
+        kept_opts = [o for o in volume_options(v) if o != "np"]
         source = os.path.expandvars(os.path.expanduser(source))
         expanded = f"{source}:{target}"
         if kept_opts:
@@ -428,7 +418,7 @@ def generate_quadlets(
             real_for_mount = real
 
         if is_np and not os.path.isdir(real):
-            _src, target, _opts = _split_volume_spec(expanded)
+            _src, target, _opts = split_volume_spec(expanded)
             if not target:
                 click.echo(
                     f"warning: skipping volume {expanded!r} with the "
@@ -467,6 +457,13 @@ def generate_quadlets(
             continue
 
         expanded_volumes.append(expanded)
+
+    non_persistent_runtime_root = ""
+    if non_persistent_precreate_dirs or non_persistent_file_copies:
+        non_persistent_runtime_root = shlex.quote(
+            f"%t/agentcage/{deploy_name or name}/mounts"
+        )
+
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
 
     # Cage placeholders are delivered via an EnvironmentFile (read by podman
@@ -755,6 +752,7 @@ def generate_quadlets(
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
         tmpfs=cc.tmpfs,
+        non_persistent_runtime_root=non_persistent_runtime_root,
         non_persistent_precreate_dirs=non_persistent_precreate_dirs,
         non_persistent_file_copies=non_persistent_file_copies,
         podman_secrets=cage_podman_secrets,

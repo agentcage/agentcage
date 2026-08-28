@@ -97,8 +97,11 @@ Exec={{ command | systemd_exec }}
 {% endif %}
 
 [Service]
-{% if non_persistent_precreate_dirs %}
-ExecStartPre=/bin/bash -c 'mkdir -p{% for dir in non_persistent_precreate_dirs %} {{ dir }}{% endfor %}'
+{% if non_persistent_runtime_root %}
+# Reset stale overlay state before every start (including recovery after an
+# unclean stop), then remove it again once the container has stopped.
+ExecStartPre=/bin/bash -c 'rm -rf {{ non_persistent_runtime_root }}{% if non_persistent_precreate_dirs %} && mkdir -p{% for dir in non_persistent_precreate_dirs %} {{ dir }}{% endfor %}{% endif %}'
+ExecStopPost=/bin/bash -c 'rm -rf {{ non_persistent_runtime_root }}'
 {% endif %}
 {% for copy in non_persistent_file_copies %}
 ExecStartPre=/bin/bash -c 'mkdir -p {{ copy.dir }} && cp -f {{ copy.src }} {{ copy.dst }}'
