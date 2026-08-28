@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -387,6 +388,89 @@ def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
     staged = os.path.join(seed_dir, os.path.basename(real_path))
     shutil.copy2(real_path, staged)
     return staged
+
+
+# ``/tmp`` semantics: writable by every uid in the cage, sticky so one uid
+# cannot delete another's entries. Applied only to tmpfs entries that mask a
+# host bind-mount — see _apply_tmpfs_mask_mode().
+_TMPFS_MASK_MODE = "mode=1777"
+
+
+def _tmpfs_spec_target(spec: str) -> str:
+    """Return the container path of a ``Tmpfs=`` spec (``path[:options]``)."""
+    return spec.split(":", 1)[0]
+
+
+def _apply_tmpfs_mask_mode(
+    tmpfs: list[str], volumes: list[str]
+) -> list[str]:
+    """Pin ``mode=1777`` on tmpfs entries that mask a host bind-mount.
+
+    Neither OCI runtime gives a tmpfs the kernel's default ``1777`` root
+    mode when the mount spec carries no explicit ``mode=``: both copy the
+    mode of the directory the tmpfs is mounted *over* instead — runc in
+    ``mountEntry.createOpenMountpoint`` (``mode=%04o`` prepended to the
+    mount data), crun in ``append_tmpfs_mode_if_missing`` ("only when the
+    mount does not already request an explicit mode= option"). The tmpfs
+    root is then owned by the userns root the runtime mounts as, not by
+    the cage workload's ``user:``.
+
+    For a tmpfs that masks a path inside a *host* bind-mount — the #170
+    ``/workspace/.git/hooks/`` and #173 ``/workspace/.claude/`` masks the
+    scaffolds ship — the inherited mode is the **host** directory's,
+    typically ``0755``. The mask therefore comes up root-owned and
+    read-only for the uid the cage actually runs as, so a legitimate
+    in-cage write (``git`` installing a hook, an agent writing project
+    ``.claude`` state) fails with EACCES and only ``--as-root`` can write
+    (#321). Ownership cannot be expressed here — tmpfs ``uid=``/``gid=``
+    would have to hardcode the workload uid — but the mode can, and a
+    sticky world-writable root makes the mask usable by any ``user:``.
+
+    This does not weaken the mask. The tmpfs stays private to the cage's
+    mount namespace and mounted ``rprivate``, so cage writes still never
+    reach the host; the declared ``noexec,nosuid,nodev`` options are
+    untouched, so nothing planted there is executable; and the sticky bit
+    keeps one in-cage uid from clobbering another's entries.
+
+    Only bind-masking entries are rewritten, and only when the operator
+    did not already pass an explicit ``mode=``. A tmpfs over an image
+    directory (``/tmp``, ``/var/cache``, …) keeps inheriting that
+    directory's mode: it is the image author's intent and it is already
+    expressed in the cage's own uid space, so there is nothing to fix.
+    """
+    bind_targets = set()
+    for vol in volumes:
+        _source, target, _opts = split_volume_spec(vol)
+        if not target.startswith("/"):
+            continue
+        normalized = posixpath.normpath(target)
+        # A bind at "/" would make every tmpfs look like a mask.
+        if normalized != "/":
+            bind_targets.add(normalized)
+    if not bind_targets:
+        return list(tmpfs)
+
+    rewritten = []
+    for spec in tmpfs:
+        target = _tmpfs_spec_target(spec)
+        options = [o for o in spec[len(target):].lstrip(":").split(",") if o]
+        if not target.startswith("/") or any(
+            o.startswith("mode=") for o in options
+        ):
+            rewritten.append(spec)
+            continue
+        dest = posixpath.normpath(target)
+        masks_bind = any(
+            dest == bind or dest.startswith(bind + "/")
+            for bind in bind_targets
+        )
+        if not masks_bind:
+            rewritten.append(spec)
+            continue
+        rewritten.append(
+            f"{target}:{','.join([*options, _TMPFS_MASK_MODE])}"
+        )
+    return rewritten
 
 
 def generate_quadlets(
@@ -881,7 +965,7 @@ def generate_quadlets(
         patches_host_dir=patches_host_dir,
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
-        tmpfs=cc.tmpfs,
+        tmpfs=_apply_tmpfs_mask_mode(cc.tmpfs, expanded_volumes),
         non_persistent_runtime_root=non_persistent_runtime_root,
         non_persistent_precreate_dirs=non_persistent_precreate_dirs,
         non_persistent_file_copies=non_persistent_file_copies,
