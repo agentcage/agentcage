@@ -170,6 +170,11 @@ def test_sync_abstaining_inspectors_yield_empty_list():
 # ── Async wrapper ────────────────────────────────────────
 
 
+def threading_main_thread_name() -> str:
+    import threading
+    return threading.main_thread().name
+
+
 def test_async_preserves_result_through_executor():
     """The async wrapper returns the same verdicts the sync core would."""
     a = _RecordingInspector("a", _res("a", "flag"))
@@ -194,11 +199,6 @@ def test_async_runs_chain_off_the_event_loop_thread():
     # MainThread and freeze the loop — assert it did not.
     assert inspector.thread_name is not None
     assert inspector.thread_name != threading_main_thread_name()
-
-
-def threading_main_thread_name() -> str:
-    import threading
-    return threading.main_thread().name
 
 
 def test_async_loop_stays_responsive_during_slow_inspector():
@@ -227,6 +227,16 @@ def test_async_loop_stays_responsive_during_slow_inspector():
     assert elapsed < 0.15 + 0.1  # generous upper bound (chain + hb)
     # And the heartbeat did actually advance (5 ticks recorded).
     assert len(progressed_at) == 5
+    # Robust responsiveness check (matches the sibling tests in
+    # ``test_addon_inspector_chain.py`` and ``test_protocol_relays_smtp.py``):
+    # if the loop were blocked for the 0.15s inspector sleep, the gap
+    # between the first heartbeat tick (~0) and the second (~0.15s)
+    # would blow past this bound. Normal scheduling jitter is well
+    # under 0.02s per tick.
+    assert progressed_at[-1] - start < 0.15
+    gaps = [progressed_at[i] - progressed_at[i - 1]
+            for i in range(1, len(progressed_at))]
+    assert max(gaps) < 0.1
 
 
 def test_async_preserves_skip_predicate_and_method():

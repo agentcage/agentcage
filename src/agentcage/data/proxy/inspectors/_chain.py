@@ -18,13 +18,14 @@ worker thread — the same concurrency shape in both callers, with no
 duplicated chain logic.
 
 Thread safety: every shipped inspector is a pure function of its
-``InspectionContext`` argument plus its own configuration, which is set
-once in ``configure()`` and never mutated on the ``inspect_*`` path.
-No module-level globals or class-level caches are touched during
-inspection, so running the chain off-loop on the default
-``ThreadPoolExecutor`` is safe (verified by reading each inspector in
-``inspectors/``). A custom inspector that mutates shared state would
-need its own guarding; that is out of scope for this refactor.
+``InspectionContext`` argument plus its own configuration, which is built
+in a local and rebound atomically in ``configure()`` and never touched
+on the ``inspect_*`` path. No module-level globals or class-level caches
+are touched during inspection, so running the chain off-loop on the
+default ``ThreadPoolExecutor`` is safe (verified by reading each
+inspector in ``inspectors/``). A custom inspector that mutates shared
+state would need its own guarding; that is out of scope for this
+refactor.
 """
 
 from __future__ import annotations
@@ -84,7 +85,6 @@ async def run_inspector_chain(
     *,
     method: str = "request",
     skip: Optional[Callable[[Inspector], bool]] = None,
-    loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> list[InspectionResult]:
     """Async wrapper: run ``run_inspector_chain_sync`` in a thread.
 
@@ -100,8 +100,8 @@ async def run_inspector_chain(
     across concurrent invocations, so appending to its
     ``prior_results`` from the worker thread is safe.
     """
-    running_loop = loop or asyncio.get_running_loop()
-    return await running_loop.run_in_executor(
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
         None,
         functools.partial(
             run_inspector_chain_sync,
