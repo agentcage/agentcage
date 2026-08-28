@@ -373,6 +373,16 @@ class TestExtraMountsForVolumes:
         assert len(mounts) == 1
         assert mounts[0]["writable"] is False
 
+    def test_np_volume_is_shared_readonly_despite_rw(self, tmp_path):
+        """An np bind is only an overlay lowerdir for podman inside the VM, so
+        the host->VM virtiofs share must stay read-only even though the cage
+        sees a writable target."""
+        d = tmp_path / "data"
+        d.mkdir()
+        mounts = _extra_mounts_for_volumes([f"{d}:/data:rw,np"])
+        assert len(mounts) == 1
+        assert mounts[0]["writable"] is False
+
     def test_no_opts_defaults_readonly(self, tmp_path):
         d = tmp_path / "data"
         d.mkdir()

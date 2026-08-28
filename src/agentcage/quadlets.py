@@ -397,8 +397,15 @@ def generate_quadlets(
         # with `statfs ...: no such file or directory` — and on the VM
         # backend the path is not mounted into the VM either.
         if not os.path.exists(real):
+            # Name np explicitly: for an np bind the consequence is not just a
+            # missing mount but a silently unmet isolation expectation, which a
+            # generic warning makes easy to overlook (e.g. a typo'd source).
+            detail = (
+                "host path does not exist; the np bind is not mounted at all"
+                if is_np else "host path does not exist"
+            )
             click.echo(
-                f"warning: skipping volume {host_path!r} (host path does not exist)",
+                f"warning: skipping volume {host_path!r} ({detail})",
                 err=True,
             )
             continue

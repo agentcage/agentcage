@@ -1294,13 +1294,17 @@ class AppleContainerBackend:
         # _user_volume_argv here is an idempotent revalidation, NOT a
         # re-expansion: absolute paths have no `~`/`$VAR` left to resolve, so
         # this no longer depends on PROJECT_DIR being in the start() env.
-        raw_volume_entries = meta.get("volumes") or []
+        # Keeping the revalidation is load-bearing: it re-applies the
+        # $HOME-containment and unresolved-$VAR guards, so hand-edited or
+        # tampered unit metadata cannot mount a path that create/update time
+        # would have refused. It preserves the inline ``np`` option so the
+        # routing below can still see it.
+        volume_entries = self._user_volume_argv(meta.get("volumes") or [])
         # A bind that carries the inline ``np`` flag is read from a lowerdir
         # and copied to a tmpfs at its requested target. Other binds are
         # passed directly through unchanged.
         copies: list[str] = []
-        for idx, vol_entry in enumerate(raw_volume_entries):
-            validate_non_persistent_volume(vol_entry)
+        for idx, vol_entry in enumerate(volume_entries):
             host_src, target, _opts = split_volume_spec(vol_entry)
             if not target:
                 continue

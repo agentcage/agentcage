@@ -1884,6 +1884,7 @@ def test_unit_json_persists_inline_np_volume_flag(tmp_path, monkeypatch):
 
 
 def test_start_routes_only_np_directory_via_tmpfs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
     np_host = tmp_path / "np-src"
     np_host.mkdir()
     persistent_host = tmp_path / "persistent-src"
@@ -1912,7 +1913,46 @@ def test_start_routes_only_np_directory_via_tmpfs(tmp_path, monkeypatch):
     ) in cage_argv
 
 
+@pytest.mark.parametrize("options", ["rw", "rw,np"])
+def test_start_revalidates_unsafe_unit_metadata_volumes(
+    tmp_path, monkeypatch, options,
+):
+    """start() must re-apply the $HOME/unresolved-$VAR guards to unit metadata.
+
+    generate_units already drops unsafe entries, so this is defense-in-depth
+    against hand-edited or tampered unit JSON. Regression guard: routing np
+    binds must not bypass _user_volume_argv."""
+    monkeypatch.delenv("AGENTCAGE_NOPE", raising=False)
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [
+                f"/etc:/cage-etc:{options}",
+                f"${{AGENTCAGE_NOPE}}/x:/cage-unset:{options}",
+            ],
+        },
+    )
+
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    mounted = [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--volume"
+    ]
+    assert not any("/cage-etc" in entry for entry in mounted)
+    assert not any("/cage-unset" in entry for entry in mounted)
+    # Neither entry may reach the np lowerdir/tmpfs routing either.
+    assert not any("/run/agentcage/mounts/" in entry for entry in mounted)
+    assert "--tmpfs" not in cage_argv
+    assert not any(
+        arg.startswith("AGENTCAGE_NONPERSISTENT_COPIES=") for arg in cage_argv
+    )
+
+
 def test_start_routes_np_file_to_exact_target_without_tmpfs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
     host_file = tmp_path / "settings.json"
     host_file.write_text("{}")
     backend, captured = _setup_start_test(
