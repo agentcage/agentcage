@@ -317,7 +317,8 @@ register_cage "$CAGE_SRC"
 e2e_timer_start
 export E2E_SRC_ENV_SECRET="env-secret-value-99"
 export E2E_PORT_SECRETS_SRC="$SECRET_PORT_SRC"
-if create_cage "$CONFIGS/secrets-source.yaml" >/dev/null 2>&1; then
+# stderr is kept so a failing create explains itself (#317).
+if create_cage "$CONFIGS/secrets-source.yaml" >/dev/null; then
   e2e_pass "3.7" "env: source cage created"
 else
   e2e_fail "3.7" "env: source cage created" "cage create failed"
