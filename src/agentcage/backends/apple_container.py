@@ -272,12 +272,53 @@ class AppleContainerBackend:
             os.path.expanduser(f"~/Library/LaunchAgents/io.agentcage.{name}.plist")
         )
 
+    def _gui_domain_reachable(self, uid: int) -> bool:
+        """Probe whether the `gui/<uid>` launchd domain is reachable now.
+
+        `~/Library/LaunchAgents/` plists live in the per-user *GUI* domain.
+        That domain is only addressable from a session that owns the
+        Aqua console (a local Terminal.app window, or a GUI login). Over
+        SSH the user session runs in the non-GUI `user/<uid>` context:
+        `launchctl bootstrap gui/<uid>` exits 0 but silently no-ops,
+        because the GUI domain isn't actually reachable from the SSH
+        context — so the cage never auto-starts and the operator gets a
+        misleading "installed" status. See issue #185.
+
+        We probe reachability by asking launchd to print the gui domain;
+        it returns non-zero ("Domain does not support specified action")
+        when the GUI session isn't reachable from the current context.
+
+        If `launchctl` isn't on PATH (a stripped/over-SSH environment) or
+        the `print` subcommand is absent on an old macOS, ``subprocess.run``
+        raises ``OSError``/``FileNotFoundError``. We treat "can't probe" the
+        same as "unreachable" — the plist file is already on disk (the real
+        persistence; see ``_install_launchd_plist``), so returning ``False``
+        skips the immediate-load with the honest informational message
+        rather than propagating an exception out of ``start()`` after a
+        successful container launch. See #185.
+        """
+        import subprocess as _sp
+        try:
+            probe = _sp.run(["launchctl", "print", f"gui/{uid}"],
+                            check=False, capture_output=True, text=True)
+        except OSError:
+            return False
+        return probe.returncode == 0
+
     def _install_launchd_plist(self, name: str) -> None:
         """Write + load the per-cage launchd plist.
 
         The plist re-execs `container start <cage>` at user login. Logs
         go under the per-cage state dir so `cage logs` already finds
         them. Idempotent: an existing plist is overwritten and reloaded.
+
+        Persistence model (#185): the plist FILE on disk in
+        `~/Library/LaunchAgents/` IS the persistence — launchd auto-loads
+        it at the next Aqua login. The immediate `launchctl bootstrap
+        gui/<uid>` is convenience for the common local-Terminal.app case,
+        NOT correctness. Over SSH the gui domain isn't reachable, so the
+        bootstrap is skipped with a clear informational message rather
+        than silently no-op-ing (the pre-#185 bug).
         """
         binary = ac_cli.container_binary()
         if binary is None:
@@ -315,19 +356,27 @@ class AppleContainerBackend:
 </plist>
 """
         plist.write_text(plist_xml)
-        # bootstrap into the GUI user's domain (the modern macOS API).
-        # `launchctl load -w` is deprecated since 10.10 and frequently
-        # silently no-ops in non-TTY contexts — the symptom we hit was
-        # the plist file existing but `launchctl list` showing nothing,
-        # so autostart never actually ran. `bootstrap gui/<uid>` is the
-        # documented replacement and the form Apple recommends for
-        # ~/Library/LaunchAgents/ plists. Fall back to `load -w` if
-        # `bootstrap` fails for any reason (e.g. very old macOS, no GUI
-        # session) so we never get worse than the prior behavior.
+        # The plist file is now the persistence mechanism: launchd will
+        # auto-load it at the next Aqua login regardless of anything
+        # below. The remaining steps are the immediate-load convenience.
         import subprocess as _sp
         label = f"io.agentcage.{name}"
         uid = os.getuid()
         domain = f"gui/{uid}"
+        # Reachability gate (#185): `launchctl bootstrap gui/<uid>` over
+        # SSH exits 0 but silently no-ops because the gui domain isn't
+        # reachable from the SSH/non-GUI session context (console owned
+        # by another user, `who -u` empty). Probe the domain first; if it
+        # isn't reachable, skip the immediate-load and emit an honest
+        # informational message instead of the pre-#185 silent no-op.
+        if not self._gui_domain_reachable(uid):
+            click.echo(
+                f"note: plist written to {plist}; autostart will activate at "
+                f"next GUI login (immediate-load not available from this "
+                f"SSH/non-GUI context — see #185)",
+                err=True,
+            )
+            return
         # bootout any prior version of the service so bootstrap doesn't
         # fail with "service is already loaded". `bootout` errors are
         # benign — they just mean the service wasn't loaded.
@@ -352,7 +401,15 @@ class AppleContainerBackend:
                 )
 
     def _uninstall_launchd_plist(self, name: str) -> None:
-        """Unload + remove the per-cage launchd plist. No-op if absent."""
+        """Unload + remove the per-cage launchd plist. No-op if absent.
+
+        Note: over SSH the gui domain isn't reachable, so `bootout`/`unload`
+        no-op (same reachability story as ``_install_launchd_plist``'s probe,
+        #185) — but that's fine: the file removal is what guarantees the
+        service won't reload at next login. Uninstall therefore does NOT gate
+        on reachability; the file is removed unconditionally so persistence
+        can't survive a destroy by hiding behind an unreachable domain.
+        """
         plist = self._launchd_plist_path(name)
         if not plist.exists():
             return
