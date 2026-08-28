@@ -103,37 +103,52 @@ class SecretsInspector(Inspector):
         # block-by-default only when unset.
         self.action_explicit = "action" in config
         self.action = "block" if config.get("action") == "block" else "flag"
-        self.patterns: dict[str, re.Pattern] = {}
-        self.allow_to_domains: dict[str, list[str]] = {}
+        # Build ``patterns`` and ``allow_to_domains`` in locals and rebind
+        # the attributes exactly once at the end.  ``inspect_request`` reads
+        # ``self.patterns`` / ``self.allow_to_domains`` from a worker thread
+        # (the inspector chain runs on a ``ThreadPoolExecutor`` via
+        # ``run_inspector_chain``), while ``configure()`` may fire
+        # concurrently from ``_maybe_reload`` on the loop thread during a
+        # config hot-reload.  Mutating the live attribute in place after the
+        # initial ``self.patterns = dict(BUILTIN_SECRETS)`` rebind lets a
+        # worker grab the freshly-rebound dict and start ``.items()``
+        # iteration while ``configure`` is still inserting ``extra_patterns``
+        # — raising ``RuntimeError: dictionary changed size during
+        # iteration``.  Building in a local and rebinding atomically means
+        # ``inspect_*`` only ever observes a fully-built, immutable-to-it
+        # dict (CPython attribute rebind is atomic under the GIL).
+        patterns: dict[str, re.Pattern] = {}
+        allow_to_domains: dict[str, list[str]] = {}
         if self.enabled:
-            self.patterns = dict(BUILTIN_SECRETS)
+            patterns = dict(BUILTIN_SECRETS)
             for p in config.get("extra_patterns", []):
                 env_name = p.get("env")
                 if env_name:
                     value = os.environ.get(env_name, "")
                     if not value:
                         continue
-                    self.patterns[p["name"]] = re.compile(re.escape(value))
+                    patterns[p["name"]] = re.compile(re.escape(value))
                 else:
-                    self.patterns[p["name"]] = re.compile(p["pattern"])
+                    patterns[p["name"]] = re.compile(p["pattern"])
             # Merge built-in allow_to_domains (user config wins)
             if config.get("builtin_allow_to_domains", True):
-                merged: dict[str, list[str]] = {
+                allow_to_domains = {
                     k: [d.lower() for d in v]
                     for k, v in BUILTIN_ALLOW_TO_DOMAINS.items()
                 }
                 for pat_name, domains in (
                     config.get("allow_to_domains") or {}
                 ).items():
-                    merged[pat_name] = [d.lower() for d in domains]
-                self.allow_to_domains = merged
+                    allow_to_domains[pat_name] = [d.lower() for d in domains]
             else:
                 for pat_name, domains in (
                     config.get("allow_to_domains") or {}
                 ).items():
-                    self.allow_to_domains[pat_name] = [
+                    allow_to_domains[pat_name] = [
                         d.lower() for d in domains
                     ]
+        self.patterns = patterns
+        self.allow_to_domains = allow_to_domains
 
     def inspect_request(
         self, ctx: InspectionContext

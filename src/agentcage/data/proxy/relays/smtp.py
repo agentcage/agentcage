@@ -50,6 +50,7 @@ from email import message_from_bytes
 from email.policy import compat32 as _email_policy
 from typing import Callable, Optional
 
+from inspectors._chain import run_inspector_chain
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.util import shannon_entropy
 from relays._tls import upstream_connect_kwargs
@@ -617,7 +618,7 @@ class SmtpRelay:
                         await client_writer.drain()
                         txn = _Transaction()
                         continue
-                    inspector_block = self._run_inspectors(body, txn)
+                    inspector_block = await self._run_inspectors(body, txn)
                     if inspector_block is not None:
                         # Inspector rejected the body — release the slot
                         # so a misconfigured client (e.g. one that sends
@@ -853,7 +854,7 @@ class SmtpRelay:
         })
         return f"recipient {rcpt} not permitted"
 
-    def _run_inspectors(
+    async def _run_inspectors(
         self, body: bytes, txn: "_Transaction"
     ) -> Optional[InspectionResult]:
         """Run the proxy's inspector chain on the assembled RFC822
@@ -867,6 +868,13 @@ class SmtpRelay:
         That lets legitimate user content (forwarded mail with API
         keys, base64 attachments, calendar invites) reach the trusted
         recipient instead of being blocked by a strict body filter.
+
+        The chain itself runs in a thread executor
+        (``loop.run_in_executor``) via the shared
+        ``run_inspector_chain`` helper so a multi-megabyte DATA payload
+        through the secrets/entropy/content-type inspectors (~50–300 ms
+        of CPU work) does not block the event loop and starve every
+        other client session / relay on the same asyncio loop.
         """
         if not self._inspectors:
             return None
@@ -903,20 +911,25 @@ class SmtpRelay:
             body_size=len(body),
             body_entropy=shannon_entropy(body) if body else None,
         )
-        flagged: list[InspectionResult] = []
-        bypassed: list[str] = []
-        for inspector in self._inspectors:
-            if inspector.name in bypass:
-                bypassed.append(inspector.name)
-                continue
-            result = inspector.inspect_request(ctx)
-            if result is None:
-                continue
-            ctx.prior_results.append(result)
-            if result.action == "block":
-                return result
-            if result.action == "flag":
-                flagged.append(result)
+        # `bypass` is a set of inspector names; the shared chain helper
+        # skips any inspector whose name is in it. Computed up front
+        # (rather than collected mid-loop) because on the non-blocked
+        # path the loop runs to completion, so every bypassed name is
+        # reached — identical to collecting it inline. On a hard block
+        # the original returned immediately without logging the bypass,
+        # and we preserve that by returning before the bypass audit log.
+        chain_results = await run_inspector_chain(
+            self._inspectors,
+            ctx,
+            method="request",
+            skip=lambda insp: insp.name in bypass,
+        )
+        block = next(
+            (r for r in chain_results if r.action == "block"), None
+        )
+        if block is not None:
+            return block
+        flagged = [r for r in chain_results if r.action == "flag"]
         for r in flagged:
             self._audit_log({
                 "kind": "smtp_data_flag",
@@ -927,6 +940,7 @@ class SmtpRelay:
                 "sender": txn.sender,
                 "recipients": list(txn.recipients),
             })
+        bypassed = [i.name for i in self._inspectors if i.name in bypass]
         if bypassed:
             self._audit_log({
                 "kind": "smtp_data_bypass",
