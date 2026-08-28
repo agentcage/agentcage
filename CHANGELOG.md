@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`apple-container` proxy log files (audit/capture/proxy/dnsmasq) are no longer world-readable on the host.** The egress supervisor created `audit.jsonl`, `capture.jsonl`, `proxy.log` and `dnsmasq.log` inside the host bind-mounted per-cage logs dir (chmod 1777) with the daemons' default umask 022, so they landed at 0644 (dnsmasq.log 0664). virtiofs *identity-maps* the host owner into the cage guest, so the untrusted cage workload (uid 1000, "others") could read **and** forge/truncate the audit trail, capture bodies and DNS log — defeating `agentcage cage audit` as a forensic primitive and letting a malicious workload inject lines blaming a sibling cage before/after exfil. The supervisor now pre-creates each file at mode `0640` owned by its service user (`acproxy` for the mitmproxy logs, `acdns` for dnsmasq) before the daemon starts, using `setpriv --reuid` + `install -m 0640` so the file is owned by the right user at a restrictive mode from the instant it exists (no chmod-after-create race, no root-owned-0640 window). Opening for append preserves the 0640 mode, so the service keeps rw as the owner while "others" — the cage workload via virtiofs — get nothing. The 1777 *directory* mode is unchanged: the service users must still enter it and the sticky bit still prevents cross-uid deletion; what changed is the FILE modes. (#186)
+
 ## [0.32.0] - 2026-08-18
 
 ### Added
