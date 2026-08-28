@@ -183,12 +183,39 @@ def check_lima(distro: str) -> CheckResult:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     if _IS_MACOS:
-        # On macOS the VM is the only isolation mode — without Lima no
-        # cage can ever start, so this is an error, not a warning.
-        return CheckResult("error", "Lima not found (required on macOS)",
+        # On macOS Lima is the only isolation mode *besides* apple-container.
+        # Without Lima no `vm` cage can ever start, but if apple-container is
+        # available (and would be the host's chosen backend), a missing Lima
+        # is a soft warning, not a hard error — the host can still run cages
+        # via apple-container. `doctor` must be able to exit 0 on an
+        # apple-container-only macOS host (issue #215). We only keep the
+        # hard `error` for the case where NEITHER backend is usable, so an
+        # operator on a macOS host with no isolation backend at all is still
+        # told loudly to install Lima.
+        if _apple_container_available():
+            return CheckResult(
+                "warn",
+                "Lima not found (optional — apple-container is available "
+                "and is the chosen backend on this host; install Lima to also "
+                "enable vm isolation)",
+                hint="brew install lima",
+            )
+        return CheckResult("error", "Lima not found (required on macOS — no "
+                                     "usable isolation backend)",
                            hint="brew install lima")
     return CheckResult("warn", "Lima not found (needed for VM mode)",
                        hint=_INSTALL_LIMA.get(distro, _INSTALL_LIMA["unknown"]))
+
+
+def _apple_container_available() -> bool:
+    """True if the apple-container backend's prerequisites are all met.
+
+    Used to make the Lima check backend-aware: when apple-container is
+    ready and would be the chosen backend, a missing Lima is a soft
+    warning rather than a hard error (issue #215).
+    """
+    from agentcage.apple_container import prerequisites as ac_prereq
+    return not ac_prereq.check_prerequisites()
 
 
 def _check_apple_container() -> CheckResult:

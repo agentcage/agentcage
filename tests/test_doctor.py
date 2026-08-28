@@ -483,12 +483,29 @@ class TestMacOS:
         assert "macOS" in r.message
 
     def test_lima_required_error_on_macos(self):
-        """On macOS the VM is the only isolation mode — missing Lima is fatal,
-        so it must report as an error, not a soft warning."""
+        """On macOS the VM is the only isolation mode *besides* apple-container.
+        Missing Lima is fatal only when apple-container is ALSO unavailable —
+        i.e. no isolation backend is usable at all. On the Linux CI the
+        apple-container prerequisite check short-circuits to 'requires macOS',
+        so the helper returns False and Lima-missing stays a hard error."""
         with patch("agentcage.doctor._IS_MACOS", True), \
-             patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError):
+             patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError), \
+             patch("agentcage.doctor._apple_container_available", return_value=False):
             r = check_lima("unknown")
         assert r.level == "error"
+        assert "brew install lima" in r.hint
+
+    def test_lima_missing_is_warn_when_apple_container_available(self):
+        """Adjacent finding (issue #215): on an apple-container-only macOS host,
+        a missing Lima must be a soft warning, not a hard error, so `doctor`
+        can exit 0. Lima is only needed for vm isolation, which the user isn't
+        using when apple-container is the chosen backend."""
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor.subprocess.run", side_effect=FileNotFoundError), \
+             patch("agentcage.doctor._apple_container_available", return_value=True):
+            r = check_lima("unknown")
+        assert r.level == "warn"
+        assert "apple-container" in r.message
         assert "brew install lima" in r.hint
 
     def test_secret_backend_macos_with_podman(self):
@@ -538,4 +555,39 @@ class TestMacOS:
         assert "QEMU" not in messages
         assert "cgroup" not in messages
         assert "linger" not in messages
+        assert not any(r.level == "error" for r in results)
+
+    def test_run_doctor_exits_zero_on_apple_container_only_host(self):
+        """Adjacent finding (issue #215): a macOS host with Lima missing but
+        apple-container fully ready must let `doctor` exit 0. Pre-fix, the
+        unconditional Lima `error` forced exit 1 even though the host could
+        run cages via apple-container."""
+        def fake_run(cmd, **kwargs):
+            prog = cmd[0] if cmd else ""
+            if prog == "podman":
+                raise FileNotFoundError
+            # limactl is NOT installed on this apple-container-only host
+            if prog == "limactl":
+                raise FileNotFoundError
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+        usage = MagicMock()
+        usage.free = 50 * 1024 ** 3
+        mock_sock = MagicMock()
+        with patch("agentcage.doctor._IS_MACOS", True), \
+             patch("agentcage.doctor._python_version_info", return_value=(3, 12, 5)), \
+             patch("agentcage.doctor.subprocess.run", side_effect=fake_run), \
+             patch("agentcage.doctor.shutil.disk_usage", return_value=usage), \
+             patch("agentcage.doctor.socket.getaddrinfo", return_value=[("ok",)]), \
+             patch("agentcage.doctor.socket.socket") as msock, \
+             patch("agentcage.doctor._detect_distro", return_value="unknown"), \
+             patch("agentcage.doctor._apple_container_available", return_value=True):
+            msock.return_value.__enter__ = MagicMock(return_value=mock_sock)
+            msock.return_value.__exit__ = MagicMock(return_value=False)
+            results = run_doctor()
+
+        # Lima-missing must be a warning (not error) so exit code is 0.
+        lima_results = [r for r in results if "Lima" in r.message]
+        assert lima_results, "expected a Lima check result"
+        assert all(r.level == "warn" for r in lima_results)
         assert not any(r.level == "error" for r in results)
