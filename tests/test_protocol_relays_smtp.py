@@ -1055,6 +1055,74 @@ class TestInspectorIntegration:
 
         _run(_go())
 
+    def test_inspector_chain_runs_off_loop_keeping_it_responsive(self):
+        """Regression for #223: the relay's inspector chain must run in a
+        thread executor, not inline on the event loop. While a slow
+        inspector sleeps inside the DATA handler, a concurrent asyncio
+        task on the same loop must keep making progress — proof the
+        loop is not blocked by body inspection."""
+        import time
+
+        class _SlowInspector(Inspector):
+            name = "slow"
+
+            def configure(self, config: dict) -> None:
+                pass
+
+            def inspect_request(self, ctx):  # noqa: ARG002
+                # CPU-bound stand-in: blocks the worker thread, never
+                # the event loop. If the chain ran inline this would
+                # freeze every other coroutine on the relay.
+                time.sleep(0.2)
+                return None
+
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port),
+                    inspectors=[_SlowInspector()],
+                ) as (_, port):
+                    # Heartbeat on the SAME loop the relay serves.
+                    ticks: list[float] = []
+
+                    async def _heartbeat():
+                        for _ in range(8):
+                            ticks.append(time.monotonic())
+                            await asyncio.sleep(0.02)
+
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        hb = asyncio.create_task(_heartbeat())
+                        w.write(
+                            b"Subject: heavy\r\n\r\n"
+                            b"a slow body to inspect\r\n.\r\n"
+                        )
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        await hb
+                        assert code == 250, code
+                    # The heartbeat advanced through the inspector's
+                    # 0.2s sleep — the loop was NOT blocked.
+                    assert len(ticks) == 8
+                    # And the spans between ticks stayed small (the
+                    # loop serviced them rather than stalling).
+                    gaps = [ticks[i] - ticks[i - 1] for i in range(1, len(ticks))]
+                    assert max(gaps) < 0.2
+                assert len(recorder.transactions) == 1
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
     def test_secrets_inspector_blocks_anthropic_key_in_body(self):
         """Use the real SecretsInspector to verify the wire-up: a
         leaked Anthropic key in an outbound email body must be

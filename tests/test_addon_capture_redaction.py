@@ -23,6 +23,8 @@ assertion is binary: real value present in capture file = leak.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import sys
 import types
@@ -226,12 +228,12 @@ def test_capture_jsonl_does_not_contain_real_secret_after_inject(tmp_path):
         '{"model": "claude", "x-api-key": "{{ANTHROPIC_API_KEY}}"}'
     )
     flow = _make_flow(body=req_body)
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     # Sanity: the upstream got the real value (inject worked).
     assert _FAKE_REAL.encode() in flow.request.content
 
     _attach_response(flow)
-    addon.response(flow)
+    asyncio.run(addon.response(flow))
 
     cap_text = (tmp_path / "capture.jsonl").read_text()
     assert _FAKE_REAL not in cap_text, (
@@ -266,13 +268,13 @@ def test_strict_default_leaves_body_placeholder_uninjected(tmp_path):
     flow = _make_flow(
         body='{"model": "claude", "x-api-key": "{{ANTHROPIC_API_KEY}}"}',
     )
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     # The real value never went on the wire: body still holds the placeholder.
     assert _FAKE_REAL.encode() not in flow.request.content
     assert b"{{ANTHROPIC_API_KEY}}" in flow.request.content
 
     _attach_response(flow)
-    addon.response(flow)
+    asyncio.run(addon.response(flow))
 
     cap_text = (tmp_path / "capture.jsonl").read_text()
     assert _FAKE_REAL not in cap_text
@@ -296,11 +298,11 @@ def test_capture_jsonl_does_not_contain_real_secret_in_headers(tmp_path):
         headers={"Authorization": "Bearer {{ANTHROPIC_API_KEY}}"},
         body=b"",
     )
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     assert flow.request.headers["Authorization"] == f"Bearer {_FAKE_REAL}"
 
     _attach_response(flow)
-    addon.response(flow)
+    asyncio.run(addon.response(flow))
 
     cap_text = (tmp_path / "capture.jsonl").read_text()
     assert _FAKE_REAL not in cap_text, (
@@ -340,12 +342,12 @@ def test_strict_default_injects_anthropic_x_api_key_header(tmp_path):
         headers={"x-api-key": "{{ANTHROPIC_API_KEY}}"},
         body=b"",
     )
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     # On the wire upstream: the real key, so Anthropic accepts it.
     assert flow.request.headers["x-api-key"] == _FAKE_REAL
 
     _attach_response(flow)
-    addon.response(flow)
+    asyncio.run(addon.response(flow))
 
     cap_text = (tmp_path / "capture.jsonl").read_text()
     assert _FAKE_REAL not in cap_text, (
@@ -383,12 +385,12 @@ def test_strict_inject_headers_keywordless_header_no_capture_leak(tmp_path):
         headers={"X-Honeycomb-Team": "{{HONEYCOMB_API_KEY}}"},
         body=b"",
     )
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     # On the wire upstream: the real key, so Honeycomb accepts it.
     assert flow.request.headers["X-Honeycomb-Team"] == _FAKE_REAL
 
     _attach_response(flow)
-    addon.response(flow)
+    asyncio.run(addon.response(flow))
 
     cap_text = (tmp_path / "capture.jsonl").read_text()
     assert _FAKE_REAL not in cap_text, (
@@ -424,13 +426,13 @@ def test_redact_request_round_trip_through_addon_response(tmp_path):
         headers={"Authorization": "Bearer {{ANTHROPIC_API_KEY}}"},
         body='{"k": "{{ANTHROPIC_API_KEY}}"}',
     )
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
     # On the wire upstream: real value present in BOTH places.
     assert flow.request.headers["Authorization"] == f"Bearer {_FAKE_REAL}"
     assert _FAKE_REAL.encode() in flow.request.content
 
     _attach_response(flow)
-    addon.response(flow)
+    asyncio.run(addon.response(flow))
 
     # In memory after response(): placeholder restored everywhere.
     assert flow.request.headers["Authorization"] == (

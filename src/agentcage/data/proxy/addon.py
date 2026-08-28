@@ -14,6 +14,7 @@ import yaml
 from mitmproxy import ctx, http
 from mitmproxy.proxy.mode_specs import ReverseMode
 
+from inspectors._chain import run_inspector_chain
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.body_size import BodySizeInspector
 from inspectors.content_type import ContentTypeInspector
@@ -480,7 +481,7 @@ class Agentcage:
             return True
         return False
 
-    def request(self, flow: http.HTTPFlow) -> None:
+    async def request(self, flow: http.HTTPFlow) -> None:
         self._maybe_reload()
 
         # Reverse proxy flows are inbound traffic (host → cage via proxy).
@@ -602,15 +603,15 @@ class Agentcage:
             if flow.request.headers.get("origin"):
                 flow.request.headers["origin"] = f"{proto}://{host_hdr}"
 
-        for inspector in self.inspectors:
-            if is_reverse and isinstance(inspector, DomainInspector):
-                continue
-            result = inspector.inspect_request(ctx_obj)
-            if result is not None:
-                results.append(result)
-                ctx_obj.prior_results.append(result)
-                if result.action == "block":
-                    break  # short-circuit on hard block
+        results.extend(await run_inspector_chain(
+            self.inspectors,
+            ctx_obj,
+            method="request",
+            skip=(
+                lambda insp: is_reverse
+                and isinstance(insp, DomainInspector)
+            ),
+        ))
 
         # Source IP for inbound requests (extracted above for X-Forwarded-For)
         source = client_ip
@@ -680,7 +681,7 @@ class Agentcage:
                     "outbound_req": cap_outbound_req,
                 }
 
-    def response(self, flow: http.HTTPFlow) -> None:
+    async def response(self, flow: http.HTTPFlow) -> None:
         # Only run response inspectors if the request wasn't blocked
         if flow.metadata.get("agentcage_blocked"):
             self._cap_pending.pop(flow.id, None)
@@ -723,13 +724,11 @@ class Agentcage:
         ctx_obj = self._build_context(flow, response=True)
         results: list[InspectionResult] = []
 
-        for inspector in self.inspectors:
-            result = inspector.inspect_response(ctx_obj)
-            if result is not None:
-                results.append(result)
-                ctx_obj.prior_results.append(result)
-                if result.action == "block":
-                    break
+        results.extend(await run_inspector_chain(
+            self.inspectors,
+            ctx_obj,
+            method="response",
+        ))
 
         blocked = [r for r in results if r.action == "block"]
         if blocked:
@@ -923,7 +922,7 @@ class Agentcage:
             except OSError:
                 pass
 
-    def websocket_message(self, flow: http.HTTPFlow) -> None:
+    async def websocket_message(self, flow: http.HTTPFlow) -> None:
         """Inspect, inject, and redact WebSocket frame payloads."""
         assert flow.websocket is not None
         msg = flow.websocket.messages[-1]
@@ -977,15 +976,15 @@ class Agentcage:
                 results.append(inject_result)
                 ws_ctx.prior_results.append(inject_result)
 
-            for inspector in self.inspectors:
-                if is_reverse and isinstance(inspector, DomainInspector):
-                    continue
-                result = inspector.inspect_request(ws_ctx)
-                if result is not None:
-                    results.append(result)
-                    ws_ctx.prior_results.append(result)
-                    if result.action == "block":
-                        break
+            results.extend(await run_inspector_chain(
+                self.inspectors,
+                ws_ctx,
+                method="request",
+                skip=(
+                    lambda insp: is_reverse
+                    and isinstance(insp, DomainInspector)
+                ),
+            ))
 
             blocked = [r for r in results if r.action == "block"]
             if blocked:
@@ -1007,15 +1006,15 @@ class Agentcage:
                     self._log(flow, "allowed", "websocket", results, direction="outbound", secrets_injected=injected)
         else:
             # ── Inbound (remote → cage) ───────────────────
-            for inspector in self.inspectors:
-                if is_reverse and isinstance(inspector, DomainInspector):
-                    continue
-                result = inspector.inspect_response(ws_ctx)
-                if result is not None:
-                    results.append(result)
-                    ws_ctx.prior_results.append(result)
-                    if result.action == "block":
-                        break
+            results.extend(await run_inspector_chain(
+                self.inspectors,
+                ws_ctx,
+                method="response",
+                skip=(
+                    lambda insp: is_reverse
+                    and isinstance(insp, DomainInspector)
+                ),
+            ))
 
             blocked = [r for r in results if r.action == "block"]
             if blocked:
