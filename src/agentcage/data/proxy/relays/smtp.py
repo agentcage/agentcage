@@ -654,8 +654,10 @@ class SmtpRelay:
                     try:
                         if upstream is None:
                             upstream = await self._connect_upstream()
-                        upstream_status = await upstream.deliver(
-                            txn.sender, list(txn.recipients), body
+                        upstream_status, rcpt_accepted, rcpt_rejected = (
+                            await upstream.deliver(
+                                txn.sender, list(txn.recipients), body
+                            )
                         )
                     except Exception as e:
                         log.error(
@@ -696,7 +698,14 @@ class SmtpRelay:
                         "relay": self._cfg.name,
                         "decision": "allowed",
                         "sender": txn.sender,
-                        "recipients": list(txn.recipients),
+                        # Only the recipients the upstream actually
+                        # accepted — these are the addresses the
+                        # message was delivered to. Recipients the cage
+                        # allowlisted but the upstream refused are
+                        # carried separately below so forensics can
+                        # tell who actually received the message.
+                        "recipients": rcpt_accepted,
+                        "recipients_rejected_upstream": rcpt_rejected,
                         "size": len(body),
                         "upstream_status": upstream_status,
                     })
@@ -1065,26 +1074,38 @@ class _UpstreamSmtp:
 
     async def deliver(
         self, sender: str, recipients: list[str], body: bytes,
-    ) -> str:
-        """Synthesize MAIL FROM / RCPT TO / DATA upstream."""
+    ) -> tuple[str, list[str], list[str]]:
+        """Synthesize MAIL FROM / RCPT TO / DATA upstream.
+
+        Returns ``(upstream_status, accepted, rejected)`` where
+        ``accepted``/``rejected`` are the recipient addresses the
+        upstream actually accepted vs rejected at ``RCPT TO`` time.
+        ``upstream_status`` is the human-readable status string the
+        upstream returned for the message (preserved verbatim for
+        callers that branch on it and for the audit log). Raises
+        ``ConnectionError`` when the upstream rejects MAIL FROM, all
+        RCPTs, or the DATA body — those are not partial deliveries.
+        """
         code, txt = await self._command(
             f"MAIL FROM:<{sender}>".encode("utf-8"),
         )
         if code != 250:
             raise ConnectionError(f"upstream MAIL FROM rejected: {code} {txt}")
-        accepted = 0
+        accepted: list[str] = []
+        rejected: list[str] = []
         for rcpt in recipients:
             code, txt = await self._command(
                 f"RCPT TO:<{rcpt}>".encode("utf-8"),
             )
             if 200 <= code < 300:
-                accepted += 1
+                accepted.append(rcpt)
             else:
+                rejected.append(rcpt)
                 log.warning(
                     "smtp relay %s: upstream rejected RCPT %s: %d %s",
                     self._relay_name, rcpt, code, txt,
                 )
-        if accepted == 0:
+        if not accepted:
             await self._command(b"RSET")
             raise ConnectionError("upstream rejected all recipients")
         code, txt = await self._command(b"DATA")
@@ -1105,7 +1126,7 @@ class _UpstreamSmtp:
         code, txt = await self._read_response()
         if not 200 <= code < 300:
             raise ConnectionError(f"upstream DATA body rejected: {code} {txt}")
-        return f"upstream {code} {txt}"
+        return f"upstream {code} {txt}", accepted, rejected
 
     async def close(self) -> None:
         try:
