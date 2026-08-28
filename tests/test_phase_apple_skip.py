@@ -21,7 +21,6 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -43,7 +42,7 @@ def _make_fake_bin(tmp_path: Path) -> Path:
     _write("uname", "echo Darwin")
     # `container` is present so the phase passes the CLI-installed guard.
     _write("container", "exit 0")
-    # `sysctl` for kern.hv_vcpus; tests override per-case.
+    # `sysctl` for kern.hv.supported; tests override per-case.
     _write("sysctl", "echo 0")
     return bindir
 
@@ -58,7 +57,7 @@ def _run_phase(tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProce
     }
     full_env.update(env)
     return subprocess.run(
-        [sys.executable is not None and "bash" or "bash", str(PHASE)],
+        ["bash", str(PHASE)],
         capture_output=True, text=True, env=full_env, timeout=30,
     )
 
@@ -73,14 +72,14 @@ class TestPhaseAppleNestedVirtSkip:
         assert "ImageOS=macos26" in result.stdout
         assert "#215" in result.stdout
 
-    def test_skips_when_kern_hv_vcpus_is_zero(self, tmp_path):
-        """kern.hv_vcpus=0 ⇒ no hypervisor support ⇒ SKIP exit 0."""
+    def test_skips_when_kern_hv_supported_is_zero(self, tmp_path):
+        """kern.hv.supported=0 ⇒ no hypervisor support ⇒ SKIP exit 0."""
         # ImageOS unset so only the sysctl probe fires.
         result = _run_phase(tmp_path, {"ImageOS": ""})
         assert result.returncode == 0, result.stdout + result.stderr
         assert "SKIP" in result.stdout
         assert "nested virtualization unavailable" in result.stdout
-        assert "kern.hv_vcpus=0" in result.stdout
+        assert "kern.hv.supported=0" in result.stdout
         assert "#215" in result.stdout
 
     def test_force_override_bypasses_probe(self, tmp_path):
@@ -106,6 +105,6 @@ class TestPhaseAppleNestedVirtSkip:
         text = PHASE.read_text()
         assert "AGENTCAGE_APPLE_E2E_FORCE" in text
         assert "ImageOS" in text
-        assert "kern.hv_vcpus" in text
+        assert "kern.hv.supported" in text
         assert "#215" in text
         assert "nested virtualization unavailable" in text

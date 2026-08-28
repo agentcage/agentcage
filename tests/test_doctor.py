@@ -561,7 +561,13 @@ class TestMacOS:
         """Adjacent finding (issue #215): a macOS host with Lima missing but
         apple-container fully ready must let `doctor` exit 0. Pre-fix, the
         unconditional Lima `error` forced exit 1 even though the host could
-        run cages via apple-container."""
+        run cages via apple-container.
+
+        Models an apple-container-READY host by mocking
+        `check_prerequisites` to return no issues, so the dedicated
+        `_check_apple_container` result is `pass` (not the `warn` it would
+        emit on a Linux CI where the real prerequisite check short-circuits
+        to 'requires macOS'). This reflects the named scenario faithfully."""
         def fake_run(cmd, **kwargs):
             prog = cmd[0] if cmd else ""
             if prog == "podman":
@@ -581,7 +587,8 @@ class TestMacOS:
              patch("agentcage.doctor.socket.getaddrinfo", return_value=[("ok",)]), \
              patch("agentcage.doctor.socket.socket") as msock, \
              patch("agentcage.doctor._detect_distro", return_value="unknown"), \
-             patch("agentcage.doctor._apple_container_available", return_value=True):
+             patch("agentcage.apple_container.prerequisites.check_prerequisites",
+                   return_value=[]):
             msock.return_value.__enter__ = MagicMock(return_value=mock_sock)
             msock.return_value.__exit__ = MagicMock(return_value=False)
             results = run_doctor()
@@ -590,4 +597,10 @@ class TestMacOS:
         lima_results = [r for r in results if "Lima" in r.message]
         assert lima_results, "expected a Lima check result"
         assert all(r.level == "warn" for r in lima_results)
+        # apple-container is ready ⇒ its dedicated check must be a pass,
+        # modelling a real apple-container-only host (not the CI's
+        # 'requires macOS' short-circuit).
+        apple_results = [r for r in results if "Apple container" in r.message]
+        assert apple_results, "expected an Apple container check result"
+        assert all(r.level == "pass" for r in apple_results)
         assert not any(r.level == "error" for r in results)

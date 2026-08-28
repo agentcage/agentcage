@@ -167,11 +167,17 @@ def check_podman_rootless(distro: str) -> CheckResult:
     return CheckResult("warn", "Could not verify Podman rootless mode")
 
 
-def check_lima(distro: str) -> CheckResult:
+def check_lima(distro: str, apple_container_available: bool | None = None) -> CheckResult:
     """Check lima is installed.
 
     Optional on Linux (container isolation works without it), but
     mandatory on macOS where the VM is the only isolation mode.
+
+    On macOS the apple-container awareness is pluggable: pass
+    ``apple_container_available`` (e.g. a precomputed result from a
+    ``run_doctor`` pass that already called ``check_prerequisites``)
+    to avoid a redundant ``container system status`` invocation; leave
+    it ``None`` to auto-detect via ``_apple_container_available()``.
     """
     try:
         r = subprocess.run(["limactl", "--version"], capture_output=True, text=True, timeout=5)
@@ -192,7 +198,12 @@ def check_lima(distro: str) -> CheckResult:
         # hard `error` for the case where NEITHER backend is usable, so an
         # operator on a macOS host with no isolation backend at all is still
         # told loudly to install Lima.
-        if _apple_container_available():
+        ac_ok = (
+            apple_container_available
+            if apple_container_available is not None
+            else _apple_container_available()
+        )
+        if ac_ok:
             return CheckResult(
                 "warn",
                 "Lima not found (optional — apple-container is available "
@@ -218,14 +229,23 @@ def _apple_container_available() -> bool:
     return not ac_prereq.check_prerequisites()
 
 
-def _check_apple_container() -> CheckResult:
+def _check_apple_container(precomputed_issues: list[str] | None = None) -> CheckResult:
     """Check Apple `container` CLI for the apple-container backend.
 
     Optional on macOS. If absent, Lima is still the default and the doctor
     just notes that apple-container isolation is unavailable.
+
+    Pass ``precomputed_issues`` to reuse a ``check_prerequisites()`` result
+    already obtained earlier in the same ``run_doctor`` pass (e.g. for the
+    Lima backend-awareness decision) so Apple's ``container system status``
+    is invoked at most once per doctor run instead of twice.
     """
     from agentcage.apple_container import prerequisites as ac_prereq
-    issues = ac_prereq.check_prerequisites()
+    issues = (
+        precomputed_issues
+        if precomputed_issues is not None
+        else ac_prereq.check_prerequisites()
+    )
     if not issues:
         return CheckResult(
             "pass",
@@ -489,6 +509,18 @@ def run_doctor() -> list[CheckResult]:
     all_results: list[CheckResult] = []
 
     # --- Prerequisites ---
+    # On macOS, the apple-container prerequisites are needed both for the
+    # Lima backend-awareness decision AND for the dedicated apple-container
+    # check. Probe Apple's `container system status` exactly once and reuse
+    # the result in both, instead of invoking it twice per doctor run.
+    if _IS_MACOS:
+        from agentcage.apple_container import prerequisites as _ac_prereq
+        _apple_issues = _ac_prereq.check_prerequisites()
+        _apple_ok = not _apple_issues
+    else:
+        _apple_issues = None
+        _apple_ok = None
+
     prereqs = Section("Prerequisites")
     prereqs.results.append(_safe_check(check_python_version, label="Python version"))
     prereqs.results.append(_safe_check(check_podman, distro, label="Podman"))
@@ -496,9 +528,9 @@ def run_doctor() -> list[CheckResult]:
     # Podman runs on the host (on macOS it runs inside the VM).
     if prereqs.results[-1].level == "pass" and not _IS_MACOS:
         prereqs.results.append(_safe_check(check_podman_rootless, distro, label="Podman rootless"))
-    prereqs.results.append(_safe_check(check_lima, distro, label="Lima"))
+    prereqs.results.append(_safe_check(check_lima, distro, _apple_ok, label="Lima"))
     if _IS_MACOS:
-        prereqs.results.append(_safe_check(_check_apple_container, label="Apple container"))
+        prereqs.results.append(_safe_check(_check_apple_container, _apple_issues, label="Apple container"))
     # QEMU and systemd linger are Linux-only — macOS uses the vz hypervisor.
     if not _IS_MACOS:
         prereqs.results.append(_safe_check(check_qemu, distro, label="QEMU"))
