@@ -44,6 +44,10 @@ from agentcage.init import (
     scaffold_name_prefix,
 )
 from agentcage.podman import Podman
+from agentcage.volume_mounts import (
+    is_non_persistent_volume,
+    validate_non_persistent_volume,
+)
 from agentcage.services import (
     build_and_deploy,
     check_port_availability,
@@ -418,7 +422,14 @@ def execute(
     # scaffold whose user has opted into host bind-mounts (e.g. a
     # commented-out ~/.<agent> mount the user has chosen to enable).
     # Without this, a login inside the cage never round-trips to the host.
-    _ensure_volume_dirs(cfg.container.volumes)
+    # An inline ``np`` bind is intentionally non-persistent, so do not create
+    # a host directory for it merely to seed an empty lower layer.
+    for volume in cfg.container.volumes:
+        validate_non_persistent_volume(volume)
+    _ensure_volume_dirs([
+        volume for volume in cfg.container.volumes
+        if not is_non_persistent_volume(volume)
+    ])
 
     # Check port availability
     unavailable = check_port_availability(cfg)

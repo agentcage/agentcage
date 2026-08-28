@@ -45,7 +45,7 @@ Settings under `container:`.
 |---------|------|---------|-------------|
 | `image` | `string` | *(required)* | Container image for the agent. |
 | `command` | `list[string]` | *(none)* | Command to run in the agent container (e.g. `["node", "app.js"]`). |
-| `volumes` | `list[string]` | `[]` | Bind mount specs (`host:container`). Host paths are resolved to absolute paths at generation time. If you move files after generating, regenerate the quadlets. |
+| `volumes` | `list[string]` | `[]` | Host bind specs in `host:container[:options]` form. Host paths are resolved to absolute paths at generation time; regenerate the deployment if a source moves. Add the agentcage-only `np` option to make one bind non-persistent; see [Non-persistent bind mounts](#non-persistent-bind-mounts). |
 | `env` | `map[string, string]` | `{}` | Environment variables. `${VAR}` references are expanded from your current shell environment at generation time — the values are baked into the generated quadlet files, not resolved at container start. |
 | `named_volumes` | `map[string, string]` | `{}` | Podman named volume to mount spec (e.g. `mydata: "/data:rw"`). Not resolved with realpath. |
 | `tmpfs` | `list[string]` | `[]` | tmpfs mount specs (useful for writable areas on read-only containers). |
@@ -56,6 +56,51 @@ Settings under `container:`.
 | `memory` | `string` | *(none)* | Memory limit (e.g. `"4g"`). See [Podman `--memory`](https://docs.podman.io/en/latest/markdown/podman-run.1.html). |
 | `cpus` | `string` | *(none)* | CPU limit (e.g. `"2.0"`). See [Podman `--cpus`](https://docs.podman.io/en/latest/markdown/podman-run.1.html). |
 | `nested_containers` | `bool` | `false` | Enable podman-in-podman support. See [Nested containers](#nested-containers). |
+
+### Non-persistent bind mounts
+
+Add the inline `np` option to an individual `container.volumes` entry when the
+cage must be able to edit that mount without writing changes back to the host:
+
+```yaml
+container:
+  volumes:
+    - "~/project:/workspace:rw,np"  # writable in the cage; changes discarded
+    - "~/.cache/tool:/cache:rw"     # ordinary persistent host bind
+```
+
+`np` affects only the entry carrying it. Unflagged host binds and
+`container.named_volumes` retain their normal persistence. On the next start,
+the ephemeral target is seeded again from the host source, so changes from a
+previous cage session do not reappear.
+
+The host source must already exist. In particular, `agentcage run` does not
+create a missing source for an `np` bind; the normal missing-volume warning and
+skip behavior applies.
+
+For consistent behavior across all isolation backends, use `np` by itself or
+as `rw,np`. Other options are rejected when combined with `np`: `ro`
+contradicts the writable ephemeral target; Podman's `z`/`Z` and `O` conflict
+with the generated overlay; `U` could mutate host ownership; and Apple
+container cannot apply additional options to its bare tmpfs mount.
+
+Implementation differs by source and backend but preserves the same external
+semantics:
+
+- **Container and VM, directory source:** the host directory is a read-only
+  lower layer beneath a Podman overlay. Upper/work state is kept under the
+  user's runtime directory and removed on stop and before every start.
+- **Container and VM, file source:** the host file is copied to an ephemeral
+  runtime file and mounted at the requested target.
+- **Apple container, directory source:** the directory is copied into a tmpfs
+  at startup. Large directory mounts therefore consume VM memory and increase
+  startup time.
+- **Apple container, file source:** the file is copied to its exact target in
+  the fresh cage filesystem.
+
+Use an ordinary `ro` bind instead if the cage does not need to edit the data.
+Use `container.tmpfs` for empty scratch space that does not need initial
+contents from the host.
 
 ### Ports
 

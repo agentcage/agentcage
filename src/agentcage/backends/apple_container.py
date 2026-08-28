@@ -57,6 +57,11 @@ from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
 from agentcage.config import Config
 from agentcage.quadlets import _effective_port_policy
+from agentcage.volume_mounts import (
+    is_non_persistent_volume,
+    split_volume_spec,
+    validate_non_persistent_volume,
+)
 
 
 # Shared agentcage-egress image is built once per host (tagged with the
@@ -227,6 +232,7 @@ class AppleContainerBackend:
         out: list[str] = []
         home = os.path.realpath(os.path.expanduser("~"))
         for v in raw_entries:
+            validate_non_persistent_volume(v)
             if ":" not in v:
                 click.echo(
                     f"warning: skipping volume {v!r} on apple-container "
@@ -1288,8 +1294,34 @@ class AppleContainerBackend:
         # _user_volume_argv here is an idempotent revalidation, NOT a
         # re-expansion: absolute paths have no `~`/`$VAR` left to resolve, so
         # this no longer depends on PROJECT_DIR being in the start() env.
-        for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
-            cage_argv += ["--volume", vol_entry]
+        # Keeping the revalidation is load-bearing: it re-applies the
+        # $HOME-containment and unresolved-$VAR guards, so hand-edited or
+        # tampered unit metadata cannot mount a path that create/update time
+        # would have refused. It preserves the inline ``np`` option so the
+        # routing below can still see it.
+        volume_entries = self._user_volume_argv(meta.get("volumes") or [])
+        # A bind that carries the inline ``np`` flag is read from a lowerdir
+        # and copied to a tmpfs at its requested target. Other binds are
+        # passed directly through unchanged.
+        copies: list[str] = []
+        for idx, vol_entry in enumerate(volume_entries):
+            host_src, target, _opts = split_volume_spec(vol_entry)
+            if not target:
+                continue
+            if not is_non_persistent_volume(vol_entry):
+                cage_argv += ["--volume", vol_entry]
+                continue
+            lower = f"/run/agentcage/mounts/vol-{idx}/lower"
+            cage_argv += ["--volume", f"{host_src}:{lower}:ro"]
+            if os.path.isdir(host_src):
+                # Apple `container run --tmpfs` takes a bare path only;
+                # Docker's `path:opts` syntax is interpreted literally.
+                cage_argv += ["--tmpfs", target]
+            copies.append(f"{lower}\t{target}")
+        if copies:
+            cage_argv += [
+                "-e", "AGENTCAGE_NONPERSISTENT_COPIES=" + "\n".join(copies),
+            ]
         # Apple's --cpus / --memory normalization (uppercase suffix, ceil
         # fractions). Backward-compat fallback to pre-0.20.6 `mem_mb` int.
         cpus_raw = meta.get("cpus")

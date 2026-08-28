@@ -1861,6 +1861,129 @@ def test_unit_json_persists_user_volumes(tmp_path, monkeypatch):
     assert parsed["volumes"] == [f"{tmp_path}/foo:/workspace:rw"]
 
 
+def test_unit_json_persists_inline_np_volume_flag(tmp_path, monkeypatch):
+    """The start path needs the inline np marker to route this bind through
+    apple-container's lowerdir+tmpfs implementation."""
+    from agentcage.config import Config, ContainerConfig
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "foo").mkdir()
+    cfg = Config(
+        name="demo",
+        isolation="apple-container",
+        container=ContainerConfig(
+            image="localhost/test:latest",
+            volumes=["~/foo:/workspace:rw,np"],
+        ),
+    )
+    out = AppleContainerBackend().generate_units(
+        cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo"
+    )
+    assert json.loads(out["demo.json"])["volumes"] == [
+        f"{tmp_path}/foo:/workspace:rw,np"
+    ]
+
+
+def test_start_routes_only_np_directory_via_tmpfs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    np_host = tmp_path / "np-src"
+    np_host.mkdir()
+    persistent_host = tmp_path / "persistent-src"
+    persistent_host.mkdir()
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [
+                f"{np_host}:/workspace:rw,np",
+                f"{persistent_host}:/cache:rw",
+            ],
+        },
+    )
+
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert f"{np_host}:/run/agentcage/mounts/vol-0/lower:ro" in cage_argv
+    tmpfs_index = cage_argv.index("--tmpfs")
+    assert cage_argv[tmpfs_index + 1] == "/workspace"
+    assert f"{persistent_host}:/cache:rw" in cage_argv
+    assert (
+        "AGENTCAGE_NONPERSISTENT_COPIES="
+        "/run/agentcage/mounts/vol-0/lower\t/workspace"
+    ) in cage_argv
+
+
+@pytest.mark.parametrize("options", ["rw", "rw,np"])
+def test_start_revalidates_unsafe_unit_metadata_volumes(
+    tmp_path, monkeypatch, options,
+):
+    """start() must re-apply the $HOME/unresolved-$VAR guards to unit metadata.
+
+    generate_units already drops unsafe entries, so this is defense-in-depth
+    against hand-edited or tampered unit JSON. Regression guard: routing np
+    binds must not bypass _user_volume_argv."""
+    monkeypatch.delenv("AGENTCAGE_NOPE", raising=False)
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [
+                f"/etc:/cage-etc:{options}",
+                f"${{AGENTCAGE_NOPE}}/x:/cage-unset:{options}",
+            ],
+        },
+    )
+
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    mounted = [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--volume"
+    ]
+    assert not any("/cage-etc" in entry for entry in mounted)
+    assert not any("/cage-unset" in entry for entry in mounted)
+    # Neither entry may reach the np lowerdir/tmpfs routing either.
+    assert not any("/run/agentcage/mounts/" in entry for entry in mounted)
+    assert "--tmpfs" not in cage_argv
+    assert not any(
+        arg.startswith("AGENTCAGE_NONPERSISTENT_COPIES=") for arg in cage_argv
+    )
+
+
+def test_start_routes_np_file_to_exact_target_without_tmpfs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    host_file = tmp_path / "settings.json"
+    host_file.write_text("{}")
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{host_file}:/home/node/.config/settings.json:rw,np"],
+        },
+    )
+
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert f"{host_file}:/run/agentcage/mounts/vol-0/lower:ro" in cage_argv
+    assert "/home/node/.config/settings.json" not in [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--tmpfs"
+    ]
+    assert (
+        "AGENTCAGE_NONPERSISTENT_COPIES="
+        "/run/agentcage/mounts/vol-0/lower\t/home/node/.config/settings.json"
+    ) in cage_argv
+
+    init_script = (
+        Path(__file__).parents[1]
+        / "src/agentcage/data/apple-container/cage-init.sh"
+    ).read_text()
+    assert 'mkdir -p "$(dirname "${target}")"' in init_script
+    assert 'cp -f "${lower}" "${target}"' in init_script
+
+
 def test_unit_json_bakes_env_var_so_mount_survives_restart(tmp_path, monkeypatch):
     """Regression: the scaffold workspace mount is `${PROJECT_DIR}:/workspace`
     and PROJECT_DIR only exists in the `agentcage run` process env. Pre-fix,
