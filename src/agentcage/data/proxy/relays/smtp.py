@@ -411,6 +411,22 @@ class SmtpRelay:
                             await self._readline_with_timeout(client_reader)
                         except asyncio.TimeoutError:
                             return
+                    elif arg.upper() == "PLAIN":
+                        # RFC 4954 continuation form: the client sends
+                        # "AUTH PLAIN" with NO inline token, the server
+                        # replies 334, and the client sends the base64
+                        # token on the next line. We mirror AUTH LOGIN's
+                        # continuation read — same idle timeout, same
+                        # 235 forge afterward. The inline form ("AUTH
+                        # PLAIN <base64>") keeps working unchanged: its
+                        # token rides in `arg` and falls straight through
+                        # to the shared 235 below.
+                        self._write_line(client_writer, b"334 ")
+                        await client_writer.drain()
+                        try:
+                            await self._readline_with_timeout(client_reader)
+                        except asyncio.TimeoutError:
+                            return
                     self._write_line(
                         client_writer,
                         b"235 2.7.0 already authenticated (relay)",
