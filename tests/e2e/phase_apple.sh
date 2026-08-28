@@ -27,8 +27,10 @@
 #   * cage create builds both images (agentcage-egress + per-cage wrapper)
 #   * cage status shows both microVMs running
 #   * cage exec defaults to uid 1000
-#   * Threat-model invariants: secrets/iptables not reachable from cage
-#   * domain add SIGHUPs dnsmasq in egress (no restart)
+#   * Threat-model invariants: secrets not reachable from the cage VM;
+#     root in the cage VM cannot modify the cage's firewall
+#   * domain add SIGHUPs dnsmasq in BOTH the egress sibling and the cage
+#     (the cage-local one is load-bearing since #210) — no cage restart
 #   * cage destroy cleans both microVMs + the per-cage network
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -161,11 +163,75 @@ echo "--- THREAT MODEL: secrets ARE in egress VM ---"
 agentcage cage exec "$CAGE" -s egress --as-root -- ls /home/acproxy/secrets \
     || { echo "FAIL: egress can't read its own secrets"; exit 1; }
 
-echo "--- THREAT MODEL: no iptables binary in cage VM ---"
-if agentcage cage exec "$CAGE" --as-root -- which iptables 2>/dev/null; then
-    echo "FAIL: iptables present in cage VM!"
+echo "--- THREAT MODEL: root in cage VM cannot modify the firewall ---"
+# This assertion used to be "no iptables binary in the cage VM" — that
+# invariant died in #210 ("block cage->host-gateway TCP + non-DNS UDP",
+# CTF F1), which re-added iptables to Containerfile.wrapper.j2 because
+# cage-init.sh stage B' now needs it INSIDE the cage to install:
+#   * OUTPUT -d <vmnet-gateway> -p tcp/udp -j DROP  (cage->macOS-host
+#     services: sshd :22, ARD :5900 — reachable outside the egress proxy)
+#   * OUTPUT -p udp --dport 53 -m owner ! --uid-owner 201 -j DROP
+#     (workload-originated DNS-tunnel exfil past the in-cage dnsmasq)
+# The binary being present is therefore REQUIRED, not a finding. Since
+# #200 added the old check and #210 invalidated it without updating it,
+# this line aborted the phase on every bare-metal run and everything
+# below it was dead. See issue #314.
+#
+# Containment is capability-based now: `cage exec --as-root` wraps the
+# session in `setpriv --bounding-set=-net_admin --inh-caps=-net_admin`
+# (backends/apple_container.py exec_argv), so uid 0 in the cage lands
+# with CAP_NET_ADMIN cleared from CapEff and every mutating netfilter
+# call returns EPERM. That is what we assert here.
+
+# Guard first: a MISSING iptables must not make the mutation checks below
+# pass vacuously (a command that isn't there also "fails"). It is also a
+# real defect in its own right — without iptables, cage-init.sh stage B'
+# logs "cage->host lockdown skipped" and the #210 DROP rules never land.
+if ! agentcage cage exec "$CAGE" --as-root -- sh -c 'command -v iptables >/dev/null 2>&1'; then
+    echo "FAIL: no iptables in cage VM — cage-init.sh stage B' cannot install"
+    echo "      the #210 cage->host-gateway / DNS-owner DROP rules, and the"
+    echo "      capability assertions below would pass vacuously."
     exit 1
 fi
+
+# (a) A mutating iptables operation must FAIL as root in the cage VM.
+fw_rc=0
+fw_out=$(agentcage cage exec "$CAGE" --as-root -- iptables -F OUTPUT 2>&1) || fw_rc=$?
+if [ "$fw_rc" -eq 0 ]; then
+    echo "FAIL: --as-root flushed the cage's OUTPUT chain — CAP_NET_ADMIN is"
+    echo "      NOT being dropped, so the #210 egress lockdown is bypassable!"
+    exit 1
+fi
+echo "    iptables -F OUTPUT rejected (rc=$fw_rc): $fw_out"
+
+# (b) Same for appending a rule, so we're not just observing a quirk of -F.
+fw_rc=0
+fw_out=$(agentcage cage exec "$CAGE" --as-root -- \
+    iptables -A OUTPUT -p tcp -j ACCEPT 2>&1) || fw_rc=$?
+if [ "$fw_rc" -eq 0 ]; then
+    echo "FAIL: --as-root appended an OUTPUT ACCEPT rule in the cage VM!"
+    exit 1
+fi
+echo "    iptables -A OUTPUT ... rejected (rc=$fw_rc): $fw_out"
+
+# (c) Root cause, asserted directly: CAP_NET_ADMIN (bit 12 => mask 0x1000)
+# must be CLEAR in the effective set of an --as-root session. Reference
+# values measured on a real cage (container 1.0.0, ubuntu:24.04 base):
+#   CapEff 00000000a80425fb  <- --as-root session, bit 12 CLEAR (0x...2...)
+#   CapBnd 00000000a80435fb  <- container's full --cap-add set, bit 12 SET
+# The two differ by exactly 0x1000, which is the masking logic below.
+capeff=$(agentcage cage exec "$CAGE" --as-root -- \
+    sh -c 'grep -m1 "^CapEff:" /proc/self/status' 2>/dev/null \
+    | awk '{print $2}' | tr -dc '0-9a-fA-F' || true)
+if [ -z "$capeff" ]; then
+    echo "FAIL: could not read CapEff from /proc/self/status in the cage VM"
+    exit 1
+fi
+if [ $(( 0x$capeff & 0x1000 )) -ne 0 ]; then
+    echo "FAIL: CAP_NET_ADMIN set in CapEff ($capeff) for cage exec --as-root!"
+    exit 1
+fi
+echo "    CapEff=$capeff (CAP_NET_ADMIN bit 12 clear)"
 
 echo "--- cage exec proxied curl works (allowlisted) ---"
 # The cage's ubuntu:24.04 base ships without curl/wget. apt-install it
@@ -183,11 +249,31 @@ if ! agentcage cage exec "$CAGE" -- curl -s -o /dev/null -w "%{http_code}" \
 fi
 
 echo "--- domain add live-reloads dnsmasq (no cage restart) ---"
-cage_pid_before=$(container inspect "$CAGE" | jq -r '.[0].process.pid // .[0].Process.pid // empty')
+# Restart signal = PID 1's start time, read from /proc/1's mtime INSIDE
+# the cage VM. The previous probe used
+# `container inspect "$CAGE" | jq -r '.[0].process.pid ...'`, but Apple
+# `container` 1.0.0's inspect schema has no `process` object at all — it
+# is `status.{state,networks,startedDate}` (see
+# src/agentcage/apple_container/cli.py::container_state and the schema
+# fixtures in tests/test_apple_container.py). jq therefore emitted
+# `empty` on BOTH sides and `"" != ""` was always false: the assertion
+# passed vacuously and could never have caught a restart. It sits below
+# the stale iptables check (issue #314), so nobody noticed. Reading PID
+# 1's start time from inside the VM is schema-independent, and an empty
+# read is now an explicit FAIL rather than a silent pass.
+cage_boot_marker() {
+    agentcage cage exec "$CAGE" --as-root -- stat -c %Y /proc/1 2>/dev/null \
+        | tr -dc '0-9' || true
+}
+cage_boot_before=$(cage_boot_marker)
+if [ -z "$cage_boot_before" ]; then
+    echo "FAIL: cannot read the cage VM's PID-1 start time — restart probe unusable"
+    exit 1
+fi
 agentcage domain add "$CAGE" api.anthropic.com || { echo "FAIL: domain add"; exit 1; }
-cage_pid_after=$(container inspect "$CAGE" | jq -r '.[0].process.pid // .[0].Process.pid // empty')
-if [ "$cage_pid_before" != "$cage_pid_after" ]; then
-    echo "FAIL: cage VM restarted on domain add (was $cage_pid_before, now $cage_pid_after)"
+cage_boot_after=$(cage_boot_marker)
+if [ -z "$cage_boot_after" ] || [ "$cage_boot_before" != "$cage_boot_after" ]; then
+    echo "FAIL: cage VM restarted on domain add (PID-1 start was $cage_boot_before, now $cage_boot_after)"
     exit 1
 fi
 
