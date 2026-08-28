@@ -763,6 +763,135 @@ class TestSystemctlStart:
         )
 
 
+class TestInVmBuildFailureDiagnostics:
+    """Issue #319: a failed ``podman build`` inside the VM used to reach the
+    operator as a bare CalledProcessError traceback. ``LimaInstance.exec``
+    runs with ``capture_output=True``, so podman's real error was stranded
+    on the exception and thrown away — the reported first-``cage create``
+    failure was undiagnosable without reproducing it by hand in the guest."""
+
+    @staticmethod
+    def _exec_failing_on_build(*, stdout="", stderr="", returncode=1):
+        """Mock ``inst.exec`` that fails only on the ``podman build`` call."""
+        import subprocess
+
+        def _exec(cmd, **kwargs):
+            if "build" in cmd:
+                raise subprocess.CalledProcessError(
+                    returncode, ["limactl", "shell", "agentcage-testcage",
+                                 "--", *cmd],
+                    output=stdout, stderr=stderr,
+                )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        return _exec
+
+    def test_egress_build_failure_surfaces_captured_output(self, capsys):
+        import subprocess
+
+        import click
+
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = True
+        mock_inst.name = "agentcage-testcage"
+        mock_inst.exec.side_effect = self._exec_failing_on_build(
+            stdout="STEP 5/12: RUN apt-get update\n",
+            stderr="error: mount /proc: operation not permitted\n",
+        )
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             pytest.raises(click.ClickException) as excinfo:
+            backend.build_artifacts(_make_config(), "testcage")
+
+        err = capsys.readouterr().err
+        # Both captured streams reach the operator, not just the exit status.
+        assert "STEP 5/12" in err
+        assert "operation not permitted" in err
+        assert "exit status 1" in err
+        # ClickException => click prints "Error: ..." and exits 1 instead of
+        # dumping a Python traceback; the original failure stays as __cause__.
+        assert "agentcage-egress" in str(excinfo.value)
+        assert isinstance(excinfo.value.__cause__, subprocess.CalledProcessError)
+
+    def test_build_failure_without_output_says_so(self, capsys):
+        import click
+
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = True
+        mock_inst.name = "agentcage-testcage"
+        mock_inst.exec.side_effect = self._exec_failing_on_build(returncode=125)
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             pytest.raises(click.ClickException):
+            backend.build_artifacts(_make_config(), "testcage")
+
+        err = capsys.readouterr().err
+        assert "exit status 125" in err
+        assert "produced no output" in err
+
+    def test_scaffold_cage_build_failure_surfaces_output(self, capsys, tmp_path):
+        """The scaffold cage image build inside the VM is routed through the
+        same reporting helper as the egress build."""
+        import click
+
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.name = "agentcage-testcage"
+        mock_inst.exec.side_effect = self._exec_failing_on_build(
+            stderr="Error: no such file or directory\n",
+        )
+        config = _make_config()
+        config.container.build.containerfile = "Containerfile"
+        (tmp_path / "Containerfile").write_text("FROM scratch\n")
+
+        with patch("agentcage.state.deployment_dir", return_value=tmp_path), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             pytest.raises(click.ClickException) as excinfo:
+            backend._build_cage_image_in_vm(
+                config, "testcage", mock_inst, "/tmp/agentcage-build",
+            )
+
+        err = capsys.readouterr().err
+        assert "no such file or directory" in err
+        assert config.container.image in str(excinfo.value)
+
+    def test_successful_build_stays_quiet(self, capsys):
+        from agentcage.backends.vm import _exec_build
+
+        mock_inst = MagicMock()
+        mock_inst.exec.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        _exec_build(mock_inst, ["podman", "build", "-t", "x", "."], what="build of x")
+
+        assert capsys.readouterr().err == ""
+        mock_inst.exec.assert_called_once_with(
+            ["podman", "build", "-t", "x", "."]
+        )
+
+    def test_bytes_streams_are_decoded(self, capsys):
+        """``exec(text=False)`` yields bytes; the dump must not crash on it."""
+        import subprocess
+
+        import click
+
+        from agentcage.backends.vm import _exec_build
+
+        mock_inst = MagicMock()
+        mock_inst.exec.side_effect = subprocess.CalledProcessError(
+            1, ["podman", "build"], output=b"stdout bytes\n", stderr=b"stderr bytes\n",
+        )
+
+        with pytest.raises(click.ClickException):
+            _exec_build(mock_inst, ["podman", "build"], what="build of x")
+
+        err = capsys.readouterr().err
+        assert "stdout bytes" in err
+        assert "stderr bytes" in err
+
+
 class TestDeployCageStartOrder:
     """The cage's ExecStartPre is a 30s poll for mitmproxy's CA cert.
     Starting cage in the same loop as the egress container races that
