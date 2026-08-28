@@ -13,6 +13,7 @@ import sys
 import time
 import tarfile
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 
 import click
@@ -40,6 +41,7 @@ from agentcage.services import (
     suggest_alt_port as _suggest_alt_port,
     check_port_availability as _check_port_availability,
     ensure_patches as _ensure_patches,
+    write_resolv_files as _write_resolv_files,
     build_container_image as _build_container_image_svc,
     build_and_deploy as _build_and_deploy,
     destroy_cage as _destroy_cage,
@@ -291,6 +293,180 @@ def _build_container_image(cfg, config_dir: Path, podman: Podman,
     """CLI wrapper that passes click.echo to the service layer."""
     _build_container_image_svc(cfg, config_dir, podman, echo=click.echo,
                                no_cache=no_cache, pull=pull)
+
+
+def _containerfile_image_refs(cfg, state_dir: Path,
+                              resolved_args: dict[str, str]) -> set[str]:
+    """Return concrete image references used by a staged Containerfile."""
+    containerfile = cfg.container.build.containerfile
+    if not containerfile:
+        return set()
+    path = Path(containerfile)
+    if not path.is_absolute():
+        path = state_dir / path
+    try:
+        content = path.read_text()
+    except OSError:
+        return set()
+
+    args = dict(resolved_args)
+    for line in content.splitlines():
+        match = re.match(r"\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S+))?", line)
+        if match and match.group(1) not in args and match.group(2):
+            args[match.group(1)] = match.group(2)
+
+    refs: set[str] = set()
+    stages: set[str] = set()
+    variable = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+    for line in content.splitlines():
+        match = re.match(r"\s*FROM\s+(?:--\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?", line, re.I)
+        if not match:
+            continue
+        ref = variable.sub(
+            lambda item: args.get(item.group(1) or item.group(2), item.group(0)),
+            match.group(1),
+        )
+        if ref.lower() != "scratch" and ref not in stages and "$" not in ref:
+            refs.add(ref)
+        if match.group(2):
+            stages.add(match.group(2))
+    return refs
+
+
+def _image_identity(inspect: object) -> str:
+    """Extract a stable content identity from Podman/Apple inspect output."""
+    if not isinstance(inspect, dict):
+        return "unavailable"
+    for key in ("RepoDigests", "repoDigests"):
+        values = inspect.get(key)
+        if isinstance(values, list) and values:
+            return json.dumps(sorted(str(value) for value in values))
+    for key in ("Digest", "digest", "Id", "ID", "id"):
+        value = inspect.get(key)
+        if value:
+            return str(value)
+    return "unavailable"
+
+
+def _resolved_update_config(cfg) -> tuple[dict, dict[str, str]]:
+    """Return effective values after config/default/scaffold resolution.
+
+    Existing cages own a frozen copy of their scaffold config and build
+    context, so update must not consult the live scaffold registry here. The
+    dataclass is the fully parsed/defaulted form that every backend renders.
+    Image-valued build args are resolved to content identities separately.
+    """
+    resolved_args = dict(cfg.container.build.args)
+    return asdict(cfg), resolved_args
+
+
+def _update_image_digests(cfg, name: str, podman: Podman,
+                          resolved_args: dict[str, str], *,
+                          refresh: bool) -> dict[str, str]:
+    """Refresh and inspect every image that can affect the deployment."""
+    state_dir = state.deployment_dir(name)
+    refs = {cfg.container.image}
+    # A configured image is either the direct upstream (no Containerfile) or
+    # the local build target. Never pull a build target over the image we just
+    # built; refresh its concrete FROM references instead.
+    upstream_refs = _containerfile_image_refs(cfg, state_dir, resolved_args)
+    containerfile_name = cfg.container.build.containerfile or ""
+    containerfile_path = Path(containerfile_name) if containerfile_name else None
+    if containerfile_path is not None and not containerfile_path.is_absolute():
+        containerfile_path = state_dir / containerfile_path
+    if not containerfile_name or containerfile_path is None \
+            or not containerfile_path.is_file():
+        # Missing staged files fail later in the build, but retain the legacy
+        # best-effort pull (and make mocked/programmatic update paths useful).
+        upstream_refs.add(cfg.container.image)
+    refs.update(upstream_refs)
+    if cfg.isolation in ("container", "vm"):
+        refs.add(f"agentcage-egress:{version('agentcage')}")
+
+    inspector = podman
+    can_refresh = True
+    if cfg.isolation == "vm":
+        inst = LimaInstance(name)
+        can_refresh = inst.is_running()
+        if can_refresh:
+            from agentcage.lima.podman import VmPodman
+            inspector = VmPodman(name)  # type: ignore[assignment]
+    elif cfg.isolation == "apple-container":
+        from agentcage.apple_container import cli as ac_cli
+        from agentcage.backends.apple_container import _egress_image_name
+        refs.add(_egress_image_name())
+        identities: dict[str, str] = {}
+        for ref in sorted(refs):
+            if not ref:
+                continue
+            if refresh and ref in upstream_refs \
+                    and not ref.startswith("localhost/"):
+                ac_cli.run(["image", "pull", ref], check=False, capture_output=False)
+            identities[ref] = _image_identity(ac_cli.image_inspect(ref))
+        return identities
+
+    identities = {}
+    for ref in sorted(refs):
+        if not ref:
+            continue
+        if refresh and can_refresh and ref in upstream_refs \
+                and not ref.startswith("localhost/"):
+            inspector.pull(ref)
+        try:
+            identities[ref] = _image_identity(inspector.image_inspect(ref))
+        except Exception:
+            identities[ref] = "unavailable"
+    if not can_refresh:
+        identities["__image_check__"] = "vm-stopped"
+    return identities
+
+
+def _update_fingerprint(cfg, name: str, backend, podman: Podman,
+                        config_host_path: str, network_octet: int | None, *,
+                        refresh_images: bool,
+                        units: dict[str, str] | None = None) -> tuple[dict, dict[str, str]]:
+    """Compute the current update fingerprint and generated unit output."""
+    from agentcage.fingerprint import compute_fingerprint, scaffold_context_version
+    from agentcage.quadlets import cage_network_addrs, collect_used_octets
+
+    resolved, resolved_args = _resolved_update_config(cfg)
+    if units is None:
+        patches_work = _ensure_patches(podman)
+        addrs = cage_network_addrs(
+            cfg.name,
+            used_octets=collect_used_octets(exclude=name),
+            network_octet=network_octet,
+        )
+        _write_resolv_files(
+            patches_work, cfg.name, addrs["ip_egress"], cfg.dns_servers,
+        )
+        units = backend.generate_units(
+            cfg,
+            config_host_path,
+            patches_work,
+            name,
+            used_octets=collect_used_octets(exclude=name),
+            network_octet=network_octet,
+        )
+    if not isinstance(units, dict):
+        units = {}
+
+    image_digests = _update_image_digests(
+        cfg, name, podman, resolved_args, refresh=refresh_images,
+    )
+    raw = state.load_raw_config(name)
+    context_version = scaffold_context_version(
+        state.deployment_dir(name), cfg.container.build.containerfile,
+    )
+    scaffold = (state.load_metadata(name) or {}).get("scaffold", "")
+    fingerprint = compute_fingerprint(
+        raw,
+        resolved_config=resolved,
+        units=units,
+        image_digests=image_digests,
+        scaffold_version=f"{scaffold}:{context_version}",
+    )
+    return fingerprint, units
 
 
 # Entries in a Containerfile's directory that are agentcage config, not
@@ -916,8 +1092,10 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
               help="Force re-pull of the base image from the registry "
                    "(--pull=always). Combine with --no-cache for a fully "
                    "clean rebuild.")
+@click.option("--force", is_flag=True,
+              help="Rebuild and restart even when inputs are unchanged.")
 def cage_update(name: str | None, config_path: str | None,
-                no_cache: bool, pull: bool):
+                no_cache: bool, pull: bool, force: bool):
     """Rebuild and restart an existing cage.
 
     NAME is optional when ``-c`` is given — the cage to update is taken
@@ -1039,10 +1217,39 @@ def cage_update(name: str | None, config_path: str | None,
             click.echo(f"  agentcage secret set {name} {key}", err=True)
         sys.exit(1)
 
+    # Generate the exact units and resolve current image identities before
+    # stopping anything. This keeps a no-op update non-disruptive. Cheap
+    # bookkeeping above (config staging, metadata, derived proxy/DNS files,
+    # validation, and secret checks) still runs on every invocation.
+    from agentcage.quadlets import collect_used_octets as _collect_update
+    _existing_meta = state.load_metadata(name) or {}
+    _existing_octet = _existing_meta.get("network_octet")
+    backend = _ensure_backend_ready(cfg)
+    current_fingerprint, fingerprint_units = _update_fingerprint(
+        cfg,
+        name,
+        backend,
+        podman,
+        config_host_path,
+        _existing_octet,
+        refresh_images=True,
+    )
+    from agentcage.fingerprint import fingerprint_matches
+    stored_fingerprint = state.load_fingerprint(name)
+    running = all(
+        backend.is_running(name, service)
+        for service in backend.service_names(name)
+    )
+    if not (force or no_cache or pull) and running \
+            and fingerprint_matches(stored_fingerprint, current_fingerprint):
+        click.echo(
+            f"cage '{name}' already up to date (use --force to rebuild anyway)"
+        )
+        return
+
     # Stop existing services before port check — the running cage's own
     # ports would otherwise be detected as conflicts.
     click.echo("Stopping services...")
-    backend = get_backend(cfg)
     backend.stop(name)
 
     # Check port availability (after stop so the cage's own ports are free).
@@ -1071,16 +1278,6 @@ def cage_update(name: str | None, config_path: str | None,
         config_dir = Path(config_path).parent if config_path else state.deployment_dir(name)
         _build_container_image(cfg, config_dir, podman, no_cache=no_cache, pull=pull)
 
-    # Pull image on host (container mode) — VM mode pulls inside the VM
-    if cfg.isolation == "container":
-        click.echo(f"Pulling {cfg.container.image}...")
-        if not podman.pull(cfg.container.image):
-            click.echo(
-                f"warning: pull failed for {cfg.container.image} "
-                f"(local image or no network — continuing with cached image)",
-                err=True,
-            )
-
     # Preserve the cage's existing network octet across updates. The podman
     # network was created at cage-create time with the originally-assigned
     # subnet; re-deriving from the hash here (which can land on a different
@@ -1090,13 +1287,7 @@ def cage_update(name: str | None, config_path: str | None,
     #   "requested static ip 10.89.X.10 not in any subnet on network <name>-net"
     # See: https://github.com/agentcage/agentcage/issues/... (cage update
     # regenerated quadlets with a fresh octet on single-cage systems).
-    from agentcage.quadlets import collect_used_octets as _collect_update
-    _existing_meta = state.load_metadata(name) or {}
-    _existing_octet = _existing_meta.get("network_octet")
-    # Bring up the backend substrate (apple-container's apiserver dies on
-    # reboot) and gate on prerequisites before the rebuild/restart.
-    _ensure_backend_ready(cfg)
-    _build_and_deploy(
+    deployed_units = _build_and_deploy(
         cfg,
         config_host_path,
         name,
@@ -1106,6 +1297,23 @@ def cage_update(name: str | None, config_path: str | None,
         no_cache=no_cache,
         pull=pull,
     )
+
+    # Only record a fingerprint after the complete build/install/start path
+    # succeeds. Re-inspect image identities because a Containerfile build may
+    # have changed the target image after the preflight snapshot.
+    if not isinstance(deployed_units, dict):
+        deployed_units = fingerprint_units
+    successful_fingerprint, _ = _update_fingerprint(
+        cfg,
+        name,
+        backend,
+        podman,
+        config_host_path,
+        _existing_octet,
+        refresh_images=False,
+        units=deployed_units,
+    )
+    state.save_fingerprint(name, successful_fingerprint)
     click.echo(f"Updated cage '{name}'")
 
     if cfg.help:

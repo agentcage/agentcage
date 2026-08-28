@@ -2748,6 +2748,123 @@ def test_egress_supervisor_keeps_lazy_connection_strategy():
     assert "connection_strategy=lazy" in egress_supervisor
 
 
+def test_egress_supervisor_precreates_logs_at_0640():
+    """Regression for #186: the egress supervisor must pre-create the four
+    proxy log files (audit.jsonl, capture.jsonl, proxy.log, dnsmasq.log)
+    at mode 0640 owned by their service user before the daemons start.
+
+    On the apple-container backend the host per-cage logs_dir is
+    bind-mounted into the egress microVM and virtiofs *identity-maps*
+    host owner → guest owner, so files the daemons create at the default
+    0644 are readable (and dnsmasq.log writable) by the cage workload
+    (uid 1000, "others"). A malicious workload could then forge/truncate
+    the audit trail. Pre-creating at 0640 owned by acproxy/acdns denies
+    "others" any access via the identity mapping.
+
+    Static check on the script — the load-bearing piece is that the
+    files are created up-front at a restrictive mode (install -m 0640,
+    no chmod-after-create race) and chowned to the right service user.
+    """
+    egress_supervisor = (
+        Path(__file__).parent.parent
+        / "src" / "agentcage" / "data" / "containers" / "supervisor-egress.sh"
+    ).read_text()
+
+    # The helper must create files at 0640 up front (install -m 0640
+    # creates at 0600 then fchmods to 0640 — the intermediate 0600 grants
+    # "others" nothing, so no world-readable window).
+    assert "install -m 0640" in egress_supervisor, (
+        "supervisor must create log files with `install -m 0640` (no race)"
+    )
+
+    # The create path must run under setpriv as the service user with
+    # --clear-groups, so a future edit that drops setpriv and creates as
+    # root-then-chown (re-introducing the CAP_FOWNER/chown dependency)
+    # is caught.
+    assert "setpriv --reuid=" in egress_supervisor \
+        and "--clear-groups" in egress_supervisor, (
+        "supervisor must create/tighten logs under `setpriv --clear-groups` "
+        "as the service user (no root-then-chown, no CAP_FOWNER dep) (#186)"
+    )
+
+    # Each of the four log files must be pre-created and owned by its
+    # service user (acproxy for the mitmproxy-owned logs, acdns for
+    # dnsmasq). Assert the exact _ensure_log calls so a future edit can't
+    # silently drop one or point it at the wrong owner.
+    expected = [
+        ("/var/log/agentcage/dnsmasq.log", "acdns"),
+        ("/var/log/agentcage/audit.jsonl", "acproxy"),
+        ("/var/log/agentcage/capture.jsonl", "acproxy"),
+        ("/var/log/agentcage/proxy.log", "acproxy"),
+    ]
+    for path, user in expected:
+        call = f"_ensure_log {path} {user}"
+        assert call in egress_supervisor, (
+            f"supervisor missing `_ensure_log {path} {user}` (#186)"
+        )
+
+    # Ordering: each _ensure_log call must appear BEFORE the daemon that
+    # writes the file is launched, so a future edit that moves creation
+    # to AFTER the daemon starts (reopening the create-race where the
+    # daemon creates at its umask 0644) is caught. Assert RELATIVE
+    # ordering (ensure_log before launch line), not absolute line nums.
+    lines = egress_supervisor.splitlines()
+    # dnsmasq.log ensure must precede the first dnsmasq launch line.
+    dns_ensure_idx = next(
+        i for i, ln in enumerate(lines)
+        if "_ensure_log /var/log/agentcage/dnsmasq.log acdns" in ln
+    )
+    dns_launch_idx = next(
+        i for i, ln in enumerate(lines)
+        if "/usr/sbin/dnsmasq" in ln or "/opt/agentcage/dns-audit.sh" in ln
+    )
+    assert dns_ensure_idx < dns_launch_idx, (
+        "_ensure_log dnsmasq.log must run BEFORE the dnsmasq launch line "
+        "(else the daemon creates the file at its umask 0644) (#186)"
+    )
+    # The three acproxy ensure calls must precede the mitmdump launch line.
+    acproxy_ensure_idx = next(
+        i for i, ln in enumerate(lines)
+        if "_ensure_log /var/log/agentcage/proxy.log acproxy" in ln
+    )
+    mitm_launch_idx = next(
+        i for i, ln in enumerate(lines) if "mitmdump" in ln
+    )
+    assert acproxy_ensure_idx < mitm_launch_idx, (
+        "_ensure_log acproxy logs must run BEFORE the mitmdump launch line "
+        "(else the daemon creates the files at its umask 0644) (#186)"
+    )
+
+    # Failure must NOT be silent: the helper must surface a loud `log`
+    # warning on failure (no `|| true` swallowing the error), so a degraded
+    # audit-integrity control is observable to the operator/CI.
+    assert "|| log \"warn: _ensure_log" in egress_supervisor, (
+        "_ensure_log must emit a loud log warning on failure instead of "
+        "silently `|| true`-ing (silent degradation re-opens #186)"
+    )
+
+    # Defense-in-depth: no line creating one of these four log files may
+    # leave it world-readable. The pre-creation must be 0640, never 0644
+    # / 0664 / 0666. (The 1777 logs *directory* is intentional and out
+    # of scope — the sticky bit prevents cross-uid deletion; what matters
+    # is the FILE modes, not the dir mode.)
+    log_basenames = ("audit.jsonl", "capture.jsonl", "proxy.log", "dnsmasq.log")
+    for line in egress_supervisor.splitlines():
+        if not any(b in line for b in log_basenames):
+            continue
+        # A chmod/create that grants any perms to "others" on one of
+        # these files would re-open the #186 hole.
+        assert "0644" not in line, (
+            f"supervisor creates a world-readable log file (#186): {line!r}"
+        )
+        assert "0664" not in line, (
+            f"supervisor creates a group+world-writable log file (#186): {line!r}"
+        )
+        assert "0666" not in line, (
+            f"supervisor creates a world-writable log file (#186): {line!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # reload_domains: live SIGHUP allowlist reload (no cage rebuild/restart)
 # ---------------------------------------------------------------------------

@@ -145,6 +145,28 @@ def load_metadata(name: str) -> dict:
         return json.load(f)
 
 
+def save_fingerprint(name: str, fingerprint: dict) -> None:
+    """Atomically persist the last successful update fingerprint."""
+    d = _deploy_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "fingerprint.json"
+    temporary = d / "fingerprint.json.tmp"
+    temporary.write_text(json.dumps(fingerprint, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+def load_fingerprint(name: str) -> dict | None:
+    """Load a deployment fingerprint, treating missing/corrupt state as stale."""
+    path = _deploy_dir(name) / "fingerprint.json"
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def save_proxy_config(name: str) -> str:
     """Write a proxy-specific config subset and return its path.
 

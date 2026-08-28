@@ -253,6 +253,74 @@ class TestCageUpdate:
         assert save_calls, "save_deployment was not called"
         assert save_calls[0].args[0] == "inferred-from-config"
 
+    @patch("agentcage.cli._update_fingerprint")
+    @patch("agentcage.cli._build_and_deploy", return_value={})
+    @patch("agentcage.cli._check_port_availability", return_value=[])
+    @patch("agentcage.cli._check_secrets", return_value=[])
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_unchanged_second_update_skips_and_force_rebuilds(
+        self, mock_state, MockPodman, mock_backend, _check_secrets,
+        _check_ports, build_deploy, update_fingerprint, tmp_path,
+    ):
+        """A successful fingerprint is reused; --force bypasses the match."""
+        from agentcage.config import Config, ContainerConfig, BuildConfig
+
+        fingerprint = {
+            "version": 1,
+            "fingerprint": "same-inputs",
+            "components": {},
+        }
+        update_fingerprint.return_value = (fingerprint, {})
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = tmp_path
+        mock_state.save_proxy_config.return_value = "/fake/proxy.yaml"
+        mock_state.load_metadata.return_value = {
+            "agentcage_version": "0.32.0",
+            "network_octet": 123,
+        }
+        mock_state.load_raw_config.return_value = {
+            "name": "test",
+            "container": {"image": "test:latest"},
+        }
+        mock_state.load_deployment_config.return_value = Config(
+            name="test",
+            isolation="container",
+            container=ContainerConfig(
+                image="test:latest",
+                build=BuildConfig(containerfile=None, args={}),
+            ),
+        )
+        backend = mock_backend.return_value
+        backend.service_names.return_value = ["cage", "egress"]
+        backend.is_running.return_value = True
+
+        # No pre-existing fingerprint: backwards-compatible full update.
+        mock_state.load_fingerprint.return_value = None
+        first = _runner().invoke(main, ["cage", "update", "test"])
+        assert first.exit_code == 0, first.output
+        assert build_deploy.call_count == 1
+        mock_state.save_fingerprint.assert_called_with("test", fingerprint)
+
+        # The next invocation sees the fingerprint written above and returns
+        # before stop/build/restart.
+        mock_state.load_fingerprint.return_value = fingerprint
+        backend.stop.reset_mock()
+        second = _runner().invoke(main, ["cage", "update", "test"])
+        assert second.exit_code == 0, second.output
+        assert "cage 'test' already up to date (use --force to rebuild anyway)" \
+            in second.output
+        assert build_deploy.call_count == 1
+        backend.stop.assert_not_called()
+
+        forced = _runner().invoke(
+            main, ["cage", "update", "test", "--force"],
+        )
+        assert forced.exit_code == 0, forced.output
+        assert build_deploy.call_count == 2
+        assert backend.stop.called
+
     @patch("agentcage.cli._build_and_deploy")
     @patch("agentcage.cli._check_port_availability", return_value=[])
     @patch("agentcage.cli.get_backend")
