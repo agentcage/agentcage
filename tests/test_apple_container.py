@@ -2279,6 +2279,199 @@ def test_tmpfs_targets_normalizes_dedupes_and_rejects_unsafe():
 
 
 # ---------------------------------------------------------------------------
+# tmpfs mask mount points created through the workspace bind (#320)
+# ---------------------------------------------------------------------------
+
+def _start_with_masks(tmp_path, monkeypatch, project):
+    """start() a cage whose scaffold masks sit under a `/workspace` bind."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{project}:/workspace:rw"],
+            "tmpfs": [
+                "/tmp:rw,noexec,nosuid,size=256M",
+                "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+                "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M",
+            ],
+        },
+    )
+
+
+def test_stop_removes_mask_mountpoints_created_on_a_non_git_project(
+    tmp_path, monkeypatch,
+):
+    """#320, apple-container half: wiring container.tmpfs (#318) means the
+    in-guest OCI runtime mkdir's each mask mount point, and a bind shares
+    inodes with its source — so on a project that is not a git repo the
+    host gains a stray `.git/hooks/` that `test -d .git` misreads as a
+    repository. stop() must retire exactly the dirs that were absent at
+    start, deepest-first including the implied `.git` parent."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "file.txt").write_text("x")
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    # Simulate the runtime's mkdir -p landing on the host through the bind.
+    (project / ".git" / "hooks").mkdir(parents=True)
+    (project / ".claude").mkdir()
+
+    backend.stop("demo")
+    assert not (project / ".git").exists()
+    assert not (project / ".claude").exists()
+    # Untouched project content survives.
+    assert (project / "file.txt").exists()
+    # Bookkeeping is consumed, so a second stop is a no-op.
+    assert not backend._mask_state_path("demo").exists()
+    backend.stop("demo")
+
+
+def test_stop_keeps_preexisting_and_non_empty_mask_mountpoints(
+    tmp_path, monkeypatch,
+):
+    """Never remove a dir the operator already had, and never remove one
+    that has content. A real repo's `.git/hooks` (pre-existing) and a
+    `.claude/` that gained a file while the cage ran must both survive."""
+    project = tmp_path / "project"
+    (project / ".git" / "hooks").mkdir(parents=True)
+    (project / ".git" / "hooks" / "pre-commit.sample").write_text("#!/bin/sh\n")
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    # `.claude/` was absent at start, so it IS a candidate — but the
+    # operator dropped a file in it before stop.
+    (project / ".claude").mkdir()
+    (project / ".claude" / "settings.json").write_text("{}")
+
+    backend.stop("demo")
+    # Pre-existing: never recorded, so never a candidate.
+    assert (project / ".git" / "hooks" / "pre-commit.sample").exists()
+    # Recorded but non-empty: rmdir refuses, we warn and keep.
+    assert (project / ".claude" / "settings.json").exists()
+
+
+def test_mask_cleanup_is_contained_to_the_bind_source(tmp_path, monkeypatch):
+    """A symlink swapped in after start must not redirect a removal out of
+    the project. Both the islink guard and the realpath containment check
+    have to hold, because either alone would let `<project>/.git ->
+    <elsewhere>` retire a directory the cage never created."""
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    (project / ".claude").symlink_to(outside)
+
+    backend.stop("demo")
+    assert outside.is_dir()
+    assert (project / ".claude").is_symlink()
+
+
+def test_mask_cleanup_refuses_a_recorded_path_outside_its_root(
+    tmp_path, monkeypatch,
+):
+    """Containment is re-checked at teardown against the root recorded at
+    start, not trusted from the bookkeeping file: tampered or stale state
+    must not turn stop() into an arbitrary rmdir. Exercises the realpath
+    guard directly, with a real empty directory that rmdir would otherwise
+    happily remove."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "elsewhere" / "empty"
+    outside.mkdir(parents=True)
+    backend = AppleContainerBackend()
+    state = backend._mask_state_path("demo")
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({str(project): [str(outside)]}))
+
+    backend._cleanup_mask_mountpoints("demo")
+    assert outside.is_dir()
+    assert not state.exists()
+
+
+def test_destroy_removes_mask_mountpoints_when_stop_did_not(
+    tmp_path, monkeypatch,
+):
+    """destroy_resources must clean up too — it runs before the per-cage
+    state rmtree that would otherwise take the bookkeeping file with it,
+    and a cage can be destroyed without a preceding stop()."""
+    project = tmp_path / "project"
+    project.mkdir()
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    (project / ".git" / "hooks").mkdir(parents=True)
+    monkeypatch.setattr(backend, "_launchd_plist_path", lambda _n: tmp_path / "nope")
+    backend.destroy_resources("demo")
+    assert not (project / ".git").exists()
+
+
+def test_start_does_not_record_mask_mountpoints_for_np_binds(
+    tmp_path, monkeypatch,
+):
+    """An `np` bind's target is a tmpfs seeded from a read-only lowerdir —
+    the runtime's mkdir lands in guest memory, never on the host. Recording
+    a candidate there would make stop() rmdir a host path the cage never
+    created."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    project = tmp_path / "project"
+    project.mkdir()
+    backend, _captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{project}:/workspace:rw,np"],
+            "tmpfs": ["/workspace/.git/hooks/:rw,size=64M"],
+        },
+    )
+    backend.start("demo", quiet=True)
+    assert not backend._mask_state_path("demo").exists()
+
+
+def test_cleanup_mask_mountpoints_is_a_noop_without_bookkeeping(
+    tmp_path, monkeypatch,
+):
+    """Safe when the start hook never ran (older cage, hand-deleted state):
+    no crash, no removal, and stop/destroy must not fail."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    backend = AppleContainerBackend()
+    backend._cleanup_mask_mountpoints("never-started")
+    backend._mask_state_path("demo").parent.mkdir(parents=True, exist_ok=True)
+    backend._mask_state_path("demo").write_text("not json{")
+    backend._cleanup_mask_mountpoints("demo")
+
+
+def test_mask_mountpoint_dirs_maps_masks_to_host_paths(tmp_path):
+    """The shared path computation (volume_mounts.mask_mountpoint_dirs, the
+    same helper the quadlet backend's #320 fix uses): only masks nested
+    under a host-backed bind produce candidates, the implied parent chain is
+    included, and the list is deepest-first."""
+    from agentcage.volume_mounts import mask_mountpoint_dirs
+    project = str(tmp_path / "project")
+    assert mask_mountpoint_dirs(
+        [
+            "/tmp:rw,size=256M",                     # no enclosing bind
+            "/workspace:rw",                         # covers the whole mount
+            "/workspace/.git/hooks/:rw,size=64M",
+            "/cache/x:rw",                           # enclosing mount is not host-backed
+        ],
+        [("/workspace", project), ("/cache", "")],
+    ) == {
+        project: [
+            os.path.join(project, ".git", "hooks"),
+            os.path.join(project, ".git"),
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # cage-init.sh stage C' — non-persistent seed ownership
 # ---------------------------------------------------------------------------
 

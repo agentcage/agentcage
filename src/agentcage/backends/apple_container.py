@@ -61,6 +61,7 @@ from agentcage.config import Config
 from agentcage.quadlets import _effective_port_policy
 from agentcage.volume_mounts import (
     is_non_persistent_volume,
+    mask_mountpoint_dirs,
     split_volume_spec,
     validate_non_persistent_volume,
 )
@@ -297,6 +298,113 @@ class AppleContainerBackend:
 
     def _state_dir(self, name: str) -> Path:
         return Path(os.path.expanduser("~/.config/agentcage/apple-container")) / name
+
+    def _mask_state_path(self, name: str) -> Path:
+        """Bookkeeping file for tmpfs-mask mount points created on the host.
+
+        Written by ``_record_mask_mountpoints`` immediately before
+        ``container run`` and consumed by ``_cleanup_mask_mountpoints`` on
+        stop / destroy. Lives inside the per-cage state dir so
+        ``destroy_resources``'s ``rmtree`` disposes of any leftover.
+        """
+        return self._state_dir(name) / "mask-mountpoints.json"
+
+    def _record_mask_mountpoints(
+        self, name: str, tmpfs_specs: list[str], volume_entries: list[str],
+    ) -> None:
+        """Record which tmpfs-mask mount points are ABSENT on the host now.
+
+        A ``container.tmpfs`` target nested under a host bind makes the
+        in-guest OCI runtime create the mount point, and a bind shares inodes
+        with its source, so that ``mkdir -p`` lands in the operator's project
+        directory on the host: masking ``/workspace/.git/hooks/`` on a
+        non-git project leaves a stray host ``.git/hooks/`` that the
+        ubiquitous ``test -d .git`` idiom misreads as a repository (#320).
+
+        Pre-#318 apple-container never wired ``container.tmpfs`` into
+        ``container run``, which is why #320's quadlet-side fix concluded
+        this backend was unaffected. Wiring tmpfs through made it affected,
+        so this is the same bookkeeping the quadlet backend does with an
+        ``ExecStartPre``/``ExecStopPost`` pair — there is no such hook here,
+        so it is Python-side. The mask itself stays unconditional: dropping
+        it when ``.git`` is absent would reopen the #170 pivot for a ``.git``
+        created later.
+
+        Only paths that do not exist right now are recorded, so a
+        pre-existing directory is never a removal candidate. A symlink
+        counts as existing (``lexists``) — mirrors the quadlet hook's
+        ``[ -e ] || [ -L ]`` skip.
+        """
+        mount_targets: list[tuple[str, str]] = []
+        for entry in volume_entries:
+            host_src, target, _opts = split_volume_spec(entry)
+            if not target:
+                continue
+            # An ``np`` bind's target is a tmpfs seeded from a read-only
+            # lowerdir; writes there never reach the host, so it must not
+            # attribute a nested mask to its host source.
+            mount_targets.append(
+                (target, "" if is_non_persistent_volume(entry) else host_src)
+            )
+        absent: dict[str, list[str]] = {}
+        for root, dirs in mask_mountpoint_dirs(tmpfs_specs, mount_targets).items():
+            # `dirs` is deepest-first; keep that order for teardown.
+            missing = [d for d in dirs if not os.path.lexists(d)]
+            if missing:
+                absent[root] = missing
+        state = self._mask_state_path(name)
+        if not absent:
+            # Nothing to clean up — drop any stale record from an earlier
+            # start so teardown can't act on outdated bookkeeping.
+            state.unlink(missing_ok=True)
+            return
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(absent, indent=2))
+
+    def _cleanup_mask_mountpoints(self, name: str) -> None:
+        """Remove the still-empty mask mount points ``start()`` created.
+
+        ``rmdir`` is the whole "only if empty" safety story: a mount point
+        the operator (or the workload, through a persistent bind) put content
+        into is kept, with a warning. Removal is additionally contained to
+        the bind source recorded at start and re-checked against
+        ``realpath`` here, so a symlink swapped in after start cannot
+        redirect a removal out of the project directory.
+
+        Best-effort and idempotent throughout — a missing/unreadable state
+        file (start hook never ran, older cage, hand-deleted state) is a
+        silent no-op, and nothing here may fail a stop or destroy.
+        """
+        state = self._mask_state_path(name)
+        try:
+            recorded = json.loads(state.read_text())
+        except (OSError, ValueError):
+            return
+        if not isinstance(recorded, dict):
+            state.unlink(missing_ok=True)
+            return
+        for root, dirs in sorted(recorded.items()):
+            if not isinstance(root, str) or not isinstance(dirs, list):
+                continue
+            # `realpath` on a non-existent path resolves lexically, matching
+            # the quadlet hook's `realpath -m`.
+            real_root = os.path.realpath(root)
+            for d in dirs:
+                if not isinstance(d, str):
+                    continue
+                if not os.path.realpath(d).startswith(real_root + os.sep):
+                    continue
+                if os.path.islink(d) or not os.path.isdir(d):
+                    continue
+                try:
+                    os.rmdir(d)
+                except OSError:
+                    click.echo(
+                        f"warning: keeping {d} (created as a tmpfs mask "
+                        f"mount point, but not empty)",
+                        err=True,
+                    )
+        state.unlink(missing_ok=True)
 
     def logs_dir(self, name: str) -> Path:
         """Per-cage logs dir on the host, bind-mounted into the egress microVM.
@@ -1640,6 +1748,13 @@ class AppleContainerBackend:
             if tmpfs_target in np_tmpfs_targets:
                 continue
             cage_argv += ["--tmpfs", tmpfs_target]
+        # A mask nested under a host bind makes the in-guest OCI runtime
+        # mkdir the mount point THROUGH the bind, onto the host (#320).
+        # Record which of those dirs are absent right now so stop/destroy
+        # can retire exactly those, and only while still empty.
+        self._record_mask_mountpoints(
+            name, meta.get("tmpfs") or [], volume_entries,
+        )
         # Apple's --cpus / --memory normalization (uppercase suffix, ceil
         # fractions). Backward-compat fallback to pre-0.20.6 `mem_mb` int.
         cpus_raw = meta.get("cpus")
@@ -1859,6 +1974,10 @@ class AppleContainerBackend:
         """Stop both microVMs (cage + egress)."""
         ac_cli.run(["stop", name], check=False)
         ac_cli.run(["stop", f"{name}-egress"], check=False)
+        # Retire the host dirs the tmpfs masks materialized through the
+        # workspace bind (#320). After the cage VM is down, so a still-live
+        # mount can't make an empty dir look occupied.
+        self._cleanup_mask_mountpoints(name)
 
     def restart(self, name: str) -> None:
         self.stop(name)
@@ -1887,6 +2006,10 @@ class AppleContainerBackend:
                 r = ac_cli.run(["delete", "-f", cname], check=False)
                 if r.returncode == 0:
                     removed.append(f"container:{cname}")
+        # Mask mount points created through the workspace bind (#320).
+        # Runs before the state rmtree below, which would otherwise take the
+        # bookkeeping file with it. No-op when stop() already handled it.
+        self._cleanup_mask_mountpoints(name)
         # Per-cage network. `network delete` is idempotent in Apple's CLI
         # but we only care to report when it actually existed; rely on the
         # rc to decide whether to add it to `removed`.

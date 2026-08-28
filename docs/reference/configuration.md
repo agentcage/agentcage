@@ -130,6 +130,13 @@ agent cannot plant a git hook that a later host-side `git commit` executes,
 nor a project `.claude/settings.json` `hooks` block that another cage honors
 on launch.
 
+A mask over a path that does not exist on the host creates it there — a bind
+shares inodes with its source, so the runtime's mount-point `mkdir` writes
+through. agentcage records which of those directories were absent when the
+cage started and removes them again, while still empty, on `cage stop` and
+`cage destroy`. Directories you already had, and any that gained content, are
+left alone.
+
 **Apple container applies the mounts but not their options.** Apple's
 `container run --tmpfs` takes a bare path, so `noexec`, `nosuid`, `nodev` and
 `size=` are dropped and each mount lands with kernel-default tmpfs semantics.
