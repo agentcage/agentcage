@@ -97,6 +97,12 @@ Exec={{ command | systemd_exec }}
 {% endif %}
 
 [Service]
+{% if non_persistent_precreate_dirs %}
+ExecStartPre=/bin/bash -c 'mkdir -p{% for dir in non_persistent_precreate_dirs %} {{ dir }}{% endfor %}'
+{% endif %}
+{% for copy in non_persistent_file_copies %}
+ExecStartPre=/bin/bash -c 'mkdir -p {{ copy.dir }} && cp -f {{ copy.src }} {{ copy.dst }}'
+{% endfor %}
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
 # Add the cage's default route via the egress container. Retries because
 # the container PID is briefly invalid (0/empty) right after `podman start`

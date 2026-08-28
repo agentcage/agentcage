@@ -116,13 +116,12 @@ def _extra_mounts_for_volumes(volumes: list[str]) -> list[dict]:
             continue
         seen.add(host_path)
 
-        # Determine writable from volume opts (default read-only for safety)
-        parts = vol.split(":")
-        writable = False
-        if len(parts) >= 3:
-            opts = parts[2].lower().split(",")
-            if "rw" in opts:
-                writable = True
+        # Determine writable from volume opts (default read-only for safety).
+        # An inline ``np`` bind is only an overlay lowerdir for podman in the
+        # VM, so it must be shared read-only with Lima as well.
+        parts = vol.split(":", 2)
+        opts = parts[2].lower().split(",") if len(parts) == 3 else []
+        writable = "rw" in opts and "np" not in opts
 
         mounts.append({"location": host_path, "writable": writable})
 

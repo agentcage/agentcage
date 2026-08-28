@@ -272,6 +272,29 @@ else
   log "stage C: no /certs/mitmproxy-ca-cert.pem after 10s — HTTPS to the proxy may fail (egress still booting?)"
 fi
 
+#-- Stage C'. Per-bind non-persistent mounts ------------------------------
+# apple-container has no writable overlay-bind primitive comparable to
+# podman's overlay mount. For a user bind carrying the inline ``np`` option,
+# the backend mounts the host source read-only under /run/agentcage/mounts and
+# provides a tmpfs at the requested target. Seed that tmpfs from the lowerdir:
+# workload writes remain in tmpfs and disappear when the cage stops.
+if [ -n "${AGENTCAGE_NONPERSISTENT_COPIES:-}" ]; then
+  log "stage C': seeding non-persistent ephemeral mounts"
+  printf '%s\n' "${AGENTCAGE_NONPERSISTENT_COPIES}" | while IFS="$(printf '\t')" read -r lower target; do
+    if [ -z "${lower}" ] || [ -z "${target}" ]; then
+      continue
+    fi
+    mkdir -p "${target}"
+    if [ -d "${lower}" ]; then
+      (cd "${lower}" && tar cf - .) | (cd "${target}" && tar xpf -) 2>/dev/null \
+        || log "warn: failed to seed non-persistent mount ${target} from ${lower}"
+    elif [ -f "${lower}" ]; then
+      cp -f "${lower}" "${target}" 2>/dev/null \
+        || log "warn: failed to seed non-persistent file mount ${target} from ${lower}"
+    fi
+  done
+fi
+
 #-- Stage D. Drop privileges + exec the user's CMD ------------------------
 # Resolve the cage user's NAME (capsh's --user= takes a name, not a uid;
 # the name varies by base image: ubuntu / node / claude / cage).

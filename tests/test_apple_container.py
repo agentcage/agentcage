@@ -1861,6 +1861,28 @@ def test_unit_json_persists_user_volumes(tmp_path, monkeypatch):
     assert parsed["volumes"] == [f"{tmp_path}/foo:/workspace:rw"]
 
 
+def test_unit_json_persists_inline_np_volume_flag(tmp_path, monkeypatch):
+    """The start path needs the inline np marker to route this bind through
+    apple-container's lowerdir+tmpfs implementation."""
+    from agentcage.config import Config, ContainerConfig
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "foo").mkdir()
+    cfg = Config(
+        name="demo",
+        isolation="apple-container",
+        container=ContainerConfig(
+            image="localhost/test:latest",
+            volumes=["~/foo:/workspace:rw,np"],
+        ),
+    )
+    out = AppleContainerBackend().generate_units(
+        cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo"
+    )
+    assert json.loads(out["demo.json"])["volumes"] == [
+        f"{tmp_path}/foo:/workspace:rw,np"
+    ]
+
+
 def test_unit_json_bakes_env_var_so_mount_survives_restart(tmp_path, monkeypatch):
     """Regression: the scaffold workspace mount is `${PROJECT_DIR}:/workspace`
     and PROJECT_DIR only exists in the `agentcage run` process env. Pre-fix,

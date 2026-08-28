@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import shutil
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -254,6 +255,51 @@ def vm_local_placeholders_env_path(name: str) -> str:
 # /home/acdns/dnsmasq.pid)``. See cli.py:_update_dns_quadlet.
 
 
+def _split_volume_spec(spec: str) -> tuple[str, str, str]:
+    """Split a Docker/Podman-style volume spec into source/target/options.
+
+    agentcage only accepts path-like host bind sources for ``container.volumes``;
+    named volumes are carried in ``container.named_volumes``. The parser keeps
+    drive-letter edge cases out of scope because Linux/VM paths are POSIX and
+    apple-container volume parsing is separate.
+    """
+    parts = spec.split(":", 2)
+    if len(parts) < 2:
+        return spec, "", ""
+    if len(parts) == 2:
+        return parts[0], parts[1], ""
+    return parts[0], parts[1], parts[2]
+
+
+def _non_persistent_overlay_mount(
+    volume_spec: str,
+    *,
+    name: str,
+    index: int,
+) -> tuple[str, str, str] | None:
+    """Return (volume, upperdir, workdir) for an ephemeral overlay bind.
+
+    Podman's ``:O`` bind option mounts the host source as an overlay lowerdir.
+    Supplying explicit upper/work dirs under ``%t`` keeps all writes in the
+    user's runtime tmpfs instead of in container storage. The host source is
+    never mounted writable, while the cage still sees a writable target.
+    """
+    source, target, options = _split_volume_spec(volume_spec)
+    if not source or not target:
+        return None
+
+    mount_id = f"vol-{index}"
+    upper = f"%t/agentcage/{name}/mounts/{mount_id}/upper"
+    work = f"%t/agentcage/{name}/mounts/{mount_id}/work"
+    passthrough_opts = [
+        o for o in (options.split(",") if options else [])
+        if o and o not in ("ro", "rw", "O", "np") and not o.startswith("upperdir=")
+        and not o.startswith("workdir=")
+    ]
+    opts = ["O", f"upperdir={upper}", f"workdir={work}", *passthrough_opts]
+    return (f"{source}:{target}:{','.join(opts)}", upper, work)
+
+
 def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
     """Stage a single-file volume source so the VM backend can mount it.
 
@@ -320,15 +366,25 @@ def generate_quadlets(
     cc = config.container
     files: dict[str, str] = {}
 
-    # Expand ~ and env vars in volume paths and env values
+    # Expand ~ and env vars in volume paths and env values. The inline ``np``
+    # option marks one bind non-persistent: it uses Podman's overlay bind with
+    # explicit %t-backed upper/work dirs, so cage writes never reach the host.
     expanded_volumes = []
+    non_persistent_precreate_dirs = []
+    non_persistent_file_copies = []
     home = os.path.realpath(os.path.expanduser("~"))
     for v in cc.volumes:
-        # Expand ~ in the host path portion (before the first ':')
-        parts = v.split(":", 1)
-        parts[0] = os.path.expanduser(parts[0])
-        expanded = os.path.expandvars(":".join(parts))
-        host_path = expanded.split(":")[0]
+        # Split inline options first: ``np`` is agentcage-only and must not
+        # reach podman. All other mount options are preserved.
+        source, target, raw_opts = _split_volume_spec(v)
+        option_list = [o for o in raw_opts.split(",") if o]
+        is_np = "np" in option_list
+        kept_opts = [o for o in option_list if o != "np"]
+        source = os.path.expandvars(os.path.expanduser(source))
+        expanded = f"{source}:{target}"
+        if kept_opts:
+            expanded += ":" + ",".join(kept_opts)
+        host_path = source
 
         # Skip a volume whose ${VAR} did not expand — it cannot be mounted.
         if "$" in host_path:
@@ -366,7 +422,48 @@ def generate_quadlets(
         if config.isolation == "vm" and not os.path.isdir(real):
             staged = _stage_vm_file_volume(real, deploy_name or name)
             container_part = expanded.split(":", 1)[1]
-            expanded_volumes.append(f"{staged}:{container_part}")
+            expanded = f"{staged}:{container_part}"
+            real_for_mount = staged
+        else:
+            real_for_mount = real
+
+        if is_np and not os.path.isdir(real):
+            _src, target, _opts = _split_volume_spec(expanded)
+            if not target:
+                click.echo(
+                    f"warning: skipping volume {expanded!r} with the "
+                    "np flag (invalid volume spec)",
+                    err=True,
+                )
+                continue
+            copy_id = f"file-{len(non_persistent_file_copies)}"
+            runtime_file = f"%t/agentcage/{deploy_name or name}/mounts/{copy_id}/{os.path.basename(real_for_mount)}"
+            expanded_volumes.append(f"{runtime_file}:{target}:rw")
+            non_persistent_file_copies.append({
+                "src": shlex.quote(real_for_mount),
+                "dst": shlex.quote(runtime_file),
+                "dir": shlex.quote(os.path.dirname(runtime_file)),
+            })
+            continue
+
+        if is_np:
+            overlay = _non_persistent_overlay_mount(
+                expanded,
+                name=deploy_name or name,
+                index=len(non_persistent_precreate_dirs) // 2,
+            )
+            if overlay is None:
+                click.echo(
+                    f"warning: skipping volume {expanded!r} with the "
+                    "np flag (invalid volume spec)",
+                    err=True,
+                )
+                continue
+            expanded_volumes.append(overlay[0])
+            non_persistent_precreate_dirs.extend([
+                shlex.quote(overlay[1]),
+                shlex.quote(overlay[2]),
+            ])
             continue
 
         expanded_volumes.append(expanded)
@@ -658,6 +755,8 @@ def generate_quadlets(
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
         tmpfs=cc.tmpfs,
+        non_persistent_precreate_dirs=non_persistent_precreate_dirs,
+        non_persistent_file_copies=non_persistent_file_copies,
         podman_secrets=cage_podman_secrets,
         placeholders_env_path=placeholders_env_path,
         cage_env_dir=cage_env_dir,

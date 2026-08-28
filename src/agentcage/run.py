@@ -418,7 +418,16 @@ def execute(
     # scaffold whose user has opted into host bind-mounts (e.g. a
     # commented-out ~/.<agent> mount the user has chosen to enable).
     # Without this, a login inside the cage never round-trips to the host.
-    _ensure_volume_dirs(cfg.container.volumes)
+    # An inline ``np`` bind is intentionally non-persistent, so do not create
+    # a host directory for it merely to seed an empty lower layer.
+    def _has_np_option(volume: str) -> bool:
+        parts = volume.split(":", 2)
+        return len(parts) == 3 and "np" in parts[2].split(",")
+
+    _ensure_volume_dirs([
+        volume for volume in cfg.container.volumes
+        if not _has_np_option(volume)
+    ])
 
     # Check port availability
     unavailable = check_port_availability(cfg)

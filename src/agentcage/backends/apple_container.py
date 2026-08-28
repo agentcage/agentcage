@@ -1288,8 +1288,31 @@ class AppleContainerBackend:
         # _user_volume_argv here is an idempotent revalidation, NOT a
         # re-expansion: absolute paths have no `~`/`$VAR` left to resolve, so
         # this no longer depends on PROJECT_DIR being in the start() env.
-        for vol_entry in self._user_volume_argv(meta.get("volumes") or []):
-            cage_argv += ["--volume", vol_entry]
+        raw_volume_entries = meta.get("volumes") or []
+        # A bind that carries the inline ``np`` flag is read from a lowerdir
+        # and copied to a tmpfs at its requested target. Other binds are
+        # passed directly through unchanged.
+        copies: list[str] = []
+        for idx, vol_entry in enumerate(raw_volume_entries):
+            parts = vol_entry.split(":", 2)
+            if len(parts) < 2:
+                continue
+            host_src, target = parts[0], parts[1]
+            opts = parts[2].split(",") if len(parts) == 3 else []
+            if "np" not in opts:
+                cage_argv += ["--volume", vol_entry]
+                continue
+            lower = f"/run/agentcage/mounts/vol-{idx}/lower"
+            cage_argv += ["--volume", f"{host_src}:{lower}:ro"]
+            if os.path.isdir(host_src):
+                # Apple `container run --tmpfs` takes a bare path only;
+                # Docker's `path:opts` syntax is interpreted literally.
+                cage_argv += ["--tmpfs", target]
+            copies.append(f"{lower}\t{target}")
+        if copies:
+            cage_argv += [
+                "-e", "AGENTCAGE_NONPERSISTENT_COPIES=" + "\n".join(copies),
+            ]
         # Apple's --cpus / --memory normalization (uppercase suffix, ceil
         # fractions). Backward-compat fallback to pre-0.20.6 `mem_mb` int.
         cpus_raw = meta.get("cpus")
