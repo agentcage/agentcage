@@ -2146,6 +2146,139 @@ def test_start_routes_np_file_to_exact_target_without_tmpfs(tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# container.tmpfs (#318 — the tmpfs half of the #120 parity gap)
+# ---------------------------------------------------------------------------
+
+def test_unit_json_persists_container_tmpfs(tmp_path, monkeypatch):
+    """`generate_units` must persist `container.tmpfs` into the unit JSON —
+    start() is meta-driven (no Config), so an unpersisted field is a silently
+    dropped mount. Persisted RAW (options included) so a future agentcage
+    that can forward options needs no metadata migration."""
+    from agentcage.config import Config, ContainerConfig
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = Config(
+        name="demo",
+        isolation="apple-container",
+        container=ContainerConfig(
+            image="localhost/test:latest",
+            tmpfs=[
+                "/tmp:rw,noexec,nosuid,size=256M",
+                "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+            ],
+        ),
+    )
+    out = AppleContainerBackend().generate_units(
+        cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo"
+    )
+    assert json.loads(out["demo.json"])["tmpfs"] == [
+        "/tmp:rw,noexec,nosuid,size=256M",
+        "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+    ]
+
+
+def test_start_emits_container_tmpfs_as_bare_paths(tmp_path, monkeypatch):
+    """#318: `container.tmpfs` entries reach the cage VM's `container run`
+    argv as `--tmpfs <bare path>`.
+
+    Bare path, not `path:opts`: Apple `container` 1.0.0 treats the WHOLE
+    --tmpfs argument as the destination, so passing the scaffold's
+    `rw,noexec,nosuid,nodev,size=64M` suffix would mount a tmpfs at a
+    directory literally named `/workspace/.git/hooks/:rw,noexec,...`. The
+    trailing slash is stripped for the same reason.
+
+    This is what makes the #170 (cage->host git-hook pivot) and #173
+    (project .claude/settings.json injection) masks real on the backend
+    macOS picks by default."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{workspace}:/workspace:rw"],
+            "tmpfs": [
+                "/tmp:rw,noexec,nosuid,size=256M",
+                "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+                "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M",
+            ],
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    tmpfs_args = [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--tmpfs"
+    ]
+    assert tmpfs_args == [
+        "/tmp", "/workspace/.git/hooks", "/workspace/.claude",
+    ]
+    # The bind the masks overlay is still mounted; Apple depth-sorts the
+    # merged mount list, so the bind lands before its nested tmpfs.
+    assert f"{workspace}:/workspace:rw" in cage_argv
+    # Option strings must never leak into the argv.
+    assert not any("noexec" in arg for arg in cage_argv)
+    assert not any("size=" in arg for arg in cage_argv)
+    # The egress sibling gets no user tmpfs — its mount set is fixed.
+    assert "--tmpfs" not in _egress_run_argv(captured)
+
+
+def test_start_without_container_tmpfs_emits_no_tmpfs(tmp_path, monkeypatch):
+    """No `tmpfs:` in the cage.yaml → no --tmpfs argv. Guards against a
+    stray empty-string mount from a missing/None metadata field."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+        },
+    )
+    backend.start("demo", quiet=True)
+    assert "--tmpfs" not in _cage_run_argv(captured)
+
+
+def test_start_does_not_double_tmpfs_an_np_volume_target(tmp_path, monkeypatch):
+    """An `np` bind already provides a tmpfs at its target, seeded from the
+    host lowerdir by cage-init stage C'. A `container.tmpfs` entry naming the
+    same target must not add a second, EMPTY mount over the seeded copy."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    np_host = tmp_path / "np-src"
+    np_host.mkdir()
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{np_host}:/workspace:rw,np"],
+            "tmpfs": ["/workspace/:rw,size=64M"],
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--tmpfs"
+    ] == ["/workspace"]
+
+
+def test_tmpfs_targets_normalizes_dedupes_and_rejects_unsafe():
+    """`_tmpfs_targets` is the single normalizer for this backend: strip the
+    option suffix and trailing slashes, drop duplicates, and refuse targets
+    the runtime must never be handed — a relative path, or `/` (a tmpfs over
+    the rootfs would hide the cage image)."""
+    assert AppleContainerBackend._tmpfs_targets([
+        "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+        "/workspace/.git/hooks",          # duplicate after normalization
+        "/tmp",
+        "relative/path:rw",               # not absolute
+        "/:rw",                           # rootfs
+        "/",
+    ]) == ["/workspace/.git/hooks", "/tmp"]
+
+
+# ---------------------------------------------------------------------------
 # cage-init.sh stage C' — non-persistent seed ownership
 # ---------------------------------------------------------------------------
 

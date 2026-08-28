@@ -1170,19 +1170,6 @@ def validate_config(config: Config) -> list[str]:
             "proxy (default-deny)."
         )
 
-    def _is_scaffold_default_tmpfs(entries: list[str]) -> bool:
-        """A single entry whose target is /tmp matches the stock scaffold
-        default (``tmpfs: ["/tmp:rw,noexec,nosuid,size=256M"]``). On
-        apple-container the cage's /tmp lives in the RW rootfs, so the
-        functional outcome (writable /tmp for the workload) is the same;
-        the noexec/nosuid hardening flags aren't enforced but no scaffold
-        relies on them. Multiple entries OR a non-``/tmp`` target IS
-        operator intent that this backend can't honor — keep warning."""
-        if len(entries) != 1:
-            return False
-        target = entries[0].split(":", 1)[0]
-        return target == "/tmp"
-
     # Apple-container backend: surface config knobs that the backend doesn't
     # respect today (silently dropped pre-this-warning). Tracked as the full
     # parity work in #120. Plain `validate_config` warnings so the user sees
@@ -1191,8 +1178,9 @@ def validate_config(config: Config) -> list[str]:
     # unconditionally for the container backend. The right long-term fix is
     # either to make the supervisor honor them or to make the scaffold
     # cage.yaml.j2 templates omit them on apple-container; until then, this
-    # tells the operator their `tmpfs:` / `volumes:` / `add_capabilities:`
-    # entries are decorative on this backend.
+    # tells the operator which of their entries are decorative on this
+    # backend. `volumes:` and (since #318) `tmpfs:` are NOT in that set —
+    # both are wired through `container run` argv now.
     if config.isolation == "apple-container":
         # Each entry: (field-path, predicate-on-config-that-says-"non-default",
         # human-readable summary of what the field's effect would be elsewhere).
@@ -1205,22 +1193,11 @@ def validate_config(config: Config) -> list[str]:
             # `_user_volume_argv`.
             ("container.named_volumes", bool(config.container.named_volumes),
              "podman named volumes (no equivalent on apple-container)"),
-            # Stock scaffold ships `tmpfs: ["/tmp:rw,noexec,nosuid,size=256M"]`
-            # as defense-in-depth for the container backend. On apple-
-            # container the cage's /tmp lives in the RW rootfs — the
-            # workload functionally gets a writable /tmp, and the noexec
-            # /nosuid hardening flags aren't enforced. A single /tmp
-            # entry is the documented scaffold default; treating it as
-            # "compatible enough" silences the noisiest warning on every
-            # default cage. Anything else (multiple entries, non-/tmp
-            # targets like /run, /var/cache) still warns because those
-            # do represent operator intent that this backend can't honor.
-            ("container.tmpfs",
-             bool(config.container.tmpfs) and not _is_scaffold_default_tmpfs(
-                 config.container.tmpfs
-             ),
-             "tmpfs mounts (apple-container's rootfs is RW; explicit tmpfs entries "
-             "are not wired)"),
+            # container.tmpfs is no longer silently dropped — #318 wired it
+            # to per-entry `container run --tmpfs <path>` argv on the cage
+            # microVM (backends/apple_container.py `_tmpfs_targets`). Only
+            # the OPTION list is lost, and that gets its own precise warning
+            # below rather than a blanket "has no effect".
             ("container.podman_secrets", bool(config.container.podman_secrets),
              "Podman secret refs (no host Podman secret store on apple-container; "
              "use cage.yaml `secret_injection:` or env: instead)"),
@@ -1293,44 +1270,51 @@ def validate_config(config: Config) -> list[str]:
                     f"{field_path}: silently has no effect on apple-container "
                     f"({summary}). See issue #120 for the parity plan."
                 )
-        # The generic ``container.tmpfs`` warning above is harmless-
-        # parity noise for most tmpfs targets (an extra /run, /var/cache
-        # overlay that the RW rootfs already covers functionally). But the
-        # #170 / #173 workspace executable-config masks are SECURITY
-        # controls, not /tmp-parity convenience: without them a caged agent
-        # can plant a host git hook (#170 cage→host pivot) or a project
-        # .claude/settings.json hooks block (#173 cage→cage injection).
-        # An operator who has learned to ignore the generic tmpfs warning
-        # as "harmless /tmp parity" would silently be running an OPEN
-        # cage→host pivot on apple-container. Call out those specific
-        # dropped entries by name so the residual exposure is unmissable,
-        # instead of folding them into the generic ``container.tmpfs``
-        # warning an operator may already tune out.
-        if config.container.tmpfs:
-            for entry in config.container.tmpfs:
-                target = entry.split(":", 1)[0]
-                if target == "/workspace/.git/hooks/":
-                    warnings.append(
-                        f"container.tmpfs: SECURITY-RELEVANT drop on "
-                        f"apple-container — the #170 cage→host git-hook "
-                        f"pivot mask (/workspace/.git/hooks/) is NOT "
-                        f"applied on apple-container — a caged agent can "
-                        f"still plant a host git hook that the next "
-                        f"host-side `git commit` runs as the host user. "
-                        f"The pivot remains exploitable. "
-                        f"See #120 for tmpfs parity."
-                    )
-                elif target == "/workspace/.claude/":
-                    warnings.append(
-                        f"container.tmpfs: SECURITY-RELEVANT drop on "
-                        f"apple-container — the #173 cage→cage "
-                        f"hooks-injection mask (/workspace/.claude/) is "
-                        f"NOT applied on apple-container — a caged agent "
-                        f"can still plant a project .claude/settings.json "
-                        f"`hooks` block that Claude Code in another cage "
-                        f"honors on launch. The injection chain remains "
-                        f"exploitable. See #120 for tmpfs parity."
-                    )
+        # `container.tmpfs` IS applied on apple-container since #318:
+        # `start()` emits one `container run --tmpfs <path>` per entry, and
+        # Apple sorts the container's mounts by destination depth before the
+        # in-guest OCI runtime applies them, so `/workspace/.git/hooks`
+        # (depth 3) lands ON TOP of the `/workspace` bind (depth 1). The
+        # #170 cage->host git-hook pivot mask and the #173 cage->cage
+        # `.claude/settings.json` injection mask therefore take effect here.
+        #
+        # What is still NOT honored is the OPTION list. Apple's `--tmpfs`
+        # takes a bare path (container 1.0.0 treats the whole argument as
+        # the destination), so `rw,noexec,nosuid,nodev,size=64M` is dropped
+        # and the mount lands with kernel-default tmpfs semantics: writable,
+        # exec/suid/dev permitted, and sized only by the cage VM's memory.
+        # Be precise about that split. The masks' pivot defense comes from
+        # the overlay itself, not from `noexec` (the planted hook would
+        # execute on the HOST, outside the cage's mount namespace, where an
+        # in-cage `noexec` is irrelevant) — but an operator who wrote
+        # `size=64M` deserves to know it is not enforced, and an unbounded
+        # tmpfs is a memory-exhaustion vector against the cage VM.
+        _tmpfs_dropped_opts = [
+            target for target, _, options in (
+                entry.partition(":") for entry in config.container.tmpfs
+            )
+            if options
+        ]
+        if _tmpfs_dropped_opts:
+            _masks = [
+                t for t in _tmpfs_dropped_opts
+                if t.rstrip("/") in ("/workspace/.git/hooks", "/workspace/.claude")
+            ]
+            _mask_note = (
+                " The mask entries (%s) do still block their cage→host / "
+                "cage→cage pivot: that protection comes from the tmpfs "
+                "overlaying the bind, not from `noexec`."
+                % ", ".join(_masks)
+            ) if _masks else ""
+            warnings.append(
+                "container.tmpfs: the mounts ARE applied on apple-container, "
+                "but their OPTIONS are not — Apple's `container run --tmpfs` "
+                "takes a bare path, so %s get kernel-default tmpfs semantics: "
+                "noexec/nosuid/nodev are NOT enforced and any `size=` cap is "
+                "ignored (an unbounded tmpfs can exhaust the cage VM's "
+                "memory; bound it with container.memory).%s See #120."
+                % (", ".join(_tmpfs_dropped_opts), _mask_note)
+            )
         # secret_injection.transform now runs end-to-end on apple-container
         # — the in-cage mitmproxy addon loads the same data/proxy/transforms
         # registry the container backend uses. KNOWN_TRANSFORMS is the

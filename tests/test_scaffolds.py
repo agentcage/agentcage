@@ -355,77 +355,82 @@ class TestWorkspaceExecutableConfigMasks:
             "/workspace/.claude/. Masking HOME breaks claude login/creds."
         )
 
-    def test_apple_container_git_hooks_drop_warns_security_relevant(
-        self, tmp_path
-    ):
-        """On apple-container the #170 /workspace/.git/hooks/ mask is silently
-        dropped (tmpfs parity tracked in #120). The generic tmpfs warning is
-        harmless-parity noise an operator may tune out, so a security control
-        being dropped must call out the residual exposure by name: a caged
-        agent can still plant a host git hook. The warning must NOT read as
-        generic /tmp-parity gap."""
+    def _apple_warnings(self, tmp_path, scaffold="claude-code"):
+        """validate_config() for a scaffold-rendered cage.yaml, forced onto
+        the apple-container backend on a simulated macOS 26 ASi host."""
         import platform as _platform
         from unittest import mock
         from agentcage.config import load_config, validate_config
-        cfg_text = render_config("demo", scaffold="claude-code")
         p = tmp_path / "cage.yaml"
-        p.write_text(cfg_text)
+        p.write_text(render_config("demo", scaffold=scaffold))
         cfg = load_config(str(p))
         cfg.isolation = "apple-container"
         with mock.patch.object(_platform, "system", return_value="Darwin"), \
              mock.patch.object(_platform, "machine", return_value="arm64"):
-            warnings = validate_config(cfg)
-        git_hook_warns = [w for w in warnings if "/workspace/.git/hooks/" in w]
-        assert git_hook_warns, (
-            "apple-container validation must warn about the dropped "
-            "/workspace/.git/hooks/ mask (#170)"
-        )
-        assert any("SECURITY-RELEVANT" in w for w in git_hook_warns), (
-            "the .git/hooks tmpfs drop warning must be flagged "
-            "SECURITY-RELEVANT, not generic /tmp parity noise"
-        )
-        assert any("pivot" in w and "exploitable" in w for w in git_hook_warns), (
-            "the .git/hooks drop warning must name the cage→host pivot "
-            "and that it remains exploitable"
+            return validate_config(cfg)
+
+    def test_apple_container_git_hooks_mask_no_longer_reported_dropped(
+        self, tmp_path
+    ):
+        """#318: the #170 /workspace/.git/hooks/ mask is WIRED on
+        apple-container now (start() emits `--tmpfs /workspace/.git/hooks`).
+        validate_config must therefore stop telling operators the cage->host
+        pivot "remains exploitable" — a stale scare warning trains people to
+        ignore the SECURITY-RELEVANT prefix, and this one would now be
+        factually wrong."""
+        warnings = self._apple_warnings(tmp_path)
+        stale = [
+            w for w in warnings
+            if "/workspace/.git/hooks/" in w and "exploitable" in w
+        ]
+        assert not stale, (
+            "the .git/hooks mask is applied on apple-container since #318 — "
+            "validate_config must not report it as a dropped, still-"
+            "exploitable pivot: " + " | ".join(stale)
         )
 
-    def test_apple_container_dotclaude_drop_warns_security_relevant(
+    def test_apple_container_dotclaude_mask_no_longer_reported_dropped(
         self, tmp_path
     ):
-        """Symmetric to the git-hooks case: on apple-container the #173
-        /workspace/.claude/ mask is dropped, leaving the cage→cage
-        hooks-injection chain open. The warning must call out the
-        hooks-injection exposure by name, not fold it into generic tmpfs
-        parity noise."""
-        import platform as _platform
-        from unittest import mock
-        from agentcage.config import load_config, validate_config
-        cfg_text = render_config("demo", scaffold="claude-code")
-        p = tmp_path / "cage.yaml"
-        p.write_text(cfg_text)
-        cfg = load_config(str(p))
-        cfg.isolation = "apple-container"
-        with mock.patch.object(_platform, "system", return_value="Darwin"), \
-             mock.patch.object(_platform, "machine", return_value="arm64"):
-            warnings = validate_config(cfg)
-        claude_warns = [w for w in warnings if "/workspace/.claude/" in w]
-        assert claude_warns, (
-            "apple-container validation must warn about the dropped "
-            "/workspace/.claude/ mask (#173)"
+        """Symmetric to the git-hooks case: the #173 /workspace/.claude/
+        mask is applied on apple-container since #318, so the "injection
+        chain remains exploitable" warning must be gone."""
+        warnings = self._apple_warnings(tmp_path)
+        stale = [
+            w for w in warnings
+            if "/workspace/.claude/" in w and "exploitable" in w
+        ]
+        assert not stale, (
+            "the .claude/ mask is applied on apple-container since #318 — "
+            "validate_config must not report it as a dropped, still-"
+            "exploitable injection chain: " + " | ".join(stale)
         )
-        assert any("SECURITY-RELEVANT" in w for w in claude_warns), (
-            "the .claude/ tmpfs drop warning must be flagged "
-            "SECURITY-RELEVANT, not generic /tmp parity noise"
+
+    def test_apple_container_tmpfs_warning_names_dropped_options_only(
+        self, tmp_path
+    ):
+        """What apple-container really loses is the tmpfs OPTION list
+        (Apple's `--tmpfs` takes a bare path). The warning must say the
+        mounts ARE applied, and name noexec/nosuid/nodev and `size=` as the
+        part that is not — overstating enforcement is worse than the old
+        loud warning."""
+        warnings = self._apple_warnings(tmp_path)
+        tmpfs_warns = [w for w in warnings if "container.tmpfs" in w]
+        assert tmpfs_warns, (
+            "the stock scaffold ships tmpfs entries WITH options, so "
+            "apple-container must warn that the options are dropped"
         )
-        assert any("hooks-injection" in w and "exploitable" in w
-                   for w in claude_warns), (
-            "the .claude/ drop warning must name the cage→cage "
-            "hooks-injection chain and that it remains exploitable"
-        )
+        joined = " | ".join(tmpfs_warns)
+        assert "ARE applied" in joined, joined
+        assert "noexec" in joined and "size=" in joined, joined
+        # Never claim the whole field is inert.
+        assert not any(
+            "container.tmpfs: silently has no effect" in w for w in warnings
+        ), joined
 
     def test_apple_container_plain_tmp_warning_not_security_flagged(self):
-        """A plain /tmp tmpfs entry (the stock scaffold default) dropped on
-        apple-container must stay a generic parity warning — it must NOT be
+        """A plain /tmp tmpfs entry (the stock scaffold default) must stay a
+        generic parity warning about its dropped OPTIONS — it must NOT be
         mis-flagged SECURITY-RELEVANT, otherwise operators learn to treat
         the security flag as noise too. Pins the specificity of Major 1."""
         import platform as _platform

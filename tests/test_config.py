@@ -2128,9 +2128,14 @@ class TestAppleContainerSilentDrops:
         _, warnings = self._validate_under_apple(str(p))
         assert not any("container.ports" in w for w in warnings), warnings
 
-    def test_tmpfs_non_default_warns(self, tmp_path):
-        """Multi-entry tmpfs or non-/tmp target → operator intent that
-        apple-container can't honor → warn."""
+    def test_tmpfs_with_options_warns_about_options_not_the_mount(
+        self, tmp_path,
+    ):
+        """#318 wired `container.tmpfs` to `container run --tmpfs <path>`, so
+        the mounts DO happen here. Apple's flag takes a bare path though, so
+        the option list is still lost — the warning must say exactly that,
+        and must not regress into "silently has no effect" (which would be
+        false, and would train operators to ignore the field's warnings)."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
@@ -2142,15 +2147,18 @@ class TestAppleContainerSilentDrops:
                 - "/run:rw,size=16M"
         """))
         _, warnings = self._validate_under_apple(str(p))
-        assert any("container.tmpfs" in w for w in warnings), warnings
+        tmpfs_warns = [w for w in warnings if "container.tmpfs" in w]
+        assert tmpfs_warns, warnings
+        joined = " | ".join(tmpfs_warns)
+        assert "ARE applied" in joined, joined
+        assert "/tmp" in joined and "/run" in joined, joined
+        assert not any(
+            "container.tmpfs: silently has no effect" in w for w in warnings
+        ), joined
 
-    def test_tmpfs_single_tmp_entry_does_not_warn(self, tmp_path):
-        """Scaffold default ``tmpfs: ["/tmp:rw,noexec,nosuid,size=256M"]``
-        is the single-most-common cage.yaml shape across built-in scaffolds.
-        On apple-container the cage's /tmp lives in the RW rootfs — the
-        workload still gets a writable /tmp — so the noisiest warning on
-        every default cage was pure cosmetic friction. 0.22.7+ suppresses
-        it when the only tmpfs entry targets /tmp."""
+    def test_tmpfs_without_options_does_not_warn(self, tmp_path):
+        """Nothing is lost for a bare-path entry — it maps 1:1 onto Apple's
+        `--tmpfs`. No warning, so the option-drop warning stays meaningful."""
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
             name: ac-demo
@@ -2158,7 +2166,7 @@ class TestAppleContainerSilentDrops:
             container:
               image: localhost/test:latest
               tmpfs:
-                - "/tmp:rw,noexec,nosuid,size=256M"
+                - "/tmp"
         """))
         _, warnings = self._validate_under_apple(str(p))
         assert not any(

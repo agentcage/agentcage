@@ -428,6 +428,55 @@ class AppleContainerBackend:
             out.append(f"{real}:{parts[1]}")
         return out
 
+    @staticmethod
+    def _tmpfs_targets(raw_entries: list[str]) -> list[str]:
+        """Normalize ``container.tmpfs`` specs into bare cage paths.
+
+        Apple's ``container run --tmpfs`` takes a BARE PATH — at container
+        1.0.0 the whole argument is the destination, so Docker's
+        ``path:opts`` form would mount a tmpfs at a directory literally
+        named ``path:opts``. (1.3.0 learned to split ``path:opts``, but we
+        target the older contract too, so the option list is dropped on
+        every version.) That means the scaffolds'
+        ``rw,noexec,nosuid,nodev,size=64M`` is NOT forwarded: the mount
+        lands with kernel-default tmpfs options — writable, exec/suid/dev
+        permitted, and bounded only by the cage VM's memory. This is not
+        silent: ``validate_config`` warns per cage about exactly which
+        options were dropped (see config.py's apple-container block).
+
+        Returns absolute, de-duplicated, trailing-slash-stripped targets.
+        Entries that are not absolute paths, or that ask for ``/``
+        (a tmpfs over the rootfs would hide the whole image), are skipped
+        with a warning rather than handed to the runtime.
+        """
+        out: list[str] = []
+        seen: set[str] = set()
+        for entry in raw_entries:
+            target = entry.split(":", 1)[0].strip()
+            # `/workspace/.git/hooks/` -> `/workspace/.git/hooks`; Apple
+            # lexically normalizes destinations too, so strip here to keep
+            # our own dedupe honest.
+            normalized = target.rstrip("/")
+            if not target.startswith("/"):
+                click.echo(
+                    f"warning: skipping tmpfs {entry!r} on apple-container "
+                    "(target must be an absolute path)",
+                    err=True,
+                )
+                continue
+            if not normalized:
+                click.echo(
+                    f"warning: skipping tmpfs {entry!r} on apple-container "
+                    "(a tmpfs over `/` would hide the cage image's rootfs)",
+                    err=True,
+                )
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            out.append(normalized)
+        return out
+
     def _launchd_plist_path(self, name: str) -> Path:
         """Host path of the per-cage launchd plist.
 
@@ -1087,6 +1136,14 @@ class AppleContainerBackend:
                 # already-absolute paths, so start() re-running it is a safe
                 # revalidation, not a re-expansion.
                 "volumes": self._user_volume_argv(config.container.volumes),
+                # User-declared ``container.tmpfs:`` targets. Persisted raw
+                # (spec string, options included) so a future agentcage that
+                # can forward options doesn't need a metadata migration;
+                # start() normalizes to the bare paths Apple's --tmpfs
+                # accepts. Pre-#318 this field was dropped entirely, which
+                # silently disabled the #170 /workspace/.git/hooks/ and #173
+                # /workspace/.claude/ masks on this backend.
+                "tmpfs": list(config.container.tmpfs or []),
                 # User-defined ``container.env:`` entries. Apple's
                 # `container run` accepts `-e KEY=VAL` like podman. The
                 # container backend wires these via quadlets.py:338;
@@ -1537,6 +1594,7 @@ class AppleContainerBackend:
         # and copied to a tmpfs at its requested target. Other binds are
         # passed directly through unchanged.
         copies: list[str] = []
+        np_tmpfs_targets: set[str] = set()
         for idx, vol_entry in enumerate(volume_entries):
             host_src, target, _opts = split_volume_spec(vol_entry)
             if not target:
@@ -1550,11 +1608,38 @@ class AppleContainerBackend:
                 # Apple `container run --tmpfs` takes a bare path only;
                 # Docker's `path:opts` syntax is interpreted literally.
                 cage_argv += ["--tmpfs", target]
+                np_tmpfs_targets.add(target.rstrip("/") or "/")
             copies.append(f"{lower}\t{target}")
         if copies:
             cage_argv += [
                 "-e", "AGENTCAGE_NONPERSISTENT_COPIES=" + "\n".join(copies),
             ]
+        # User-declared `container.tmpfs:` entries (#318 / the tmpfs half of
+        # the #120 parity gap). Pre-0.32 these were dropped on this backend,
+        # which silently disabled the claude-code scaffold's #170
+        # `/workspace/.git/hooks/` and #173 `/workspace/.claude/` masks — the
+        # one backend macOS picks by default was the one without them.
+        #
+        # Ordering: these masks overlay a path INSIDE the `/workspace` bind,
+        # so the bind must be mounted first or the tmpfs is shadowed. argv
+        # order does not decide that — Apple hands `--volume` and `--tmpfs`
+        # to the guest in ONE `spec.mounts` array that containerization
+        # sorts by destination depth before the in-guest OCI runtime applies
+        # it (`cleanAndSortMounts` / `sortMountsByDestinationDepth` in
+        # apple/containerization's LinuxContainer.swift, present since the
+        # 0.33.x pinned by container 1.0.0). `/workspace` (depth 1) is
+        # therefore always mounted before `/workspace/.git/hooks` (depth 3),
+        # and the runtime creates the missing mountpoint. We still emit
+        # after the volumes so the argv reads in mount order.
+        for tmpfs_target in self._tmpfs_targets(meta.get("tmpfs") or []):
+            # An `np` bind already owns this target with a tmpfs of its own
+            # (seeded from the host lowerdir by cage-init stage C'); a second
+            # --tmpfs would be a redundant destination that Apple dedupes
+            # anyway. Skip it so the seeded copy is not masked by an empty
+            # mount on a runtime that keeps both.
+            if tmpfs_target in np_tmpfs_targets:
+                continue
+            cage_argv += ["--tmpfs", tmpfs_target]
         # Apple's --cpus / --memory normalization (uppercase suffix, ceil
         # fractions). Backward-compat fallback to pre-0.20.6 `mem_mb` int.
         cpus_raw = meta.get("cpus")
