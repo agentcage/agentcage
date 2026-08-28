@@ -697,6 +697,67 @@ def test_install_launchd_plist_skips_bootstrap_when_gui_domain_unreachable(
         f"message must explain SSH/non-GUI context, got {err!r}"
 
 
+def test_install_launchd_plist_skips_bootstrap_when_launchctl_missing(
+    tmp_path, monkeypatch, capsys,
+):
+    """#185: if `launchctl` isn't on PATH (a stripped env) or the `print`
+    subcommand is absent on an old macOS, ``subprocess.run`` raises
+    ``FileNotFoundError`` (an ``OSError``). The probe must swallow that and
+    treat "can't probe" the same as "unreachable": skip the immediate-load
+    with the honest informational message, leaving the plist file (the real
+    persistence) in place. Without the ``try/except OSError`` the exception
+    would propagate out of ``_install_launchd_plist``, which is called inline
+    from ``start()`` AFTER a successful container launch — turning an
+    otherwise-successful ``cage start`` into a failure and hiding the honest
+    status message (the whole point of the PR)."""
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(backend, "_launchd_plist_path",
+                        lambda name: tmp_path / f"io.agentcage.{name}.plist")
+    monkeypatch.setattr(backend, "_state_dir",
+                        lambda name: tmp_path / f"state-{name}")
+    monkeypatch.setattr("os.getuid", lambda: 501)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        # `launchctl print gui/<uid>` blows up — launchctl not on PATH
+        # in this stripped env. FileNotFoundError is an OSError subclass.
+        if argv[:2] == ["launchctl", "print"] and "gui/501" in argv:
+            raise FileNotFoundError(2, "No such file or directory: 'launchctl'")
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.object(ac_cli, "container_binary",
+                      return_value="/usr/local/bin/container"), \
+         patch("subprocess.run", side_effect=fake_run):
+        # Must NOT raise — the OSError is swallowed by the probe.
+        backend._install_launchd_plist("demo")
+
+    # The reachability probe was attempted.
+    prints = [c for c in calls if c[:2] == ["launchctl", "print"]
+              and "gui/501" in c]
+    assert len(prints) == 1, f"expected 1 gui/501 print probe, got {prints}"
+    # No bootstrap / bootout / load attempted — the probe raised, so the
+    # immediate-load is skipped rather than propagating the exception.
+    assert not any(c[:2] == ["launchctl", "bootstrap"] for c in calls), \
+        f"bootstrap must NOT run when launchctl is missing, got {calls}"
+    assert not any(c[:2] == ["launchctl", "bootout"] for c in calls), \
+        f"bootout must NOT run when launchctl is missing, got {calls}"
+    assert not any(c[:2] == ["launchctl", "load"] for c in calls), \
+        f"load must NOT run when launchctl is missing, got {calls}"
+    # The plist file is the persistence — it MUST be written regardless.
+    plist_path = tmp_path / "io.agentcage.demo.plist"
+    assert plist_path.exists(), \
+        "plist must be written even when launchctl is missing"
+    import plistlib
+    parsed = plistlib.loads(plist_path.read_text().encode())
+    assert parsed["Label"] == "io.agentcage.demo"
+    # Honest message emitted: operator knows autostart will activate at
+    # next GUI login (not that the probe crashed).
+    err = capsys.readouterr().err
+    assert "#185" in err, f"message must reference #185, got {err!r}"
+    assert "next GUI login" in err, f"message must say next GUI login, got {err!r}"
+
+
 def test_install_launchd_plist_bootstraps_when_gui_domain_reachable(
     tmp_path, monkeypatch,
 ):

@@ -287,10 +287,22 @@ class AppleContainerBackend:
         We probe reachability by asking launchd to print the gui domain;
         it returns non-zero ("Domain does not support specified action")
         when the GUI session isn't reachable from the current context.
+
+        If `launchctl` isn't on PATH (a stripped/over-SSH environment) or
+        the `print` subcommand is absent on an old macOS, ``subprocess.run``
+        raises ``OSError``/``FileNotFoundError``. We treat "can't probe" the
+        same as "unreachable" — the plist file is already on disk (the real
+        persistence; see ``_install_launchd_plist``), so returning ``False``
+        skips the immediate-load with the honest informational message
+        rather than propagating an exception out of ``start()`` after a
+        successful container launch. See #185.
         """
         import subprocess as _sp
-        probe = _sp.run(["launchctl", "print", f"gui/{uid}"],
-                        check=False, capture_output=True, text=True)
+        try:
+            probe = _sp.run(["launchctl", "print", f"gui/{uid}"],
+                            check=False, capture_output=True, text=True)
+        except OSError:
+            return False
         return probe.returncode == 0
 
     def _install_launchd_plist(self, name: str) -> None:
@@ -359,7 +371,7 @@ class AppleContainerBackend:
         # informational message instead of the pre-#185 silent no-op.
         if not self._gui_domain_reachable(uid):
             click.echo(
-                f"plist written to {plist}; autostart will activate at "
+                f"note: plist written to {plist}; autostart will activate at "
                 f"next GUI login (immediate-load not available from this "
                 f"SSH/non-GUI context — see #185)",
                 err=True,
@@ -389,7 +401,15 @@ class AppleContainerBackend:
                 )
 
     def _uninstall_launchd_plist(self, name: str) -> None:
-        """Unload + remove the per-cage launchd plist. No-op if absent."""
+        """Unload + remove the per-cage launchd plist. No-op if absent.
+
+        Note: over SSH the gui domain isn't reachable, so `bootout`/`unload`
+        no-op (same reachability story as ``_install_launchd_plist``'s probe,
+        #185) — but that's fine: the file removal is what guarantees the
+        service won't reload at next login. Uninstall therefore does NOT gate
+        on reachability; the file is removed unconditionally so persistence
+        can't survive a destroy by hiding behind an unreachable domain.
+        """
         plist = self._launchd_plist_path(name)
         if not plist.exists():
             return
