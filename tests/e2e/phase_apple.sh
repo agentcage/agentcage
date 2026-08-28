@@ -5,6 +5,24 @@
 # is manual-only and not part of CI. Run on a developer workstation
 # with `agentcage doctor` reporting all-green for apple-container.
 #
+# CI status (issue #215): this phase CANNOT run on GitHub's hosted
+# `macos-26` runner — that runner is itself a VM, so Apple's
+# Virtualization.framework refuses to boot nested VMs with
+# `VZErrorDomain Code=2 "Virtualization is not available on this
+# hardware."` The script therefore probes for nested virt and SKIPS
+# (exit 0, clear reason) on a no-nested-virt host instead of erroring,
+# while still running the real e2e when nested virt IS available.
+# Getting the real e2e into CI needs one of (none are in-repo fixes):
+#   1. a paid `macos-26-large` / `-xlarge` runner with nested virt
+#      (requires AGENTCAGE_APPLE_E2E_FORCE=1 in the workflow env — these
+#      are GitHub-hosted image runners that ALSO set ImageOS=macos26, so
+#      the auto-skip in probe 1 below would otherwise suppress them; the
+#      FORCE escape hatch is the documented way to run the real e2e on a
+#      known-capable paid nested-virt runner instead of being skipped)
+#   2. a self-hosted Apple Silicon runner (bare metal)
+#   3. keep it manual-only on developer workstations (status quo)
+# See https://github.com/agentcage/agentcage/issues/215.
+#
 # Covers the 2-microVM model from PR 3 (#196):
 #   * cage create builds both images (agentcage-egress + per-cage wrapper)
 #   * cage status shows both microVMs running
@@ -24,6 +42,56 @@ if ! command -v container >/dev/null 2>&1 && \
    [ ! -x /opt/homebrew/bin/container ]; then
     echo "SKIP: Apple \`container\` CLI not installed"
     exit 0
+fi
+
+# ── nested-virtualization probe (issue #215) ────────────────────────────────────────
+# GitHub's hosted macos-26 runners are themselves VMs, so Apple's
+# Virtualization.framework refuses to boot nested VMs (VZErrorDomain
+# Code=2). Rather than error out mid-run, detect the no-nested-virt
+# condition here and SKIP with a clear reason. On a capable bare-metal
+# (or nested-virt-enabled) host the probe passes and the real e2e runs.
+#
+# Set AGENTCAGE_APPLE_E2E_FORCE=1 to bypass the probe entirely (escape
+# hatch for self-hosted runners known to support nested virt even when
+# the heuristics below can't confirm it).
+#
+# Probe order (first hit ⇒ SKIP):
+#   1. ImageOS env — set ONLY on GitHub-hosted image runners (e.g.
+#      "macos26"), never on self-hosted runners. macos* ⇒ hosted VM
+#      ⇒ no nested virt.
+#   2. kern.hv.supported sysctl — the documented Hypervisor.framework
+#      availability sysctl: 1 ⟹ hypervisor available (proceed); 0 ⟹
+#      no VM/nested-virt support on this host (e.g. a non-GitHub VM
+#      without nested virt). We deliberately use `kern.hv.supported`
+#      and NOT `kern.hv_vcpus`: where the latter exists it reports the
+#      vCPUs *currently in use by running VMs*, so it is 0 on every
+#      IDLE capable bare-metal Apple Silicon workstation — i.e. it
+#      would FALSE-SKIP the real e2e on the very workstations this
+#      phase targets. `kern.hv.supported` reflects capability, not
+#      current utilization, which is the property we actually want.
+#      Empty/non-numeric ⟹ sysctl absent or unreadable ⟹ treat as
+#      capable and proceed (fall through to the real e2e, which is no
+#      worse than the pre-fix behavior on an incapable host).
+if [ "${AGENTCAGE_APPLE_E2E_FORCE:-0}" != "1" ]; then
+    if [ -n "${ImageOS:-}" ]; then
+        case "$ImageOS" in
+            macos*)
+                echo "SKIP: nested virtualization unavailable on this GitHub-hosted runner (ImageOS=$ImageOS) — apple-container e2e needs bare-metal Apple Silicon or a self-hosted/paid runner with nested virt (see issue #215)"
+                exit 0
+                ;;
+        esac
+    fi
+    # kern.hv.supported: 1 ⟹ hypervisor available (proceed); 0 ⟹ no
+    # nested virt (skip). Empty/non-numeric ⟹ sysctl absent/unreadable
+    # ⟹ treat as capable and proceed (intentional fallthrough: the
+    # `-eq 0` test is false for non-numeric, so we DON'T skip — the real
+    # e2e then runs and, on a genuinely incapable host, fails for the
+    # same reason it did before this probe existed).
+    _hv_supported="$(sysctl -n kern.hv.supported 2>/dev/null || true)"
+    if [ -n "$_hv_supported" ] && [ "$_hv_supported" -eq 0 ] 2>/dev/null; then
+        echo "SKIP: nested virtualization unavailable on this runner (kern.hv.supported=$_hv_supported) — apple-container e2e needs bare-metal Apple Silicon or a self-hosted/paid runner with nested virt (see issue #215)"
+        exit 0
+    fi
 fi
 
 phase_header A "apple-container Mode — Lifecycle & 2-microVM Threat Model"
