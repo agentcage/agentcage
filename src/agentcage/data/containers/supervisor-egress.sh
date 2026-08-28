@@ -41,34 +41,52 @@ die() { log "FATAL: $1"; exit "${2:-99}"; }
 #
 # First create (fresh boot): the file is created ALREADY owned by the
 # service user by running install(1) under `setpriv --reuid/--regid` for
-# that user. The 1777 dir lets any uid create here, so no caps are needed;
-# install -m 0640 sets the mode atomically at create time (no
-# chmod-after-create race window). Creating as the service user directly
-# sidesteps chown entirely, so there is no root-owned-0640 window during
-# which the daemon couldn't write, and no chown-failure edge case under
-# hardened rootless podman.
+# that user. The 1777 dir lets any uid create here, so no caps are needed.
+# GNU install -m 0640 creates the file at mode 0600 then fchmods it to
+# 0640 in the same syscall sequence; the intermediate 0600 grants
+# "others" NOTHING, so there is no world-readable window (the security
+# claim holds), but it is not literally a single atomic create — don't
+# overclaim. Creating as the service user directly sidesteps chown
+# entirely, so there is no root-owned-0640 window during which the
+# daemon couldn't write, and no chown-failure edge case under hardened
+# rootless podman.
 #
 # Restart (file already exists, owned by the service user from a prior
-# boot): tighten the mode in place with chmod 0640. The service user keeps
-# rw as the owner; root needs CAP_FOWNER for this, which PID-1 root has.
+# boot, e.g. a pre-fix 0644 file on migration): tighten the mode in place
+# with chmod 0640 run AS THE FILE OWNER via setpriv. The owner needs no
+# capability to chmod its own file, so this does NOT depend on the
+# runtime granting CAP_FOWNER to PID-1 root — mirroring the first-create
+# path and removing the cap dependency entirely (the egress argv only
+# --cap-adds NET_ADMIN/NET_BIND_SERVICE/SETUID/SETGID/SETPCAP/KILL; a
+# hardened runtime with `default_capabilities = []` drops CAP_FOWNER,
+# which would make a root chmod fail EPERM on an acproxy-owned file).
 #
-# All steps are best-effort: if setpriv/install is unavailable in a
-# minimal smoke-test image we simply leave creation to the daemon (which
-# falls back to its 0644 default — only the degraded, non-virtiofs path
-# where the threat model doesn't apply).
+# All steps are best-effort but LOUD: if setpriv/install/chmod is
+# unavailable in a minimal smoke-test image we leave creation/tightening
+# to the daemon (which falls back to its 0644 default — only the degraded,
+# non-virtiofs path where the threat model doesn't apply). But we emit a
+# loud `log` warning on failure so the operator/CI can observe that the
+# audit-integrity control has degraded — silent `|| true` would let the
+# file stay 0644 (the #186 vuln) with ZERO signal. We do NOT `die` here:
+# the container/vm smoke-test path legitimately has no setpriv, and dying
+# would break that non-virtiofs path where best-effort is appropriate.
 _ensure_log() {
   _el_file="$1"; _el_user="$2"
   if [ -e "$_el_file" ]; then
-    # Restart: tighten the existing file to 0640 in place.
-    chmod 0640 "$_el_file" 2>/dev/null || true
+    # Restart: tighten the existing file to 0640 in place AS THE OWNER
+    # (no CAP_FOWNER dependency).
+    setpriv --reuid="$_el_user" --regid="$_el_user" --clear-groups -- \
+      /bin/chmod 0640 "$_el_file" 2>/dev/null \
+      || log "warn: _ensure_log chmod 0640 failed for $_el_file ($_el_user); file may stay world-readable — audit trail may be forgeable (#186)"
   else
-    # First create: make the file owned by the service user at 0640 in
-    # one shot (umask 0027 is belt-and-suspenders alongside install -m).
+    # First create: make the file owned by the service user at 0640
+    # (umask 0027 is belt-and-suspenders alongside install -m).
     (
       umask 0027
       setpriv --reuid="$_el_user" --regid="$_el_user" --clear-groups -- \
         /usr/bin/install -m 0640 /dev/null "$_el_file"
-    ) 2>/dev/null || true
+    ) 2>/dev/null \
+      || log "warn: _ensure_log create failed for $_el_file ($_el_user); daemon will create at default perms — audit trail may be forgeable (#186)"
   fi
 }
 

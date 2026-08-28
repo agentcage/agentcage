@@ -2770,10 +2770,21 @@ def test_egress_supervisor_precreates_logs_at_0640():
         / "src" / "agentcage" / "data" / "containers" / "supervisor-egress.sh"
     ).read_text()
 
-    # The helper must create files at 0640 up front (install -m 0640 sets
-    # the mode atomically at create time — no chmod-after-create race).
+    # The helper must create files at 0640 up front (install -m 0640
+    # creates at 0600 then fchmods to 0640 — the intermediate 0600 grants
+    # "others" nothing, so no world-readable window).
     assert "install -m 0640" in egress_supervisor, (
         "supervisor must create log files with `install -m 0640` (no race)"
+    )
+
+    # The create path must run under setpriv as the service user with
+    # --clear-groups, so a future edit that drops setpriv and creates as
+    # root-then-chown (re-introducing the CAP_FOWNER/chown dependency)
+    # is caught.
+    assert "setpriv --reuid=" in egress_supervisor \
+        and "--clear-groups" in egress_supervisor, (
+        "supervisor must create/tighten logs under `setpriv --clear-groups` "
+        "as the service user (no root-then-chown, no CAP_FOWNER dep) (#186)"
     )
 
     # Each of the four log files must be pre-created and owned by its
@@ -2791,6 +2802,46 @@ def test_egress_supervisor_precreates_logs_at_0640():
         assert call in egress_supervisor, (
             f"supervisor missing `_ensure_log {path} {user}` (#186)"
         )
+
+    # Ordering: each _ensure_log call must appear BEFORE the daemon that
+    # writes the file is launched, so a future edit that moves creation
+    # to AFTER the daemon starts (reopening the create-race where the
+    # daemon creates at its umask 0644) is caught. Assert RELATIVE
+    # ordering (ensure_log before launch line), not absolute line nums.
+    lines = egress_supervisor.splitlines()
+    # dnsmasq.log ensure must precede the first dnsmasq launch line.
+    dns_ensure_idx = next(
+        i for i, ln in enumerate(lines)
+        if "_ensure_log /var/log/agentcage/dnsmasq.log acdns" in ln
+    )
+    dns_launch_idx = next(
+        i for i, ln in enumerate(lines)
+        if "/usr/sbin/dnsmasq" in ln or "/opt/agentcage/dns-audit.sh" in ln
+    )
+    assert dns_ensure_idx < dns_launch_idx, (
+        "_ensure_log dnsmasq.log must run BEFORE the dnsmasq launch line "
+        "(else the daemon creates the file at its umask 0644) (#186)"
+    )
+    # The three acproxy ensure calls must precede the mitmdump launch line.
+    acproxy_ensure_idx = next(
+        i for i, ln in enumerate(lines)
+        if "_ensure_log /var/log/agentcage/proxy.log acproxy" in ln
+    )
+    mitm_launch_idx = next(
+        i for i, ln in enumerate(lines) if "mitmdump" in ln
+    )
+    assert acproxy_ensure_idx < mitm_launch_idx, (
+        "_ensure_log acproxy logs must run BEFORE the mitmdump launch line "
+        "(else the daemon creates the files at its umask 0644) (#186)"
+    )
+
+    # Failure must NOT be silent: the helper must surface a loud `log`
+    # warning on failure (no `|| true` swallowing the error), so a degraded
+    # audit-integrity control is observable to the operator/CI.
+    assert "|| log \"warn: _ensure_log" in egress_supervisor, (
+        "_ensure_log must emit a loud log warning on failure instead of "
+        "silently `|| true`-ing (silent degradation re-opens #186)"
+    )
 
     # Defense-in-depth: no line creating one of these four log files may
     # leave it world-readable. The pre-creation must be 0640, never 0644
