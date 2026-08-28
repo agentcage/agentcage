@@ -15,6 +15,8 @@ code that actually ships.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 import sys
 import types
@@ -164,7 +166,7 @@ def test_inspector_block_returns_403(tmp_path):
     addon = _build_addon(tmp_path, [insp])
     flow = _make_flow()
 
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
 
     assert _was_blocked(flow)
     assert flow.metadata.get("agentcage_blocked") is True
@@ -180,7 +182,7 @@ def test_inspector_flag_does_not_block(tmp_path):
     addon = _build_addon(tmp_path, [insp])
     flow = _make_flow()
 
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
 
     assert not _was_blocked(flow)
     assert flow.metadata.get("agentcage_blocked") is not True
@@ -193,10 +195,50 @@ def test_no_inspectors_is_passthrough(tmp_path):
     addon = _build_addon(tmp_path, [])
     flow = _make_flow()
 
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
 
     assert not _was_blocked(flow)
     assert _audit_decisions(tmp_path) == ["allowed"]
+
+
+def test_request_chain_runs_off_loop_keeping_it_responsive(tmp_path):
+    """Regression for #223: the addon's inspector chain runs in a thread
+    executor, so a slow inspector does not block the asyncio loop. While
+    the chain sleeps, a concurrent coroutine on the same loop keeps
+    advancing — proof body inspection is off the loop."""
+    import time
+
+    class _SlowInspector:
+        name = "slow"
+
+        def inspect_request(self, ctx):  # noqa: ARG002
+            time.sleep(0.2)
+            return None
+
+        def inspect_response(self, ctx):  # noqa: ARG002
+            return None
+
+    addon = _build_addon(tmp_path, [_SlowInspector()])
+    flow = _make_flow()
+
+    async def _go():
+        ticks: list[float] = []
+
+        async def _heartbeat():
+            for _ in range(8):
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        hb = asyncio.create_task(_heartbeat())
+        await addon.request(flow)
+        await hb
+        return ticks
+
+    ticks = asyncio.run(_go())
+    # Heartbeat kept advancing through the 0.2s inspector sleep.
+    assert len(ticks) == 8
+    gaps = [ticks[i] - ticks[i - 1] for i in range(1, len(ticks))]
+    assert max(gaps) < 0.2
 
 
 # ── Relay inspector chain ────────────────────────────────
