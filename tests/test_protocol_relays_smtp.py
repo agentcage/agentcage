@@ -1323,6 +1323,131 @@ class TestAuditEntries:
         _run(_go())
 
 
+# ── #224: upstream-rejected RCPTs surfaced in the audit log ──
+
+
+class TestUpstreamRcptRejectionAudit:
+    """When the cage's ``recipient_allowlist`` passes a set of RCPTs
+    but the upstream rejects a subset, the ``allowed`` audit entry must
+    record *who actually received* the message separately from *who the
+    cage let through but the upstream refused*. Pre-fix both were
+    flattened into a single ``recipients`` list under
+    ``decision: allowed``, so forensics could not tell which recipients
+    the message actually reached."""
+
+    def test_rejected_rcpts_recorded_separately_from_accepted(self):
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            # Upstream rejects two of the five allowlisted recipients.
+            recorder.reject_rcpts = {
+                "gone@up.example.com",
+                "also-gone@up.example.com",
+            }
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            entry = _relay_entry(
+                up_port,
+                recipient_domains=["example.com"],
+            )
+            try:
+                async with _running_relay(
+                    entry, audit_log=entries.append,
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        for rcpt in (
+                            "ok1@example.com",
+                            "gone@up.example.com",
+                            "ok2@example.com",
+                            "also-gone@up.example.com",
+                            "ok3@example.com",
+                        ):
+                            code, _ = await _cmd(
+                                w, r, f"RCPT TO:<{rcpt}>".encode(),
+                            )
+                            # The cage allowlisted all of them, so
+                            # every RCPT is accepted by the relay.
+                            assert code == 250, (rcpt, code)
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"Subject: hi\r\n\r\nbody\r\n.\r\n")
+                        await w.drain()
+                        code, _ = await _read_response(r)
+                        assert code == 250, code
+                allowed = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_data"
+                    and e.get("decision") == "allowed"
+                ]
+                assert allowed
+                e = allowed[0]
+                # The audit `recipients` field lists ONLY the recipients
+                # the upstream actually accepted.
+                assert sorted(e["recipients"]) == [
+                    "ok1@example.com",
+                    "ok2@example.com",
+                    "ok3@example.com",
+                ]
+                # Rejected RCPTs are carried in a dedicated field.
+                assert sorted(e["recipients_rejected_upstream"]) == [
+                    "also-gone@up.example.com",
+                    "gone@up.example.com",
+                ]
+                # Upstream only queued one message — to the accepted set.
+                assert len(recorder.transactions) == 1
+                assert sorted(recorder.transactions[0]["recipients"]) == [
+                    "ok1@example.com",
+                    "ok2@example.com",
+                    "ok3@example.com",
+                ]
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+    def test_all_accepted_omits_empty_rejected_field(self):
+        """When upstream accepts every RCPT, the rejected field is an
+        empty list (present, not absent)."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            entries: list[dict] = []
+            try:
+                async with _running_relay(
+                    _relay_entry(up_port, recipient_domains=["example.com"]),
+                    audit_log=entries.append,
+                ) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<friend@example.com>")
+                        await _cmd(w, r, b"DATA")
+                        w.write(b"hi\r\n.\r\n")
+                        await w.drain()
+                        await _read_response(r)
+                allowed = [
+                    e for e in entries
+                    if e.get("kind") == "smtp_data"
+                    and e.get("decision") == "allowed"
+                ]
+                assert allowed
+                e = allowed[0]
+                assert e["recipients"] == ["friend@example.com"]
+                assert e["recipients_rejected_upstream"] == []
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
+
 # ── A1: upstream connection failures surface as 451 + audit entry ──
 
 

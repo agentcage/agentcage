@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **SMTP relay audit log now records which RCPTs the upstream actually accepted vs rejected.** When the cage forwarded mail, every recipient that passed `recipient_allowlist` was written to the audit log with `decision: allowed`, even when the upstream host then refused a subset of the `RCPT TO`s (mailbox over quota, unknown user, greylisted). The relay still delivered only to the accepted set, but the audit `smtp_data` entry's `recipients` field listed all of the original recipients, so a forensic reader could not tell who actually received the message — the audit log asserted delivery to recipients the message never reached. `_UpstreamSmtp.deliver` now returns `(upstream_status, accepted, rejected)` and the `allowed` audit entry records only the upstream-accepted recipients in `recipients` plus the upstream-rejected ones in a new `recipients_rejected_upstream` field, so the audit trail reflects the true delivery outcome. Deferred follow-up from PR #86 (C3). Closes #224.
+
 ## [0.32.0] - 2026-08-18
 
 ### Added
