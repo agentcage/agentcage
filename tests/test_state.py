@@ -98,6 +98,21 @@ class TestSaveAndLoadDeployment:
             state.load_deployment_config("nonexistent")
 
 
+class TestFingerprintState:
+    def test_round_trip_and_corrupt_file_falls_back_to_stale(
+        self, _patch_state_dirs,
+    ):
+        state = _patch_state_dirs
+        fingerprint = {"version": 1, "fingerprint": "abc"}
+
+        state.save_fingerprint("demo", fingerprint)
+        assert state.load_fingerprint("demo") == fingerprint
+
+        path = state.deployment_dir("demo") / "fingerprint.json"
+        path.write_text("not json")
+        assert state.load_fingerprint("demo") is None
+
+
 class TestSaveProxyConfig:
     """save_proxy_config should only keep _PROXY_KEYS."""
 

@@ -341,6 +341,7 @@ def build_and_deploy(
     state.save_metadata(deploy_name, meta)
 
     backend.start(cfg.name, quiet=quiet)
+    return units
 
 
 def current_placeholders(name: str) -> list[tuple[str, str]]:

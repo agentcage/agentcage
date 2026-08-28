@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from agentcage.lima.instance import LimaInstance
 from agentcage.podman import _parse_secret_list, filter_secrets_by_prefix
 
@@ -19,6 +21,16 @@ class VmPodman:
 
     def __init__(self, cage_name: str) -> None:
         self._inst = LimaInstance(cage_name)
+
+    def pull(self, image: str) -> bool:
+        """Pull an image in the guest, returning whether it succeeded."""
+        result = self._inst.exec(["podman", "pull", image], check=False)
+        return result.returncode == 0
+
+    def image_inspect(self, image: str) -> dict:
+        """Inspect an image in the guest using Podman's JSON format."""
+        result = self._inst.exec(["podman", "image", "inspect", image])
+        return json.loads(result.stdout)[0]
 
     def secret_list(self, prefix: str = "") -> list[dict]:
         r = self._inst.exec(
