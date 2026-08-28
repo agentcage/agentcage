@@ -127,6 +127,12 @@ MASK_CAGE="e2e-mask"
 MASK_PROJECT="$(mktemp -d "$HOME/.agentcage-e2e-mask-XXXXXX")"
 # The mask assumes a git project — create the .git tree podman overlays.
 mkdir -p "$MASK_PROJECT/.git/hooks"
+# mktemp -d makes 0700; a real checkout is 0755. With `userns: keep-id` the
+# host user keeps its own uid in the cage, which is NOT the workload's
+# `user: "1000:1000"`, so a 0700 /workspace denies uid 1000 even *search*
+# permission and every path below it fails with EACCES before the mask is
+# ever reached. Match a real project so this test measures the mask.
+chmod 755 "$MASK_PROJECT"
 # Sanity: the host pre-condition (no pre-commit hook) holds before the run.
 [ ! -f "$MASK_PROJECT/.git/hooks/pre-commit" ] || {
   e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
@@ -172,6 +178,12 @@ else
     # and writable — the mask is a transient overlay, not a read-only block).
     IN_CAGE=$(agentcage cage exec "$MASK_CAGE" -- \
       cat /workspace/.git/hooks/pre-commit 2>/dev/null | tr -d '\r\n') || true
+    # Snapshot the mask's runtime shape while the cage is still up. A bare
+    # "Permission denied" cannot distinguish a wrong tmpfs mode (#321) from a
+    # /workspace whose modes deny the workload before the mask is reached.
+    MASK_DIAG=$(agentcage cage exec "$MASK_CAGE" -- sh -c \
+      'id; ls -ldn /workspace /workspace/.git /workspace/.git/hooks; grep hooks /proc/self/mounts' \
+      2>&1 | tr -d '\r' | tr '\n' '|') || true
     # Stop the cage so the tmpfs is torn down.
     agentcage cage stop "$MASK_CAGE" >/dev/null 2>&1 || true
     if [ -f "$MASK_PROJECT/.git/hooks/pre-commit" ]; then
@@ -179,7 +191,7 @@ else
         "cage write reached the host — cage→host pivot NOT blocked (in-cage content: ${IN_CAGE:-<empty>})"
     elif [ "$IN_CAGE" != "pwned" ]; then
       e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
-        "write did not land in the cage tmpfs (in-cage content: ${IN_CAGE:-<empty>}; write stderr: ${MASK_WRITE_ERR:-<none>}) — mask shape changed"
+        "write did not land in the cage tmpfs (in-cage content: ${IN_CAGE:-<empty>}; write stderr: ${MASK_WRITE_ERR:-<none>}; cage view: ${MASK_DIAG:-<none>}) — mask shape changed"
     else
       e2e_pass "6.11" "Workspace .git/hooks tmpfs mask"
     fi
