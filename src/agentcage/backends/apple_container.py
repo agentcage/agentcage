@@ -40,14 +40,16 @@ wrap is defense-in-depth on top of that.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import shlex
 import shutil
 import time
 from importlib.metadata import version as _pkg_version
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import click
 
@@ -64,11 +66,167 @@ from agentcage.volume_mounts import (
 )
 
 
-# Shared agentcage-egress image is built once per host (tagged with the
-# agentcage version so a wheel upgrade triggers a rebuild). All cages
-# share this image — building per cage would burn ~30s + ~120MB on every
+# Shared agentcage-egress image is built once per host. All cages share
+# this image — building per cage would burn ~30s + ~120MB on every
 # `cage create`.
+#
+# The tag is `<agentcage version>-<content hash of the build inputs>`.
+# The version ALONE is not enough: `_build_egress_image_if_missing()`
+# short-circuits when the tag is already present locally, so a fix that
+# lands in supervisor-egress.sh (or the addon, inspectors, relays, …)
+# between releases would never reach a host that already holds the
+# same-version tag. That is exactly how the 0640 proxy-log hardening
+# (#186) failed to ship: hosts kept running the pre-fix supervisor out of
+# a stale `agentcage-egress:0.32.0` and `cage create` printed "already
+# present; skipping rebuild". Hashing the actual build inputs into the tag
+# makes a changed input produce a different tag, which the "already
+# present?" probe misses and therefore rebuilds — no flag required.
 _EGRESS_IMAGE_REPO = "localhost/agentcage-egress"
+
+# Truncated sha256 length for the tag suffix. 12 hex chars = 48 bits;
+# collisions across the handful of egress builds a host ever sees are not
+# a practical concern, and a short tag keeps `container images` readable.
+_EGRESS_TAG_HASH_LEN = 12
+
+# Containerfile path relative to the build context (src/agentcage/data).
+_EGRESS_CONTAINERFILE_REL = "containers/Containerfile.egress"
+
+# `COPY [--flag=…] <src>… <dest>`. Only the shell form is matched; the
+# egress Containerfile does not use the JSON-array form (a JSON COPY would
+# simply contribute no sources, and the Containerfile's own bytes are
+# always hashed, so the tag still changes whenever it is edited).
+_EGRESS_COPY_RE = re.compile(r"^COPY\s+(?P<rest>.+)$", re.IGNORECASE)
+
+# Build-context noise that must never reach the hash: bytecode caches are
+# interpreter-dependent, so hashing them would make the tag unstable
+# across Python versions for byte-identical sources.
+_EGRESS_HASH_EXCLUDE_DIRS = frozenset({"__pycache__"})
+_EGRESS_HASH_EXCLUDE_SUFFIXES = (".pyc", ".pyo")
+
+
+def _egress_data_dir() -> Path:
+    """Build context for the egress image (``src/agentcage/data``).
+
+    Resolved relative to this file so the build works regardless of cwd
+    (tests, agentcage invoked from a sub-dir, etc.).
+    """
+    return Path(__file__).resolve().parent.parent / "data"
+
+
+def _containerfile_logical_lines(text: str):
+    """Yield Containerfile instructions with backslash continuations joined.
+
+    Comment-only lines are dropped. Good enough to find COPY sources; this
+    is deliberately not a general Containerfile parser.
+    """
+    buf = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not buf and (not stripped or stripped.startswith("#")):
+            continue
+        if stripped.endswith("\\"):
+            buf += stripped[:-1] + " "
+            continue
+        buf += stripped
+        if buf:
+            yield buf
+        buf = ""
+    if buf:
+        yield buf
+
+
+def _egress_copy_sources(containerfile_text: str) -> list[str]:
+    """Source paths named by the COPY directives of the egress Containerfile.
+
+    Deriving the list from the Containerfile (rather than hardcoding it)
+    means a new `COPY proxy/<something-new>` joins the content hash
+    automatically, instead of silently falling out of the rebuild decision
+    the way a hand-maintained list eventually would.
+    """
+    sources: list[str] = []
+    for line in _containerfile_logical_lines(containerfile_text):
+        match = _EGRESS_COPY_RE.match(line)
+        if match is None:
+            continue
+        try:
+            parts = shlex.split(match.group("rest"))
+        except ValueError:
+            continue
+        # Drop `--chown=`/`--from=`-style flags; the final token is the
+        # destination inside the image, everything before it is a source.
+        parts = [p for p in parts if not p.startswith("--")]
+        if len(parts) < 2:
+            continue
+        sources.extend(parts[:-1])
+    return sources
+
+
+def _egress_build_inputs(data_dir: Path | None = None) -> list[tuple[str, Path]]:
+    """Every file baked into the egress image, as sorted (relpath, path) pairs.
+
+    The Containerfile itself plus the transitive contents of each COPY
+    source (directories are walked). Returns ``[]`` when the Containerfile
+    is missing — the build path reports that with an actionable error.
+    """
+    root = (data_dir or _egress_data_dir()).resolve()
+    containerfile = root / _EGRESS_CONTAINERFILE_REL
+    if not containerfile.is_file():
+        return []
+
+    inputs: dict[str, Path] = {_EGRESS_CONTAINERFILE_REL: containerfile}
+
+    def _add(path: Path) -> None:
+        if not path.is_file():
+            return
+        if path.suffix in _EGRESS_HASH_EXCLUDE_SUFFIXES:
+            return
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            return  # outside the build context; `container build` can't COPY it
+        if _EGRESS_HASH_EXCLUDE_DIRS.intersection(rel.parts):
+            return
+        inputs[rel.as_posix()] = path
+
+    for src in _egress_copy_sources(containerfile.read_text(errors="replace")):
+        parts = PurePosixPath(src.strip("/")).parts
+        if not parts or ".." in parts:
+            continue
+        target = root.joinpath(*parts)
+        if target.is_dir():
+            for child in target.rglob("*"):
+                _add(child)
+        else:
+            # A missing source contributes nothing on purpose: the build
+            # itself fails loudly on it and there are no bytes to hash.
+            _add(target)
+
+    return sorted(inputs.items())
+
+
+def _egress_content_hash(data_dir: Path | None = None) -> str:
+    """Short stable digest over the egress image's build inputs.
+
+    Hashes the sorted (relative path, content) pairs so a rename changes
+    the digest even when the bytes do not, and so the result does not
+    depend on filesystem iteration order.
+    """
+    inputs = _egress_build_inputs(data_dir)
+    if not inputs:
+        return "unknown"
+    digest = hashlib.sha256()
+    for rel, path in inputs:
+        try:
+            body = path.read_bytes()
+        except OSError:
+            body = b""
+        digest.update(rel.encode())
+        digest.update(b"\0")
+        # Length-prefix the body so no path+content concatenation can be
+        # re-partitioned into a different input set with the same hash.
+        digest.update(len(body).to_bytes(8, "big"))
+        digest.update(body)
+    return digest.hexdigest()[:_EGRESS_TAG_HASH_LEN]
 
 
 def _agentcage_version() -> str:
@@ -84,9 +242,19 @@ def _agentcage_version() -> str:
         return "unknown"
 
 
-def _egress_image_name() -> str:
-    """Full tagged reference for the shared egress image."""
-    return f"{_EGRESS_IMAGE_REPO}:{_agentcage_version()}"
+def _egress_image_name(data_dir: Path | None = None) -> str:
+    """Full tagged reference for the shared egress image.
+
+    ``localhost/agentcage-egress:<version>-<content-hash>``. The version
+    keeps the tag human-readable and greppable; the hash is what actually
+    drives the rebuild decision, so editing e.g. supervisor-egress.sh
+    rebuilds on the next `cage create` / `cage update` without needing
+    `--no-cache` / `--pull`.
+    """
+    return (
+        f"{_EGRESS_IMAGE_REPO}:{_agentcage_version()}"
+        f"-{_egress_content_hash(data_dir)}"
+    )
 
 
 def _normalize_cpus(value: str) -> str:
@@ -440,10 +608,11 @@ class AppleContainerBackend:
 
         Two image builds happen here (vs the legacy single wrapper build):
 
-          1. **agentcage-egress:<version>** — built ONCE per host
-             (skipped if already present locally with the version tag).
-             All cages share this image; per-cage build would burn
-             ~30s + ~120MB on every `cage create`.
+          1. **agentcage-egress:<version>-<hash>** — built ONCE per host
+             per distinct set of build inputs (skipped if that exact tag
+             is already present locally). All cages share this image;
+             per-cage build would burn ~30s + ~120MB on every
+             `cage create`.
           2. **agentcage-apple-<cage>:latest** — per-cage wrapper, now
              slimmed to FROM <user_image> + cage-init.sh + cage-cmd.sh
              (the user's argv shell-escaped at build time via
@@ -470,8 +639,9 @@ class AppleContainerBackend:
             raise ValueError("cage has no container.image set")
 
         # 1. Build (or skip) the shared agentcage-egress image. Tagged with
-        # the agentcage version so a wheel upgrade triggers a rebuild even
-        # if the user already has a stale tag from an older release.
+        # the agentcage version PLUS a hash of the build inputs, so any
+        # change to the supervisor/addon/Containerfile triggers a rebuild
+        # even within a release — not just on a wheel upgrade.
         # --no-cache/--pull force a rebuild even when the tag is present.
         self._build_egress_image_if_missing(
             quiet=quiet, no_cache=no_cache, pull=pull,
@@ -584,17 +754,25 @@ class AppleContainerBackend:
     def _build_egress_image_if_missing(
         self, *, quiet: bool = False, no_cache: bool = False, pull: bool = False,
     ) -> None:
-        """Build localhost/agentcage-egress:<version> if not already present.
+        """Build localhost/agentcage-egress:<version>-<hash> if not present.
 
         The Containerfile lives at src/agentcage/data/containers/Containerfile.egress
         (PR 1). It expects the build context to be src/agentcage/data/ so
         `COPY containers/supervisor-egress.sh ...` resolves — same context
         the smoke-test in tests/test_egress_image.py uses.
 
-        ``no_cache`` / ``pull`` force a rebuild even when the version-tagged
-        image is already present (``cage create/update --no-cache/--pull``):
-        the operator asked for a clean rebuild / fresh base, so the shared
-        egress image is rebuilt too rather than served from the cached tag.
+        The "already present" short-circuit is safe only because the tag
+        carries a hash of the build inputs (see ``_egress_image_name``):
+        editing supervisor-egress.sh or any COPYed file yields a tag that
+        is by definition not present, so the fix rebuilds and ships. A
+        version-only tag would keep serving the stale image within a
+        release, which is how the #186 log-permission fix failed to reach
+        hosts that already had `agentcage-egress:0.32.0`.
+
+        ``no_cache`` / ``pull`` still force a rebuild even when the tag IS
+        present (``cage create/update --no-cache/--pull``): the operator
+        asked for a clean rebuild / fresh base, so the shared egress image
+        is rebuilt too rather than served from the cached tag.
         """
         image = _egress_image_name()
         if not (no_cache or pull) and ac_cli.image_inspect(image) is not None:
@@ -604,10 +782,8 @@ class AppleContainerBackend:
 
         if not quiet:
             click.echo(f"Building shared egress image {image}...")
-        # Resolve paths relative to this file so the build works regardless
-        # of cwd (tests, agentcage invoked from a sub-dir, etc.).
-        data_dir = Path(__file__).resolve().parent.parent / "data"
-        containerfile = data_dir / "containers" / "Containerfile.egress"
+        data_dir = _egress_data_dir()
+        containerfile = data_dir / _EGRESS_CONTAINERFILE_REL
         if not containerfile.is_file():
             raise RuntimeError(
                 f"egress Containerfile missing at {containerfile} — "
@@ -1607,8 +1783,10 @@ class AppleContainerBackend:
         """Stop+delete both microVMs, delete the per-cage network + wrapper
         image + state dir.
 
-        The shared egress image (agentcage-egress:<version>) is NOT
-        removed — it's used by sibling cages.
+        The shared egress image (agentcage-egress:<version>-<hash>) is NOT
+        removed — it's used by sibling cages, which may well be pinned to
+        this exact tag. Superseded egress tags are left in place for the
+        same reason; `container image delete` them by hand if disk matters.
         """
         removed: list[str] = []
         # launchd plist (best-effort).
