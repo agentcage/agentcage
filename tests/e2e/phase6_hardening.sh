@@ -108,4 +108,74 @@ else
   e2e_fail "6.10" "Subnet allocation" "unexpected subnet: $SUBNET"
 fi
 
+# 6.11: Workspace .git/hooks tmpfs mask blocks cage→host git-hook pivot
+# (#170). A cage that bind-mounts ${PROJECT_DIR}:/workspace:rw and applies
+# the noexec tmpfs mask on /workspace/.git/hooks/ must NOT let a caged
+# agent's write reach the host: the cage writes into a transient tmpfs
+# that vanishes on stop, so $PROJECT_DIR/.git/hooks/pre-commit must NOT
+# exist on the host afterward. This is the e2e counterpart to the static
+# tmpfs-YAML checks in tests/test_scaffolds.py — it verifies the mask has
+# the intended security effect against a running cage, not just that the
+# config declares it. Container (podman) backend only; apple-container
+# does not yet honor tmpfs (#120) and that residual exposure is already
+# surfaced as a SECURITY-RELEVANT config warning (config.py).
+MASK_CAGE="e2e-mask"
+MASK_PROJECT="$(mktemp -d /tmp/e2e-mask-project-XXXXXX)"
+# The mask assumes a git project — create the .git tree podman overlays.
+mkdir -p "$MASK_PROJECT/.git/hooks"
+# Sanity: the host pre-condition (no pre-commit hook) holds before the run.
+[ ! -f "$MASK_PROJECT/.git/hooks/pre-commit" ] || {
+  e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
+    "host pre-condition broken: pre-commit already exists"
+}
+export E2E_MASK_PROJECT_DIR="$MASK_PROJECT"
+destroy_cage "$MASK_CAGE"
+register_cage "$MASK_CAGE"
+MASK_CREATE_RC=0
+create_cage "$CONFIGS/workspace-mask.yaml" >/dev/null 2>&1 || MASK_CREATE_RC=$?
+if [ "$MASK_CREATE_RC" -ne 0 ]; then
+  e2e_skip "6.11" "Workspace .git/hooks tmpfs mask" \
+    "cage create failed (no podman / buildkit available)"
+else
+  # `cage create` builds + starts the cage, but a sleep-infinity cage has
+  # no HTTP port to wait_ready against. Poll cage exec until the workload
+  # is up (cage exec refuses a stopped cage with a clear error).
+  MASK_READY=false
+  for _ in $(seq 1 30); do
+    if agentcage cage exec "$MASK_CAGE" -- true >/dev/null 2>&1; then
+      MASK_READY=true
+      break
+    fi
+    sleep 1
+  done
+  if [ "$MASK_READY" != true ]; then
+    e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
+      "cage not reachable via exec after create"
+  else
+    # Plant a hook from inside the cage. The write lands in the cage's
+    # tmpfs view of /workspace/.git/hooks/, not on the host bind-mount.
+    # chmod +x to mirror the real pivot shape.
+    agentcage cage exec "$MASK_CAGE" -- sh -c \
+      'echo pwned > /workspace/.git/hooks/pre-commit && chmod +x /workspace/.git/hooks/pre-commit' \
+      >/dev/null 2>&1 || true
+    # The write MUST be visible inside the cage (proves the tmpfs is there
+    # and writable — the mask is a transient overlay, not a read-only block).
+    IN_CAGE=$(agentcage cage exec "$MASK_CAGE" -- \
+      cat /workspace/.git/hooks/pre-commit 2>/dev/null | tr -d '\r\n') || true
+    # Stop the cage so the tmpfs is torn down.
+    agentcage cage stop "$MASK_CAGE" >/dev/null 2>&1 || true
+    if [ -f "$MASK_PROJECT/.git/hooks/pre-commit" ]; then
+      e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
+        "cage write reached the host — cage→host pivot NOT blocked (in-cage content: ${IN_CAGE:-<empty>})"
+    elif [ "$IN_CAGE" != "pwned" ]; then
+      e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
+        "write did not land in the cage tmpfs (in-cage content: ${IN_CAGE:-<empty>}) — mask shape changed"
+    else
+      e2e_pass "6.11" "Workspace .git/hooks tmpfs mask"
+    fi
+  fi
+fi
+destroy_cage "$MASK_CAGE"
+rm -rf "$MASK_PROJECT"
+
 print_results

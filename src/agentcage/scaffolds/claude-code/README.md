@@ -133,6 +133,8 @@ The scaffold also tmpfs-masks two executable-config surfaces under the workspace
 `~/.claude.json` (Claude Code's global UX config — model choice, theme, etc.) is **not** mounted by default; uncomment the line in `cage.yaml` if you want host preferences to follow you into the cage. Git config and SSH known hosts mounts are commented out -- uncomment them if you need git push. Remove the `~/.claude` mount to fully isolate the cage from host state.
 
 > **Note:** these tmpfs masks are honored by the container (rootless-podman) and `vm` backends. The `apple-container` backend does not yet honor `tmpfs:` entries (parity tracked in #120), so the masks are decorative there — the workspace mount still exposes host `.git/hooks/` and project `.claude/` to cage writes on apple-container until that parity work lands.
+>
+> The masks assume the host project is a git repo. When `${PROJECT_DIR}` is a git project, the `/workspace/.git/hooks/` tmpfs overlays the existing host `.git/hooks/` (the host's hooks stay untouched on the host FS). On a host project **without** a `.git/`, podman must create the mount point in the bind-mounted tree, so the mask may create an empty `.git/hooks/` directory on the host as the tmpfs mount point — the host still has no git repo, so there is nothing for a planted hook to pivot against, but be aware the directory can appear.
 
 ### Sandbox brief (introspection)
 
