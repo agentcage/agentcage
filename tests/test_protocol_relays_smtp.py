@@ -1396,6 +1396,13 @@ class TestUpstreamRcptRejectionAudit:
                     "also-gone@up.example.com",
                     "gone@up.example.com",
                 ]
+                # The verbatim upstream status string is threaded
+                # through deliver()'s return so callers/forensics can
+                # branch on it; lock in the preservation contract.
+                assert (
+                    e["upstream_status"]
+                    == "upstream 250 2.0.0 queued as ABC123"
+                )
                 # Upstream only queued one message — to the accepted set.
                 assert len(recorder.transactions) == 1
                 assert sorted(recorder.transactions[0]["recipients"]) == [
@@ -1409,9 +1416,9 @@ class TestUpstreamRcptRejectionAudit:
 
         _run(_go())
 
-    def test_all_accepted_omits_empty_rejected_field(self):
+    def test_all_accepted_has_empty_rejected_field(self):
         """When upstream accepts every RCPT, the rejected field is an
-        empty list (present, not absent)."""
+        empty list — present (forensic-safe) but empty, never absent."""
         async def _go():
             recorder = FakeSmtpRecorder()
             upstream, up_port = await _start_fake_upstream(
