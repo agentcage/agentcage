@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The SMTP relay now handles the RFC 4954 ``AUTH PLAIN`` continuation form.** The relay only recognised the inline form (`AUTH PLAIN <base64>`, token on the command line); a spec-strict client that sends bare `AUTH PLAIN` and waits for a `334` before sending the base64 token on the next line got a `502` instead, because the relay forged `235` immediately and then parsed the client's token line as an unknown command. The relay now detects the bare `AUTH PLAIN` (no inline token), sends `334`, reads the token line with the same idle-timeout read the `AUTH LOGIN` continuation already uses, and forges `235` afterward. The inline form is unchanged. Credentials are never forwarded upstream in either form — the relay already authenticated upstream with the real credentials at connect time, so the auth decision is identical for both forms. Deferred follow-up from PR #86. Closes #225.
+
 ## [0.32.0] - 2026-08-18
 
 ### Added

@@ -906,6 +906,50 @@ class TestAuthIntercept:
 
         _run(_go())
 
+    def test_client_auth_plain_continuation_lowercase_intercepted(self):
+        """SMTP verbs are case-insensitive (RFC 5321 §2.4): a spec-strict
+        client may send ``auth plain`` in lowercase. The relay must
+        still recognise the continuation form and forge the same
+        ``334`` / ``235`` dialog. Also asserts the ``334`` challenge
+        carries no prompt text (empty challenge), matching the relay's
+        forged ``b"334 "`` reply."""
+        async def _go():
+            recorder = FakeSmtpRecorder()
+            upstream, up_port = await _start_fake_upstream(
+                recorder, "agent@example.com", "real-app-password",
+            )
+            try:
+                async with _running_relay(_relay_entry(up_port)) as (_, port):
+                    async with _smtp_client(port) as (r, w):
+                        await _read_response(r)
+                        await _cmd(w, r, b"EHLO cage.local")
+                        from base64 import b64encode
+                        token = b64encode(b"\0fake\0fake").decode()
+                        # Lowercase verb — case-insensitive match.
+                        code, lines = await _cmd(w, r, b"auth plain")
+                        assert code == 334
+                        assert lines == [""]
+                        code, _ = await _cmd(w, r, token.encode())
+                        assert code == 235
+                        # Drive a real transaction so the lazy upstream
+                        # connection opens and authenticates with the
+                        # REAL credentials (never the cage's).
+                        await _cmd(w, r, b"MAIL FROM:<agent@example.com>")
+                        await _cmd(w, r, b"RCPT TO:<u@x.com>")
+                        code, _ = await _cmd(w, r, b"DATA")
+                        assert code == 354
+                        w.write(b"hi\r\n.\r\n")
+                        await w.drain()
+                        await _read_response(r)
+                assert recorder.auth_seen == (
+                    "agent@example.com", "real-app-password",
+                )
+            finally:
+                upstream.close()
+                await upstream.wait_closed()
+
+        _run(_go())
+
 
 # ── Inspector chain integration ──────────────────────────
 

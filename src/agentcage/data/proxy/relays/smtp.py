@@ -399,17 +399,26 @@ class SmtpRelay:
                         # the dialog to 235 immediately. Continuation
                         # reads share the same idle timeout so a cage
                         # that goes silent mid-AUTH doesn't pin a slot.
+                        # If the client disconnects after a 334 without
+                        # sending the continuation line, readline()
+                        # returns b"" (EOF) — mirror the main loop's
+                        # `if not line: return` so we don't fall
+                        # through to the 235 write on a dead socket.
                         self._write_line(client_writer, b"334 VXNlcm5hbWU6")
                         await client_writer.drain()
                         try:
-                            await self._readline_with_timeout(client_reader)
+                            line = await self._readline_with_timeout(client_reader)
                         except asyncio.TimeoutError:
+                            return
+                        if not line:
                             return
                         self._write_line(client_writer, b"334 UGFzc3dvcmQ6")
                         await client_writer.drain()
                         try:
-                            await self._readline_with_timeout(client_reader)
+                            line = await self._readline_with_timeout(client_reader)
                         except asyncio.TimeoutError:
+                            return
+                        if not line:
                             return
                     elif arg.upper() == "PLAIN":
                         # RFC 4954 continuation form: the client sends
@@ -417,15 +426,18 @@ class SmtpRelay:
                         # replies 334, and the client sends the base64
                         # token on the next line. We mirror AUTH LOGIN's
                         # continuation read — same idle timeout, same
-                        # 235 forge afterward. The inline form ("AUTH
-                        # PLAIN <base64>") keeps working unchanged: its
-                        # token rides in `arg` and falls straight through
-                        # to the shared 235 below.
+                        # EOF guard, same 235 forge afterward. The
+                        # inline form ("AUTH PLAIN <base64>") keeps
+                        # working unchanged: its token rides in `arg`
+                        # and falls straight through to the shared 235
+                        # below.
                         self._write_line(client_writer, b"334 ")
                         await client_writer.drain()
                         try:
-                            await self._readline_with_timeout(client_reader)
+                            line = await self._readline_with_timeout(client_reader)
                         except asyncio.TimeoutError:
+                            return
+                        if not line:
                             return
                     self._write_line(
                         client_writer,
