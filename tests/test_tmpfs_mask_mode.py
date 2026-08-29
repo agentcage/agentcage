@@ -109,7 +109,8 @@ class TestScaffoldMaskShape:
 
 
 class TestApplyTmpfsMaskMode:
-    BIND = ["/home/u/repo:/workspace:rw"]
+    # (container_target, host_source), the shape mask_mountpoint_dirs() takes.
+    BIND = [("/workspace", "/home/u/repo")]
 
     def test_operator_mode_is_never_overridden(self):
         entry = "/workspace/.git/hooks/:rw,mode=0700"
@@ -136,7 +137,15 @@ class TestApplyTmpfsMaskMode:
 
     def test_root_bind_does_not_capture_every_tmpfs(self):
         entry = "/tmp:rw"
-        assert _apply_tmpfs_mask_mode([entry], ["/host:/:rw"]) == [entry]
+        assert _apply_tmpfs_mask_mode([entry], [("/", "/host")]) == [entry]
+
+    def test_named_volume_subpath_is_also_pinned(self):
+        """A named volume reaches mount_targets with an empty host source. The
+        mask still inherits that mount's root mode, so it needs the pin too —
+        unlike the mount-point cleanup, which only tracks host-reaching binds."""
+        assert _apply_tmpfs_mask_mode(
+            ["/data/cache:rw"], [("/data", "")]
+        ) == ["/data/cache:rw,mode=1777"]
 
     def test_non_absolute_target_is_left_alone(self):
         entry = "relative:rw"

@@ -21,7 +21,7 @@ import textwrap
 
 import pytest
 
-from agentcage import quadlets
+from agentcage import quadlets, volume_mounts
 from agentcage.config import load_config
 from agentcage.quadlets import generate_quadlets
 from tests.markers import REQUIRES_GNU_REALPATH
@@ -203,7 +203,7 @@ def test_paths_with_newlines_are_skipped_with_a_warning(
     (tmp_path / "repo").mkdir()
     monkeypatch.setattr(
         quadlets,
-        "_mask_mountpoint_dirs",
+        "mask_mountpoint_dirs",
         lambda tmpfs, mounts: {
             f"{tmp_path}/re\npo": [f"{tmp_path}/re\npo/.claude"],
         },
@@ -218,7 +218,7 @@ def test_paths_with_newlines_are_skipped_with_a_warning(
 
 def test_helper_ignores_paths_that_escape_the_bind_source():
     """Defense in depth: a `..` component never yields a removable path."""
-    assert quadlets._mask_mountpoint_dirs(
+    assert volume_mounts.mask_mountpoint_dirs(
         ["/workspace/../../etc:rw"], [("/workspace", "/home/u/repo")]
     ) == {}
 
