@@ -984,7 +984,7 @@ def generate_quadlets(
         capture_host_dir=capture_host_dir,
         domains_auto_enabled=bool(getattr(config.domains.auto, "enable", False))
             or bool(getattr(config.domains, "expires", None)),
-        grants_host_dir=str(_state.grants_dir(deploy_name or name)),
+        grants_host_dir=str(_state.grants_dir(name)),
         passthrough_regex=pt_regex,
         rootless=rootless,
         inspected_tcp_ports=_inspected_tcp,

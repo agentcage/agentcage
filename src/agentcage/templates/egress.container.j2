@@ -207,8 +207,8 @@ ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ cap
 {% endif %}
 {% if domains_auto_enabled %}
 # Own the grants overlay dir for acproxy (uid 200) so the addon can write;
-# the cage (separate netns) cannot reach it. 0750 — readable only by acproxy.
-ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ grants_host_dir }}" 2>/dev/null || chmod 1777 "{{ grants_host_dir }}"{% else %}chown 200:200 "{{ grants_host_dir }}"{% endif %}'
+# 0750 — readable only by acproxy, not the cage (separate netns anyway).
+ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ grants_host_dir }}" 2>/dev/null || chmod 1777 "{{ grants_host_dir }}"; podman unshare chmod 0750 "{{ grants_host_dir }}" 2>/dev/null || true{% else %}chown 200:200 "{{ grants_host_dir }}" && chmod 0750 "{{ grants_host_dir }}"{% endif %}'
 {% endif %}
 Restart=on-failure
 

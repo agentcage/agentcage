@@ -755,15 +755,21 @@ class PolicyApi:
     def _persist_grants(self) -> None:
         """Atomically write the overlay (temp + rename).
 
-        Before writing, reconcile from the overlay file so a host-side revoke
-        (``cage grants <name> watch`` removes promoted entries; an operator's
-        ``domain rm``) is honored: if the overlay no longer contains a domain
-        that's still in the in-memory ``granted`` set, drop it here too —
-        otherwise this persist would resurrect the revoked grant and the
-        watcher would re-promote it. (The sweeper's 30s mtime poll is too
-        coarse; a grant + unrelated revoke in the same window would race.)
+        Writes the full in-memory ``granted`` set. Does NOT reconcile from
+        the overlay first: a freshly-decided grant (added to memory in
+        ``_apply_grant`` just above) is not yet on disk, so an unconditional
+        reconcile would drop it — the B1 failure mode. External changes
+        (host revoke / promote) are picked up by the mtime-gated
+        ``maybe_reload_overlay`` on the sweeper's periodic poll and at
+        construction, not here.
+
+        Convergence for the revoke race (I1): if a host revoke removes an
+        overlay entry while the addon is mid-grant, this persist may re-write
+        the entry. The watcher's next tick sees the domain is already in the
+        baseline (idempotent promote) and removes the overlay entry again, so
+        it self-heals within one tick rather than permanently resurrecting the
+        grant. The baseline ``domain rm`` is the durable revoke.
         """
-        self._reconcile_from_overlay()
         entries = self.dom.granted_entries()
         try:
             os.makedirs(self._grants_dir, exist_ok=True)
