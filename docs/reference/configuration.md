@@ -48,7 +48,7 @@ Settings under `container:`.
 | `volumes` | `list[string]` | `[]` | Host bind specs in `host:container[:options]` form. Host paths are resolved to absolute paths at generation time; regenerate the deployment if a source moves. Add the agentcage-only `np` option to make one bind non-persistent; see [Non-persistent bind mounts](#non-persistent-bind-mounts). |
 | `env` | `map[string, string]` | `{}` | Environment variables. `${VAR}` references are expanded from your current shell environment at generation time — the values are baked into the generated quadlet files, not resolved at container start. |
 | `named_volumes` | `map[string, string]` | `{}` | Podman named volume to mount spec (e.g. `mydata: "/data:rw"`). Not resolved with realpath. |
-| `tmpfs` | `list[string]` | `[]` | tmpfs mount specs (useful for writable areas on read-only containers). |
+| `tmpfs` | `list[string]` | `[]` | tmpfs mount specs in `path[:options]` form — useful for writable areas on read-only containers, and for masking a path inside a bind mount. See [tmpfs mounts](#tmpfs-mounts). |
 | `ports` | `list[string]` | `[]` | Published port specs — see [Ports](#ports). |
 | `podman_secrets` | `list[string]` | `[]` | [Podman secret](https://docs.podman.io/en/latest/markdown/podman-secret.1.html) names (injected as env vars). |
 | `user` | `string` | `"1000:1000"` | UID:GID for the cage workload (Quadlet `User=`). Set to `""` to use the image default. Interactive `agentcage run` / `cage exec` / `cage shell` sessions are pinned to uid 1000 (or `0` with `--as-root`) regardless of this field — matching the apple-container backend's behavior. See [Podman `--user`](https://docs.podman.io/en/latest/markdown/podman-run.1.html). |
@@ -107,6 +107,43 @@ observe the target still empty.
 Use an ordinary `ro` bind instead if the cage does not need to edit the data.
 Use `container.tmpfs` for empty scratch space that does not need initial
 contents from the host.
+
+### tmpfs mounts
+
+Each `container.tmpfs` entry is `path[:options]`. The cage sees an empty,
+writable directory at `path`; everything written there is discarded when the
+cage stops.
+
+A tmpfs entry can also target a path *inside* a bind mount, which masks the
+host content underneath it. The built-in scaffolds use this to close two
+cage-to-host paths:
+
+```yaml
+container:
+  tmpfs:
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
+    - "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M"
+```
+
+The cage can write to both paths, but nothing reaches the host, so a caged
+agent cannot plant a git hook that a later host-side `git commit` executes,
+nor a project `.claude/settings.json` `hooks` block that another cage honors
+on launch.
+
+A mask over a path that does not exist on the host creates it there — a bind
+shares inodes with its source, so the runtime's mount-point `mkdir` writes
+through. agentcage records which of those directories were absent when the
+cage started and removes them again, while still empty, on `cage stop` and
+`cage destroy`. Directories you already had, and any that gained content, are
+left alone.
+
+**Apple container applies the mounts but not their options.** Apple's
+`container run --tmpfs` takes a bare path, so `noexec`, `nosuid`, `nodev` and
+`size=` are dropped and each mount lands with kernel-default tmpfs semantics.
+The masks above still work — the protection comes from the overlay hiding the
+bind, not from `noexec`. What is lost is the size cap: a tmpfs the cage fills
+is bounded only by the cage VM's memory, so set `container.memory` on this
+backend. `agentcage cage create` warns and names the affected paths.
 
 ### Ports
 

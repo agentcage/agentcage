@@ -47,6 +47,8 @@ For the threat-by-threat matrix, see [Security model](security-model.md).
 
 **apple-container — most edits need `cage update`.** Allowlist, command, env, secret-injection rules, capture, and autostart are baked into the wrapper image at build time. `domain add / rm` auto-rebuilds; other edits need an explicit `cage update`.
 
+**apple-container — tmpfs options are not applied.** `container.tmpfs` mounts are created, including the scaffold masks over `/workspace/.git/hooks/` and `/workspace/.claude/`, but Apple's runtime takes a bare path so `noexec`, `nosuid`, `nodev` and `size=` are dropped. Set `container.memory` to bound an unlimited tmpfs. See [tmpfs mounts](../reference/configuration.md#tmpfs-mounts).
+
 **apple-container — `cage backup --include-secrets` is unsupported.** Secrets are provided once at `cage create` and never reconciled into a portable backup. The backup manifest records the env-var names; re-set them on the restore host with `--set-secret`.
 
 ## Related

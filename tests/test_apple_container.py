@@ -2146,6 +2146,332 @@ def test_start_routes_np_file_to_exact_target_without_tmpfs(tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# container.tmpfs (#318 — the tmpfs half of the #120 parity gap)
+# ---------------------------------------------------------------------------
+
+def test_unit_json_persists_container_tmpfs(tmp_path, monkeypatch):
+    """`generate_units` must persist `container.tmpfs` into the unit JSON —
+    start() is meta-driven (no Config), so an unpersisted field is a silently
+    dropped mount. Persisted RAW (options included) so a future agentcage
+    that can forward options needs no metadata migration."""
+    from agentcage.config import Config, ContainerConfig
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = Config(
+        name="demo",
+        isolation="apple-container",
+        container=ContainerConfig(
+            image="localhost/test:latest",
+            tmpfs=[
+                "/tmp:rw,noexec,nosuid,size=256M",
+                "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+            ],
+        ),
+    )
+    out = AppleContainerBackend().generate_units(
+        cfg, "/tmp/proxy-config.yaml", "/tmp/patches", "demo"
+    )
+    assert json.loads(out["demo.json"])["tmpfs"] == [
+        "/tmp:rw,noexec,nosuid,size=256M",
+        "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+    ]
+
+
+def test_start_emits_container_tmpfs_as_bare_paths(tmp_path, monkeypatch):
+    """#318: `container.tmpfs` entries reach the cage VM's `container run`
+    argv as `--tmpfs <bare path>`.
+
+    Bare path, not `path:opts`: Apple `container` 1.0.0 treats the WHOLE
+    --tmpfs argument as the destination, so passing the scaffold's
+    `rw,noexec,nosuid,nodev,size=64M` suffix would mount a tmpfs at a
+    directory literally named `/workspace/.git/hooks/:rw,noexec,...`. The
+    trailing slash is stripped for the same reason.
+
+    This is what makes the #170 (cage->host git-hook pivot) and #173
+    (project .claude/settings.json injection) masks real on the backend
+    macOS picks by default."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{workspace}:/workspace:rw"],
+            "tmpfs": [
+                "/tmp:rw,noexec,nosuid,size=256M",
+                "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+                "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M",
+            ],
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    tmpfs_args = [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--tmpfs"
+    ]
+    assert tmpfs_args == [
+        "/tmp", "/workspace/.git/hooks", "/workspace/.claude",
+    ]
+    # The bind the masks overlay is still mounted; Apple depth-sorts the
+    # merged mount list, so the bind lands before its nested tmpfs.
+    assert f"{workspace}:/workspace:rw" in cage_argv
+    # Option strings must never leak into the argv.
+    assert not any("noexec" in arg for arg in cage_argv)
+    assert not any("size=" in arg for arg in cage_argv)
+    # The egress sibling gets no user tmpfs — its mount set is fixed.
+    assert "--tmpfs" not in _egress_run_argv(captured)
+
+
+def test_start_without_container_tmpfs_emits_no_tmpfs(tmp_path, monkeypatch):
+    """No `tmpfs:` in the cage.yaml → no --tmpfs argv. Guards against a
+    stray empty-string mount from a missing/None metadata field."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+        },
+    )
+    backend.start("demo", quiet=True)
+    assert "--tmpfs" not in _cage_run_argv(captured)
+
+
+def test_start_does_not_double_tmpfs_an_np_volume_target(tmp_path, monkeypatch):
+    """An `np` bind already provides a tmpfs at its target, seeded from the
+    host lowerdir by cage-init stage C'. A `container.tmpfs` entry naming the
+    same target must not add a second, EMPTY mount over the seeded copy."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    np_host = tmp_path / "np-src"
+    np_host.mkdir()
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{np_host}:/workspace:rw,np"],
+            "tmpfs": ["/workspace/:rw,size=64M"],
+        },
+    )
+    backend.start("demo", quiet=True)
+    cage_argv = _cage_run_argv(captured)
+    assert [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--tmpfs"
+    ] == ["/workspace"]
+
+
+def test_tmpfs_targets_normalizes_dedupes_and_rejects_unsafe():
+    """`_tmpfs_targets` is the single normalizer for this backend: strip the
+    option suffix and trailing slashes, drop duplicates, and refuse targets
+    the runtime must never be handed — a relative path, or `/` (a tmpfs over
+    the rootfs would hide the cage image)."""
+    assert AppleContainerBackend._tmpfs_targets([
+        "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+        "/workspace/.git/hooks",          # duplicate after normalization
+        "/tmp",
+        "relative/path:rw",               # not absolute
+        "/:rw",                           # rootfs
+        "/",
+    ]) == ["/workspace/.git/hooks", "/tmp"]
+
+
+# ---------------------------------------------------------------------------
+# tmpfs mask mount points created through the workspace bind (#320)
+# ---------------------------------------------------------------------------
+
+def _start_with_masks(tmp_path, monkeypatch, project):
+    """start() a cage whose scaffold masks sit under a `/workspace` bind."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{project}:/workspace:rw"],
+            "tmpfs": [
+                "/tmp:rw,noexec,nosuid,size=256M",
+                "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+                "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M",
+            ],
+        },
+    )
+
+
+def test_stop_removes_mask_mountpoints_created_on_a_non_git_project(
+    tmp_path, monkeypatch,
+):
+    """#320, apple-container half: wiring container.tmpfs (#318) means the
+    in-guest OCI runtime mkdir's each mask mount point, and a bind shares
+    inodes with its source — so on a project that is not a git repo the
+    host gains a stray `.git/hooks/` that `test -d .git` misreads as a
+    repository. stop() must retire exactly the dirs that were absent at
+    start, deepest-first including the implied `.git` parent."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "file.txt").write_text("x")
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    # Simulate the runtime's mkdir -p landing on the host through the bind.
+    (project / ".git" / "hooks").mkdir(parents=True)
+    (project / ".claude").mkdir()
+
+    backend.stop("demo")
+    assert not (project / ".git").exists()
+    assert not (project / ".claude").exists()
+    # Untouched project content survives.
+    assert (project / "file.txt").exists()
+    # Bookkeeping is consumed, so a second stop is a no-op.
+    assert not backend._mask_state_path("demo").exists()
+    backend.stop("demo")
+
+
+def test_stop_keeps_preexisting_and_non_empty_mask_mountpoints(
+    tmp_path, monkeypatch,
+):
+    """Never remove a dir the operator already had, and never remove one
+    that has content. A real repo's `.git/hooks` (pre-existing) and a
+    `.claude/` that gained a file while the cage ran must both survive."""
+    project = tmp_path / "project"
+    (project / ".git" / "hooks").mkdir(parents=True)
+    (project / ".git" / "hooks" / "pre-commit.sample").write_text("#!/bin/sh\n")
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    # `.claude/` was absent at start, so it IS a candidate — but the
+    # operator dropped a file in it before stop.
+    (project / ".claude").mkdir()
+    (project / ".claude" / "settings.json").write_text("{}")
+
+    backend.stop("demo")
+    # Pre-existing: never recorded, so never a candidate.
+    assert (project / ".git" / "hooks" / "pre-commit.sample").exists()
+    # Recorded but non-empty: rmdir refuses, we warn and keep.
+    assert (project / ".claude" / "settings.json").exists()
+
+
+def test_mask_cleanup_is_contained_to_the_bind_source(tmp_path, monkeypatch):
+    """A symlink swapped in after start must not redirect a removal out of
+    the project. Both the islink guard and the realpath containment check
+    have to hold, because either alone would let `<project>/.git ->
+    <elsewhere>` retire a directory the cage never created."""
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    (project / ".claude").symlink_to(outside)
+
+    backend.stop("demo")
+    assert outside.is_dir()
+    assert (project / ".claude").is_symlink()
+
+
+def test_mask_cleanup_refuses_a_recorded_path_outside_its_root(
+    tmp_path, monkeypatch,
+):
+    """Containment is re-checked at teardown against the root recorded at
+    start, not trusted from the bookkeeping file: tampered or stale state
+    must not turn stop() into an arbitrary rmdir. Exercises the realpath
+    guard directly, with a real empty directory that rmdir would otherwise
+    happily remove."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "elsewhere" / "empty"
+    outside.mkdir(parents=True)
+    backend = AppleContainerBackend()
+    state = backend._mask_state_path("demo")
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({str(project): [str(outside)]}))
+
+    backend._cleanup_mask_mountpoints("demo")
+    assert outside.is_dir()
+    assert not state.exists()
+
+
+def test_destroy_removes_mask_mountpoints_when_stop_did_not(
+    tmp_path, monkeypatch,
+):
+    """destroy_resources must clean up too — it runs before the per-cage
+    state rmtree that would otherwise take the bookkeeping file with it,
+    and a cage can be destroyed without a preceding stop()."""
+    project = tmp_path / "project"
+    project.mkdir()
+    backend, _captured = _start_with_masks(tmp_path, monkeypatch, project)
+
+    backend.start("demo", quiet=True)
+    (project / ".git" / "hooks").mkdir(parents=True)
+    monkeypatch.setattr(backend, "_launchd_plist_path", lambda _n: tmp_path / "nope")
+    backend.destroy_resources("demo")
+    assert not (project / ".git").exists()
+
+
+def test_start_does_not_record_mask_mountpoints_for_np_binds(
+    tmp_path, monkeypatch,
+):
+    """An `np` bind's target is a tmpfs seeded from a read-only lowerdir —
+    the runtime's mkdir lands in guest memory, never on the host. Recording
+    a candidate there would make stop() rmdir a host path the cage never
+    created."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    project = tmp_path / "project"
+    project.mkdir()
+    backend, _captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": [f"{project}:/workspace:rw,np"],
+            "tmpfs": ["/workspace/.git/hooks/:rw,size=64M"],
+        },
+    )
+    backend.start("demo", quiet=True)
+    assert not backend._mask_state_path("demo").exists()
+
+
+def test_cleanup_mask_mountpoints_is_a_noop_without_bookkeeping(
+    tmp_path, monkeypatch,
+):
+    """Safe when the start hook never ran (older cage, hand-deleted state):
+    no crash, no removal, and stop/destroy must not fail."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    backend = AppleContainerBackend()
+    backend._cleanup_mask_mountpoints("never-started")
+    backend._mask_state_path("demo").parent.mkdir(parents=True, exist_ok=True)
+    backend._mask_state_path("demo").write_text("not json{")
+    backend._cleanup_mask_mountpoints("demo")
+
+
+def test_mask_mountpoint_dirs_maps_masks_to_host_paths(tmp_path):
+    """The shared path computation (volume_mounts.mask_mountpoint_dirs, the
+    same helper the quadlet backend's #320 fix uses): only masks nested
+    under a host-backed bind produce candidates, the implied parent chain is
+    included, and the list is deepest-first."""
+    from agentcage.volume_mounts import mask_mountpoint_dirs
+    project = str(tmp_path / "project")
+    assert mask_mountpoint_dirs(
+        [
+            "/tmp:rw,size=256M",                     # no enclosing bind
+            "/workspace:rw",                         # covers the whole mount
+            "/workspace/.git/hooks/:rw,size=64M",
+            "/cache/x:rw",                           # enclosing mount is not host-backed
+        ],
+        [("/workspace", project), ("/cache", "")],
+    ) == {
+        project: [
+            os.path.join(project, ".git", "hooks"),
+            os.path.join(project, ".git"),
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # cage-init.sh stage C' — non-persistent seed ownership
 # ---------------------------------------------------------------------------
 
