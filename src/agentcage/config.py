@@ -14,7 +14,14 @@ import yaml
 from agentcage.data.proxy.relays._validate import (
     validate_relay_entry,
 )
-from agentcage.volume_mounts import validate_non_persistent_volume
+from agentcage.volume_mounts import (
+    TMPFS_COPYUP_OPTIONS,
+    is_non_persistent_volume,
+    mask_copyup_entries,
+    split_volume_spec,
+    tmpfs_wants_copyup,
+    validate_non_persistent_volume,
+)
 
 
 KNOWN_TRANSFORMS = frozenset({"google-jwt-bearer"})
@@ -1289,12 +1296,60 @@ def validate_config(config: Config) -> list[str]:
         # in-cage `noexec` is irrelevant) — but an operator who wrote
         # `size=64M` deserves to know it is not enforced, and an unbounded
         # tmpfs is a memory-exhaustion vector against the cage VM.
+        #
+        # `tmpcopyup`/`notmpcopyup` are the exception: they are honored, by
+        # emulation rather than by the runtime (#328). The backend mounts the
+        # covered host directory read-only alongside a copy-up mask and
+        # cage-init's stage C'' replays it into the tmpfs as the cage user,
+        # so those two do not belong in the dropped-options list. What the
+        # emulation cannot reach is a copy-up request whose source is not a
+        # host directory — a mask over a named volume, over an `np` bind, or
+        # a tmpfs over a plain image directory. Those come up empty here and
+        # are called out separately.
         _tmpfs_dropped_opts = [
             target for target, _, options in (
                 entry.partition(":") for entry in config.container.tmpfs
             )
-            if options
+            if [
+                o for o in options.split(",")
+                if o and o not in TMPFS_COPYUP_OPTIONS
+            ]
         ]
+        _ac_mount_targets = [
+            (
+                split_volume_spec(v)[1],
+                "" if is_non_persistent_volume(v) else split_volume_spec(v)[0],
+            )
+            for v in config.container.volumes
+        ] + [
+            (mount.split(":", 1)[0], "")
+            for mount in config.container.named_volumes.values()
+        ]
+        _copyup_sources = {
+            target: source
+            for target, source, _root in mask_copyup_entries(
+                config.container.tmpfs, _ac_mount_targets
+            )
+        }
+        _copyup_unseedable = [
+            entry.partition(":")[0]
+            for entry in config.container.tmpfs
+            if tmpfs_wants_copyup(entry)
+            and not _copyup_sources.get(
+                os.path.normpath(entry.partition(":")[0].rstrip("/") or "/")
+            )
+        ]
+        if _copyup_unseedable:
+            warnings.append(
+                "container.tmpfs: `tmpcopyup` on %s cannot be emulated on "
+                "apple-container — Apple's `--tmpfs` has no option channel, "
+                "so agentcage seeds the tmpfs itself, and only from the host "
+                "directory a mask covers. These entries sit over a named "
+                "volume, an `np` bind or a plain image directory, so they "
+                "come up EMPTY here while podman copies the covered content "
+                "up. See #328."
+                % ", ".join(_copyup_unseedable)
+            )
         if _tmpfs_dropped_opts:
             _masks = [
                 t for t in _tmpfs_dropped_opts

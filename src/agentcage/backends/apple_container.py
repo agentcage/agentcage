@@ -61,6 +61,7 @@ from agentcage.config import Config
 from agentcage.quadlets import _effective_port_policy
 from agentcage.volume_mounts import (
     is_non_persistent_volume,
+    mask_copyup_entries,
     mask_mountpoint_dirs,
     split_volume_spec,
     validate_non_persistent_volume,
@@ -309,6 +310,28 @@ class AppleContainerBackend:
         """
         return self._state_dir(name) / "mask-mountpoints.json"
 
+    @staticmethod
+    def _mask_mount_targets(
+        volume_entries: list[str],
+    ) -> list[tuple[str, str]]:
+        """Return ``(container_target, host_source)`` for the user's binds.
+
+        The shape :func:`~agentcage.volume_mounts.mask_mountpoint_dirs` and
+        :func:`~agentcage.volume_mounts.mask_copyup_entries` consume. An
+        ``np`` bind's target is a tmpfs seeded from a read-only lowerdir —
+        writes there never reach the host — so it reports an empty source
+        and a mask nested under it is never attributed to the host path.
+        """
+        mount_targets: list[tuple[str, str]] = []
+        for entry in volume_entries:
+            host_src, target, _opts = split_volume_spec(entry)
+            if not target:
+                continue
+            mount_targets.append(
+                (target, "" if is_non_persistent_volume(entry) else host_src)
+            )
+        return mount_targets
+
     def _record_mask_mountpoints(
         self, name: str, tmpfs_specs: list[str], volume_entries: list[str],
     ) -> None:
@@ -335,17 +358,7 @@ class AppleContainerBackend:
         counts as existing (``lexists``) — mirrors the quadlet hook's
         ``[ -e ] || [ -L ]`` skip.
         """
-        mount_targets: list[tuple[str, str]] = []
-        for entry in volume_entries:
-            host_src, target, _opts = split_volume_spec(entry)
-            if not target:
-                continue
-            # An ``np`` bind's target is a tmpfs seeded from a read-only
-            # lowerdir; writes there never reach the host, so it must not
-            # attribute a nested mask to its host source.
-            mount_targets.append(
-                (target, "" if is_non_persistent_volume(entry) else host_src)
-            )
+        mount_targets = self._mask_mount_targets(volume_entries)
         absent: dict[str, list[str]] = {}
         for root, dirs in mask_mountpoint_dirs(tmpfs_specs, mount_targets).items():
             # `dirs` is deepest-first; keep that order for teardown.
@@ -584,6 +597,75 @@ class AppleContainerBackend:
             seen.add(normalized)
             out.append(normalized)
         return out
+
+    @staticmethod
+    def _tmpfs_copyup_seeds(
+        raw_entries: list[str],
+        volume_entries: list[str],
+        skip_targets: set[str],
+    ) -> list[tuple[str, str, str]]:
+        """Return ``(host_source, lower, target)`` for emulated copy-up masks.
+
+        Apple's ``container run --tmpfs`` takes a bare path, so the
+        ``tmpcopyup`` a mask declares can never reach the runtime here
+        (see :meth:`_tmpfs_targets`). Copy-up is emulated instead, exactly
+        the way ``np`` binds already are: the host directory the mask covers
+        is mounted READ-ONLY at *lower* under ``/run/agentcage/masks/`` and
+        cage-init's stage C'' replays it into the fresh tmpfs at *target*,
+        chowned to the cage user. The tmpfs itself is what the workload
+        writes to, so nothing it does reaches the host — the mask's whole
+        point (#170/#173) is preserved and the seeding only affects what the
+        cage can *read* (#328).
+
+        The lower must be its own mount because the mask already covers the
+        path inside the bind: ``/workspace/.claude`` is the tmpfs, so the
+        directory underneath it is unreachable from inside the guest.
+
+        Skipped, silently, when the mask does not name ``tmpcopyup``, when
+        the enclosing mount does not reach the host (a named volume or an
+        ``np`` bind — nothing host-side to seed from), when the target is
+        already an ``np`` tmpfs (*skip_targets*, #325's double-tmpfs
+        avoidance; cage-init seeds it from the np lowerdir instead), or when
+        the host source is not an existing directory. That last case must
+        not create the directory: the mask mount point bookkeeping (#320)
+        removes host dirs agentcage materialized, and inventing one here
+        would put a stray ``.claude/`` in a project that has none.
+
+        A source that resolves outside the bind it came from is refused with
+        a warning. Without that check a repository containing
+        ``.claude -> ../../.ssh`` would turn the mask into a fresh read-only
+        window onto a host path the operator never shared — the bind alone
+        does not expose it, because an in-guest symlink resolves in the
+        guest.
+        """
+        seeds: list[tuple[str, str, str]] = []
+        mount_targets = AppleContainerBackend._mask_mount_targets(volume_entries)
+        for idx, (target, host_source, host_root) in enumerate(
+            mask_copyup_entries(raw_entries, mount_targets)
+        ):
+            if not host_source or target in skip_targets:
+                continue
+            real_source = os.path.realpath(host_source)
+            real_root = os.path.realpath(host_root)
+            # Equality is legitimate: a mask covering the whole bind seeds
+            # from the bind source itself.
+            if real_source != real_root and not real_source.startswith(
+                real_root + os.sep
+            ):
+                click.echo(
+                    f"warning: not seeding tmpfs mask {target!r} on "
+                    f"apple-container ({host_source!r} resolves to "
+                    f"{real_source!r}, outside the {host_root!r} mount); the "
+                    "mask comes up empty",
+                    err=True,
+                )
+                continue
+            if not os.path.isdir(real_source):
+                continue
+            seeds.append(
+                (real_source, f"/run/agentcage/masks/mask-{idx}/lower", target)
+            )
+        return seeds
 
     def _launchd_plist_path(self, name: str) -> Path:
         """Host path of the per-cage launchd plist.
@@ -1748,6 +1830,25 @@ class AppleContainerBackend:
             if tmpfs_target in np_tmpfs_targets:
                 continue
             cage_argv += ["--tmpfs", tmpfs_target]
+        # Emulated `tmpcopyup` (#328). Apple's `--tmpfs` has no option
+        # channel, so a mask that asks for copy-up gets the host directory it
+        # covers mounted READ-ONLY alongside it and cage-init's stage C''
+        # replays that into the tmpfs as the cage user. Same machinery as the
+        # `np` seeding above; the read-only lower is the only new host-facing
+        # mount and it is never written to, so the mask still blocks every
+        # cage->host write.
+        copyup_seeds = self._tmpfs_copyup_seeds(
+            meta.get("tmpfs") or [], volume_entries, np_tmpfs_targets,
+        )
+        for host_source, lower, _target in copyup_seeds:
+            cage_argv += ["--volume", f"{host_source}:{lower}:ro"]
+        if copyup_seeds:
+            cage_argv += [
+                "-e",
+                "AGENTCAGE_TMPFS_COPYUP=" + "\n".join(
+                    f"{lower}\t{target}" for _src, lower, target in copyup_seeds
+                ),
+            ]
         # A mask nested under a host bind makes the in-guest OCI runtime
         # mkdir the mount point THROUGH the bind, onto the host (#320).
         # Record which of those dirs are absent right now so stop/destroy

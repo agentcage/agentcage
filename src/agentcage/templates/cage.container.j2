@@ -125,6 +125,34 @@ ExecStartPre=/bin/bash -c 'mkdir -p {{ mask.state_dir }} && : > {{ mask.state_fi
 ExecStopPost=-/bin/bash -c 'f={{ mask.state_file }}; [ -f "$f" ] || exit 0; root=$(echo {{ mask.root_b64 }} | base64 -d) && root=$(realpath -m -- "$root") || exit 0; while IFS= read -r d; do [ -n "$d" ] || continue; case "$(realpath -m -- "$d")" in "$root"/*) ;; *) continue ;; esac; [ -L "$d" ] && continue; [ -d "$d" ] || continue; rmdir "$d" 2>/dev/null || echo "agentcage: keeping $d (created as a tmpfs mask mount point, but not empty)" >&2; done < "$f"; rm -f "$f"; exit 0'
 {% endfor %}
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+{% for mask in copyup_masks %}
+# A tmpfs mask that opted into `tmpcopyup` (#328) comes up already holding a
+# copy of what it covers — but the runtime performs that copy as the user-
+# namespace root it mounts as and does not replay the source's ownership, so
+# every entry lands `0:0`. The mask's own `mode=1777` (#321) then lets the
+# cage's uid create NEW files while modifying or deleting a copied one still
+# fails EACCES/EPERM: an agent can read the project's `.claude/settings.json`
+# but not edit its own throwaway copy. Hand the copy to the cage user.
+#
+# This cannot be an ExecStartPre: that runs BEFORE the container, when the
+# tmpfs does not exist yet. It also must not be a `podman exec` — the cage
+# drops every capability, so root in an exec session has no CAP_CHOWN, and
+# `--privileged` would both hand a full capability set to a session running
+# the cage IMAGE's own `chown` binary and undercut the cage's threat model
+# for a cosmetic fix. `nsenter -U` instead joins only the container's user
+# namespace (which this unit's user owns, so it gets a full capability set
+# there) and runs the HOST's chown against the container's mount tree via
+# /proc/PID/root — the same mechanism the default-route ExecStartPost below
+# already relies on. The plain-chown fallback covers a rootful podman with no
+# user namespace to join.
+#
+# `-h` chowns symlinks themselves and `-R` does not traverse them (GNU
+# chown's -P default), so a symlink the workload plants inside the mask
+# between container start and this hook cannot redirect the chown at a path
+# outside it. Only the in-cage tmpfs is touched; the host source the copy
+# came from is never chowned.
+ExecStartPost=-/bin/bash -c 'd=$(echo {{ mask.target_b64 }} | base64 -d) || exit 0; for i in $(seq 1 30); do PID=$(podman inspect --format "{{"{{"}}.State.Pid{{"}}"}}" {{ name }}-cage 2>/dev/null); if [ -n "$PID" ] && [ "$PID" != "0" ]; then nsenter -t "$PID" -U -- chown -Rh {{ copyup_owner }} "/proc/$PID/root$d" 2>/dev/null && exit 0; chown -Rh {{ copyup_owner }} "/proc/$PID/root$d" 2>/dev/null && exit 0; break; fi; sleep 0.5; done; echo "agentcage: could not hand the copy-up tmpfs mask $d to {{ copyup_owner }} — the cage can read the seeded content but not edit it" >&2; exit 0'
+{% endfor %}
 # Add the cage's default route via the egress container. Retries because
 # the container PID is briefly invalid (0/empty) right after `podman start`
 # returns and before the container's init has fully populated state.

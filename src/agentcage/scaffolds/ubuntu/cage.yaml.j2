@@ -64,7 +64,11 @@ container:
     # runs as the host user — a cage→host pivot (#170). tmpfs overlays the
     # bind-mounted path: the cage sees an empty, transient .git/hooks/
     # (writes vanish on stop); the host's hooks are untouched.
-    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
+    # `notmpcopyup` is what makes "empty" true (#328). Without it podman
+    # copies the host's hooks into the mask, and the mask is `noexec` so
+    # none of them could ever run in the cage anyway — the copy would only
+    # add confusion plus a Permission denied whenever the agent edits one.
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup"
 
   # Resource limits — test cages are small
   memory: "1g"
