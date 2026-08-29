@@ -119,7 +119,7 @@ class Agentcage:
         # config; absent → None → zero new surface (the control host is not
         # even resolved). See docs/explain/policy-api.md and
         # data/proxy/policy_api.py.
-        self.policy_api = None
+        self.domain_requests = None
         self._policy_sweeper: Optional[asyncio.Task] = None
         self._init_policy_api()
 
@@ -162,32 +162,32 @@ class Agentcage:
         overlay + the persisted grants file, and ``PolicyApi`` replays the
         overlay on construction, so a rebuild never drops a live grant.
         """
-        pa_cfg = (self.cfg.get("policy_api") or {})
+        pa_cfg = (self.cfg.get("domains") or {}).get("auto") or {}
         if not pa_cfg or not pa_cfg.get("enable"):
-            self.policy_api = None
+            self.domain_requests = None
             return
         dom = next((i for i in self.inspectors
                     if isinstance(i, DomainInspector)), None)
         if dom is None:
             ctx.log.warn(
-                "agentcage: policy_api enabled but no domain inspector "
+                "agentcage: domains.auto enabled but no domain inspector "
                 "loaded; control endpoints disabled"
             )
-            self.policy_api = None
+            self.domain_requests = None
             return
         try:
             from policy_api import PolicyApi
-            self.policy_api = PolicyApi(
+            self.domain_requests = PolicyApi(
                 self.cfg, dom, self._audit_write, ctx.log
             )
             ctx.log.info(
-                f"agentcage: policy_api enabled (host={self.policy_api.host}, "
-                f"introspection={self.policy_api.introspection_enabled}, "
-                f"request={self.policy_api.request_enabled})"
+                f"agentcage: domains.auto enabled (host={self.domain_requests.host}, "
+                f"introspection={self.domain_requests.introspection_enabled}, "
+                f"request={self.domain_requests.request_enabled})"
             )
         except Exception as e:
-            ctx.log.warn(f"agentcage: policy_api init failed: {e}")
-            self.policy_api = None
+            ctx.log.warn(f"agentcage: domains.auto init failed: {e}")
+            self.domain_requests = None
 
     def running(self) -> None:
         """Called after the proxy is fully started — apply TLS passthrough
@@ -198,11 +198,11 @@ class Agentcage:
 
     def _start_policy_sweeper(self) -> None:
         """Start the Policy API grant-TTL sweeper as an asyncio task."""
-        if self.policy_api is None:
+        if self.domain_requests is None:
             return
         try:
             self._policy_sweeper = asyncio.get_event_loop().create_task(
-                self.policy_api.sweeper_loop()
+                self.domain_requests.sweeper_loop()
             )
         except RuntimeError:
             # No running loop (e.g. some test contexts) — sweeper is
@@ -552,7 +552,7 @@ class Agentcage:
         # none of those gates apply. Matching requires both SNI and Host to
         # equal the control host for TLS flows (a mismatch falls through to
         # the SNI check below, which rejects it). See docs/explain/policy-api.md.
-        pa = getattr(self, "policy_api", None)
+        pa = getattr(self, "domain_requests", None)
         if pa is not None and pa.enabled:
             sni = getattr(getattr(flow, "client_conn", None), "sni", None)
             if isinstance(sni, bytes):

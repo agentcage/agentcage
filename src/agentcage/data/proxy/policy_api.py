@@ -9,7 +9,7 @@ in the proxy config. It owns:
 
 * the control-host request router (``is_control_host`` / ``handle``),
 * the introspection + health endpoints (read-only),
-* the request endpoint + decision-hook invocation (webhook provider; the
+* the request endpoint + decider invocation (webhook provider; the
   built-in ``llm`` provider is a documented follow-up and returns 503),
 * the runtime grants overlay (load / persist / reconcile) and its TTL
   sweeper,
@@ -44,7 +44,7 @@ from mitmproxy import http
 # A syntactically valid public-ish hostname: 2+ dotted labels, each label
 # alphanumeric/hyphen, not an IP literal, last label length >= 2 (rejects
 # single-letter/bare TLDs and overly-broad grants like ``com`` would still
-# pass this — breadth is bounded by never_grant + the decision hook).
+# pass this — breadth is bounded by never_grant + the decider).
 _DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)"
     r"([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
@@ -71,7 +71,10 @@ class PolicyApi:
 
     def __init__(self, proxy_cfg: dict, domain_inspector, audit_write, log) -> None:
         self.proxy_cfg = proxy_cfg or {}
-        self.cfg = self.proxy_cfg.get("policy_api") or {}
+        # domains.auto nests under ``domains:`` in cage.yaml; the proxy
+        # sees the whole ``domains`` dict (it's in _PROXY_KEYS), so read
+        # auto off it.
+        self.cfg = (self.proxy_cfg.get("domains") or {}).get("auto") or {}
         self.dom = domain_inspector
         self._audit = audit_write  # callable(entry: dict) -> None
         self._log = log  # mitmproxy ctx.log
@@ -81,49 +84,34 @@ class PolicyApi:
 
         self.host = str(self.cfg.get("host", "agentcage.local") or
                         "agentcage.local").lower().rstrip(".")
-        intro = self.cfg.get("introspection") or {}
-        req = self.cfg.get("request") or {}
-        self._introspection_enabled = bool(intro.get("enable", True))
-        self._request_enabled = bool(req.get("enable", True))
+        # v1: introspection + request are both on when auto is on.
+        self._introspection_enabled = bool(self.cfg.get("enable", False))
+        self._request_enabled = bool(self.cfg.get("enable", False))
 
-        dec = req.get("decision") or {}
-        self._provider = str(dec.get("provider", "webhook") or "webhook")
-        self._fail_open = bool(dec.get("fail_open", False))
-        wh = dec.get("webhook") or {}
-        self._webhook_url = str(wh.get("url", "") or "")
-        self._webhook_timeout = float(wh.get("timeout_seconds", 10.0) or 10.0)
-        self._webhook_async = bool(wh.get("async", False))
-        llm = dec.get("llm") or {}
-        self._llm_timeout = float(llm.get("timeout_seconds", 15.0) or 15.0)
-        self._llm_provider = str(llm.get("provider", "") or "").lower()
-        self._llm_model = str(llm.get("model", "") or "")
-        self._llm_base_url = str(llm.get("base_url", "") or "").rstrip("/")
-        # Separate, required API key for the LLM evaluator (distinct from the
-        # webhook auth_source — a cage using the llm provider has no webhook).
+        decider = self.cfg.get("decider") or {}
+        self._provider = str(decider.get("kind", "agent") or "agent")
+        self._fail_open = bool(self.cfg.get("fail_open", False))
+        # Agent fields sit flat under decider: (only one decider kind in v1).
+        self._llm_timeout = float(decider.get("timeout_seconds", 15.0) or 15.0)
+        self._llm_provider = str(decider.get("provider", "") or "").lower()
+        self._llm_model = str(decider.get("model", "") or "")
+        self._llm_base_url = str(decider.get("base_url", "") or "").rstrip("/")
+        # The decider agent's API key uses the same source: scheme as
+        # secret_injection.source (env:/systemd-creds:/cmd:). Egress-only.
         self._llm_secret = self._read_secret(
-            str(llm.get("auth_source", "") or "")
+            str(decider.get("api_key", "") or "")
         )
 
-        grant = req.get("grant") or {}
-        self._ttl_seconds = int(grant.get("ttl_seconds", 3600) or 0)
-        self._max_grants = int(grant.get("max_grants", 32) or 0)
-        self._never_grant = self._effective_never_grant(
-            grant.get("never_grant") or []
-        )
+        # Grant behavior uses fixed safe defaults (no operator knob in v1).
+        # See config._AUTO_* constants. never_grant = built-ins + control host.
+        self._ttl_seconds = 0
+        self._max_grants = 32
+        self._never_grant = self._effective_never_grant([])
 
-        rl = dec.get("rate_limit") or {}
+        rl = self.cfg.get("rate_limit") or {}
         self._rl_rps = float(rl.get("requests_per_second", 1.0) or 0)
         self._rl_burst = int(rl.get("burst", 5) or 0)
         self._rl_bucket = [float(self._rl_burst), time.monotonic()]
-
-        # Staged secret files (/home/acproxy/secrets/<NAME>) + env are the
-        # two channels the egress already uses for secret_injection / relay
-        # credentials. Read the hook auth secret once at construction; a
-        # live rotation re-stages the file but a config hot-reload (which
-        # rebuilds this object) picks up the new value.
-        self._hook_secret = self._read_secret(
-            str(wh.get("auth_source", "") or "")
-        )
 
         self._grants_dir = os.environ.get(
             "AGENTCAGE_GRANTS_DIR", "/var/lib/agentcage"
@@ -150,13 +138,14 @@ class PolicyApi:
 
     # ── never_grant ────────────────────────────────────────
 
-    @staticmethod
-    def _effective_never_grant(operator_list: list) -> set:
+    def _effective_never_grant(self, operator_list: list) -> set:
         # Built-in suffix set always unioned in (suffix-matched, so
         # ``internal`` covers ``*.internal`` and ``metadata.google.internal``;
-        # ``local`` covers the default control host's TLD family). The
-        # control host itself is added by the caller's validation.
+        # ``local`` covers the default control host's TLD family), PLUS the
+        # control host itself (always never_grant — the cage can't grant the
+        # control host to itself).
         out = {"internal", "local", "localhost"}
+        out.add(self.host.lower().rstrip("."))
         for d in operator_list or []:
             if d:
                 out.add(str(d).lower().rstrip("."))
@@ -306,11 +295,11 @@ class PolicyApi:
         domain = str(payload.get("domain", "") or "").lower().rstrip(".")
         reason = str(payload.get("reason", "") or "")[:1000]
 
-        # A justification is REQUIRED — the security-expert evaluator's
+        # A justification is REQUIRED — the decider agent's
         # whole job is to adjudicate the agent's explanation of why it
         # needs the domain. A bare "I need it" is still processed (the
-        # evaluator will deny vague justifications), but a completely empty
-        # justification is rejected at the gate so the evaluator never has
+        # decider agent will deny vague justifications), but a completely empty
+        # justification is rejected at the gate so the decider agent never has
         # to reason about a no-op request. This mirrors Claude Code auto
         # mode, where the agent must state its intent before approval.
         if not reason.strip():
@@ -350,160 +339,71 @@ class PolicyApi:
             })
             return
 
-        # never_grant hard deny.
+        # never_grant hard deny — not retryable for this domain (the
+        # operator pinned it), but actionable: tell the agent to request a
+        # different, non-internal domain.
         if self._is_never_grant(domain):
-            self._respond(flow, 403, {"error": f"domain denied by never_grant: {domain}"})
+            self._respond(flow, 403, {
+                "id": None, "status": "denied", "domain": domain,
+                "reason": f"{domain} is on the operator's never_grant list and "
+                          f"cannot be granted by the policy API",
+                "suggestion": "request a different, non-internal domain; "
+                              "this one is permanently denied by policy",
+                "retryable": False,
+                "decided_by": "decider",
+            })
             self._audit_event("policy_request", {
                 "domain": domain, "decision": "denied",
-                "reason": "never_grant", "decided_by": "policy-api",
+                "reason": "never_grant", "decided_by": "decider",
             })
             return
 
-        # Capacity.
+        # Capacity — retryable once a grant expires or the operator removes
+        # one. Tell the agent what to do.
         if self._max_grants and len(self.dom.granted) >= self._max_grants:
-            self._respond(flow, 409, {"error": "max_grants reached; revoke or let a grant expire"})
+            self._respond(flow, 409, {
+                "id": None, "status": "denied", "domain": domain,
+                "reason": f"max_grants ({self._max_grants}) reached; no room "
+                          f"for another grant",
+                "suggestion": "wait for an existing grant to expire, or ask "
+                              "the operator to remove one with "
+                              "`agentcage domain rm`, then re-request",
+                "retryable": True,
+                "decided_by": "decider",
+            })
             self._audit_event("policy_request", {
                 "domain": domain, "decision": "denied",
-                "reason": "max_grants reached", "decided_by": "policy-api",
+                "reason": "max_grants reached", "decided_by": "decider",
             })
             return
 
-        # Per-cage request rate limit.
+        # Per-cage request rate limit — retryable after a short wait.
         if not self._check_rate_limit():
-            self._respond(flow, 429, {"error": "request rate limit exceeded"})
+            self._respond(flow, 429, {
+                "id": None, "status": "denied", "domain": domain,
+                "reason": "request rate limit exceeded",
+                "suggestion": "wait a few seconds and re-request the same domain",
+                "retryable": True,
+                "decided_by": "decider",
+            })
             self._audit_event("policy_request", {
                 "domain": domain, "decision": "rejected",
                 "reason": "rate limit",
             })
             return
 
-        # Dispatch to the decision hook.
-        if self._provider == "llm":
+        # Dispatch to the decider. v1 ships the agent (LLM) decider only.
+        if self._provider == "agent":
             await self._decide_llm(flow, domain, reason)
             return
 
-        if self._provider != "webhook" or not self._webhook_url:
-            self._respond(flow, 503, {"error": "decision hook not configured"})
-            return
-
-        await self._decide_webhook(flow, domain, reason)
-
-    async def _decide_webhook(self, flow: http.HTTPFlow, domain: str, reason: str) -> None:
-        payload = {
-            "cage": os.environ.get("AGENTCAGE_CAGE_NAME", ""),
-            "domain": domain,
-            "reason": reason,
-            "baseline": self.dom.baseline_list(),
-            "granted": [e["domain"] for e in self.dom.granted_entries()],
-            "ts": _now_iso(),
-        }
-        try:
-            status, body = await asyncio.to_thread(
-                self._webhook_call_sync, payload, self._webhook_timeout
-            )
-        except Exception as e:  # pragma: no cover — defensive
-            status, body = None, str(e)
-
-        if status is None:
-            # Transport failure / timeout.
-            if self._fail_open:
-                self._apply_grant(domain, reason, ttl_override=0,
-                                  decided_by="policy-hook:webhook:fail_open")
-                self._respond(flow, 200, self._grant_response(domain, reason, 0,
-                             "policy-hook:webhook:fail_open",
-                             f"hook unavailable, fail_open granted: {body}"))
-                self._audit_event("policy_request", {
-                    "domain": domain, "decision": "granted",
-                    "reason": f"fail_open: {body}",
-                    "decided_by": "policy-hook:webhook:fail_open",
-                })
-            else:
-                self._respond(flow, 503, {"error": f"decision hook unavailable: {body}"})
-                self._audit_event("policy_request", {
-                    "domain": domain, "decision": "denied",
-                    "reason": f"hook unavailable: {body}",
-                    "decided_by": "policy-api",
-                })
-            return
-
-        if status == 202 and self._webhook_async:
-            req_id = f"req_{int(time.time()*1000)}_{abs(hash(domain)) % 100000}"
-            self._pending[req_id] = {
-                "id": req_id, "domain": domain, "reason": reason,
-                "status": "pending", "created": time.monotonic(),
-            }
-            self._respond(flow, 202, {"id": req_id, "status": "pending",
-                                      "domain": domain})
-            self._audit_event("policy_request", {
-                "domain": domain, "decision": "pending",
-                "decided_by": "policy-hook:webhook", "request_id": req_id,
-            })
-            return
-
-        if status != 200:
-            self._respond(flow, 502, {"error": f"decision hook returned {status}",
-                                       "body": body[:500]})
-            self._audit_event("policy_request", {
-                "domain": domain, "decision": "denied",
-                "reason": f"hook status {status}", "decided_by": "policy-api",
-            })
-            return
-
-        try:
-            decision = json.loads(body)
-        except (ValueError, TypeError):
-            decision = {}
-        verdict = str(decision.get("decision", "") or "").lower()
-        hook_reason = str(decision.get("reason", "") or "")[:1000]
-        ttl_override = int(decision.get("ttl_seconds", 0) or 0)
-
-        if verdict != "grant":
-            self._respond(flow, 200, {
-                "id": None, "status": "denied", "domain": domain,
-                "reason": hook_reason or "denied by hook",
-                "decided_by": "policy-hook:webhook",
-            })
-            self._audit_event("policy_request", {
-                "domain": domain, "decision": "denied",
-                "reason": hook_reason, "decided_by": "policy-hook:webhook",
-            })
-            return
-
-        ttl = ttl_override or self._ttl_seconds
-        expires_at = self._expires_at(ttl)
-        decided_by = "policy-hook:webhook"
-        self._apply_grant(domain, hook_reason or reason, ttl_override=ttl,
-                          decided_by=decided_by, expires_at=expires_at)
-        self._respond(flow, 200, self._grant_response(
-            domain, hook_reason or reason, ttl, decided_by, expires_at=expires_at))
-        self._audit_event("policy_request", {
-            "domain": domain, "decision": "granted",
-            "reason": hook_reason, "decided_by": decided_by,
-            "expires_at": expires_at,
-        })
-
-    def _webhook_call_sync(self, payload: dict, timeout: float):
-        """Blocking webhook POST; run via asyncio.to_thread."""
-        data = json.dumps(payload).encode()
-        headers = {"Content-Type": "application/json",
-                   "User-Agent": "agentcage-policy-api"}
-        if self._hook_secret:
-            headers["Authorization"] = f"Bearer {self._hook_secret}"
-        req = urllib.request.Request(
-            self._webhook_url, data=data, headers=headers, method="POST"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.status, r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode("utf-8", "replace")
-        # other exceptions propagate to the caller's try/except
+        self._respond(flow, 503, {"error": "decider not configured"})
 
     # ── LLM provider (anthropic / openai / openrouter) ───────
     #
     # The egress calls the model directly over HTTPS (no SDK — keeps the
     # egress image lean and the supply chain small for the most
-    # security-critical container). The evaluator's API key is a SEPARATE
+    # security-critical container). The decider agent's API key is a SEPARATE
     # credential from the webhook auth_source, required at config time
     # (validate_config). OpenAI and OpenRouter share the OpenAI
     # chat-completions wire format; Anthropic uses /v1/messages with a
@@ -528,7 +428,7 @@ class PolicyApi:
             self._audit_event("policy_request", {
                 "domain": domain, "decision": "denied",
                 "reason": "llm provider not configured",
-                "decided_by": "policy-api",
+                "decided_by": "decider",
             })
             return
         try:
@@ -537,19 +437,18 @@ class PolicyApi:
             )
         except Exception as e:  # pragma: no cover — defensive
             verdict = {"decision": "deny", "reason": f"llm call failed: {e}",
-                       "decided_by": "policy-api"}
+                       "decided_by": "decider"}
 
-        decided_by = f"policy-hook:llm:{self._llm_provider}"
+        decided_by = f"decider:agent:{self._llm_provider}"
         decision = str(verdict.get("decision", "") or "").lower()
         llm_reason = str(verdict.get("reason", "") or "")[:1000]
         ttl_override = int(verdict.get("ttl_seconds", 0) or 0)
 
         if decision != "grant":
-            self._respond(flow, 200, {
-                "id": None, "status": "denied", "domain": domain,
-                "reason": llm_reason or "denied by llm evaluator",
-                "decided_by": decided_by,
-            })
+            self._respond(flow, 200, self._deny_response(
+                domain, llm_reason or "denied by the llm decider agent; no reason provided",
+                decided_by,
+            ))
             self._audit_event("policy_request", {
                 "domain": domain, "decision": "denied",
                 "reason": llm_reason, "decided_by": decided_by,
@@ -593,10 +492,10 @@ class PolicyApi:
     def _system_prompt() -> str:
         # Cybersecurity-expert adjudicator, mirroring Claude Code "auto"
         # mode: the agent must justify why it needs a new domain whitelisted,
-        # and this evaluator decides whether the request is legitimate or
+        # and this decider agent decides whether the request is legitimate or
         # risky. The agent's justification is the PRIMARY input — but it is
         # adversarial (the agent is motivated to be granted), so the
-        # evaluator weighs it against the domain's own reputation and the
+        # decider agent weighs it against the domain's own reputation and the
         # shape of the request, exactly as a human security reviewer would.
         return (
             "You are a senior cybersecurity expert acting as the egress-"
@@ -648,6 +547,14 @@ class PolicyApi:
             "specific risk that drove your decision. This is the audit trail; "
             "write it as if a human reviewer will read it after the fact."
             "\n"
+            "  - If you DENY, the reason must also be ACTIONABLE for the "
+            "caged agent: explain what a legitimate, grantable request for "
+            "this domain (or a safer alternative) would look like — e.g. the "
+            "specific task it should name, a more reputable domain to request "
+            "instead, or what evidence would change your decision. Do not "
+            "just say 'denied' or 'risky'; tell the agent how to ask better. "
+            "The agent will re-request using this guidance."
+            "\n"
             "  - ttl_seconds (optional, 0/omit = use the default grant TTL)."
             "\n\n"
             "Do not output anything else. Do not ask questions. Decide."
@@ -657,7 +564,7 @@ class PolicyApi:
     def _user_message(domain: str, reason: str, dom) -> dict:
         # Frame the request as a justification to be adjudicated. The agent's
         # free-text `reason` is the core signal but clearly labelled as
-        # agent-supplied, so the evaluator weighs it against the domain.
+        # agent-supplied, so the decider agent weighs it against the domain.
         return {
             "domain_requested": domain,
             "agent_justification": reason or "(none provided)",
@@ -967,9 +874,30 @@ class PolicyApi:
     @staticmethod
     def _grant_response(domain: str, reason: str, ttl: int,
                         decided_by: str, expires_at: str = "") -> dict:
+        # ``ttl_seconds`` is echoed so the agent knows its own expiry as a
+        # plain number without parsing ISO; ``expires_at`` is the absolute
+        # timestamp (empty when permanent). ``reason`` is the decider agent's
+        # risk-assessment record (the audit trail).
         return {
             "id": None, "status": "granted", "domain": domain,
             "reason": reason, "expires_at": expires_at,
+            "ttl_seconds": ttl,
+            "decided_by": decided_by,
+        }
+
+    @staticmethod
+    def _deny_response(domain: str, reason: str, decided_by: str) -> dict:
+        # ``reason`` carries the decider agent's actionable explanation (the LLM
+        # system prompt requires a denial reason that tells the agent how to
+        # ask better); ``suggestion`` is the same string surfaced under a
+        # name the agent is likely to key on for a retry. ``retryable`` is
+        # always true for a hook decision — a better-justified request may
+        # succeed, subject to the per-cage rate limit.
+        return {
+            "id": None, "status": "denied", "domain": domain,
+            "reason": reason,
+            "suggestion": reason,
+            "retryable": True,
             "decided_by": decided_by,
         }
 

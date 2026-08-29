@@ -777,25 +777,21 @@ def generate_quadlets(
     # Policy API decision-hook auth credential — same shape and same
     # egress-only invariant as a relay credential: it uses a ``*_source``
     # scheme (env:/cmd:/systemd-creds:) and must NEVER reach the cage (the
-    # CLI parser already stripped it from cage env/podman_secrets in
-    # config.load_config). Stage it into the proxy's tmpfs secret files so
-    # the addon can read the real value when calling the decision hook.
-    # See docs/explain/policy-api.md §3.3.
-    pa = getattr(config, "policy_api", None)
-    if pa is not None and getattr(pa, "enable", False):
-        for src in (
-            pa.request.decision.webhook.auth_source,
-            pa.request.decision.llm.auth_source,
-        ):
-            scheme, _, arg = (src or "").partition(":")
-            if not arg or arg in proxy_secrets:
-                continue
+    # domains.auto.decider.agent.api_key — the decider agent's own API key,
+    # an egress-only credential (the CLI parser already stripped it from
+    # cage env/podman_secrets in config.load_config). Stage it into the
+    # proxy's tmpfs secret files so the addon can read the real value when
+    # calling the decider. Same relay-auth staging path.
+    auto = getattr(getattr(config, "domains", None), "auto", None)
+    if auto is not None and getattr(auto, "enable", False):
+        api_key = auto.decider.agent.api_key
+        scheme, _, arg = (api_key or "").partition(":")
+        if arg and arg not in proxy_secrets:
             has_cred_file = (_state_creds_dir / f"{arg}.cred").exists()
-            if not _boot_resolvable(arg, scheme, has_cred_file):
-                continue
-            if scheme == "systemd-creds" or has_cred_file:
-                creds_secrets.append(arg)
-            proxy_secrets.append(arg)
+            if _boot_resolvable(arg, scheme, has_cred_file):
+                if scheme == "systemd-creds" or has_cred_file:
+                    creds_secrets.append(arg)
+                proxy_secrets.append(arg)
 
     # Direct podman_secrets on the cage container hit the same boot
     # failure when their store entry was `secret rm`'d — gate them with
@@ -1054,7 +1050,7 @@ def generate_quadlets(
     # cage that lacked the watcher installs it on demand (see cli
     # _ensure_grants_watcher) so time-limited domains always get pruned.
     needs_watcher = (
-        getattr(config.policy_api, "enable", False)
+        getattr(config.domains.auto, "enable", False)
         or bool(getattr(config.domains, "expires", None))
     )
     if needs_watcher:
