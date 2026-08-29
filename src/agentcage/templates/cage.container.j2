@@ -106,6 +106,24 @@ ExecStopPost=/bin/bash -c 'rm -rf {{ non_persistent_runtime_root }}'
 {% for copy in non_persistent_file_copies %}
 ExecStartPre=/bin/bash -c 'mkdir -p {{ copy.dir }} && cp -f {{ copy.src }} {{ copy.dst }}'
 {% endfor %}
+{% for mask in mask_mountpoints %}
+# tmpfs masks (#170/#173) whose target lives under a host bind-mount force the
+# OCI runtime to create the mount point, and a bind shares inodes with its
+# source, so the mkdir lands in the operator's project directory on the host —
+# a non-git project gains a stray `.git/hooks/` that `test -d .git` misreads as
+# a repository (#320). The masks stay unconditional; instead, record here which
+# of those paths were absent immediately before start, then remove exactly
+# those on teardown and only while they are still empty. Host paths are
+# base64-encoded because a systemd Exec line applies its own quoting before
+# bash does, and no single escaping of `~/My Project` survives both layers.
+ExecStartPre=/bin/bash -c 'mkdir -p {{ mask.state_dir }} && : > {{ mask.state_file }} && echo {{ mask.dirs_b64 }} | base64 -d | while IFS= read -r d; do [ -n "$d" ] || continue; [ -e "$d" ] && continue; [ -L "$d" ] && continue; echo "$d" >> {{ mask.state_file }}; done'
+# Deepest path first, so `<project>/.git/hooks` is retired before the
+# `<project>/.git` parent the same mask created. `rmdir` is the whole safety
+# story for "only if empty"; the realpath containment check keeps a symlink
+# swapped in after start from redirecting a removal outside the bind root, and
+# never-recorded (pre-existing) directories are simply not in the list.
+ExecStopPost=-/bin/bash -c 'f={{ mask.state_file }}; [ -f "$f" ] || exit 0; root=$(echo {{ mask.root_b64 }} | base64 -d) && root=$(realpath -m -- "$root") || exit 0; while IFS= read -r d; do [ -n "$d" ] || continue; case "$(realpath -m -- "$d")" in "$root"/*) ;; *) continue ;; esac; [ -L "$d" ] && continue; [ -d "$d" ] || continue; rmdir "$d" 2>/dev/null || echo "agentcage: keeping $d (created as a tmpfs mask mount point, but not empty)" >&2; done < "$f"; rm -f "$f"; exit 0'
+{% endfor %}
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec {{ name }}-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
 # Add the cage's default route via the egress container. Retries because
 # the container PID is briefly invalid (0/empty) right after `podman start`

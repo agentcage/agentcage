@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 
 import pytest
 
@@ -26,4 +27,13 @@ REQUIRES_PODMAN = pytest.mark.skipif(
 REQUIRES_KVM = pytest.mark.skipif(
     not os.path.exists("/dev/kvm"),
     reason="needs /dev/kvm (present on the virtualization-enabled Linux CI)",
+)
+
+REQUIRES_GNU_REALPATH = pytest.mark.skipif(
+    shutil.which("realpath") is None
+    or subprocess.run(
+        ["realpath", "-m", "--", "/nonexistent/agentcage/probe"],
+        capture_output=True,
+    ).returncode != 0,
+    reason="needs GNU coreutils `realpath -m` (present on Linux CI)",
 )

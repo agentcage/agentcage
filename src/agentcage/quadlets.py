@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import re
@@ -290,6 +291,81 @@ def _non_persistent_overlay_mount(
     return (f"{source}:{target}:{','.join(opts)}", upper, work)
 
 
+def _b64(value: str) -> str:
+    """Base64-encode *value* for safe embedding in a systemd Exec line."""
+    return base64.b64encode(value.encode()).decode()
+
+
+def _mask_mountpoint_dirs(
+    tmpfs: list[str],
+    mount_targets: list[tuple[str, str]],
+) -> dict[str, list[str]]:
+    """Map bind-mount host source -> host dirs a ``tmpfs:`` mask materializes.
+
+    A ``tmpfs:`` entry whose target sits *under* a host bind-mount forces the
+    OCI runtime to create the mount point, and because a bind shares inodes
+    with its source, that ``mkdir -p`` lands in the operator's project
+    directory on the host. The scaffold masks are the common case: masking
+    ``/workspace/.git/hooks/`` on a project that is not a git repo leaves a
+    stray host ``.git/hooks/``, which makes the ubiquitous ``test -d .git``
+    idiom misreport the directory as a repository (issue #320).
+
+    The mask itself stays unconditional — dropping it when ``.git`` is absent
+    would reopen the #170 cage->host git-hook pivot for any ``.git`` created
+    later. Instead the caller records which of these paths were absent
+    immediately before container start and removes exactly those, and only
+    while still empty, on teardown.
+
+    Args:
+        tmpfs: Raw ``container.tmpfs`` specs (``target[:options]``).
+        mount_targets: ``(container_target, host_source)`` for every mount the
+            cage quadlet emits, where *host_source* is empty for mounts that
+            do not write through to the host (named volumes, ``np`` overlays
+            whose writes land in an upperdir). Longest-prefix matching runs
+            over the whole list so that a mask under, say, a named volume
+            nested inside a bind is correctly attributed to the named volume
+            and therefore skipped.
+
+    Returns:
+        ``{host_source: [host_path, ...]}`` with each list ordered deepest
+        first, so removing ``<project>/.git/hooks`` is attempted before the
+        ``<project>/.git`` parent that the same mask also created.
+    """
+    normalized = [
+        (target.rstrip("/") or "/", source)
+        for target, source in mount_targets
+        if target.startswith("/")
+    ]
+    result: dict[str, list[str]] = {}
+    for spec in tmpfs:
+        target = spec.split(":", 1)[0].rstrip("/")
+        if not target.startswith("/"):
+            continue
+        best_target = ""
+        best_source = ""
+        for mount_target, source in normalized:
+            if target != mount_target and not target.startswith(mount_target + "/"):
+                continue
+            if len(mount_target) >= len(best_target):
+                best_target, best_source = mount_target, source
+        # No enclosing mount (the mount point is created in the container's
+        # own writable layer), the mask covers the whole mount (nothing to
+        # create), or the enclosing mount does not reach the host.
+        if not best_source or target == best_target:
+            continue
+        parts = [p for p in target[len(best_target):].split("/") if p]
+        if not parts or any(p in (".", "..") for p in parts):
+            continue
+        dirs = result.setdefault(best_source, [])
+        for depth in range(len(parts), 0, -1):
+            path = os.path.join(best_source, *parts[:depth])
+            if path not in dirs:
+                dirs.append(path)
+    for dirs in result.values():
+        dirs.sort(key=lambda path: path.count("/"), reverse=True)
+    return result
+
+
 def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
     """Stage a single-file volume source so the VM backend can mount it.
 
@@ -362,6 +438,12 @@ def generate_quadlets(
     expanded_volumes = []
     non_persistent_precreate_dirs = []
     non_persistent_file_copies = []
+    # (container_target, host_source) for every mount emitted below, with an
+    # empty source for mounts that do not write through to the host. Feeds the
+    # tmpfs-mask mount-point bookkeeping (#320) after the loop.
+    mount_targets: list[tuple[str, str]] = [
+        (mount.split(":", 1)[0], "") for mount in cc.named_volumes.values()
+    ]
     home = os.path.realpath(os.path.expanduser("~"))
     for v in cc.volumes:
         # Split inline options first: ``np`` is agentcage-only and must not
@@ -436,6 +518,7 @@ def generate_quadlets(
             copy_id = f"file-{len(non_persistent_file_copies)}"
             runtime_file = f"%t/agentcage/{deploy_name or name}/mounts/{copy_id}/{os.path.basename(real_for_mount)}"
             expanded_volumes.append(f"{runtime_file}:{target}:rw")
+            mount_targets.append((target, ""))
             non_persistent_file_copies.append({
                 "src": shlex.quote(real_for_mount),
                 "dst": shlex.quote(runtime_file),
@@ -457,6 +540,7 @@ def generate_quadlets(
                 )
                 continue
             expanded_volumes.append(overlay[0])
+            mount_targets.append((split_volume_spec(overlay[0])[1], ""))
             non_persistent_precreate_dirs.extend([
                 shlex.quote(overlay[1]),
                 shlex.quote(overlay[2]),
@@ -464,12 +548,51 @@ def generate_quadlets(
             continue
 
         expanded_volumes.append(expanded)
+        bind_source, bind_target, _bind_opts = split_volume_spec(expanded)
+        mount_targets.append((bind_target, bind_source))
 
     non_persistent_runtime_root = ""
     if non_persistent_precreate_dirs or non_persistent_file_copies:
         non_persistent_runtime_root = shlex.quote(
             f"%t/agentcage/{deploy_name or name}/mounts"
         )
+
+    # tmpfs masks whose target sits under a host bind-mount make the OCI
+    # runtime create the mount point on the HOST side of the bind, littering
+    # the operator's project dir with e.g. an empty `.git/hooks/` (#320). One
+    # ExecStartPre/ExecStopPost pair per bind root records which of those
+    # paths were absent right before start and removes exactly those, still
+    # only while empty, on teardown. Grouping by root lets the teardown line
+    # bake its own containment root, so a removal can never step outside the
+    # bind-mounted project directory.
+    mask_state_dir = f"%t/agentcage/{deploy_name or name}/masks"
+    mask_mountpoints = []
+    for idx, (root, dirs) in enumerate(
+        sorted(_mask_mountpoint_dirs(cc.tmpfs, mount_targets).items())
+    ):
+        # Host paths reach the unit base64-encoded. A systemd Exec line is
+        # word-split with its own quoting rules *before* /bin/bash ever sees
+        # it, so there is no single escaping that survives both layers for an
+        # arbitrary project path (a plain `~/My Project` already needs a quote
+        # that would terminate the systemd-level quoting early). Base64's
+        # alphabet is inert to systemd (no `%`, `$`, quote or backslash) and
+        # to the shell, so the decode happens inside bash where normal
+        # newline-delimited `read -r` handles spaces and quotes correctly.
+        if any("\n" in d or "\r" in d for d in [root, *dirs]):
+            click.echo(
+                f"warning: skipping tmpfs mask cleanup for {root!r} "
+                "(path contains a newline)",
+                err=True,
+            )
+            continue
+        mask_mountpoints.append({
+            "root_b64": _b64(root),
+            "state_dir": shlex.quote(mask_state_dir),
+            "state_file": shlex.quote(f"{mask_state_dir}/root-{idx}"),
+            # Trailing newline: `read` returns non-zero at EOF, so an
+            # unterminated last line would be dropped by the while loop.
+            "dirs_b64": _b64("".join(f"{d}\n" for d in dirs)),
+        })
 
     expanded_env = {k: os.path.expandvars(str(v)) for k, v in cc.env.items()}
 
@@ -762,6 +885,7 @@ def generate_quadlets(
         non_persistent_runtime_root=non_persistent_runtime_root,
         non_persistent_precreate_dirs=non_persistent_precreate_dirs,
         non_persistent_file_copies=non_persistent_file_copies,
+        mask_mountpoints=mask_mountpoints,
         podman_secrets=cage_podman_secrets,
         placeholders_env_path=placeholders_env_path,
         cage_env_dir=cage_env_dir,
