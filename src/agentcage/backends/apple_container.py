@@ -1699,6 +1699,21 @@ class AppleContainerBackend:
             egress_argv += [
                 "--volume", f"{secrets_dir}:/home/acproxy/secrets:ro",
             ]
+        # domains.auto grants overlay — shared backing file with the host-side
+        # grants watcher. The watcher reads state.grants_file(name) (the canonical
+        # agentcage data dir, NOT this backend's _state_dir), so the bind source
+        # must be that exact path or the watcher and addon see different files.
+        # RW so the egress addon can write decided grants; the watcher (on the
+        # macOS host) reads + revokes through the same file. Only mount when the
+        # feature is on OR any allow entry has an expiry (watcher prunes).
+        if meta.get("domains_auto") or meta.get("has_expiring_domains"):
+            from agentcage import state as _state_mod
+            grants_dir = _state_mod.grants_dir(name)
+            grants_dir.mkdir(parents=True, exist_ok=True)
+            egress_argv += [
+                "--volume", f"{grants_dir}:/var/lib/agentcage",
+                "-e", "AGENTCAGE_GRANTS_DIR=/var/lib/agentcage",
+            ]
         # Egress runs the agentcage addon — point it at the bind-mounted
         # config + capture jsonl. Same env vars data/proxy/addon.py reads.
         egress_argv += [

@@ -16,8 +16,8 @@ in the proxy config. It owns:
 * structured audit entries (``kind: policy_request``).
 
 Trust model: the egress never grants without a positive decision from the
-operator's hook; hook failure defaults to deny (``fail_open`` opts into the
-risky grant-on-error behaviour). Grants are additive-only at the L7
+operator's hook; hook failure defaults to deny (the feature is
+fail-closed — a decider error NEVER grants). Grants are additive-only at the L7
 ``DomainInspector``; DNS-layer reachability for a granted zone is applied by
 the egress supervisor, which watches the overlay file and SIGHUPs dnsmasq —
 the addon process (``acproxy``, uid 200, ``--bounding-set=-all``) cannot
@@ -90,7 +90,6 @@ class PolicyApi:
 
         decider = self.cfg.get("decider") or {}
         self._provider = str(decider.get("kind", "agent") or "agent")
-        self._fail_open = bool(self.cfg.get("fail_open", False))
         # Agent fields sit flat under decider: (only one decider kind in v1).
         self._llm_timeout = float(decider.get("timeout_seconds", 15.0) or 15.0)
         self._llm_provider = str(decider.get("provider", "") or "").lower()
@@ -419,7 +418,10 @@ class PolicyApi:
     _LLM_BASE_URLS = {
         "anthropic": "https://api.anthropic.com",
         "openai": "https://api.openai.com",
-        "openrouter": "https://openrouter.ai",
+        # OpenRouter's chat-completions endpoint is /api/v1/chat/completions
+        # (not /v1/...), so the base includes the /api/v1 prefix and the
+        # call appends /chat/completions. See test for the resolved URL.
+        "openrouter": "https://openrouter.ai/api/v1",
     }
 
     async def _decide_llm(self, flow, domain: str, reason: str) -> None:
@@ -436,13 +438,21 @@ class PolicyApi:
                 self._llm_call_sync, domain, reason, self._llm_timeout
             )
         except Exception as e:  # pragma: no cover — defensive
+            # Unconditionally fail-closed: a decider error/timeout NEVER
+            # grants. The whole point of the feature is that the caged agent
+            # cannot expand its own egress without a positive decision, so
+            # granting on an error would invert the trust model.
             verdict = {"decision": "deny", "reason": f"llm call failed: {e}",
                        "decided_by": "decider"}
 
-        decided_by = f"decider:agent:{self._llm_provider}"
+        decided_by = verdict.get("decided_by") or f"decider:agent:{self._llm_provider}"
         decision = str(verdict.get("decision", "") or "").lower()
         llm_reason = str(verdict.get("reason", "") or "")[:1000]
         ttl_override = int(verdict.get("ttl_seconds", 0) or 0)
+        # Clamp the decider-supplied TTL to a sane maximum (24h). The system
+        # prompt asks for short TTLs for transient tasks, but nothing enforces
+        # it in the model output — a grant with ttl_seconds=999999999 would
+        # otherwise live ~30 years. 0 = permanent (the v1 default) is allowed.
 
         if decision != "grant":
             self._respond(flow, 200, self._deny_response(
@@ -456,6 +466,8 @@ class PolicyApi:
             return
 
         ttl = ttl_override or self._ttl_seconds
+        if ttl > 86400:
+            ttl = 86400
         expires_at = self._expires_at(ttl)
         self._apply_grant(domain, llm_reason or reason, ttl_override=ttl,
                           decided_by=decided_by, expires_at=expires_at)
@@ -578,7 +590,14 @@ class PolicyApi:
     def _llm_openai_compat(self, base: str, provider: str, domain: str,
                            reason: str, timeout: float) -> dict:
         """OpenAI / OpenRouter chat-completions with a forced tool call."""
-        url = f"{base}/v1/chat/completions"
+        # OpenAI's base is bare (https://api.openai.com) and the endpoint is
+        # /v1/chat/completions; OpenRouter's base already includes /api/v1
+        # (see _LLM_BASE_URLS) and the endpoint is /chat/completions. Build the
+        # URL per-provider so neither gets a doubled or missing prefix.
+        if provider == "openrouter":
+            url = f"{base}/chat/completions"
+        else:
+            url = f"{base}/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._llm_secret}",
@@ -736,19 +755,16 @@ class PolicyApi:
     def _persist_grants(self) -> None:
         """Atomically write the overlay (temp + rename).
 
-        Each entry is written with an ``applied`` flag (default false for a
-        freshly-decided grant). The host-side grants watcher (see
-        ``cli.py`` ``cage grants <name> watch``) reuses the literal
-        ``domain add`` chain to promote a pending grant into the static
-        baseline — which is what makes the granted domain actually
-        resolvable (mitmproxy resolves upstreams through dnsmasq, so a
-        grant that only widens the L7 inspector would otherwise sinkhole
-        and 502). The watcher marks the entry ``applied: true`` once the
-        baseline change is live, so it never re-promotes the same grant.
+        Before writing, reconcile from the overlay file so a host-side revoke
+        (``cage grants <name> watch`` removes promoted entries; an operator's
+        ``domain rm``) is honored: if the overlay no longer contains a domain
+        that's still in the in-memory ``granted`` set, drop it here too —
+        otherwise this persist would resurrect the revoked grant and the
+        watcher would re-promote it. (The sweeper's 30s mtime poll is too
+        coarse; a grant + unrelated revoke in the same window would race.)
         """
+        self._reconcile_from_overlay()
         entries = self.dom.granted_entries()
-        for e in entries:
-            e.setdefault("applied", False)
         try:
             os.makedirs(self._grants_dir, exist_ok=True)
             tmp = self._grants_path + ".tmp"

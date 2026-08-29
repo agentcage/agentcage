@@ -226,8 +226,6 @@ The decider:
 
 - Has a timeout (default 15s) and retry policy.
 - Is **fail-closed by default**: a decider error or timeout → deny. Operator
-  can set `fail_open: true` to grant on error (not recommended; documented as
-  risky).
 - Is rate-limited per cage (default 1 req/s burst 5) independently of the
   egress's existing per-host HTTP rate limit, to bound LLM cost/abuse.
 
@@ -300,7 +298,6 @@ domains:
       api_key: env:OPENROUTER_API_KEY   # secret_injection.source syntax; egress-only
       timeout_seconds: 15
       # base_url: https://openrouter.ai  # optional override
-    fail_open: false           # deny on decider error (default)
     rate_limit: {requests_per_second: 1, burst: 5}
 ```
 

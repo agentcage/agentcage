@@ -138,7 +138,6 @@ domains:
       api_key: env:OPENROUTER_API_KEY   # secret_injection.source syntax; egress-only
       timeout_seconds: 15
       # base_url: https://openrouter.ai  # optional override
-    fail_open: false           # deny on decider error (default)
     rate_limit: {requests_per_second: 1, burst: 5}
 ```
 
@@ -164,7 +163,6 @@ domains:
 | `domains.auto.decider.api_key` | `string` | — | **Required** for `kind: agent`. The decider's own API key. Uses the `secret_injection.source` scheme (`env:NAME` / `systemd-creds:NAME` / `cmd:...`); egress-only. |
 | `domains.auto.decider.timeout_seconds` | `int` | `15` | Per-decision timeout. |
 | `domains.auto.decider.base_url` | `string` | provider default | Optional API base override (proxy/gateway/local server). |
-| `domains.auto.fail_open` | `bool` | `false` | `true` = grant on decider error/timeout (risky). Default denies. |
 | `domains.auto.rate_limit` | `{requests_per_second, burst}` | `{1, 5}` | Per-cage request rate limit, independent of the per-host HTTP rate limit. |
 
 When `auto.enable` is true, both the introspection and request endpoints are
@@ -216,8 +214,9 @@ to the agent and written to `audit.jsonl` as the risk-assessment rationale.
 ### Fail-closed vs fail-open
 
 The decider is **fail-closed by default**: a decider error, timeout, or
-unparseable model response denies the request. Setting `fail_open: true`
-grants on error instead — this is **risky** and not recommended. The decider
+unparseable model response denies the request. The decider is **always**
+fail-closed — a decider error NEVER grants (the caged agent cannot expand its
+own egress without a positive decision). The decider
 has its own timeout (default 15s) and is rate-limited per cage (default
 1 req/s, burst 5), independently of the egress's per-host HTTP rate limit, to
 bound LLM cost and abuse of the request endpoint.

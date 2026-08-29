@@ -503,8 +503,6 @@ class DomainsAutoConfig:
     enable: bool = False  # master switch
     host: str = "agentcage.local"   # reserved synthetic control host
     decider: DeciderConfig = field(default_factory=DeciderConfig)
-    # true = grant on decider error/timeout (risky). Default fail-closed.
-    fail_open: bool = False
     # Per-cage request rate limit, independent of the egress HTTP rate
     # limit, to bound LLM cost / abuse of the request endpoint.
     rate_limit_rps: float = 1.0
@@ -968,8 +966,7 @@ def load_config(path: str) -> Config:
                         base_url=str(agent_raw.get("base_url", "") or ""),
                     ),
                 ),
-                fail_open=bool(auto_raw.get("fail_open", False)),
-                rate_limit_rps=float(rl_raw.get("requests_per_second", 1.0) or 1.0),
+                    rate_limit_rps=float(rl_raw.get("requests_per_second", 1.0) or 1.0),
                 rate_limit_burst=int(rl_raw.get("burst", 5) or 5),
             )
             # Stash on a temp; the Domains block below will attach it to dc.
@@ -1788,13 +1785,6 @@ def validate_config(config: Config) -> list[str]:
             raise ValueError(
                 "domains.auto.rate_limit requests_per_second/burst must be >= 0"
             )
-        if pa.fail_open:
-            warnings.append(
-                "domains.auto.fail_open=true: a decider error or timeout will "
-                "GRANT the request (default is deny). This widens egress on "
-                "decider failure — use with care."
-            )
-
         # Control host is always in never_grant (operator can't remove it).
         if host not in pa.effective_never_grant():
             raise ValueError(

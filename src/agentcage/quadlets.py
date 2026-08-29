@@ -184,17 +184,24 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
             merged.append(host)
     # domains.auto decider agent's LLM provider host. Resolve the provider
     # name to a base host (api.openrouter.ai, api.anthropic.com,
-    # api.openai.com) so the egress's urllib call can reach it.
+    # api.openai.com) so the egress's urllib call can reach it. If the operator
+    # set a custom base_url, parse ITS host instead (a self-hosted/proxy
+    # decider endpoint won't be in the provider map).
     auto = getattr(getattr(config, "domains", None), "auto", None)
     if auto is not None and getattr(auto, "enable", False):
-        provider = (auto.decider.agent.provider or "").lower()
-        base = {
-            "anthropic": "api.anthropic.com",
-            "openai": "api.openai.com",
-            "openrouter": "openrouter.ai",
-        }.get(provider, "")
-        if base and base not in merged:
-            merged.append(base)
+        base_url = (auto.decider.agent.base_url or "").rstrip("/")
+        if base_url:
+            from urllib.parse import urlsplit
+            host = urlsplit(base_url).hostname or ""
+        else:
+            provider = (auto.decider.agent.provider or "").lower()
+            host = {
+                "anthropic": "api.anthropic.com",
+                "openai": "api.openai.com",
+                "openrouter": "openrouter.ai",
+            }.get(provider, "")
+        if host and host not in merged:
+            merged.append(host)
     return merged
 
 
@@ -555,6 +562,7 @@ def generate_quadlets(
     env = _make_env()
     name = config.name
     cc = config.container
+    from agentcage import state as _state
     files: dict[str, str] = {}
 
     # Expand ~ and env vars in volume paths and env values. The inline ``np``
@@ -974,6 +982,9 @@ def generate_quadlets(
         inbound_forwards=inbound_forwards,
         capture_enabled=capture_enabled,
         capture_host_dir=capture_host_dir,
+        domains_auto_enabled=bool(getattr(config.domains.auto, "enable", False))
+            or bool(getattr(config.domains, "expires", None)),
+        grants_host_dir=str(_state.grants_dir(deploy_name or name)),
         passthrough_regex=pt_regex,
         rootless=rootless,
         inspected_tcp_ports=_inspected_tcp,

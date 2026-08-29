@@ -100,7 +100,6 @@ class TestOmitted:
         auto = cfg.domains.auto
         assert auto.host == "agentcage.local"
         assert auto.decider.kind == "agent"
-        assert auto.fail_open is False
         assert auto.rate_limit_rps == 1.0
         assert auto.rate_limit_burst == 5
 
@@ -234,17 +233,6 @@ class TestLlmProvider:
             validate_config(cfg)
 
 
-# ── fail_open ─────────────────────────────────────────────
-
-
-class TestFailOpen:
-    def test_fail_open_warns(self, tmp_path):
-        body = _enabled(_agent_decider())
-        body = body.replace("    enable: true",
-                            "    enable: true\n    fail_open: true")
-        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
-        warnings = validate_config(cfg)
-        assert any("fail_open" in w for w in warnings)
 
 
 # ── proxy-config subset membership ─────────────────────────
