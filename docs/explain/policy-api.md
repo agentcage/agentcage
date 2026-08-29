@@ -11,17 +11,20 @@ Two new **opt-in** capabilities for a cage, both served by the egress proxy on a
 reserved control hostname so they work even under full default-deny:
 
 1. **Introspection** — the agent can `GET` the effective domain allow/block
-   policy (baseline + runtime-granted overlay).
+   policy (baseline + decider-granted domains).
 2. **Request** — the agent can `POST` a request to add a domain. The egress
-   invokes an operator-configured **decision hook** (a webhook, or a built-in
-   LLM call) that grants or denies. On grant, the domain is added to a live
-   in-memory overlay that takes effect immediately and is persisted so it
-   survives egress restart; the operator can promote it into the static
-   `cage.yaml` baseline via the existing `agentcage domain add` path.
+   invokes a **decider** — a built-in LLM cybersecurity-expert agent
+   (`kind: agent`) — that scrutinizes the request's justification as an
+   adversarial claim and grants or denies. On grant, an auto-started grants
+   watcher promotes the domain into the static `cage.yaml` baseline via the
+   existing `agentcage domain add` chain, so it is immediately reachable and
+   permanent.
 
-The egress never self-authorizes without the decision hook, never writes the
-operator's `cage.yaml`, and the feature is disabled by default with zero
-behavior change when off.
+The egress never self-authorizes without the decider, and the feature is
+disabled by default with zero behavior change when off. Auto-management nests
+under `domains.auto`, so all domain egress policy (static
+`allow`/`block`/`passthrough`, `expires`, and runtime auto-management) shares
+one namespace.
 
 ---
 
@@ -57,10 +60,10 @@ The relevant facts of the current architecture (verified in code):
 
 The last point is the foundation: **granting a domain is already a solved
 host-side operation.** This design adds (a) an in-cage way to *observe* the
-policy and (b) an in-cage way to *request* a change, gated by external logic,
-with the egress applying grants to a live overlay for immediate effect and the
-host promotion path reusing the existing `domain add` machinery for durability
-and operator visibility.
+policy and (b) an in-cage way to *request* a change, gated by the decider,
+with the egress applying the grant immediately (L7) and an auto-started
+grants watcher promoting it into the static baseline via the existing
+`domain add` machinery for durability and operator visibility.
 
 ## 2. Goals / non-goals
 
@@ -68,22 +71,25 @@ Goals:
 
 - Agent can discover the effective allowlist without trial-and-error `fetch`
   (today it only learns by getting 403s).
-- Agent can request a new domain; an external, operator-controlled decision
-  (LLM or otherwise) grants or denies.
-- Granted domains take effect immediately and survive egress restart.
+- Agent can request a new domain; the built-in decider (an LLM
+  cybersecurity-expert agent) grants or denies.
+- Granted domains take effect immediately and are promoted into the static
+  baseline (permanent, survive `cage destroy`/`recreate`).
 - Both features are **opt-in** and **off by default**; no change for existing
   cages.
 - Works under default-deny (the whole point is to ask for more access).
 - Works across all three isolation backends.
-- Fully audited; operator can see, promote, and revoke grants.
+- Fully audited; operator can see grants and remove them via
+  `agentcage domain rm`.
 
 Non-goals (explicitly out of scope for v1):
 
 - Requesting changes to **ports**, **blocklist** entries, **secrets**, or
   **passthrough**. v1 is allowlist-additive only. (Introspection may *show*
   these; requests cannot change them.)
-- Human-in-the-loop approval UI. The decision hook *may* delegate to a human
-  (a webhook can do anything), but agentcage itself ships no approval UI.
+- Human-in-the-loop approval UI. The decider *may* eventually delegate to a
+  human (a future `kind: webhook` could do anything), but agentcage itself
+  ships no approval UI.
 - Granting in **blocklist** mode. A grant is meaningless there (blocklist
   allows everything except listed). v1 requires allowlist mode; blocklist mode
   disables the request endpoint (introspection still works).
@@ -98,7 +104,7 @@ A reserved hostname, default `agentcage.local`, served entirely by the egress:
 - **DNS**: dnsmasq gains `address=/agentcage.local/<ip_egress>` (rendered at
   deploy time; `ip_egress` is already known to `quadlets.py`). The cage
   resolves it to the egress and connects normally. Configurable via
-  `policy_api.host`.
+  `domains.auto.host`.
 - **TLS**: the egress CA already mints a cert for any SNI, and the cage trusts
   that CA, so `https://agentcage.local` works with no extra cert plumbing.
 - **Interception**: the addon short-circuits in `request()` **before** the
@@ -123,8 +129,8 @@ either).
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET`  | `/v1/allowlist` | Introspection. Returns the effective domain policy. |
-| `POST` | `/v1/allowlist/requests` | Request a new domain. Triggers the decision hook. |
-| `GET`  | `/v1/allowlist/requests/{id}` | Poll a request's status (async hooks). |
+| `POST` | `/v1/allowlist/requests` | Request a new domain. Invokes the decider. |
+| `GET`  | `/v1/allowlist/requests/{id}` | Poll a request's status. |
 | `GET`  | `/v1/health` | Liveness + feature flags (which endpoints are enabled). |
 
 Anything else on the control host → `404`. No wildcarding, no proxying.
@@ -138,7 +144,7 @@ Anything else on the control host → `404`. No wildcarding, no proxying.
   "granted": [
     {"domain": "registry.npmjs.org", "granted_at": "2026-06-01T12:00:00Z",
      "expires_at": "2026-06-01T13:00:00Z", "reason": "npm install requested",
-     "source": "policy-hook"}
+     "source": "decider", "decided_by": "decider:agent:openrouter"}
   ],
   "passthrough": ["whatsapp.com"],
   "requestable": true,
@@ -147,8 +153,10 @@ Anything else on the control host → `404`. No wildcarding, no proxying.
 ```
 
 - `baseline` = the operator's static `domains.allow` from `config.yaml`.
-- `granted` = runtime overlay entries (empty when the request endpoint is
-  disabled). Each carries `expires_at` if the grant has a TTL.
+- `granted` = domains admitted by the decider and promoted into the baseline
+  by the grants watcher (empty when auto-management is disabled). Entries are
+  permanent; an `expires_at` field appears only for domains time-limited via
+  `agentcage domain add --expires-in`.
 - `requestable` = whether `POST /v1/allowlist/requests` is enabled (so the
   agent knows before trying).
 
@@ -160,7 +168,7 @@ Request body:
 {"domain": "registry.npmjs.org", "reason": "need to run npm install"}
 ```
 
-Synchronous decision (default) → `200`:
+Synchronous decision → `200`:
 
 ```json
 {
@@ -168,212 +176,207 @@ Synchronous decision (default) → `200`:
   "status": "granted",
   "domain": "registry.npmjs.org",
   "reason": "package install looks benign",
-  "expires_at": "2026-06-01T13:00:00Z",
-  "decided_by": "policy-hook:webhook"
+  "decided_by": "decider:agent:openrouter"
 }
 ```
 
-Async hook (operator's webhook returns `202` with a handle) → `202` with
-`status: "pending"`; the agent polls `GET /v1/allowlist/requests/{id}` until
-`granted`/`denied`. The addon retains pending requests in memory for a
-configurable TTL (default 5 min).
+Errors: `400` bad domain syntax / not allowlist mode / missing `reason`;
+`409` already granted; `429` request rate limit; `503` decider unavailable
+(configurable fail-open vs fail-closed; **default fail-closed** = deny).
 
-Errors: `400` bad domain syntax / not allowlist mode; `409` already granted;
-`429` request rate limit; `503` decision hook unavailable (configurable
-fail-open vs fail-closed; **default fail-closed** = deny).
+### 3.3 The decider (built-in LLM cybersecurity-expert agent)
 
-### 3.3 Decision hook ("external logic / LLM call")
-
-The hook is invoked **by the egress** (it has its own internet outbound on
+The decider is invoked **by the egress** (it has its own internet outbound on
 the podman network, and already handles real secret values as the secret
-injector). Two providers, selected by config:
+injector). The decider is configured as a `decider:` block under
+`domains.auto`, with a `kind`. **v1 ships `kind: agent` only** — the built-in
+LLM decider, a senior cybersecurity expert that adjudicates each request
+(Claude Code "auto" mode for egress). `kind: webhook` is **reserved / not
+yet implemented** — the design below describes the `agent` decider.
 
-#### Provider `webhook` (recommended, primary)
+#### `kind: agent` — the built-in LLM decider
 
-The egress `POST`s a JSON decision request to an operator-controlled URL:
+The egress calls the LLM provider directly over raw HTTPS — **no SDK**, to
+keep the egress image lean. Three providers:
 
-```json
-{
-  "cage": "myagent",
-  "domain": "registry.npmjs.org",
-  "reason": "need to run npm install",
-  "baseline": ["anthropic.com", "github.com"],
-  "granted": ["api.openai.com"],
-  "ts": "2026-06-01T12:00:00Z"
-}
-```
+- `anthropic` — `/v1/messages` (API key via the `x-api-key` header).
+- `openai` — `/v1/chat/completions` (OpenAI chat-completions wire format).
+- `openrouter` — same OpenAI chat-completions format, with OpenRouter's
+  model-routing (`anthropic/claude-sonnet-4-5`, etc.).
 
-Expected response:
+Config gives `provider`, `model`, an `api_key` (the decider's own key,
+declared with the `secret_injection.source` scheme — `env:NAME` /
+`systemd-creds:NAME` / `cmd:...`; **egress-only**, stripped from the cage env
+and staged to the proxy tmpfs), a `timeout_seconds` (default 15), and an
+optional `base_url` override.
 
-```json
-{"decision": "grant", "reason": "...", "ttl_seconds": 3600}
-```
+The agent must justify the request: the `POST` body requires a non-empty
+`reason`, and the decider treats it as an **adversarial claim to be
+scrutinized**. The system prompt casts the model as a senior cybersecurity
+expert acting as the autonomous-approval gate: it grants only when the
+justification explains a specific, plausible task and the domain is a
+well-known, legitimate, low-risk service for that task; it denies
+look-alikes, paste/file-share/anonymizer domains, and vague justifications.
+The decision is forced through a `decide` tool call (decision/reason); a
+response with no usable tool call is treated as **deny** (fail-closed). The
+decider's `reason` is returned to the agent and written to `audit.jsonl` as
+the risk-assessment rationale.
 
-or `{"decision": "deny", "reason": "..."}`. The operator's service does
-whatever it wants — an LLM call, a static rule, a human approval queue, a
-Slack prompt. This keeps the LLM/external logic **outside** the egress trust
-boundary and fully under operator control. Auth via an injected secret
-(`Authorization: Bearer <secret>`, referencing a `secret_injection` env name
-the egress already holds).
+The decider:
 
-#### Provider `llm` (built-in, optional convenience)
-
-The egress calls an LLM provider directly. Config gives `provider`
-(`anthropic` | `openai`), `model`, an API key referenced by `secret_injection`
-env name, a `prompt` template (with `{domain}`, `{reason}`, `{baseline}`,
-`{granted}` placeholders), and a response parser (structured tool call →
-grant/deny + reason + ttl). Reuses the egress's existing ability to hold real
-secret values. Provided so a single cage can self-serve without an external
-service, but documented as a larger trust surface (the egress makes model
-calls and parses their output as policy).
-
-Both providers:
-
-- Have a timeout (default 10s) and retry policy.
-- Are **fail-closed by default**: a hook error or timeout → deny. Operator
+- Has a timeout (default 15s) and retry policy.
+- Is **fail-closed by default**: a decider error or timeout → deny. Operator
   can set `fail_open: true` to grant on error (not recommended; documented as
   risky).
-- Are rate-limited per cage (default 1 req/s burst 5) independently of the
+- Is rate-limited per cage (default 1 req/s burst 5) independently of the
   egress's existing per-host HTTP rate limit, to bound LLM cost/abuse.
 
-### 3.4 Applying a grant (live overlay + persistence)
+### 3.4 Applying a grant (immediate + permanent promotion)
 
 On `grant`:
 
-1. **Live effect**: the addon calls `DomainInspector.grant(domain)` which
-   adds the domain to the in-memory `domain_set` (allowlist mode). The very
-   next request to that domain passes the domain inspector. No restart, no
-   SIGHUP, no upstream reconnect.
-2. **Persistence**: the grant is appended to a **grants overlay** file on a
-   writable volume (`/var/lib/agentcage/grants.yaml`, mounted from the host
-   per-cage deploy dir). On egress start and on every `_maybe_reload`, the
-   addon replays non-expired grants into the inspector **after** `configure()`
-   so hot-reloads of `config.yaml` never wipe runtime grants.
-3. **Expiry**: an optional background sweeper (a single `asyncio` task
-   started in `running()`) drops expired grants from memory and the overlay.
-4. **Audit**: every request + decision is written to `audit.jsonl` with
-   `kind: "policy_request"`, the domain, the decision, the reason, and
-   `decided_by`. This is the forensic record.
+1. **Live effect (L7)**: the addon calls `DomainInspector.grant(domain)`
+   which adds the domain to the in-memory `domain_set` (allowlist mode). The
+   very next request to that domain passes the domain inspector. No restart,
+   no SIGHUP, no upstream reconnect.
+2. **Permanent promotion (baseline)**: the **auto-started grants watcher**
+   (started whenever `auto.enable` is true) runs the literal `domain add`
+   chain (`save_raw_config` → `save_proxy_config` → `save_dns_allowlist` →
+   SIGHUP dnsmasq), baking the domain into the operator's `cage.yaml`
+   baseline. The addon hot-reloads on `config.yaml`'s mtime. The grant is
+   immediately reachable and permanent — it survives `cage destroy`/
+   `recreate`. There is no separate overlay file and no manual `watch` step.
+3. **Audit**: every request + decision is written to the egress
+   `audit.jsonl` as `policy_request`, with the domain, the decision, the
+   decider's `reason`, and `decided_by` (`decider:agent:<provider>` for
+   grants, `decider` for structural denials). The per-cage
+   `policy-audit.jsonl` carries `policy_grant_applied`,
+   `policy_grant_removed`, and `domain_allow_expired`.
 
-The grants overlay is **additive only** and clearly separated from the
-operator's `config.yaml` baseline:
+Grants are **additive only**:
 
-- The egress **never** writes `config.yaml` (it's `:ro`). The baseline is
-  always the operator's.
+- The egress **never** writes `config.yaml` directly for a grant; promotion
+  goes through the host-side `domain add` machinery, so the baseline is
+  always changed through the operator-visible path.
 - Introspection reports `baseline` and `granted` as distinct lists.
 - Grants only ever *expand* the allow set. They cannot weaken the SNI/Host
   check, secret inspection, entropy, content-type, or body-size inspectors —
   those still run on traffic to granted domains.
 
-### 3.5 Promotion to the static baseline (optional, host-side)
+### 3.5 Revoking & time-limiting grants (host-side)
 
-A grant in the overlay takes effect immediately and survives egress restart,
-but a `cage destroy`/`recreate` loses it. To make a grant permanent, the
-operator promotes it into `cage.yaml` via the **existing** path:
+Grants are **permanent** — the auto-started watcher promotes each grant into
+`cage.yaml` via the existing `domain add` live-reload path, so there is no
+manual `promote` step and no separate overlay to manage. The
+`cage grants promote`/`revoke` commands were removed.
 
-- New CLI: `agentcage cage grants <name> list` / `promote <domain>` /
-  `revoke <domain>`. `promote` reads the overlay, runs the same logic as
-  `domain add` (`save_raw_config` → `save_proxy_config` → `save_dns_allowlist`
-  → SIGHUP dnsmasq), and removes the now-redundant overlay entry.
-- Optional lightweight **host watcher** (`agentcage cage grants --watch`, or
-  a systemd user unit) that auto-promotes grants after a configurable delay.
-  v1 ships the on-demand CLI; the watcher is a documented follow-up so we
-  don't add an always-on component before the UX is proven.
+- **Remove a granted domain:** `agentcage domain rm <domain>` — drops it from
+  the baseline and live-reloads it away.
+- **Time-limit a domain:** `agentcage domain add <domain> --expires-in 30m` —
+  records an expiry in `domains.expires`; the domain is removed automatically
+  when it expires (`domain_allow_expired` in `policy-audit.jsonl`).
+- **Debug the watcher:** `agentcage cage grants <name> watch` still exists for
+  debugging the auto-promotion flow. There is no manual `watch` to start — the
+  watcher starts itself when `auto.enable` is true.
 
-This deliberately reuses the battle-tested `domain add` machinery rather than
-inventing a second write path.
+This deliberately reuses the battle-tested `domain add`/`domain rm` machinery
+rather than inventing a second write path.
 
 ### 3.6 Opt-in configuration
 
-New top-level config section, disabled by default:
+Auto-management nests under `domains.auto`, disabled by default. Full form:
 
 ```yaml
-policy_api:
-  enable: true                       # master switch; off = no control host
-  host: agentcage.local              # reserved control hostname (default)
+domains:
+  allow: [anthropic.com, github.com]
+  expires: {npmjs.org: "2026-08-29T19:00:00+00:00"}   # from `domain add --expires-in`
+  auto:                       # auto-manage this allowlist (opt-in, default off)
+    enable: true              # master switch; off = no control host
+    host: agentcage.local     # reserved synthetic control host (default)
+    decider:                  # the agent that decides each request
+      kind: agent             # "agent" = built-in LLM cybersecurity expert (v1 only)
+      provider: openrouter    # anthropic | openai | openrouter
+      model: anthropic/claude-sonnet-4-5
+      api_key: env:OPENROUTER_API_KEY   # secret_injection.source syntax; egress-only
+      timeout_seconds: 15
+      # base_url: https://openrouter.ai  # optional override
+    fail_open: false           # deny on decider error (default)
+    rate_limit: {requests_per_second: 1, burst: 5}
+```
 
-  introspection:
-    enable: true                     # GET /v1/allowlist (default: follows enable)
+Minimal form:
 
-  request:
-    enable: true                     # POST /v1/allowlist/requests
-    decision:
-      provider: webhook              # "webhook" | "llm"
-      webhook:
-        url: https://approver.example.com/agentcage
-        auth_secret: POLICY_HOOK_TOKEN   # env name from secret_injection
-        timeout_seconds: 10
-        async: false                # true → 202 + poll
-      # llm:                          # alternative provider
-      #   provider: anthropic
-      #   model: claude-sonnet-4-5
-      #   auth_secret: ANTHROPIC_API_KEY
-      #   timeout_seconds: 15
-      fail_open: false               # true = grant on hook error (risky)
-      rate_limit: {requests_per_second: 1, burst: 5}
-    grant:
-      ttl_seconds: 3600              # 0 = no expiry
-      max_grants: 32                 # cap total overlay size
-      never_grant:                   # hard deny list (always denied)
-        - agentcage.local
-        - 169.254.169.254
-        - "*.internal"
-      require_allowlist_mode: true   # refuse to run in blocklist mode (default)
+```yaml
+domains:
+  allow: [anthropic.com]
+  auto:
+    enable: true
+    decider: {kind: agent, provider: openrouter, model: anthropic/claude-sonnet-4-5, api_key: env:OPENROUTER_API_KEY}
 ```
 
 Validation (`config.validate_config`):
 
-- `policy_api.enable` gates everything. Both sub-`enable` flags default to
-  the master.
-- `request.enable` requires allowlist mode (`domains.mode == "allowlist"`)
-  unless `require_allowlist_mode: false` (warned as risky).
-- `never_grant` must include the control host and link-local/metadata ranges
-  by default; operator additions are unioned.
-- `webhook.url` must be an absolute `https` URL (or `http` to a loopback).
-- `auth_secret` must reference a name present in `secret_injection` (the
-  egress can only use secrets it already holds). Validated at create/update.
-- `max_grants >= 0`, `ttl_seconds >= 0`.
+- `domains.auto.enable` gates everything. When true, **both** endpoints are
+  on — there are no separate `introspection:`/`request:` enable flags.
+- Auto-management requires allowlist mode (`domains.allow` present); the
+  request endpoint refuses to run in blocklist mode.
+- `decider.kind` must be `agent` in v1 (`webhook` is reserved / not yet
+  implemented).
+- `decider.api_key` is **required** for `kind: agent`, declared with the
+  `secret_injection.source` scheme (`env:` / `systemd-creds:` / `cmd:`). It
+  is egress-only: stripped from the cage env, staged to the proxy tmpfs.
+  Validated at create/update.
+- There is **no `grant:` block**. Grants use fixed safe defaults: permanent
+  (`ttl_seconds: 0`), max 32 concurrent, a `never_grant` set of
+  `internal`/`local`/`localhost` + the control host (always unioned, the
+  decider can't override), and a require-allowlist-mode invariant. These are
+  NOT operator-configurable in v1.
+- `max_grants >= 0` (fixed at 32), `ttl_seconds >= 0` (fixed at 0).
 
 ## 4. Threat model & security
 
-This feature intentionally lets the cage expand its own egress, gated by an
-external decision. The safeguards:
+This feature intentionally lets the cage expand its own egress, gated by the
+decider. The safeguards:
 
-1. **Opt-in, off by default.** No config section → zero new surface; the
-   control host isn't even resolved.
-2. **Decision hook is the gate.** The egress never grants without a positive
-   grant from the hook. Hook failure defaults to **deny**.
-3. **Additive-only overlay.** Grants can only *widen* the allowlist; they
+1. **Opt-in, off by default.** No `domains.auto:` section (or `enable: false`)
+   → zero new surface; the control host isn't even resolved.
+2. **The decider is the gate.** The egress never grants without a positive
+   grant from the decider. Decider failure defaults to **deny**.
+3. **Additive-only.** Grants can only *widen* the allowlist; they
    never bypass the SNI/Host check, secret/entropy/content-type/body-size
    inspectors, rate limits, or the TCP-bypass kill. Granted traffic is still
    fully inspected.
 4. **Control host is synthetic and non-forwardable.** The addon answers it
-   locally and never opens an upstream. `agentcage.local` is in `never_grant`
-   by default, so the cage can't grant it to itself and can't reach a "real"
-   agentcage.local upstream.
+   locally and never opens an upstream. `agentcage.local` is in the fixed
+   `never_grant` set, so the cage can't grant it to itself and can't reach a
+   "real" agentcage.local upstream.
 5. **No SSRF via the request endpoint.** Only the two documented paths exist;
    everything else 404s. The `domain` field is validated as a syntactically
    valid public hostname (no IP literals, no `*.local`, no link-local/metadata
-   ranges — enforced via `never_grant` + syntax check).
-6. **Bounded blast radius.** `max_grants`, per-cage request rate limit, TTL
-   expiry, and full audit logging. The grants overlay is per-cage, not shared.
-7. **Secret hygiene.** The hook auth secret flows through the existing
-   `secret_injection` mechanism — the real value lives only in the egress,
-   never in the cage env.
-8. **Trust-boundary note (documented, not hidden).** With the `llm` provider,
-   the egress makes model calls and interprets their output as policy. With
-   the `webhook` provider, policy logic stays with the operator. The docs
-   recommend `webhook` for production and flag `llm` as a larger surface.
-9. **Baseline immutability.** The egress cannot rewrite `config.yaml`; the
-   operator's static policy is never silently changed. Promotion is an
-   explicit operator action.
+   ranges — enforced via the fixed `never_grant` set + syntax check).
+6. **Bounded blast radius.** Max 32 concurrent grants, per-cage request rate
+   limit, full audit logging, and permanent grants that are explicitly
+   removable via `agentcage domain rm`. The grant lifecycle is per-cage, not
+   shared.
+7. **Secret hygiene.** The decider's `api_key` flows through the
+   `secret_injection.source` mechanism as an egress-only secret — the real
+   value lives only in the egress, never in the cage env.
+8. **Trust-boundary note (documented, not hidden).** With `kind: agent`, the
+   egress makes model calls over raw HTTPS and interprets their output as
+   policy. v1 ships the agent decider only; `kind: webhook` (which would keep
+   policy logic outside the egress) is reserved / not yet implemented.
+9. **Baseline immutability from the egress.** The egress cannot rewrite
+   `config.yaml` directly; grants are promoted through the host-side
+   `domain add` machinery, so the operator's static policy is never silently
+   changed by the egress.
 
 Residual risks (acknowledged):
 
-- A grant widens egress to a new host. If the hook is compromised or
-  mis-prompted (LLM provider), the cage gains access it shouldn't. Mitigated
-  by `never_grant`, TTLs, audit, and recommending the webhook provider.
-- The egress gains a new outbound destination (the webhook URL / LLM API).
+- A grant widens egress to a new host. If the decider is mis-prompted or the
+  model is compromised, the cage gains access it shouldn't. Mitigated by the
+  fixed `never_grant` set, the adversarial-claim system prompt, audit, and
+  explicit removal via `agentcage domain rm`.
+- The egress gains a new outbound destination (the LLM provider API).
   This is egress-egress, not subject to the cage allowlist, and is pinned in
   config + audited.
 
@@ -384,12 +387,13 @@ are safe and reversible; M3 adds the policy mutation; M4–M6 are hardening +
 parity.
 
 ### M1 — Config schema + validation + docs (no runtime effect)
-- `config.py`: add `PolicyApiConfig`, `IntrospectionConfig`, `RequestConfig`,
-  `DecisionConfig` (`webhook`/`llm` variants), `GrantConfig`. Parse under
-  `policy_api:`. Wire into `Config`.
+- `config.py`: add `DomainAutoConfig`, `DeciderConfig` (`kind: agent` only in
+  v1; `webhook` reserved). Parse under `domains.auto:`. Wire into `Config`.
+  No `IntrospectionConfig`/`RequestConfig`/`GrantConfig` — both endpoints are
+  on when `enable` is true, and grant behavior is fixed safe defaults.
 - `validate_config`: implement all rules in §3.6 (allowlist-mode requirement,
-  `never_grant` defaults incl. control host + metadata ranges, secret ref
-  existence, URL shape, numeric bounds).
+  `decider.kind == agent`, required `api_key` with a valid `*_source`
+  scheme, numeric bounds).
 - `docs/explain/policy-api.md` (this doc) + a section in
   `docs/reference/domains.md` pointing here.
 - Tests: config parse/validate (positive + every rejection), backward-compat
@@ -397,7 +401,7 @@ parity.
 
 ### M2 — Control host + introspection endpoint (read-only, safe)
 - dnsmasq render (`services.py` / `quadlets.py`): emit
-  `address=/<host>/<ip_egress>` when `policy_api.enable` (all backends).
+  `address=/<host>/<ip_egress>` when `domains.auto.enable` (all backends).
 - `addon.py`: in `request()`, short-circuit on the control host *before* the
   SNI check / rate limit / inspector chain when enabled. Implement
   `GET /v1/allowlist` (serialize `DomainInspector` state) and `GET /v1/health`.
@@ -409,59 +413,59 @@ parity.
   unknown paths, SNI/Host mismatch on control host → 404); e2e that a
   default-denied cage can `GET /v1/allowlist`.
 
-### M3 — Request endpoint + decision hook + grants overlay
+### M3 — Request endpoint + decider + grants watcher
 - `addon.py`: `POST /v1/allowlist/requests` handler:
-  - validate domain (syntax + `never_grant` + allowlist mode + not already
-    granted);
+  - validate domain (syntax + fixed `never_grant` + allowlist mode + not
+    already granted) and require a non-empty `reason`;
   - enforce request rate limit;
-  - build decision context, invoke provider (`webhook` via the egress's own
-    outbound HTTP client; `llm` via provider SDK call);
-  - on `grant`: `DomainInspector.grant(domain)`, append to overlay, audit,
-    return response. On `deny`: audit, return. On async `202`: stash
-    pending, expose poll endpoint.
+  - build decision context, invoke the `kind: agent` decider (raw HTTPS to
+    the LLM provider — `anthropic` `/v1/messages`, `openai`/`openrouter`
+    `/v1/chat/completions`, no SDK);
+  - on `grant`: `DomainInspector.grant(domain)` (immediate L7), hand off to
+    the grants watcher for permanent promotion, audit, return response. On
+    `deny`: audit, return.
 - `DomainInspector`: add `grant(domain)` / `revoke(domain)` /
   `effective_set()`; make `configure()` not clobber grants (replay after).
-- Grants overlay file (`/var/lib/agentcage/grants.yaml`) on a new writable
-  per-cage volume; load + replay on `load()` and `_maybe_reload()`; atomic
-  write (temp + rename).
-- TTL expiry sweeper: `asyncio` task started in `running()`, cancelled in
-  `done()`.
-- `egress.container.j2` + apple-container: mount the grants volume (writable
-  by `acproxy` uid 200), pass `AGENTCAGE_POLICY_API_*` env where helpful.
-- Audit entries `kind: policy_request` with full context.
-- Tests: webhook provider (grant/deny/timeout/fail-closed/async), grants
-  replay across simulated reload, TTL expiry, `max_grants` cap, `never_grant`
-  enforcement, request rate limit; e2e grant → immediate access to new host.
+- Grants watcher: auto-started when `domains.auto.enable`, runs the literal
+  `domain add` chain to bake grants into `cage.yaml` (permanent). No overlay
+  file and no TTL sweeper — grants are permanent; time-limiting is
+  `agentcage domain add --expires-in`.
+- `egress.container.j2` + apple-container: stage the decider `api_key` into
+  the proxy tmpfs (egress-only), pass `AGENTCAGE_DOMAIN_AUTO_*` env where
+  helpful.
+- Audit: egress `audit.jsonl` `policy_request` (the decision) + per-cage
+  `policy-audit.jsonl` `policy_grant_applied`/`policy_grant_removed`/
+  `domain_allow_expired`.
+- Tests: agent decider (grant/deny/timeout/fail-closed/malformed), grants
+  promoted via `domain add` chain, `never_grant` enforcement, request rate
+  limit, missing-`reason` rejection; e2e grant → immediate access to new host.
 
-### M4 — Built-in LLM provider
-- `llm` provider: Anthropic + OpenAI clients, prompt templating, structured
-  tool-call response parsing (grant/deny/reason/ttl). API key via
-  `secret_injection` env name (read from staged secret files, same path the
-  injector uses).
+### M4 — Agent decider hardening
+- `kind: agent` decider: prompt templating, structured `decide` tool-call
+  response parsing (decision/reason). API key via `api_key` (`*_source`
+  scheme, read from staged secret files).
 - Hardening: response schema validation, strict parse → deny on ambiguity,
-  prompt-injection-resistant system prompt, per-provider timeout/retry.
+  prompt-injection-resistant system prompt (adversarial-claim framing),
+  per-provider timeout/retry.
 - Tests: mocked provider endpoints (grant/deny/malformed/unavailable),
   secret-resolution from staged files.
 
-### M5 — Host-side grants management + promotion
-- CLI `agentcage cage grants <name> list|promote|revoke`:
-  - `list`: read overlay (host-side file) → table.
-  - `promote <domain>`: run the existing `domain add` logic
-    (`save_raw_config` → `save_proxy_config` → `save_dns_allowlist` →
-    `_update_dns_quadlet`), then remove the overlay entry.
-  - `revoke <domain>`: remove from overlay and signal egress (overlay file
-    mtime → addon hot-reload drops it; or an explicit dnsmasq-style signal).
-- `cage show` / `domain list` show granted overlay alongside baseline.
+### M5 — Host-side grants management
+- CLI: `agentcage cage grants <name> list` (show promoted grants) and
+  `agentcage cage grants <name> watch` (debug the auto-promotion flow).
+  `promote`/`revoke` were removed — grants are permanent; removal is
+  `agentcage domain rm <domain>`, time-limiting is
+  `agentcage domain add <domain> --expires-in`.
+- `cage show` / `domain list` show granted domains alongside baseline.
 - AGENTS.md brief: templated addition telling the agent the control
-  endpoints exist (only rendered when `policy_api.enable`), so it knows to
+  endpoints exist (only rendered when `domains.auto.enable`), so it knows to
   query/request instead of guessing.
-- Tests: promote → baseline updated + overlay cleared + still live; revoke;
-  show output.
+- Tests: grant → baseline updated + still live; `domain rm` removal;
+  `--expires-in` expiry; show output.
 
 ### M6 — Apple-container parity + hardening + security review
-- Verify the apple-container egress supervisor wires the control-host DNS,
-  grants volume, and uid mapping (mirror of container backend's acproxy
-  handling).
+- Verify the apple-container egress supervisor wires the control-host DNS
+  and uid mapping (mirror of container backend's acproxy handling).
 - Fuzz the control endpoint (unknown methods, huge bodies, weird Host
   headers, concurrent requests), confirm no path reaches a real upstream.
 - Threat-model review pass against §4; add tests for each safeguard.
@@ -472,34 +476,39 @@ parity.
 
 | Area | Files |
 |------|-------|
-| Config | `src/agentcage/config.py` (new dataclasses + parse + validate) |
-| Proxy addon | `src/agentcage/data/proxy/addon.py` (control host, endpoints, hook caller, grants overlay, sweeper), `inspectors/domain.py` (`grant`/`revoke`/`snapshot`, replay-safe `configure`) |
-| Rendering | `src/agentcage/quadlets.py`, `src/agentcage/services.py`, `templates/egress.container.j2`, `data/containers/supervisor-egress.sh` (control-host DNS, grants volume, env) |
+| Config | `src/agentcage/config.py` (new dataclasses + parse + validate under `domains.auto`) |
+| Proxy addon | `src/agentcage/data/proxy/addon.py` (control host, endpoints, decider caller, grants watcher handoff), `inspectors/domain.py` (`grant`/`revoke`/`snapshot`, replay-safe `configure`) |
+| Rendering | `src/agentcage/quadlets.py`, `src/agentcage/services.py`, `templates/egress.container.j2`, `data/containers/supervisor-egress.sh` (control-host DNS, decider `api_key` staging, env) |
 | Apple-container | `src/agentcage/data/apple-container/*`, `backends/apple_container.py` (`reload_domains`-style parity for grants + control host) |
-| CLI | `src/agentcage/cli.py` (`cage grants` group; introspection in `show`/`domain list`) |
+| CLI | `src/agentcage/cli.py` (`cage grants` group: `list`/`watch`; removal via `domain rm`) |
 | Brief | `src/agentcage/scaffolds/AGENTS.md` (templated control-endpoint notice) |
 | Docs | `docs/explain/policy-api.md`, `docs/reference/policy-api.md`, `docs/reference/domains.md` |
-| Tests | `tests/` (config, addon control endpoints, hook providers, grants replay, promotion, e2e) |
+| Tests | `tests/` (config, addon control endpoints, decider, grants promotion, removal, e2e) |
 
 ## 7. Alternatives considered
 
 - **Egress writes `config.yaml` directly.** Rejected: the file is `:ro` by
   design and the egress is unprivileged; letting it rewrite operator policy
-  inverts the trust model. The overlay + optional host promotion preserves
-  the operator-as-source-of-truth invariant.
+  inverts the trust model. Promoting grants through the host-side
+  `domain add` machinery preserves the operator-as-source-of-truth invariant.
 - **Host-side daemon owns all decisions + application.** Cleanest trust
   boundary but adds an always-on component and a new IPC channel (egress→host
-  request queue) for v1. Deferred (§3.5 watcher). The egress-calls-hook model
-  reuses the egress's existing outbound and secret handling with no new
-  daemon.
-- **In-memory-only grants (no persistence).** Rejected: grants lost on every
+  request queue) for v1. Deferred (a future `kind: webhook` could delegate).
+  The egress-calls-decider model reuses the egress's existing outbound and
+  secret handling with no new daemon.
+- **In-memory-only grants (no promotion).** Rejected: grants lost on every
   egress restart (which happens on `cage restart`, host reboot, OOM kill) —
-  the agent would re-request constantly. The overlay file is cheap and
-  keeps grants durable without touching `config.yaml`.
+  the agent would re-request constantly. The auto-started watcher promotes
+  each grant into `cage.yaml` via `domain add`, keeping grants durable and
+  operator-visible.
 - **Make the control host a magic IP (e.g. 169.254.169.254).** Rejected: a
   hostname is debuggable (`curl https://agentcage.local/v1/allowlist`),
   composes with the existing dnsmasq allowlist machinery, and avoids
-  colliding with metadata-service semantics. The `never_grant` default still
-  blocks link-local/metadata IPs by pattern.
+  colliding with metadata-service semantics. The fixed `never_grant` set
+  still blocks link-local/metadata IPs by pattern.
+- **Operator-configurable `grant:` block.** Rejected for v1: fixed safe
+  defaults (permanent, max 32, fixed `never_grant`, require-allowlist-mode)
+  keep the trust surface minimal and reviewable. Operator time-limiting is
+  served by `agentcage domain add --expires-in`.
 - **Generalize to ports/secrets/blocklist.** Explicitly deferred (§2) to
   keep v1's trust surface minimal and reviewable.

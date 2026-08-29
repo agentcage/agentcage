@@ -30,9 +30,10 @@ surprises here are by design. (The running version is in the
   `POST https://agentcage.local/v1/allowlist/requests` with a `domain` and
   `reason` to request a new egress domain — instead of guessing from 403s.
   This hostname is reserved and answered by the sandbox itself, so it works
-  even when nothing else is allowlisted. The request is decided by an
-  operator-configured hook; a granted domain takes effect within about a
-  second.
+  even when nothing else is allowlisted. The request is decided by a built-in
+  decider agent (a cybersecurity expert that scrutinizes your justification);
+  a granted domain is promoted into the baseline and becomes reachable within
+  about a second.
 - The root filesystem may be read-only and Linux capabilities dropped. Write
   to your workspace, `/tmp`, or `/run`.
 
