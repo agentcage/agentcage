@@ -149,10 +149,27 @@ def _passthrough_regex(domains: list[str]) -> str:
 
 
 def _effective_dns_allowlist(config: Config) -> list[str]:
-    """Merge passthrough domains into the DNS allowlist.
+    """Merge passthrough + egress-internal hosts into the DNS allowlist.
 
-    Passthrough domains must resolve via upstream DNS (not the sinkhole),
-    so they are auto-added to the allowlist when in allowlist mode.
+    These hosts must resolve via upstream DNS (not the sinkhole) because a
+    component *inside the egress* connects to them directly — not through
+    mitmproxy, so the L7 allowlist never sees them and the sinkhole would
+    just break the connection:
+
+    * ``passthrough`` domains (cage traffic that bypasses TLS interception).
+    * protocol-relay upstream hosts — the relay opens its own socket to the
+      upstream (``asyncio.open_connection``), so it resolves via the egress's
+      dnsmasq. The operator drops these from ``domains.allow`` so the *cage*
+      can't reach them (only the relay can); but they must still resolve, so
+      they're auto-added here.
+    * the ``domains.auto`` decider agent's LLM provider host — the decider
+      calls the model via ``urllib`` from the addon process, again outside
+      mitmproxy. Without DNS resolution the decider 502s on every request.
+
+    Being in the DNS allowlist only makes a host *resolvable*; it does NOT
+    add it to the cage's HTTP allowlist (``DomainInspector``), so the cage
+    still can't reach these hosts over HTTP — only the egress-internal
+    component that needs them can.
     """
     if config.domains.mode != "allowlist":
         return []
@@ -160,6 +177,24 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
     for d in config.domains.passthrough:
         if d not in merged:
             merged.append(d)
+    # Protocol-relay upstream hosts.
+    for relay in getattr(config, "protocol_relays", []) or []:
+        host = getattr(relay.upstream, "host", "") or ""
+        if host and host not in merged:
+            merged.append(host)
+    # domains.auto decider agent's LLM provider host. Resolve the provider
+    # name to a base host (api.openrouter.ai, api.anthropic.com,
+    # api.openai.com) so the egress's urllib call can reach it.
+    auto = getattr(getattr(config, "domains", None), "auto", None)
+    if auto is not None and getattr(auto, "enable", False):
+        provider = (auto.decider.agent.provider or "").lower()
+        base = {
+            "anthropic": "api.anthropic.com",
+            "openai": "api.openai.com",
+            "openrouter": "openrouter.ai",
+        }.get(provider, "")
+        if base and base not in merged:
+            merged.append(base)
     return merged
 
 
