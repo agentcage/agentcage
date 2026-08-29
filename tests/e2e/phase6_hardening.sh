@@ -120,9 +120,19 @@ fi
 # does not yet honor tmpfs (#120) and that residual exposure is already
 # surfaced as a SECURITY-RELEVANT config warning (config.py).
 MASK_CAGE="e2e-mask"
-MASK_PROJECT="$(mktemp -d /tmp/e2e-mask-project-XXXXXX)"
+# Must live under $HOME: quadlets.py rejects any container.volumes host path
+# that resolves outside the home directory, so a /tmp project dir made this
+# whole phase report SKIP ("cage create failed") on every runner instead of
+# ever exercising the mask.
+MASK_PROJECT="$(mktemp -d "$HOME/.agentcage-e2e-mask-XXXXXX")"
 # The mask assumes a git project — create the .git tree podman overlays.
 mkdir -p "$MASK_PROJECT/.git/hooks"
+# mktemp -d makes 0700; a real checkout is 0755. With `userns: keep-id` the
+# host user keeps its own uid in the cage, which is NOT the workload's
+# `user: "1000:1000"`, so a 0700 /workspace denies uid 1000 even *search*
+# permission and every path below it fails with EACCES before the mask is
+# ever reached. Match a real project so this test measures the mask.
+chmod 755 "$MASK_PROJECT"
 # Sanity: the host pre-condition (no pre-commit hook) holds before the run.
 [ ! -f "$MASK_PROJECT/.git/hooks/pre-commit" ] || {
   e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
@@ -137,7 +147,7 @@ MASK_CREATE_RC=0
 create_cage "$CONFIGS/workspace-mask.yaml" >/dev/null || MASK_CREATE_RC=$?
 if [ "$MASK_CREATE_RC" -ne 0 ]; then
   e2e_skip "6.11" "Workspace .git/hooks tmpfs mask" \
-    "cage create failed (no podman / buildkit available)"
+    "cage create failed (no podman / buildkit available) — see the dumped create output above"
 else
   # `cage create` builds + starts the cage, but a sleep-infinity cage has
   # no HTTP port to wait_ready against. Poll cage exec until the workload
@@ -154,16 +164,26 @@ else
     e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
       "cage not reachable via exec after create"
   else
-    # Plant a hook from inside the cage. The write lands in the cage's
-    # tmpfs view of /workspace/.git/hooks/, not on the host bind-mount.
-    # chmod +x to mirror the real pivot shape.
-    agentcage cage exec "$MASK_CAGE" -- sh -c \
+    # Plant a hook from inside the cage AS THE DEFAULT (non-root) cage user.
+    # The write lands in the cage's tmpfs view of /workspace/.git/hooks/, not
+    # on the host bind-mount. chmod +x mirrors the real pivot shape. The
+    # runtimes give an option-less tmpfs the mode of the directory it masks —
+    # here the host's 0755 .git/hooks — with a root-owned root, so without the
+    # mask-mode pin (#321) this write fails with EACCES; keep its stderr so
+    # that shows up in the failure message instead of an empty file.
+    MASK_WRITE_ERR=$(agentcage cage exec "$MASK_CAGE" -- sh -c \
       'echo pwned > /workspace/.git/hooks/pre-commit && chmod +x /workspace/.git/hooks/pre-commit' \
-      >/dev/null 2>&1 || true
+      2>&1 >/dev/null | tr -d '\r' | tr '\n' ' ') || true
     # The write MUST be visible inside the cage (proves the tmpfs is there
     # and writable — the mask is a transient overlay, not a read-only block).
     IN_CAGE=$(agentcage cage exec "$MASK_CAGE" -- \
       cat /workspace/.git/hooks/pre-commit 2>/dev/null | tr -d '\r\n') || true
+    # Snapshot the mask's runtime shape while the cage is still up. A bare
+    # "Permission denied" cannot distinguish a wrong tmpfs mode (#321) from a
+    # /workspace whose modes deny the workload before the mask is reached.
+    MASK_DIAG=$(agentcage cage exec "$MASK_CAGE" -- sh -c \
+      'id; ls -ldn /workspace /workspace/.git /workspace/.git/hooks; grep hooks /proc/self/mounts' \
+      2>&1 | tr -d '\r' | tr '\n' '|') || true
     # Stop the cage so the tmpfs is torn down.
     agentcage cage stop "$MASK_CAGE" >/dev/null 2>&1 || true
     if [ -f "$MASK_PROJECT/.git/hooks/pre-commit" ]; then
@@ -171,13 +191,19 @@ else
         "cage write reached the host — cage→host pivot NOT blocked (in-cage content: ${IN_CAGE:-<empty>})"
     elif [ "$IN_CAGE" != "pwned" ]; then
       e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
-        "write did not land in the cage tmpfs (in-cage content: ${IN_CAGE:-<empty>}) — mask shape changed"
+        "write did not land in the cage tmpfs (in-cage content: ${IN_CAGE:-<empty>}; write stderr: ${MASK_WRITE_ERR:-<none>}; cage view: ${MASK_DIAG:-<none>}) — mask shape changed"
     else
       e2e_pass "6.11" "Workspace .git/hooks tmpfs mask"
     fi
   fi
 fi
 destroy_cage "$MASK_CAGE"
-rm -rf "$MASK_PROJECT"
+# Guard the rm: this path is now under $HOME, so an empty MASK_PROJECT must
+# never turn into `rm -rf ""`. An `if` and not `[ ... ] && rm`: lib.sh runs the
+# phase under `set -e`, where a false test as the last command would abort
+# before print_results.
+if [ -n "${MASK_PROJECT:-}" ]; then
+  rm -rf "$MASK_PROJECT"
+fi
 
 print_results

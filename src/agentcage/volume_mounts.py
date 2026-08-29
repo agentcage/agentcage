@@ -56,6 +56,46 @@ def validate_non_persistent_volume(spec: str) -> None:
         )
 
 
+def tmpfs_spec_target(spec: str) -> str:
+    """Return the container path of a ``container.tmpfs`` spec.
+
+    An entry is ``target[:options]``; only the target is meaningful to the
+    mount-topology helpers below.
+    """
+    return spec.split(":", 1)[0]
+
+
+def enclosing_mount(
+    target: str,
+    mount_targets: list[tuple[str, str]],
+) -> tuple[str, str]:
+    """Return the deepest mount in *mount_targets* that contains *target*.
+
+    Args:
+        target: An absolute container path, without a trailing slash.
+        mount_targets: ``(container_target, host_source)`` for every mount the
+            backend emits, where *host_source* is empty for mounts that do not
+            write through to the host (named volumes, ``np`` mounts whose
+            writes land in an overlay upperdir or a tmpfs).
+
+    Returns:
+        ``(mount_target, host_source)`` for the longest matching mount target,
+        or ``("", "")`` when no mount encloses *target*. A mount at ``/`` never
+        matches: it would make every path in the cage look nested.
+    """
+    best_target = ""
+    best_source = ""
+    for raw_target, source in mount_targets:
+        if not raw_target.startswith("/"):
+            continue
+        mount_target = raw_target.rstrip("/") or "/"
+        if target != mount_target and not target.startswith(mount_target + "/"):
+            continue
+        if len(mount_target) >= len(best_target):
+            best_target, best_source = mount_target, source
+    return best_target, best_source
+
+
 def mask_mountpoint_dirs(
     tmpfs: list[str],
     mount_targets: list[tuple[str, str]],
@@ -91,23 +131,12 @@ def mask_mountpoint_dirs(
         first, so removing ``<project>/.git/hooks`` is attempted before the
         ``<project>/.git`` parent that the same mask also created.
     """
-    normalized = [
-        (target.rstrip("/") or "/", source)
-        for target, source in mount_targets
-        if target.startswith("/")
-    ]
     result: dict[str, list[str]] = {}
     for spec in tmpfs:
-        target = spec.split(":", 1)[0].rstrip("/")
+        target = tmpfs_spec_target(spec).rstrip("/")
         if not target.startswith("/"):
             continue
-        best_target = ""
-        best_source = ""
-        for mount_target, source in normalized:
-            if target != mount_target and not target.startswith(mount_target + "/"):
-                continue
-            if len(mount_target) >= len(best_target):
-                best_target, best_source = mount_target, source
+        best_target, best_source = enclosing_mount(target, mount_targets)
         # No enclosing mount (the mount point is created in the container's
         # own writable layer), the mask covers the whole mount (nothing to
         # create), or the enclosing mount does not reach the host.

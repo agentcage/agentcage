@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -17,8 +18,11 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from agentcage.config import Config
 from agentcage.volume_mounts import (
+    enclosing_mount,
     is_non_persistent_volume,
+    mask_mountpoint_dirs,
     split_volume_spec,
+    tmpfs_spec_target,
     validate_non_persistent_volume,
     volume_options,
 )
@@ -296,76 +300,6 @@ def _b64(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
-def _mask_mountpoint_dirs(
-    tmpfs: list[str],
-    mount_targets: list[tuple[str, str]],
-) -> dict[str, list[str]]:
-    """Map bind-mount host source -> host dirs a ``tmpfs:`` mask materializes.
-
-    A ``tmpfs:`` entry whose target sits *under* a host bind-mount forces the
-    OCI runtime to create the mount point, and because a bind shares inodes
-    with its source, that ``mkdir -p`` lands in the operator's project
-    directory on the host. The scaffold masks are the common case: masking
-    ``/workspace/.git/hooks/`` on a project that is not a git repo leaves a
-    stray host ``.git/hooks/``, which makes the ubiquitous ``test -d .git``
-    idiom misreport the directory as a repository (issue #320).
-
-    The mask itself stays unconditional — dropping it when ``.git`` is absent
-    would reopen the #170 cage->host git-hook pivot for any ``.git`` created
-    later. Instead the caller records which of these paths were absent
-    immediately before container start and removes exactly those, and only
-    while still empty, on teardown.
-
-    Args:
-        tmpfs: Raw ``container.tmpfs`` specs (``target[:options]``).
-        mount_targets: ``(container_target, host_source)`` for every mount the
-            cage quadlet emits, where *host_source* is empty for mounts that
-            do not write through to the host (named volumes, ``np`` overlays
-            whose writes land in an upperdir). Longest-prefix matching runs
-            over the whole list so that a mask under, say, a named volume
-            nested inside a bind is correctly attributed to the named volume
-            and therefore skipped.
-
-    Returns:
-        ``{host_source: [host_path, ...]}`` with each list ordered deepest
-        first, so removing ``<project>/.git/hooks`` is attempted before the
-        ``<project>/.git`` parent that the same mask also created.
-    """
-    normalized = [
-        (target.rstrip("/") or "/", source)
-        for target, source in mount_targets
-        if target.startswith("/")
-    ]
-    result: dict[str, list[str]] = {}
-    for spec in tmpfs:
-        target = spec.split(":", 1)[0].rstrip("/")
-        if not target.startswith("/"):
-            continue
-        best_target = ""
-        best_source = ""
-        for mount_target, source in normalized:
-            if target != mount_target and not target.startswith(mount_target + "/"):
-                continue
-            if len(mount_target) >= len(best_target):
-                best_target, best_source = mount_target, source
-        # No enclosing mount (the mount point is created in the container's
-        # own writable layer), the mask covers the whole mount (nothing to
-        # create), or the enclosing mount does not reach the host.
-        if not best_source or target == best_target:
-            continue
-        parts = [p for p in target[len(best_target):].split("/") if p]
-        if not parts or any(p in (".", "..") for p in parts):
-            continue
-        dirs = result.setdefault(best_source, [])
-        for depth in range(len(parts), 0, -1):
-            path = os.path.join(best_source, *parts[:depth])
-            if path not in dirs:
-                dirs.append(path)
-    for dirs in result.values():
-        dirs.sort(key=lambda path: path.count("/"), reverse=True)
-    return result
-
-
 def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
     """Stage a single-file volume source so the VM backend can mount it.
 
@@ -387,6 +321,83 @@ def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
     staged = os.path.join(seed_dir, os.path.basename(real_path))
     shutil.copy2(real_path, staged)
     return staged
+
+
+# ``/tmp`` semantics: writable by every uid in the cage, sticky so one uid
+# cannot delete another's entries. Applied only to tmpfs entries that mask a
+# path inside another mount — see _apply_tmpfs_mask_mode().
+_TMPFS_MASK_MODE = "mode=1777"
+
+
+def _apply_tmpfs_mask_mode(
+    tmpfs: list[str],
+    mount_targets: list[tuple[str, str]],
+) -> list[str]:
+    """Pin ``mode=1777`` on tmpfs entries that mask a path inside a mount.
+
+    Neither OCI runtime gives a tmpfs the kernel's default ``1777`` root
+    mode when the mount spec carries no explicit ``mode=``: both copy the
+    mode of the directory the tmpfs is mounted *over* instead — runc in
+    ``mountEntry.createOpenMountpoint`` (``mode=%04o`` prepended to the
+    mount data), crun in ``append_tmpfs_mode_if_missing`` ("only when the
+    mount does not already request an explicit mode= option"). The tmpfs
+    root is then owned by the userns root the runtime mounts as, not by
+    the cage workload's ``user:``.
+
+    For a tmpfs that masks a path inside a host bind-mount — the #170
+    ``/workspace/.git/hooks/`` and #173 ``/workspace/.claude/`` masks the
+    scaffolds ship — the inherited mode is the **host** directory's,
+    typically ``0755``. The mask therefore comes up root-owned and
+    read-only for the uid the cage actually runs as, so a legitimate
+    in-cage write (``git`` installing a hook, an agent writing project
+    ``.claude`` state) fails with EACCES and only ``--as-root`` can write
+    (#321). Ownership cannot be expressed here — tmpfs ``uid=``/``gid=``
+    would have to hardcode the workload uid — but the mode can, and a
+    sticky world-writable root makes the mask usable by any ``user:``.
+
+    This does not weaken the mask. The tmpfs stays private to the cage's
+    mount namespace and mounted ``rprivate``, so cage writes still never
+    reach the host; the declared ``noexec,nosuid,nodev`` options are
+    untouched, so nothing planted there is executable; and the sticky bit
+    keeps one in-cage uid from clobbering another's entries.
+
+    Only masking entries are rewritten, and only when the operator did not
+    already pass an explicit ``mode=``. A tmpfs over an image directory
+    (``/tmp``, ``/var/cache``, …) keeps inheriting that directory's mode:
+    it is the image author's intent and it is already expressed in the
+    cage's own uid space, so there is nothing to fix.
+
+    Args:
+        tmpfs: Raw ``container.tmpfs`` specs (``target[:options]``).
+        mount_targets: ``(container_target, host_source)`` for every mount
+            the cage quadlet emits, in the same shape
+            :func:`~agentcage.volume_mounts.mask_mountpoint_dirs` consumes.
+            Only the *topology* matters here — a mask inherits the mode of
+            whatever it covers whether or not that mount reaches the host —
+            so unlike the mount-point bookkeeping this ignores
+            *host_source*.
+    """
+    rewritten = []
+    for spec in tmpfs:
+        target = tmpfs_spec_target(spec)
+        options = [o for o in spec[len(target):].lstrip(":").split(",") if o]
+        if not target.startswith("/") or any(
+            o.startswith("mode=") for o in options
+        ):
+            rewritten.append(spec)
+            continue
+        enclosing, _source = enclosing_mount(
+            posixpath.normpath(target), mount_targets
+        )
+        if not enclosing:
+            rewritten.append(spec)
+            continue
+        # The operator's literal target is emitted back unchanged; only the
+        # comparison above is normalized.
+        rewritten.append(
+            f"{target}:{','.join([*options, _TMPFS_MASK_MODE])}"
+        )
+    return rewritten
 
 
 def generate_quadlets(
@@ -568,7 +579,7 @@ def generate_quadlets(
     mask_state_dir = f"%t/agentcage/{deploy_name or name}/masks"
     mask_mountpoints = []
     for idx, (root, dirs) in enumerate(
-        sorted(_mask_mountpoint_dirs(cc.tmpfs, mount_targets).items())
+        sorted(mask_mountpoint_dirs(cc.tmpfs, mount_targets).items())
     ):
         # Host paths reach the unit base64-encoded. A systemd Exec line is
         # word-split with its own quoting rules *before* /bin/bash ever sees
@@ -881,7 +892,7 @@ def generate_quadlets(
         patches_host_dir=patches_host_dir,
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
-        tmpfs=cc.tmpfs,
+        tmpfs=_apply_tmpfs_mask_mode(cc.tmpfs, mount_targets),
         non_persistent_runtime_root=non_persistent_runtime_root,
         non_persistent_precreate_dirs=non_persistent_precreate_dirs,
         non_persistent_file_copies=non_persistent_file_copies,

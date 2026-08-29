@@ -130,6 +130,17 @@ agent cannot plant a git hook that a later host-side `git commit` executes,
 nor a project `.claude/settings.json` `hooks` block that another cage honors
 on launch.
 
+Making the cage able to write there takes one extra option. Both OCI runtimes
+give a tmpfs the mode of the directory it is mounted over whenever the entry
+declares no `mode=` of its own, and the tmpfs root is owned by the
+user-namespace root — for a mask that is the *host* directory's mode (usually
+`0755`) and an owner the workload is not, so a non-root `container.user` could
+not write to its own mask. agentcage therefore appends `mode=1777` (`/tmp`
+semantics: writable by any uid in the cage, sticky) to any entry whose target
+sits at or below a mount target. Declare your own `mode=` to opt out. Entries
+that are not inside a mount (`/tmp`, `/var/cache`, …) keep inheriting the image
+directory's mode.
+
 A mask over a path that does not exist on the host creates it there — a bind
 shares inodes with its source, so the runtime's mount-point `mkdir` writes
 through. agentcage records which of those directories were absent when the
@@ -139,7 +150,8 @@ left alone.
 
 **Apple container applies the mounts but not their options.** Apple's
 `container run --tmpfs` takes a bare path, so `noexec`, `nosuid`, `nodev` and
-`size=` are dropped and each mount lands with kernel-default tmpfs semantics.
+`size=` are dropped — as is the `mode=` above — and each mount lands with
+kernel-default tmpfs semantics.
 The masks above still work — the protection comes from the overlay hiding the
 bind, not from `noexec`. What is lost is the size cap: a tmpfs the cage fills
 is bounded only by the cage VM's memory, so set `container.memory` on this
