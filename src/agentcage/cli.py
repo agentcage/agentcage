@@ -4058,15 +4058,72 @@ def domain_list(name: str):
 
     mode, domain_entries, passthrough = _read_domain_config(raw)
     pt_set = set(passthrough)
+    expires = _read_domain_expires(raw)
 
     click.echo(f"Mode: {mode}")
     for d in sorted(domain_entries):
-        suffix = " [passthrough]" if d in pt_set else ""
-        click.echo(f"{d}{suffix}")
+        tags = ""
+        if d in pt_set:
+            tags += " [passthrough]"
+        exp = expires.get(d.lower().rstrip("."))
+        if exp:
+            tags += f" (expires {exp})"
+        click.echo(f"{d}{tags}")
     # Show passthrough-only domains (in passthrough but not in the main list)
     for d in sorted(passthrough):
         if d not in domain_entries:
             click.echo(f"{d} [passthrough only]")
+
+
+def _parse_duration(duration: str) -> int:
+    """Parse a human duration like ``1h`` / ``30m`` / ``2d`` / ``3600`` into
+    seconds. Raises ValueError with a helpful message on bad input.
+
+    Units: s (seconds), m (minutes), h (hours), d (days). A bare integer is
+    seconds. Used by ``domain add --expires-in``.
+    """
+    s = str(duration).strip().lower()
+    if not s:
+        raise ValueError("empty duration")
+    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if s[-1] in mult and s[:-1].isdigit():
+        return int(s[:-1]) * mult[s[-1]]
+    if s.isdigit():
+        return int(s)
+    raise ValueError(
+        f"invalid duration {duration!r}: use a number with a unit suffix "
+        f"(e.g. 30s, 10m, 1h, 2d) or a bare number of seconds"
+    )
+
+
+def _expires_at_from_now(seconds: int) -> str:
+    from datetime import datetime, timezone, timedelta
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _read_domain_expires(raw: dict) -> dict[str, str]:
+    """Read the ``domains.expires`` map from raw config (lowercased keys)."""
+    dom = raw.get("domains") or {}
+    raw_expires = dom.get("expires") or {}
+    out: dict[str, str] = {}
+    if isinstance(raw_expires, dict):
+        for k, v in raw_expires.items():
+            if k and v:
+                out[str(k).lower().rstrip(".")] = str(v)
+    elif isinstance(raw_expires, list):
+        for e in raw_expires:
+            if isinstance(e, dict) and e.get("domain") and e.get("expires_at"):
+                out[str(e["domain"]).lower().rstrip(".")] = str(e["expires_at"])
+    return out
+
+
+def _write_domain_expires(raw: dict, expires: dict[str, str]) -> None:
+    """Write the ``domains.expires`` map back into raw config (sorted)."""
+    dom = raw.setdefault("domains", {})
+    if expires:
+        dom["expires"] = {k: expires[k] for k in sorted(expires)}
+    else:
+        dom.pop("expires", None)
 
 
 def _update_dns_quadlet(cfg) -> None:
@@ -4218,10 +4275,20 @@ def _update_dns_quadlet(cfg) -> None:
 @click.argument("domain_names", nargs=-1, required=True)
 @click.option("--passthrough", is_flag=True,
               help="Also add to TLS passthrough list (no MITM interception).")
-def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
+@click.option("--expires-in", "expires_in", default=None,
+              help="Time-limit the entry: e.g. 30m, 1h, 2d (or a bare number "
+                   "of seconds). After it expires the domain is blocked at "
+                   "the proxy and pruned from the allowlist. Useful for a "
+                   "one-off task like `npm install`. Only valid in allowlist "
+                   "mode.")
+def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
+               expires_in: str | None):
     """Add one or more domains to a cage's filter list.
 
     Multiple domains may be passed; the cage is reloaded at most once.
+    With ``--expires-in`` the entry is time-limited (allowlist mode only):
+    it works until its TTL elapses, then the proxy blocks it and the grants
+    watcher prunes it from the allowlist + dnsmasq. Permanent by default.
     """
     try:
         raw = state.load_raw_config(name)
@@ -4237,15 +4304,36 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
     if list_key not in dom:
         dom[list_key] = []
 
+    # --expires-in only makes sense in allowlist mode (a blocklist entry's
+    # expiry is meaningless — blocklist denies by membership, not time).
+    expires_iso = ""
+    if expires_in is not None:
+        if list_key != "allow":
+            click.echo(
+                "error: --expires-in is only valid in allowlist mode "
+                "(a blocklist entry can't be time-limited)",
+                err=True,
+            )
+            sys.exit(1)
+        try:
+            expires_iso = _expires_at_from_now(_parse_duration(expires_in))
+        except ValueError as e:
+            click.echo(f"error: invalid --expires-in: {e}", err=True)
+            sys.exit(1)
+
     pt_note = " (passthrough)" if passthrough else ""
+    exp_note = f" (expires {expires_iso})" if expires_iso else ""
     changed = False
     messages: list[str] = []
+
+    expires = _read_domain_expires(raw)
 
     for domain_name in domain_names:
         already_in_list = domain_name in dom[list_key]
         already_passthrough = domain_name in dom.get("passthrough", [])
 
-        if already_in_list and (not passthrough or already_passthrough):
+        if already_in_list and (not passthrough or already_passthrough) \
+                and not expires_iso:
             messages.append(f"'{domain_name}' is already in cage '{name}'.")
             continue
 
@@ -4255,15 +4343,25 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
             if "passthrough" not in dom:
                 dom["passthrough"] = []
             dom["passthrough"].append(domain_name)
+        if expires_iso:
+            expires[domain_name.lower().rstrip(".")] = expires_iso
 
         changed = True
-        messages.append(f"Added '{domain_name}'{pt_note} to cage '{name}'.")
+        messages.append(f"Added '{domain_name}'{pt_note}{exp_note} to cage '{name}'.")
+
+    _write_domain_expires(raw, expires)
 
     if changed:
         _apply_baseline_change(name, raw)
         cfg = state.load_deployment_config(name)
         if get_backend(cfg).is_running(cfg.name, "cage"):
             messages.append("DNS and proxy updated.")
+        # A time-limited entry needs the grants watcher running to prune it
+        # from the baseline + dnsmasq when it expires (the L7 inspector blocks
+        # it immediately regardless, but tidiness depends on the watcher).
+        # Ensure the watcher unit is installed + started; idempotent.
+        if expires_iso:
+            _ensure_grants_watcher(name, cfg)
 
     for line in messages:
         click.echo(line)
@@ -4285,6 +4383,47 @@ def _apply_baseline_change(name: str, raw: dict) -> None:
     state.save_proxy_config(name)
     cfg = state.load_deployment_config(name)
     _update_dns_quadlet(cfg)
+
+
+def _ensure_grants_watcher(name: str, cfg) -> None:
+    """Install + start the grants watcher for a cage if it isn't running.
+
+    The watcher promotes Policy-API grants AND prunes expired allowlist
+    entries (from ``domain add --expires-in`` or a TTL'd grant). It is
+    normally installed on ``cage create``/``update`` when ``policy_api.enable``
+    is set, but a time-limited ``domain add --expires-in`` on a cage that
+    isn't using the Policy API still needs pruning — so this helper writes
+    the unit on demand and starts it. Idempotent: a present, running watcher
+    is a no-op. Best-effort: a failure to start is warned, not fatal (the L7
+    inspector still enforces expiry immediately; the watcher only keeps the
+    baseline + dnsmasq tidy).
+    """
+    try:
+        backend = get_backend(cfg)
+        unit_path_fn = getattr(backend, "grants_unit_path", None)
+        if unit_path_fn is None:
+            return  # backend without host-side systemd units (vm/apple-container parity)
+        unit_path = unit_path_fn(name)
+    except Exception:
+        return
+    if unit_path is None:
+        return
+    # Render + install the unit if missing (mirrors quadlets._grants_service_unit).
+    if not unit_path.exists():
+        try:
+            from agentcage.quadlets import _grants_service_unit
+            unit_path.parent.mkdir(parents=True, exist_ok=True)
+            unit_path.write_text(_grants_service_unit(name, name))
+            from agentcage import systemd as _systemd
+            _systemd.daemon_reload()
+        except Exception as e:
+            click.echo(f"warning: could not install grants watcher unit: {e}", err=True)
+            return
+    try:
+        from agentcage import systemd as _systemd
+        _systemd.start_unit(f"{name}-grants.service")
+    except Exception as e:
+        click.echo(f"warning: could not start grants watcher: {e}", err=True)
 
 
 @domain.command("rm")
@@ -4323,6 +4462,10 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
         dom[list_key].remove(domain_name)
         if domain_name in pt_entries:
             dom["passthrough"].remove(domain_name)
+        # Drop any expiry entry for the removed domain too.
+        expires = _read_domain_expires(raw)
+        if expires.pop(domain_name.lower().rstrip("."), None) is not None:
+            _write_domain_expires(raw, expires)
 
     _apply_baseline_change(name, raw)
 
@@ -4570,6 +4713,48 @@ def grants_watch(interval: float, once: bool):
         """Process the overlay once. Returns True if anything changed."""
         entries = state.load_grants(name)
         changed = False
+        # 0. Prune expired allowlist entries that came from
+        #    ``domain add --expires-in`` (they live in domains.expires, not
+        #    the grants overlay). The L7 inspector already blocks them; this
+        #    keeps the baseline + dnsmasq tidy so `domain list` and DNS stay
+        #    accurate. Audit each removal.
+        try:
+            raw = state.load_raw_config(name)
+            _ensure_v022_cage(name)
+            _ensure_domain_section(raw)
+            dom = raw["domains"]
+            expires = _read_domain_expires(raw)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            expired_baseline = [
+                d for d, exp in expires.items() if exp and exp <= now_iso
+            ]
+            if expired_baseline:
+                allow = dom.get("allow") or []
+                allow_lower = {x.rstrip(".").lower() for x in allow}
+                removed_any = False
+                for d in expired_baseline:
+                    if d in allow_lower:
+                        for i, x in enumerate(allow):
+                            if x.rstrip(".").lower() == d:
+                                allow.pop(i)
+                                removed_any = True
+                                break
+                    expires.pop(d, None)
+                    state.append_policy_audit(name, {
+                        "kind": "domain_allow_expired",
+                        "domain": d,
+                        "reason": "allowlist entry expired",
+                        "action": "removed_from_baseline",
+                    })
+                if removed_any:
+                    _write_domain_expires(raw, expires)
+                    try:
+                        _apply_baseline_change(name, raw)
+                    except (SystemExit, Exception):
+                        pass
+                    changed = True
+        except FileNotFoundError:
+            pass
         # 1. Drop expired grants from baseline + overlay (TTL enforcement).
         expired = [e for e in entries
                    if _is_expired(e) and e.get("applied")]

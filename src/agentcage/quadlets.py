@@ -1044,4 +1044,61 @@ def generate_quadlets(
         lifecycle=lifecycle,
     )
 
+    # Policy API grants watcher — a host-side systemd user service that
+    # auto-starts with the egress and promotes agent-requested, hook-approved
+    # The watcher is installed when (a) the Policy API is enabled (it
+    # promotes hook-approved grants) OR (b) any allowlist entry has an expiry
+    # (it prunes expired ``domain add --expires-in`` entries from the
+    # baseline + dnsmasq). A cage using neither has no watcher — zero new
+    # surface, matching the opt-in posture. ``domain add --expires-in`` on a
+    # cage that lacked the watcher installs it on demand (see cli
+    # _ensure_grants_watcher) so time-limited domains always get pruned.
+    needs_watcher = (
+        getattr(config.policy_api, "enable", False)
+        or bool(getattr(config.domains, "expires", None))
+    )
+    if needs_watcher:
+        files[f"{name}-grants.service"] = _grants_service_unit(
+            name, deploy_name or name
+        )
+
     return files
+
+
+def _grants_service_unit(name: str, deploy_name: str) -> str:
+    """Render the auto-start grants-watcher systemd user unit.
+
+    Plain ``.service`` (not a quadlet): the watcher must run on the host so
+    it can write the operator's ``cage.yaml`` baseline and exec into the
+    egress to SIGHUP dnsmasq — neither of which the in-container addon can
+    do. It is bound to the egress lifecycle (starts after it, stops with it)
+    and pulled in at boot via ``WantedBy=default.target``, so the operator
+    never starts or stops it by hand.
+    """
+    return f"""[Unit]
+Description=agentcage policy-api grants watcher for {name}
+# Start after the egress is up (the addon that decides grants lives there)
+# and track its lifecycle — stop the watcher when the egress stops.
+Requires={name}-egress.service
+After={name}-egress.service
+BindsTo={name}-egress.service
+PartOf={name}-egress.service
+
+[Service]
+Type=simple
+# Reuses the literal ``domain add`` live-reload chain for every grant.
+ExecStart={shlex.quote(_agentcage_cli())} cage grants {shlex.quote(name)} watch --interval 1
+Restart=on-failure
+RestartSec=2
+# Stop cleanly on shutdown so a restart doesn't leave a stale loop.
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _agentcage_cli() -> str:
+    """Absolute path to the agentcage CLI for use in generated units."""
+    path = shutil.which("agentcage")
+    return path or "agentcage"

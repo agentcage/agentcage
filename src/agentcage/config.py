@@ -202,6 +202,15 @@ class DomainConfig:
     allow: list[str] = field(default_factory=list)
     block: list[str] = field(default_factory=list)
     passthrough: list[str] = field(default_factory=list)
+    # Per-domain expiry (allowlist mode): domain → ISO-8601 expires_at.
+    # Absent key (or empty value) = permanent. Backward compatible: an
+    # operator who never uses ``--expires-in`` has an empty map and zero
+    # behavior change. Enforced two ways: the L7 DomainInspector blocks an
+    # expired domain in-process (immediate, robust even if the watcher is
+    # down), and the auto-started grants watcher prunes expired entries from
+    # the baseline + dnsmasq so the lists stay tidy. See
+    # docs/explain/policy-api.md §expiry.
+    expires: dict[str, str] = field(default_factory=dict)
 
     @property
     def list(self) -> list[str]:
@@ -481,8 +490,13 @@ class DecisionConfig:
 
 @dataclass
 class GrantConfig:
-    # 0 = no expiry; grant lives until revoked or the cage is destroyed.
-    ttl_seconds: int = 3600
+    # 0 = no expiry (permanent). Grants are permanent by default: the
+    # auto-started watcher promotes each grant into the static baseline via
+    # the ``domain add`` chain, where it stays until the operator removes
+    # it with ``agentcage domain rm``. A non-zero ttl_seconds opts into
+    # temporary grants (the watcher removes them from the baseline when
+    # they expire) — useful for a one-off task, not the common case.
+    ttl_seconds: int = 0
     # Cap on total live overlay entries. A request that would exceed this
     # is denied (the agent must let an existing grant expire or be revoked).
     max_grants: int = 32
@@ -1050,6 +1064,25 @@ def load_config(path: str) -> Config:
             dc.allow = entries
         elif dc.mode == "blocklist":
             dc.block = entries
+
+    # Per-domain expiry map (allowlist mode). Accepts either a flat
+    # mapping ``{domain: expires_at}`` or a list of ``{domain, expires_at}``
+    # objects for readability. Domains not in allow are ignored; an expires
+    # value for a blocklisted domain is meaningless (blocklist denies by
+    # membership, not time). All values are kept as ISO-8601 strings and
+    # validated loosely (the inspector/watcher parse them at check time and
+    # treat an unparseable value as "no expiry").
+    expires_raw = dom_raw.get("expires") or {}
+    expires: dict[str, str] = {}
+    if isinstance(expires_raw, dict):
+        for k, v in expires_raw.items():
+            if k and v:
+                expires[str(k).lower().rstrip(".")] = str(v)
+    elif isinstance(expires_raw, list):
+        for e in expires_raw:
+            if isinstance(e, dict) and e.get("domain") and e.get("expires_at"):
+                expires[str(e["domain"]).lower().rstrip(".")] = str(e["expires_at"])
+    dc.expires = expires
     cfg.domains = dc
 
     # Logging

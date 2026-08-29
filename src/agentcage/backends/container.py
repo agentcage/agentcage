@@ -122,15 +122,35 @@ class ContainerBackend:
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/containers/systemd"))
 
+    def user_unit_dir(self) -> Path:
+        """Directory for plain (non-quadlet) systemd user units.
+
+        Quadlet ``.container``/``.network``/``.volume`` files live in
+        :meth:`unit_dir` and are transpiled by the quadlet generator. A plain
+        ``.service`` (like the Policy API grants watcher) must be installed
+        here so systemd-user picks it up directly.
+        """
+        return Path(os.path.expanduser("~/.config/systemd/user"))
+
+    def grants_unit_path(self, name: str) -> Path:
+        return self.user_unit_dir() / f"{name}-grants.service"
+
     def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
+        user_dest = self.user_unit_dir()
+        user_dest.mkdir(parents=True, exist_ok=True)
         # The deploy_name isn't threaded down here; pull it from any unit name
         # (units are keyed "<name>-cage.container" / etc.). Best-effort.
         cage = _cage_from_units(units)
         with Phase("deploy.quadlets", cage=cage):
             for filename, content in units.items():
-                (dest / filename).write_text(content)
+                # Plain .service units go to the systemd user dir; quadlet
+                # types (.container/.network/.volume) go to the quadlet dir.
+                if filename.endswith(".service"):
+                    (user_dest / filename).write_text(content)
+                else:
+                    (dest / filename).write_text(content)
             if not quiet:
                 click.echo(f"Installed quadlet files to {dest}/")
             systemd.daemon_reload()
@@ -162,6 +182,18 @@ class ContainerBackend:
                     pass
         with Phase("systemd.start_cage", cage=name):
             systemd.start_unit(f"{name}-cage.service")
+        # Auto-start the Policy API grants watcher if its unit is installed
+        # (transparent — the operator never starts it by hand). It is bound
+        # to the egress, so it tracks the egress lifecycle on stop.
+        if self.grants_unit_path(name).exists():
+            try:
+                systemd.start_unit(f"{name}-grants.service")
+            except Exception as e:
+                if not quiet:
+                    click.echo(
+                        f"warning: failed to start grants watcher: {e}",
+                        err=True,
+                    )
         if not quiet:
             click.echo(f"Started {name}-cage")
 
@@ -171,6 +203,11 @@ class ContainerBackend:
                 systemd.stop_unit(f"{name}-{svc}.service")
             except Exception as e:
                 click.echo(f"warning: failed to stop {name}-{svc}: {e}", err=True)
+        if self.grants_unit_path(name).exists():
+            try:
+                systemd.stop_unit(f"{name}-grants.service")
+            except Exception as e:
+                click.echo(f"warning: failed to stop grants watcher: {e}", err=True)
 
     def restart(self, name: str) -> None:
         for svc in self.service_names(name):
@@ -178,6 +215,11 @@ class ContainerBackend:
                 systemd.restart_unit(f"{name}-{svc}.service")
             except Exception as e:
                 click.echo(f"warning: failed to restart {name}-{svc}: {e}", err=True)
+        if self.grants_unit_path(name).exists():
+            try:
+                systemd.restart_unit(f"{name}-grants.service")
+            except Exception as e:
+                click.echo(f"warning: failed to restart grants watcher: {e}", err=True)
 
     # Quadlet filenames enumerated by destroy_resources / has_resources.
     # The list intentionally includes the LEGACY `-proxy.container` and
@@ -210,6 +252,13 @@ class ContainerBackend:
                 fpath.unlink()
                 removed.append(fname)
 
+        # Remove the Policy API grants watcher unit (plain .service, lives
+        # in the systemd user dir, not the quadlet dir).
+        grants_path = self.grants_unit_path(name)
+        if grants_path.exists():
+            grants_path.unlink()
+            removed.append(grants_path.name)
+
         systemd.daemon_reload()
 
         # Remove Podman resources
@@ -234,7 +283,8 @@ class ContainerBackend:
     def has_resources(self, name: str) -> bool:
         quadlet_dir = self.unit_dir()
         return any((quadlet_dir / f"{name}{suffix}").exists()
-                   for suffix in self._QUADLET_FILES)
+                   for suffix in self._QUADLET_FILES) or \
+            self.grants_unit_path(name).exists()
 
     def is_running(self, name: str, service: str) -> bool:
         return self._podman.container_running(f"{name}-{service}")

@@ -30,6 +30,12 @@ class DomainInspector(Inspector):
         # ``mode`` is read by callers; keep it as a plain attribute.
         self.mode: str = ""
         self._baseline: set[str] = set()
+        # Domain → ISO expires_at for allowlist entries with a TTL. Empty
+        # value / absent key = permanent. Enforced in ``inspect_request``
+        # so an expired domain is blocked at L7 immediately, even before the
+        # grants watcher prunes it from the baseline + dnsmasq. Robust against
+        # a stopped watcher.
+        self._expires: dict[str, str] = {}
         # granted[domain_lower] = {granted_at, expires_at, reason, source}
         self.granted: dict[str, dict] = {}
 
@@ -47,6 +53,20 @@ class DomainInspector(Inspector):
             # Backward compat: mode + list
             self.mode = config.get("mode")  # "allowlist" | "blocklist" | None
             self._baseline = {d.lower() for d in config.get("list", [])}
+        # Per-domain expiry (allowlist mode). Lowercase, trailing-dot-stripped
+        # keys to match ``_matches`` suffix semantics. ``expires`` may be a
+        # ``{domain: iso}`` map or a list of ``{domain, expires_at}`` objects —
+        # accept both (the proxy-config mirror of cage.yaml's ``domains.expires``).
+        self._expires = {}
+        raw_expires = config.get("expires") or {}
+        if isinstance(raw_expires, dict):
+            for k, v in raw_expires.items():
+                if k and v:
+                    self._expires[str(k).lower().rstrip(".")] = str(v)
+        elif isinstance(raw_expires, list):
+            for e in raw_expires:
+                if isinstance(e, dict) and e.get("domain") and e.get("expires_at"):
+                    self._expires[str(e["domain"]).lower().rstrip(".")] = str(e["expires_at"])
         # NOTE: intentionally do NOT touch self.granted here. Hot-reload of
         # config.yaml rebuilds the baseline; live grants survive and remain
         # effective (replayed on top). The addon's _maybe_reload calls
@@ -70,6 +90,29 @@ class DomainInspector(Inspector):
                 return True
         return False
 
+    def _matched_expired(self, host: str) -> Optional[str]:
+        """If the allowlist entry matching *host* has expired, return its
+        domain name (for the block reason); else None.
+
+        Walks the host's suffixes (longest first, like ``_matches``) and
+        checks the first suffix that is BOTH in the allow set AND has an
+        expires_at. An expires_at that parses as a past timestamp → expired.
+        """
+        from datetime import datetime, timezone
+        parts = host.lower().split(".")
+        for i in range(len(parts)):
+            suffix = ".".join(parts[i:])
+            if suffix in self.domain_set and suffix in self._expires:
+                exp = self._expires[suffix] or ""
+                if not exp:
+                    continue
+                try:
+                    if exp <= datetime.now(timezone.utc).isoformat():
+                        return suffix
+                except ValueError:
+                    continue
+        return None
+
     def inspect_request(
         self, ctx: InspectionContext
     ) -> Optional[InspectionResult]:
@@ -86,13 +129,34 @@ class DomainInspector(Inspector):
                 severity="error",
             )
         matched = self._matches(ctx.host)
-        if self.mode == "allowlist" and not matched:
-            return InspectionResult(
-                inspector=self.name,
-                action="block",
-                reason=f"domain not in allowlist: {ctx.host}",
-                severity="error",
-            )
+        if self.mode == "allowlist":
+            if not matched:
+                return InspectionResult(
+                    inspector=self.name,
+                    action="block",
+                    reason=f"domain not in allowlist: {ctx.host}",
+                    severity="error",
+                )
+            # Expiry enforcement (allowlist mode only): if the allowlist
+            # entry that matched has an expires_at in the past, treat the
+            # domain as no-longer-allowed. This makes a time-limited domain
+            # (``domain add --expires-in`` or a TTL'd grant) stop working the
+            # moment it expires, in-process, without waiting for the watcher
+            # to prune the baseline. An unparseable expires_at is treated as
+            # "no expiry" (fail-open on the timestamp, never fail-closed on
+            # a malformed value).
+            expired_entry = self._matched_expired(ctx.host)
+            if expired_entry is not None:
+                return InspectionResult(
+                    inspector=self.name,
+                    action="block",
+                    reason=(
+                        f"domain allowlist entry expired: "
+                        f"{expired_entry} (was allowed until its TTL elapsed)"
+                    ),
+                    severity="error",
+                )
+            return None
         if self.mode == "blocklist" and matched:
             return InspectionResult(
                 inspector=self.name,
