@@ -56,12 +56,6 @@ _DOMAIN_RE = re.compile(
 # enforces its own cap before JSON parsing.
 _MAX_BODY = 8 * 1024
 
-# Pending async requests are retained in memory for this long (seconds)
-# before a poll returns 404. In-memory only — an egress restart loses them
-# (documented); the operator's hook may still be processing.
-_PENDING_TTL = 300
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -117,7 +111,6 @@ class PolicyApi:
         )
         self._grants_path = os.path.join(self._grants_dir, "grants.yaml")
         self._grants_mtime: float = 0.0
-        self._pending: dict[str, dict] = {}
 
         self._reconcile_from_overlay()
 
@@ -246,11 +239,6 @@ class PolicyApi:
                 self._respond(flow, 404, {"error": "request endpoint disabled"})
                 return True
             await self._handle_request(flow)
-            return True
-
-        if method == "GET" and path.startswith("/v1/allowlist/requests/"):
-            req_id = path[len("/v1/allowlist/requests/"):]
-            self._respond(flow, *self._request_status(req_id))
             return True
 
         self._respond(flow, 404, {"error": "not found"})
@@ -712,17 +700,6 @@ class PolicyApi:
             "decision": decision,
             "reason": str(args.get("reason", "") or ""),
             "ttl_seconds": int(args.get("ttl_seconds", 0) or 0),
-        }
-
-    # ── GET /v1/allowlist/requests/{id} ─────────────────────
-
-    def _request_status(self, req_id: str) -> tuple[int, dict]:
-        entry = self._pending.get(req_id)
-        if entry is None:
-            return 404, {"error": f"unknown or expired request id: {req_id}"}
-        return 200, {
-            "id": req_id, "status": entry["status"],
-            "domain": entry["domain"], "reason": entry["reason"],
         }
 
     # ── Grant application + overlay ─────────────────────────

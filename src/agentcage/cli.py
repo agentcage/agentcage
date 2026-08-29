@@ -4756,8 +4756,11 @@ def grants_watch(interval: float, once: bool):
         except FileNotFoundError:
             pass
         # 1. Drop expired grants from baseline + overlay (TTL enforcement).
-        expired = [e for e in entries
-                   if _is_expired(e) and e.get("applied")]
+        #    Any entry with a past expires_at — promoted entries are removed
+        #    from the overlay on promotion, so this catches entries that were
+        #    granted with a TTL but whose promotion raced (or operator-added
+        #    --expires-in entries still in the overlay).
+        expired = [e for e in entries if _is_expired(e)]
         if expired:
             try:
                 raw = state.load_raw_config(name)
@@ -4798,7 +4801,9 @@ def grants_watch(interval: float, once: bool):
                        if str(e.get("domain", "")).rstrip(".").lower()
                        not in expired_domains]
         # 2. Promote pending grants into the baseline.
-        pending = [e for e in entries if not e.get("applied")]
+        #    The addon writes every decided grant to the overlay (no `applied`
+        #    flag); the watcher promotes all present entries and removes them.
+        pending = list(entries)
         if pending:
             try:
                 raw = state.load_raw_config(name)
