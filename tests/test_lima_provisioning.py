@@ -229,6 +229,74 @@ class TestGenerateLimaConfig:
         assert not any("loginctl" in ln for ln in code_lines)
         assert "/var/lib/systemd/linger" in output
 
+    def test_provision_restarts_user_manager_for_dbus_socket(self):
+        """Issue #319: apt installs `dbus-user-session` underneath a
+        `user@<uid>.service` that Lima's own SSH bring-up already started,
+        and a running user manager never loads a socket unit that appeared
+        beneath it. `/run/user/<uid>/bus` therefore stays absent for the
+        whole boot, and rootless podman's systemd cgroup manager fails every
+        container it creates with "sd-bus call: Interactive authentication
+        required." Provisioning must restart the manager so it picks up
+        dbus.socket."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        code_lines = [
+            ln for ln in output.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        joined = "\n".join(code_lines)
+        # The uid is resolved from the templated guest username, not guessed.
+        assert 'id -u "$lima_user"' in joined
+        assert 'systemctl restart "user@${lima_uid}.service"' in joined
+
+    def test_user_manager_restart_runs_after_install_and_linger(self):
+        """Ordering is load-bearing: restarting before the apt install would
+        bring the manager back up without dbus.socket, and restarting before
+        the linger sentinel exists would let logind reap the fresh manager."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        code_lines = [
+            ln for ln in output.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+
+        def _index(needle):
+            hits = [i for i, ln in enumerate(code_lines) if needle in ln]
+            assert hits, f"{needle!r} not found in provisioning code"
+            return hits[0]
+
+        install = _index("dbus-user-session")
+        linger = _index('touch "/var/lib/systemd/linger/$lima_user"')
+        restart = _index('systemctl restart "user@${lima_uid}.service"')
+        assert install < restart
+        assert linger < restart
+
+    def test_user_manager_restart_is_non_fatal(self):
+        """`set -euo pipefail` is in force, so an unguarded failing restart
+        would abort provisioning and leave a half-built VM. Consistent with
+        the script's `usermod ... || true` style, it must only warn."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        restart_block = output.split('systemctl restart "user@${lima_uid}.service"')[1]
+        # The very next thing after the restart is its `|| echo warning:` guard.
+        assert restart_block.lstrip().startswith("\\")
+        assert "|| echo" in restart_block.split("\n")[1]
+        assert "warning:" in restart_block
+
+    def test_user_manager_restart_does_not_use_loginctl(self):
+        """The restart must not reintroduce the logind D-Bus path that
+        `test_provision_does_not_call_loginctl_enable_linger` rules out, and
+        must not use `systemctl --user`, which as root targets root's own
+        manager rather than the cage user's."""
+        cfg = MockConfig(name="test-cage")
+        output = generate_lima_config(cfg)
+        code_lines = [
+            ln for ln in output.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        assert not any("loginctl" in ln for ln in code_lines)
+        assert not any("systemctl --user" in ln for ln in code_lines)
+
     def test_name_in_comment(self):
         cfg = MockConfig(name="my-agent")
         output = generate_lima_config(cfg)

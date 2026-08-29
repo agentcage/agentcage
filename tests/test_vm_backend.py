@@ -908,18 +908,20 @@ class TestInVmBuildFailureDiagnostics:
 
 
 class TestUserSessionReadinessGate:
-    """Issue #319: on a fresh Lima VM the first in-VM ``podman build`` failed
-    because ``limactl shell`` opens a non-login session and the guest's
-    systemd user manager / user D-Bus was not up yet, so rootless podman's
-    systemd cgroup manager could not make its sd-bus call::
+    """Issue #319 safety net. Rootless podman's systemd cgroup manager needs
+    the guest user's D-Bus, and without it every container creation fails::
 
         warning: The cgroupv2 manager is set to systemd but there is no
                  systemd user session available
         error running container: from /usr/bin/crun ...: sd-bus call:
                  Interactive authentication required.: Permission denied
 
-    A retry always succeeded, which is why this is a readiness gate (probe
-    the precondition once, wait for it) and NOT a retry around the build."""
+    The cause is fixed in provisioning (see
+    ``TestUserManagerRestartForDbusSocket``), so this gate is defense in
+    depth: it should resolve on its first probe, and on timeout it names the
+    precondition and still hands over to the build rather than stalling or
+    failing early. It is a gate, never a retry — the build runs exactly
+    once, so genuine build failures still fail immediately."""
 
     @staticmethod
     def _is_probe(cmd) -> bool:
@@ -1022,10 +1024,13 @@ class TestUserSessionReadinessGate:
         ]
         assert len(builds) == 1, "the build must still be attempted on timeout"
         err = capsys.readouterr().err
-        # The timeout message names the precondition, not just "timed out".
-        assert "systemd user session" in err
+        # The timeout message names the precondition, not just "timed out",
+        # and points at the provisioning fault rather than implying that
+        # waiting or retrying is the remedy.
         assert "/run/user/<uid>/bus" in err
         assert "no-user-bus" in err
+        assert "dbus.socket" in err
+        assert "#319" in err
 
     def test_wait_is_bounded(self):
         """Never an unbounded loop: the wait returns False at the deadline."""

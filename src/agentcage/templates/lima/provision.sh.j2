@@ -89,4 +89,49 @@ chmod -R g+rX /var/log/journal
 mkdir -p /var/lib/systemd/linger
 touch "/var/lib/systemd/linger/$lima_user"
 
+# Restart the cage user's systemd manager so it picks up dbus.socket.
+#
+# MUST come after BOTH the apt install above and the linger sentinel touch.
+#
+# Lima SSHes into the guest before running this provisioning script, and
+# that login has already started `user@<uid>.service`. A *running* user
+# manager does not notice a socket unit that apt drops underneath it, so
+# even though `dbus-user-session` is installed above, the user manager
+# keeps running without dbus.socket loaded and `/run/user/<uid>/bus` never
+# appears for the life of that boot. Observed live on a fresh host:
+#
+#   user@503.service:  active            <- manager running
+#   systemd-logind:    active, rc=0      <- NOT wedged
+#   linger sentinel:   present
+#   dbus-user-session: ii 1.16.2-2       <- installed
+#   user dbus.socket:  inactive          <- the cause
+#   /run/user/503/bus: ABSENT
+#
+# Rootless podman defaults to the systemd cgroup manager, which needs that
+# bus, so the first in-VM `podman build` dies at its first RUN step with
+# "sd-bus call: Interactive authentication required." — issue #319. Only a
+# reboot or manager restart fixed it, because a *fresh* manager starts with
+# the package already present. That is why retrying `cage create` worked
+# and why waiting never could: the socket was never going to appear.
+#
+# `systemctl restart user@<uid>.service` (verified in-guest: dbus.socket
+# inactive -> active, bus socket ABSENT -> PRESENT) is preferred over
+# `systemctl --user daemon-reload && systemctl --user start dbus.socket`:
+# this script runs as root, so `systemctl --user` would target root's own
+# manager, and reaching the cage user's manager instead needs XDG_RUNTIME_DIR
+# plumbing that is exactly what is half-initialised here. Running as root
+# during provisioning also means no polkit prompt — unlike `loginctl
+# enable-linger`, which is avoided for the reason documented above.
+#
+# Only the manager unit is restarted; the live SSH session lives in its own
+# session scope under user-<uid>.slice and is not torn down. Non-fatal: a
+# warning is better than aborting the whole provisioning run.
+lima_uid="$(id -u "$lima_user" 2>/dev/null || true)"
+if [ -n "$lima_uid" ]; then
+    systemctl restart "user@${lima_uid}.service" \
+        || echo "warning: failed to restart user@${lima_uid}.service; rootless podman may lack its user D-Bus" >&2
+else
+    echo "warning: could not resolve uid for $lima_user; skipping user manager restart" >&2
+fi
+
 echo "agentcage provisioning complete"
