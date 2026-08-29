@@ -833,6 +833,97 @@ class AppleContainerBackend:
                 check=False, capture_output=True)
         plist.unlink(missing_ok=True)
 
+    # ── domains.auto grants watcher (launchd plist) ───────────
+    # The grants watcher promotes approved domain requests into the static
+    # baseline via the literal ``domain add`` chain. On the container/vm
+    # backends it's a systemd user unit bound to the egress; on apple-container
+    # the analog is a second launchd plist on the macOS host (the watcher
+    # must run on the host to write cage.yaml + exec the egress to SIGHUP
+    # dnsmasq — it can't run inside the microVM). Mirrors the cage autostart
+    # plist above; the watcher re-execs ``agentcage cage grants <name> watch``.
+
+    def _grants_plist_path(self, name: str) -> Path:
+        """Host path of the per-cage grants-watcher launchd plist."""
+        return Path(
+            os.path.expanduser(f"~/Library/LaunchAgents/io.agentcage.{name}.grants.plist")
+        )
+
+    def grants_unit_path(self, name: str) -> Path:
+        """Backend-protocol alias for :meth:`_grants_plist_path`.
+
+        The CLI's ``_ensure_grants_watcher`` looks this up by name so a
+        single code path works across backends (systemd unit on
+        container/vm, launchd plist here).
+        """
+        return self._grants_plist_path(name)
+
+    def _install_grants_plist(self, name: str) -> None:
+        """Write + load the per-cage grants-watcher launchd plist.
+
+        Keeps the watcher alive across restarts (``KeepAlive=true``, unlike
+        the cage autostart plist which is ``RunAtLoad`` only) so approved
+        grants are promoted promptly and expired ``--expires-in`` entries
+        pruned. Idempotent. Best-effort immediate-load (same SSH reachability
+        caveat as the cage plist); the FILE is the persistence.
+        """
+        import shutil as _shutil, subprocess as _sp
+        binary = _shutil.which("agentcage") or "agentcage"
+        plist = self._grants_plist_path(name)
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        state_dir = self._state_dir(name)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        label = f"io.agentcage.{name}.grants"
+        plist_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{binary}</string>
+        <string>cage</string>
+        <string>grants</string>
+        <string>{name}</string>
+        <string>watch</string>
+        <string>--interval</string>
+        <string>1</string>
+    </array>
+    <key>StandardOutPath</key>
+    <string>{state_dir}/grants.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>{state_dir}/grants.err.log</string>
+</dict>
+</plist>
+"""
+        plist.write_text(plist_xml)
+        uid = os.getuid()
+        domain = f"gui/{uid}"
+        if not self._gui_domain_reachable(uid):
+            return  # file is persistence; immediate-load not available over SSH
+        _sp.run(["launchctl", "bootout", f"{domain}/{label}"],
+                check=False, capture_output=True)
+        _sp.run(["launchctl", "bootstrap", domain, str(plist)],
+                check=False, capture_output=True)
+
+    def _uninstall_grants_plist(self, name: str) -> None:
+        """Unload + remove the per-cage grants-watcher plist. No-op if absent."""
+        import subprocess as _sp
+        plist = self._grants_plist_path(name)
+        if not plist.exists():
+            return
+        label = f"io.agentcage.{name}.grants"
+        domain = f"gui/{os.getuid()}"
+        _sp.run(["launchctl", "bootout", f"{domain}/{label}"],
+                check=False, capture_output=True)
+        _sp.run(["launchctl", "unload", str(plist)],
+                check=False, capture_output=True)
+        plist.unlink(missing_ok=True)
+
     # --- Backend protocol -----------------------------------------------------
 
     def check_prerequisites(self, config: Config) -> list[str]:  # noqa: ARG002
@@ -1076,25 +1167,31 @@ class AppleContainerBackend:
 
         # dnsmasq.conf — same template as the legacy single-VM model.
         # Just write the rendered bytes to disk instead of into the
-        # wrapper build context.
+        # wrapper build context. Use the EFFECTIVE DNS allowlist (allow +
+        # passthrough + relay upstreams + domains.auto decider host) so the
+        # same egress-internal hosts that must resolve on container/vm also
+        # resolve here — single source of truth (quadlets._effective_dns_allowlist).
+        from agentcage.quadlets import _effective_dns_allowlist
+        effective_allow = _effective_dns_allowlist(config)
         (dest / "dnsmasq.conf").write_text(
             ac_wrapper.render_dnsmasq_conf(
-                list(config.domains.allow or []),
+                effective_allow,
                 dns_servers=list(config.dns_servers or []),
             )
         )
 
         # dns-allowlist.conf — same shape state.save_dns_allowlist
-        # produces for the container backend. Re-use the helper for
-        # parity; fall back to in-line rendering if the cage.yaml isn't
-        # on disk yet (pre-create path).
+        # produces for the container backend (it also uses
+        # _effective_dns_allowlist, so the two files stay in sync). Re-use
+        # the helper for parity; fall back to in-line rendering from the
+        # effective allowlist if the cage.yaml isn't on disk yet (pre-create).
         try:
             allowlist_path = Path(_state.save_dns_allowlist(deploy_name))
             shutil.copy2(allowlist_path, dest / "dns-allowlist.conf")
         except FileNotFoundError:
             lines = [
                 f"server=/{d}/{srv}"
-                for d in (config.domains.allow or [])
+                for d in effective_allow
                 for srv in (config.dns_servers or ["1.1.1.1", "8.8.8.8"])
             ]
             (dest / "dns-allowlist.conf").write_text(
@@ -1307,6 +1404,11 @@ class AppleContainerBackend:
                 "secrets_backend": config.secrets.backend,
                 "secrets_allow_plaintext": bool(config.secrets.allow_plaintext),
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
+                # domains.auto grants watcher: install its launchd plist on
+                # start() when the feature is on OR any allow entry has an
+                # expiry (the watcher prunes expired --expires-in entries).
+                "domains_auto": bool(getattr(config.domains.auto, "enable", False)),
+                "has_expiring_domains": bool(getattr(config.domains, "expires", None)),
                 # User-defined host bind mounts. Apple's `container run`
                 # accepts `--volume host:cage[:mode]` just like podman.
                 # Expand + validate the host path HERE (at generate_units
@@ -1883,6 +1985,11 @@ class AppleContainerBackend:
         # across reloads.
         if meta.get("autostart"):
             self._install_launchd_plist(name)
+        # domains.auto grants watcher: install + load its launchd plist so
+        # approved grants are promoted + expired entries pruned transparently.
+        # Mirrors the container/vm backend installing <name>-grants.service.
+        if meta.get("domains_auto") or meta.get("has_expiring_domains"):
+            self._install_grants_plist(name)
         if not quiet:
             click.echo(f"Started {name} (apple-container, 2-microVM model)")
 
@@ -2075,6 +2182,9 @@ class AppleContainerBackend:
         """Stop both microVMs (cage + egress)."""
         ac_cli.run(["stop", name], check=False)
         ac_cli.run(["stop", f"{name}-egress"], check=False)
+        # Stop the grants watcher too (it polls the overlay; with the cage
+        # down there's nothing to promote and every SIGHUP attempt no-ops).
+        self._uninstall_grants_plist(name)
         # Retire the host dirs the tmpfs masks materialized through the
         # workspace bind (#320). After the cage VM is down, so a still-live
         # mount can't make an empty dir look occupied.
@@ -2099,6 +2209,11 @@ class AppleContainerBackend:
         if plist.exists():
             self._uninstall_launchd_plist(name)
             removed.append(f"launchd:{plist}")
+        # grants-watcher launchd plist (domains.auto / --expires-in).
+        gplist = self._grants_plist_path(name)
+        if gplist.exists():
+            self._uninstall_grants_plist(name)
+            removed.append(f"launchd:{gplist}")
         # Containers — stop+delete cage first (in case start() ordered them
         # the other way, this just makes the cleanup more readable).
         for cname in (name, f"{name}-egress"):

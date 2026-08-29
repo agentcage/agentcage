@@ -4821,8 +4821,10 @@ def grants_watch(interval: float, once: bool):
                     _apply_baseline_change(name, raw)
                 except (SystemExit, Exception):
                     pass
+                promoted_domains = set()
                 for e in pending:
-                    e["applied"] = True
+                    d = str(e.get("domain", "")).rstrip(".").lower()
+                    promoted_domains.add(d)
                     state.append_policy_audit(name, {
                         "kind": "policy_grant_applied",
                         "domain": e.get("domain"),
@@ -4831,6 +4833,12 @@ def grants_watch(interval: float, once: bool):
                         "expires_at": e.get("expires_at", ""),
                         "action": "added_to_baseline",
                     })
+                # Remove promoted entries from the overlay — they now live
+                # in the baseline; keeping them would grow the file without
+                # bound and re-surface them in `cage grants list`.
+                entries = [e for e in entries
+                           if str(e.get("domain", "")).rstrip(".").lower()
+                           not in promoted_domains]
                 changed = True
             except FileNotFoundError:
                 pass
