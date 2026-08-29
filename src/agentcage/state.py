@@ -128,6 +128,59 @@ def capture_file(name: str) -> Path:
     return capture_dir(name) / "capture.jsonl"
 
 
+# ── Policy API grants overlay ──────────────────────────────
+# The egress addon writes runtime domain grants to a YAML list file on a
+# per-cage writable volume (see docs/explain/policy-api.md §3.4). The
+# volume is bind-mounted from this host path (container + vm backends) so
+# the host-side ``cage grants`` CLI can read/promote/revoke without exec-
+# ing into the egress. Format — a top-level YAML list of entries:
+#
+#   - domain: registry.npmjs.org
+#     granted_at: "2026-06-01T12:00:00+00:00"
+#     expires_at: "2026-06-01T13:00:00+00:00"   # optional, empty = no expiry
+#     reason: npm install requested
+#     source: policy-hook
+#
+# The addon owns writes at runtime; the host CLI's revoke does a
+# read-modify-write with atomic rename. Concurrent writers are bounded by
+# the per-cage request rate limit; last-writer-wins on the rare overlap.
+
+
+def grants_dir(name: str) -> Path:
+    """Return (and create) ~/.local/share/agentcage/<name>/grants/."""
+    d = _DATA_DIR / name / "grants"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def grants_file(name: str) -> Path:
+    """Return the path to the policy-api grants overlay for a cage."""
+    return grants_dir(name) / "grants.yaml"
+
+
+def load_grants(name: str) -> list[dict]:
+    """Read the grants overlay as a list of entry dicts (empty if absent)."""
+    p = grants_file(name)
+    if not p.is_file():
+        return []
+    try:
+        data = yaml.safe_load(p.read_text())
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict) and e.get("domain")]
+
+
+def save_grants(name: str, entries: list[dict]) -> None:
+    """Atomically write the grants overlay (temp file + rename)."""
+    p = grants_file(name)
+    tmp = p.with_suffix(".yaml.tmp")
+    tmp.write_text(yaml.safe_dump(entries, default_flow_style=False,
+                                  sort_keys=False))
+    tmp.replace(p)
+
+
 def save_metadata(name: str, metadata: dict) -> None:
     """Write metadata.json to the deployment state directory."""
     d = _deploy_dir(name)
