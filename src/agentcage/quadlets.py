@@ -18,8 +18,10 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from agentcage.config import Config
 from agentcage.volume_mounts import (
+    TMPFS_COPYUP_OPTIONS,
     enclosing_mount,
     is_non_persistent_volume,
+    mask_copyup_entries,
     mask_mountpoint_dirs,
     split_volume_spec,
     tmpfs_spec_target,
@@ -325,15 +327,27 @@ def _stage_vm_file_volume(real_path: str, deploy_name: str) -> str:
 
 # ``/tmp`` semantics: writable by every uid in the cage, sticky so one uid
 # cannot delete another's entries. Applied only to tmpfs entries that mask a
-# path inside another mount — see _apply_tmpfs_mask_mode().
+# path inside another mount — see _apply_tmpfs_mask_options().
 _TMPFS_MASK_MODE = "mode=1777"
 
+# Copy-up default for a mask that declares neither ``tmpcopyup`` nor
+# ``notmpcopyup`` (#328). Podman appends ``tmpcopyup`` to every tmpfs in that
+# position (``pkg/util/mountOpts.go``), so a mask silently came up holding the
+# very host content it was added to hide, while apple-container — whose
+# ``--tmpfs`` has no option channel — came up empty. Pinning the default here
+# makes "unspecified" mean the same thing on both backends and matches what a
+# mask is for: an operator who overlays a bind wants that path hidden, and
+# copy-up under the masks' ``noexec`` only delivers files the cage can look at
+# but never run. Opt in per entry with ``tmpcopyup`` (the ``.claude/`` mask
+# does).
+_TMPFS_MASK_NO_COPYUP = "notmpcopyup"
 
-def _apply_tmpfs_mask_mode(
+
+def _apply_tmpfs_mask_options(
     tmpfs: list[str],
     mount_targets: list[tuple[str, str]],
 ) -> list[str]:
-    """Pin ``mode=1777`` on tmpfs entries that mask a path inside a mount.
+    """Pin agentcage's mask defaults on tmpfs entries nested inside a mount.
 
     Neither OCI runtime gives a tmpfs the kernel's default ``1777`` root
     mode when the mount spec carries no explicit ``mode=``: both copy the
@@ -361,10 +375,27 @@ def _apply_tmpfs_mask_mode(
     untouched, so nothing planted there is executable; and the sticky bit
     keeps one in-cage uid from clobbering another's entries.
 
-    Only masking entries are rewritten, and only when the operator did not
-    already pass an explicit ``mode=``. A tmpfs over an image directory
-    (``/tmp``, ``/var/cache``, …) keeps inheriting that directory's mode:
-    it is the image author's intent and it is already expressed in the
+    The second pin is ``notmpcopyup`` (#328). Podman appends ``tmpcopyup``
+    to every tmpfs whose spec names neither copy-up option
+    (``pkg/util/mountOpts.go``), so the masks came up on podman holding a
+    copy of the host's ``.git/hooks/`` and project ``.claude/`` — the exact
+    content the mask exists to hide — while apple-container's bare
+    ``--tmpfs`` (no option channel at all) came up empty. Neither was a
+    decision. Defaulting masks to ``notmpcopyup`` makes "unspecified" mean
+    the same thing on both backends, matches what a mask is for, and drops
+    a usability trap: the copied-up files land owned by the userns root, so
+    an agent editing one hit ``Permission denied`` on a file it could not
+    have executed anyway (the masks are ``noexec``). An entry that *wants*
+    the host content — the ``.claude/`` mask, so a caged agent can read the
+    project's ``settings.json`` — opts in with an explicit ``tmpcopyup``,
+    which podman passes through verbatim and which
+    :func:`~agentcage.volume_mounts.mask_copyup_entries` hands to the
+    per-backend seeding/ownership fixups.
+
+    Only masking entries are rewritten, and each pin only when the operator
+    named that option themselves. A tmpfs over an image directory
+    (``/tmp``, ``/var/cache``, …) is left entirely alone: its mode and its
+    contents are the image author's intent and are already expressed in the
     cage's own uid space, so there is nothing to fix.
 
     Args:
@@ -372,18 +403,16 @@ def _apply_tmpfs_mask_mode(
         mount_targets: ``(container_target, host_source)`` for every mount
             the cage quadlet emits, in the same shape
             :func:`~agentcage.volume_mounts.mask_mountpoint_dirs` consumes.
-            Only the *topology* matters here — a mask inherits the mode of
-            whatever it covers whether or not that mount reaches the host —
-            so unlike the mount-point bookkeeping this ignores
-            *host_source*.
+            Only the *topology* matters here — a mask inherits the mode and
+            the contents of whatever it covers whether or not that mount
+            reaches the host — so unlike the mount-point bookkeeping this
+            ignores *host_source*.
     """
     rewritten = []
     for spec in tmpfs:
         target = tmpfs_spec_target(spec)
         options = [o for o in spec[len(target):].lstrip(":").split(",") if o]
-        if not target.startswith("/") or any(
-            o.startswith("mode=") for o in options
-        ):
+        if not target.startswith("/"):
             rewritten.append(spec)
             continue
         enclosing, _source = enclosing_mount(
@@ -392,12 +421,62 @@ def _apply_tmpfs_mask_mode(
         if not enclosing:
             rewritten.append(spec)
             continue
+        pinned = list(options)
+        if not any(o in TMPFS_COPYUP_OPTIONS for o in options):
+            pinned.append(_TMPFS_MASK_NO_COPYUP)
+        # ``mode=`` stays LAST: both runtimes prepend the mount point's
+        # inherited mode to the mount data and the kernel takes the last
+        # ``mode=`` it parses.
+        if not any(o.startswith("mode=") for o in options):
+            pinned.append(_TMPFS_MASK_MODE)
+        if pinned == options:
+            rewritten.append(spec)
+            continue
         # The operator's literal target is emitted back unchanged; only the
         # comparison above is normalized.
-        rewritten.append(
-            f"{target}:{','.join([*options, _TMPFS_MASK_MODE])}"
-        )
+        rewritten.append(f"{target}:{','.join(pinned)}")
     return rewritten
+
+
+# uid:gid the copied-up mask content is handed to when ``container.user``
+# does not name a numeric one. Matches the uid every first-party scaffold
+# image gives its workload user, the uid apple-container's cage-init hands
+# its seeded copies (``data/apple-container/cage-init.sh`` stage C'), and the
+# uid interactive ``cage exec`` / ``cage shell`` sessions are pinned to
+# regardless of ``container.user``.
+_MASK_COPYUP_DEFAULT_OWNER = "1000:1000"
+
+
+def _mask_copyup_owner(user: str) -> str:
+    """Return the ``uid:gid`` a copy-up mask's contents must be handed to.
+
+    Both OCI runtimes perform ``tmpcopyup`` as the user-namespace root they
+    mount as, and neither replays the source's ownership onto the copy, so
+    the content lands ``0:0`` — unwritable and undeletable for the non-root
+    uid the cage actually runs as, even with :data:`_TMPFS_MASK_MODE`'s
+    sticky world-writable tmpfs root (the sticky bit lets the workload
+    *create* siblings but never modify or remove a root-owned entry). #328
+    measured exactly that: an agent could read the seeded project
+    ``.claude/settings.json`` but got ``Permission denied`` editing its own
+    throwaway copy.
+
+    Returns ``""`` when no chown is needed or possible: a cage that already
+    runs as uid 0 owns the copy outright (``nested_containers`` forces
+    ``User=0``), and a ``container.user`` naming a *name* rather than a uid
+    cannot be resolved host-side — the cage image's ``/etc/passwd`` is not
+    readable from here.
+    """
+    spec = (user or "").strip()
+    if not spec:
+        # Image default. Every first-party scaffold image puts its workload
+        # user at uid 1000 and interactive sessions are pinned there anyway.
+        return _MASK_COPYUP_DEFAULT_OWNER
+    uid, _sep, gid = spec.partition(":")
+    if not uid.isdigit():
+        return ""
+    if int(uid) == 0:
+        return ""
+    return f"{uid}:{gid}" if gid.isdigit() else f"{uid}:{uid}"
 
 
 def generate_quadlets(
@@ -884,6 +963,26 @@ def generate_quadlets(
     if lifecycle in ("interactive", "ephemeral"):
         restart = "no"
 
+    # tmpfs masks that opted into copy-up (#328). Podman hands the option to
+    # the OCI runtime verbatim, so the content is already in place when the
+    # workload starts — but it is owned by the userns root the runtime copied
+    # it as, which the cage's non-root uid can neither modify nor delete. A
+    # post-start chown inside the container's namespaces repairs exactly that;
+    # see the ExecStartPost in cage.container.j2 for why it cannot run earlier
+    # (ExecStartPre precedes the container, so the tmpfs does not exist yet).
+    cage_tmpfs = _apply_tmpfs_mask_options(cc.tmpfs, mount_targets)
+    copyup_owner = _mask_copyup_owner(cage_user)
+    copyup_masks = []
+    if copyup_owner:
+        for target, _src, _root in mask_copyup_entries(
+            cage_tmpfs, mount_targets
+        ):
+            # Same escaping story as the mask mount-point hooks above: a
+            # systemd Exec line applies its own quoting before bash sees it,
+            # so the cage path travels base64-encoded and is decoded inside
+            # bash where it can be quoted normally.
+            copyup_masks.append({"target_b64": _b64(target)})
+
     # Cage container — no published ports (traffic arrives via proxy reverse mode)
     files[f"{name}-cage.container"] = env.get_template("cage.container.j2").render(
         **common,
@@ -892,7 +991,9 @@ def generate_quadlets(
         patches_host_dir=patches_host_dir,
         volumes=expanded_volumes,
         named_volumes=cc.named_volumes,
-        tmpfs=_apply_tmpfs_mask_mode(cc.tmpfs, mount_targets),
+        tmpfs=cage_tmpfs,
+        copyup_masks=copyup_masks,
+        copyup_owner=copyup_owner,
         non_persistent_runtime_root=non_persistent_runtime_root,
         non_persistent_precreate_dirs=non_persistent_precreate_dirs,
         non_persistent_file_copies=non_persistent_file_copies,

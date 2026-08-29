@@ -121,14 +121,56 @@ cage-to-host paths:
 ```yaml
 container:
   tmpfs:
-    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
-    - "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M"
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup"
+    - "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M,tmpcopyup"
 ```
 
 The cage can write to both paths, but nothing reaches the host, so a caged
 agent cannot plant a git hook that a later host-side `git commit` executes,
 nor a project `.claude/settings.json` `hooks` block that another cage honors
 on launch.
+
+#### Copy-up: what a mask starts out holding
+
+`tmpcopyup` seeds the tmpfs with a copy of the directory it covers;
+`notmpcopyup` leaves it empty. Both are declared per entry, and the choice is
+independent of the masking itself — the cage writes to the tmpfs either way,
+so nothing it does reaches the host.
+
+A mask that names neither option gets `notmpcopyup`. Empty is what a mask is
+usually for, and pinning it keeps the two backends identical: Podman appends
+`tmpcopyup` to every tmpfs that does not say otherwise, while Apple container's
+bare `--tmpfs` has no option channel at all, so leaving it unspecified used to
+mean "full" on one backend and "empty" on the other. Entries that are not
+inside a mount (`/tmp`, `/var/cache`, …) are untouched and keep whatever the
+runtime does by default — their contents are the image author's business.
+
+The scaffolds split the two masks by intent. `.git/hooks/` is empty: the mask
+is `noexec`, so a copied-up hook could never run in the cage, and a copy would
+only add confusion. `.claude/` is seeded, so a caged agent still reads the
+project's `settings.json`, commands and subagents — as its own throwaway copy.
+
+The seeded copy is handed to the cage workload user (uid 1000 unless
+`container.user` names another numeric uid), so the agent can edit it. The
+mechanism differs by backend:
+
+- **Container and VM:** the option reaches Podman verbatim and the OCI runtime
+  performs the copy before the workload starts, so the content is there from
+  the first instant. The runtime copies as the user-namespace root and does not
+  replay the source's ownership, so a post-start hook on the cage unit chowns
+  the copy to the cage user; for a moment after `cage start` the content is
+  readable but not yet writable.
+- **Apple container:** the option cannot reach Apple's runtime, so agentcage
+  emulates it. The host directory the mask covers is mounted **read-only**
+  under `/run/agentcage/masks/`, and the cage's init replays it into the tmpfs
+  — chowned to the cage user — before the workload starts. Copy-up is only
+  emulated where there is a host directory to seed from: a mask over a named
+  volume, over an `np` bind, or a tmpfs over a plain image directory comes up
+  empty here, and `agentcage cage create` warns when you ask for one.
+
+A copy-up source that resolves outside the bind it came from — a project
+containing `.claude -> ../../.ssh` — is refused with a warning rather than
+mounted.
 
 Making the cage able to write there takes one extra option. Both OCI runtimes
 give a tmpfs the mode of the directory it is mounted over whenever the entry
@@ -151,7 +193,8 @@ left alone.
 **Apple container applies the mounts but not their options.** Apple's
 `container run --tmpfs` takes a bare path, so `noexec`, `nosuid`, `nodev` and
 `size=` are dropped — as is the `mode=` above — and each mount lands with
-kernel-default tmpfs semantics.
+kernel-default tmpfs semantics. The exception is `tmpcopyup`/`notmpcopyup`,
+which agentcage honors by emulation as described above.
 The masks above still work — the protection comes from the overlay hiding the
 bind, not from `noexec`. What is lost is the size cap: a tmpfs the cage fills
 is bounded only by the cage VM's memory, so set `container.memory` on this

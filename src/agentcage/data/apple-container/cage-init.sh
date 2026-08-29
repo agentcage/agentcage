@@ -272,6 +272,30 @@ else
   log "stage C: no /certs/mitmproxy-ca-cert.pem after 10s — HTTPS to the proxy may fail (egress still booting?)"
 fi
 
+#-- Seeding helper (stages C' and C'') -------------------------------------
+# Replay a read-only lower directory into the fresh tmpfs mounted at
+# ${2}, then hand the copy to the cage user.
+#
+# `tar xp` replays the HOST source's ownership and modes into the fresh
+# tmpfs, and these stages run as root. An ordinary host source (0755, not
+# owned by uid 1000) therefore lands root-owned and the uid-1000 workload
+# of stage D cannot write a single byte into it — the exact opposite of
+# what `np` promises ("writable in the cage; changes discarded") and of
+# what a `tmpcopyup` mask promises ("the cage's own throwaway copy").
+#
+# Only the tmpfs ${2} is chowned; ${1} is the read-only host bind and is
+# never touched. `-h` chowns symlinks themselves rather than their
+# referents, so a symlink inside the seeded tree (e.g. ./evil ->
+# /etc/shadow, replayed verbatim from the host source) cannot redirect the
+# chown at a path outside ${2}.
+seed_dir_from_lower() {
+  mkdir -p "$2"
+  (cd "$1" && tar cf - .) | (cd "$2" && tar xpf -) 2>/dev/null \
+    || log "warn: failed to seed $2 from $1"
+  chown -Rh 1000:1000 "$2" 2>/dev/null \
+    || log "warn: failed to chown $2 to uid 1000 — the cage workload may not be able to write to it"
+}
+
 #-- Stage C'. Per-bind non-persistent mounts ------------------------------
 # apple-container has no writable overlay-bind primitive comparable to
 # podman's overlay mount. For a user bind carrying the inline ``np`` option,
@@ -285,23 +309,7 @@ if [ -n "${AGENTCAGE_NONPERSISTENT_COPIES:-}" ]; then
       continue
     fi
     if [ -d "${lower}" ]; then
-      mkdir -p "${target}"
-      (cd "${lower}" && tar cf - .) | (cd "${target}" && tar xpf -) 2>/dev/null \
-        || log "warn: failed to seed non-persistent mount ${target} from ${lower}"
-      # `tar xp` replays the HOST source's ownership and modes into the
-      # fresh tmpfs, and this stage runs as root. An ordinary host source
-      # (0755, not owned by uid 1000) therefore lands root-owned and the
-      # uid-1000 workload of stage D cannot write a single byte into it —
-      # the exact opposite of what `np` promises ("writable in the cage;
-      # changes discarded"). Hand the ephemeral copy to the cage user.
-      #
-      # Only the tmpfs ${target} is chowned; ${lower} is the read-only
-      # host bind and is never touched. `-h` chowns symlinks themselves
-      # rather than their referents, so a symlink inside the seeded tree
-      # (e.g. ./evil -> /etc/shadow, replayed verbatim from the host
-      # source) cannot redirect the chown at a path outside ${target}.
-      chown -Rh 1000:1000 "${target}" 2>/dev/null \
-        || log "warn: failed to chown non-persistent mount ${target} to uid 1000 — the cage workload may not be able to write to it"
+      seed_dir_from_lower "${lower}" "${target}"
     elif [ -f "${lower}" ]; then
       # A file target must remain a file: creating ${target} itself as a
       # directory would make cp place the source at ${target}/lower.
@@ -322,6 +330,32 @@ if [ -n "${AGENTCAGE_NONPERSISTENT_COPIES:-}" ]; then
       fi
       chown -h 1000:1000 "${target}" 2>/dev/null \
         || log "warn: failed to chown non-persistent file mount ${target} to uid 1000 — the cage workload may not be able to write to it"
+    fi
+  done
+fi
+
+#-- Stage C''. Copy-up tmpfs masks ----------------------------------------
+# A `container.tmpfs` entry that masks a path inside a bind mount and asks
+# for `tmpcopyup` must come up holding a COPY of what it covers — the
+# claude-code scaffold's `/workspace/.claude/` mask, so a caged agent can
+# read the project's settings/commands/subagents while its writes stay in
+# the cage (#328). Podman hands `tmpcopyup` to the OCI runtime; Apple's
+# `container run --tmpfs` takes a bare path with no option channel at all,
+# so the backend mounts the covered host directory read-only under
+# /run/agentcage/masks and we replay it here, before the workload starts.
+#
+# The mask itself is unchanged: the workload writes to the tmpfs, never to
+# the lower, so the #170/#173 cage->host and cage->cage pivots stay closed.
+# A mask that did NOT ask for copy-up is simply absent from this list and
+# comes up empty, which is agentcage's default for masks on both backends.
+if [ -n "${AGENTCAGE_TMPFS_COPYUP:-}" ]; then
+  log "stage C'': seeding copy-up tmpfs masks"
+  printf '%s\n' "${AGENTCAGE_TMPFS_COPYUP}" | while IFS="$(printf '\t')" read -r lower target; do
+    if [ -z "${lower}" ] || [ -z "${target}" ]; then
+      continue
+    fi
+    if [ -d "${lower}" ]; then
+      seed_dir_from_lower "${lower}" "${target}"
     fi
   done
 fi

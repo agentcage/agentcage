@@ -78,15 +78,25 @@ container:
     # runs as the host user — a cage→host pivot (#170). tmpfs overlays the
     # bind-mounted path: the cage sees an empty, transient .git/hooks/
     # (writes vanish on stop); the host's hooks are untouched.
-    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
+    # `notmpcopyup` is what makes "empty" true (#328). Without it podman
+    # copies the host's hooks into the mask, and the mask is `noexec` so
+    # none of them could ever run in the cage anyway — the copy would only
+    # add confusion plus a Permission denied whenever the agent edits one.
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup"
     # Mask the project-local .claude/ so a caged agent can't plant a
     # malicious .claude/settings.json `hooks` block that Claude Code in
     # another cage honors on launch — a cage→cage hooks-injection chain
     # (#173). This is the PROJECT-level .claude/ under /workspace (read
     # from the RW bind-mount), not the cage's own ~/.claude home (which
-    # holds CLAUDE.md, login creds, and in-cage settings). Project-level
-    # Claude config/commands/subagents must be baked into the cage image.
-    - "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M"
+    # holds CLAUDE.md, login creds, and in-cage settings).
+    # `tmpcopyup` seeds the mask with a COPY of the project's .claude/, so
+    # the caged agent still reads the project's settings, commands and
+    # subagents (#328) — they do not have to be baked into the cage image.
+    # The copy is the cage's own throwaway: agentcage hands it to the cage
+    # user so the agent can edit it, and every write dies with the cage.
+    # Nothing the cage writes here reaches the host, so the #173 cage→cage
+    # chain stays closed.
+    - "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M,tmpcopyup"
 
   # Resource limits
   memory: "8g"

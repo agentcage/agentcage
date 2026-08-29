@@ -65,6 +65,33 @@ def tmpfs_spec_target(spec: str) -> str:
     return spec.split(":", 1)[0]
 
 
+def tmpfs_spec_options(spec: str) -> list[str]:
+    """Return the non-empty options of a ``container.tmpfs`` spec."""
+    _target, _sep, raw_options = spec.partition(":")
+    return [option for option in raw_options.split(",") if option]
+
+
+# Copy-up options, as podman's ``pkg/util/mountOpts.go`` spells them. Podman
+# appends ``tmpcopyup`` to every tmpfs that declares neither, which is why the
+# scaffold masks came up on podman holding the host's hooks and project
+# ``.claude/`` while apple-container (whose ``--tmpfs`` has no option channel
+# at all) came up empty — issue #328.
+TMPFS_COPYUP_OPTIONS = ("tmpcopyup", "notmpcopyup")
+
+
+def tmpfs_wants_copyup(spec: str) -> bool:
+    """Return whether *spec* explicitly asks for ``tmpcopyup``.
+
+    Only an explicit request counts. agentcage pins ``notmpcopyup`` on mask
+    entries that declare neither option (see
+    :func:`agentcage.quadlets._apply_tmpfs_mask_options`), so "unspecified"
+    means *empty* on every backend rather than whatever the runtime happens
+    to default to.
+    """
+    options = tmpfs_spec_options(spec)
+    return "tmpcopyup" in options and "notmpcopyup" not in options
+
+
 def enclosing_mount(
     target: str,
     mount_targets: list[tuple[str, str]],
@@ -153,3 +180,53 @@ def mask_mountpoint_dirs(
     for dirs in result.values():
         dirs.sort(key=lambda path: path.count("/"), reverse=True)
     return result
+
+
+def mask_copyup_entries(
+    tmpfs: list[str],
+    mount_targets: list[tuple[str, str]],
+) -> list[tuple[str, str, str]]:
+    """Return ``(container_target, host_source, host_root)`` for copy-up masks.
+
+    A *mask* is a ``tmpfs:`` entry whose target sits at or below another
+    emitted mount — the same relation :func:`mask_mountpoint_dirs` and
+    :func:`agentcage.quadlets._apply_tmpfs_mask_options` use. A tmpfs over a
+    plain image directory (``/tmp``, ``/var/cache``) has no enclosing mount
+    and is never returned: its contents are the image author's intent and
+    the runtime's own copy-up already expresses them.
+
+    Args:
+        tmpfs: Raw ``container.tmpfs`` specs (``target[:options]``).
+        mount_targets: ``(container_target, host_source)`` for every mount the
+            backend emits, in the shape :func:`mask_mountpoint_dirs` consumes.
+
+    Returns:
+        One entry per copy-up mask, ordered as declared. *container_target*
+        is normalized (no trailing slash). *host_source* is the host
+        directory the mask covers — ``<bind source>/<relative path>`` — and
+        *host_root* the enclosing bind's own source, so a caller that turns
+        *host_source* into a mount can require it to resolve inside the
+        directory the operator already agreed to share (a project-supplied
+        ``.claude -> ../../.ssh`` symlink must not become a new host
+        exposure). Both are ``""`` when the enclosing mount does not reach
+        the host (a named volume, an ``np`` bind), in which case only a
+        runtime-side copy-up can populate the tmpfs.
+    """
+    entries: list[tuple[str, str, str]] = []
+    for spec in tmpfs:
+        target = tmpfs_spec_target(spec).rstrip("/")
+        if not target.startswith("/") or not tmpfs_wants_copyup(spec):
+            continue
+        normalized = os.path.normpath(target)
+        best_target, best_source = enclosing_mount(normalized, mount_targets)
+        if not best_target:
+            continue
+        source = ""
+        if best_source:
+            parts = [
+                p for p in normalized[len(best_target):].split("/") if p
+            ]
+            if not any(p in (".", "..") for p in parts):
+                source = os.path.join(best_source, *parts)
+        entries.append((normalized, source, best_source if source else ""))
+    return entries

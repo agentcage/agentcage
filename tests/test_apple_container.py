@@ -2279,6 +2279,175 @@ def test_tmpfs_targets_normalizes_dedupes_and_rejects_unsafe():
 
 
 # ---------------------------------------------------------------------------
+# emulated tmpfs-mask copy-up (#328)
+# ---------------------------------------------------------------------------
+
+def _tmpfs_copyup_argv(tmp_path, monkeypatch, volumes, tmpfs):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x", "cpus": 1,
+            "memory": "1G", "lifecycle": "interactive",
+            "volumes": volumes,
+            "tmpfs": tmpfs,
+        },
+    )
+    backend.start("demo", quiet=True)
+    return _cage_run_argv(captured)
+
+
+def _copyup_env(cage_argv):
+    for i, arg in enumerate(cage_argv[:-1]):
+        if arg == "-e" and cage_argv[i + 1].startswith("AGENTCAGE_TMPFS_COPYUP="):
+            return cage_argv[i + 1].split("=", 1)[1]
+    return ""
+
+
+def test_copyup_mask_is_seeded_from_a_readonly_lower(tmp_path, monkeypatch):
+    """#328: Apple's `--tmpfs` takes a bare path, so a mask's `tmpcopyup`
+    can never reach the runtime here. The backend mounts the host directory
+    the mask covers READ-ONLY under /run/agentcage/masks and cage-init's
+    stage C'' replays it into the tmpfs — same shape as the `np` seeding."""
+    project = tmp_path / "project"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "settings.json").write_text("{}")
+    cage_argv = _tmpfs_copyup_argv(
+        tmp_path, monkeypatch,
+        [f"{project}:/workspace:rw"],
+        [
+            "/tmp:rw,noexec,nosuid,size=256M",
+            "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup",
+            "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M,tmpcopyup",
+        ],
+    )
+    lower = "/run/agentcage/masks/mask-0/lower"
+    assert f"{project}/.claude:{lower}:ro" in cage_argv
+    assert _copyup_env(cage_argv) == f"{lower}\t/workspace/.claude"
+    # The mask itself is still mounted over the bind: seeding decides what
+    # the cage can READ, never where its writes land (#173).
+    assert "/workspace/.claude" in cage_argv
+    assert f"{project}:/workspace:rw" in cage_argv
+    # The lower is the only new host-facing mount and it is read-only.
+    assert not any(
+        arg.startswith(f"{project}/.claude:") and not arg.endswith(":ro")
+        for arg in cage_argv
+    )
+
+
+def test_mask_without_tmpcopyup_is_not_seeded(tmp_path, monkeypatch):
+    """agentcage's default for a mask is empty on both backends, so a mask
+    that names neither copy-up option gets no lower and no env."""
+    project = tmp_path / "project"
+    (project / ".claude").mkdir(parents=True)
+    cage_argv = _tmpfs_copyup_argv(
+        tmp_path, monkeypatch,
+        [f"{project}:/workspace:rw"],
+        ["/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M"],
+    )
+    assert _copyup_env(cage_argv) == ""
+    assert not any("/run/agentcage/masks" in arg for arg in cage_argv)
+
+
+def test_copyup_mask_over_a_missing_host_dir_is_skipped(tmp_path, monkeypatch):
+    """A project with no `.claude/` must not gain one: #320's bookkeeping
+    removes mount points agentcage materialized, and inventing a host
+    directory here would leave a stray one behind."""
+    project = tmp_path / "project"
+    project.mkdir()
+    cage_argv = _tmpfs_copyup_argv(
+        tmp_path, monkeypatch,
+        [f"{project}:/workspace:rw"],
+        ["/workspace/.claude/:rw,tmpcopyup"],
+    )
+    assert _copyup_env(cage_argv) == ""
+    assert not (project / ".claude").exists()
+    # The mask is still applied — dropping it would reopen #173 for a
+    # `.claude/` created later.
+    assert "/workspace/.claude" in cage_argv
+
+
+def test_copyup_mask_over_an_np_target_is_not_double_seeded(
+    tmp_path, monkeypatch,
+):
+    """#325's double-tmpfs avoidance: an `np` bind already owns that target
+    with a tmpfs cage-init seeds from the np lowerdir."""
+    project = tmp_path / "project"
+    project.mkdir()
+    cage_argv = _tmpfs_copyup_argv(
+        tmp_path, monkeypatch,
+        [f"{project}:/workspace:rw,np"],
+        ["/workspace/:rw,tmpcopyup"],
+    )
+    assert _copyup_env(cage_argv) == ""
+    assert [
+        cage_argv[i + 1] for i, arg in enumerate(cage_argv[:-1])
+        if arg == "--tmpfs"
+    ] == ["/workspace"]
+
+
+def test_copyup_source_escaping_the_bind_is_refused(tmp_path, monkeypatch):
+    """A repository containing `.claude -> ../../.ssh` must not turn the
+    mask into a fresh read-only window onto a host path the operator never
+    shared. The bind alone does not expose it: an in-guest symlink resolves
+    in the guest."""
+    project = tmp_path / "project"
+    project.mkdir()
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (project / ".claude").symlink_to(secret)
+    cage_argv = _tmpfs_copyup_argv(
+        tmp_path, monkeypatch,
+        [f"{project}:/workspace:rw"],
+        ["/workspace/.claude/:rw,tmpcopyup"],
+    )
+    assert _copyup_env(cage_argv) == ""
+    assert not any(str(secret) in arg for arg in cage_argv)
+
+
+def test_copyup_mask_over_the_whole_bind_seeds_from_the_bind_source(
+    tmp_path, monkeypatch,
+):
+    """A mask covering the bind's own target seeds from the bind source —
+    the containment check must not read that as an escape."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "file.txt").write_text("x")
+    cage_argv = _tmpfs_copyup_argv(
+        tmp_path, monkeypatch,
+        [f"{project}:/workspace:rw"],
+        ["/workspace/:rw,tmpcopyup"],
+    )
+    lower = "/run/agentcage/masks/mask-0/lower"
+    assert f"{project}:{lower}:ro" in cage_argv
+    assert _copyup_env(cage_argv) == f"{lower}\t/workspace"
+
+
+def test_stage_c_double_prime_seeds_and_hands_the_copy_to_the_cage_user(
+    tmp_path,
+):
+    """The in-guest half: stage C'' replays the read-only lower into the
+    tmpfs and chowns it to uid 1000, so the agent can edit its throwaway
+    copy instead of hitting the Permission denied #328 measured."""
+    lower = tmp_path / "lower"
+    (lower / "commands").mkdir(parents=True)
+    (lower / "settings.json").write_text('{"host":"settings"}')
+    target = tmp_path / "target"
+
+    chowns = _run_stage_c_prime(tmp_path, [], copyup=[(lower, target)])
+
+    assert (target / "settings.json").read_text() == '{"host":"settings"}'
+    assert (target / "commands").is_dir()
+    assert chowns == [f"-Rh 1000:1000 {target}"]
+    # The read-only lower is never chowned.
+    assert not any(str(lower) in line for line in chowns)
+
+
+def test_stage_c_double_prime_is_inert_without_the_env(tmp_path):
+    assert _run_stage_c_prime(tmp_path, []) == []
+
+
+# ---------------------------------------------------------------------------
 # tmpfs mask mount points created through the workspace bind (#320)
 # ---------------------------------------------------------------------------
 
@@ -2476,28 +2645,34 @@ def test_mask_mountpoint_dirs_maps_masks_to_host_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _stage_c_prime_script():
-    """Return cage-init.sh's stage C' block as a standalone POSIX-sh script.
+    """Return cage-init.sh's seeding stages as a standalone POSIX-sh script.
 
-    Stage C' is the only part of cage-init that can be exercised off-VM: it
-    is pure filesystem work driven by AGENTCAGE_NONPERSISTENT_COPIES. Slicing
-    it out (rather than asserting on source text) lets the tests below run the
-    real control flow — which branch chowns what — against a temp dir.
+    The shared seed helper plus stages C' (``np`` binds) and C'' (copy-up
+    tmpfs masks, #328) are the only parts of cage-init that can be exercised
+    off-VM: they are pure filesystem work driven by
+    AGENTCAGE_NONPERSISTENT_COPIES / AGENTCAGE_TMPFS_COPYUP. Slicing them out
+    (rather than asserting on source text) lets the tests below run the real
+    control flow — which branch chowns what — against a temp dir. Each stage
+    is inert when its env var is unset, so one slice serves both.
     """
     text = (
         Path(__file__).resolve().parent.parent
         / "src" / "agentcage" / "data" / "apple-container" / "cage-init.sh"
     ).read_text()
-    start = text.index("#-- Stage C'. Per-bind non-persistent mounts")
+    start = text.index("#-- Seeding helper (stages C' and C'')")
     end = text.index("#-- Stage D.", start)
     return "set -eu\nlog() { printf '%s\\n' \"$*\" >&2; }\n" + text[start:end]
 
 
-def _run_stage_c_prime(tmp_path, copies):
-    """Run stage C' with a recording `chown` stub; return its arg lines.
+def _run_stage_c_prime(tmp_path, copies, copyup=()):
+    """Run stages C'/C'' with a recording `chown` stub; return its arg lines.
 
     chown(1) to uid 1000 needs root, which the test suite is not. The stub
     keeps the assertions about *which paths are handed to the cage user*
     honest without needing privileges, and keeps the on-disk seeding real.
+
+    *copies* drives stage C' (``np`` binds), *copyup* stage C'' (copy-up
+    tmpfs masks, #328); both are ``(lower, target)`` pairs.
     """
     bindir = tmp_path / "fakebin"
     bindir.mkdir()
@@ -2512,6 +2687,9 @@ def _run_stage_c_prime(tmp_path, copies):
     env["PATH"] = f"{bindir}:{env['PATH']}"
     env["AGENTCAGE_NONPERSISTENT_COPIES"] = "\n".join(
         f"{lower}\t{target}" for lower, target in copies
+    )
+    env["AGENTCAGE_TMPFS_COPYUP"] = "\n".join(
+        f"{lower}\t{target}" for lower, target in copyup
     )
     proc = subprocess.run(
         ["sh", str(script)], env=env, capture_output=True, text=True,
@@ -3062,6 +3240,66 @@ def test_validate_config_protocol_relays_on_apple_container_no_warning():
         warnings = validate_config(cfg)
     relay_warnings = [w for w in warnings if "protocol_relays" in w]
     assert relay_warnings == []
+
+
+def _apple_tmpfs_warnings(tmpfs, volumes=(), named_volumes=None):
+    """validate_config warnings mentioning container.tmpfs, off-Mac."""
+    with patch.object(platform, "system", return_value="Darwin"), \
+            patch.object(platform, "machine", return_value="arm64"), \
+            patch.object(
+                platform, "mac_ver",
+                return_value=("26.0", ("", "", ""), ""),
+            ):
+        cfg = Config(name="tmpfs-cage", isolation="apple-container")
+        cfg.container.image = "ubuntu:24.04"
+        cfg.container.volumes = list(volumes)
+        cfg.container.named_volumes = dict(named_volumes or {})
+        cfg.container.tmpfs = list(tmpfs)
+        cfg.domains.allow = ["example.com"]
+        warnings = validate_config(cfg)
+    return [w for w in warnings if "container.tmpfs" in w]
+
+
+def test_copyup_options_are_not_reported_as_dropped(tmp_path):
+    """#328: `tmpcopyup`/`notmpcopyup` ARE honored on this backend — by
+    emulation rather than by Apple's runtime — so an entry whose only option
+    is a copy-up flag must not be listed among the dropped ones."""
+    assert _apple_tmpfs_warnings(
+        ["/workspace/.claude/:tmpcopyup"],
+        volumes=[f"{tmp_path}:/workspace:rw"],
+    ) == []
+
+
+def test_unemulatable_copyup_is_called_out(tmp_path):
+    """Seeding needs a host directory to read. A mask over a named volume
+    has none, so it comes up empty here while podman copies the volume's
+    content up — the operator has to be told."""
+    warnings = _apple_tmpfs_warnings(
+        ["/data/cache:tmpcopyup"], named_volumes={"c-data": "/data:rw"},
+    )
+    assert len(warnings) == 1
+    assert "/data/cache" in warnings[0]
+    assert "cannot be emulated" in warnings[0]
+
+
+def test_image_directory_copyup_is_called_out(tmp_path):
+    """A tmpfs over a plain image directory is not a mask at all: there is
+    no host source, so `tmpcopyup` cannot be emulated there either."""
+    warnings = _apple_tmpfs_warnings(["/var/cache:tmpcopyup"])
+    assert len(warnings) == 1
+    assert "/var/cache" in warnings[0]
+
+
+def test_hardening_options_are_still_reported_as_dropped(tmp_path):
+    """The copy-up carve-out must not swallow the #120 option-drop warning
+    the scaffold masks depend on."""
+    warnings = _apple_tmpfs_warnings(
+        ["/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup"],
+        volumes=[f"{tmp_path}:/workspace:rw"],
+    )
+    assert len(warnings) == 1
+    assert "OPTIONS are not" in warnings[0]
+    assert "/workspace/.git/hooks/" in warnings[0]
 
 
 # ---------------------------------------------------------------------------

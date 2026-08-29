@@ -15,7 +15,7 @@ import textwrap
 
 from agentcage import quadlets
 from agentcage.config import load_config
-from agentcage.quadlets import _apply_tmpfs_mask_mode, generate_quadlets
+from agentcage.quadlets import _apply_tmpfs_mask_options, generate_quadlets
 
 
 def _config(tmp_path, volumes, tmpfs):
@@ -58,8 +58,8 @@ class TestScaffoldMaskShape:
 
     WORKSPACE = "~/repo:/workspace:rw"
     SCRATCH = "/tmp:rw,noexec,nosuid,size=256M"
-    HOOKS = "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"
-    CLAUDE = "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M"
+    HOOKS = "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup"
+    CLAUDE = "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M,tmpcopyup"
 
     def test_masks_get_the_sticky_world_writable_mode(self, tmp_path, monkeypatch):
         unit = _cage_unit(
@@ -114,49 +114,51 @@ class TestApplyTmpfsMaskMode:
 
     def test_operator_mode_is_never_overridden(self):
         entry = "/workspace/.git/hooks/:rw,mode=0700"
-        assert _apply_tmpfs_mask_mode([entry], self.BIND) == [entry]
+        assert _apply_tmpfs_mask_options([entry], self.BIND) == [
+            f"{entry},notmpcopyup"
+        ]
 
     def test_masking_the_bind_target_itself_is_pinned(self):
-        assert _apply_tmpfs_mask_mode(["/workspace:rw"], self.BIND) == [
-            "/workspace:rw,mode=1777"
+        assert _apply_tmpfs_mask_options(["/workspace:rw"], self.BIND) == [
+            "/workspace:rw,notmpcopyup,mode=1777"
         ]
 
     def test_option_less_entry_gets_the_mode(self):
-        assert _apply_tmpfs_mask_mode(["/workspace/.claude"], self.BIND) == [
-            "/workspace/.claude:mode=1777"
+        assert _apply_tmpfs_mask_options(["/workspace/.claude"], self.BIND) == [
+            "/workspace/.claude:notmpcopyup,mode=1777"
         ]
 
     def test_sibling_prefix_is_not_a_mask(self):
         """``/workspace-scratch`` is not under ``/workspace``."""
         entry = "/workspace-scratch:rw"
-        assert _apply_tmpfs_mask_mode([entry], self.BIND) == [entry]
+        assert _apply_tmpfs_mask_options([entry], self.BIND) == [entry]
 
     def test_without_bind_mounts_nothing_is_rewritten(self):
         entries = ["/tmp:rw", "/workspace/.git/hooks/:rw"]
-        assert _apply_tmpfs_mask_mode(entries, []) == entries
+        assert _apply_tmpfs_mask_options(entries, []) == entries
 
     def test_root_bind_does_not_capture_every_tmpfs(self):
         entry = "/tmp:rw"
-        assert _apply_tmpfs_mask_mode([entry], [("/", "/host")]) == [entry]
+        assert _apply_tmpfs_mask_options([entry], [("/", "/host")]) == [entry]
 
     def test_named_volume_subpath_is_also_pinned(self):
         """A named volume reaches mount_targets with an empty host source. The
         mask still inherits that mount's root mode, so it needs the pin too —
         unlike the mount-point cleanup, which only tracks host-reaching binds."""
-        assert _apply_tmpfs_mask_mode(
+        assert _apply_tmpfs_mask_options(
             ["/data/cache:rw"], [("/data", "")]
-        ) == ["/data/cache:rw,mode=1777"]
+        ) == ["/data/cache:rw,notmpcopyup,mode=1777"]
 
     def test_non_absolute_target_is_left_alone(self):
         entry = "relative:rw"
-        assert _apply_tmpfs_mask_mode([entry], self.BIND) == [entry]
+        assert _apply_tmpfs_mask_options([entry], self.BIND) == [entry]
 
     def test_unnormalized_target_is_matched_but_emitted_verbatim(self):
         """Podman gets the operator's literal path back; only the comparison
         is normalized."""
-        assert _apply_tmpfs_mask_mode(
+        assert _apply_tmpfs_mask_options(
             ["/workspace/./.git/hooks/:rw"], self.BIND
-        ) == ["/workspace/./.git/hooks/:rw,mode=1777"]
+        ) == ["/workspace/./.git/hooks/:rw,notmpcopyup,mode=1777"]
 
 
 class TestNonPersistentBind:
@@ -170,6 +172,6 @@ class TestNonPersistentBind:
             ["/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M"],
         )
         assert (
-            "Tmpfs=/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,mode=1777"
-            in unit
+            "Tmpfs=/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,"
+            "notmpcopyup,mode=1777" in unit
         )
