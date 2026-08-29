@@ -827,8 +827,21 @@ class PolicyApi:
         return [e for e in data if isinstance(e, dict) and e.get("domain")]
 
     def _persist_grants(self) -> None:
-        """Atomically write the overlay (temp + rename)."""
+        """Atomically write the overlay (temp + rename).
+
+        Each entry is written with an ``applied`` flag (default false for a
+        freshly-decided grant). The host-side grants watcher (see
+        ``cli.py`` ``cage grants <name> watch``) reuses the literal
+        ``domain add`` chain to promote a pending grant into the static
+        baseline — which is what makes the granted domain actually
+        resolvable (mitmproxy resolves upstreams through dnsmasq, so a
+        grant that only widens the L7 inspector would otherwise sinkhole
+        and 502). The watcher marks the entry ``applied: true`` once the
+        baseline change is live, so it never re-promotes the same grant.
+        """
         entries = self.dom.granted_entries()
+        for e in entries:
+            e.setdefault("applied", False)
         try:
             os.makedirs(self._grants_dir, exist_ok=True)
             tmp = self._grants_path + ".tmp"

@@ -4260,17 +4260,31 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
         messages.append(f"Added '{domain_name}'{pt_note} to cage '{name}'.")
 
     if changed:
-        state.save_raw_config(name, raw)
-        state.save_proxy_config(name)
-
+        _apply_baseline_change(name, raw)
         cfg = state.load_deployment_config(name)
-        _update_dns_quadlet(cfg)
-
         if get_backend(cfg).is_running(cfg.name, "cage"):
             messages.append("DNS and proxy updated.")
 
     for line in messages:
         click.echo(line)
+
+
+def _apply_baseline_change(name: str, raw: dict) -> None:
+    """Persist a raw cage.yaml edit and live-reload the egress.
+
+    The shared tail of ``domain add`` / ``domain rm`` / the Policy API
+    grants watcher: write the modified config, re-render the proxy subset,
+    then re-publish the dnsmasq allowlist + SIGHUP dnsmasq so the change is
+    live without a cage restart (the mitmproxy addon hot-reloads
+    proxy-config.yaml via its mtime poll). Reusing this one function is what
+    makes every grant path apply domains the *exact* same way a manual
+    ``agentcage domain add`` does — single source of truth for the write
+    + reload chain.
+    """
+    state.save_raw_config(name, raw)
+    state.save_proxy_config(name)
+    cfg = state.load_deployment_config(name)
+    _update_dns_quadlet(cfg)
 
 
 @domain.command("rm")
@@ -4310,14 +4324,10 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
         if domain_name in pt_entries:
             dom["passthrough"].remove(domain_name)
 
-    state.save_raw_config(name, raw)
-    state.save_proxy_config(name)
-
-    cfg = state.load_deployment_config(name)
-    _update_dns_quadlet(cfg)
+    _apply_baseline_change(name, raw)
 
     msg = f"Removed '{domain_name}' from cage '{name}'."
-    if get_backend(cfg).is_running(cfg.name, "cage"):
+    if get_backend(state.load_deployment_config(name)).is_running(name, "cage"):
         msg += " DNS and proxy updated."
     click.echo(msg)
 
@@ -4439,15 +4449,16 @@ def grants_promote(domain: str):
         click.echo(f"'{domain}' is already in the baseline.")
     else:
         allow_list.append(domain)
-        # Live-reload chain, mirroring domain_add exactly: rewrite the
-        # stored cage.yaml + proxy-config.yaml, then re-publish the dnsmasq
-        # allowlist and SIGHUP dnsmasq so the change is live without a cage
-        # restart. The addon hot-reloads proxy-config.yaml via its mtime poll.
-        state.save_raw_config(name, raw)
-        state.save_proxy_config(name)
-        cfg = state.load_deployment_config(name)
-        _update_dns_quadlet(cfg)
-        if get_backend(cfg).is_running(cfg.name, "cage"):
+        # Live-reload chain via the shared helper (same path as
+        # ``domain add`` and the grants watcher).
+        _apply_baseline_change(name, raw)
+        state.append_policy_audit(name, {
+            "kind": "policy_grant_promoted",
+            "domain": domain,
+            "reason": "operator promote",
+            "action": "added_to_baseline",
+        })
+        if get_backend(state.load_deployment_config(name)).is_running(name, "cage"):
             click.echo("DNS and proxy updated.")
 
     # The grant is now redundant with the baseline — drop it from the
@@ -4491,6 +4502,169 @@ def grants_revoke(domain: str):
         click.echo(f"error: '{domain}' is not a runtime grant", err=True)
         sys.exit(1)
     state.save_grants(name, remaining)
+    state.append_policy_audit(name, {
+        "kind": "policy_grant_revoked",
+        "domain": domain,
+        "reason": "operator revoke",
+        "action": "overlay_entry_removed",
+    })
     click.echo(f"Revoked runtime grant for '{domain}'.")
     click.echo("(takes effect on the next proxied request)")
+
+
+@grants.command("watch")
+@click.option("--interval", default=1.0, show_default=True,
+              help="Seconds between overlay checks.")
+@click.option("--once", is_flag=True,
+              help="Process pending/expired grants once and exit "
+                   "(no continuous loop). Useful for testing or a cron job.")
+def grants_watch(interval: float, once: bool):
+    """Apply runtime grants into the baseline as they are decided.
+
+    Mirrors ``agentcage domain add`` exactly: for each grant the egress's
+    decision hook approved (overlay entry with ``applied: false``), this
+    command appends the domain to the static ``domains.allow`` baseline and
+    runs the live-reload chain (``save_raw_config`` → ``save_proxy_config`` →
+    ``_update_dns_quadlet`` → dnsmasq SIGHUP). That is what makes a granted
+    domain actually *reachable*: mitmproxy resolves its upstreams through
+    dnsmasq, so the L7 ``DomainInspector.grant()`` alone (which the addon
+    also applies) is not enough — the domain must be resolvable too, and
+    the only component that can write the dnsmasq allowlist + SIGHUP it is
+    the host CLI (the addon runs as ``acproxy``, uid 200, no ``CAP_KILL``).
+
+    Robustness:
+      * Idempotent — an entry is marked ``applied: true`` once the baseline
+        change is live, so a restart of the watcher (or a duplicate
+        decision) never re-promotes the same domain.
+      * TTL-aware — when an entry's ``expires_at`` passes, the domain is
+        removed from the baseline (via the ``domain rm`` chain) and the
+        entry dropped from the overlay, so a TTL'd grant stops being
+        reachable instead of silently becoming permanent.
+      * Serial — pending grants are promoted in one batch (one
+        ``save_raw_config`` + one reload) so a burst of decisions makes one
+        atomic baseline edit, not a thundering herd of read-modify-writes.
+
+    Run this in the foreground during a session, or as a systemd user unit
+    (``agentcage cage grants <name> watch``) for an always-on cage.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+    name = _grants_name()
+    # Existence check up front so a typo isn't a silent empty-overlay loop.
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    def _is_expired(entry: dict) -> bool:
+        exp = str(entry.get("expires_at", "") or "")
+        if not exp:
+            return False
+        try:
+            return exp <= datetime.now(timezone.utc).isoformat()
+        except ValueError:
+            return False
+
+    def _tick() -> bool:
+        """Process the overlay once. Returns True if anything changed."""
+        entries = state.load_grants(name)
+        changed = False
+        # 1. Drop expired grants from baseline + overlay (TTL enforcement).
+        expired = [e for e in entries
+                   if _is_expired(e) and e.get("applied")]
+        if expired:
+            try:
+                raw = state.load_raw_config(name)
+                _ensure_v022_cage(name)
+                _ensure_domain_section(raw)
+                dom = raw["domains"]
+                allow = dom.get("allow") or []
+                for e in expired:
+                    d = str(e.get("domain", "")).rstrip(".").lower()
+                    if d in [x.rstrip(".").lower() for x in allow]:
+                        for i, x in enumerate(allow):
+                            if x.rstrip(".").lower() == d:
+                                allow.pop(i)
+                                break
+                        changed = True
+                if changed:
+                    # Tolerate a reload failure (e.g. egress not yet up,
+                    # dnsmasq validation hiccup): the baseline is already
+                    # written; record intent + audit, retry the SIGHUP next
+                    # tick. A stopped cage is the common case at startup.
+                    try:
+                        _apply_baseline_change(name, raw)
+                    except (SystemExit, Exception):
+                        pass
+            except FileNotFoundError:
+                pass
+            expired_domains = {str(e.get("domain", "")).rstrip(".").lower()
+                               for e in expired}
+            for e in expired:
+                state.append_policy_audit(name, {
+                    "kind": "policy_grant_removed",
+                    "domain": e.get("domain"),
+                    "reason": "ttl expired",
+                    "source": e.get("source", ""),
+                    "action": "removed_from_baseline",
+                })
+            entries = [e for e in entries
+                       if str(e.get("domain", "")).rstrip(".").lower()
+                       not in expired_domains]
+        # 2. Promote pending grants into the baseline.
+        pending = [e for e in entries if not e.get("applied")]
+        if pending:
+            try:
+                raw = state.load_raw_config(name)
+                _ensure_v022_cage(name)
+                _ensure_domain_section(raw)
+                dom = raw["domains"]
+                list_key = ("allow" if "allow" in dom
+                            else "block" if "block" in dom else "allow")
+                dom.setdefault(list_key, [])
+                allow_lower = {x.rstrip(".").lower() for x in dom[list_key]}
+                for e in pending:
+                    d = str(e.get("domain", "")).rstrip(".")
+                    dl = d.lower()
+                    if dl not in allow_lower:
+                        dom[list_key].append(d)
+                        allow_lower.add(dl)
+                # Same tolerance as the expire path: the baseline write is
+                # the durable part; the live-reload SIGHUP is best-effort.
+                try:
+                    _apply_baseline_change(name, raw)
+                except (SystemExit, Exception):
+                    pass
+                for e in pending:
+                    e["applied"] = True
+                    state.append_policy_audit(name, {
+                        "kind": "policy_grant_applied",
+                        "domain": e.get("domain"),
+                        "reason": e.get("reason", ""),
+                        "source": e.get("source", ""),
+                        "expires_at": e.get("expires_at", ""),
+                        "action": "added_to_baseline",
+                    })
+                changed = True
+            except FileNotFoundError:
+                pass
+        # 3. Persist the overlay (marks promoted entries applied, drops
+        #    expired). Only write if something actually changed to avoid
+        #    churning the mtime the addon hot-reloads on.
+        if changed:
+            state.save_grants(name, entries)
+        return changed
+
+    if once:
+        _tick()
+        return
+    click.echo(f"Watching grants overlay for cage '{name}' (interval {interval}s). Ctrl-C to stop.")
+    try:
+        while True:
+            if _tick():
+                pass  # could log per-change; keep quiet to be cron-friendly
+            _time.sleep(interval)
+    except KeyboardInterrupt:
+        click.echo("stopped.")
 

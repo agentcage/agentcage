@@ -181,6 +181,37 @@ def save_grants(name: str, entries: list[dict]) -> None:
     tmp.replace(p)
 
 
+def policy_audit_file(name: str) -> Path:
+    """Per-cage Policy-API audit log (JSONL) next to the grants overlay.
+
+    The egress addon writes its own ``audit.jsonl`` (decisions, inspector
+    verdicts) inside the container. The host-side grants watcher mutates
+    the static baseline (``domain add``/``rm`` equivalent) — those mutations
+    are operator-visible as stdout, but a structured record belongs here so
+    the forensic trail of *which grant was applied/removed when and by whom*
+    is greppable alongside the overlay that drove it.
+    """
+    return grants_dir(name) / "policy-audit.jsonl"
+
+
+def append_policy_audit(name: str, entry: dict) -> None:
+    """Append a structured JSON audit entry for a Policy-API baseline change.
+
+    Each entry carries a ``ts`` (UTC ISO) and a ``kind`` so it composes with
+    the egress audit schema (``policy_grant_applied`` / ``policy_grant_removed``).
+    Best-effort: a write failure is swallowed (audit is defense-in-depth,
+    never a reason to fail a grant promotion).
+    """
+    from datetime import datetime, timezone
+    entry = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
+    try:
+        grants_dir(name)  # ensures the dir exists
+        with open(policy_audit_file(name), "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
 def save_metadata(name: str, metadata: dict) -> None:
     """Write metadata.json to the deployment state directory."""
     d = _deploy_dir(name)
