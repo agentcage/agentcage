@@ -90,6 +90,12 @@ def push_config_files(name: str, inst: LimaInstance) -> None:
 
 VM_SERVICE_STARTUP_DELAY_S = 5
 VM_SERVICE_STARTUP_POLL_INTERVAL_S = 0.1
+# Issue #319: how long to wait for the guest's systemd *user* session before
+# dispatching the first in-VM podman build. Observed window on a fresh Lima
+# VM is a few seconds; 90s is a generous ceiling that still fails fast enough
+# to hand over to the build (and #322's output surfacing) rather than hang.
+VM_USER_SESSION_TIMEOUT_S = 90
+VM_USER_SESSION_POLL_INTERVAL_S = 1.0
 PROXY_READINESS_TIMEOUT_S = 30
 PROXY_READINESS_POLL_INTERVAL_S = 0.25
 
@@ -227,6 +233,106 @@ def _wait_infra_active(
     return pending
 
 
+# One round-trip probe for "can rootless podman run a container yet?".
+#
+# ``limactl shell`` opens a NON-login session. Immediately after Lima reports
+# READY, the guest user's systemd user manager (``user@<uid>.service``) and
+# its D-Bus (``/run/user/<uid>/bus``) may not be up yet — the provisioning
+# script enables lingering by touching ``/var/lib/systemd/linger/<user>``,
+# but logind only acts on that sentinel on its next GC/session event, so the
+# user manager is started lazily by the first SSH login and takes a moment.
+#
+# Rootless podman defaults to ``cgroup_manager = "systemd"``, which needs
+# that bus. Dispatching ``podman build`` into the gap fails at the first
+# ``RUN`` step with podman's own diagnosis:
+#
+#     warning: The cgroupv2 manager is set to systemd but there is no
+#              systemd user session available
+#     error running container: from /usr/bin/crun creating container for
+#              [...]: sd-bus call: Interactive authentication required.
+#
+# Deliberately NOT probed: ``loginctl show-user <uid> --property=Linger``.
+# It is a logind D-Bus round-trip, and the provisioning script already
+# documents that logind can wedge during guest bring-up (its dbus calls then
+# block for 25s) — putting that call in a poll loop would turn a transient
+# hiccup into a multi-minute stall. Lingering is set by provisioning anyway;
+# and ``loginctl enable-linger`` over a *remote* SSH session is not an
+# ``allow_active`` polkit subject, so it would hit the very "Interactive
+# authentication required" wall we are working around. Waiting is correct.
+_USER_SESSION_PROBE = (
+    'uid=$(id -u); '
+    'if [ ! -S "/run/user/$uid/bus" ]; then echo no-user-bus; exit 0; fi; '
+    'systemctl --user is-system-running 2>/dev/null || true'
+)
+
+# ``systemctl --user is-system-running`` states that mean the user manager is
+# up and can service podman's sd-bus call. ``degraded`` counts: it only says
+# some user unit failed, the bus and the cgroup delegation are live (and it
+# exits non-zero, which is why this matches on stdout, not the exit code).
+# Everything else — ``initializing``/``starting``/``offline``/``unknown``, or
+# the socket not existing yet — keeps us waiting.
+_USER_SESSION_READY_STATES = frozenset({"running", "degraded"})
+
+
+def _probe_user_session(inst: LimaInstance) -> str:
+    """Return the guest's user-session state as a short token.
+
+    Never raises: this runs on the happy path in front of a build, so a
+    flaky ``limactl shell`` must degrade to "not ready yet", not to an
+    exception that pre-empts the build we are trying to protect.
+    """
+    try:
+        r = inst.exec(["bash", "-c", _USER_SESSION_PROBE], check=False)
+    except Exception as e:  # pragma: no cover - defensive
+        return f"probe failed: {e}"
+    return _decode_stream(r.stdout).strip() or "unknown"
+
+
+def _wait_user_session_ready(
+    inst: LimaInstance,
+    *,
+    timeout_s: float = VM_USER_SESSION_TIMEOUT_S,
+    interval_s: float = VM_USER_SESSION_POLL_INTERVAL_S,
+) -> bool:
+    """Block until the guest's rootless-podman preconditions hold.
+
+    Returns True if the session became ready, False if *timeout_s* elapsed
+    first. The caller must proceed with the build either way: a timeout is
+    a *hint*, not a verdict. Failing early here would trade one opaque
+    error for another and would throw away the real podman diagnostic that
+    ``_exec_build`` now surfaces (#322).
+
+    This is a readiness gate, not a retry: the build is still dispatched
+    exactly once, so a genuine build failure fails immediately and loudly.
+    """
+    deadline = time.monotonic() + timeout_s
+    announced = False
+    while True:
+        state = _probe_user_session(inst)
+        if state in _USER_SESSION_READY_STATES:
+            if announced:
+                click.echo(f"Guest systemd user session ready ({state}).")
+            return True
+        if time.monotonic() >= deadline:
+            with output.pause_active_spinner():
+                click.echo(
+                    f"warning: gave up after {timeout_s:.0f}s waiting for the "
+                    "guest systemd user session (rootless podman needs "
+                    "/run/user/<uid>/bus for its systemd cgroup manager); "
+                    f"last probe reported {state!r}. Building anyway — if the "
+                    "build fails, podman's own error is printed below.",
+                    err=True,
+                )
+            return False
+        if not announced:
+            announced = True
+            click.echo(
+                "Waiting for the guest systemd user session "
+                f"(rootless podman needs its user D-Bus; state: {state})..."
+            )
+        time.sleep(interval_s)
+
+
 class VmBackend:
     """Backend using Lima VMs with Podman + quadlets inside.
 
@@ -295,6 +401,19 @@ class VmBackend:
             build_flags.append("--no-cache")
         if pull:
             build_flags.append("--pull=always")
+
+        # Gate the FIRST in-VM podman invocation on the guest's systemd user
+        # session being up (#319). Placed after the build-context copy on
+        # purpose: the copy and the `rm -rf`/`mkdir` round-trips above give
+        # the guest a few free seconds (and each `limactl shell` login is
+        # itself what makes logind start `user@<uid>.service`), so on a warm
+        # VM this is a single probe that returns immediately.
+        with Phase("wait.user_session", cage=deploy_name):
+            _wait_user_session_ready(
+                inst,
+                timeout_s=VM_USER_SESSION_TIMEOUT_S,
+                interval_s=VM_USER_SESSION_POLL_INTERVAL_S,
+            )
 
         version = _pkg_version("agentcage")
         click.echo(f"Building egress image inside VM (agentcage-egress:{version})...")
