@@ -405,6 +405,121 @@ class ProtocolRelay:
     policy: RelayPolicy = field(default_factory=RelayPolicy)
 
 
+# ── Policy API (opt-in allowlist introspection + on-demand requests) ──
+#
+# See docs/explain/policy-api.md. Two opt-in capabilities served by the
+# egress on a reserved control hostname so they work under full default-
+# deny: introspection (GET the effective allow/block policy) and request
+# (POST a new domain, gated by an operator-configured decision hook).
+# Disabled by default; ``policy_api:`` absent ⇒ zero new surface and the
+# control host is not even resolved.
+#
+# Auth for the decision hook follows the protocol-relay precedent (a
+# ``*_source`` scheme: ``env:`` / ``cmd:`` / ``systemd-creds:``) rather
+# than ``secret_injection`` — the hook credential is an egress-only
+# secret that must never appear in cage traffic, so piggy-backing on a
+# secret-injection rule (which exists to substitute placeholders INTO
+# cage traffic) would be the wrong abstraction. The quadlet renderer
+# stages it into the proxy's tmpfs secret files exactly like a relay
+# credential.
+
+
+@dataclass
+class WebhookDecisionConfig:
+    url: str = ""
+    # ``systemd-creds:NAME`` | ``env:NAME`` | ``cmd:...`` — relay-auth shape.
+    auth_source: str = ""
+    timeout_seconds: float = 10.0
+    # true → hook returns 202 with a handle; the agent polls
+    # GET /v1/allowlist/requests/{id}. Not implemented for v1 webhook
+    # provider (kept synchronous) but parsed for forward compatibility.
+    async_mode: bool = False
+
+
+@dataclass
+class LlmDecisionConfig:
+    # ``anthropic`` | ``openai``. Parsed for config validity; the built-in
+    # LLM provider is a follow-up (M4) — v1 ships webhook only. A config
+    # that selects ``llm`` validates but the request endpoint returns 503
+    # "llm provider not implemented" until M4 lands.
+    provider: str = ""
+    model: str = ""
+    auth_source: str = ""
+    timeout_seconds: float = 15.0
+
+
+@dataclass
+class DecisionConfig:
+    # ``webhook`` | ``llm``
+    provider: str = "webhook"
+    webhook: WebhookDecisionConfig = field(default_factory=WebhookDecisionConfig)
+    llm: LlmDecisionConfig = field(default_factory=LlmDecisionConfig)
+    # true = grant on hook error/timeout (risky, not recommended). Default
+    # fail-closed: any hook error denies.
+    fail_open: bool = False
+    # Per-cage request rate limit, independent of the egress's per-host HTTP
+    # rate limit, to bound LLM cost / abuse of the request endpoint.
+    rate_limit_rps: float = 1.0
+    rate_limit_burst: int = 5
+
+
+@dataclass
+class GrantConfig:
+    # 0 = no expiry; grant lives until revoked or the cage is destroyed.
+    ttl_seconds: int = 3600
+    # Cap on total live overlay entries. A request that would exceed this
+    # is denied (the agent must let an existing grant expire or be revoked).
+    max_grants: int = 32
+    # Hard-deny list. Matched as DomainInspector matches: label-suffix
+    # (``internal`` matches ``foo.internal``). IP literals are redundant
+    # here — the request endpoint rejects IP-literal domains by syntax —
+    # but allowed for belt-and-braces. The control host and a small
+    # built-in set are ALWAYS unioned in at validation time; operator
+    # entries only ever widen this.
+    never_grant: list[str] = field(default_factory=list)
+    # When true (default), the request endpoint refuses to run in
+    # blocklist mode (a grant is meaningless there). Set false to allow
+    # (warned as risky).
+    require_allowlist_mode: bool = True
+
+
+@dataclass
+class RequestConfig:
+    enable: bool = True  # follows policy_api.enable when omitted
+    decision: DecisionConfig = field(default_factory=DecisionConfig)
+    grant: GrantConfig = field(default_factory=GrantConfig)
+
+
+@dataclass
+class IntrospectionConfig:
+    enable: bool = True  # follows policy_api.enable when omitted
+
+
+# Always-unioned-into never_grant. Suffix-matched, so ``internal`` covers
+# ``*.internal`` and ``metadata.google.internal``; ``local`` covers the
+# default control host's TLD family. IP metadata endpoints are blocked by
+# the request endpoint's IP-literal syntax rejection, so they are not
+# listed here, but the control host itself always is (added dynamically
+# relative to ``policy_api.host``).
+_BUILTIN_NEVER_GRANT = ("internal", "local", "localhost")
+
+
+@dataclass
+class PolicyApiConfig:
+    enable: bool = False  # master switch
+    host: str = "agentcage.local"
+    introspection: IntrospectionConfig = field(default_factory=IntrospectionConfig)
+    request: RequestConfig = field(default_factory=RequestConfig)
+
+    def effective_never_grant(self) -> set[str]:
+        """Operator ``never_grant`` ∪ {control host} ∪ built-in set."""
+        out = {h.lower().rstrip(".") for h in _BUILTIN_NEVER_GRANT}
+        out.add(self.host.lower().rstrip("."))
+        for d in self.request.grant.never_grant or []:
+            out.add(str(d).lower().rstrip("."))
+        return out
+
+
 _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
 
 
@@ -424,6 +539,12 @@ class Config:
     # See data/proxy/addon.py ``_load_custom_inspectors`` for the dispatch.
     inspectors: list[dict] = field(default_factory=list)
     protocol_relays: list[ProtocolRelay] = field(default_factory=list)
+    # Opt-in Policy API (allowlist introspection + on-demand domain
+    # requests gated by an external decision hook). Disabled by default;
+    # see docs/explain/policy-api.md. Parsed here, plumbed into the
+    # egress's proxy-config.yaml via state._PROXY_KEYS, and enforced by
+    # the mitmproxy addon on a reserved control hostname.
+    policy_api: PolicyApiConfig = field(default_factory=PolicyApiConfig)
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -814,6 +935,77 @@ def load_config(path: str) -> Config:
         ]
         cc.env = {
             k: v for k, v in cc.env.items() if k not in relay_secret_names
+        }
+
+    # Policy API — opt-in allowlist introspection + on-demand requests.
+    # Parses the section into typed config; validation lives in
+    # validate_config. The decision-hook auth secret uses the relay-auth
+    # ``*_source`` scheme and is collected here so it can be stripped from
+    # the cage env / podman_secrets (it must never reach the cage, even as
+    # a placeholder) and staged into the proxy's tmpfs secret files by the
+    # quadlet renderer — exactly like a relay credential.
+    policy_secret_names: set[str] = set()
+    pa_raw = raw.get("policy_api") or {}
+    if isinstance(pa_raw, dict):
+        pa = PolicyApiConfig(
+            enable=bool(pa_raw.get("enable", False)),
+            host=str(pa_raw.get("host", "agentcage.local") or "agentcage.local"),
+        )
+        intro_raw = pa_raw.get("introspection") or {}
+        pa.introspection = IntrospectionConfig(
+            enable=bool(intro_raw.get("enable", True))
+        )
+        req_raw = pa_raw.get("request") or {}
+        dec_raw = req_raw.get("decision") or {}
+        grant_raw = req_raw.get("grant") or {}
+        rl_raw = dec_raw.get("rate_limit") or {}
+        decision = DecisionConfig(
+            provider=str(dec_raw.get("provider", "webhook") or "webhook"),
+            fail_open=bool(dec_raw.get("fail_open", False)),
+            rate_limit_rps=float(rl_raw.get("requests_per_second", 1.0) or 1.0),
+            rate_limit_burst=int(rl_raw.get("burst", 5) or 5),
+        )
+        wh_raw = dec_raw.get("webhook") or {}
+        decision.webhook = WebhookDecisionConfig(
+            url=str(wh_raw.get("url", "") or ""),
+            auth_source=str(wh_raw.get("auth_source", "") or ""),
+            timeout_seconds=float(wh_raw.get("timeout_seconds", 10.0) or 10.0),
+            async_mode=bool(wh_raw.get("async", False)),
+        )
+        llm_raw = dec_raw.get("llm") or {}
+        decision.llm = LlmDecisionConfig(
+            provider=str(llm_raw.get("provider", "") or ""),
+            model=str(llm_raw.get("model", "") or ""),
+            auth_source=str(llm_raw.get("auth_source", "") or ""),
+            timeout_seconds=float(llm_raw.get("timeout_seconds", 15.0) or 15.0),
+        )
+        pa.request = RequestConfig(
+            enable=bool(req_raw.get("enable", True)),
+            decision=decision,
+            grant=GrantConfig(
+                ttl_seconds=int(grant_raw.get("ttl_seconds", 3600) or 0),
+                max_grants=int(grant_raw.get("max_grants", 32) or 0),
+                never_grant=list(grant_raw.get("never_grant") or []),
+                require_allowlist_mode=bool(
+                    grant_raw.get("require_allowlist_mode", True)
+                ),
+            ),
+        )
+        cfg.policy_api = pa
+        # Collect auth_source env names so they are stripped from the cage
+        # env/podman_secrets (egress-only credentials, never cage-visible).
+        for src in (decision.webhook.auth_source, decision.llm.auth_source):
+            scheme, _, arg = (src or "").partition(":")
+            if scheme and arg:
+                validate_source(src)
+                policy_secret_names.add(arg)
+
+    if policy_secret_names:
+        cc.podman_secrets = [
+            s for s in cc.podman_secrets if s not in policy_secret_names
+        ]
+        cc.env = {
+            k: v for k, v in cc.env.items() if k not in policy_secret_names
         }
 
     # DNS servers (default to host resolvers if not specified)
@@ -1518,5 +1710,132 @@ def validate_config(config: Config) -> list[str]:
                     f"env var reference ${{{varname}}} is unset (key: {key})"
                 )
             start = end + 1
+
+    # ── Policy API validation ───────────────────────────────
+    # All rules are no-ops when the feature is disabled (the default):
+    # an omitted ``policy_api:`` section yields enable=False and adds zero
+    # new surface — the control host is not even resolved.
+    pa = config.policy_api
+    if pa.enable:
+        import re as _re
+        # Control host: a syntactically valid hostname, not an IP literal,
+        # not resolvable as a real upstream (it's synthetic). Must not
+        # collide with a domain the operator already allow/passthrough'd —
+        # that would make the synthetic control host also a real egress
+        # target, breaking the non-forwardable invariant.
+        host = pa.host.lower().rstrip(".")
+        if not _re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$", host) or "." not in host:
+            raise ValueError(
+                f"policy_api.host {pa.host!r} must be a dotted hostname "
+                f"(e.g. 'agentcage.local'), not an IP literal or single label"
+            )
+        all_named = set(map(str.lower, config.domains.allow)) | set(
+            map(str.lower, config.domains.block)
+        ) | set(map(str.lower, config.domains.passthrough))
+        if host in all_named:
+            raise ValueError(
+                f"policy_api.host {pa.host!r} must not appear in "
+                f"domains.allow/block/passthrough — the control host is a "
+                f"synthetic, non-forwardable endpoint"
+            )
+
+        g = pa.request.grant
+        if g.max_grants < 0:
+            raise ValueError("policy_api.request.grant.max_grants must be >= 0")
+        if g.ttl_seconds < 0:
+            raise ValueError("policy_api.request.grant.ttl_seconds must be >= 0")
+
+        # Request endpoint requires allowlist mode unless the operator
+        # explicitly opts out (a grant is meaningless in blocklist mode).
+        if pa.request.enable and config.domains.mode != "allowlist":
+            if g.require_allowlist_mode:
+                raise ValueError(
+                    "policy_api.request requires domains allowlist mode "
+                    "(a grant only narrows an allowlist; in blocklist mode "
+                    "everything not blocked is already reachable). Set "
+                    "policy_api.request.grant.require_allowlist_mode: false "
+                    "to allow (not recommended)."
+                )
+            warnings.append(
+                "policy_api.request is enabled in blocklist mode with "
+                "require_allowlist_mode=false: grants are no-ops here "
+                "(blocklist already allows everything not listed)"
+            )
+
+        dec = pa.request.decision
+        if dec.provider not in ("webhook", "llm"):
+            raise ValueError(
+                f"policy_api.request.decision.provider must be 'webhook' or "
+                f"'llm' (got {dec.provider!r})"
+            )
+        if dec.rate_limit_rps < 0 or dec.rate_limit_burst < 0:
+            raise ValueError(
+                "policy_api.request.decision.rate_limit "
+                "requests_per_second/burst must be >= 0"
+            )
+        if dec.provider == "webhook":
+            wh = dec.webhook
+            if not wh.url:
+                raise ValueError(
+                    "policy_api.request.decision.provider=webhook requires "
+                    "decision.webhook.url"
+                )
+            from urllib.parse import urlsplit
+            parts = urlsplit(wh.url)
+            if parts.scheme not in ("http", "https") or not parts.netloc:
+                raise ValueError(
+                    f"policy_api.request.decision.webhook.url {wh.url!r} "
+                    f"must be an absolute http(s) URL"
+                )
+            # http only to a loopback target (operator's local approver).
+            # http to a public host would leak the decision payload (and
+            # any auth header) in cleartext.
+            if parts.scheme == "http":
+                http_host = parts.hostname or ""
+                try:
+                    is_lb = ipaddress.ip_address(http_host).is_loopback
+                except ValueError:
+                    is_lb = http_host in ("localhost",)
+                if not is_lb:
+                    raise ValueError(
+                        f"policy_api.request.decision.webhook.url "
+                        f"{wh.url!r}: http is only allowed to a loopback "
+                        f"target; use https for a remote approver"
+                    )
+            if wh.timeout_seconds <= 0:
+                raise ValueError(
+                    "policy_api.request.decision.webhook.timeout_seconds "
+                    "must be > 0"
+                )
+        elif dec.provider == "llm":
+            llm = dec.llm
+            if llm.provider not in ("anthropic", "openai"):
+                raise ValueError(
+                    f"policy_api.request.decision.llm.provider must be "
+                    f"'anthropic' or 'openai' (got {llm.provider!r})"
+                )
+            if not llm.model:
+                raise ValueError(
+                    "policy_api.request.decision.llm.model is required"
+                )
+            warnings.append(
+                "policy_api.request.decision.provider=llm: the built-in LLM "
+                "provider is a follow-up; v1 ships webhook only. The request "
+                "endpoint will return 503 until the LLM provider lands."
+            )
+
+        if dec.fail_open:
+            warnings.append(
+                "policy_api.request.decision.fail_open=true: a decision-hook "
+                "error or timeout will GRANT the request (default is deny). "
+                "This widens egress on hook failure — use with care."
+            )
+
+        # Control host is always never_grant (operator can't remove it).
+        if host not in pa.effective_never_grant():
+            raise ValueError(
+                "policy_api.host must always be in never_grant (internal "
+                "invariant violated)"
+            )
 
     return warnings
