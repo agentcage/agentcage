@@ -13,6 +13,7 @@ from pathlib import Path
 
 import click
 
+from agentcage import output
 from agentcage._timing import Phase
 from agentcage.config import Config
 from agentcage.lima import prerequisites as lima_prerequisites
@@ -121,6 +122,56 @@ def _dump_service_failure(inst: LimaInstance, svc: str) -> None:
             click.echo(journal.stdout.rstrip(), err=True)
     except Exception:
         pass
+
+
+def _decode_stream(stream: str | bytes | None) -> str:
+    """Return *stream* as text, tolerating the bytes form of ``exec(text=False)``."""
+    if stream is None:
+        return ""
+    if isinstance(stream, bytes):
+        return stream.decode("utf-8", errors="replace")
+    return stream
+
+
+def _exec_build(inst: LimaInstance, cmd: list[str], *, what: str) -> None:
+    """Run an image build inside the guest, surfacing its output on failure.
+
+    ``LimaInstance.exec`` runs with ``capture_output=True``, so a failed
+    in-guest ``podman build`` used to reach the operator as a bare
+    ``CalledProcessError`` traceback whose only content was the (very
+    long) ``limactl shell ...`` command line and an exit status —
+    podman's actual error was stranded on the exception and never
+    printed. Issue #319: a first ``cage create`` on a fresh host failed
+    here and the reason could not be determined from agentcage's output
+    at all; it had to be reproduced by hand inside the VM.
+
+    Dump the captured streams at the point of failure — same shape as
+    ``_systemctl_start`` surfacing a failed unit — then raise a
+    ``click.ClickException`` so the CLI reports a one-line error instead
+    of a Python traceback (``cage create``/``cage update`` re-raise, and
+    click renders ``Error: ...``). The original ``CalledProcessError`` is
+    kept as ``__cause__``.
+    """
+    try:
+        inst.exec(cmd)
+    except subprocess.CalledProcessError as e:
+        stdout = _decode_stream(e.stdout).rstrip()
+        stderr = _decode_stream(e.stderr).rstrip()
+        # A build log is many lines and fights the "Starting cage..."
+        # spinner for the same terminal line; pause it while we dump.
+        with output.pause_active_spinner():
+            click.echo(
+                f"error: {what} failed inside the VM "
+                f"(exit status {e.returncode})",
+                err=True,
+            )
+            if stdout:
+                click.echo(stdout, err=True)
+            if stderr:
+                click.echo(stderr, err=True)
+            if not stdout and not stderr:
+                click.echo("(the build produced no output)", err=True)
+        raise click.ClickException(f"{what} failed inside the VM") from e
 
 
 def _systemctl_start(
@@ -248,7 +299,7 @@ class VmBackend:
         version = _pkg_version("agentcage")
         click.echo(f"Building egress image inside VM (agentcage-egress:{version})...")
         with Phase("build.egress", cage=deploy_name):
-            inst.exec([
+            _exec_build(inst, [
                 "podman", "build", *build_flags,
                 "--cap-add=CAP_CHOWN", "--cap-add=CAP_FOWNER",
                 "--cap-add=CAP_SETUID", "--cap-add=CAP_SETGID",
@@ -256,7 +307,7 @@ class VmBackend:
                 "-t", f"agentcage-egress:{version}",
                 "-f", f"{vm_build_dir}/containers/Containerfile.egress",
                 vm_build_dir,
-            ])
+            ], what=f"build of agentcage-egress:{version}")
 
         # Build or pull the cage image inside the VM
         if config and config.container.image:
@@ -425,7 +476,7 @@ class VmBackend:
             "-f", f"{vm_scaffold_dir}/{containerfile.name}",
             vm_scaffold_dir,
         ]
-        inst.exec(build_cmd)
+        _exec_build(inst, build_cmd, what=f"build of {config.container.image}")
 
     def _deploy_cage(self, name: str, inst: LimaInstance, config: Config | None = None) -> None:
         """Deploy quadlet files and start services inside the Lima VM."""
