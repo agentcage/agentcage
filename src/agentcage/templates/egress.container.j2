@@ -206,14 +206,24 @@ ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }}
 ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 200:200 "{{ capture_host_dir }}"{% endif %}'
 {% endif %}
 {% if domains_auto_enabled %}
-# Own the grants overlay dir for acproxy (uid 200) so the addon can write.
-# Unlike the capture dir (which falls back to 1777 for shared HAR export),
-# the grants dir must NOT be world-writable — if chown fails, leave it at
-# mkdir default (0755) and let the addon fail to write (fail-CLOSED: no
-# grants = no egress expansion) rather than making it world-writable (a
-# host process could inject fake grants). The cage can't reach it regardless
-# (separate netns), but the host-side integrity matters.
-ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ grants_host_dir }}" 2>/dev/null; podman unshare chmod 0750 "{{ grants_host_dir }}" 2>/dev/null || true{% else %}chown 200:200 "{{ grants_host_dir }}" && chmod 0750 "{{ grants_host_dir }}"{% endif %}'
+# The grants overlay dir is a TRUE DUAL-WRITER across the rootless user
+# namespace: the egress addon (container uid 200, mapped to a subuid on the
+# host — egress sets no UserNS=) writes grants.yaml when the decider grants
+# a domain, AND the host watcher (the operator) rewrites grants.yaml on
+# every tick to remove promoted entries. Both use atomic temp+rename
+# (save_grants), so only DIRECTORY write+execute matters; the file's own
+# owner/perms are irrelevant. The operator owns the dir (state.grants_dir
+# mkdirs it); the addon is "other". chmod 0777 grants write to both (operator
+# as owner, addon as other via the world bit). Do NOT chown to 200 — that
+# would make the operator "other" and block the watcher from removing
+# promoted entries (grants would pile up forever).
+#
+# This is deliberately world-writable, unlike a secrets dir. The grants
+# overlay is host-side state; an attacker who can write here can already
+# edit the baseline config (~/.config/agentcage/<name>/config.yaml)
+# directly — the host is the trust boundary, not this dir. The cage itself
+# can't reach it (separate netns).
+ExecStartPre=/bin/bash -c 'chmod 0777 "{{ grants_host_dir }}" 2>/dev/null || true'
 {% endif %}
 Restart=on-failure
 

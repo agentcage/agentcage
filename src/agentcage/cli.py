@@ -4587,9 +4587,30 @@ def grants_promote(domain: str):
         dom["allow"] = []
     allow_list = dom["allow"]
 
+    # Look up the overlay entry (if any) to preserve its TTL into
+    # domains.expires — otherwise a ttl_seconds grant promoted by hand
+    # silently becomes permanent (the watcher's auto-promote has the same
+    # fix; see _tick step 2).
+    overlay_entries = state.load_grants(name)
+    grant_entry = next(
+        (e for e in overlay_entries
+         if _grant_domain_match(str(e.get("domain", "")), domain)),
+        None,
+    )
+    expires_at = str((grant_entry or {}).get("expires_at", "") or "")
+    if expires_at:
+        expires = _read_domain_expires(raw)
+        expires[domain.lower().rstrip(".")] = expires_at
+        _write_domain_expires(raw, expires)
+
     already_baseline = domain in allow_list
     if already_baseline:
         click.echo(f"'{domain}' is already in the baseline.")
+        # The domain is present, but a TTL'd grant still tightens it: the
+        # expires write above must be persisted too, not silently dropped
+        # (raw was mutated by _write_domain_expires but nothing saved it).
+        if expires_at:
+            _apply_baseline_change(name, raw)
     else:
         allow_list.append(domain)
         # Live-reload chain via the shared helper (same path as
@@ -4599,6 +4620,7 @@ def grants_promote(domain: str):
             "kind": "policy_grant_promoted",
             "domain": domain,
             "reason": "operator promote",
+            "expires_at": expires_at,
             "action": "added_to_baseline",
         })
         if get_backend(state.load_deployment_config(name)).is_running(name, "cage"):
@@ -4652,7 +4674,8 @@ def grants_revoke(domain: str):
         "action": "overlay_entry_removed",
     })
     click.echo(f"Revoked runtime grant for '{domain}'.")
-    click.echo("(takes effect on the next proxied request)")
+    click.echo("(takes effect within ~30s — the egress's overlay poll "
+              "interval; a restart applies it immediately)")
 
 
 @grants.command("watch")
@@ -4814,12 +4837,24 @@ def grants_watch(interval: float, once: bool):
                             else "block" if "block" in dom else "allow")
                 dom.setdefault(list_key, [])
                 allow_lower = {x.rstrip(".").lower() for x in dom[list_key]}
+                # Preserve each grant's TTL into domains.expires so step 0
+                # of the next tick prunes it (and the L7 inspector enforces
+                # it). Without this, a ttl_seconds grant is promoted into
+                # domains.allow and its expires_at (which lived only in the
+                # overlay entry) is deleted with that entry one tick later —
+                # silently turning a short-lived grant permanent.
+                expires = _read_domain_expires(raw)
                 for e in pending:
                     d = str(e.get("domain", "")).rstrip(".")
                     dl = d.lower()
                     if dl not in allow_lower:
                         dom[list_key].append(d)
                         allow_lower.add(dl)
+                    exp = str(e.get("expires_at", "") or "")
+                    if exp:
+                        expires[dl] = exp
+                if expires:
+                    _write_domain_expires(raw, expires)
                 # Same tolerance as the expire path: the baseline write is
                 # the durable part; the live-reload SIGHUP is best-effort.
                 try:

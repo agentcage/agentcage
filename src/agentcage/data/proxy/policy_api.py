@@ -156,27 +156,28 @@ class PolicyApi:
     def _read_secret(auth_source: str) -> str:
         """Resolve a ``*_source`` credential to its real value.
 
-        Mirrors the relay/secret-injection read path: env first, then the
-        staged tmpfs file at ``/home/acproxy/secrets/<NAME>``. Returns "" if
-        unset (the webhook call is then made unauthenticated — the operator's
-        approver can reject, or the URL can carry its own creds).
+        Mirrors the secret-injection convention: the staged tmpfs file at
+        ``/home/acproxy/secrets/<NAME>`` first (it is the live-update
+        channel — ``secret set`` restages it without a restart), then the
+        boot-time env (the Podman Secret env channel). Returns "" if unset
+        (the decider call then fails closed — fail-closed is unconditional).
         """
         scheme, _, arg = (auth_source or "").partition(":")
         if not arg:
             return ""
-        val = os.environ.get(arg)
-        if val:
-            return val.strip()
         for path in (
             os.path.join("/home/acproxy/secrets", arg),
             os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run"), arg),
         ):
             try:
                 with open(path) as f:
-                    return f.read().strip()
+                    val = f.read().strip()
+                    if val:
+                        return val
             except OSError:
                 continue
-        return ""
+        val = os.environ.get(arg)
+        return val.strip() if val else ""
 
     # ── Control-host matching ───────────────────────────────
 

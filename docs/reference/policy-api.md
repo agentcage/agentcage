@@ -26,9 +26,10 @@ Introspection and requests are served by the egress proxy itself on a reserved
 control hostname — default `agentcage.local`, configurable via
 `domains.auto.host`. The cage reaches it like any other host:
 
-- **DNS** — dnsmasq gains `address=/agentcage.local/<ip_egress>` (rendered at
-  deploy time, all backends), so the cage resolves the control host to the
-  egress and connects normally.
+- **DNS** — `agentcage.local` resolves via the dnsmasq sinkhole: the global
+  `address=/#/<ip_egress>` catch-all already sends every unresolved name to
+  the egress, so the control host needs no dedicated record (works on all
+  backends). The cage resolves it to the egress and connects normally.
 - **TLS** — the egress CA already mints a certificate for any SNI, and the
   cage trusts that CA via the `/certs` mount, so `https://agentcage.local`
   works with no extra certificate plumbing. HTTP is accepted too.

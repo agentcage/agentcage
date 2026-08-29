@@ -483,7 +483,7 @@ class AgentDeciderConfig:
     # Optional API base URL override. Defaults per provider:
     #   anthropic  -> https://api.anthropic.com
     #   openai     -> https://api.openai.com
-    #   openrouter -> https://openrouter.ai
+    #   openrouter -> https://openrouter.ai/api/v1
     base_url: str = ""
 
 

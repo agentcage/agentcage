@@ -522,6 +522,13 @@ class Agentcage:
         # Update TLS passthrough (--ignore-hosts)
         self._apply_passthrough()
 
+        # Rebuild the Policy API (domains.auto) controller: enabling /
+        # disabling auto, or changing the decider/host/rate-limit, must take
+        # effect on live config edit, not only on egress restart. Idempotent
+        # and safe to call every reload (its docstring says so) — it no-ops
+        # when disabled and re-reads the api_key from the re-staged secret.
+        self._init_domain_requests()
+
         self._config_mtime = mtime
         names = [i.name for i in self.inspectors]
         ctx.log.info(f"agentcage: config reloaded, inspectors={names}")

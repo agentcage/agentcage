@@ -1710,6 +1710,16 @@ class AppleContainerBackend:
             from agentcage import state as _state_mod
             grants_dir = _state_mod.grants_dir(name)
             grants_dir.mkdir(parents=True, exist_ok=True)
+            # True dual-writer across the container userns: the egress addon
+            # (uid 200) and the host watcher (operator) both rewrite
+            # grants.yaml via atomic temp+rename, so the DIR must be writable
+            # by both. chmod 0777 (operator owns it; addon is "other" via the
+            # world bit). Don't chown to 200 — that would block the watcher.
+            # See egress.container.j2 for the full rationale.
+            try:
+                grants_dir.chmod(0o777)
+            except OSError:
+                pass
             egress_argv += [
                 "--volume", f"{grants_dir}:/var/lib/agentcage",
                 "-e", "AGENTCAGE_GRANTS_DIR=/var/lib/agentcage",

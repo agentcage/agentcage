@@ -101,8 +101,9 @@ Non-goals (explicitly out of scope for v1):
 
 A reserved hostname, default `agentcage.local`, served entirely by the egress:
 
-- **DNS**: dnsmasq gains `address=/agentcage.local/<ip_egress>` (rendered at
-  deploy time; `ip_egress` is already known to `quadlets.py`). The cage
+- **DNS**: `agentcage.local` resolves via the dnsmasq sinkhole: the global
+  `address=/#/<ip_egress>` catch-all already sends every unresolved name to
+  the egress, so the control host needs no dedicated record. The cage
   resolves it to the egress and connects normally. Configurable via
   `domains.auto.host`.
 - **TLS**: the egress CA already mints a cert for any SNI, and the cage trusts
