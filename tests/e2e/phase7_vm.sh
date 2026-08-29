@@ -23,6 +23,10 @@ podman build -t basic-agent "$REPO_ROOT/examples/basic/agent" >/dev/null 2>&1
 
 echo "Creating VM cage (this takes a few minutes)..."
 export E2E_PORT_VM="$PORT"
+# stderr is suppressed here on purpose: this create is EXPECTED to fail
+# routinely (the agent image isn't inside the VM yet — it's transferred
+# and the services started by hand just below), so the #317 failure dump
+# would be pure noise on every run.
 create_cage "$CONFIGS/vm.yaml" >/dev/null 2>&1 || true
 
 # The cage service may fail because the image isn't in the VM yet

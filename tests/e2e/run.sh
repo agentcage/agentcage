@@ -4,7 +4,7 @@
 # Usage:
 #   bash tests/e2e/run.sh                    # run all phases
 #   bash tests/e2e/run.sh 1 2 3 4            # run specific phases
-#   bash tests/e2e/run.sh container          # phases 1-6
+#   bash tests/e2e/run.sh container          # phases 1-6 (Linux only, see #317)
 #   bash tests/e2e/run.sh vm                 # phase 7 only
 #   E2E_PORT_BASE=19100 bash tests/e2e/run.sh  # custom port base
 
@@ -39,10 +39,13 @@ else
         echo "  8  OpenClaw scaffold regression canary (pulls openclaw:latest)"
         echo ""
         echo "Shortcuts:"
-        echo "  container   Phases 1-6"
+        echo "  container   Phases 1-6 (Linux host only)"
         echo "  vm          Phase 7 only"
         echo "  openclaw    Phase 8 only"
         echo "  all         Phases 1-8 (default)"
+        echo ""
+        echo "Note: phases 1-6 and 8 require rootless podman and therefore a"
+        echo "      Linux host. On macOS use 'vm' or tests/e2e/phase_apple.sh."
         echo ""
         echo "Environment:"
         echo "  E2E_PORT_BASE    Port base for test cages (default: 19080)"
@@ -54,6 +57,47 @@ else
         ;;
     esac
   done
+fi
+
+# ── host guard: container phases are Linux-only (issue #317) ─────────
+# Phases 1-6 and 8 are "container phases": they drive rootless podman
+# directly (start_mock, the mock container, `podman images`) and their
+# configs pin no `isolation:` key.
+#
+# On macOS that combination silently runs the WRONG backend:
+#   * `container` isolation is rejected outright by config validation
+#     ("container isolation is not available on macOS"), and
+#   * `default_isolation()` resolves an unpinned config to
+#     apple-container (macOS 26+ Apple Silicon) or vm (anything else).
+# `cage create` then builds the egress image into the apple-container
+# image store while start_mock looks for it via `podman images` — a
+# different, empty store — and the phase dies somewhere unrelated.
+#
+# Refuse up front with the real constraint instead. Deliberately scoped:
+# `run.sh vm` (phase 7, Lima) and tests/e2e/phase_apple.sh are supported
+# on macOS and are not blocked; on Linux this guard never fires.
+if [ "$(uname -s)" = "Darwin" ]; then
+  BLOCKED=()
+  for p in "${PHASES[@]}"; do
+    case "$p" in
+      1|2|3|4|5|6|8) BLOCKED+=("$p") ;;
+    esac
+  done
+  if [ ${#BLOCKED[@]} -gt 0 ]; then
+    {
+      echo "ERROR: phase(s) ${BLOCKED[*]} need 'container' isolation (rootless podman),"
+      echo "       which agentcage does not support on macOS — config validation"
+      echo "       rejects it, and these phases would otherwise run against a"
+      echo "       different backend whose images podman cannot see (issue #317)."
+      echo ""
+      echo "Supported on macOS:"
+      echo "  bash tests/e2e/run.sh vm       # phase 7 — Lima VM mode"
+      echo "  bash tests/e2e/phase_apple.sh  # apple-container (macOS 26+ Apple Silicon)"
+      echo ""
+      echo "For the container phases, use a Linux host (or CI)."
+    } >&2
+    exit 1
+  fi
 fi
 
 # ── preflight ────────────────────────────────────────────────────────

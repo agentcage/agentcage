@@ -234,7 +234,9 @@ dump_cage_diagnostics() {
     nsenter -t "$_cage_pid" -U -n -- ip route 2>&1 | sed 's/^/          /' >&2 || echo "          (nsenter failed)" >&2
     # Pick the egress IP that lives on the same /24 as the cage (the cage-net interface).
     local _egress_cage_ip
-    _egress_cage_ip=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-egress" 2>/dev/null)
+    # `|| true`: a failing inspect must not abort the diagnostic dump
+    # half-way through under `set -e` (#317).
+    _egress_cage_ip=$(podman inspect --format '{{(index .NetworkSettings.Networks "'"${cage}"'-net").IPAddress}}' "${cage}-egress" 2>/dev/null || true)
     echo "        [cage → egress IP ping (target=$_egress_cage_ip, 3 probes)]" >&2
     if [ -n "$_egress_cage_ip" ]; then
       nsenter -t "$_cage_pid" -U -n -- ping -c 3 -W 2 -q "$_egress_cage_ip" 2>&1 | sed 's/^/          /' >&2 || true
@@ -307,7 +309,13 @@ register_cage() {
   E2E_CAGES_TO_CLEANUP+=("$1")
 }
 
-# Destroy a cage silently
+# Destroy a cage silently.
+#
+# Unlike create_cage (#317) this one stays silent on failure ON PURPOSE:
+# every phase calls it up-front to clear a *possibly non-existent* stale
+# cage, so a non-zero exit is the normal case and carries no signal. The
+# `|| true` is likewise deliberate — a failed destroy must never abort a
+# phase under `set -e`.
 destroy_cage() {
   stop_mock "$1"
   agentcage cage destroy "$1" -y >/dev/null 2>&1 || true
@@ -327,17 +335,45 @@ destroy_cage_with_volumes() {
   done
 }
 
-# Create a cage from a config template (expands env vars) and register for cleanup.
-# Streams output to stderr so callers can redirect with >/dev/null.
+# _dump_captured LABEL OUTPUT
+#   Print a captured command's combined output to stderr, indented and
+#   framed like dump_cage_diagnostics. Used by the helpers below so a
+#   failing command explains itself even when the caller redirects the
+#   helper's stdout to /dev/null.
+_dump_captured() {
+  local label="$1" output="$2"
+  {
+    echo "        ── $label ──"
+    if [ -n "$output" ]; then
+      printf '%s\n' "$output" | sed 's/^/          /'
+    else
+      echo "          (no output)"
+    fi
+    echo "        ── end $label ──"
+  } >&2
+}
+
+# Create a cage from a config template (expands env vars).
+#
+# Output handling (issue #317): `agentcage cage create` output is CAPTURED,
+# not streamed. On success nothing is printed, so phases keep their clean
+# output with the customary `create_cage ... >/dev/null`. On failure the
+# captured output is dumped to stderr before returning the non-zero rc, so
+# a broken create explains itself instead of producing a bare
+# `Phase N: FAIL (0/0)`. Capturing here (rather than asking callers to stop
+# redirecting) is what makes the diagnostic survive `>/dev/null` callers.
 create_cage() {
   local config="$1"
   shift
   local tmpconfig
   tmpconfig=$(mktemp /tmp/e2e-config-XXXXXX.yaml)
   envsubst < "$config" > "$tmpconfig"
-  local rc=0
-  AGENT_DIR="$AGENT_DIR" agentcage cage create -c "$tmpconfig" "$@" 2>&1 || rc=$?
+  local rc=0 output
+  output=$(AGENT_DIR="$AGENT_DIR" agentcage cage create -c "$tmpconfig" "$@" 2>&1) || rc=$?
   rm -f "$tmpconfig"
+  if [ "$rc" -ne 0 ]; then
+    _dump_captured "cage create FAILED (exit $rc): $(basename "$config")" "$output"
+  fi
   return $rc
 }
 
@@ -450,13 +486,28 @@ start_mock() {
   # — build_artifacts() tags as ``agentcage-egress:<pkg-version>``. The
   # mock just needs an image with python3 inside; egress has it (debian
   # bookworm-slim + the mitmproxy bundle which ships its own python).
+  #
+  # The `|| true` is load-bearing (#317): lib.sh runs under `set -euo
+  # pipefail`, so when the store holds no agentcage-egress image grep exits
+  # 1, pipefail propagates it, and the bare assignment killed the ENTIRE
+  # phase right here — no message, no test results, just `FAIL (0/0)`. That
+  # is precisely what a macOS run hit, because the image had been built into
+  # the apple-container store where podman cannot see it. Tolerate the empty
+  # result so the diagnostic below actually gets a chance to run.
   local mock_image
   mock_image=$(podman images --format '{{.Repository}}:{{.Tag}}' \
-    | grep -E '^localhost/agentcage-egress:' | head -n 1)
+    | grep -E '^localhost/agentcage-egress:' | head -n 1 || true)
   if [ -z "$mock_image" ]; then
     # Fall back to the unversioned name in case the test runner pre-built
     # one without a version tag.
     mock_image=localhost/agentcage-egress
+    # A missing egress image after a successful `cage create` almost always
+    # means the cage was built by a NON-podman backend (vm / apple-container),
+    # whose image store podman cannot see — the exact #317 failure mode.
+    echo "WARNING: no localhost/agentcage-egress:* image in the podman store;" >&2
+    echo "         falling back to '$mock_image'. If the cage was created with a" >&2
+    echo "         vm or apple-container backend its egress image lives in a" >&2
+    echo "         different image store — see issue #317." >&2
   fi
 
   # Start mock container (reuses the already-built agentcage-egress image
@@ -470,21 +521,28 @@ start_mock() {
   #   [tini, --, /opt/agentcage/supervisor]. We override here so
   #   `python3 /mock.py` runs directly instead of being parsed as the
   #   supervisor's args.
-  if ! podman run -d --name "${cage}-mock" \
+  # Capture podman's own error (#317): a bare "failed to start mock
+  # container" hides the actual cause (missing image, missing network, …).
+  local run_out run_rc=0
+  run_out=$(podman run -d --name "${cage}-mock" \
     --user root \
     --network "${cage}-net" \
     --sysctl net.ipv4.ip_unprivileged_port_start=80 \
     --entrypoint=python3 \
     -v "${MOCK_SCRIPT}:/mock.py:ro" \
-    "$mock_image" /mock.py >/dev/null 2>&1; then
-    echo "WARNING: failed to start mock container for $cage" >&2
+    "$mock_image" /mock.py 2>&1) || run_rc=$?
+  if [ "$run_rc" -ne 0 ]; then
+    echo "WARNING: failed to start mock container for $cage (image: $mock_image)" >&2
+    _dump_captured "podman run FAILED (exit $run_rc)" "$run_out"
     return 1
   fi
 
-  # Get mock IP
+  # Get mock IP. `|| true` for the same reason as the image lookup above:
+  # a failing inspect must reach the explicit check below, not abort the
+  # phase with no output via `set -e`.
   local mock_ip
   mock_ip=$(podman inspect "${cage}-mock" \
-    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+    --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || true)
   if [ -z "$mock_ip" ]; then
     echo "WARNING: mock container has no IP for $cage" >&2
     stop_mock "$cage"

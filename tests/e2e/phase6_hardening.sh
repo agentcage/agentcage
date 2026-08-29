@@ -132,7 +132,9 @@ export E2E_MASK_PROJECT_DIR="$MASK_PROJECT"
 destroy_cage "$MASK_CAGE"
 register_cage "$MASK_CAGE"
 MASK_CREATE_RC=0
-create_cage "$CONFIGS/workspace-mask.yaml" >/dev/null 2>&1 || MASK_CREATE_RC=$?
+# Only stdout is dropped: create_cage dumps a failing create to stderr
+# (#317), and the skip below needs that reason to be visible.
+create_cage "$CONFIGS/workspace-mask.yaml" >/dev/null || MASK_CREATE_RC=$?
 if [ "$MASK_CREATE_RC" -ne 0 ]; then
   e2e_skip "6.11" "Workspace .git/hooks tmpfs mask" \
     "cage create failed (no podman / buildkit available)"
