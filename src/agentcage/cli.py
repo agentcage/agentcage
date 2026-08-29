@@ -4322,3 +4322,175 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
     click.echo(msg)
 
 
+# ── cage grants: Policy API runtime domain grants ────────────
+# Host-side management of the per-cage grants overlay (see
+# docs/explain/policy-api.md §3.4–3.5). The overlay is an additive
+# list of domains the egress granted at the agent's request, on top of
+# the operator's static ``domains.allow`` baseline. These commands only
+# touch the host-side overlay file + (for promote) the stored cage.yaml;
+# they never exec into the egress. ``promote`` reuses the battle-tested
+# ``domain add`` live-reload chain (save_raw_config → save_proxy_config
+# → _update_dns_quadlet) so a promoted grant becomes durable and visible
+# to the operator exactly like a hand-added domain.
+#
+# Command shape: ``agentcage cage grants <name> <list|promote|revoke>``.
+# The cage name is a positional argument on the *group* itself (not each
+# subcommand) so it always comes first — ``cage grants NOPE list`` rather
+# than ``cage grants list NOPE`` — matching the rest of the cage CLI's
+# ``cage <verb> <name>`` shape and the usage in the design doc. Click's
+# group parser consumes the leading positional as the group's argument
+# and dispatches the remaining token as the subcommand, so this just
+# works; the subcommands pull the name back out of the parent context
+# via :func:`_grants_name`.
+
+
+def _grant_domain_match(entry_domain: str, target: str) -> bool:
+    """Case-insensitive, trailing-dot-insensitive domain match.
+
+    DNS is case-insensitive and treats ``foo.com`` and ``foo.com.`` as the
+    same name, so grant lookups must too — otherwise an operator typing
+    ``revoke Foo.COM`` against an overlay entry written as ``foo.com``
+    would silently miss it and report the grant as absent.
+    """
+    return entry_domain.rstrip(".").lower() == target.rstrip(".").lower()
+
+
+def _grants_name() -> str:
+    """Return the cage name parsed by the ``cage grants`` group.
+
+    The group carries ``name`` as its own positional argument (see the
+    module comment above); subcommands read it from the parent context
+    rather than declaring a duplicate argument of their own.
+    """
+    return click.get_current_context().parent.params["name"]
+
+
+@cage.group("grants", cls=AliasGroup, aliases={"ls": "list"})
+@click.argument("name")
+def grants(name: str):
+    """Manage Policy API runtime domain grants (see docs/explain/policy-api.md)."""
+
+
+@grants.command("list")
+def grants_list():
+    """List runtime grants (overlay) and the static baseline for a cage."""
+    name = _grants_name()
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    # Baseline comes from the validated Config object so it reflects the
+    # same allowlist the egress enforces, not a raw-dict re-interpretation.
+    try:
+        cfg = state.load_deployment_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    baseline = list(cfg.domains.allow)
+    click.echo("Baseline: " + (" ".join(sorted(baseline)) if baseline else "(empty)"))
+
+    entries = state.load_grants(name)
+    if not entries:
+        click.echo("(no runtime grants)")
+        return
+
+    # Fixed-width column layout keeps the output greppable / parseable.
+    click.echo(f"{'DOMAIN':32} {'GRANTED_AT':26} {'EXPIRES_AT':26} {'REASON':24} SOURCE")
+    for e in entries:
+        click.echo(
+            f"{str(e.get('domain', '')):32} "
+            f"{str(e.get('granted_at', '')):26} "
+            f"{str(e.get('expires_at', '')):26} "
+            f"{str(e.get('reason', '')):24} "
+            f"{e.get('source', '')}"
+        )
+
+
+@grants.command("promote")
+@click.argument("domain")
+def grants_promote(domain: str):
+    """Promote a runtime grant into the permanent baseline, then drop it from the overlay."""
+    name = _grants_name()
+    try:
+        raw = state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    _ensure_v022_cage(name)
+    _ensure_domain_section(raw)
+    dom = raw["domains"]
+
+    # A grant only widens the allow set; blocklist mode allows everything
+    # except the listed names, so a "grant" is meaningless there and the
+    # request endpoint refuses to run in that mode (policy-api.md §2/§3.6).
+    # Mirroring that invariant host-side keeps promotion honest.
+    if "block" in dom and "allow" not in dom:
+        click.echo("error: cannot promote into a blocklist-mode cage", err=True)
+        sys.exit(1)
+
+    if "allow" not in dom:
+        dom["allow"] = []
+    allow_list = dom["allow"]
+
+    already_baseline = domain in allow_list
+    if already_baseline:
+        click.echo(f"'{domain}' is already in the baseline.")
+    else:
+        allow_list.append(domain)
+        # Live-reload chain, mirroring domain_add exactly: rewrite the
+        # stored cage.yaml + proxy-config.yaml, then re-publish the dnsmasq
+        # allowlist and SIGHUP dnsmasq so the change is live without a cage
+        # restart. The addon hot-reloads proxy-config.yaml via its mtime poll.
+        state.save_raw_config(name, raw)
+        state.save_proxy_config(name)
+        cfg = state.load_deployment_config(name)
+        _update_dns_quadlet(cfg)
+        if get_backend(cfg).is_running(cfg.name, "cage"):
+            click.echo("DNS and proxy updated.")
+
+    # The grant is now redundant with the baseline — drop it from the
+    # overlay so list/show reflect reality and the egress stops carrying
+    # a duplicate entry. Case-insensitive, trailing-dot-insensitive match
+    # (see _grant_domain_match) so the operator's casing doesn't matter.
+    remaining = [
+        e for e in state.load_grants(name)
+        if not _grant_domain_match(str(e.get("domain", "")), domain)
+    ]
+    state.save_grants(name, remaining)
+    click.echo(
+        f"Promoted '{domain}' into the baseline and removed it from the "
+        f"runtime overlay."
+    )
+
+
+@grants.command("revoke")
+@click.argument("domain")
+def grants_revoke(domain: str):
+    """Remove a runtime grant from the overlay (does not touch the baseline).
+
+    The addon hot-reloads the overlay on its mtime poll, so the grant stops
+    being effective on the next proxied request — no explicit signal needed.
+    """
+    name = _grants_name()
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    entries = state.load_grants(name)
+    remaining = [
+        e for e in entries
+        if not _grant_domain_match(str(e.get("domain", "")), domain)
+    ]
+    if len(remaining) == len(entries):
+        # Nothing matched — surface a clear error rather than a silent no-op
+        # that would leave the operator believing the grant was revoked.
+        click.echo(f"error: '{domain}' is not a runtime grant", err=True)
+        sys.exit(1)
+    state.save_grants(name, remaining)
+    click.echo(f"Revoked runtime grant for '{domain}'.")
+    click.echo("(takes effect on the next proxied request)")
+

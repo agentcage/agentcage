@@ -438,14 +438,30 @@ class WebhookDecisionConfig:
 
 @dataclass
 class LlmDecisionConfig:
-    # ``anthropic`` | ``openai``. Parsed for config validity; the built-in
-    # LLM provider is a follow-up (M4) — v1 ships webhook only. A config
-    # that selects ``llm`` validates but the request endpoint returns 503
-    # "llm provider not implemented" until M4 lands.
+    # ``anthropic`` | ``openai`` | ``openrouter``. The egress calls the
+    # provider directly over HTTPS (no SDK — keeps the egress image lean)
+    # and interprets a structured tool-call response as the grant/deny
+    # decision. OpenAI and OpenRouter share the OpenAI chat-completions wire
+    # format (``/v1/chat/completions``); Anthropic uses ``/v1/messages``.
+    #
+    # The evaluator's API key is a SEPARATE credential from the webhook
+    # ``auth_source``: a cage that uses the ``llm`` provider has no webhook,
+    # so its key must not be confused with one. It is an egress-only secret
+    # (staged into the proxy's tmpfs secret files, never cage-visible) and
+    # is REQUIRED for the ``llm`` provider.
     provider: str = ""
     model: str = ""
+    # ``systemd-creds:NAME`` | ``env:NAME`` | ``cmd:...`` — relay-auth shape.
+    # Required when provider=llm.
     auth_source: str = ""
     timeout_seconds: float = 15.0
+    # Optional API base URL override. Defaults are resolved per provider:
+    #   anthropic  -> https://api.anthropic.com
+    #   openai     -> https://api.openai.com
+    #   openrouter -> https://openrouter.ai
+    # Set this to point at a proxy/gateway, a local OpenAI-compatible server,
+    # or a custom OpenRouter-compatible endpoint.
+    base_url: str = ""
 
 
 @dataclass
@@ -978,6 +994,7 @@ def load_config(path: str) -> Config:
             model=str(llm_raw.get("model", "") or ""),
             auth_source=str(llm_raw.get("auth_source", "") or ""),
             timeout_seconds=float(llm_raw.get("timeout_seconds", 15.0) or 15.0),
+            base_url=str(llm_raw.get("base_url", "") or ""),
         )
         pa.request = RequestConfig(
             enable=bool(req_raw.get("enable", True)),
@@ -1809,20 +1826,26 @@ def validate_config(config: Config) -> list[str]:
                 )
         elif dec.provider == "llm":
             llm = dec.llm
-            if llm.provider not in ("anthropic", "openai"):
+            if llm.provider not in ("anthropic", "openai", "openrouter"):
                 raise ValueError(
                     f"policy_api.request.decision.llm.provider must be "
-                    f"'anthropic' or 'openai' (got {llm.provider!r})"
+                    f"'anthropic', 'openai', or 'openrouter' "
+                    f"(got {llm.provider!r})"
                 )
             if not llm.model:
                 raise ValueError(
                     "policy_api.request.decision.llm.model is required"
                 )
-            warnings.append(
-                "policy_api.request.decision.provider=llm: the built-in LLM "
-                "provider is a follow-up; v1 ships webhook only. The request "
-                "endpoint will return 503 until the LLM provider lands."
-            )
+            # The evaluator API key is a REQUIRED, separate credential
+            # (distinct from the webhook auth_source, which is unused here).
+            if not llm.auth_source:
+                raise ValueError(
+                    "policy_api.request.decision.llm.auth_source is required "
+                    "— the LLM policy evaluator needs its own API key, an "
+                    "egress-only secret (e.g. 'systemd-creds:POLICY_LLM_KEY' "
+                    "or 'env:OPENROUTER_API_KEY'). It is separate from the "
+                    "webhook auth_source."
+                )
 
         if dec.fail_open:
             warnings.append(

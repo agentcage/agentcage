@@ -64,3 +64,4 @@ domains:
 - [Ports](ports.md) — TCP/UDP egress policy that pairs with domain filtering.
 - [Inspectors](inspectors.md) — the `domain` inspector that enforces this allowlist on HTTP.
 - [Protocol relays](protocol-relays.md) — drop relay upstream hosts from `allow` so only the relay can reach them.
+- [Policy API](policy-api.md) — optional opt-in feature letting a caged agent introspect its allowlist and request new egress domains at runtime, gated by an operator decision hook. See the [design doc](../explain/policy-api.md).

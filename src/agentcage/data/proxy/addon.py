@@ -23,7 +23,6 @@ from inspectors.entropy import EntropyInspector
 from inspectors.secrets import SecretsInspector
 from inspectors.util import load_inspector_from_file, shannon_entropy
 from secret_injector import SecretInjector
-
 CONFIG_PATH = os.environ.get("AGENTCAGE_CONFIG", "/etc/agentcage/config.yaml")
 CAPTURE_PATH = os.environ.get("AGENTCAGE_CAPTURE", "")
 
@@ -115,6 +114,15 @@ class Agentcage:
         self._load_builtin_inspectors()
         self._load_custom_inspectors()
 
+        # Policy API (opt-in allowlist introspection + on-demand requests).
+        # Constructed only when ``policy_api.enable`` is set in the proxy
+        # config; absent → None → zero new surface (the control host is not
+        # even resolved). See docs/explain/policy-api.md and
+        # data/proxy/policy_api.py.
+        self.policy_api = None
+        self._policy_sweeper: Optional[asyncio.Task] = None
+        self._init_policy_api()
+
         # Audit log file — structured JSON lines for forensic analysis
         audit_path = os.environ.get(
             "AGENTCAGE_AUDIT_LOG", "/var/log/agentcage/audit.jsonl"
@@ -147,11 +155,59 @@ class Agentcage:
             f"injection_rules={len(self.injector.rules)}"
         )
 
+    def _init_policy_api(self) -> None:
+        """Build (or rebuild) the Policy API controller from the live config.
+
+        Rebuild on hot-reload is safe: grants live in the ``DomainInspector``
+        overlay + the persisted grants file, and ``PolicyApi`` replays the
+        overlay on construction, so a rebuild never drops a live grant.
+        """
+        pa_cfg = (self.cfg.get("policy_api") or {})
+        if not pa_cfg or not pa_cfg.get("enable"):
+            self.policy_api = None
+            return
+        dom = next((i for i in self.inspectors
+                    if isinstance(i, DomainInspector)), None)
+        if dom is None:
+            ctx.log.warn(
+                "agentcage: policy_api enabled but no domain inspector "
+                "loaded; control endpoints disabled"
+            )
+            self.policy_api = None
+            return
+        try:
+            from policy_api import PolicyApi
+            self.policy_api = PolicyApi(
+                self.cfg, dom, self._audit_write, ctx.log
+            )
+            ctx.log.info(
+                f"agentcage: policy_api enabled (host={self.policy_api.host}, "
+                f"introspection={self.policy_api.introspection_enabled}, "
+                f"request={self.policy_api.request_enabled})"
+            )
+        except Exception as e:
+            ctx.log.warn(f"agentcage: policy_api init failed: {e}")
+            self.policy_api = None
+
     def running(self) -> None:
         """Called after the proxy is fully started — apply TLS passthrough
         and start any non-HTTP protocol relay listeners."""
         self._apply_passthrough()
         self._start_protocol_relays()
+        self._start_policy_sweeper()
+
+    def _start_policy_sweeper(self) -> None:
+        """Start the Policy API grant-TTL sweeper as an asyncio task."""
+        if self.policy_api is None:
+            return
+        try:
+            self._policy_sweeper = asyncio.get_event_loop().create_task(
+                self.policy_api.sweeper_loop()
+            )
+        except RuntimeError:
+            # No running loop (e.g. some test contexts) — sweeper is
+            # best-effort; expiry is also reconciled on overlay reload.
+            self._policy_sweeper = None
 
     async def done(self) -> None:
         """Drain protocol relays cleanly on shutdown.
@@ -162,11 +218,16 @@ class Agentcage:
         relay is never invoked; mitmproxy just tears down the loop.
         """
         relays = list(getattr(self, "_relays", []) or [])
-        if not relays:
-            return
-        await asyncio.gather(
-            *[r.stop() for r in relays], return_exceptions=True
-        )
+        if relays:
+            await asyncio.gather(
+                *[r.stop() for r in relays], return_exceptions=True
+            )
+        if getattr(self, "_policy_sweeper", None) is not None:
+            self._policy_sweeper.cancel()
+            try:
+                await self._policy_sweeper
+            except asyncio.CancelledError:
+                pass
 
     def _audit_write(self, entry: dict) -> None:
         """Write a structured JSON line to the audit pipeline.
@@ -484,6 +545,25 @@ class Agentcage:
     async def request(self, flow: http.HTTPFlow) -> None:
         self._maybe_reload()
 
+        # ── Policy API control host ────────────────────────────
+        # Short-circuit BEFORE the SNI/Host strict check, rate limiter,
+        # secret-injection policy, and the inspector chain. The control
+        # host is a synthetic local endpoint (never forwarded upstream), so
+        # none of those gates apply. Matching requires both SNI and Host to
+        # equal the control host for TLS flows (a mismatch falls through to
+        # the SNI check below, which rejects it). See docs/explain/policy-api.md.
+        pa = getattr(self, "policy_api", None)
+        if pa is not None and pa.enabled:
+            sni = getattr(getattr(flow, "client_conn", None), "sni", None)
+            if isinstance(sni, bytes):
+                try:
+                    sni = sni.decode("idna")
+                except UnicodeError:
+                    sni = sni.decode("utf-8", "replace")
+            if pa.is_control_host(sni, flow.request.host_header):
+                await pa.handle(flow)
+                return
+
         # Reverse proxy flows are inbound traffic (host → cage via proxy).
         # Detect early so we can guard the transparent-mode host rewrite.
         is_reverse = isinstance(
@@ -682,6 +762,10 @@ class Agentcage:
                 }
 
     async def response(self, flow: http.HTTPFlow) -> None:
+        # Control-host responses are synthesized by the addon; never run
+        # response inspectors or secret redaction on them.
+        if flow.metadata.get("agentcage_control"):
+            return
         # Only run response inspectors if the request wasn't blocked
         if flow.metadata.get("agentcage_blocked"):
             self._cap_pending.pop(flow.id, None)
