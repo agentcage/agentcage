@@ -114,14 +114,14 @@ class Agentcage:
         self._load_builtin_inspectors()
         self._load_custom_inspectors()
 
-        # Policy API (opt-in allowlist introspection + on-demand requests).
+        # domains.auto — opt-in auto-managed allowlist (introspection + on-demand requests).
         # Constructed only when ``policy_api.enable`` is set in the proxy
         # config; absent → None → zero new surface (the control host is not
         # even resolved). See docs/explain/policy-api.md and
         # data/proxy/policy_api.py.
         self.domain_requests = None
         self._policy_sweeper: Optional[asyncio.Task] = None
-        self._init_policy_api()
+        self._init_domain_requests()
 
         # Audit log file — structured JSON lines for forensic analysis
         audit_path = os.environ.get(
@@ -155,7 +155,7 @@ class Agentcage:
             f"injection_rules={len(self.injector.rules)}"
         )
 
-    def _init_policy_api(self) -> None:
+    def _init_domain_requests(self) -> None:
         """Build (or rebuild) the Policy API controller from the live config.
 
         Rebuild on hot-reload is safe: grants live in the ``DomainInspector``

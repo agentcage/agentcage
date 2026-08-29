@@ -4,7 +4,7 @@ Opt-in allowlist introspection + on-demand domain requests, served by the
 egress on a reserved control hostname so they work under full default-deny.
 See ``docs/explain/policy-api.md``.
 
-This module is loaded by ``addon.py`` only when ``policy_api.enable`` is set
+This module is loaded by ``addon.py`` only when ``domains.auto.enable`` is set
 in the proxy config. It owns:
 
 * the control-host request router (``is_control_host`` / ``handle``),

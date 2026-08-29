@@ -4390,7 +4390,7 @@ def _ensure_grants_watcher(name: str, cfg) -> None:
 
     The watcher promotes Policy-API grants AND prunes expired allowlist
     entries (from ``domain add --expires-in`` or a TTL'd grant). It is
-    normally installed on ``cage create``/``update`` when ``policy_api.enable``
+    normally installed on ``cage create``/``update`` when ``domains.auto.enable``
     is set, but a time-limited ``domain add --expires-in`` on a cage that
     isn't using the Policy API still needs pruning — so this helper writes
     the unit on demand and starts it. Idempotent: a present, running watcher
