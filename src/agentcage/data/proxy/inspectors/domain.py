@@ -96,14 +96,20 @@ class DomainInspector(Inspector):
 
         Walks the host's suffixes (longest first, like ``_matches``) and
         checks the first suffix that is BOTH in the allow set AND has an
-        expires_at. An expires_at that parses as a past timestamp → expired.
+        expires_at. The expiry source is the baseline ``domains.expires``
+        map (operator ``domain add --expires-in``), falling back to the
+        matching GRANT entry's own ``expires_at`` — a TTL'd grant must
+        expire at L7 immediately, not keep passing for up to the sweeper's
+        30s poll. An expires_at that parses as a past timestamp → expired.
         """
         from datetime import datetime, timezone
         parts = host.lower().split(".")
         for i in range(len(parts)):
             suffix = ".".join(parts[i:])
-            if suffix in self.domain_set and suffix in self._expires:
-                exp = self._expires[suffix] or ""
+            if suffix in self.domain_set:
+                exp = self._expires.get(suffix, "")
+                if not exp and suffix in self.granted:
+                    exp = (self.granted[suffix].get("expires_at") or "")
                 if not exp:
                     continue
                 try:
@@ -179,11 +185,13 @@ class DomainInspector(Inspector):
         """Add *domain* to the live allow overlay (allowlist mode only).
 
         Takes effect immediately for the next request — at the L7 domain
-        inspector. (DNS-layer reachability for the granted zone is applied
-        separately by the egress supervisor, which watches the grants
-        overlay file and SIGHUPs dnsmasq — the addon process lacks the
-        privileges to signal dnsmasq itself. See docs/explain/policy-api.md
-        §3.4 and the supervisor bridge in supervisor-egress.sh.)
+        inspector, including the entry's own ``expires_at`` (``_matched_expired``
+        consults it, so an expired grant blocks before the sweeper even
+        drops it). DNS-layer reachability for the granted zone is applied by
+        the HOST-side grants watcher, which promotes the overlay entry into
+        the static baseline via the ``domain add`` chain (dnsmasq allowlist
+        rewrite + SIGHUP) — the addon process lacks the privileges to do
+        that itself. See docs/explain/policy-api.md §3.4.
         """
         if self.mode != "allowlist":
             return

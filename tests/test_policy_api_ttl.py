@@ -177,3 +177,64 @@ class TestWatchRemovesPromotedEntries:
         saved_raw = mock_apply.call_args[0][1]
         assert saved_raw["domains"]["expires"]["x.com"] == \
             "2030-01-01T00:10:00+00:00"
+
+
+class TestEnsureGrantsWatcherBackendGate:
+    """_ensure_grants_watcher must never write a systemd unit at the
+    apple-container launchd .plist path — the apple backend installs its
+    own plist. And it must warn (not silently no-op) on the vm backend,
+    where the watcher is unsupported in v1."""
+
+    @patch("agentcage.cli.get_backend")
+    def test_apple_delegates_to_install_plist(self, mock_backend):
+        backend = MagicMock()
+        # grants_unit_path returns a .plist path — the trap: writing the
+        # systemd unit there would corrupt it.
+        from pathlib import Path
+        backend.grants_unit_path.return_value = Path(
+            "/tmp/io.agentcage.x.grants.plist")
+        install = backend._install_grants_plist
+        mock_backend.return_value = backend
+
+        from agentcage.cli import _ensure_grants_watcher
+        cfg = MagicMock()
+        cfg.isolation = "apple-container"
+        _ensure_grants_watcher("x", cfg)
+
+        install.assert_called_once_with("x")
+        # And the systemd-unit write path was never taken: the plist path
+        # must still not exist (no unit string written into it).
+        assert not Path("/tmp/io.agentcage.x.grants.plist").exists()
+
+    @patch("agentcage.cli.get_backend")
+    def test_vm_warns_and_skips(self, mock_backend, capsys):
+        backend = MagicMock(spec=[])
+        mock_backend.return_value = backend
+
+        from agentcage.cli import _ensure_grants_watcher
+        cfg = MagicMock()
+        cfg.isolation = "vm"
+        _ensure_grants_watcher("x", cfg)
+
+        out = capsys.readouterr().err
+        assert "not supported on the vm backend" in out
+
+    @patch("agentcage.cli.get_backend")
+    def test_container_backend_still_writes_unit(self, mock_backend, tmp_path):
+        backend = MagicMock()
+        unit = tmp_path / "x-grants.service"
+        backend.grants_unit_path.return_value = unit
+        # No _install_grants_plist on the container backend.
+        del backend._install_grants_plist
+        mock_backend.return_value = backend
+
+        from agentcage.cli import _ensure_grants_watcher
+        import agentcage.systemd as _systemd
+        cfg = MagicMock()
+        cfg.isolation = "container"
+        with patch.object(_systemd, "start_unit") as mock_start:
+            _ensure_grants_watcher("x", cfg)
+
+        assert unit.exists()
+        assert "[Unit]" in unit.read_text()
+        mock_start.assert_called_once_with("x-grants.service")

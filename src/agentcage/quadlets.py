@@ -1099,7 +1099,13 @@ def generate_quadlets(
         getattr(config.domains.auto, "enable", False)
         or bool(getattr(config.domains, "expires", None))
     )
-    if needs_watcher:
+    # VM deploys skip the unit: the file would be copied into the guest's
+    # systemd dir where plain .service files never load (not Quadlets), and
+    # the host CLI can't run the watcher against a guest-side overlay.
+    # domains.auto on the vm backend is not supported in v1 (the CLI warns
+    # in _ensure_grants_watcher); container deploys install it into the
+    # host's systemd user dir via the container backend.
+    if needs_watcher and config.isolation != "vm":
         files[f"{name}-grants.service"] = _grants_service_unit(
             name, deploy_name or name
         )

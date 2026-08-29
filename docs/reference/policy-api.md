@@ -60,8 +60,16 @@ on — there are no separate `introspection:`/`request:` enable flags.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET`  | `/v1/allowlist` | Introspection. Returns the effective domain policy. |
-| `POST` | `/v1/allowlist/requests` | Request a new domain. Invokes the decider. |
-| `GET`  | `/v1/allowlist/requests/{id}` | Poll a request's status. |
+| `POST` | `/v1/allowlist/requests` | Request a new domain. Invokes the decider (synchronous — the decision is in the response body). |
+| `GET`  | `/v1/health` | Liveness + feature flags. |
+
+**Backend support (v1):** the grants watcher — the component that promotes
+approved grants into the static baseline and prunes expired entries — runs
+on the **container** backend (systemd user unit) and **apple-container**
+(launchd plist). The **vm** backend is not supported in v1: the host CLI
+cannot watch a guest-side overlay, so `domains.auto` grants are decided and
+L7-enforced but never promoted to the baseline/DNS (the CLI warns when this
+matters, e.g. `domain add --expires-in` on a vm cage).
 | `GET`  | `/v1/health` | Liveness + feature flags (which endpoints are enabled). |
 
 ### `GET /v1/allowlist`

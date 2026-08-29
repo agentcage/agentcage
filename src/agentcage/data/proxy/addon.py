@@ -14,6 +14,12 @@ import yaml
 from mitmproxy import ctx, http
 from mitmproxy.proxy.mode_specs import ReverseMode
 
+# Hard cap for the in-container audit log. The caged agent can reach the
+# control endpoints (introspection is unauthenticated by design), and
+# every request writes a record — without a cap that is an unbounded
+# disk-fill vector against the egress container.
+_AUDIT_CAP_BYTES = 16 * 1024 * 1024
+
 from inspectors._chain import run_inspector_chain
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.body_size import BodySizeInspector
@@ -121,6 +127,7 @@ class Agentcage:
         # data/proxy/policy_api.py.
         self.domain_requests = None
         self._policy_sweeper: Optional[asyncio.Task] = None
+        self._running = False
         self._init_domain_requests()
 
         # Audit log file — structured JSON lines for forensic analysis
@@ -128,6 +135,7 @@ class Agentcage:
             "AGENTCAGE_AUDIT_LOG", "/var/log/agentcage/audit.jsonl"
         )
         self._audit_file = None
+        self._audit_capped = False
         if audit_path:
             try:
                 os.makedirs(os.path.dirname(audit_path), exist_ok=True)
@@ -161,7 +169,17 @@ class Agentcage:
         Rebuild on hot-reload is safe: grants live in the ``DomainInspector``
         overlay + the persisted grants file, and ``PolicyApi`` replays the
         overlay on construction, so a rebuild never drops a live grant.
+
+        Also owns the sweeper task lifecycle: a rebuild cancels the old
+        task (it polls the OLD controller object) and starts a new one, so
+        ENABLING domains.auto on a live cage actually starts the TTL
+        sweeper and DISABLING it stops the stale one — without this, a
+        hot-enabled feature would leave grants permanently unswept and
+        host overlay changes unreconciled.
         """
+        if self._policy_sweeper is not None:
+            self._policy_sweeper.cancel()
+            self._policy_sweeper = None
         pa_cfg = (self.cfg.get("domains") or {}).get("auto") or {}
         if not pa_cfg or not pa_cfg.get("enable"):
             self.domain_requests = None
@@ -188,10 +206,17 @@ class Agentcage:
         except Exception as e:
             ctx.log.warn(f"agentcage: domains.auto init failed: {e}")
             self.domain_requests = None
+            return
+        # Start the sweeper immediately when the proxy is already running
+        # (hot-reload path); at load time running() starts it once the loop
+        # is live.
+        if self._running:
+            self._start_policy_sweeper()
 
     def running(self) -> None:
         """Called after the proxy is fully started — apply TLS passthrough
         and start any non-HTTP protocol relay listeners."""
+        self._running = True
         self._apply_passthrough()
         self._start_protocol_relays()
         self._start_policy_sweeper()
@@ -217,6 +242,7 @@ class Agentcage:
         TCP reset. Without this hook the careful shutdown logic in the
         relay is never invoked; mitmproxy just tears down the loop.
         """
+        self._running = False
         relays = list(getattr(self, "_relays", []) or [])
         if relays:
             await asyncio.gather(
@@ -235,6 +261,14 @@ class Agentcage:
         Same sink as ``_log()``: stderr (always) and ``audit.jsonl``
         (when configured). Used by protocol relays so per-decision
         records land in the same place HTTP decisions do.
+
+        Hard-capped at ``_AUDIT_CAP_BYTES`` (16 MB): the caged agent can
+        reach the control endpoints (introspection is unauthenticated and
+        un-rate-limited by design), and every call writes an audit record
+        — without a cap that is an unbounded disk-fill vector against
+        the egress container. Past the cap, records still go to stderr
+        (journald's own rotation applies) but the file is left alone; the
+        operator can rotate or truncate it.
         """
         if "ts" not in entry:
             entry["ts"] = datetime.now(timezone.utc).isoformat()
@@ -242,8 +276,22 @@ class Agentcage:
         print(line, file=sys.stderr, flush=True)
         if self._audit_file:
             try:
-                self._audit_file.write(line + "\n")
-                self._audit_file.flush()
+                if not self._audit_capped:
+                    import os as _os
+                    try:
+                        if self._audit_file.tell() > _AUDIT_CAP_BYTES:
+                            self._audit_capped = True
+                            ctx.log.warn(
+                                "agentcage: audit log at cap "
+                                f"({_AUDIT_CAP_BYTES} bytes); file writes "
+                                "suspended (stderr only) — rotate the file "
+                                "to resume"
+                            )
+                    except OSError:
+                        pass
+                if not self._audit_capped:
+                    self._audit_file.write(line + "\n")
+                    self._audit_file.flush()
             except OSError:
                 pass
 

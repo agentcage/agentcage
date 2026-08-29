@@ -4400,12 +4400,34 @@ def _ensure_grants_watcher(name: str, cfg) -> None:
     """
     try:
         backend = get_backend(cfg)
-        unit_path_fn = getattr(backend, "grants_unit_path", None)
-        if unit_path_fn is None:
-            return  # backend without host-side systemd units (vm/apple-container parity)
-        unit_path = unit_path_fn(name)
     except Exception:
         return
+    isolation = getattr(cfg, "isolation", "container") or "container"
+    # Apple-container: the watcher is a LAUNCHD PLIST the backend installs
+    # itself (_install_grants_plist). Never write a systemd unit at that
+    # path — grants_unit_path() returns a .plist there, and a systemd unit
+    # string written into it would corrupt the plist.
+    install_plist = getattr(backend, "_install_grants_plist", None)
+    if install_plist is not None:
+        try:
+            install_plist(name)
+        except Exception as e:
+            click.echo(f"warning: could not install grants watcher: {e}",
+                        err=True)
+        return
+    unit_path_fn = getattr(backend, "grants_unit_path", None)
+    if unit_path_fn is None:
+        # VM backend: no host-side watcher in v1. The entry is still
+        # enforced at L7 immediately; but the baseline + dnsmasq are not
+        # pruned and Policy-API grants are not promoted on VM.
+        if isolation == "vm":
+            click.echo(
+                "warning: the grants watcher is not supported on the vm "
+                "backend in v1 — expiry is enforced at the proxy (L7), but "
+                "the baseline/DNS are not pruned and domains.auto grants "
+                "are not promoted on VM", err=True)
+        return  # backend without host-side systemd units
+    unit_path = unit_path_fn(name)
     if unit_path is None:
         return
     # Render + install the unit if missing (mirrors quadlets._grants_service_unit).

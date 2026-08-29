@@ -9,19 +9,24 @@ in the proxy config. It owns:
 
 * the control-host request router (``is_control_host`` / ``handle``),
 * the introspection + health endpoints (read-only),
-* the request endpoint + decider invocation (webhook provider; the
-  built-in ``llm`` provider is a documented follow-up and returns 503),
+* the request endpoint + decider invocation (v1 ships the ``agent``
+  LLM decider — anthropic / openai / openrouter — called over raw HTTPS
+  outside the mitmproxy data path; ``kind: webhook`` is a reserved
+  follow-up and is rejected at config time),
 * the runtime grants overlay (load / persist / reconcile) and its TTL
   sweeper,
 * structured audit entries (``kind: policy_request``).
 
 Trust model: the egress never grants without a positive decision from the
-operator's hook; hook failure defaults to deny (the feature is
-fail-closed — a decider error NEVER grants). Grants are additive-only at the L7
-``DomainInspector``; DNS-layer reachability for a granted zone is applied by
-the egress supervisor, which watches the overlay file and SIGHUPs dnsmasq —
-the addon process (``acproxy``, uid 200, ``--bounding-set=-all``) cannot
-signal dnsmasq itself.
+operator's decider; decider failure defaults to deny (the feature is
+fail-closed — a decider error NEVER grants). Grants are additive-only at the
+L7 ``DomainInspector``; DNS-layer reachability for a granted zone is applied
+by the HOST-side grants watcher (a systemd user unit on container deploys,
+a launchd plist on apple-container), which promotes overlay grants into the
+static baseline via the literal ``domain add`` chain (``save_raw_config`` →
+``save_proxy_config`` → ``_update_dns_quadlet`` → dnsmasq SIGHUP) — the
+addon process (``acproxy``, uid 200, ``--bounding-set=-all``) cannot write
+the dnsmasq allowlist or signal dnsmasq itself.
 """
 
 from __future__ import annotations
@@ -457,6 +462,22 @@ class PolicyApi:
         ttl = ttl_override or self._ttl_seconds
         if ttl > 86400:
             ttl = 86400
+        # A negative ttl_seconds is out-of-contract decider output (the
+        # documented values are >= 0, where 0/absent = permanent). Treat it
+        # as a malformed response and DENY — fail-closed — rather than
+        # letting ``_expires_at`` collapse it to a permanent grant.
+        if ttl < 0:
+            self._respond(flow, 200, self._deny_response(
+                domain,
+                "denied: malformed decider response (negative ttl_seconds)",
+                decided_by,
+            ))
+            self._audit_event("policy_request", {
+                "domain": domain, "decision": "denied",
+                "reason": "malformed decider response: negative ttl_seconds",
+                "decided_by": decided_by,
+            })
+            return
         expires_at = self._expires_at(ttl)
         self._apply_grant(domain, llm_reason or reason, ttl_override=ttl,
                           decided_by=decided_by, expires_at=expires_at)
@@ -707,6 +728,17 @@ class PolicyApi:
 
     def _apply_grant(self, domain: str, reason: str, *, ttl_override: int,
                      decided_by: str, expires_at: str = "") -> None:
+        # Reconcile from the overlay BEFORE adding the fresh grant: a
+        # host-side revoke that has hit disk is picked up here, so the
+        # persist below cannot resurrect it. The fresh grant is added
+        # AFTER the reconcile, so it cannot be dropped (B1 stays fixed).
+        # This shrinks the revoke↔grant race from the sweeper's ≤30s poll
+        # to a read-then-rename TOCTOU of milliseconds. Without it, a
+        # resurrected entry would be promoted into the baseline by the
+        # host watcher — PERMANENTLY, since promotion is not idempotent
+        # w.r.t. revoke (the reconcile is mtime-gated, so it is a no-op
+        # when nothing changed externally — the common case).
+        self.maybe_reload_overlay()
         expires = expires_at or self._expires_at(ttl_override or self._ttl_seconds)
         self.dom.grant(domain, expires_at=expires, reason=reason,
                        source=decided_by)
@@ -741,12 +773,14 @@ class PolicyApi:
         ``maybe_reload_overlay`` on the sweeper's periodic poll and at
         construction, not here.
 
-        Convergence for the revoke race (I1): if a host revoke removes an
-        overlay entry while the addon is mid-grant, this persist may re-write
-        the entry. The watcher's next tick sees the domain is already in the
-        baseline (idempotent promote) and removes the overlay entry again, so
-        it self-heals within one tick rather than permanently resurrecting the
-        grant. The baseline ``domain rm`` is the durable revoke.
+        Convergence for the revoke race (I1): ``_apply_grant`` reconciles
+        from the overlay (mtime-gated) BEFORE adding a fresh grant, and the
+        sweeper reconciles before expiry-persisting, so the addon does not
+        resurrect a host-side revoke in the common case. A residual
+        millisecond TOCTOU remains (revoke lands on disk between the
+        reconcile read and this rename); if it fires, the watcher promotes
+        the resurrected entry into the baseline — the operator's durable
+        control is ``agentcage domain rm`` on the baseline itself.
         """
         entries = self.dom.granted_entries()
         try:
@@ -799,14 +833,22 @@ class PolicyApi:
     async def sweeper_loop(self) -> None:
         """Drop expired grants periodically + on overlay change.
 
-        Runs as an asyncio task started in ``running()`` and cancelled in
-        ``done()``. Expiry narrows the in-memory set AND the overlay file
-        (whose mtime change the egress supervisor watches to regenerate
-        dnsmasq's per-zone forwarders — see supervisor-egress.sh).
+        Runs as an asyncio task started in ``running()`` (and restarted on
+        config hot-reload by ``_init_domain_requests``) and cancelled in
+        ``done()``. Expiry narrows the in-memory set AND the overlay file.
+        DNS-layer reachability is NOT applied here — the HOST-side grants
+        watcher promotes grants into the baseline via the ``domain add``
+        chain; this loop only manages the L7 overlay.
         """
         try:
             while True:
                 await asyncio.sleep(30)
+                # Pick up host-side revoke/promote FIRST: an expiry-triggered
+                # persist must not re-write an entry the host just revoked in
+                # the same tick (the addon would resurrect it before ever
+                # seeing the revoke — and the host watcher would then promote
+                # the resurrected entry into the baseline permanently).
+                self.maybe_reload_overlay()
                 now = _now_iso()
                 expired = self.dom.drop_expired(now)
                 if expired:
@@ -815,8 +857,6 @@ class PolicyApi:
                         self._audit_event("policy_grant_expired", {
                             "domain": d, "reason": "ttl expired",
                         })
-                # Also pick up host-side revoke/promote.
-                self.maybe_reload_overlay()
         except asyncio.CancelledError:
             return
 

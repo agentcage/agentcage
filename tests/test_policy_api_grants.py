@@ -132,6 +132,49 @@ class TestDropExpired:
         assert d.is_granted("future.com") is True
         assert d.is_granted("noexp.com") is True
 
+
+class TestGrantTtlEnforcedAtL7:
+    """A TTL'd grant must block at L7 the moment its expires_at passes —
+    NOT keep passing for up to the sweeper's 30s poll. Regression guard
+    for the 5th-review finding: ``_matched_expired`` consulted only the
+    baseline ``domains.expires`` map, never the grant entry's own
+    ``expires_at``."""
+
+    def test_expired_grant_blocks_at_l7_immediately(self):
+        d = DomainInspector()
+        d.configure({"allow": ["a.com"]})
+        # A grant whose expires_at is already past. Do NOT call
+        # drop_expired — the point is that L7 blocks even before the
+        # sweeper sees it.
+        d.grant("past.com", expires_at="2000-01-01T00:00:00Z")
+        result = d.inspect_request(_ctx(host="past.com"))
+        assert result is not None
+        assert result.action == "block"
+        assert "expired" in result.reason
+
+    def test_unexpired_grant_still_passes_l7(self):
+        d = DomainInspector()
+        d.configure({"allow": ["a.com"]})
+        d.grant("future.com", expires_at="2999-01-01T00:00:00Z")
+        assert d.inspect_request(_ctx(host="future.com")) is None
+
+    def test_permanent_grant_has_no_l7_expiry(self):
+        d = DomainInspector()
+        d.configure({"allow": ["a.com"]})
+        d.grant("perm.com")  # no expires_at
+        assert d.inspect_request(_ctx(host="perm.com")) is None
+
+    def test_baseline_expires_still_enforced_alongside_grants(self):
+        # The baseline path (domain add --expires-in) must keep working:
+        # a domain in BOTH the baseline-with-expiry and granted maps takes
+        # the baseline expiry (the first matching suffix wins).
+        d = DomainInspector()
+        d.configure({"allow": ["a.com"],
+                     "expires": {"a.com": "2000-01-01T00:00:00Z"}})
+        result = d.inspect_request(_ctx(host="a.com"))
+        assert result is not None
+        assert result.action == "block"
+        assert "expired" in result.reason
     def test_drop_expired_empty_now_keeps_all(self):
         d = DomainInspector()
         d.configure({"allow": ["a.com"]})

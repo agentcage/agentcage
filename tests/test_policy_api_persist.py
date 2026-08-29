@@ -130,3 +130,88 @@ class TestPersistHonorsRevoke:
         data = yaml.safe_load(overlay.read_text())
         domains = {e["domain"] for e in (data or [])}
         assert "z.com" in domains and "x.com" not in domains
+
+
+class TestGrantReconcilesBeforePersist:
+    """_apply_grant reconciles from the overlay BEFORE adding the fresh
+    grant — so a host-side revoke that hit disk cannot be resurrected by
+    the very next addon grant (the 5th-review HIGH finding: a resurrected
+    entry would be promoted into the baseline by the host watcher —
+    permanently, since promotion is not idempotent w.r.t. revoke)."""
+
+    def test_grant_picks_up_pending_revoke_first(self, tmp_path, monkeypatch):
+        pa, dom, overlay = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "r", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        assert dom.is_granted("x.com")
+        # Host revokes x.com: overlay rewritten without it, mtime bumped.
+        # NO sweeper tick runs — the next _apply_grant itself must see it.
+        overlay.write_text("[]\n")
+        ft = time.time() + 100
+        os.utime(overlay, (ft, ft))
+        # A new grant arrives before the sweeper's 30s poll would fire.
+        pa._apply_grant("z.com", "r2", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        assert not dom.is_granted("x.com"), \
+            "revoked x.com resurrected by the next grant's persist"
+        assert dom.is_granted("z.com")
+        data = yaml.safe_load(overlay.read_text())
+        domains = {e["domain"] for e in (data or [])}
+        assert "z.com" in domains and "x.com" not in domains, \
+            "resurrected x.com written to overlay — watcher would promote it"
+
+    def test_grant_without_external_change_is_untouched(self, tmp_path, monkeypatch):
+        """The reconcile-before-grant is mtime-gated: with no external
+        change it must not drop the in-memory grants (B1 stays fixed)."""
+        pa, dom, overlay = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "r", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        pa._apply_grant("y.com", "r2", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        assert dom.is_granted("x.com") and dom.is_granted("y.com")
+        data = yaml.safe_load(overlay.read_text())
+        domains = {e["domain"] for e in (data or [])}
+        assert domains == {"x.com", "y.com"}
+
+
+class TestNegativeTtlDenied:
+    """A negative ttl_seconds from the decider is out-of-contract output —
+    the grant must be DENIED (fail-closed), not collapsed to a permanent
+    grant by ``_expires_at``."""
+
+    def test_negative_ttl_denies(self, tmp_path, monkeypatch):
+        import asyncio
+        pa, dom, overlay = _make_pa(tmp_path, monkeypatch)
+        # Configure the LLM path (white-box: pretend the api_key resolved).
+        pa._llm_provider = "openrouter"
+        pa._llm_model = "m"
+        pa._llm_secret = "sk-test"
+        # The decider misbehaves: grants with a NEGATIVE ttl.
+        pa._llm_call_sync = lambda domain, reason, timeout: {
+            "decision": "grant", "reason": "r", "ttl_seconds": -5,
+        }
+        flow = MagicMock()
+        asyncio.run(pa._decide_llm(flow, "neg.com", "need it"))
+        # The response is a MagicMock (stubbed mitmproxy), so assert via the
+        # durable side effects: no grant in memory, no overlay entry.
+        assert not dom.is_granted("neg.com"), \
+            "negative ttl_seconds must never produce a grant"
+        assert not overlay.exists() or \
+            not any(e["domain"] == "neg.com"
+                    for e in (yaml.safe_load(overlay.read_text()) or [])), \
+            "negative-ttl grant must not reach the overlay"
+
+    def test_positive_ttl_still_grants(self, tmp_path, monkeypatch):
+        import asyncio
+        pa, dom, overlay = _make_pa(tmp_path, monkeypatch)
+        pa._llm_provider = "openrouter"
+        pa._llm_model = "m"
+        pa._llm_secret = "sk-test"
+        pa._llm_call_sync = lambda domain, reason, timeout: {
+            "decision": "grant", "reason": "r", "ttl_seconds": 60,
+        }
+        flow = MagicMock()
+        asyncio.run(pa._decide_llm(flow, "pos.com", "need it"))
+        assert dom.is_granted("pos.com")
+        data = yaml.safe_load(overlay.read_text())
+        assert any(e["domain"] == "pos.com" for e in (data or []))
