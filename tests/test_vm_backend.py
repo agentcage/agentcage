@@ -24,6 +24,18 @@ def _make_config(name: str = "testcage") -> Config:
     return cfg
 
 
+def _ready_probe_exec(cmd, **kwargs):
+    """Mock ``LimaInstance.exec`` for a guest whose user session is already up.
+
+    ``build_artifacts`` gates the first in-VM podman call on the guest's
+    systemd user session (#319), so any mock guest must answer that probe —
+    otherwise every build test would sit out the full readiness timeout.
+    """
+    if any("is-system-running" in str(a) for a in cmd):
+        return MagicMock(returncode=0, stdout="running\n", stderr="")
+    return MagicMock(returncode=0, stdout="", stderr="")
+
+
 class TestCheckPrerequisites:
     def test_delegates_to_lima_prerequisites(self):
         backend = VmBackend()
@@ -51,6 +63,7 @@ class TestBuildArtifacts:
         mock_inst = MagicMock()
         mock_inst.is_running.return_value = True
         mock_inst.name = "agentcage-testcage"
+        mock_inst.exec.side_effect = _ready_probe_exec
         config = _make_config()
 
         with patch.object(backend, "_instance", return_value=mock_inst), \
@@ -94,6 +107,7 @@ class TestBuildArtifacts:
         mock_inst = MagicMock()
         mock_inst.is_running.return_value = True
         mock_inst.name = "agentcage-testcage"
+        mock_inst.exec.side_effect = _ready_probe_exec
         with patch.object(backend, "_instance", return_value=mock_inst), \
              patch("subprocess.run", return_value=MagicMock(returncode=0)):
             backend.build_artifacts(
@@ -125,6 +139,7 @@ class TestBuildArtifacts:
         mock_inst = MagicMock()
         mock_inst.is_running.return_value = True
         mock_inst.name = "agentcage-testcage"
+        mock_inst.exec.side_effect = _ready_probe_exec
         config = _make_config()
         config.container.build.containerfile = "Containerfile"
 
@@ -782,7 +797,7 @@ class TestInVmBuildFailureDiagnostics:
                                  "--", *cmd],
                     output=stdout, stderr=stderr,
                 )
-            return MagicMock(returncode=0, stdout="", stderr="")
+            return _ready_probe_exec(cmd, **kwargs)
 
         return _exec
 
@@ -890,6 +905,176 @@ class TestInVmBuildFailureDiagnostics:
         err = capsys.readouterr().err
         assert "stdout bytes" in err
         assert "stderr bytes" in err
+
+
+class TestUserSessionReadinessGate:
+    """Issue #319 safety net. Rootless podman's systemd cgroup manager needs
+    the guest user's D-Bus, and without it every container creation fails::
+
+        warning: The cgroupv2 manager is set to systemd but there is no
+                 systemd user session available
+        error running container: from /usr/bin/crun ...: sd-bus call:
+                 Interactive authentication required.: Permission denied
+
+    The cause is fixed in provisioning (see
+    ``TestUserManagerRestartForDbusSocket``), so this gate is defense in
+    depth: it should resolve on its first probe, and on timeout it names the
+    precondition and still hands over to the build rather than stalling or
+    failing early. It is a gate, never a retry — the build runs exactly
+    once, so genuine build failures still fail immediately."""
+
+    @staticmethod
+    def _is_probe(cmd) -> bool:
+        return any("is-system-running" in str(a) for a in cmd)
+
+    @staticmethod
+    def _backend_with(exec_side_effect):
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = True
+        mock_inst.name = "agentcage-testcage"
+        mock_inst.exec.side_effect = exec_side_effect
+        return backend, mock_inst
+
+    def test_ready_session_passes_straight_through(self):
+        """A warm VM costs exactly one probe and no sleep."""
+        import time as _time
+
+        backend, mock_inst = self._backend_with(_ready_probe_exec)
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)):
+            t0 = _time.monotonic()
+            backend.build_artifacts(_make_config(), "testcage")
+            elapsed = _time.monotonic() - t0
+
+        probes = [c for c in mock_inst.exec.call_args_list if self._is_probe(c[0][0])]
+        assert len(probes) == 1
+        assert elapsed < 0.5
+        builds = [
+            c for c in mock_inst.exec.call_args_list
+            if "podman" in str(c) and "build" in str(c)
+        ]
+        assert len(builds) == 1
+
+    def test_degraded_counts_as_ready(self):
+        """``is-system-running`` exits non-zero for ``degraded``, but the bus
+        and the cgroup delegation are live — that must not block the build."""
+        from agentcage.backends.vm import _wait_user_session_ready
+
+        mock_inst = MagicMock()
+        mock_inst.exec.return_value = MagicMock(returncode=1, stdout="degraded\n")
+
+        assert _wait_user_session_ready(
+            mock_inst, timeout_s=5.0, interval_s=0.01,
+        ) is True
+        assert mock_inst.exec.call_count == 1
+
+    def test_waits_then_proceeds_when_session_appears(self, capsys):
+        """The gate polls while the precondition is missing and continues as
+        soon as it appears — the build is still dispatched exactly once."""
+        states = ["no-user-bus", "starting", "running"]
+
+        def _exec(cmd, **kwargs):
+            if TestUserSessionReadinessGate._is_probe(cmd):
+                return MagicMock(returncode=0, stdout=states.pop(0) + "\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        backend, mock_inst = self._backend_with(_exec)
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("agentcage.backends.vm.VM_USER_SESSION_POLL_INTERVAL_S", 0.01):
+            backend.build_artifacts(_make_config(), "testcage")
+
+        assert states == []
+        calls = mock_inst.exec.call_args_list
+        probe_idx = [i for i, c in enumerate(calls) if self._is_probe(c[0][0])]
+        build_idx = [
+            i for i, c in enumerate(calls)
+            if "podman" in str(c) and "build" in str(c)
+        ]
+        assert len(probe_idx) == 3
+        assert len(build_idx) == 1
+        # The gate must close BEFORE the first in-VM podman invocation.
+        assert max(probe_idx) < build_idx[0]
+        out = capsys.readouterr().out
+        assert "Waiting for the guest systemd user session" in out
+
+    def test_timeout_still_attempts_the_build(self, capsys):
+        """A gate timeout is a hint, not a verdict: failing early would swap
+        one opaque error for another and discard podman's real diagnostic,
+        which #322 exists to surface."""
+        def _exec(cmd, **kwargs):
+            if TestUserSessionReadinessGate._is_probe(cmd):
+                return MagicMock(returncode=0, stdout="no-user-bus\n")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        backend, mock_inst = self._backend_with(_exec)
+
+        with patch.object(backend, "_instance", return_value=mock_inst), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("agentcage.backends.vm.VM_USER_SESSION_TIMEOUT_S", 0.02), \
+             patch("agentcage.backends.vm.VM_USER_SESSION_POLL_INTERVAL_S", 0.01):
+            backend.build_artifacts(_make_config(), "testcage")
+
+        builds = [
+            c for c in mock_inst.exec.call_args_list
+            if "podman" in str(c) and "build" in str(c)
+        ]
+        assert len(builds) == 1, "the build must still be attempted on timeout"
+        err = capsys.readouterr().err
+        # The timeout message names the precondition, not just "timed out",
+        # and points at the provisioning fault rather than implying that
+        # waiting or retrying is the remedy.
+        assert "/run/user/<uid>/bus" in err
+        assert "no-user-bus" in err
+        assert "dbus.socket" in err
+        assert "#319" in err
+
+    def test_wait_is_bounded(self):
+        """Never an unbounded loop: the wait returns False at the deadline."""
+        from agentcage.backends.vm import _wait_user_session_ready
+
+        mock_inst = MagicMock()
+        mock_inst.exec.return_value = MagicMock(returncode=0, stdout="starting\n")
+
+        assert _wait_user_session_ready(
+            mock_inst, timeout_s=0.02, interval_s=0.01,
+        ) is False
+
+    def test_probe_never_raises(self):
+        """A flaky ``limactl shell`` degrades to 'not ready', it must not
+        pre-empt the build with an exception from the gate itself."""
+        from agentcage.backends.vm import _probe_user_session
+
+        mock_inst = MagicMock()
+        mock_inst.exec.side_effect = RuntimeError("ssh: connection reset")
+
+        assert "probe failed" in _probe_user_session(mock_inst)
+
+    def test_probe_not_run_when_vm_not_running(self):
+        """No guest, no probe — the existing is_running() early return still
+        short-circuits before any limactl round-trip."""
+        backend = VmBackend()
+        mock_inst = MagicMock()
+        mock_inst.is_running.return_value = False
+
+        with patch.object(backend, "_instance", return_value=mock_inst):
+            backend.build_artifacts(_make_config(), "testcage")
+
+        mock_inst.exec.assert_not_called()
+
+    def test_probe_does_not_call_loginctl(self):
+        """``loginctl`` round-trips logind over D-Bus, and provisioning already
+        documents that logind can wedge for 25s during guest bring-up — that
+        must never sit inside a poll loop. Lingering is set by the provisioning
+        script's sentinel file instead."""
+        from agentcage.backends.vm import _USER_SESSION_PROBE
+
+        assert "loginctl" not in _USER_SESSION_PROBE
+        assert "/run/user/$uid/bus" in _USER_SESSION_PROBE
+        assert "systemctl --user is-system-running" in _USER_SESSION_PROBE
 
 
 class TestDeployCageStartOrder:

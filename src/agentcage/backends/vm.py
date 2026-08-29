@@ -90,6 +90,15 @@ def push_config_files(name: str, inst: LimaInstance) -> None:
 
 VM_SERVICE_STARTUP_DELAY_S = 5
 VM_SERVICE_STARTUP_POLL_INTERVAL_S = 0.1
+# Issue #319 safety net: how long to wait for the guest's systemd *user*
+# session before dispatching the first in-VM podman build. The real fix is
+# in provisioning (provision.sh.j2 restarts user@<uid>.service so it picks
+# up dbus.socket), so the bus should already be present and this gate should
+# resolve on its first probe. The ceiling is deliberately short: if the bus
+# is missing here it is a provisioning fault that waiting cannot repair, and
+# a long stall would only delay the real error.
+VM_USER_SESSION_TIMEOUT_S = 20
+VM_USER_SESSION_POLL_INTERVAL_S = 1.0
 PROXY_READINESS_TIMEOUT_S = 30
 PROXY_READINESS_POLL_INTERVAL_S = 0.25
 
@@ -227,6 +236,118 @@ def _wait_infra_active(
     return pending
 
 
+# One round-trip probe for "can rootless podman run a container yet?".
+#
+# Rootless podman defaults to ``cgroup_manager = "systemd"``, which needs the
+# guest user's D-Bus at ``/run/user/<uid>/bus``. Without it every container
+# creation fails at the first ``RUN`` step:
+#
+#     warning: The cgroupv2 manager is set to systemd but there is no
+#              systemd user session available
+#     error running container: from /usr/bin/crun creating container for
+#              [...]: sd-bus call: Interactive authentication required.
+#
+# That is issue #319, and the *cause* is fixed in provisioning, not here:
+# apt installs ``dbus-user-session`` underneath a ``user@<uid>.service``
+# that Lima's own SSH bring-up already started, and a running user manager
+# never loads the socket unit that appeared beneath it — so the bus stays
+# absent for the whole boot. ``provision.sh.j2`` now restarts that manager.
+#
+# This gate is therefore defense-in-depth, not the remedy. It should be a
+# single probe that returns immediately. If it ever has to wait, the guest
+# is in a state waiting cannot repair, which is why the ceiling is short and
+# why a timeout hands straight over to the build (and to #322's diagnostics)
+# instead of stalling.
+#
+# Deliberately NOT probed: ``loginctl show-user <uid> --property=Linger``.
+# It is a logind D-Bus round-trip, and the provisioning script documents that
+# logind can wedge during guest bring-up (its dbus calls then block for 25s)
+# — putting that in a poll loop would turn a hiccup into a multi-minute
+# stall. Lingering is set by provisioning's sentinel file anyway, and it was
+# not the problem: logind was verified healthy and the sentinel present while
+# the bus was still missing.
+_USER_SESSION_PROBE = (
+    'uid=$(id -u); '
+    'if [ ! -S "/run/user/$uid/bus" ]; then echo no-user-bus; exit 0; fi; '
+    'systemctl --user is-system-running 2>/dev/null || true'
+)
+
+# ``systemctl --user is-system-running`` states that mean the user manager is
+# up and can service podman's sd-bus call. ``degraded`` counts: it only says
+# some user unit failed, the bus and the cgroup delegation are live (and it
+# exits non-zero, which is why this matches on stdout, not the exit code).
+# Everything else — ``initializing``/``starting``/``offline``/``unknown``, or
+# the socket not existing yet — keeps us waiting.
+_USER_SESSION_READY_STATES = frozenset({"running", "degraded"})
+
+
+def _probe_user_session(inst: LimaInstance) -> str:
+    """Return the guest's user-session state as a short token.
+
+    Never raises: this runs on the happy path in front of a build, so a
+    flaky ``limactl shell`` must degrade to "not ready yet", not to an
+    exception that pre-empts the build we are trying to protect.
+    """
+    try:
+        r = inst.exec(["bash", "-c", _USER_SESSION_PROBE], check=False)
+    except Exception as e:  # pragma: no cover - defensive
+        return f"probe failed: {e}"
+    return _decode_stream(r.stdout).strip() or "unknown"
+
+
+def _wait_user_session_ready(
+    inst: LimaInstance,
+    *,
+    timeout_s: float = VM_USER_SESSION_TIMEOUT_S,
+    interval_s: float = VM_USER_SESSION_POLL_INTERVAL_S,
+) -> bool:
+    """Check the guest's rootless-podman preconditions before building.
+
+    Expected to succeed on the first probe: provisioning now guarantees the
+    user D-Bus exists (see ``_USER_SESSION_PROBE``). The bounded wait covers
+    a slow manager restart on an underpowered host.
+
+    Returns True if the session is ready, False if *timeout_s* elapsed. The
+    caller must proceed with the build either way: a timeout is a *hint*,
+    not a verdict. Failing early here would trade one opaque error for
+    another and would throw away the real podman diagnostic that
+    ``_exec_build`` surfaces (#322).
+
+    This is a readiness gate, not a retry: the build is still dispatched
+    exactly once, so a genuine build failure fails immediately and loudly.
+    """
+    deadline = time.monotonic() + timeout_s
+    announced = False
+    while True:
+        state = _probe_user_session(inst)
+        if state in _USER_SESSION_READY_STATES:
+            if announced:
+                click.echo(f"Guest systemd user session ready ({state}).")
+            return True
+        if time.monotonic() >= deadline:
+            with output.pause_active_spinner():
+                click.echo(
+                    "warning: the guest's systemd user D-Bus "
+                    "(/run/user/<uid>/bus) is still absent after "
+                    f"{timeout_s:.0f}s; last probe reported {state!r}. "
+                    "Rootless podman needs it for its systemd cgroup manager. "
+                    "This usually means the guest's user dbus.socket never "
+                    "came up (a provisioning fault, not a slow start — see "
+                    "#319), so recreating the VM is more likely to help than "
+                    "retrying. Building anyway — if the build fails, podman's "
+                    "own error is printed below.",
+                    err=True,
+                )
+            return False
+        if not announced:
+            announced = True
+            click.echo(
+                "Waiting for the guest systemd user session "
+                f"(rootless podman needs its user D-Bus; state: {state})..."
+            )
+        time.sleep(interval_s)
+
+
 class VmBackend:
     """Backend using Lima VMs with Podman + quadlets inside.
 
@@ -295,6 +416,19 @@ class VmBackend:
             build_flags.append("--no-cache")
         if pull:
             build_flags.append("--pull=always")
+
+        # Safety net for #319: confirm the guest's systemd user D-Bus exists
+        # before the FIRST in-VM podman invocation. Provisioning is what
+        # guarantees it (provision.sh.j2 restarts user@<uid>.service so it
+        # loads dbus.socket); this only catches a guest that slipped through,
+        # and turns "podman build failed" into a message that names the
+        # actual precondition. Normally a single probe, no sleep.
+        with Phase("wait.user_session", cage=deploy_name):
+            _wait_user_session_ready(
+                inst,
+                timeout_s=VM_USER_SESSION_TIMEOUT_S,
+                interval_s=VM_USER_SESSION_POLL_INTERVAL_S,
+            )
 
         version = _pkg_version("agentcage")
         click.echo(f"Building egress image inside VM (agentcage-egress:{version})...")
