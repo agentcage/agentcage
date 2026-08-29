@@ -4676,9 +4676,9 @@ def grants_watch(interval: float, once: bool):
     the host CLI (the addon runs as ``acproxy``, uid 200, no ``CAP_KILL``).
 
     Robustness:
-      * Idempotent — an entry is marked ``applied: true`` once the baseline
-        change is live, so a restart of the watcher (or a duplicate
-        decision) never re-promotes the same domain.
+      * Idempotent — promoted entries are removed from the overlay (they
+        now live in the baseline), so a restart of the watcher or a
+        duplicate decision never re-promotes the same domain.
       * TTL-aware — when an entry's ``expires_at`` passes, the domain is
         removed from the baseline (via the ``domain rm`` chain) and the
         entry dropped from the overlay, so a TTL'd grant stops being

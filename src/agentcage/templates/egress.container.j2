@@ -206,9 +206,14 @@ ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }}
 ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 200:200 "{{ capture_host_dir }}"{% endif %}'
 {% endif %}
 {% if domains_auto_enabled %}
-# Own the grants overlay dir for acproxy (uid 200) so the addon can write;
-# 0750 — readable only by acproxy, not the cage (separate netns anyway).
-ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ grants_host_dir }}" 2>/dev/null || chmod 1777 "{{ grants_host_dir }}"; podman unshare chmod 0750 "{{ grants_host_dir }}" 2>/dev/null || true{% else %}chown 200:200 "{{ grants_host_dir }}" && chmod 0750 "{{ grants_host_dir }}"{% endif %}'
+# Own the grants overlay dir for acproxy (uid 200) so the addon can write.
+# Unlike the capture dir (which falls back to 1777 for shared HAR export),
+# the grants dir must NOT be world-writable — if chown fails, leave it at
+# mkdir default (0755) and let the addon fail to write (fail-CLOSED: no
+# grants = no egress expansion) rather than making it world-writable (a
+# host process could inject fake grants). The cage can't reach it regardless
+# (separate netns), but the host-side integrity matters.
+ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ grants_host_dir }}" 2>/dev/null; podman unshare chmod 0750 "{{ grants_host_dir }}" 2>/dev/null || true{% else %}chown 200:200 "{{ grants_host_dir }}" && chmod 0750 "{{ grants_host_dir }}"{% endif %}'
 {% endif %}
 Restart=on-failure
 
