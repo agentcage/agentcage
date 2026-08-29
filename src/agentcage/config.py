@@ -953,6 +953,13 @@ def load_config(path: str) -> Config:
             # ``decider:`` (only one decider kind in v1, so no extra nesting).
             agent_raw = decider_raw
             rl_raw = auto_raw.get("rate_limit") or {}
+            # Preserve an explicit 0 (rate limiting disabled — the
+            # operator's deliberate choice; the proxy parses 0 the same
+            # way). Only absent/null/empty falls back to the default. A
+            # bare `or` would coerce an explicit 0 to the default and
+            # disagree with the proxy's parse.
+            _rps_raw = rl_raw.get("requests_per_second")
+            _burst_raw = rl_raw.get("burst")
             auto = DomainsAutoConfig(
                 enable=True,
                 host=str(auto_raw.get("host", "agentcage.local") or "agentcage.local"),
@@ -966,8 +973,12 @@ def load_config(path: str) -> Config:
                         base_url=str(agent_raw.get("base_url", "") or ""),
                     ),
                 ),
-                    rate_limit_rps=float(rl_raw.get("requests_per_second", 1.0) or 1.0),
-                rate_limit_burst=int(rl_raw.get("burst", 5) or 5),
+                    # Preserve an explicit 0 — see the comment above the
+                    # DomainsAutoConfig(...) call.
+                    rate_limit_rps=float(
+                        _rps_raw if _rps_raw not in (None, "") else 1.0),
+                    rate_limit_burst=int(
+                        _burst_raw if _burst_raw not in (None, "") else 5),
             )
             # Stash on a temp; the Domains block below will attach it to dc.
             _pending_auto = auto
@@ -1780,6 +1791,17 @@ def validate_config(config: Config) -> list[str]:
                 "source: scheme (e.g. 'systemd-creds:POLICY_LLM_KEY' or "
                 "'env:OPENROUTER_API_KEY')."
             )
+        # https-only: the decider API key travels as a bearer header on
+        # every call — an http:// base_url would leak it in cleartext.
+        if ag.base_url:
+            from urllib.parse import urlsplit
+            parts = urlsplit(ag.base_url)
+            if parts.scheme != "https" or not parts.hostname:
+                raise ValueError(
+                    "domains.auto.decider.agent.base_url must be an "
+                    "https:// URL (the decider API key is sent on every "
+                    f"call; http:// would leak it in cleartext — got {ag.base_url!r})"
+                )
 
         if pa.rate_limit_rps < 0 or pa.rate_limit_burst < 0:
             raise ValueError(

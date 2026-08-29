@@ -4435,7 +4435,7 @@ def _ensure_grants_watcher(name: str, cfg) -> None:
         try:
             from agentcage.quadlets import _grants_service_unit
             unit_path.parent.mkdir(parents=True, exist_ok=True)
-            unit_path.write_text(_grants_service_unit(name, name))
+            unit_path.write_text(_grants_service_unit(name))
             from agentcage import systemd as _systemd
             _systemd.daemon_reload()
         except Exception as e:
@@ -4710,9 +4710,10 @@ def grants_watch(interval: float, once: bool):
     """Apply runtime grants into the baseline as they are decided.
 
     Mirrors ``agentcage domain add`` exactly: for each grant the egress's
-    decision hook approved (overlay entry with ``applied: false``), this
-    command appends the domain to the static ``domains.allow`` baseline and
-    runs the live-reload chain (``save_raw_config`` → ``save_proxy_config`` →
+    decider approved (an overlay entry), this command appends the domain to
+    the static ``domains.allow`` baseline (preserving its TTL into
+    ``domains.expires``) and runs the live-reload chain
+    (``save_raw_config`` → ``save_proxy_config`` →
     ``_update_dns_quadlet`` → dnsmasq SIGHUP). That is what makes a granted
     domain actually *reachable*: mitmproxy resolves its upstreams through
     dnsmasq, so the L7 ``DomainInspector.grant()`` alone (which the addon

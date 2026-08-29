@@ -1106,28 +1106,33 @@ def generate_quadlets(
     # in _ensure_grants_watcher); container deploys install it into the
     # host's systemd user dir via the container backend.
     if needs_watcher and config.isolation != "vm":
-        files[f"{name}-grants.service"] = _grants_service_unit(
-            name, deploy_name or name
-        )
+        files[f"{name}-grants.service"] = _grants_service_unit(name)
 
     return files
 
 
-def _grants_service_unit(name: str, deploy_name: str) -> str:
+def _grants_service_unit(name: str) -> str:
     """Render the auto-start grants-watcher systemd user unit.
 
     Plain ``.service`` (not a quadlet): the watcher must run on the host so
     it can write the operator's ``cage.yaml`` baseline and exec into the
     egress to SIGHUP dnsmasq — neither of which the in-container addon can
-    do. It is bound to the egress lifecycle (starts after it, stops with it)
-    and pulled in at boot via ``WantedBy=default.target``, so the operator
-    never starts or stops it by hand.
+    do. It tracks the egress lifecycle (ordered after it, stops with it via
+    BindsTo/PartOf) and is pulled in at boot via ``WantedBy=default.target``
+    so the operator never starts or stops it by hand.
+
+    Deliberately ``Wants=`` not ``Requires=``: the watcher is useful with the
+    egress DOWN too (pruning expired baseline entries needs no proxy, and a
+    stopped cage is the common case at boot) — ``Requires=`` would boot the
+    whole egress just because the watcher started, e.g. when
+    ``domain add --expires-in`` installs it on demand on a stopped cage.
     """
     return f"""[Unit]
 Description=agentcage policy-api grants watcher for {name}
-# Start after the egress is up (the addon that decides grants lives there)
-# and track its lifecycle — stop the watcher when the egress stops.
-Requires={name}-egress.service
+# Ordered after the egress and tracks its stop (BindsTo/PartOf) — but do
+# NOT Require it: the watcher prunes expired baseline entries even while
+# the egress is down, and must not boot it as a side effect.
+Wants={name}-egress.service
 After={name}-egress.service
 BindsTo={name}-egress.service
 PartOf={name}-egress.service

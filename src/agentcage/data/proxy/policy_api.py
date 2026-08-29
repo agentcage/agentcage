@@ -106,9 +106,14 @@ class PolicyApi:
         self._max_grants = 32
         self._never_grant = self._effective_never_grant([])
 
+        # Rate limit for control-plane requests. An explicit 0 disables
+        # limiting (matching config.py's parse — absent/null/"" falls back
+        # to the 1 rps / 5 burst defaults, NOT to 0).
         rl = self.cfg.get("rate_limit") or {}
-        self._rl_rps = float(rl.get("requests_per_second", 1.0) or 0)
-        self._rl_burst = int(rl.get("burst", 5) or 0)
+        _rps = rl.get("requests_per_second")
+        _burst = rl.get("burst")
+        self._rl_rps = float(_rps if _rps not in (None, "") else 1.0)
+        self._rl_burst = int(_burst if _burst not in (None, "") else 5)
         self._rl_bucket = [float(self._rl_burst), time.monotonic()]
 
         self._grants_dir = os.environ.get(
@@ -204,10 +209,13 @@ class PolicyApi:
     # ── Request router ─────────────────────────────────────
 
     async def handle(self, flow: http.HTTPFlow) -> bool:
-        """Route a control-host request. Returns True if handled (response
-        synthesized; no upstream connection). Returns False if the path is
-        unknown (caller 404s) — but this method always sets a response for a
-        recognized control flow.
+        """Route a control-host request. Always returns True: once the
+        flow targets the control host (checked by ``is_control_host``),
+        every path — recognized or not — gets a synthesized response here
+        (200 for known endpoints, 404 for unknown ones, 4xx/429/413 for bad
+        requests) and NO upstream connection is ever opened. The return
+        value is kept for future routing decisions; the addon currently
+        relies on the synthesized response alone.
         """
         path = flow.request.path or "/"
         method = flow.request.method.upper()

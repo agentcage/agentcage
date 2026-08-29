@@ -143,6 +143,60 @@ class TestAgentParse:
 # ── api_key validation ────────────────────────────────
 
 
+class TestBaseUrlScheme:
+    """https-only: the decider API key is sent as a bearer header on
+    every call — http:// (or garbage) must be rejected at config time
+    rather than leak the key in cleartext at runtime."""
+
+    def test_http_base_url_rejected(self, tmp_path):
+        body = _enabled(_agent_decider(base_url="http://llm.local"))
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        with pytest.raises(ValueError, match="https"):
+            validate_config(cfg)
+
+    def test_non_url_base_url_rejected(self, tmp_path):
+        body = _enabled(_agent_decider(base_url="llm.local"))
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        with pytest.raises(ValueError, match="https"):
+            validate_config(cfg)
+
+    def test_https_base_url_validates_clean(self, tmp_path):
+        body = _enabled(_agent_decider(base_url="https://llm.example"))
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        validate_config(cfg)  # must not raise
+
+
+class TestRateLimitZeroParse:
+    """An explicit ``requests_per_second: 0`` means 'rate limiting
+    disabled' — the operator's deliberate choice, and the proxy parses it
+    the same way. It must NOT be coerced to the 1.0 default (the
+    5th-review LOW: `0` meant 'disabled' to the proxy but '1.0' to
+    validation)."""
+
+    def test_explicit_zero_preserved(self, tmp_path):
+        body = _enabled(
+            _agent_decider() +
+            "\nrate_limit:\n  requests_per_second: 0\n  burst: 0")
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.rate_limit_rps == 0.0
+        assert cfg.domains.auto.rate_limit_burst == 0
+        validate_config(cfg)  # 0 is legal (>= 0)
+
+    def test_absent_falls_back_to_defaults(self, tmp_path):
+        body = _enabled(_agent_decider())
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.rate_limit_rps == 1.0
+        assert cfg.domains.auto.rate_limit_burst == 5
+
+    def test_explicit_values_preserved(self, tmp_path):
+        body = _enabled(
+            _agent_decider() +
+            "\nrate_limit:\n  requests_per_second: 2.5\n  burst: 10")
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.rate_limit_rps == 2.5
+        assert cfg.domains.auto.rate_limit_burst == 10
+
+
 class TestApiKey:
     def test_bad_scheme_raises(self, tmp_path):
         body = _enabled(_agent_decider(api_key="bogus:TOKEN"))
