@@ -1052,3 +1052,165 @@ class TestRemovalEndpoint:
                                         "ttl_seconds": 0}
         _handle(pa, _flow(domain="x.com", reason="need it again"))
         assert dom.is_granted("x.com")
+
+    # ── Review follow-ups on PR #337 (round 1) ──────────────
+    #
+    # Baseline-only matching (the flag and the 403-vs-404 branch both used
+    # ``_matches``, which consults baseline ∪ live grants), expiry-aware
+    # flag, allowlist-mode guard, and rate-limit-first ordering. See the
+    # commit body for the per-finding rationale.
+
+    def test_sibling_grant_shadow_no_baseline_flag(self, tmp_path,
+                                                   monkeypatch,
+                                                   resp_status):
+        """Fix 1(a): with live grants for both ``x.com`` and ``sub.x.com``,
+        removing ``sub.x.com`` must NOT light ``still_allowed_by_baseline``
+        — the keeping-alive source is the surviving ``x.com`` GRANT (a
+        sibling), not the operator's static baseline, so the flag would
+        lie about which source keeps the domain reachable."""
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "r", ttl_override=0, decided_by="test")
+        pa._apply_grant("sub.x.com", "r", ttl_override=0, decided_by="test")
+        assert dom.is_granted("sub.x.com")
+        bodies = []
+        orig = pa._respond
+
+        def _capture(flow, status, body):
+            bodies.append((status, body))
+            orig(flow, status, body)
+
+        monkeypatch.setattr(pa, "_respond", _capture)
+        _handle(pa, _removal_flow("sub.x.com"))
+        status, body = bodies[-1]
+        assert status == 200
+        # sub.x.com is not in the baseline, so the flag must be absent —
+        # not True (covered by a sibling grant) and not False (would read
+        # as "explicitly narrowed to baseline-unreachable").
+        assert "still_allowed_by_baseline" not in body
+        assert not dom.is_granted("sub.x.com")
+        assert dom.is_granted("x.com"), "sibling grant survives"
+        # And L7 still reaches sub.x.com via the surviving x.com grant.
+        assert dom._matches("sub.x.com")
+
+    def test_non_grant_covered_by_sibling_grant_404(self, tmp_path,
+                                                    monkeypatch,
+                                                    resp_status):
+        """Fix 1(b): removing a domain that is NOT a live grant but is
+        covered by a sibling grant's suffix must 404, not 403. ``_matches``
+        would have lit on the sibling grant's suffix and mis-reported the
+        domain as operator-owned; ``matches_baseline`` (baseline only) does
+        not, so the agent is told it is not present and can remove the
+        covering grant instead."""
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "r", ttl_override=0, decided_by="test")
+        # sub.x.com is reachable only via the x.com grant's suffix.
+        assert not dom.is_granted("sub.x.com")
+        assert dom._matches("sub.x.com")
+        _handle(pa, _removal_flow("sub.x.com"))
+        assert resp_status[-1] == 404
+        assert dom.is_granted("x.com"), "covering grant untouched"
+
+    def test_expired_baseline_grant_removal_no_flag(self, tmp_path,
+                                                     monkeypatch,
+                                                     resp_status):
+        """Fix 2: removing a grant that shadows an EXPIRED baseline entry
+        must not report ``still_allowed_by_baseline``. The baseline entry
+        is expired, so L7 (``_matched_expired``) blocks the domain — the
+        agent did narrow it to unreachable, and the flag would mislead
+        (the re-grant-over-expired-baseline case the code comment cites)."""
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        dom = DomainInspector()
+        dom.configure({
+            "allow": ["x.com"],
+            "expires": {"x.com": "2000-01-01T00:00:00+00:00"},
+        })
+        auto = {"enable": True, "decider": {"kind": "agent",
+                "provider": "openrouter", "model": "m", "api_key": "env:K"}}
+        cfg = {"domains": {"allow": ["x.com"], "auto": auto}}
+        pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
+        pa._llm_secret = "sk-test"
+        pa._apply_grant("x.com", "re-grant over expired baseline",
+                        ttl_override=0, decided_by="test")
+        assert dom.is_granted("x.com")
+        # Sanity: the baseline entry is expired at L7.
+        assert dom._matched_expired("x.com") == "x.com"
+
+        bodies = []
+        orig = pa._respond
+
+        def _capture(flow, status, body):
+            bodies.append((status, body))
+            orig(flow, status, body)
+
+        monkeypatch.setattr(pa, "_respond", _capture)
+        _handle(pa, _removal_flow("x.com", reason="done"))
+        status, body = bodies[-1]
+        assert status == 200
+        assert not dom.is_granted("x.com")
+        # Flag must be absent — the only baseline suffix covering x.com is
+        # the expired x.com entry, which L7 blocks.
+        assert "still_allowed_by_baseline" not in body
+
+    def test_blocklist_mode_removal_400(self, tmp_path, monkeypatch,
+                                        resp_status):
+        """Fix 3: a hot-reload can flip the mode to blocklist, in which
+        ``_matches`` consults the block list and the 403 reason /
+        ``still_allowed_by_baseline`` flag would invert. Refuse up front
+        with 400, mirroring the request endpoint's guard."""
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        dom = DomainInspector()
+        dom.configure({"block": ["evil.com"]})
+        auto = {"enable": True, "decider": {"kind": "agent",
+                "provider": "openrouter", "model": "m", "api_key": "env:K"}}
+        cfg = {"domains": {"block": ["evil.com"], "auto": auto}}
+        pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
+        pa._llm_secret = "sk-test"
+        _handle(pa, _removal_flow("evil.com"))
+        assert resp_status[-1] == 400
+
+    def test_rate_limit_runs_before_invalid_domain_gate(self, tmp_path,
+                                                        monkeypatch,
+                                                        resp_status):
+        """Fix 4: the rate limit must run BEFORE the domain-syntax gate,
+        so a flood of invalid-domain removals is bounded by the bucket.
+        Past the burst, later invalid domains 429 (rate limit) — they
+        never reach the 400 invalid-syntax path, so no unbounded audit
+        lines."""
+        pa, _ = _make_pa(tmp_path, monkeypatch,
+                         rate_limit={"requests_per_second": 0.001,
+                                     "burst": 2})
+        statuses = []
+        # Flood well past the burst of 2 with invalid domains.
+        for _ in range(6):
+            _handle(pa, _removal_flow("bad..name"))
+            statuses.append(resp_status[-1])
+        # First two pass the rate limit and 400 on syntax; the rest are
+        # rate-limited (429) before the syntax gate.
+        assert statuses[:2] == [400, 400]
+        assert statuses[2:] == [429] * 4, statuses
+
+    def test_429_and_invalid_domain_audit_events(self, tmp_path,
+                                                 monkeypatch,
+                                                 resp_status):
+        """Fix 4: the 429 path emits ``policy_removal`` with reason
+        ``rate limit``; the invalid-domain path (now reachable only within
+        the rate limit) emits ``policy_removal`` with reason ``invalid
+        domain syntax``. Both audit-field shapes are preserved."""
+        pa, _ = _make_pa(tmp_path, monkeypatch,
+                         rate_limit={"requests_per_second": 0.001,
+                                     "burst": 1})
+        events = []
+        monkeypatch.setattr(pa, "_audit_event",
+                            lambda kind, extra: events.append((kind, extra)))
+        # First call: within the burst, invalid domain → 400 + audit.
+        _handle(pa, _removal_flow("bad..name"))
+        assert events[-1] == ("policy_removal", {
+            "domain": "bad..name", "decision": "rejected",
+            "reason": "invalid domain syntax",
+        })
+        # Second call: bucket empty → 429 + audit BEFORE the syntax gate.
+        _handle(pa, _removal_flow("bad..name"))
+        assert events[-1] == ("policy_removal", {
+            "domain": "bad..name", "decision": "rejected",
+            "reason": "rate limit",
+        })
