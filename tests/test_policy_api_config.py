@@ -726,3 +726,62 @@ class TestValidDomainTightening:
         cfg = load_config(_write(tmp_path, body))
         with pytest.raises(ValueError, match="invalid domain syntax"):
             validate_config(cfg)
+
+
+# ── Single-label LAN hostnames in operator-owned lists ───────────────────
+
+
+class TestSingleLabelHostnames:
+    """0.34.0's validator required a dotted name everywhere, breaking real
+    configs whose ``domains.allow`` names a LAN/tailnet host by its bare
+    hostname (``fcos-vm-home-01``) — entries that rendered and matched fine
+    in every prior release. Operator-owned lists (the static domains lists
+    and ``domain add``) now pass ``allow_single_label=True``; the runtime
+    grant paths (addon request endpoint, reconcile, promote) stay
+    strict-dotted per the Policy API threat model."""
+
+    def test_valid_domain_rejects_single_label_by_default(self):
+        # The strict default is what every runtime-grant path calls.
+        assert valid_domain("fcos-vm-home-01") is False
+
+    def test_valid_domain_accepts_single_label_when_allowed(self):
+        assert valid_domain("fcos-vm-home-01", allow_single_label=True) is True
+        assert valid_domain("nas", allow_single_label=True) is True
+
+    def test_single_label_still_rejects_injection_shapes(self):
+        # The relaxation must not weaken the dnsmasq-injection guards.
+        for bad in ("bad\nline", "bad/path", "bad name", "UPPER",
+                    "-leading", "trailing-", "host\n"):
+            assert valid_domain(bad, allow_single_label=True) is False
+
+    def test_single_label_still_rejects_short_and_ip(self):
+        # The >=2-char last-label rule and IP-literal rejection apply to the
+        # single-label branch too.
+        assert valid_domain("x", allow_single_label=True) is False
+        assert valid_domain("1.2.3.4", allow_single_label=True) is False
+
+    def test_single_label_allow_entry_validates_clean(self, tmp_path):
+        body = "domains:\n  allow:\n    - fcos-vm-home-01\n    - github.com\n"
+        cfg = load_config(_write(tmp_path, body))
+        validate_config(cfg)  # must not raise
+
+    def test_single_label_passthrough_and_expires_validate_clean(
+        self, tmp_path
+    ):
+        body = (
+            "domains:\n"
+            "  allow:\n"
+            "    - fcos-vm-home-01\n"
+            "  passthrough:\n"
+            "    - fcos-vm-home-01\n"
+            "  expires:\n"
+            "    fcos-vm-home-01: \"2099-01-01T00:00:00+00:00\"\n"
+        )
+        cfg = load_config(_write(tmp_path, body))
+        validate_config(cfg)  # must not raise
+
+    def test_newline_bearing_single_label_still_rejected(self, tmp_path):
+        body = 'domains:\n  allow:\n    - "badhost\n"\n'
+        cfg = load_config(_write(tmp_path, body))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)

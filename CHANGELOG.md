@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Single-label LAN hostnames in `domains.allow` no longer fail config validation.** 0.34.0's new per-entry domain-syntax validation (part of the `domains.auto` hardening) required a dotted name in every domains list, so a cage whose allowlist names a LAN/mDNS/tailnet host by its bare hostname (`fcos-vm-home-01`) — an entry that rendered into dnsmasq and suffix-matched in the `DomainInspector` without issue in every release before 0.34.0 — was rejected at `cage create`/`update` with `invalid domain syntax`, bricking previously valid configs on upgrade. `valid_domain()` gained an `allow_single_label` keyword: the operator-owned paths — the static `domains.allow`/`block`/`passthrough`/`expires` lists and the `domain add` command, strings that come from the same person who could edit `cage.yaml` anyway — accept a bare label matching the same charset/length rules as a dotted-name label, so none of the dnsmasq-injection guards (whitespace, slashes, the `\Z` anchor), the IP-literal rejection, or the ≥2-char rule are weakened. The runtime grant paths deliberately stay strict-dotted: the addon's request endpoint, the grants reconcile, and `grants promote` all validate strings that cross the cage trust boundary, where "syntactically valid public hostname" is part of the Policy API threat model — a single-label name is exactly what an internal service looks like, and the decider must never be asked about one.
+
 ## [0.34.0] - 2026-08-30
 
 ### Added

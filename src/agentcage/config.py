@@ -54,6 +54,12 @@ DOMAIN_RE = re.compile(
     r"(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z"
 )
 
+# One bare DNS label — the shape of a LAN/mDNS/tailnet hostname
+# (``fcos-vm-home-01``). Same charset and length rules as one DOMAIN_RE
+# label; used only by ``valid_domain(allow_single_label=True)`` (see its
+# docstring for why the runtime-grant paths never take this branch).
+SINGLE_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+
 
 # Wildcard-DNS services (nip.io, sslip.io, xip.io, traefik.me, localtest.me
 # and clones) encode an IP in the hostname and resolve to it, so
@@ -92,12 +98,26 @@ def encoded_private_ip(domain: str) -> str | None:
     return None if ip.is_global else str(ip)
 
 
-def valid_domain(domain: str) -> bool:
+def valid_domain(domain: str, *, allow_single_label: bool = False) -> bool:
     """True if *domain* is a syntactically valid lowercase DNS domain.
 
     Rejects anything that is not a plain dotted hostname — in particular
     strings containing newlines, slashes, or other characters that would
     inject additional directives when interpolated into dnsmasq config.
+
+    ``allow_single_label=True`` additionally accepts a bare hostname with
+    no dot (``fcos-vm-home-01``, ``nas``) — the shape a LAN/mDNS/tailnet
+    host legitimately takes in an OPERATOR-owned list. Only the static
+    ``domains.allow``/``block``/``passthrough``/``expires`` entries and the
+    operator's ``domain add`` pass it: those strings come from the same
+    person who could edit cage.yaml anyway, and single-label hosts worked
+    there in every release before the 0.34.0 validator (dnsmasq renders
+    ``server=/name/`` and the DomainInspector suffix-matches it just fine).
+    The RUNTIME grant paths — the addon's request endpoint, the grants
+    reconcile, ``grants promote`` — deliberately stay strict-dotted: a
+    grant crosses the cage trust boundary, and "syntactically valid PUBLIC
+    hostname" is part of that threat model (a single-label name is exactly
+    what an internal service looks like).
 
     Mirrors the in-container addon's ``_valid_domain`` (data/proxy/
     policy_api.py) so a domain the host accepts at parse time is the same
@@ -125,12 +145,15 @@ def valid_domain(domain: str) -> bool:
     exclude it mid-string, but make it explicit so a future regex tweak
     can't silently re-open the injection).
     """
-    if (
-        not isinstance(domain, str)
-        or any(c.isspace() for c in domain)
-        or not DOMAIN_RE.match(domain)
-    ):
+    if not isinstance(domain, str) or any(c.isspace() for c in domain):
         return False
+    if not DOMAIN_RE.match(domain):
+        # A single label never matches DOMAIN_RE (its dotted-suffix group is
+        # ``+``). Accept it only on operator-owned paths, and only when it is
+        # a well-formed label by the same charset/length rules — the
+        # injection properties (no whitespace, no ``/``) are identical.
+        if not (allow_single_label and SINGLE_LABEL_RE.match(domain)):
+            return False
     # Reject IP literals (v4/v6). IPv6 literals already fail the regex
     # (``:`` is not in the char classes), but IPv4 literals like ``1.2.3.4``
     # match the dotted-label shape, so reject them explicitly — mirroring
@@ -1525,13 +1548,27 @@ def validate_config(config: Config) -> list[str]:
     # wildcard form is accepted at the config layer; a ``.example.com`` or
     # bare ``com`` entry would be escaped verbatim and silently fail to
     # match the intended hosts. ``valid_domain`` therefore applies directly.
-    _bad_allow = [d for d in config.domains.allow if not valid_domain(d)]
-    _bad_block = [d for d in config.domains.block if not valid_domain(d)]
+    # ``allow_single_label=True`` on every static list: these entries are
+    # operator-owned (same trust as editing cage.yaml itself), and a bare
+    # LAN/tailnet hostname (``fcos-vm-home-01``) is a legitimate, previously
+    # working entry — 0.34.0's strict-dotted validator broke real configs.
+    # The runtime-grant validators (addon request endpoint, reconcile,
+    # promote) stay strict-dotted; see valid_domain's docstring.
+    _bad_allow = [
+        d for d in config.domains.allow
+        if not valid_domain(d, allow_single_label=True)
+    ]
+    _bad_block = [
+        d for d in config.domains.block
+        if not valid_domain(d, allow_single_label=True)
+    ]
     _bad_passthrough = [
-        d for d in config.domains.passthrough if not valid_domain(d)
+        d for d in config.domains.passthrough
+        if not valid_domain(d, allow_single_label=True)
     ]
     _bad_expires = [
-        k for k in config.domains.expires if not valid_domain(k)
+        k for k in config.domains.expires
+        if not valid_domain(k, allow_single_label=True)
     ]
     if _bad_allow or _bad_block or _bad_passthrough or _bad_expires:
         offenders = ", ".join(
@@ -1540,7 +1577,8 @@ def validate_config(config: Config) -> list[str]:
         )
         raise ValueError(
             f"invalid domain syntax: {offenders} — expected a plain "
-            f"lowercase dotted hostname (e.g. 'api.example.com')"
+            f"lowercase hostname (e.g. 'api.example.com', or a bare LAN "
+            f"name like 'fcos-vm-home-01')"
         )
 
     warnings = []
