@@ -1291,6 +1291,14 @@ class TestGrantsOverlayRoundTrip:
     the host-side grants watcher uses for VM cages (the overlay lives
     guest-side; see quadlets.vm_local_grants_dir)."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_home_cache(self):
+        """Isolate tests from the module-level ``_guest_home`` cache."""
+        from agentcage.backends.vm import _guest_home
+        _guest_home.clear()
+        yield
+        _guest_home.clear()
+
     def test_ensure_grants_dir_mkdirs_guest_local_dir(self):
         from agentcage.backends.vm import ensure_grants_dir
         inst = MagicMock()
@@ -1303,6 +1311,7 @@ class TestGrantsOverlayRoundTrip:
                 "/home/acuser/.config/agentcage-vm/cages/test/grants"] in calls
 
     def test_pull_grants_parses_yaml(self):
+        """Exit 0 + YAML payload → parsed entries (existing behavior)."""
         import yaml as _yaml
         from agentcage.backends.vm import pull_grants
         entries = [{"domain": "example.com", "reason": "need api"}]
@@ -1312,9 +1321,14 @@ class TestGrantsOverlayRoundTrip:
         def _exec(cmd, **kw):
             if cmd[:2] == ["bash", "-c"] and "echo ~" in cmd[2]:
                 return MagicMock(returncode=0, stdout="/home/acuser\n", stderr="")
-            if cmd[0] == "cat":
-                assert cmd[1] == (
-                    "/home/acuser/.config/agentcage-vm/cages/test/grants/grants.yaml")
+            if cmd[0] == "sh" and cmd[1] == "-c":
+                script = cmd[2]
+                # Probe distinguishes missing from failed.
+                assert "[ -f" in script and "exit 42" in script
+                assert (
+                    "/home/acuser/.config/agentcage-vm/cages/test/"
+                    "grants/grants.yaml"
+                ) in script
                 return MagicMock(returncode=0, stdout=payload, stderr="")
             raise AssertionError(f"unexpected exec: {cmd}")
 
@@ -1322,16 +1336,52 @@ class TestGrantsOverlayRoundTrip:
         assert pull_grants("test", inst) == entries
 
     def test_pull_grants_missing_file_is_empty(self):
+        """Sentinel exit 42 → file absent → [] (normal empty state)."""
         from agentcage.backends.vm import pull_grants
         inst = MagicMock()
 
         def _exec(cmd, **kw):
-            if cmd[0] == "cat":
-                return MagicMock(returncode=1, stdout="", stderr="no such file")
+            if cmd[0] == "sh" and cmd[1] == "-c":
+                assert "exit 42" in cmd[2]
+                return MagicMock(returncode=42, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="/home/acuser\n", stderr="")
 
         inst.exec.side_effect = _exec
         assert pull_grants("test", inst) == []
+
+    def test_pull_grants_probe_other_nonzero_is_none(self):
+        """A nonzero exit that is NOT 42 (permission/IO error) → None,
+        not [] — a read failure must not masquerade as an empty overlay
+        the watcher would then persist as a wipe."""
+        from agentcage.backends.vm import pull_grants
+        inst = MagicMock()
+
+        def _exec(cmd, **kw):
+            if cmd[0] == "sh" and cmd[1] == "-c":
+                return MagicMock(
+                    returncode=1, stdout="", stderr="permission denied")
+            return MagicMock(returncode=0, stdout="/home/acuser\n", stderr="")
+
+        inst.exec.side_effect = _exec
+        assert pull_grants("test", inst) is None
+
+    def test_pull_grants_probe_script_shape(self):
+        """The probe script must contain ``[ -f`` and a sentinel
+        ``exit 42`` so missing can be told apart from failed."""
+        from agentcage.backends.vm import pull_grants
+        inst = MagicMock()
+        seen = {}
+
+        def _exec(cmd, **kw):
+            if cmd[0] == "sh" and cmd[1] == "-c":
+                seen["script"] = cmd[2]
+                return MagicMock(returncode=42, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="/home/acuser\n", stderr="")
+
+        inst.exec.side_effect = _exec
+        pull_grants("test", inst)
+        assert "[ -f" in seen["script"]
+        assert "exit 42" in seen["script"]
 
     def test_pull_grants_exec_failure_is_none(self):
         """A failed round-trip (VM down) is None — NOT [] — so the
@@ -1346,14 +1396,41 @@ class TestGrantsOverlayRoundTrip:
         inst = MagicMock()
 
         def _exec(cmd, **kw):
-            if cmd[0] == "cat":
-                return MagicMock(returncode=0, stdout="::: not yaml [\n", stderr="")
+            if cmd[0] == "sh" and cmd[1] == "-c":
+                return MagicMock(
+                    returncode=0, stdout="::: not yaml [\n", stderr="")
             return MagicMock(returncode=0, stdout="/home/acuser\n", stderr="")
 
         inst.exec.side_effect = _exec
         assert pull_grants("test", inst) == []
 
+    def test_home_resolution_cached_across_pull_grants(self):
+        """Two consecutive pulls resolve the guest ``$HOME`` only once
+        (the cache is keyed by cage name, not LimaInstance object)."""
+        from agentcage.backends.vm import pull_grants
+        inst = MagicMock()
+
+        def _exec(cmd, **kw):
+            if cmd[0] == "bash" and "echo ~" in cmd[2]:
+                return MagicMock(returncode=0, stdout="/home/acuser\n", stderr="")
+            if cmd[0] == "sh" and cmd[1] == "-c":
+                return MagicMock(returncode=42, stdout="", stderr="")
+            raise AssertionError(f"unexpected exec: {cmd}")
+
+        inst.exec.side_effect = _exec
+        pull_grants("test", inst)
+        pull_grants("test", inst)
+
+        echo_calls = [
+            c for c in inst.exec.call_args_list
+            if c.args[0][:2] == ["bash", "-c"] and "echo ~" in c.args[0][2]
+        ]
+        assert len(echo_calls) == 1
+
     def test_push_grants_atomic_base64_write(self):
+        """Fix 3: the in-guest temp is O_EXCL-safe (``mktemp``) + atomic
+        ``mv``, not a predictable ``<path>.tmp`` redirect a planted symlink
+        could intercept."""
         import base64 as _b64
         import yaml as _yaml
         from agentcage.backends.vm import push_grants
@@ -1363,15 +1440,21 @@ class TestGrantsOverlayRoundTrip:
         def _exec(cmd, **kw):
             if cmd[0] == "bash" and "echo ~" in cmd[2]:
                 return MagicMock(returncode=0, stdout="/home/acuser\n", stderr="")
-            if cmd[0] == "bash":
-                # Atomic: decode into a temp file, then mv over the target —
-                # the in-guest addon's mtime-poll never sees a truncated
-                # overlay mid-write.
+            if cmd[0] == "sh" and cmd[1] == "-c":
                 script = cmd[2]
-                assert ".tmp " in script and "mv " in script
+                # mktemp (O_EXCL) in the target's dir, then atomic mv.
+                assert "mktemp" in script
+                assert "mv " in script
+                # No predictable ``<path>.tmp`` redirect.
+                assert ".tmp " not in script
+                assert "> /home/acuser/.config/agentcage-vm/cages/test/" \
+                    "grants/grants.yaml.tmp" not in script
                 target = ("/home/acuser/.config/agentcage-vm/cages/test/"
                           "grants/grants.yaml")
-                assert f"mv " in script and target in script
+                directory = ("/home/acuser/.config/agentcage-vm/cages/"
+                             "test/grants")
+                assert f"mktemp {directory}/XXXXXX" in script
+                assert target in script
                 # The payload is base64 of the YAML dump.
                 b64 = script.split("echo '")[1].split("'")[0]
                 assert _b64.b64decode(b64) == _yaml.safe_dump(
