@@ -1636,39 +1636,3 @@ class TestVmLocalGrantsOverlayPath:
         loads)."""
         files = self._vm_files(tmp_path)
         assert "test-grants.service" not in files
-
-    def test_grants_service_unit_interval(self):
-        from agentcage.quadlets import _grants_service_unit
-        assert "--interval 1" in _grants_service_unit("test")
-        assert "--interval 5" in _grants_service_unit("test", interval=5)
-
-    # ── Round-10 Fix 6: vm watcher unit references a guest-only unit ──────
-
-    def test_grants_service_unit_vm_omits_egress_dependency(self):
-        """Fix 6: for VM cages the egress service is a GUEST-only unit (it
-        lives inside the Lima VM's systemd), so a host-side watcher unit
-        that ``Wants={name}-egress.service`` references a nonexistent host
-        unit. ``is_vm=True`` must omit the Wants=/After= lines entirely."""
-        from agentcage.quadlets import _grants_service_unit
-        vm_unit = _grants_service_unit("x", interval=5, is_vm=True)
-        assert "Wants=" not in vm_unit
-        assert "After=" not in vm_unit
-        # The ExecStart + interval still render.
-        assert "--interval 5" in vm_unit
-        assert "cage grants x watch" in vm_unit
-        assert "WantedBy=default.target" in vm_unit
-
-    def test_grants_service_unit_default_keeps_egress_dependency(self):
-        """The default (container) unit still emits the egress Wants=/After=
-        ordering lines — the egress service is a real host-side unit there."""
-        from agentcage.quadlets import _grants_service_unit
-        unit = _grants_service_unit("x", interval=1)
-        assert "Wants=x-egress.service" in unit
-        assert "After=x-egress.service" in unit
-
-    def test_grants_service_unit_explicit_container_keeps_dependency(self):
-        """Passing is_vm=False explicitly still emits the dependency."""
-        from agentcage.quadlets import _grants_service_unit
-        unit = _grants_service_unit("x", interval=1, is_vm=False)
-        assert "Wants=x-egress.service" in unit
-        assert "After=x-egress.service" in unit

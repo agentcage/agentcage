@@ -4177,66 +4177,6 @@ def test_start_injects_agentcage_version_env(tmp_path, monkeypatch):
     backend.start("demo", quiet=True)
     cage_argv = _cage_run_argv(captured)
     assert any(a.startswith("AGENTCAGE_VERSION=") for a in cage_argv)
-
-
-# ── domains.auto grants-watcher launchd plist (apple-container parity) ──
-# The container/vm backend auto-starts a <name>-grants.service systemd user
-# unit; apple-container's analog is a second launchd plist on the macOS host
-# running `agentcage cage grants <name> watch`. These pin that parity.
-
-def test_grants_unit_path_returns_launchd_plist():
-    """grants_unit_path() is the backend-protocol alias the CLI's
-    _ensure_grants_watcher uses; on apple-container it's a launchd plist."""
-    p = AppleContainerBackend().grants_unit_path("demo")
-    assert p.name == "io.agentcage.demo.grants.plist"
-    assert "LaunchAgents" in str(p)
-
-
-def test_install_grants_plist_writes_watcher_xml(tmp_path, monkeypatch):
-    """_install_grants_plist writes a plist whose ProgramArguments re-execs
-    `agentcage cage grants <name> watch --interval 1` and KeepAlive=true (so
-    the watcher restarts if it exits, unlike the cage's RunAtLoad plist)."""
-    backend = AppleContainerBackend()
-    monkeypatch.setattr(backend, "_grants_plist_path",
-                        lambda name: tmp_path / f"io.agentcage.{name}.grants.plist")
-    monkeypatch.setattr(backend, "_state_dir",
-                        lambda name: tmp_path / f"state-{name}")
-    monkeypatch.setattr("os.getuid", lambda: 501)
-    # ``_install_grants_plist`` delegates to the shared
-    # ``agentcage.watcher.install_grants_watcher_plist``, which probes the
-    # gui domain via the shared ``watcher._gui_domain_reachable`` (the
-    # per-backend copy was removed as a round-10 extraction leftover).
-    # Patch the shared probe so the install takes the reachable branch.
-    with patch("shutil.which", return_value="/opt/agentcage"), \
-         patch("agentcage.watcher._gui_domain_reachable", return_value=True), \
-         patch("subprocess.run",
-               return_value=type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()):
-        backend._install_grants_plist("demo")
-    import plistlib
-    parsed = plistlib.loads((tmp_path / "io.agentcage.demo.grants.plist").read_bytes())
-    assert parsed["Label"] == "io.agentcage.demo.grants"
-    assert parsed["RunAtLoad"] is True
-    assert parsed["KeepAlive"] is True
-    argv = parsed["ProgramArguments"]
-    assert argv[0] == "/opt/agentcage"
-    assert argv[1:5] == ["cage", "grants", "demo", "watch"]
-    assert "--interval" in argv and "1" in argv
-
-
-def test_uninstall_grants_plist_removes_file(tmp_path, monkeypatch):
-    """_uninstall_grants_plist bootouts/unloads and removes the file (the
-    file is the persistence; removal guarantees no reload at next login)."""
-    backend = AppleContainerBackend()
-    plist = tmp_path / "io.agentcage.demo.grants.plist"
-    plist.write_text("<plist/>")
-    monkeypatch.setattr(backend, "_grants_plist_path", lambda name: plist)
-    monkeypatch.setattr("os.getuid", lambda: 501)
-    with patch("subprocess.run",
-               return_value=type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()):
-        backend._uninstall_grants_plist("demo")
-    assert not plist.exists()
-
-
 def test_generate_units_records_domains_auto_flag():
     """generate_units bakes domains_auto + has_expiring_domains into the
     unit metadata so start() knows whether to install the watcher plist."""
@@ -4269,59 +4209,6 @@ def test_generate_units_records_expiring_domains_flag():
     meta = json.loads(units["deploy.json"])
     assert meta["domains_auto"] is False
     assert meta["has_expiring_domains"] is True
-
-
-def test_start_installs_grants_plist_when_domains_auto(monkeypatch, tmp_path):
-    """The metadata flag drives the watcher install: when domains_auto (or
-    has_expiring_domains) is set, start() calls _install_grants_plist. We
-    exercise just the dispatch by monkeypatching the heavy start() steps and
-    asserting the install is invoked for the right metadata shapes."""
-    backend = AppleContainerBackend()
-    monkeypatch.setattr(backend, "unit_dir", lambda: tmp_path)
-    monkeypatch.setattr(backend, "_state_dir", lambda name: tmp_path / f"s-{name}")
-    monkeypatch.setattr(backend, "ensure_ready", lambda *, quiet=False: None)
-    monkeypatch.setattr(ac_cli, "system_running", lambda: True)
-    monkeypatch.setattr(ac_cli, "image_inspect", lambda *a, **k: {"id": "x"})
-    cp = type("CP", (), {"returncode": 0, "stdout": "{}", "stderr": ""})
-    monkeypatch.setattr(ac_cli, "run", lambda *a, **k: cp())
-    monkeypatch.setattr(backend, "_wait_supervisor_ready", lambda *a, **k: None)
-    monkeypatch.setattr(backend, "_container_ip", lambda *a, **k: "10.0.0.2")
-    monkeypatch.setattr(backend, "_cleanup_mask_mountpoints", lambda *a, **k: None)
-    # Stub the egress-config-dir lookup start() does; it must exist as a dir.
-    _egress_dir = tmp_path / "egress-config"
-    _egress_dir.mkdir()
-    monkeypatch.setattr(backend, "egress_config_dir", lambda name: _egress_dir)
-    monkeypatch.setattr(backend, "public_certs_dir", lambda name: tmp_path / "certs")
-    installed: list[str] = []
-    monkeypatch.setattr(backend, "_install_grants_plist",
-                        lambda name: installed.append(name))
-    monkeypatch.setattr(backend, "_install_launchd_plist", lambda name: None)
-    base_meta = {"image_tag": "x", "volumes": [], "autostart": False,
-                 "domains_auto": False, "has_expiring_domains": False,
-                 "secrets_backend": "auto", "secrets_allow_plaintext": False,
-                 "secret_envs": [], "secret_env_placeholders": [],
-                 "relay_secret_envs": [], "lifecycle": "service",
-                 "user_volumes": [], "tmpfs_targets": [],
-                 "egress_image": "e:1", "wrapper_image": "w:1",
-                 "network_name": "demo-net", "env": {}, "command": [],
-                 "read_only": True, "drop_capabilities": ["ALL"],
-                 "add_capabilities": [], "no_new_privileges": True,
-                 "user": "1000:1000", "memory": "", "cpus": "",
-                 "security_label_disable": True, "userns": "",
-                 "named_volumes": {}, "tmpfs": [],
-                 "dns_servers": ["1.1.1.1"], "allow_icmp": False,
-                 "ports_env": {}, "inbound_forwards": []}
-    # domains_auto=true -> watcher installed.
-    meta = dict(base_meta, domains_auto=True)
-    (tmp_path / "demo.json").write_text(json.dumps(meta))
-    backend.start("demo", quiet=True)
-    assert installed == ["demo"], installed
-
-# ── decider LLM provider host in the dnsmasq allowlist (apple parity) ──
-# The decider's urllib LLM call resolves via the egress dnsmasq, which only
-# forwards allowlisted zones. _render_egress_config must include the decider
-# provider host in the rendered dnsmasq.conf (and dns-allowlist.conf) or the
-# decider 502s on DNS. Same fix as container/vm via _effective_dns_allowlist.
 
 def test_render_egress_config_includes_decider_provider_host(tmp_path, monkeypatch):
     """_render_egress_config renders dnsmasq.conf with a server= line for the

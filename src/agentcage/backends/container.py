@@ -132,9 +132,6 @@ class ContainerBackend:
         """
         return Path(os.path.expanduser("~/.config/systemd/user"))
 
-    def grants_unit_path(self, name: str) -> Path:
-        return self.user_unit_dir() / f"{name}-grants.service"
-
     def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
@@ -182,34 +179,6 @@ class ContainerBackend:
                     pass
         with Phase("systemd.start_cage", cage=name):
             systemd.start_unit(f"{name}-cage.service")
-        # Auto-start the Policy API grants watcher if its unit is installed
-        # (transparent — the operator never starts it by hand). It is bound
-        # to the egress, so it tracks the egress lifecycle on stop.
-        if self.grants_unit_path(name).exists():
-            try:
-                systemd.start_unit(f"{name}-grants.service")
-            except Exception as e:
-                if not quiet:
-                    click.echo(
-                        f"warning: failed to start grants watcher: {e}",
-                        err=True,
-                    )
-            # Enable the unit so it survives a host reboot. A NATIVE
-            # ``.service``'s ``[Install] WantedBy=`` stanza only names the
-            # symlink that ``systemctl enable`` creates; nothing creates it
-            # automatically (quadlet units are generator-activated, this
-            # native unit is not). Before this, the watcher stayed dead
-            # after a reboot unless the operator had once run
-            # ``domain add --expires-in``. Best-effort, mirroring the
-            # start call's tolerance above.
-            try:
-                systemd.enable_unit(f"{name}-grants.service")
-            except Exception as e:
-                if not quiet:
-                    click.echo(
-                        f"warning: failed to enable grants watcher: {e}",
-                        err=True,
-                    )
         if not quiet:
             click.echo(f"Started {name}-cage")
 
@@ -219,11 +188,6 @@ class ContainerBackend:
                 systemd.stop_unit(f"{name}-{svc}.service")
             except Exception as e:
                 click.echo(f"warning: failed to stop {name}-{svc}: {e}", err=True)
-        if self.grants_unit_path(name).exists():
-            try:
-                systemd.stop_unit(f"{name}-grants.service")
-            except Exception as e:
-                click.echo(f"warning: failed to stop grants watcher: {e}", err=True)
 
     def restart(self, name: str) -> None:
         for svc in self.service_names(name):
@@ -231,11 +195,6 @@ class ContainerBackend:
                 systemd.restart_unit(f"{name}-{svc}.service")
             except Exception as e:
                 click.echo(f"warning: failed to restart {name}-{svc}: {e}", err=True)
-        if self.grants_unit_path(name).exists():
-            try:
-                systemd.restart_unit(f"{name}-grants.service")
-            except Exception as e:
-                click.echo(f"warning: failed to restart grants watcher: {e}", err=True)
 
     # Quadlet filenames enumerated by destroy_resources / has_resources.
     # The list intentionally includes the LEGACY `-proxy.container` and
@@ -268,13 +227,6 @@ class ContainerBackend:
                 fpath.unlink()
                 removed.append(fname)
 
-        # Remove the Policy API grants watcher unit (plain .service, lives
-        # in the systemd user dir, not the quadlet dir).
-        grants_path = self.grants_unit_path(name)
-        if grants_path.exists():
-            grants_path.unlink()
-            removed.append(grants_path.name)
-
         systemd.daemon_reload()
 
         # Remove Podman resources
@@ -299,8 +251,7 @@ class ContainerBackend:
     def has_resources(self, name: str) -> bool:
         quadlet_dir = self.unit_dir()
         return any((quadlet_dir / f"{name}{suffix}").exists()
-                   for suffix in self._QUADLET_FILES) or \
-            self.grants_unit_path(name).exists()
+                   for suffix in self._QUADLET_FILES)
 
     def is_running(self, name: str, service: str) -> bool:
         return self._podman.container_running(f"{name}-{service}")
