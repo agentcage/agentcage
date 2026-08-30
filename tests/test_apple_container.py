@@ -4148,20 +4148,95 @@ def test_egress_dnsmasq_listens_explicitly_and_forwards_to_gateway():
     assert "/run/agentcage/dns-allowlist.egress.conf" in script
 
 
-def test_reload_domains_regenerates_runtime_servers_before_sighup():
-    """Live `domain add/rm` must regenerate the runtime servers-file the
-    dnsmasq instances actually serve (/run/agentcage/dns-allowlist.{cage,
-    egress}.conf), re-pointing apexes at each VM's default-route upstream,
-    BEFORE the SIGHUP — otherwise the new apex lands only in the
-    bind-mounted file and the served set is stale."""
+def test_reload_domains_cage_regenerates_runtime_servers_before_sighup():
+    """Live `domain add/rm` regenerates the CAGE-LOCAL runtime servers-file
+    the cage dnsmasq actually serves (/run/agentcage/dns-allowlist.cage.conf),
+    re-pointing apexes at the cage's default-route upstream (the egress
+    sibling), BEFORE the SIGHUP — otherwise the new apex lands only in the
+    bind-mounted file and the served set is stale.
+
+    The EGRESS path no longer regenerates from the host: it raises the
+    supervisor's reload flag so the supervisor re-renders BASELINE+GRANTED
+    and SIGHUPs (covered by test_reload_domains_egress_raises_supervisor_
+    reload_flag). The cage-local regeneration is baseline-only and
+    intentional (see the inline step-3 comment in reload_domains)."""
     import inspect
     src = inspect.getsource(AppleContainerBackend.reload_domains)
-    # both instances re-point at their default route (cage→egress,
-    # egress→gateway) and rewrite the served runtime file before SIGHUP
-    assert "/run/agentcage/dns-allowlist.egress.conf" in src
+    # the cage-local instance re-points at its default route (cage→egress)
+    # and rewrites the served runtime file before SIGHUP
     assert "/run/agentcage/dns-allowlist.cage.conf" in src
     assert 'ip route' in src and '/^default/' in src
     assert "kill -HUP" in src
+    # the egress path references its runtime file too (the flag-raise is
+    # gated on it existing)
+    assert "/run/agentcage/dns-allowlist.egress.conf" in src
+
+
+def test_reload_domains_egress_raises_supervisor_reload_flag(tmp_path, monkeypatch):
+    """Round-11 finding: reload_domains must NOT regenerate the egress's
+    runtime servers-file from the BASELINE alone — the old `sed` of
+    /etc/agentcage/dns-allowlist.conf > /run/agentcage/dns-allowlist.egress.conf
+    clobbered every in-flight policy-API granted zone out of dnsmasq on
+    every operator domain add/rm. Instead, when the runtime servers-file
+    exists, raise the supervisor's reload flag (/home/acproxy/dns/reload)
+    so the supervisor re-renders BASELINE + GRANTED zones and SIGHUPs
+    within ~1s. The fallback (runtime file absent → egress reads the
+    bind-mounted file directly) keeps the plain pidfile SIGHUP on
+    /home/acdns/dnsmasq.pid."""
+    backend = AppleContainerBackend()
+    egress_dir = tmp_path / "egress"
+    egress_dir.mkdir()
+    allow = egress_dir / "dns-allowlist.conf"
+    allow.write_text("server=/old.example/1.1.1.1\n")
+
+    monkeypatch.setattr(backend, "egress_config_dir", lambda name: egress_dir)
+    monkeypatch.setattr(
+        backend, "_render_egress_config",
+        lambda cfg, name: allow.write_text("server=/new.example/1.1.1.1\n"),
+    )
+    monkeypatch.setattr(backend, "is_running", lambda name, svc: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    cfg = Config(name="demo", isolation="apple-container")
+    cfg.container.image = "x"
+    with patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.reload_domains(cfg, "demo")
+
+    # Isolate the egress step-2 exec: `exec demo-egress sh -c <script>`.
+    # (Step 1 is `exec demo-egress dnsmasq --test ...`; step 3 targets the
+    # cage, not the egress.)
+    egress_sh = [
+        a for a in calls
+        if a[:2] == ["exec", "demo-egress"] and a[2:4] == ["sh", "-c"]
+    ]
+    assert len(egress_sh) == 1, f"expected one egress sh -c exec, got {egress_sh!r}"
+    script = egress_sh[0][4]
+
+    # (a) does NOT regenerate from the baseline via sed into the runtime
+    # servers-file — that clobbers granted zones.
+    assert not (
+        "sed" in script and "> /run/agentcage/dns-allowlist.egress.conf" in script
+    ), (
+        f"egress exec must not sed-regenerate the runtime servers-file "
+        f"(clobbers granted zones): {script!r}"
+    )
+    # (b) raises the supervisor's reload flag so the supervisor re-renders
+    # BASELINE + GRANTED and SIGHUPs.
+    assert "/home/acproxy/dns/reload" in script, (
+        f"egress exec must raise the supervisor reload flag: {script!r}"
+    )
+    # (c) keeps the fallback pidfile SIGHUP for when the runtime file is
+    # absent (egress reads the bind-mounted file directly).
+    assert "/home/acdns/dnsmasq.pid" in script and "kill -HUP" in script, (
+        f"egress exec must keep the fallback pidfile SIGHUP: {script!r}"
+    )
+    # The flag-raise is gated on the runtime servers-file existing.
+    assert "/run/agentcage/dns-allowlist.egress.conf" in script
 
 
 def test_start_injects_agentcage_version_env(tmp_path, monkeypatch):
