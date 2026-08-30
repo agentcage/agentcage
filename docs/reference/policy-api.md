@@ -61,6 +61,7 @@ on — there are no separate `introspection:`/`request:` enable flags.
 |--------|------|---------|
 | `GET`  | `/v1/allowlist` | Introspection. Returns the effective domain policy. |
 | `POST` | `/v1/allowlist/requests` | Request a new domain. Invokes the decider (synchronous — the decision is in the response body). |
+| `POST` | `/v1/allowlist/removals` | Give back a live runtime grant the agent no longer needs. No decider — a removal only narrows. |
 | `GET`  | `/v1/health` | Liveness + feature flags. |
 
 **Backend support:** identical on all three backends. A grant is applied
@@ -140,6 +141,47 @@ Errors:
 
 Every response carries an `id` (`req_<hex>`) that correlates it with the
 `policy_request` line in `audit.jsonl`.
+
+### `POST /v1/allowlist/removals`
+
+Self-service narrowing — the agent gives back a runtime grant it no longer
+needs. The mirror image of the request endpoint in trust terms: a removal
+only ever **shrinks** the agent's own egress, so **no decider is involved
+and no justification is required** (an optional `reason` is recorded in
+`audit.jsonl`).
+
+Request body:
+
+```json
+{"domain": "registry.npmjs.org", "reason": "one-off install finished"}
+```
+
+Scope is **live runtime grants only** — the exact domains in the
+introspection response's `granted` list. A grant the host reconcile has
+already promoted into the operator's static baseline is indistinguishable
+from a domain the operator added by hand, and the egress never edits the
+baseline (the same immutability invariant that routes promotion through
+the host-side `domain add` machinery), so those return `403` naming
+`agentcage domain rm` as the operator command.
+
+Removal takes effect the same two-step way a grant does, in reverse: the
+domain leaves the in-memory L7 allow set immediately, and the shrunk zone
+list is republished so the supervisor drops it from dnsmasq within ~1s.
+The overlay entry is deleted, so the removal survives an egress restart
+and the next reconcile has nothing to promote. Removal is not a ban — the
+agent can re-request the domain later and the decider adjudicates fresh.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Removed (`status: removed`). Carries `still_allowed_by_baseline: true` when the domain also suffix-matches the static baseline, so the agent knows the narrowing was partial. |
+| `400` | Bad domain syntax. |
+| `403` | The domain matches the operator baseline (possibly a promoted grant) — not the agent's to retract. |
+| `404` | Not a live runtime grant (`status: not_found`). |
+| `429` | Rate limited (shares the request endpoint's per-cage bucket). |
+
+Audited as `policy_removal` lines in `audit.jsonl`. Enabled together with
+the request endpoint by `auto.enable` (the `/v1/health` features object
+reports `removal`).
 
 ## Config schema
 
@@ -304,7 +346,10 @@ expiry and re-publishes the zone list, and the next reconcile tidies the
 baseline.
 
 - **Remove a granted domain:** `agentcage domain rm <domain>` — drops it from
-  the baseline and live-reloads it away.
+  the baseline and live-reloads it away. The **agent** can also give back a
+  grant it no longer needs via `POST /v1/allowlist/removals` — but only
+  while it is still a live runtime grant (not yet promoted into the
+  baseline); see the endpoint section above.
 - **Time-limit a domain:** `agentcage domain add <domain> --expires-in 30m` —
   records an expiry in `domains.expires`; the domain is removed automatically
   when it expires.

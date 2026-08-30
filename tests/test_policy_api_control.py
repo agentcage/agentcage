@@ -903,3 +903,152 @@ class TestContextRuntimeHardening:
         # would ride the system prompt (config.py's stated rationale).
         pa, _ = _make_pa(tmp_path, monkeypatch, context={"purpose": "ci"})
         assert pa._context == ""
+
+
+# ── POST /v1/allowlist/removals — self-service narrowing ─────────────────
+
+
+def _removal_flow(domain, reason=None, raw_body=None):
+    body = {"domain": domain}
+    if reason is not None:
+        body["reason"] = reason
+    return _flow(path="/v1/allowlist/removals",
+                 raw_body=raw_body if raw_body is not None
+                 else json.dumps(body).encode())
+
+
+class TestRemovalEndpoint:
+    """The agent can give back a runtime grant it no longer needs. A
+    removal only ever SHRINKS the agent's own egress, so there is no
+    decider; scope is live runtime grants ONLY — the operator's static
+    baseline (including grants already promoted into it) is refused, per
+    the baseline-immutability-from-the-egress invariant."""
+
+    def test_remove_live_grant(self, tmp_path, monkeypatch, resp_status):
+        monkeypatch.setenv("AGENTCAGE_DNS_PUBLISH",
+                           str(tmp_path / "dns" / "granted"))
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "needed once", ttl_override=0,
+                        decided_by="test")
+        assert dom.is_granted("x.com")
+        assert _overlay_domains(tmp_path) == {"x.com"}
+        assert "x.com" in (tmp_path / "dns" / "granted").read_text()
+
+        _handle(pa, _removal_flow("x.com", reason="task finished"))
+        assert resp_status[-1] == 200
+        assert not dom.is_granted("x.com")
+        # Durability: gone from the overlay, so it cannot come back at
+        # restart or be promoted by the next host reconcile.
+        assert _overlay_domains(tmp_path) == set()
+        # Enforcement: the shrunk zone list is republished for dnsmasq.
+        assert "x.com" not in (tmp_path / "dns" / "granted").read_text()
+        # L7: the domain no longer matches the allow set.
+        assert not dom._matches("x.com")
+
+    def test_remove_baseline_denied_403(self, tmp_path, monkeypatch,
+                                        resp_status):
+        """The baseline is the operator's static policy — a promoted grant
+        lives there too and is indistinguishable, so both are refused."""
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        _handle(pa, _removal_flow("a.com"))
+        assert resp_status[-1] == 403
+        assert dom._matches("a.com"), "baseline must be untouched"
+
+    def test_remove_baseline_subdomain_denied_403(self, tmp_path,
+                                                  monkeypatch, resp_status):
+        # sub.a.com suffix-matches the baseline; refuse, don't 404.
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        _handle(pa, _removal_flow("sub.a.com"))
+        assert resp_status[-1] == 403
+        assert dom._matches("sub.a.com")
+
+    def test_remove_unknown_404(self, tmp_path, monkeypatch, resp_status):
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        _handle(pa, _removal_flow("never-granted.com"))
+        assert resp_status[-1] == 404
+
+    def test_remove_invalid_domain_400(self, tmp_path, monkeypatch,
+                                       resp_status):
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        for bad in ("bad..name", "evil.com\n", "10.0.0.1", ""):
+            _handle(pa, _removal_flow(bad))
+            assert resp_status[-1] == 400
+
+    def test_removal_reason_optional(self, tmp_path, monkeypatch,
+                                     resp_status):
+        """Unlike a request, a removal needs no justification — it only
+        narrows. An omitted reason must not 400."""
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("y.com", "r", ttl_override=0, decided_by="test")
+        _handle(pa, _removal_flow("y.com"))
+        assert resp_status[-1] == 200
+        assert not dom.is_granted("y.com")
+
+    def test_grant_shadowing_baseline_reports_still_allowed(
+            self, tmp_path, monkeypatch, resp_status):
+        """Removing a grant whose domain also matches the baseline must
+        say so, or the agent believes it narrowed more than it did."""
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("a.com", "re-grant over baseline", ttl_override=0,
+                        decided_by="test")
+        bodies = []
+        orig = pa._respond
+
+        def _capture(flow, status, body):
+            bodies.append((status, body))
+            orig(flow, status, body)
+
+        monkeypatch.setattr(pa, "_respond", _capture)
+        _handle(pa, _removal_flow("a.com"))
+        status, body = bodies[-1]
+        assert status == 200
+        assert body.get("still_allowed_by_baseline") is True
+        assert not dom.is_granted("a.com")
+        assert dom._matches("a.com"), "baseline coverage remains"
+
+    def test_removal_shares_rate_limit_bucket(self, tmp_path, monkeypatch,
+                                              resp_status):
+        pa, _ = _make_pa(tmp_path, monkeypatch,
+                         rate_limit={"requests_per_second": 0.001,
+                                     "burst": 2})
+        for _ in range(2):
+            _handle(pa, _removal_flow("never-granted.com"))
+        _handle(pa, _removal_flow("never-granted.com"))
+        assert resp_status[-1] == 429
+
+    def test_removal_disabled_404(self, tmp_path, monkeypatch, resp_status):
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        dom = DomainInspector()
+        dom.configure({"allow": ["a.com"]})
+        cfg = {"domains": {"allow": ["a.com"], "auto": {"enable": False}}}
+        pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
+        _handle(pa, _removal_flow("x.com"))
+        assert resp_status[-1] == 404
+
+    def test_health_reports_removal_feature(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        assert pa._health()["features"]["removal"] is True
+
+    def test_removal_audited(self, tmp_path, monkeypatch, resp_status):
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("z.com", "r", ttl_override=0, decided_by="test")
+        events = []
+        monkeypatch.setattr(pa, "_audit_event",
+                            lambda kind, extra: events.append((kind, extra)))
+        _handle(pa, _removal_flow("z.com", reason="done with it"))
+        assert events[-1][0] == "policy_removal"
+        assert events[-1][1]["decision"] == "removed"
+        assert events[-1][1]["reason"] == "done with it"
+
+    def test_re_request_after_removal_allowed(self, tmp_path, monkeypatch,
+                                              resp_status):
+        """Removal is not a ban: the agent can ask again later and the
+        decider adjudicates fresh."""
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "r", ttl_override=0, decided_by="test")
+        _handle(pa, _removal_flow("x.com"))
+        assert not dom.is_granted("x.com")
+        pa._llm_call_sync = lambda *a: {"decision": "grant", "reason": "ok",
+                                        "ttl_seconds": 0}
+        _handle(pa, _flow(domain="x.com", reason="need it again"))
+        assert dom.is_granted("x.com")
