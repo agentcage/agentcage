@@ -1142,13 +1142,24 @@ def generate_quadlets(
     return files
 
 
-def _grants_service_unit(name: str, interval: int = 1) -> str:
+def _grants_service_unit(name: str, interval: int = 1, *,
+                        is_vm: bool = False) -> str:
     """Render the auto-start grants-watcher systemd user unit.
 
     ``interval`` is the poll interval in seconds. VM cages use a longer
     interval (each tick is a ``limactl shell`` SSH round-trip to pull the
     guest-local overlay, so 1 Hz would be chatty; 5 s keeps grant
     promotion latency negligible).
+
+    ``is_vm`` omits the egress ``Wants=``/``After=`` ordering lines: for
+    VM cages the egress service is a GUEST-side unit (it lives inside the
+    Lima VM's systemd, not the host's), so a host-side watcher unit that
+    ``Wants={name}-egress.service`` references a unit that does not exist
+    on the host — systemd would log an unresolved dependency and (worse)
+    the ordering would be meaningless. The VM watcher still runs
+    independently of egress state (it polls the guest overlay over
+    limactl and prunes the host-side baseline); it just no longer claims
+    a host-side dependency on a guest-only unit.
 
     Plain ``.service`` (not a quadlet): the watcher must run on the host so
     it can write the operator's ``cage.yaml`` baseline and exec into the
@@ -1161,30 +1172,46 @@ def _grants_service_unit(name: str, interval: int = 1) -> str:
     itself is what brings it up the first time (a native ``.service``'s
     ``WantedBy`` field alone does not start anything).
 
-    The watcher intentionally runs INDEPENDENTLY of egress state: it only
-    ``Wants=`` and is ordered ``After=`` the egress (a hard dependency /
-    ``Requires=`` would boot the whole egress just because the watcher
-    started, e.g. when ``domain add --expires-in`` installs it on demand on
-    a stopped cage). There is deliberately NO ``BindsTo=``/``PartOf=`` on
-    the egress — pruning expired baseline entries needs no proxy, so the
-    watcher must keep running even while the egress is down or after an
-    egress crash/restart. ``BindsTo=`` would stop the watcher on a clean
-    egress stop (and ``Restart=on-failure`` does NOT revive a unit stopped
-    cleanly), silently halting promotions after the first egress crash;
-    ``PartOf=`` would stop/restart it in lockstep with the egress for no
-    benefit. The container backend stops/starts this unit explicitly on
-    ``cage stop``/``destroy`` (see ``backends/container.py``), so lifecycle
-    is managed by hand there rather than by unit-level coupling.
+    The watcher intentionally runs INDEPENDENTLY of egress state: for
+    container cages it only ``Wants=`` and is ordered ``After=`` the egress
+    (a hard dependency / ``Requires=`` would boot the whole egress just
+    because the watcher started, e.g. when ``domain add --expires-in``
+    installs it on demand on a stopped cage). There is deliberately NO
+    ``BindsTo=``/``PartOf=`` on the egress — pruning expired baseline
+    entries needs no proxy, so the watcher must keep running even while the
+    egress is down or after an egress crash/restart. ``BindsTo=`` would stop
+    the watcher on a clean egress stop (and ``Restart=on-failure`` does NOT
+    revive a unit stopped cleanly), silently halting promotions after the
+    first egress crash; ``PartOf=`` would stop/restart it in lockstep with
+    the egress for no benefit. The container backend stops/starts this unit
+    explicitly on ``cage stop``/``destroy`` (see ``backends/container.py``),
+    so lifecycle is managed by hand there rather than by unit-level
+    coupling. NOTE: the unit is only written when missing (see
+    ``_ensure_grants_watcher``), so VM cages already installed before this
+    fix keep their old Wants=/After= lines referencing the guest-only
+    egress — acceptable: the unresolved dependency is a harmless log line,
+    and a reinstall/upgrade regenerates the corrected unit.
     """
+    if is_vm:
+        # No host-side egress dependency: the egress service is a
+        # guest-only unit (it lives inside the Lima VM's systemd), so
+        # ``Wants=``/``After=`` it from the host would reference a
+        # nonexistent unit. The watcher still prunes the host-side
+        # baseline independently.
+        egress_dep = ""
+    else:
+        # Ordered after the egress, but only Wants= it (no BindsTo/PartOf):
+        # the watcher intentionally runs independently of egress state —
+        # pruning expired baseline entries needs no proxy, and the
+        # container backend stops this unit explicitly on
+        # ``cage stop``/destroy.
+        egress_dep = (
+            f"Wants={name}-egress.service\n"
+            f"After={name}-egress.service\n"
+        )
     return f"""[Unit]
 Description=agentcage policy-api grants watcher for {name}
-# Ordered after the egress, but only Wants= it (no BindsTo/PartOf): the
-# watcher intentionally runs independently of egress state — pruning
-# expired baseline entries needs no proxy, and the backend stops this
-# unit explicitly on `cage stop`/destroy.
-Wants={name}-egress.service
-After={name}-egress.service
-
+{egress_dep}
 [Service]
 Type=simple
 # Reuses the literal ``domain add`` live-reload chain for every grant.

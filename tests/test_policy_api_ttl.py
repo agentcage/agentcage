@@ -1037,3 +1037,282 @@ class TestMergeNoneNeverWipes:
                    for e in saved["entries"])
         assert saved["entries"]  # non-empty: other grants survive
         assert "could not re-read" in result.output
+
+
+# ── Round-10 Fix 1: TTL onto an already-permanent baseline entry ─────────
+
+
+class TestWatchDoesNotTightenPermanentBaseline:
+    """Fix 1: the watcher must NOT write a stale overlay TTL onto a domain
+    the operator already permanently allowlisted (e.g. via ``domain add``
+    with no ``--expires-in``). The manual ``cage grants promote`` command
+    deliberately tightens an existing baseline entry with the overlay TTL
+    (an explicit operator act — intentional TIGHTENING); the watcher is
+    AUTOMATIC and must be more conservative, leaving the operator's
+    stronger (permanent) decision untouched so step 0 of a later tick
+    can't prune it. A NEW domain's TTL still lands in ``domains.expires``.
+    """
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_permanent_baseline_entry_keeps_no_expires(
+        self, mock_state, mock_apply
+    ):
+        # "perm.com" is permanently in the operator's allow list (no TTL);
+        # "new.com" is a fresh grant not yet in the baseline.
+        raw = {
+            "name": "basic",
+            "container": {"image": "node:22-slim",
+                          "command": ["node", "/app/agent.js"]},
+            "domains": {"allow": ["anthropic.com", "perm.com"]},
+        }
+        overlay = [
+            {"domain": "perm.com", "reason": "r", "source": "decider",
+             "granted_at": "2026-01-01T00:00:00+00:00",
+             "expires_at": "2030-01-01T00:10:00+00:00"},  # TTL on perm.com
+            {"domain": "new.com", "reason": "r", "source": "decider",
+             "granted_at": "2026-01-01T00:00:00+00:00",
+             "expires_at": "2030-01-01T00:10:00+00:00"},  # TTL on new.com
+        ]
+        mock_state.load_raw_config.return_value = raw
+        mock_state.load_grants.return_value = overlay
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+
+        saved = mock_apply.call_args[0][1]
+        expires = saved["domains"].get("expires", {})
+        # perm.com was already permanent: the operator's entry is untouched —
+        # the stale overlay TTL must NOT have landed in domains.expires.
+        assert "perm.com" not in expires
+        # perm.com is still in the allow list (unchanged, not pruned).
+        assert "perm.com" in saved["domains"]["allow"]
+        # new.com was a fresh grant: its TTL still lands in expires and the
+        # domain is appended to the allow list.
+        assert expires["new.com"] == "2030-01-01T00:10:00+00:00"
+        assert "new.com" in saved["domains"]["allow"]
+
+
+# ── Round-10 Fix 2: domain add writes a value validate_config rejects ────
+
+
+class TestDomainAddValidatesSyntax:
+    """Fix 2: ``domain add`` previously appended without syntax-validating,
+    so ``agentcage cage <name> domain add "foo.com/x"`` wrote a cage.yaml
+    that ``validate_config`` (and ``valid_domain``) REJECTS on next load —
+    bricking the cage. The canonical form must be validated up front; on
+    failure the command errors (matching the command's existing error
+    style) and exits 1, writing nothing. A valid domain still works.
+    """
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_domain_add_rejects_invalid_syntax(self, mock_state,
+                                               mock_get_backend,
+                                               mock_update_dns):
+        mock_state.valid_domain.side_effect = valid_domain
+        raw = {"name": "basic", "domains": {"allow": ["anthropic.com"]}}
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        mock_get_backend.return_value.is_running.return_value = False
+
+        result = _runner().invoke(
+            main, ["domain", "add", "basic", "foo.com/x"])
+        assert result.exit_code != 0
+        assert "invalid domain" in result.output
+        assert "foo.com/x" in result.output
+        # Nothing written: the up-front validation sys.exit(1)s before any
+        # append / baseline change / DNS reload.
+        mock_state.save_raw_config.assert_not_called()
+        mock_update_dns.assert_not_called()
+
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_domain_add_valid_domain_still_works(self, mock_state,
+                                                 mock_get_backend,
+                                                 mock_update_dns):
+        mock_state.valid_domain.side_effect = valid_domain
+        raw = {"name": "basic", "domains": {"allow": ["anthropic.com"]}}
+        mock_state.load_raw_config.return_value = raw
+        cfg = MagicMock()
+        cfg.name = "basic"
+        mock_state.load_deployment_config.return_value = cfg
+        mock_get_backend.return_value.is_running.return_value = False
+
+        result = _runner().invoke(
+            main, ["domain", "add", "basic", "example.com"])
+        assert result.exit_code == 0, result.output
+        saved = mock_state.save_raw_config.call_args[0][1]
+        assert "example.com" in saved["domains"]["allow"]
+
+
+# ── Round-10 Fix 3: domain-keyed merge drops a fresh re-grant ────────────
+
+
+class TestTickMergeKeepsFreshRegrant:
+    """Fix 3: step 3's domain-keyed merge dropped a fresh re-grant of a
+    domain that was expired-and-removed earlier in the SAME tick but
+    freshly re-decided by the addon during the tick window (the new entry
+    has a strictly newer ``granted_at``). The merge must keep the on-disk
+    entry whose ``granted_at`` is strictly newer than the removed
+    snapshot entry's ``granted_at``."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_fresh_regrant_survives_after_expire_in_same_tick(
+        self, mock_state, mock_apply
+    ):
+        t1 = "2026-01-01T00:00:00+00:00"
+        t2 = "2026-01-01T00:00:05+00:00"  # strictly newer
+        # "d.com" is NOT in the baseline allow list — step 1 drops the
+        # expired entry from the overlay and records removed["d.com"]=T1.
+        raw = {
+            "name": "basic",
+            "container": {"image": "node:22-slim",
+                          "command": ["node", "/app/agent.js"]},
+            "domains": {"allow": ["anthropic.com"]},
+        }
+        expired_snapshot = [{
+            "domain": "d.com", "reason": "r", "source": "decider",
+            "granted_at": t1,
+            "expires_at": "2000-01-01T00:00:00+00:00",  # past → expired
+        }]
+        fresh_reread = [{
+            "domain": "d.com", "reason": "re-decided", "source": "decider",
+            "granted_at": t2,  # strictly newer than the removed snapshot
+            "expires_at": "2030-01-01T00:10:00+00:00",  # future → pending
+        }]
+        # 1st load_grants = top-of-_tick snapshot (expired); 2nd = step-3
+        # re-read, by which point the addon has re-granted d.com (T2).
+        mock_state.load_grants.side_effect = [
+            list(expired_snapshot), list(fresh_reread)]
+        mock_state.load_raw_config.return_value = raw
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+
+        # The fresh re-grant (granted_at T2 > the removed T1) survives the
+        # domain-keyed merge — it is NOT dropped as a stale duplicate.
+        saved = mock_state.save_grants.call_args[0][1]
+        assert len(saved) == 1
+        assert saved[0]["domain"] == "d.com"
+        assert saved[0]["granted_at"] == t2
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_same_grantedat_regrant_still_dropped(self, mock_state, mock_apply):
+        """Defensive: an on-disk entry with the SAME granted_at as the
+        removed snapshot entry (i.e. the very entry we removed, not a
+        fresh re-grant) is still dropped — only a STRICTLY newer
+        granted_at resurrects a re-grant."""
+        t1 = "2026-01-01T00:00:00+00:00"
+        raw = {
+            "name": "basic",
+            "container": {"image": "node:22-slim",
+                          "command": ["node", "/app/agent.js"]},
+            "domains": {"allow": ["anthropic.com"]},
+        }
+        entry = [{"domain": "d.com", "reason": "r", "source": "decider",
+                  "granted_at": t1,
+                  "expires_at": "2000-01-01T00:00:00+00:00"}]
+        mock_state.load_grants.side_effect = [
+            list(entry), list(entry)]  # same granted_at on re-read
+        mock_state.load_raw_config.return_value = raw
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+        saved = mock_state.save_grants.call_args[0][1]
+        assert saved == []  # not a fresh re-grant → dropped
+
+
+# ── Round-10 Fix 4: audit spam for unchanged entries ─────────────────────
+
+
+class TestWatchNoAuditForAlreadyBaseline:
+    """Fix 4: ``policy_grant_applied`` audits were emitted for every
+    pending entry EVERY tick even when the domain was already in the
+    baseline (nothing added). The audit must fire ONLY for entries this
+    tick actually ADDED to the allow list; an already-present entry is a
+    no-op promotion (the overlay entry is still removed — the observable
+    change — but no redundant audit line)."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_already_baseline_no_policy_grant_applied_audit(
+        self, mock_state, mock_apply
+    ):
+        # "x.com" is ALREADY in the baseline; the overlay carries a
+        # (stale) TTL'd grant for it.
+        raw = {
+            "name": "basic",
+            "container": {"image": "node:22-slim",
+                          "command": ["node", "/app/agent.js"]},
+            "domains": {"allow": ["anthropic.com", "x.com"]},
+        }
+        overlay = [{
+            "domain": "x.com", "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2030-01-01T00:10:00+00:00",  # future → pending
+        }]
+        mock_state.load_raw_config.return_value = raw
+        mock_state.load_grants.return_value = overlay
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+
+        # No policy_grant_applied audit: nothing was added to the baseline.
+        audits = [c.args[1]
+                  for c in mock_state.append_policy_audit.call_args_list]
+        applied = [a for a in audits
+                   if a.get("kind") == "policy_grant_applied"]
+        assert applied == []
+        # The overlay entry IS still removed (the observable change) — the
+        # no-op promotion still clears the pending entry from the overlay.
+        saved_overlay = mock_state.save_grants.call_args[0][1]
+        assert saved_overlay == []
+        # And no baseline change was needed (the domain was already there).
+        mock_apply.assert_not_called()
+
+
+# ── Round-10 Fix 5: --once bypasses _safe_tick ────────────────────────────
+
+
+class TestWatchOnceSafeTick:
+    """Fix 5: ``grants watch --once`` called ``_tick()`` directly instead
+    of the isolated ``_safe_tick(_tick, name)`` wrapper. A one-shot crash
+    must be a logged warning (exit 0), not an uncaught traceback — mirrors
+    the continuous loop's per-tick isolation so a cron job / test harness
+    never exits non-zero on a transient tick failure the loop survives."""
+
+    @patch("agentcage.cli.state")
+    def test_once_tick_raises_warns_exit_zero(self, mock_state):
+        mock_state.load_deployment_config.return_value = _make_cfg()
+        # A non-None overlay so _tick proceeds past the early return; an
+        # empty list keeps step 1/2 idle so step 0's load_raw_config is the
+        # first thing that runs.
+        mock_state.load_grants.return_value = []
+        # The FIRST load_raw_config is grants_watch's top-level existence
+        # check (only FileNotFoundError is caught there) — let it succeed.
+        # The SECOND is step 0 inside _tick: a RuntimeError (NOT
+        # FileNotFoundError, which step 0 catches) propagates out of _tick.
+        mock_state.load_raw_config.side_effect = [
+            _raw(), RuntimeError("boom")]
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        # Exit 0 (warning, not a crash) — _safe_tick swallowed the tick.
+        assert result.exit_code == 0, result.output
+        assert "boom" in result.output
+        assert "basic" in result.output  # the cage name is in the warning

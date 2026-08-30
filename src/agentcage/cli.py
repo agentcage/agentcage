@@ -4328,6 +4328,22 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
 
     expires = _read_domain_expires(raw)
 
+    # Validate domain syntax UP FRONT, before any append / baseline change
+    # (Fix 2): ``dom[list_key].append(dn)`` previously appended without
+    # syntax-validating, so ``agentcage cage <name> domain add "foo.com/x"``
+    # wrote a cage.yaml that ``validate_config`` (and ``valid_domain``)
+    # REJECTS on next load — bricking the cage. Validate the canonical
+    # (lowercased, trailing-dot-stripped) form, the exact string that would
+    # land in cage.yaml; on failure echo an error in the command's existing
+    # style (mirrors ``grants promote``'s "cannot promote into a
+    # blocklist-mode cage" / "invalid domain" refusal) and exit 1, so
+    # nothing is written.
+    for domain_name in domain_names:
+        dn = domain_name.rstrip(".").lower()
+        if not state.valid_domain(dn):
+            click.echo(f"error: invalid domain: {domain_name!r}", err=True)
+            sys.exit(1)
+
     for domain_name in domain_names:
         # Canonical form (lowercased, trailing dots stripped) for the
         # stored value + membership checks — the raw operator argument may
@@ -4455,7 +4471,15 @@ def _ensure_grants_watcher(name: str, cfg) -> None:
         try:
             from agentcage.quadlets import _grants_service_unit
             unit_path.parent.mkdir(parents=True, exist_ok=True)
-            unit_path.write_text(_grants_service_unit(name, interval=_interval))
+            # Pass is_vm so the unit omits the egress Wants=/After= lines
+            # for VM cages (Fix 6): the egress service is a GUEST-only unit
+            # (it lives inside the Lima VM's systemd), so a host-side
+            # watcher that ``Wants={name}-egress.service`` references a
+            # nonexistent host unit. NOTE: only written when missing, so
+            # already-installed VM units keep their old (harmless but
+            # noisy) dependency lines until a reinstall regenerates them.
+            unit_path.write_text(_grants_service_unit(
+                name, interval=_interval, is_vm=(isolation == "vm")))
             from agentcage import systemd as _systemd
             _systemd.daemon_reload()
         except Exception as e:
@@ -5016,15 +5040,21 @@ def grants_watch(interval: float, once: bool):
             return False
         changed = False
         # Domains this tick intentionally REMOVES from the overlay (expired
-        # in step 1, promoted in step 2). Tracked explicitly so the step-3
+        # in step 1, promoted in step 2), keyed by domain with the SNAPSHOT
+        # entry's granted_at as the value. Tracked explicitly so the step-3
         # write can MERGE against a fresh re-read of the on-disk overlay
         # instead of clobbering it with this tick's stale snapshot — a
         # grant the egress addon persisted during the (podman-exec-spanning)
         # step-2 window would otherwise be silently lost (Fix 1). The
         # watcher only ever REMOVES overlay entries (steps 1/2 never add),
-        # so ``merged = on_disk − removed_domains`` preserves every fresh
-        # on-disk entry written after the snapshot.
-        removed_domains: set[str] = set()
+        # so ``merged = on_disk − removed`` preserves every fresh on-disk
+        # entry written after the snapshot. The granted_at value lets the
+        # merge keep a fresh RE-GRANT of the same domain whose granted_at
+        # is strictly newer than the snapshot entry this tick removed
+        # (Fix 3): the addon re-decided the domain during the tick window
+        # and the new entry must survive, not be dropped as a stale
+        # duplicate.
+        removed: dict[str, str] = {}
         # 0. Prune expired allowlist entries that came from
         #    ``domain add --expires-in`` (they live in domains.expires, not
         #    the grants overlay). The L7 inspector already blocks them; this
@@ -5112,8 +5142,12 @@ def grants_watch(interval: float, once: bool):
                 pass
             expired_domains = {str(e.get("domain", "")).rstrip(".").lower()
                                for e in expired}
-            removed_domains |= expired_domains
             for e in expired:
+                dl = str(e.get("domain", "")).rstrip(".").lower()
+                # Track the snapshot entry's granted_at so step 3's merge
+                # can keep a fresh re-grant of the same domain whose
+                # granted_at is strictly newer (Fix 3).
+                removed[dl] = str(e.get("granted_at", "") or "")
                 state.append_policy_audit(name, {
                     "kind": "policy_grant_removed",
                     "domain": e.get("domain"),
@@ -5200,18 +5234,50 @@ def grants_watch(interval: float, once: bool):
                             dom[list_key].append(dl)
                             allow_lower.add(dl)
                             baseline_touched = True
-                        exp = str(e.get("expires_at", "") or "")
-                        if exp:
-                            expires[dl] = exp
+                            # Preserve the grant's TTL into domains.expires
+                            # ONLY when this promotion actually ADDED the
+                            # domain to the allow list (Fix 1). The manual
+                            # ``cage grants promote`` command deliberately
+                            # writes the overlay TTL onto an ALREADY-permanent
+                            # baseline entry too — that is intentional
+                            # TIGHTENING by an explicit operator act (the
+                            # operator chose to promote this exact grant with
+                            # this exact TTL; see grants_promote). The watcher
+                            # is AUTOMATIC and must be more conservative: a
+                            # stale overlay TTL (from an old grant decision)
+                            # must NOT narrow or prune the operator's own
+                            # permanent entry (set via ``domain add`` with no
+                            # --expires-in). Writing expires[dl] here for an
+                            # already-present domain would let step 0 of a
+                            # later tick prune the operator's permanent allow
+                            # entry — silently weakening an explicit operator
+                            # decision with stale automatic data.
+                            exp = str(e.get("expires_at", "") or "")
+                            if exp:
+                                expires[dl] = exp
+                            # Audit ONLY actual baseline additions (Fix 4):
+                            # an entry already in the baseline is a no-op
+                            # promotion, not a spam-worthy repeat record
+                            # every tick. The overlay entry IS still removed
+                            # below (the observable change) — just without a
+                            # redundant ``policy_grant_applied`` line.
+                            state.append_policy_audit(name, {
+                                "kind": "policy_grant_applied",
+                                "domain": e.get("domain"),
+                                "reason": e.get("reason", ""),
+                                "source": e.get("source", ""),
+                                "expires_at": e.get("expires_at", ""),
+                                "action": "added_to_baseline",
+                            })
+                        # The domain is removed from the overlay whether it
+                        # was newly added or already in the baseline (it now
+                        # lives in the baseline either way; keeping it would
+                        # grow the file without bound). Track the snapshot
+                        # entry's granted_at so step 3's merge can keep a
+                        # fresh re-grant whose granted_at is strictly newer
+                        # (Fix 3).
                         promoted_domains.add(dl)
-                        state.append_policy_audit(name, {
-                            "kind": "policy_grant_applied",
-                            "domain": e.get("domain"),
-                            "reason": e.get("reason", ""),
-                            "source": e.get("source", ""),
-                            "expires_at": e.get("expires_at", ""),
-                            "action": "added_to_baseline",
-                        })
+                        removed[dl] = str(e.get("granted_at", "") or "")
                     if expires:
                         _write_domain_expires(raw, expires)
                     # Only run the live-reload chain (which execs podman —
@@ -5232,8 +5298,7 @@ def grants_watch(interval: float, once: bool):
                     # without bound and re-surface them in `cage grants list`.
                     # Rejected entries are deliberately NOT removed (they
                     # stay so the operator sees them and the rejection is
-                    # auditable) and thus NOT in removed_domains.
-                    removed_domains |= promoted_domains
+                    # auditable) and thus NOT in ``removed``.
                     entries = [e for e in entries
                                if str(e.get("domain", "")).rstrip(".").lower()
                                not in promoted_domains]
@@ -5244,11 +5309,16 @@ def grants_watch(interval: float, once: bool):
         # 3. Persist the overlay (marks promoted entries applied, drops
         #    expired). MERGE-ON-WRITE (Fix 1): re-read the CURRENT on-disk
         #    overlay and drop only this tick's intentional removals
-        #    (``removed_domains``), so a grant the egress addon persisted
-        #    AFTER this tick's top-of-``_tick`` snapshot — i.e. during the
+        #    (``removed``), so a grant the egress addon persisted AFTER
+        #    this tick's top-of-``_tick`` snapshot — i.e. during the
         #    podman-exec-spanning step-2 window — survives. The watcher
         #    only ever REMOVES overlay entries (steps 1/2 never add), so
-        #    ``merged = on_disk − removed_domains`` is the correct merge.
+        #    ``merged = on_disk − removed`` is the correct merge. Fix 3:
+        #    ``removed`` carries the SNAPSHOT entry's granted_at, so a
+        #    fresh re-grant of a domain this tick expired-and-removed but
+        #    the addon freshly re-decided during the tick window (a newer
+        #    granted_at) survives the domain-keyed drop instead of being
+        #    lost as a stale duplicate.
         #    Only write if something actually changed to avoid churning
         #    the mtime the addon hot-reloads on.
         if changed:
@@ -5259,16 +5329,40 @@ def grants_watch(interval: float, once: bool):
                 # are already durable host-side) and skip the overlay
                 # write — the next reachable tick re-merges.
                 return changed
-            merged = [
-                e for e in current
-                if str(e.get("domain", "")).rstrip(".").lower()
-                not in removed_domains
-            ]
+
+            def _dropped_by_tick(e: dict) -> bool:
+                """True if ``e`` is one this tick intentionally removed.
+
+                A fresh re-grant the addon persisted AFTER this tick's
+                snapshot has a strictly NEWER granted_at than the snapshot
+                entry this tick removed — keep it (Fix 3). Compare ISO
+                strings lexically (both come from the same producer, so
+                lexical == chronological); defensive: on any comparison
+                surprise fall back to dropping (never resurrect a
+                genuinely-removed entry on a malformed granted_at).
+                """
+                dl = str(e.get("domain", "")).rstrip(".").lower()
+                if dl not in removed:
+                    return False
+                snap_ga = removed[dl]
+                cur_ga = str(e.get("granted_at", "") or "")
+                try:
+                    return not (cur_ga > snap_ga)
+                except Exception:
+                    return True
+
+            merged = [e for e in current if not _dropped_by_tick(e)]
             _save_grants_overlay(name, _watch_cfg, merged)
         return changed
 
     if once:
-        _tick()
+        # Route the one-shot path through ``_safe_tick`` too (Fix 5): a
+        # single surprise (malformed overlay / decode error) must be a
+        # logged warning, not an uncaught traceback — mirrors the
+        # continuous loop's per-tick isolation so ``--once`` (a cron job,
+        # or a test harness) never exits non-zero on a transient tick
+        # failure the loop would have survived.
+        _safe_tick(_tick, name)
         return
     click.echo(f"Watching grants overlay for cage '{name}' (interval {interval}s). Ctrl-C to stop.")
     try:
