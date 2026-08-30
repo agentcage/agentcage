@@ -651,7 +651,19 @@ class TestDnsPanel:
         assert data["summary"]["decisions"] == {"allowed": 1, "blocked": 1}
         assert "evil.example" in data["summary"]["top_blocked_hosts"]
 
-    def test_dns_endpoint(self, client, monkeypatch):  # noqa: F811
+    def test_dns_forwards_filters(self, web_env, monkeypatch):
+        monkeypatch.setattr(
+            providers, "_run_capture",
+            lambda argv, **kw: "\n".join(json.dumps(e) for e in DNS_LINES),
+        )
+        data = providers.cage_dns("demo", decisions=["blocked"])
+        assert data["count"] == 1
+        assert data["entries"][0]["host"] == "evil.example"
+        data = providers.cage_dns("demo", hosts=["api.example"])
+        assert data["count"] == 1
+        assert data["entries"][0]["host"] == "api.example.com"
+
+    def test_dns_endpoint(self, client, monkeypatch):
         monkeypatch.setattr(
             providers, "_run_capture",
             lambda argv, **kw: "\n".join(json.dumps(e) for e in DNS_LINES),
@@ -660,6 +672,18 @@ class TestDnsPanel:
         assert status == 200
         data = json.loads(body)
         assert data["count"] == 2
+
+    def test_dns_endpoint_filters(self, client, monkeypatch):
+        monkeypatch.setattr(
+            providers, "_run_capture",
+            lambda argv, **kw: "\n".join(json.dumps(e) for e in DNS_LINES),
+        )
+        status, body, _ = client(
+            "/api/v1/cages/demo/dns?decision=blocked&host=evil")
+        assert status == 200
+        data = json.loads(body)
+        assert data["count"] == 1
+        assert data["entries"][0]["host"] == "evil.example"
 
 
 # ── capture / HAR ─────────────────────────────────────────────

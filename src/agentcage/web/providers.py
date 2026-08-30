@@ -601,16 +601,24 @@ def cage_traffic(
     }
 
 
-def cage_dns(name: str, *, limit: int = 100, since: str | None = None) -> dict:
+def cage_dns(
+    name: str,
+    *,
+    limit: int = 100,
+    decisions: list[str] | None = None,
+    hosts: list[str] | None = None,
+    since: str | None = None,
+) -> dict:
     """DNS decisions for a cage: queries, sinkholes, top domains.
 
     The egress's dnsmasq wrapper (dns-audit.sh) emits one audit entry per
     DNS decision (method ``DNS``); this panel is that slice of the audit
-    stream. CLI twin: ``agentcage cage audit NAME --method DNS
-    [--summary]``.
+    stream, with the same filters the traffic panel takes. CLI twin:
+    ``agentcage cage audit NAME --method DNS [--summary]``.
     """
     data = cage_traffic(
-        name, limit=limit, methods=["DNS"], since=since,
+        name, limit=limit, decisions=decisions, hosts=hosts,
+        methods=["DNS"], since=since,
     )
     data["panel"] = "dns"
     return data

@@ -27,13 +27,20 @@ agentcage web --host 0.0.0.0     # share on the network (warns — see below)
 ## Panels
 
 The dashboard's landing page lists every cage (status, lifecycle,
-isolation, secrets, domains); clicking one shows its detail: per-service
-runtime status, expected secrets, the domain allowlist with passthrough
-and expiry, runtime Policy API grants, DNS decisions, recent traffic
-decisions, captured HTTP flows (inbound view) with a HAR download, and
-service logs. Views auto-refresh every 5 s; traffic and logs can be
-tailed live (SSE) with the `live` toggle — the web twin of `cage audit
--f` / `cage logs -f`. A `doctor` page mirrors `agentcage doctor`.
+isolation, secrets, domains); clicking one opens the cage with a tab
+bar — one page per panel: **summary** (identity, per-service status),
+**traffic**, **dns**, **secrets**, **allowlist** (baseline + runtime
+grants), **capture** (inbound view + HAR download), and **logs**. Each
+page fetches only its own panel; pages auto-refresh every 5 s. Traffic
+and logs can be tailed live (SSE) with the `live` toggle — the web twin
+of `cage audit -f` / `cage logs -f`. A `doctor` page mirrors
+`agentcage doctor`.
+
+The traffic and DNS pages carry the same filters `cage audit` takes,
+applied server-side so the table, the live stream (the SSE URL carries
+the active filters), and the CLI twin all show the same slice: status
+chips (all / allowed / blocked / flagged) map to `?decision=`, and the
+host box maps to `?host=`.
 
 | Panel | Endpoint | CLI twin |
 |-------|----------|----------|
@@ -53,12 +60,15 @@ tailed live (SSE) with the `live` toggle — the web twin of `cage audit
 
 `traffic` accepts `?limit=`, `?decision=` (repeatable), `?host=`
 (repeatable), `?method=` (repeatable), and `?since=` (`1h`, `30m`, `7d`,
-ISO date) — the same filters `cage audit` takes. `logs` accepts
+ISO date) — the same filters `cage audit` takes; `dns` accepts
+`?limit=`, `?decision=`, `?host=`, `?since=`. `logs` accepts
 `?service=` (repeatable) and `?lines=`. `capture` accepts `?limit=`;
 the HAR download accepts `?limit=` (capped at 5000 entries). The DNS
 panel is the audit stream's `method: DNS` slice — the egress's dnsmasq
-wrapper emits one audit entry per DNS decision (allowed lookups and
-sinkholed non-allowlisted lookups).
+wrapper (`dns-audit.sh --log-allowed`) emits one audit entry per DNS
+decision (allowed, forwarded, cached, and sinkholed lookups). Note:
+cages created before v0.35.1 audited only blocked DNS lookups; run
+`agentcage cage update NAME` to pick up the rebuilt egress image.
 
 ### Capture views stay inbound
 

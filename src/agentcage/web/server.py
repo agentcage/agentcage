@@ -178,8 +178,17 @@ class _Handler(BaseHTTPRequestHandler):
         if fn is None:
             raise ApiError(404, f"unknown panel: {panel}")
 
-        if panel in ("cage", "secrets", "allowlist", "dns"):
+        if panel in ("cage", "secrets", "allowlist"):
             self._send_json(200, fn(name))
+        elif panel == "dns":
+            self._send_json(200, fn(
+                name,
+                limit=self._int_query(query, "limit", default=100,
+                                      maximum=_MAX_LIMIT),
+                decisions=self._list_query(query, "decision"),
+                hosts=self._list_query(query, "host"),
+                since=self._one_query(query, "since"),
+            ))
         elif panel == "capture":
             self._send_json(200, fn(
                 name,

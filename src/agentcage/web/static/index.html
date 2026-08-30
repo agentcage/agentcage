@@ -19,14 +19,14 @@
               color: var(--accent); }
   header .sub { color: var(--dim); font-size: 12px; }
   header nav { margin-left: 24px; }
-  header nav a { color: var(--dim); text-decoration: none; font-size: 13px;
+  header nav a, .tabs a { color: var(--dim); text-decoration: none; font-size: 13px;
                  margin-right: 14px; }
-  header nav a.active, header nav a:hover { color: var(--accent); }
+  header nav a.active, .tabs a.active, header nav a:hover, .tabs a:hover { color: var(--accent); }
   header .conn { margin-left: auto; font-size: 12px; color: var(--dim); }
   header .conn .dot { display: inline-block; width: 8px; height: 8px;
                       border-radius: 50%; margin-right: 5px; }
   .dot.ok { background: var(--ok); } .dot.bad { background: var(--err); }
-  main { padding: 20px 22px; max-width: 1100px; margin: 0 auto; }
+  main { padding: 20px 22px 40px; max-width: 1100px; margin: 0 auto; }
   .banner { padding: 8px 12px; margin-bottom: 16px; border-radius: 6px;
             background: rgba(248,81,73,.12); border: 1px solid var(--err);
             color: var(--err); font-size: 13px; display: none; }
@@ -47,24 +47,22 @@
   .badge.full { color: var(--ok);  border-color: var(--ok); }
   .badge.dim  { color: var(--dim); }
   .mono { font-family: var(--mono); font-size: 12px; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-           gap: 16px; }
   .card { background: var(--panel); border: 1px solid var(--border);
-          border-radius: 8px; padding: 14px 16px; }
-  .card h2 { margin: 0 0 10px; font-size: 13px; color: var(--dim);
+          border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+  .card h2, .pagehead h2 { margin: 0 0 10px; font-size: 13px; color: var(--dim);
              text-transform: uppercase; letter-spacing: .05em;
              display: flex; align-items: center; gap: 8px; }
-  .card h2 .cli { margin-left: auto; font-size: 11px; text-transform: none;
+  .card h2 .cli, .pagehead .cli { margin-left: auto; font-size: 11px; text-transform: none;
                   letter-spacing: 0; color: var(--dim);
                   font-family: var(--mono); font-weight: 400; }
-  .card h2 button { font-size: 11px; padding: 2px 10px; margin-left: 8px; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; }
   .kv .k { color: var(--dim); } .kv .v { font-family: var(--mono); font-size: 12px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+           align-items: center; }
   .chip { padding: 2px 10px; border-radius: 12px; font-size: 12px;
           background: var(--bg); border: 1px solid var(--border); }
   .chip b { font-family: var(--mono); }
-  pre { margin: 0; max-height: 340px; overflow: auto; background: var(--bg);
+  pre { margin: 0; max-height: 480px; overflow: auto; background: var(--bg);
         border: 1px solid var(--border); border-radius: 6px; padding: 10px;
         font-family: var(--mono); font-size: 11.5px; line-height: 1.45; }
   .empty { color: var(--dim); font-size: 13px; padding: 8px 0; }
@@ -72,6 +70,16 @@
            display: inline-block; margin-bottom: 14px; }
   a.dl { color: var(--accent); text-decoration: none; font-size: 12px;
          font-family: var(--mono); }
+  input[type=text] { background: var(--bg); color: var(--fg);
+                   border: 1px solid var(--border); border-radius: 6px;
+                   padding: 4px 10px; font-size: 12px; font-family: var(--mono); }
+  .fchip { padding: 2px 12px; border-radius: 12px; font-size: 12px;
+           background: var(--bg); border: 1px solid var(--border);
+           color: var(--dim); cursor: pointer; user-select: none; }
+  .fchip.on-allowed  { color: var(--ok);   border-color: var(--ok); }
+  .fchip.on-blocked { color: var(--err);  border-color: var(--err); }
+  .fchip.on-flagged { color: var(--warn); border-color: var(--warn); }
+  .fchip.on-all { color: var(--accent); border-color: var(--accent); }
   select, button { background: var(--bg); color: var(--fg);
                    border: 1px solid var(--border); border-radius: 6px;
                    padding: 4px 10px; font-size: 12px; font-family: var(--mono);
@@ -80,7 +88,14 @@
   .decision-blocked { color: var(--err); }
   .decision-flagged { color: var(--warn); }
   .decision-allowed { color: var(--ok); }
-  footer { padding: 20px 22px 30px; color: var(--dim); font-size: 12px; }
+  .pagehead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+              margin: 0 0 14px; }
+  .pagehead .name { font-size: 20px; font-family: var(--mono); }
+  .tabs { margin: 10px 0 18px; padding-bottom: 10px;
+          border-bottom: 1px solid var(--border); }
+  .tabs a { margin-right: 4px; padding: 3px 10px; border-radius: 6px; }
+  .tabs a.active { background: rgba(88,166,255,.12); }
+  footer { padding: 12px 22px 30px; color: var(--dim); font-size: 12px; }
   footer code { font-family: var(--mono); color: var(--accent); }
 </style>
 </head>
@@ -108,9 +123,17 @@ const REFRESH_MS = 5000;
 
 // Live-tail preferences survive re-renders; the sockets themselves do
 // not — every render closes and (if still wanted) reopens them, so the
-// 5 s polling refresh can never stack a second EventSource.
+// polling refresh can never stack a second EventSource.
 const liveWanted = { traffic: false, logs: false };
 const liveSocks = { traffic: null, logs: null };
+
+// Traffic/DNS filter state (per page). Applied server-side (?decision=,
+// ?host=) so the CLI twin (`cage audit --decision ... --host ...`) and
+// the live stream see exactly what the table sees.
+const filters = {
+  traffic: { decision: 'all', host: '' },
+  dns:     { decision: 'all', host: '' },
+};
 
 function showBanner(msg) {
   $banner.textContent = msg;
@@ -145,10 +168,10 @@ function statusBadge(status) {
   return `<span class="badge ${cls}">${esc(status)}</span>`;
 }
 
-function setNav() {
+function setNav(activeTab, cageName) {
   const route = location.hash || '#/';
-  document.getElementById('nav-cages').className =
-    route.startsWith('#/cage/') || route === '#/' ? 'active' : '';
+  const onCages = route === '#/' || route.startsWith('#/cage/');
+  document.getElementById('nav-cages').className = onCages ? 'active' : '';
   document.getElementById('nav-doctor').className =
     route === '#/doctor' ? 'active' : '';
 }
@@ -193,7 +216,7 @@ function renderDoctor(data) {
     <tbody>${rows || '<tr><td colspan="3" class="empty">No checks ran.</td></tr>'}</tbody></table>`;
 }
 
-// ── cage detail ────────────────────────────────────────────
+// ── shared bits ──────────────────────────────────────────────
 
 function kv(pairs) {
   return '<div class="kv">' + pairs.map(([k, v]) =>
@@ -206,19 +229,151 @@ function renderServices(services) {
     .join(' ');
 }
 
-function renderSecrets(data) {
-  if (data.error) return `<div class="empty">${esc(data.error)}</div>`;
-  if (!data.secrets.length) return '<div class="empty">No secrets expected.</div>';
+function decisionChips(mode) {
+  const f = filters[mode];
+  const mk = (val, label, cls) =>
+    `<span class="fchip ${f.decision === val ? 'on-' + val : ''}" data-decision="${val}">${label}</span>`;
+  return mk('all', 'all') + mk('allowed', 'allowed') +
+         mk('blocked', 'blocked') + mk('flagged', 'flagged');
+}
+
+function filterQuery(mode) {
+  const f = filters[mode];
+  const qs = [`limit=100`];
+  if (f.decision !== 'all') qs.push(`decision=${encodeURIComponent(f.decision)}`);
+  if (f.host.trim()) qs.push(`host=${encodeURIComponent(f.host.trim())}`);
+  return qs.join('&');
+}
+
+function summaryChips(s) {
+  return [
+    ['total', s.total || 0],
+    ['allowed', (s.decisions || {}).allowed || 0],
+    ['blocked', (s.decisions || {}).blocked || 0, 'var(--err)'],
+    ['flagged', (s.decisions || {}).flagged || 0, 'var(--warn)'],
+  ].map(([k, v, c]) =>
+    `<span class="chip"${c ? ` style="color:${c}"` : ''}>${esc(k)} <b>${v}</b></span>`).join('');
+}
+
+function entryRow(e, isDns) {
+  return `<tr>
+    <td class="mono">${esc((e.ts || '').slice(11, 23))}</td>
+    <td class="mono">${esc(e.direction || '')}</td>
+    <td class="mono">${esc(isDns ? '' : (e.method || ''))}</td>
+    <td class="mono">${esc(e.host || '')}${esc(isDns ? '' : (e.path || ''))}</td>
+    <td class="decision-${esc(e.decision || '')} mono">${esc(e.decision || '')}</td>
+    <td class="mono">${esc(e.reason || '')}</td></tr>`;
+}
+
+const ENTRY_HEADER = (isDns) => `<tr><th>${isDns ? 'Time' : 'Time'}</th><th>Dir</th><th>${isDns ? '' : 'Method'}</th><th>${isDns ? 'Domain' : 'Host / path'}</th><th>Decision</th><th>Reason</th></tr>`;
+
+// ── cage pages ──────────────────────────────────────────────
+
+const CAGE_TABS = [
+  ['', 'summary'], ['traffic', 'traffic'], ['dns', 'dns'],
+  ['secrets', 'secrets'], ['allowlist', 'allowlist'],
+  ['capture', 'capture'], ['logs', 'logs'],
+];
+
+function cageTabs(name, active) {
+  return `<div class="tabs">` + CAGE_TABS.map(([slug, label]) =>
+    `<a href="#/cage/${esc(name)}${slug ? '/' + slug : ''}" class="${slug === active ? 'active' : ''}">${label}</a>`
+  ).join('') + `</div>`;
+}
+
+function cagePageHead(detail, tab) {
+  return `<a class="back" href="#/">← all cages</a>
+    <div class="pagehead">
+      <span class="name">${esc(detail.name)}</span>
+      ${statusBadge(detail.status)}
+      <span class="cli">${esc(CLI_HINT[tab] || '')}</span>
+    </div>
+    ${renderServices(detail.services || [])}
+    ${cageTabs(detail.name, tab)}`;
+}
+
+const CLI_HINT = {
+  '': 'agentcage cage show',
+  traffic: 'agentcage cage audit',
+  dns: 'agentcage cage audit --method DNS',
+  secrets: 'agentcage secret list',
+  allowlist: 'agentcage domain list · cage grants list',
+  capture: 'agentcage cage har',
+  logs: 'agentcage cage logs',
+};
+
+async function renderCagePage(name, tab) {
+  const detail = await api(`/api/v1/cages/${name}`);
+  let body;
+  switch (tab) {
+    case 'traffic': body = await trafficPage(name, false); break;
+    case 'dns':     body = await trafficPage(name, true);  break;
+    case 'secrets': body = secretsPage(await api(`/api/v1/cages/${name}/secrets`)); break;
+    case 'allowlist': body = allowlistPage(await api(`/api/v1/cages/${name}/allowlist`)); break;
+    case 'capture': body = capturePage(await api(`/api/v1/cages/${name}/capture`), name); break;
+    case 'logs':    body = await logsPage(await api(`/api/v1/cages/${name}/logs?lines=100`), name); break;
+    default:        body = summaryPage(detail, name); break;
+  }
+  $view.innerHTML = cagePageHead(detail, tab) + body;
+  wirePage(name, tab);
+}
+
+// ── summary page ─────────────────────────────────────────────
+
+async function summaryPage(detail, name) {
+  const domains = await api(`/api/v1/cages/${name}/allowlist`);
+  return `<div class="card"><h2>Cage</h2>${kv([
+    ['isolation', esc(detail.isolation)],
+    ['image', esc(detail.image)],
+    ['lifecycle', esc(detail.lifecycle)],
+    ['ports', esc((detail.ports || []).join(', ') || '—')],
+    ['version', esc(detail.version)],
+    ['domains', `${esc(domains.mode)} · ${domains.domains.length} baseline · ${domains.grants.length} grants`],
+  ])}</div>`;
+}
+
+// ── traffic + dns pages (shared machinery) ──────────────────
+
+async function trafficPage(name, isDns) {
+  const mode = isDns ? 'dns' : 'traffic';
+  const data = await api(`/api/v1/cages/${name}/${mode}?${filterQuery(mode)}`);
+  const s = data.summary || {};
+  const topHosts = Object.entries(s.top_hosts || {}).slice(0, 8)
+    .map(([h, n]) => `<span class="chip">${esc(h)} <b>${n}</b></span>`).join('');
+  const rows = (data.entries || []).slice().reverse().map(e => entryRow(e, isDns)).join('');
+  const liveBtn = isDns ? '' :
+    `<button id="live-traffic" class="${liveWanted.traffic ? 'live-on' : ''}">${liveWanted.traffic ? '● live' : '○ live'}</button>`;
+  return `<div class="chips">${liveBtn}
+      <span class="fchip-label" style="color:var(--dim);font-size:12px">status:</span>
+      ${decisionChips(mode)}
+      <input type="text" id="host-filter" placeholder="filter by host…"
+             value="${esc(filters[mode].host)}" style="margin-left:auto">
+    </div>
+    <div class="chips">${summaryChips(s)}</div>
+    ${topHosts ? '<div class="chips">' + topHosts + '</div>' : ''}
+    ${!isDns && liveWanted.traffic ? `<table style="margin-bottom:8px"><thead>${ENTRY_HEADER(false)}</thead><tbody id="live-rows"></tbody></table>` : ''}
+    ${data.count ? `<table><thead>${ENTRY_HEADER(isDns)}</thead><tbody>${rows}</tbody></table>`
+      : `<div class="empty">No ${isDns ? 'DNS queries' : 'audit entries'} match.</div>`}`;
+}
+
+// ── secrets page ────────────────────────────────────────────
+
+function secretsPage(data) {
+  if (data.error) return `<div class="card"><div class="empty">${esc(data.error)}</div></div>`;
+  if (!data.secrets.length) return '<div class="card"><div class="empty">No secrets expected.</div></div>';
   const rows = data.secrets.map(s => `<tr>
     <td class="mono">${esc(s.name)}</td>
     <td>${s.present === null ? '<span class="badge dim">unknown</span>'
       : `<span class="badge ${s.present ? 'full' : 'miss'}">${s.present ? 'set' : 'MISSING'}</span>`}</td>
     <td class="mono">${s.inject_to ? esc(s.inject_to.join(', ')) : '<span style="color:var(--dim)">all allowed domains</span>'}</td>
     </tr>`).join('');
-  return `<table><thead><tr><th>Secret</th><th>Status</th><th>Inject scope</th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<div class="card"><h2>Expected secrets<span class="cli">${data.present ?? ''}/${data.expected} set</span></h2>
+    <table><thead><tr><th>Secret</th><th>Status</th><th>Inject scope</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-function renderAllowlist(data) {
+// ── allowlist page ──────────────────────────────────────────
+
+function allowlistPage(data) {
   const doms = data.domains.length ? data.domains.map(d =>
     `<tr><td class="mono">${esc(d.domain)}</td>
      <td>${d.passthrough ? '<span class="badge dim">passthrough</span>' : ''}</td>
@@ -235,64 +390,16 @@ function renderAllowlist(data) {
         <td class="mono">${esc(g.source || '')}</td></tr>`).join('')
         + '</tbody></table>'
       : '<div class="empty">No runtime grants.</div>';
-  return `<h2 style="font-size:13px;color:var(--dim);text-transform:uppercase;margin:14px 0 8px">Domains — ${esc(data.mode)}</h2>
-    <table><thead><tr><th>Domain</th><th></th><th>Expiry</th></tr></thead><tbody>${doms}</tbody></table>
-    <h2 style="font-size:13px;color:var(--dim);text-transform:uppercase;margin:14px 0 8px">Runtime grants (Policy API)</h2>
-    ${grantsHtml}`;
+  return `<div class="card"><h2>Domains — ${esc(data.mode)}</h2>
+    <table><thead><tr><th>Domain</th><th></th><th>Expiry</th></tr></thead><tbody>${doms}</tbody></table></div>
+    <div class="card"><h2>Runtime grants (Policy API)</h2>${grantsHtml}</div>`;
 }
 
-function summaryChips(s) {
-  return [
-    ['total', s.total || 0],
-    ['allowed', (s.decisions || {}).allowed || 0],
-    ['blocked', (s.decisions || {}).blocked || 0, 'var(--err)'],
-    ['flagged', (s.decisions || {}).flagged || 0, 'var(--warn)'],
-  ].map(([k, v, c]) =>
-    `<span class="chip"${c ? ` style="color:${c}"` : ''}>${esc(k)} <b>${v}</b></span>`).join('');
-}
+// ── capture page ────────────────────────────────────────────
 
-function trafficRow(e) {
-  return `<tr>
-    <td class="mono">${esc((e.ts || '').slice(11, 23))}</td>
-    <td class="mono">${esc(e.direction || '')}</td>
-    <td class="mono">${esc(e.method || '')}</td>
-    <td class="mono">${esc(e.host || '')}${esc(e.path || '')}</td>
-    <td class="decision-${esc(e.decision || '')} mono">${esc(e.decision || '')}</td>
-    <td class="mono">${esc(e.reason || '')}</td></tr>`;
-}
-
-function renderTraffic(data, name) {
-  const s = data.summary || {};
-  const topHosts = Object.entries(s.top_hosts || {}).slice(0, 6)
-    .map(([h, n]) => `<span class="chip">${esc(h)} <b>${n}</b></span>`).join('');
-  const rows = (data.entries || []).slice().reverse().map(trafficRow).join('');
-  const liveBtn = `<button id="live-traffic" class="${liveWanted.traffic ? 'live-on' : ''}">${liveWanted.traffic ? '● live' : '○ live'}</button>`;
-  return `<div class="chips">${liveBtn}${summaryChips(s)}</div>
-    ${topHosts ? '<div class="chips">' + topHosts + '</div>' : ''}
-    <div id="live-traffic-wrap" style="display:none;margin-bottom:8px">
-      <table><thead><tr><th>Time</th><th>Dir</th><th>Method</th><th>Host / path</th><th>Decision</th><th>Reason</th></tr></thead>
-      <tbody id="live-traffic-body"></tbody></table></div>
-    ${data.count ? `<table><thead><tr><th>Time</th><th>Dir</th><th>Method</th><th>Host / path</th><th>Decision</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<div class="empty">${data.note ? esc(data.note) : 'No audit entries match.'}</div>`}`;
-}
-
-function renderDns(data) {
-  const s = data.summary || {};
-  const top = Object.entries(s.top_hosts || {}).slice(0, 8)
-    .map(([h, n]) => `<span class="chip">${esc(h)} <b>${n}</b></span>`).join('');
-  const blocked = Object.entries(s.top_blocked_hosts || {}).slice(0, 8)
-    .map(([h, n]) => `<span class="chip" style="color:var(--err)">${esc(h)} <b>${n}</b></span>`).join('');
-  const rows = (data.entries || []).slice().reverse().map(trafficRow).join('');
-  return `<div class="chips">${summaryChips(s)}</div>
-    ${top ? '<div class="chips">' + top + '</div>' : ''}
-    ${blocked ? '<div class="chips">' + blocked + '</div>' : ''}
-    ${data.count ? `<table><thead><tr><th>Time</th><th>Dir</th><th></th><th>Domain</th><th>Decision</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table>`
-      : '<div class="empty">No DNS queries recorded yet.</div>'}`;
-}
-
-function renderCapture(data, name) {
+function capturePage(data, name) {
   if (!data.captured)
-    return `<div class="empty">${esc(data.detail || '')}</div>`;
+    return `<div class="card"><div class="empty">${esc(data.detail || '')}</div></div>`;
   const rows = (data.entries || []).slice().reverse().map(e => `<tr>
     <td class="mono">${esc((e.ts || '').slice(0, 23))}</td>
     <td class="mono">${esc(e.direction || '')}</td>
@@ -300,35 +407,78 @@ function renderCapture(data, name) {
     <td class="mono">${esc(e.host || '')}</td>
     <td class="mono">${e.status ?? '—'}</td>
     <td class="decision-${esc(e.decision || '')} mono">${esc(e.decision || '')}</td></tr>`).join('');
-  return `<div class="chips">
-      <span class="chip">flows <b>${data.count}</b></span>
-      <span class="chip">size <b>${(data.size / 1024).toFixed(1)} KiB</b></span>
+  return `<div class="card"><h2>Captured flows<span class="cli">${data.count} flows · ${(data.size / 1024).toFixed(1)} KiB · inbound view only</span></h2>
+    <div class="chips">
       <a class="dl" href="/api/v1/cages/${esc(name)}/capture/har">download HAR (inbound)</a>
     </div>
     ${rows ? `<table><thead><tr><th>Time</th><th>Dir</th><th>Method</th><th>Host</th><th>Status</th><th>Decision</th></tr></thead><tbody>${rows}</tbody></table>`
-      : '<div class="empty">No captured flows.</div>'}`;
+      : '<div class="empty">No captured flows.</div>'}</div>`;
 }
 
-function renderLogs(data, name) {
+// ── logs page ───────────────────────────────────────────────
+
+function logsPage(data, name) {
   const liveBtn = `<button id="live-logs" class="${liveWanted.logs ? 'live-on' : ''}">${liveWanted.logs ? '● live' : '○ live'}</button>`;
-  return `<div class="chips">${liveBtn}<span class="chip">services <b>${esc((data.services || []).join(', '))}</b></span><span class="chip" style="color:var(--dim)">agentcage cage logs -f ${esc(name)}</span></div>
-    <pre id="log-lines">${esc((data.lines || []).join('\n'))}</pre>`;
+  return `<div class="card"><h2>Service output<span class="cli">${esc((data.services || []).join(', '))}</span></h2>
+    <div class="chips">${liveBtn}<span class="chip" style="color:var(--dim)">agentcage cage logs -f ${esc(name)}</span></div>
+    <pre id="log-lines">${esc((data.lines || []).join('\n'))}</pre></div>`;
 }
 
-// ── live wiring ─────────────────────────────────────────────
+// ── page wiring (after innerHTML) ───────────────────────────
+
+function wirePage(name, tab) {
+  if (tab === 'traffic' || tab === 'dns') {
+    const mode = tab === 'dns' ? 'dns' : 'traffic';
+    $view.querySelectorAll('.fchip').forEach(chip => {
+      chip.onclick = () => {
+        filters[mode].decision = chip.dataset.decision;
+        render();
+      };
+    });
+    const hostInput = document.getElementById('host-filter');
+    if (hostInput) {
+      let t;
+      hostInput.oninput = () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          if (filters[mode].host !== hostInput.value) {
+            filters[mode].host = hostInput.value;
+            render();
+          }
+        }, 400);
+      };
+    }
+    const liveBtn = document.getElementById('live-traffic');
+    if (liveBtn) liveBtn.onclick = () => {
+      liveWanted.traffic = !liveWanted.traffic;
+      closeLive();
+      render();
+    };
+    if (liveWanted.traffic && tab === 'traffic') startLiveTraffic(name);
+  }
+  if (tab === 'logs') {
+    const liveBtn = document.getElementById('live-logs');
+    if (liveBtn) liveBtn.onclick = () => {
+      liveWanted.logs = !liveWanted.logs;
+      closeLive();
+      render();
+    };
+    if (liveWanted.logs) startLiveLogs(name);
+  }
+}
 
 function startLiveTraffic(name) {
-  const sock = new EventSource(`/api/v1/cages/${name}/traffic/stream`);
+  // The stream carries the same filters the table shows.
+  const qs = filterQuery('traffic').split('&').filter(q => !q.startsWith('limit='));
+  const sock = new EventSource(`/api/v1/cages/${name}/traffic/stream?${qs.join('&')}`);
   liveSocks.traffic = sock;
-  document.getElementById('live-traffic-wrap').style.display = 'block';
   sock.onmessage = ev => {
     const e = JSON.parse(ev.data);
-    const body = document.getElementById('live-traffic-body');
-    if (!body) return;
-    body.insertAdjacentHTML('afterbegin', trafficRow(e));
+    const body = document.getElementById('live-rows');
+    if (!body) return;   // user left the page mid-event
+    body.insertAdjacentHTML('afterbegin', entryRow(e, false));
     while (body.rows.length > 100) body.deleteRow(-1);
   };
-  sock.onerror = () => { /* banner shows via polling; view re-renders */ };
 }
 
 function startLiveLogs(name) {
@@ -347,62 +497,7 @@ function startLiveLogs(name) {
 
 // ── views / routing ─────────────────────────────────────────
 
-async function renderCageView(name) {
-  const [detail, secrets, allowlist, traffic, dns, capture, logs] = await Promise.all([
-    api(`/api/v1/cages/${name}`),
-    api(`/api/v1/cages/${name}/secrets`),
-    api(`/api/v1/cages/${name}/allowlist`),
-    api(`/api/v1/cages/${name}/traffic?limit=50`),
-    api(`/api/v1/cages/${name}/dns?limit=50`),
-    api(`/api/v1/cages/${name}/capture?limit=50`),
-    api(`/api/v1/cages/${name}/logs?lines=100`),
-  ]);
-  const svc = renderServices(detail.services || []);
-  const head = `
-    <a class="back" href="#/">← all cages</a>
-    <div class="cards">
-      <div class="card"><h2>Cage</h2>${kv([
-        ['name', esc(detail.name)], ['status', statusBadge(detail.status)],
-        ['services', svc], ['isolation', esc(detail.isolation)],
-        ['image', esc(detail.image)], ['lifecycle', esc(detail.lifecycle)],
-        ['ports', esc((detail.ports || []).join(', ') || '—')],
-        ['version', esc(detail.version)],
-      ])}</div>
-      <div class="card"><h2>Secrets<span class="cli">agentcage secret list ${esc(name)}</span></h2>${renderSecrets(secrets)}</div>
-    </div>
-    <div style="height:16px"></div>
-    <div class="cards">
-      <div class="card"><h2>Allowlist<span class="cli">agentcage domain list ${esc(name)}</span></h2>
-        ${renderAllowlist(allowlist)}</div>
-      <div class="card"><h2>DNS<span class="cli">agentcage cage audit ${esc(name)} --method DNS</span></h2>
-        ${renderDns(dns)}</div>
-    </div>
-    <div style="height:16px"></div>
-    <div class="card"><h2>Traffic<span class="cli">agentcage cage audit ${esc(name)}</span></h2>${renderTraffic(traffic, name)}</div>
-    <div style="height:16px"></div>
-    <div class="cards">
-      <div class="card"><h2>Capture<span class="cli">agentcage cage har ${esc(name)}</span></h2>${renderCapture(capture, name)}</div>
-    </div>
-    <div style="height:16px"></div>
-    <div class="card"><h2>Logs<span class="cli">agentcage cage logs ${esc(name)}</span></h2>${renderLogs(logs, name)}</div>`;
-  $view.innerHTML = head;
-
-  // Buttons exist now — wire toggles, then open wanted streams.
-  const tBtn = document.getElementById('live-traffic');
-  const lBtn = document.getElementById('live-logs');
-  if (tBtn) tBtn.onclick = () => {
-    liveWanted.traffic = !liveWanted.traffic;
-    closeLive(); render();
-  };
-  if (lBtn) lBtn.onclick = () => {
-    liveWanted.logs = !liveWanted.logs;
-    closeLive(); render();
-  };
-  if (liveWanted.traffic) startLiveTraffic(name);
-  if (liveWanted.logs) startLiveLogs(name);
-}
-
-async function renderOverviewView() {
+async function renderCageOverview() {
   const data = await api('/api/v1/overview');
   $view.innerHTML = renderOverview(data);
   $view.querySelectorAll('tr.row').forEach(tr =>
@@ -414,14 +509,23 @@ async function renderDoctorView() {
   $view.innerHTML = `<h2 style="font-size:13px;color:var(--dim);text-transform:uppercase;margin:0 0 10px">Doctor <span style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px">agentcage doctor</span></h2>${renderDoctor(data)}`;
 }
 
+let currentRoute = '';
 async function render() {
   closeLive();
-  setNav();
-  const m = location.hash.match(/^#\/cage\/([a-z0-9-]+)$/);
+  const route = location.hash || '#/';
+  const cage = route.match(/^#\/cage\/([a-z0-9-]+)(?:\/(\w+))?$/);
+  currentRoute = route;
   try {
-    if (m) await renderCageView(m[1]);
-    else if (location.hash === '#/doctor') await renderDoctorView();
-    else await renderOverviewView();
+    if (cage) {
+      setNav(cage[2] || '');
+      await renderCagePage(cage[1], cage[2] || '');
+    } else if (route === '#/doctor') {
+      setNav();
+      await renderDoctorView();
+    } else {
+      setNav();
+      await renderCageOverview();
+    }
     showBanner('');
   } catch (err) {
     showBanner(err.message);
@@ -431,8 +535,13 @@ async function render() {
 window.addEventListener('hashchange', render);
 render();
 setInterval(() => {
-  // Poll only when not tailing live — a live view updates itself.
-  if (!liveWanted.traffic && !liveWanted.logs) render();
+  // Poll only when not tailing live — a live view updates itself, and
+  // re-rendering under a text input would eat the caret.
+  if (location.hash === currentRoute &&
+      !liveWanted.traffic && !liveWanted.logs &&
+      !document.activeElement?.matches?.('#host-filter')) {
+    render();
+  }
 }, REFRESH_MS);
 </script>
 </body>
