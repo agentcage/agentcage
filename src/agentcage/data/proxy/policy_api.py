@@ -366,6 +366,13 @@ class PolicyApi:
             await self._handle_request(flow)
             return True
 
+        if method == "POST" and path == "/v1/allowlist/removals":
+            if not self.request_enabled:
+                self._respond(flow, 404, {"error": "removal endpoint disabled"})
+                return True
+            self._handle_removal(flow)
+            return True
+
         self._respond(flow, 404, {"error": "not found"})
         return True
 
@@ -378,6 +385,9 @@ class PolicyApi:
             "features": {
                 "introspection": self.introspection_enabled,
                 "request": self.request_enabled,
+                # Self-removal rides the same master switch as requests:
+                # both exist to let the agent manage its own runtime grants.
+                "removal": self.request_enabled,
             },
             "host": self.host,
         }
@@ -524,6 +534,128 @@ class PolicyApi:
             return
 
         self._respond(flow, 503, {"error": "decider not configured"})
+
+    # ── POST /v1/allowlist/removals ────────────────────────
+    #
+    # Self-service narrowing: the agent gives back a runtime grant it no
+    # longer needs. Deliberately the mirror image of the request endpoint
+    # in trust terms — a removal only ever SHRINKS the agent's own egress,
+    # so no decider is involved and no justification is required (an
+    # optional ``reason`` is recorded in the audit trail). Scope is LIVE
+    # RUNTIME GRANTS ONLY: a grant that the host reconcile already promoted
+    # into the operator's static baseline is indistinguishable from a
+    # domain the operator added by hand, and the egress must never edit the
+    # baseline ("baseline immutability from the egress" — the same
+    # invariant that routes promotion through the host-side `domain add`
+    # machinery). Those return 403 with the operator command to use.
+    #
+    # Removal takes effect the same two-step way a grant does, in reverse:
+    # the domain leaves the in-memory overlay immediately (the very next
+    # request to it is blocked at L7), and ``_persist_grants`` republishes
+    # the shrunk zone list so the supervisor drops it from dnsmasq within
+    # ~1s. The host reconcile needs no new channel: it re-reads the current
+    # overlay before its merge-on-write (``merged = on_disk − removed``,
+    # steps only ever remove), so a cage-side removal that lands mid-tick
+    # simply stays absent. Residual race: a reconcile that promotes the
+    # grant concurrently with the removal wins — the domain lands in the
+    # baseline and the removal reports it as operator-owned on retry;
+    # narrowing converges to the operator's explicit state, never silently
+    # widens.
+
+    def _handle_removal(self, flow: http.HTTPFlow) -> None:
+        try:
+            payload = json.loads(flow.request.content or b"{}")
+        except (ValueError, TypeError):
+            self._respond(flow, 400, {"error": "invalid JSON body"})
+            return
+        if not isinstance(payload, dict):
+            self._respond(flow, 400, {"error": "invalid JSON body"})
+            return
+        domain = str(payload.get("domain", "") or "").lower().rstrip(".")
+        reason = str(payload.get("reason", "") or "")[:1000]
+
+        if not self._valid_domain(domain):
+            self._respond(flow, 400, {"error": f"invalid domain: {domain!r}"})
+            self._audit_event("policy_removal", {
+                "domain": domain, "decision": "rejected",
+                "reason": "invalid domain syntax",
+            })
+            return
+
+        # Same per-cage bucket as the request endpoint: removal is cheap
+        # (no LLM call), but the control plane as a whole stays bounded.
+        if not self._check_rate_limit():
+            self._respond(flow, 429, {
+                "id": _new_request_id(), "status": "denied", "domain": domain,
+                "reason": "request rate limit exceeded",
+                "suggestion": "wait a few seconds and re-send the removal",
+                "retryable": True,
+            })
+            self._audit_event("policy_removal", {
+                "domain": domain, "decision": "rejected",
+                "reason": "rate limit",
+            })
+            return
+
+        # Pick up any host-side revoke/promote that already hit disk, so
+        # the decision below is made against current state (mirrors
+        # ``_apply_grant``'s reconcile-before-mutate).
+        self.maybe_reload_overlay()
+
+        if self.dom.is_granted(domain):
+            self.dom.revoke(domain)
+            # Persists the shrunk overlay AND republishes the DNS zone list
+            # (the publish runs even if the overlay write fails — the safe
+            # direction: enforcement now, durability best-effort).
+            self._persist_grants()
+            body = {
+                "id": _new_request_id(), "status": "removed",
+                "domain": domain,
+                "reason": reason or "removed at the agent's request",
+            }
+            # A grant can shadow a baseline suffix (e.g. a re-grant made
+            # while the baseline entry was expired). Removing the grant
+            # then does NOT make the domain unreachable — say so, or the
+            # agent believes it narrowed more than it did.
+            if self.dom._matches(domain):
+                body["still_allowed_by_baseline"] = True
+            self._respond(flow, 200, body)
+            self._audit_event("policy_removal", {
+                "domain": domain, "decision": "removed",
+                "reason": reason,
+            })
+            return
+
+        # Not a live grant. Distinguish "operator baseline" (403 — the
+        # egress must not edit the operator's static policy; a promoted
+        # grant lives there too and is deliberately no longer the agent's
+        # to retract) from "not present at all" (404).
+        if self.dom._matches(domain):
+            self._respond(flow, 403, {
+                "id": _new_request_id(), "status": "denied", "domain": domain,
+                "reason": f"{domain} matches the operator's static baseline "
+                          f"(or a grant already promoted into it); the "
+                          f"policy API can only remove live runtime grants",
+                "suggestion": "ask the operator to run "
+                              "`agentcage domain rm` if this domain should "
+                              "really go away",
+                "retryable": False,
+            })
+            self._audit_event("policy_removal", {
+                "domain": domain, "decision": "denied",
+                "reason": "baseline entry (operator-owned)",
+            })
+            return
+
+        self._respond(flow, 404, {
+            "id": _new_request_id(), "status": "not_found", "domain": domain,
+            "reason": f"{domain} is not a live runtime grant",
+            "suggestion": "GET /v1/allowlist and use the exact domain from "
+                          "the granted list",
+        })
+        self._audit_event("policy_removal", {
+            "domain": domain, "decision": "not_found",
+        })
 
     # ── LLM provider (anthropic / openai / openrouter) ───────
     #
