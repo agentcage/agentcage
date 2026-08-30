@@ -632,6 +632,73 @@ def doctor():
     sys.exit(1 if any(r.level == "error" for r in results) else 0)
 
 
+# ── overview / web (dashboard) ───────────────────────────
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True,
+              help="Output machine-readable JSON (same payload as "
+                   "GET /api/v1/overview).")
+def overview(as_json):
+    """Show every cage at a glance: status, secrets, domains.
+
+    The terminal twin of the web dashboard's landing page. Every panel
+    the web interface serves has a CLI command; this is the aggregate one.
+    """
+    from agentcage.web import providers
+
+    data = providers.overview()
+    if as_json:
+        click.echo(json.dumps(data, indent=2))
+        return
+
+    cages = data["cages"]
+    if not cages:
+        click.echo("No cages found.")
+        return
+
+    click.echo(f"{'NAME':<25} {'STATUS':<18} {'LIFECYCLE':<14} "
+               f"{'ISOLATION':<12} {'SECRETS':<10} {'DOMAINS':<9} VERSION")
+    for c in cages:
+        secs = c.get("secrets") or {}
+        sec = (f"{secs.get('present', 0)}/{secs.get('expected', 0)}"
+               + (f" !{secs['missing']}" if secs.get("missing") else ""))
+        doms = c.get("domains") or {}
+        dom = f"{doms.get('mode', '?')}:{doms.get('domains', 0)}"
+        click.echo(f"{c['name']:<25} {c['status']:<18} "
+                    f"{c.get('lifecycle', '-'):<14} {c.get('isolation', '-'):<12} "
+                    f"{sec:<10} {dom:<9} {c.get('version', '-')}")
+
+
+@main.command("web")
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Interface to bind. The dashboard is read-only but "
+                   "shows cage inventory — keep it on loopback unless you "
+                   "really mean to share it.")
+@click.option("--port", type=int, default=7635, show_default=True,
+              help="Port to serve the dashboard on.")
+@click.option("--no-browser", is_flag=True,
+              help="Do not open the dashboard in a browser.")
+def web(host, port, no_browser):
+    """Serve the read-only web dashboard (visibility into cages,
+    secrets, the domain allowlist, DNS decisions, captured traffic,
+    and proxy logs — with live tailing via SSE).
+
+    Every panel is also a CLI command (`agentcage overview`, `agentcage
+    doctor`, `cage show`, `secret list`, `domain list`, `cage grants
+    list`, `cage audit [--method DNS] [-f]`, `cage har`, `cage logs
+    [-f]`); the web interface adds a view, never a capability.
+    """
+    from agentcage.web.server import serve
+
+    try:
+        serve(host, port, open_browser=not no_browser)
+    except OSError as exc:
+        click.echo(f"error: could not start web server on {host}:{port}: {exc}",
+                   err=True)
+        sys.exit(1)
+
+
 # ── scaffold group ──────────────────────────────────────
 
 from agentcage.scaffold_cli import scaffold  # noqa: E402

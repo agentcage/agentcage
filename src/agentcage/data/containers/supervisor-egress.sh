@@ -390,7 +390,7 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
     prlimit --as=$((256 * 1024 * 1024)) -- \
       setpriv --reuid=acdns --regid=acdns --clear-groups \
               --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
-      /opt/agentcage/dns-audit.sh \
+      /opt/agentcage/dns-audit.sh --log-allowed \
         /usr/sbin/dnsmasq -k \
           --pid-file="$DNSMASQ_PID_FILE" \
           --conf-file=/run/agentcage/dnsmasq.egress.conf \
@@ -415,7 +415,7 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
     prlimit --as=$((256 * 1024 * 1024)) -- \
       setpriv --reuid=acdns --regid=acdns --clear-groups \
               --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
-      /opt/agentcage/dns-audit.sh \
+      /opt/agentcage/dns-audit.sh --log-allowed \
         /usr/sbin/dnsmasq -k \
           --pid-file="$DNSMASQ_PID_FILE" \
           --conf-file=/etc/agentcage/dnsmasq.conf \
@@ -491,7 +491,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   prlimit --as=$((256 * 1024 * 1024)) -- \
     setpriv --reuid=acdns --regid=acdns --clear-groups \
             --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
-    /opt/agentcage/dns-audit.sh \
+    /opt/agentcage/dns-audit.sh --log-allowed \
       /usr/sbin/dnsmasq -k \
         --pid-file="$DNSMASQ_PID_FILE" \
         --no-resolv \

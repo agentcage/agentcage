@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentcage</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --fg: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149; --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.5 -apple-system, 'Segoe UI', Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px;
+           padding: 14px 22px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 16px; font-family: var(--mono);
+              color: var(--accent); }
+  header .sub { color: var(--dim); font-size: 12px; }
+  header nav { margin-left: 24px; }
+  header nav a, .tabs a { color: var(--dim); text-decoration: none; font-size: 13px;
+                 margin-right: 14px; }
+  header nav a.active, .tabs a.active, header nav a:hover, .tabs a:hover { color: var(--accent); }
+  header .conn { margin-left: auto; font-size: 12px; color: var(--dim); }
+  header .conn .dot { display: inline-block; width: 8px; height: 8px;
+                      border-radius: 50%; margin-right: 5px; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--err); }
+  main { padding: 20px 22px 40px; max-width: 1100px; margin: 0 auto; }
+  .banner { padding: 8px 12px; margin-bottom: 16px; border-radius: 6px;
+            background: rgba(248,81,73,.12); border: 1px solid var(--err);
+            color: var(--err); font-size: 13px; display: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 600; font-size: 12px;
+       text-transform: uppercase; letter-spacing: .04em; }
+  tr.row { cursor: pointer; }
+  tr.row:hover { background: rgba(88,166,255,.07); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
+           font-size: 11px; font-family: var(--mono);
+           border: 1px solid var(--border); }
+  .badge.run  { color: var(--ok);   border-color: var(--ok); }
+  .badge.stop { color: var(--dim); }
+  .badge.deg  { color: var(--warn); border-color: var(--warn); }
+  .badge.legacy, .badge.err { color: var(--err); border-color: var(--err); }
+  .badge.miss { color: var(--err);  border-color: var(--err); }
+  .badge.full { color: var(--ok);  border-color: var(--ok); }
+  .badge.dim  { color: var(--dim); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border);
+          border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+  .card h2, .pagehead h2 { margin: 0 0 10px; font-size: 13px; color: var(--dim);
+             text-transform: uppercase; letter-spacing: .05em;
+             display: flex; align-items: center; gap: 8px; }
+  .card h2 .cli, .pagehead .cli { margin-left: auto; font-size: 11px; text-transform: none;
+                  letter-spacing: 0; color: var(--dim);
+                  font-family: var(--mono); font-weight: 400; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; }
+  .kv .k { color: var(--dim); } .kv .v { font-family: var(--mono); font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;
+           align-items: center; }
+  .chip { padding: 2px 10px; border-radius: 12px; font-size: 12px;
+          background: var(--bg); border: 1px solid var(--border); }
+  .chip b { font-family: var(--mono); }
+  pre { margin: 0; max-height: 480px; overflow: auto; background: var(--bg);
+        border: 1px solid var(--border); border-radius: 6px; padding: 10px;
+        font-family: var(--mono); font-size: 11.5px; line-height: 1.45; }
+  .empty { color: var(--dim); font-size: 13px; padding: 8px 0; }
+  a.back { color: var(--accent); text-decoration: none; font-size: 13px;
+           display: inline-block; margin-bottom: 14px; }
+  a.dl { color: var(--accent); text-decoration: none; font-size: 12px;
+         font-family: var(--mono); }
+  input[type=text] { background: var(--bg); color: var(--fg);
+                   border: 1px solid var(--border); border-radius: 6px;
+                   padding: 4px 10px; font-size: 12px; font-family: var(--mono); }
+  .fchip { padding: 2px 12px; border-radius: 12px; font-size: 12px;
+           background: var(--bg); border: 1px solid var(--border);
+           color: var(--dim); cursor: pointer; user-select: none; }
+  .fchip.on-allowed  { color: var(--ok);   border-color: var(--ok); }
+  .fchip.on-blocked { color: var(--err);  border-color: var(--err); }
+  .fchip.on-flagged { color: var(--warn); border-color: var(--warn); }
+  .fchip.on-all { color: var(--accent); border-color: var(--accent); }
+  select, button { background: var(--bg); color: var(--fg);
+                   border: 1px solid var(--border); border-radius: 6px;
+                   padding: 4px 10px; font-size: 12px; font-family: var(--mono);
+                   cursor: pointer; }
+  button.live-on { color: var(--ok); border-color: var(--ok); }
+  .decision-blocked { color: var(--err); }
+  .decision-flagged { color: var(--warn); }
+  .decision-allowed { color: var(--ok); }
+  .pagehead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+              margin: 0 0 14px; }
+  .pagehead .name { font-size: 20px; font-family: var(--mono); }
+  .tabs { margin: 10px 0 18px; padding-bottom: 10px;
+          border-bottom: 1px solid var(--border); }
+  .tabs a { margin-right: 4px; padding: 3px 10px; border-radius: 6px; }
+  .tabs a.active { background: rgba(88,166,255,.12); }
+  footer { padding: 12px 22px 30px; color: var(--dim); font-size: 12px; }
+  footer code { font-family: var(--mono); color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>agentcage</h1><span class="sub">web dashboard</span>
+  <nav>
+    <a href="#/" id="nav-cages">cages</a>
+    <a href="#/doctor" id="nav-doctor">doctor</a>
+  </nav>
+  <span class="conn"><span class="dot ok" id="conn-dot"></span><span id="conn-label">connected</span></span>
+</header>
+<main>
+  <div class="banner" id="banner"></div>
+  <div id="view"></div>
+</main>
+<footer>read-only view · every panel has a CLI twin · <code>agentcage --help</code></footer>
+
+<script>
+'use strict';
+
+const $view = document.getElementById('view');
+const $banner = document.getElementById('banner');
+const REFRESH_MS = 5000;
+
+// Live-tail preferences survive re-renders; the sockets themselves do
+// not — every render closes and (if still wanted) reopens them, so the
+// polling refresh can never stack a second EventSource.
+const liveWanted = { traffic: false, logs: false };
+const liveSocks = { traffic: null, logs: null };
+
+// Traffic/DNS filter state (per page). Applied server-side (?decision=,
+// ?host=) so the CLI twin (`cage audit --decision ... --host ...`) and
+// the live stream see exactly what the table sees.
+const filters = {
+  traffic: { decision: 'all', host: '' },
+  dns:     { decision: 'all', host: '' },
+};
+
+function showBanner(msg) {
+  $banner.textContent = msg;
+  $banner.style.display = msg ? 'block' : 'none';
+  document.getElementById('conn-dot').className = 'dot ' + (msg ? 'bad' : 'ok');
+  document.getElementById('conn-label').textContent = msg ? 'disconnected' : 'connected';
+}
+
+function closeLive() {
+  for (const k of Object.keys(liveSocks)) {
+    if (liveSocks[k]) { liveSocks[k].close(); liveSocks[k] = null; }
+  }
+}
+
+async function api(path) {
+  const res = await fetch(path, { headers: { 'Accept': 'application/json' } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function statusBadge(status) {
+  const cls = status.startsWith('running') ? 'run'
+            : status.startsWith('degraded') ? 'deg'
+            : status.startsWith('stopped') || status === 'exited' ? 'stop'
+            : 'err';
+  return `<span class="badge ${cls}">${esc(status)}</span>`;
+}
+
+function setNav(activeTab, cageName) {
+  const route = location.hash || '#/';
+  const onCages = route === '#/' || route.startsWith('#/cage/');
+  document.getElementById('nav-cages').className = onCages ? 'active' : '';
+  document.getElementById('nav-doctor').className =
+    route === '#/doctor' ? 'active' : '';
+}
+
+// ── overview ───────────────────────────────────────────────
+
+function renderOverview(data) {
+  if (!data.cages.length)
+    return '<div class="empty">No cages found. <code>agentcage init NAME</code> to create one.</div>';
+  const rows = data.cages.map(c => {
+    const secs = c.secrets
+      ? `<span class="badge ${c.secrets.missing ? 'miss' : 'full'}">${c.secrets.present}/${c.secrets.expected}${c.secrets.missing ? ' · ' + c.secrets.missing + ' missing' : ''}</span>` : '';
+    const doms = c.domains ? `<span class="badge dim">${esc(c.domains.mode)} · ${c.domains.domains}</span>` : '';
+    return `<tr class="row" data-cage="${esc(c.name)}">
+      <td class="mono">${esc(c.name)}</td>
+      <td>${statusBadge(c.status)}</td>
+      <td class="mono">${esc(c.lifecycle || '')}</td>
+      <td class="mono">${esc(c.isolation || '')}</td>
+      <td>${secs}</td><td>${doms}</td>
+      <td class="mono">${esc(c.scaffold && c.scaffold !== '-' ? c.scaffold : '')}</td>
+      <td class="mono">${esc(c.version || '')}</td></tr>`;
+  }).join('');
+  return `<table><thead><tr>
+    <th>Name</th><th>Status</th><th>Lifecycle</th><th>Isolation</th>
+    <th>Secrets</th><th>Domains</th><th>Scaffold</th><th>Version</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ── doctor ──────────────────────────────────────────────────
+
+function renderDoctor(data) {
+  const rows = data.checks.map(c => `<tr>
+    <td><span class="badge ${c.level === 'pass' ? 'full' : c.level === 'warn' ? 'deg' : 'err'}">${esc(c.level)}</span></td>
+    <td>${esc(c.message)}</td>
+    <td class="mono">${esc(c.hint || '')}</td></tr>`).join('');
+  return `<div class="chips">
+      <span class="chip">pass <b>${data.pass}</b></span>
+      <span class="chip" style="color:var(--warn)">warn <b>${data.warn}</b></span>
+      <span class="chip" style="color:var(--err)">error <b>${data.error}</b></span>
+    </div>
+    <table><thead><tr><th>Level</th><th>Check</th><th>Hint</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="3" class="empty">No checks ran.</td></tr>'}</tbody></table>`;
+}
+
+// ── shared bits ──────────────────────────────────────────────
+
+function kv(pairs) {
+  return '<div class="kv">' + pairs.map(([k, v]) =>
+    `<div class="k">${esc(k)}</div><div class="v">${v ?? ''}</div>`).join('') + '</div>';
+}
+
+function renderServices(services) {
+  return services.map(s =>
+    `<span class="badge ${s.running ? 'run' : 'stop'}">${esc(s.service)} ${s.running ? '● running' : '○ stopped'}</span>`)
+    .join(' ');
+}
+
+function filterQuery(mode) {
+  const f = filters[mode];
+  const qs = [`limit=100`];
+  // Decision stays client-side: the count chips below double as filters,
+  // so the summary must keep counting every decision even while one is
+  // selected — filtering server-side would zero out the other chips.
+  if (f.host.trim()) qs.push(`host=${encodeURIComponent(f.host.trim())}`);
+  return qs.join('&');
+}
+
+// One chip row, two jobs: each chip shows a decision's real count (from
+// the unfiltered summary) AND filters the table to it when clicked.
+// Shared by the traffic and DNS pages.
+function statChips(mode, s) {
+  const active = filters[mode].decision;
+  const mk = (decision, count, dim) =>
+    `<span class="fchip ${active === decision ? 'on-' + decision : ''}" data-decision="${decision}">` +
+    `${decision} <b${dim ? ` style="color:${dim}"` : ''}>${count}</b></span>`;
+  const d = s.decisions || {};
+  return mk('all', s.total || 0)
+       + mk('allowed', d.allowed || 0, 'var(--ok)')
+       + mk('blocked', d.blocked || 0, 'var(--err)')
+       + mk('flagged', d.flagged || 0, 'var(--warn)');
+}
+
+function entryRow(e, isDns) {
+  return `<tr>
+    <td class="mono">${esc((e.ts || '').slice(11, 23))}</td>
+    <td class="mono">${esc(e.direction || '')}</td>
+    <td class="mono">${esc(isDns ? '' : (e.method || ''))}</td>
+    <td class="mono">${esc(e.host || '')}${esc(isDns ? '' : (e.path || ''))}</td>
+    <td class="decision-${esc(e.decision || '')} mono">${esc(e.decision || '')}</td>
+    <td class="mono">${esc(e.reason || '')}</td></tr>`;
+}
+
+const ENTRY_HEADER = (isDns) => `<tr><th>${isDns ? 'Time' : 'Time'}</th><th>Dir</th><th>${isDns ? '' : 'Method'}</th><th>${isDns ? 'Domain' : 'Host / path'}</th><th>Decision</th><th>Reason</th></tr>`;
+
+// ── cage pages ──────────────────────────────────────────────
+
+const CAGE_TABS = [
+  ['', 'summary'], ['traffic', 'traffic'], ['dns', 'dns'],
+  ['secrets', 'secrets'], ['allowlist', 'allowlist'],
+  ['capture', 'capture'], ['logs', 'logs'],
+];
+
+function cageTabs(name, active) {
+  return `<div class="tabs">` + CAGE_TABS.map(([slug, label]) =>
+    `<a href="#/cage/${esc(name)}${slug ? '/' + slug : ''}" class="${slug === active ? 'active' : ''}">${label}</a>`
+  ).join('') + `</div>`;
+}
+
+function cagePageHead(detail, tab) {
+  return `<a class="back" href="#/">← all cages</a>
+    <div class="pagehead">
+      <span class="name">${esc(detail.name)}</span>
+      ${statusBadge(detail.status)}
+      <span class="cli">${esc(CLI_HINT[tab] || '')}</span>
+    </div>
+    ${renderServices(detail.services || [])}
+    ${cageTabs(detail.name, tab)}`;
+}
+
+const CLI_HINT = {
+  '': 'agentcage cage show',
+  traffic: 'agentcage cage audit',
+  dns: 'agentcage cage audit --method DNS',
+  secrets: 'agentcage secret list',
+  allowlist: 'agentcage domain list · cage grants list',
+  capture: 'agentcage cage har',
+  logs: 'agentcage cage logs',
+};
+
+async function renderCagePage(name, tab) {
+  const detail = await api(`/api/v1/cages/${name}`);
+  let body;
+  switch (tab) {
+    case 'traffic': body = await trafficPage(name, false); break;
+    case 'dns':     body = await trafficPage(name, true);  break;
+    case 'secrets': body = secretsPage(await api(`/api/v1/cages/${name}/secrets`)); break;
+    case 'allowlist': body = allowlistPage(await api(`/api/v1/cages/${name}/allowlist`)); break;
+    case 'capture': body = capturePage(await api(`/api/v1/cages/${name}/capture`), name); break;
+    case 'logs':    body = await logsPage(await api(`/api/v1/cages/${name}/logs?lines=100`), name); break;
+    default:        body = await summaryPage(detail, name); break;
+  }
+  $view.innerHTML = cagePageHead(detail, tab) + body;
+  wirePage(name, tab);
+}
+
+// ── summary page ─────────────────────────────────────────────
+
+async function summaryPage(detail, name) {
+  const domains = await api(`/api/v1/cages/${name}/allowlist`);
+  return `<div class="card"><h2>Cage</h2>${kv([
+    ['isolation', esc(detail.isolation)],
+    ['image', esc(detail.image)],
+    ['lifecycle', esc(detail.lifecycle)],
+    ['ports', esc((detail.ports || []).join(', ') || '—')],
+    ['version', esc(detail.version)],
+    ['domains', `${esc(domains.mode)} · ${domains.domains.length} baseline · ${domains.grants.length} grants`],
+  ])}</div>`;
+}
+
+// ── traffic + dns pages (shared machinery) ──────────────────
+
+async function trafficPage(name, isDns) {
+  const mode = isDns ? 'dns' : 'traffic';
+  const data = await api(`/api/v1/cages/${name}/${mode}?${filterQuery(mode)}`);
+  const s = data.summary || {};
+  const decision = filters[mode].decision;
+  const visible = (data.entries || []).filter(e =>
+    decision === 'all' || e.decision === decision);
+  const topHosts = Object.entries(s.top_hosts || {}).slice(0, 8)
+    .map(([h, n]) => `<span class="chip">${esc(h)} <b>${n}</b></span>`).join('');
+  const rows = visible.slice().reverse().map(e => entryRow(e, isDns)).join('');
+  const liveBtn = isDns ? '' :
+    `<button id="live-traffic" class="${liveWanted.traffic ? 'live-on' : ''}">${liveWanted.traffic ? '● live' : '○ live'}</button>`;
+  return `<div class="chips">${liveBtn}${statChips(mode, s)}
+      <input type="text" id="host-filter" placeholder="filter by host…"
+             value="${esc(filters[mode].host)}" style="margin-left:auto">
+    </div>
+    ${topHosts ? '<div class="chips">' + topHosts + '</div>' : ''}
+    ${!isDns && liveWanted.traffic ? `<table style="margin-bottom:8px"><thead>${ENTRY_HEADER(false)}</thead><tbody id="live-rows"></tbody></table>` : ''}
+    ${visible.length ? `<table><thead>${ENTRY_HEADER(isDns)}</thead><tbody>${rows}</tbody></table>`
+      : `<div class="empty">No ${isDns ? 'DNS queries' : 'audit entries'} match.</div>`}`;
+}
+
+// ── secrets page ────────────────────────────────────────────
+
+function secretsPage(data) {
+  if (data.error) return `<div class="card"><div class="empty">${esc(data.error)}</div></div>`;
+  if (!data.secrets.length) return '<div class="card"><div class="empty">No secrets expected.</div></div>';
+  const rows = data.secrets.map(s => `<tr>
+    <td class="mono">${esc(s.name)}</td>
+    <td>${s.present === null ? '<span class="badge dim">unknown</span>'
+      : `<span class="badge ${s.present ? 'full' : 'miss'}">${s.present ? 'set' : 'MISSING'}</span>`}</td>
+    <td class="mono">${s.inject_to ? esc(s.inject_to.join(', ')) : '<span style="color:var(--dim)">all allowed domains</span>'}</td>
+    </tr>`).join('');
+  return `<div class="card"><h2>Expected secrets<span class="cli">${data.present ?? ''}/${data.expected} set</span></h2>
+    <table><thead><tr><th>Secret</th><th>Status</th><th>Inject scope</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// ── allowlist page ──────────────────────────────────────────
+
+function allowlistPage(data) {
+  const doms = data.domains.length ? data.domains.map(d =>
+    `<tr><td class="mono">${esc(d.domain)}</td>
+     <td>${d.passthrough ? '<span class="badge dim">passthrough</span>' : ''}</td>
+     <td class="mono">${d.expires ? 'expires ' + esc(d.expires) : ''}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="empty">No domains in the baseline.</td></tr>';
+  const grantsHtml = data.grants_note
+    ? `<div class="empty">${esc(data.grants_note)}</div>`
+    : data.grants.length
+      ? '<table><thead><tr><th>Domain</th><th>Expires</th><th>Reason</th><th>Source</th></tr></thead><tbody>'
+        + data.grants.map(g => `<tr>
+        <td class="mono">${esc(g.domain)}</td>
+        <td class="mono">${esc(g.expires_at || '—')}</td>
+        <td class="mono">${esc(g.reason || '')}</td>
+        <td class="mono">${esc(g.source || '')}</td></tr>`).join('')
+        + '</tbody></table>'
+      : '<div class="empty">No runtime grants.</div>';
+  return `<div class="card"><h2>Domains — ${esc(data.mode)}</h2>
+    <table><thead><tr><th>Domain</th><th></th><th>Expiry</th></tr></thead><tbody>${doms}</tbody></table></div>
+    <div class="card"><h2>Runtime grants (Policy API)</h2>${grantsHtml}</div>`;
+}
+
+// ── capture page ────────────────────────────────────────────
+
+function capturePage(data, name) {
+  if (!data.captured)
+    return `<div class="card"><div class="empty">${esc(data.detail || '')}</div></div>`;
+  const rows = (data.entries || []).slice().reverse().map(e => `<tr>
+    <td class="mono">${esc((e.ts || '').slice(0, 23))}</td>
+    <td class="mono">${esc(e.direction || '')}</td>
+    <td class="mono">${esc(e.method || '')}</td>
+    <td class="mono">${esc(e.host || '')}</td>
+    <td class="mono">${e.status ?? '—'}</td>
+    <td class="decision-${esc(e.decision || '')} mono">${esc(e.decision || '')}</td></tr>`).join('');
+  return `<div class="card"><h2>Captured flows<span class="cli">${data.count} flows · ${(data.size / 1024).toFixed(1)} KiB · inbound view only</span></h2>
+    <div class="chips">
+      <a class="dl" href="/api/v1/cages/${esc(name)}/capture/har">download HAR (inbound)</a>
+    </div>
+    ${rows ? `<table><thead><tr><th>Time</th><th>Dir</th><th>Method</th><th>Host</th><th>Status</th><th>Decision</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<div class="empty">No captured flows.</div>'}</div>`;
+}
+
+// ── logs page ───────────────────────────────────────────────
+
+function logsPage(data, name) {
+  const liveBtn = `<button id="live-logs" class="${liveWanted.logs ? 'live-on' : ''}">${liveWanted.logs ? '● live' : '○ live'}</button>`;
+  return `<div class="card"><h2>Service output<span class="cli">${esc((data.services || []).join(', '))}</span></h2>
+    <div class="chips">${liveBtn}<span class="chip" style="color:var(--dim)">agentcage cage logs -f ${esc(name)}</span></div>
+    <pre id="log-lines">${esc((data.lines || []).join('\n'))}</pre></div>`;
+}
+
+// ── page wiring (after innerHTML) ───────────────────────────
+
+function wirePage(name, tab) {
+  if (tab === 'traffic' || tab === 'dns') {
+    const mode = tab === 'dns' ? 'dns' : 'traffic';
+    $view.querySelectorAll('.fchip').forEach(chip => {
+      chip.onclick = () => {
+        filters[mode].decision = chip.dataset.decision;
+        render();
+      };
+    });
+    const hostInput = document.getElementById('host-filter');
+    if (hostInput) {
+      let t;
+      hostInput.oninput = () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          if (filters[mode].host !== hostInput.value) {
+            filters[mode].host = hostInput.value;
+            render();
+          }
+        }, 400);
+      };
+    }
+    const liveBtn = document.getElementById('live-traffic');
+    if (liveBtn) liveBtn.onclick = () => {
+      liveWanted.traffic = !liveWanted.traffic;
+      closeLive();
+      render();
+    };
+    if (liveWanted.traffic && tab === 'traffic') startLiveTraffic(name);
+  }
+  if (tab === 'logs') {
+    const liveBtn = document.getElementById('live-logs');
+    if (liveBtn) liveBtn.onclick = () => {
+      liveWanted.logs = !liveWanted.logs;
+      closeLive();
+      render();
+    };
+    if (liveWanted.logs) startLiveLogs(name);
+  }
+}
+
+function startLiveTraffic(name) {
+  // One stream per page, unfiltered server-side; the decision filter is
+  // applied per event so switching chips never re-opens the socket.
+  const qs = filterQuery('traffic').split('&').filter(q => !q.startsWith('limit='));
+  const sock = new EventSource(`/api/v1/cages/${name}/traffic/stream?${qs.join('&')}`);
+  liveSocks.traffic = sock;
+  sock.onmessage = ev => {
+    const e = JSON.parse(ev.data);
+    const d = filters.traffic.decision;
+    if (d !== 'all' && e.decision !== d) return;
+    const body = document.getElementById('live-rows');
+    if (!body) return;   // user left the page mid-event
+    body.insertAdjacentHTML('afterbegin', entryRow(e, false));
+    while (body.rows.length > 100) body.deleteRow(-1);
+  };
+}
+
+function startLiveLogs(name) {
+  const sock = new EventSource(`/api/v1/cages/${name}/logs/stream`);
+  liveSocks.logs = sock;
+  sock.onmessage = ev => {
+    const e = JSON.parse(ev.data);
+    const pre = document.getElementById('log-lines');
+    if (!pre) return;
+    pre.textContent += (pre.textContent ? '\n' : '') + e.line;
+    const lines = pre.textContent.split('\n');
+    if (lines.length > 500) pre.textContent = lines.slice(-500).join('\n');
+    pre.scrollTop = pre.scrollHeight;
+  };
+}
+
+// ── views / routing ─────────────────────────────────────────
+
+async function renderCageOverview() {
+  const data = await api('/api/v1/overview');
+  $view.innerHTML = renderOverview(data);
+  $view.querySelectorAll('tr.row').forEach(tr =>
+    tr.addEventListener('click', () => { location.hash = '#/cage/' + tr.dataset.cage; }));
+}
+
+async function renderDoctorView() {
+  const data = await api('/api/v1/doctor');
+  $view.innerHTML = `<h2 style="font-size:13px;color:var(--dim);text-transform:uppercase;margin:0 0 10px">Doctor <span style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px">agentcage doctor</span></h2>${renderDoctor(data)}`;
+}
+
+let currentRoute = '';
+async function render() {
+  closeLive();
+  const route = location.hash || '#/';
+  const cage = route.match(/^#\/cage\/([a-z0-9-]+)(?:\/(\w+))?$/);
+  currentRoute = route;
+  try {
+    if (cage) {
+      setNav(cage[2] || '');
+      await renderCagePage(cage[1], cage[2] || '');
+    } else if (route === '#/doctor') {
+      setNav();
+      await renderDoctorView();
+    } else {
+      setNav();
+      await renderCageOverview();
+    }
+    showBanner('');
+  } catch (err) {
+    showBanner(err.message);
+  }
+}
+
+window.addEventListener('hashchange', render);
+render();
+setInterval(() => {
+  // Poll only when not tailing live — a live view updates itself, and
+  // re-rendering under a text input would eat the caret.
+  if (location.hash === currentRoute &&
+      !liveWanted.traffic && !liveWanted.logs &&
+      !document.activeElement?.matches?.('#host-filter')) {
+    render();
+  }
+}, REFRESH_MS);
+</script>
+</body>
+</html>
