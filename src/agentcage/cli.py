@@ -5399,3 +5399,166 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
 
     _safe_tick(_tick, name)
 
+
+
+# ── watcher: the in-egress LLM traffic auditor ────────────────
+# Host-side read surface for the traffic watcher (see
+# docs/explain/traffic-watcher.md): the watcher itself runs INSIDE the
+# egress — an asyncio scan loop, sibling of the domains.auto decider —
+# and writes its findings + scan state onto the grants volume (the one
+# host↔egress shared writable volume that already exists on every
+# backend). These commands are deliberately READ-ONLY: the watcher can
+# only ever narrow runtime grants in-egress, and anything broader stays
+# an operator decision made with `agentcage domain rm` / `cage grants`.
+# There is no host daemon and no `watcher start` on purpose — the
+# egress-local DNS-apply rework deleted the last host-side watcher, and
+# its supervision belongs to the egress supervisor that already runs.
+
+
+def _watcher_vol_dir(name: str) -> Path:
+    """Host path of the watcher's output dir on the grants volume."""
+    return state.grants_dir(name) / "watcher"
+
+
+def _load_watcher_output(name: str, cfg, rel: str) -> str | None:
+    """Read one watcher output file, isolation-aware.
+
+    container / apple-container: the grants volume is bind-mounted from
+    the host, so the findings file is read directly. VM cages: the
+    volume lives guest-local (Lima's host→guest write caching can't be
+    trusted, see ``quadlets.vm_local_grants_dir``), so the file is
+    pulled over ``limactl shell`` with the same sentinel protocol as
+    ``pull_grants`` — file-absent is the normal pre-first-scan state (""),
+    while an unreachable VM is ``None`` (callers must not read "all
+    clear" into a failed round-trip).
+    """
+    if getattr(cfg, "isolation", "container") == "vm":
+        from agentcage.lima.instance import LimaInstance
+        from agentcage.backends.vm import pull_watcher_output
+        return pull_watcher_output(name, LimaInstance(name), rel)
+    p = _watcher_vol_dir(name) / rel
+    try:
+        return p.read_text()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return None
+
+
+@main.group(cls=AliasGroup, aliases={"ls": "findings"})
+def watcher():
+    """Read the traffic watcher's findings and scan status.
+
+    The watcher is an opt-in in-egress LLM agent that re-analyzes the
+    cage's recent traffic (audit + capture) after the fact and flags
+    suspicious patterns; it can revoke the runtime grants its analysis
+    damns (narrowing only) and recommends — never applies — baseline
+    edits. Enable it with the ``watcher:`` block in cage.yaml. See
+    docs/explain/traffic-watcher.md.
+    """
+
+
+@watcher.command("findings")
+@click.argument("name")
+@click.option("-s", "--severity", "severities", multiple=True,
+              type=click.Choice(["info", "low", "medium", "high", "critical"]),
+              help="Filter by severity (repeatable).")
+@click.option("--host", "hosts", multiple=True,
+              help="Filter by domain/host (substring match, repeatable).")
+@click.option("-n", "--max-entries", default=50, show_default=True,
+              help="Max findings to show (most recent; 0 = all).")
+@click.option("--json", "as_json", is_flag=True,
+              help="Output raw finding entries as JSON lines.")
+def watcher_findings(name, severities, hosts, max_entries, as_json):
+    """Show the traffic watcher's recorded findings."""
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    cfg = state.load_deployment_config(name)
+
+    text = _load_watcher_output(name, cfg, "findings.jsonl")
+    if text is None:
+        click.echo(
+            f"error: could not reach the VM for cage '{name}' — the "
+            f"watcher's findings live guest-side. Start the cage and "
+            f"retry.", err=True)
+        sys.exit(1)
+    entries = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if severities and str(d.get("severity", "")) not in severities:
+            continue
+        if hosts and not any(h in str(d.get("host", "")) for h in hosts):
+            continue
+        entries.append(d)
+    if not entries:
+        click.echo("(no watcher findings recorded)")
+        return
+    if max_entries > 0:
+        entries = entries[-max_entries:]
+    if as_json:
+        for e in entries:
+            click.echo(json.dumps(e))
+        return
+    click.echo(f"{'TIMESTAMP':<26} {'SEVERITY':<9} {'DOMAIN':<30} TITLE")
+    for e in entries:
+        ts = str(e.get("ts", ""))[:25]
+        sev = str(e.get("severity", ""))[:8]
+        dom = str(e.get("host", ""))[:29]
+        title = str(e.get("title", ""))
+        click.echo(f"{ts:<26} {sev:<9} {dom:<30} {title}")
+    click.echo("")
+    click.echo(
+        "Details and recommendations are in the JSON output (--json) and "
+        "the audit stream (`cage audit --inspector watcher`).")
+
+
+@watcher.command("status")
+@click.argument("name")
+def watcher_status(name):
+    """Show the traffic watcher's configuration and last scan."""
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    cfg = state.load_deployment_config(name)
+    w = getattr(cfg, "watcher", None)
+    if w is None or not w.enable:
+        click.echo(
+            f"The traffic watcher is not enabled for cage '{name}' — add a "
+            f"`watcher:` block to its cage.yaml (see "
+            f"docs/explain/traffic-watcher.md).")
+        return
+    click.echo(f"Traffic watcher for cage '{name}': enabled")
+    click.echo(f"  scan interval:   {w.interval_seconds}s")
+    click.echo(f"  lookback window: {w.window_seconds}s")
+    click.echo(f"  auto-revoke:    {'yes' if w.auto_revoke else 'no (findings only)'}")
+    click.echo(f"  agent:          {w.agent.provider} / {w.agent.model}")
+
+    text = _load_watcher_output(name, cfg, "state.json")
+    if text is None:
+        click.echo("  scan state:     (VM unreachable — start the cage and retry)")
+        return
+    if not text.strip():
+        click.echo("  scan state:     (no scan yet — the watcher scans on its "
+                   "first interval)")
+        return
+    try:
+        st = json.loads(text)
+    except (ValueError, TypeError):
+        click.echo("  scan state:     (unreadable — the egress may predate the watcher)")
+        return
+    click.echo(f"  last scan:      {st.get('last_scan', '')}"
+               + ("  [FAILED]" if st.get("last_scan_failed") else ""))
+    click.echo(f"  scans run:      {st.get('scans', 0)}")
+    click.echo(f"  flows in last window: {st.get('flows_last_window', 0)}")
+    click.echo(f"  findings total: {st.get('findings_total', 0)}")

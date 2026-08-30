@@ -185,7 +185,7 @@ def fill_placeholders(name: str, prev_raw: dict | None = None) -> bool:
 _PROXY_KEYS = frozenset({
     "domains", "secrets", "max_request_body", "entropy", "content_type",
     "inspectors", "rate_limit", "logging", "secret_injection", "capture",
-    "protocol_relays",
+    "protocol_relays", "watcher",
 })
 
 

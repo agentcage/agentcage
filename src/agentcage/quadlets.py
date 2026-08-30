@@ -202,6 +202,25 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
             }.get(provider, "")
         if host and host not in merged:
             merged.append(host)
+    # The traffic watcher agent's LLM provider host — same reasoning as
+    # the decider's: the watcher calls its model via urllib from the
+    # addon process, outside mitmproxy, so without DNS resolution here
+    # every scan fails (recorded as watcher_scan_failed findings). Same
+    # provider-name → host map, same custom-base_url handling.
+    watcher = getattr(config, "watcher", None)
+    if watcher is not None and getattr(watcher, "enable", False):
+        w_base = (watcher.agent.base_url or "").rstrip("/")
+        if w_base:
+            from urllib.parse import urlsplit
+            host = urlsplit(w_base).hostname or ""
+        else:
+            host = {
+                "anthropic": "api.anthropic.com",
+                "openai": "api.openai.com",
+                "openrouter": "openrouter.ai",
+            }.get((watcher.agent.provider or "").lower(), "")
+        if host and host not in merged:
+            merged.append(host)
     return merged
 
 
@@ -323,6 +342,19 @@ def vm_local_grants_dir(name: str) -> str:
 def vm_local_grants_file(name: str) -> str:
     """VM-local path of the grants overlay file. See ``vm_local_grants_dir``."""
     return f"{vm_local_grants_dir(name)}/grants.yaml"
+
+
+def vm_local_watcher_dir(name: str) -> str:
+    """VM-local dir of the traffic watcher's output (findings + scan state).
+
+    Sibling of the grants overlay INSIDE the guest: the in-egress watcher
+    (data/proxy/watcher.py) writes ``watcher/findings.jsonl`` and
+    ``watcher/state.json`` next to the overlay on the same guest-local
+    volume, and the host-side `agentcage watcher` CLI pulls them back
+    over ``limactl shell`` exactly like ``pull_grants`` does (same
+    guest-local rationale — see ``vm_local_grants_dir``).
+    """
+    return f"{vm_local_grants_dir(name)}/watcher"
 
 
 # Note: a render_dns_quadlet() helper used to live here for the 3-service
@@ -860,6 +892,24 @@ def generate_quadlets(
                 if scheme == "systemd-creds" or has_cred_file:
                     creds_secrets.append(arg)
                 proxy_secrets.append(arg)
+
+    # The traffic watcher agent's own API key (watcher.agent.api_key) —
+    # identical egress-only invariant and identical staging path as the
+    # decider's key above: stripped from the cage env/podman_secrets at
+    # parse time (config.load_config added it to the same set), staged
+    # into the proxy's tmpfs secret files so the in-egress watcher can
+    # read the real value when calling its model. Reusing the decider's
+    # env var (same NAME) is fine — the dedup check below handles it.
+    watcher = getattr(config, "watcher", None)
+    if watcher is not None and getattr(watcher, "enable", False):
+        w_api_key = watcher.agent.api_key
+        _scheme, _, _arg = (w_api_key or "").partition(":")
+        if _arg and _arg not in proxy_secrets:
+            _has_cred = (_state_creds_dir / f"{_arg}.cred").exists()
+            if _boot_resolvable(_arg, _scheme, _has_cred):
+                if _scheme == "systemd-creds" or _has_cred:
+                    creds_secrets.append(_arg)
+                proxy_secrets.append(_arg)
 
     # Direct podman_secrets on the cage container hit the same boot
     # failure when their store entry was `secret rm`'d — gate them with

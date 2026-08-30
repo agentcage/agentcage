@@ -117,6 +117,140 @@ def _new_request_id() -> str:
     return "req_" + os.urandom(12).hex()
 
 
+# ── Shared LLM provider client ─────────────────────────────────────
+# Module-level so the traffic watcher (data/proxy/watcher.py) shares the
+# exact same wire code: same URL building, same auth-header conventions,
+# same forced-tool-call contract, same fail-closed argument parsing. Both
+# the decider and the watcher are LLM agents living in the egress; keeping
+# one client means a provider-auth or format fix lands once.
+
+_LLM_BASE_URLS = {
+    "anthropic": "https://api.anthropic.com",
+    "openai": "https://api.openai.com",
+    # OpenRouter's chat-completions endpoint is /api/v1/chat/completions
+    # (not /v1/...), so the base includes the /api/v1 prefix and the
+    # call appends /chat/completions.
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+# The decider's tool, normalized (provider wire shapes are built inside
+# llm_tool_call). Shared shape: {name, description, parameters}.
+_DECIDE_TOOL = {
+    "name": "decide",
+    "description": "Grant or deny the egress request.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "decision": {"type": "string", "enum": ["grant", "deny"]},
+            "reason": {"type": "string"},
+            "ttl_seconds": {"type": "integer", "enum": [0, 600, 3600]},
+        },
+        "required": ["decision", "reason"],
+    },
+}
+
+
+def llm_tool_call(*, provider: str, model: str, api_key: str, base_url: str,
+                  system: str, user_content: str, tool: dict, timeout: float,
+                  max_tokens: int = 256) -> dict:
+    """One LLM call with a FORCED tool call; returns the raw response dict.
+
+    Anthropic uses /v1/messages (x-api-key header, tool_choice {type: tool});
+    OpenAI and OpenRouter use the chat-completions format (bearer header,
+    tool_choice {type: function}) with different URL prefixes (see
+    _LLM_BASE_URLS). Raises on HTTP/network errors — callers decide the
+    fail-closed shape (the decider denies; the watcher records a failed
+    scan). Never widens anything on either path.
+    """
+    if provider == "anthropic":
+        url = f"{base_url}/v1/messages"
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "User-Agent": "agentcage-policy-api",
+        }
+        body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user_content}],
+            "tools": [{
+                "name": tool["name"],
+                "description": tool["description"],
+                "input_schema": tool["parameters"],
+            }],
+            "tool_choice": {"type": "tool", "name": tool["name"]},
+        }
+    else:  # openai + openrouter share the chat-completions wire format
+        # OpenAI's base is bare and the endpoint is /v1/chat/completions;
+        # OpenRouter's base already includes /api/v1. Build per-provider so
+        # neither gets a doubled or missing prefix.
+        if provider == "openrouter":
+            url = f"{base_url}/chat/completions"
+        else:
+            url = f"{base_url}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "agentcage-policy-api",
+        }
+        if provider == "openrouter":
+            # OpenRouter recommends these for attribution; optional but cheap.
+            headers["X-Title"] = "agentcage-policy-api"
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["parameters"],
+                },
+            }],
+            "tool_choice": {"type": "function",
+                             "function": {"name": tool["name"]}},
+            "temperature": 0,
+        }
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def parse_tool_args(raw: dict, provider: str, tool_name: str) -> dict:
+    """Extract the forced tool call's arguments from a provider response.
+
+    Fail-closed: returns ``{}`` on ANY parse failure (no tool call,
+    unparseable arguments, wrong tool name, malformed response). Callers
+    treat an empty dict per their own fail-closed rule — the decider turns
+    it into a deny, the watcher into a recorded scan failure.
+    """
+    args: dict = {}
+    try:
+        if provider == "anthropic":
+            for block in raw.get("content", []) or []:
+                if isinstance(block, dict) \
+                        and block.get("type") == "tool_use" \
+                        and block.get("name") == tool_name:
+                    args = block.get("input") or {}
+                    break
+        else:  # openai / openrouter
+            choice = (raw.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            tcs = msg.get("tool_calls") or []
+            if tcs:
+                args = json.loads(
+                    tcs[0].get("function", {}).get("arguments", "{}"))
+    except (ValueError, TypeError, KeyError, IndexError):
+        args = {}
+    return args if isinstance(args, dict) else {}
+
+
 class PolicyApi:
     """Control-plane state + request handling for the Policy API."""
 
@@ -730,6 +864,14 @@ class PolicyApi:
     # chat-completions wire format; Anthropic uses /v1/messages with a
     # different auth-header convention.
     #
+    # The transport/parsing half of this client lives in the module-level
+    # helpers (``llm_tool_call`` / ``parse_tool_args``) so the traffic
+    # watcher (data/proxy/watcher.py — the after-the-fact LLM traffic
+    # auditor) shares the exact same wire code instead of mirroring it.
+    # Both modules ship in the same egress image and import each other by
+    # bare module name (the addon dir is on sys.path), so this is real
+    # reuse, not the host/egress mirror convention.
+    #
     # Prompt-injection hardening: the agent-supplied ``reason`` is quoted
     # into a fixed user-message turn and NEVER into the system prompt; the
     # system prompt is a constant that defines the tool and the decision
@@ -743,14 +885,7 @@ class PolicyApi:
     # put in the constant system prompt the way the rules above are. The
     # agent's justification stays in its own adversarial user-message turn.
 
-    _LLM_BASE_URLS = {
-        "anthropic": "https://api.anthropic.com",
-        "openai": "https://api.openai.com",
-        # OpenRouter's chat-completions endpoint is /api/v1/chat/completions
-        # (not /v1/...), so the base includes the /api/v1 prefix and the
-        # call appends /chat/completions. See test for the resolved URL.
-        "openrouter": "https://openrouter.ai/api/v1",
-    }
+    _LLM_BASE_URLS = _LLM_BASE_URLS
 
     async def _decide_llm(self, flow, domain: str, reason: str) -> None:
         if not self._llm_provider or not self._llm_model or not self._llm_secret:
@@ -1018,96 +1153,25 @@ class PolicyApi:
     def _llm_openai_compat(self, base: str, provider: str, domain: str,
                            reason: str, timeout: float) -> dict:
         """OpenAI / OpenRouter chat-completions with a forced tool call."""
-        # OpenAI's base is bare (https://api.openai.com) and the endpoint is
-        # /v1/chat/completions; OpenRouter's base already includes /api/v1
-        # (see _LLM_BASE_URLS) and the endpoint is /chat/completions. Build the
-        # URL per-provider so neither gets a doubled or missing prefix.
-        if provider == "openrouter":
-            url = f"{base}/chat/completions"
-        else:
-            url = f"{base}/v1/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._llm_secret}",
-            "User-Agent": "agentcage-policy-api",
-        }
-        if provider == "openrouter":
-            # OpenRouter recommends these for attribution; optional but cheap.
-            headers["X-Title"] = "agentcage-policy-api"
-        tool = {
-            "type": "function",
-            "function": {
-                "name": "decide",
-                "description": "Grant or deny the egress request.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "decision": {"type": "string",
-                                     "enum": ["grant", "deny"]},
-                        "reason": {"type": "string"},
-                        "ttl_seconds": {"type": "integer", "enum": [0, 600, 3600]},
-                    },
-                    "required": ["decision", "reason"],
-                },
-            },
-        }
-        body = {
-            "model": self._llm_model,
-            "messages": [
-                {"role": "system", "content": self._decider_system_prompt()},
-                {"role": "user", "content": json.dumps(
-                    self._user_message(domain, reason, self.dom))},
-            ],
-            "tools": [tool],
-            "tool_choice": {"type": "function", "function": {"name": "decide"}},
-            "temperature": 0,
-        }
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode(),
-            headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+        return llm_tool_call(
+            provider=provider, model=self._llm_model, api_key=self._llm_secret,
+            base_url=base, system=self._decider_system_prompt(),
+            user_content=json.dumps(
+                self._user_message(domain, reason, self.dom)),
+            tool=_DECIDE_TOOL, timeout=timeout,
+        )
 
     def _llm_anthropic(self, base: str, domain: str, reason: str,
                        timeout: float) -> dict:
         """Anthropic /v1/messages with a forced tool use."""
-        url = f"{base}/v1/messages"
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self._llm_secret,
-            "anthropic-version": "2023-06-01",
-            "User-Agent": "agentcage-policy-api",
-        }
-        tool = {
-            "name": "decide",
-            "description": "Grant or deny the egress request.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "decision": {"type": "string",
-                                 "enum": ["grant", "deny"]},
-                    "reason": {"type": "string"},
-                    "ttl_seconds": {"type": "integer", "enum": [0, 600, 3600]},
-                },
-                "required": ["decision", "reason"],
-            },
-        }
-        body = {
-            "model": self._llm_model,
-            "max_tokens": 256,
-            "system": self._decider_system_prompt(),
-            "messages": [
-                {"role": "user", "content": json.dumps(
-                    self._user_message(domain, reason, self.dom))},
-            ],
-            "tools": [tool],
-            "tool_choice": {"type": "tool", "name": "decide"},
-        }
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode(),
-            headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+        return llm_tool_call(
+            provider="anthropic", model=self._llm_model,
+            api_key=self._llm_secret, base_url=base,
+            system=self._decider_system_prompt(),
+            user_content=json.dumps(
+                self._user_message(domain, reason, self.dom)),
+            tool=_DECIDE_TOOL, timeout=timeout,
+        )
 
     @staticmethod
     def _parse_llm_verdict(raw: dict, provider: str) -> dict:
@@ -1116,22 +1180,7 @@ class PolicyApi:
         Fail-closed: any ambiguity (no tool call, unparseable args, unknown
         decision) → deny.
         """
-        args: dict = {}
-        try:
-            if provider == "anthropic":
-                for block in raw.get("content", []) or []:
-                    if block.get("type") == "tool_use" \
-                            and block.get("name") == "decide":
-                        args = block.get("input") or {}
-                        break
-            else:  # openai / openrouter
-                choice = (raw.get("choices") or [{}])[0]
-                msg = choice.get("message") or {}
-                tcs = msg.get("tool_calls") or []
-                if tcs:
-                    args = json.loads(tcs[0].get("function", {}).get("arguments", "{}"))
-        except (ValueError, TypeError, KeyError, IndexError):
-            args = {}
+        args = parse_tool_args(raw, provider, "decide")
         decision = str(args.get("decision", "") or "").lower()
         if decision not in ("grant", "deny"):
             return {"decision": "deny",

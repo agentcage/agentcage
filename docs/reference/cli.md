@@ -300,6 +300,19 @@ Aliases: `ls` → `list`.
 
 Mode is `allowlist` (only listed domains permitted, default) or `blocklist` (listed domains blocked). Subdomain matching is built in — adding `anthropic.com` also allows `api.anthropic.com`.
 
+## watcher
+
+Read the traffic watcher's findings and scan status. The watcher itself runs **inside the egress** — there is no host daemon and no `watcher start`; enable it with the `watcher:` block in `cage.yaml` (see [the traffic watcher](../explain/traffic-watcher.md)).
+
+| Command | Description |
+|---------|-------------|
+| `watcher findings NAME [-s SEV] [--host H] [-n N] [--json]` | Show recorded findings (most recent last; filter by severity/domain) |
+| `watcher status NAME` | Show the watcher's configuration and last scan counters |
+
+Aliases: `ls` → `findings`.
+
+Findings also appear in the audit stream: `cage audit --inspector watcher` (each finding is a `watcher_finding` entry with `decision: flagged`). Revocations appear as `watcher_revoke` entries.
+
 ## scaffold
 
 Manage scaffold templates. Resolved in order: project-local (`.agentcage/scaffolds/`), user (`~/.config/agentcage/scaffolds/`), built-in.

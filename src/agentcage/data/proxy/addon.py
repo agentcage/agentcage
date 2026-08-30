@@ -129,6 +129,16 @@ class Agentcage:
         # data/proxy/policy_api.py.
         self.domain_requests = None
         self._policy_sweeper: Optional[asyncio.Task] = None
+        # Traffic watcher — opt-in in-egress LLM traffic auditor
+        # (data/proxy/watcher.py). Same construction pattern as
+        # domains.auto: absent ``watcher.enable`` → self.traffic_watcher
+        # stays None → module not even imported → zero new surface.
+        # The ring is the watcher's fresh-audit source: every audit entry
+        # funnels through _audit_write, so the watcher gets a copy
+        # appended here when it is enabled.
+        self.traffic_watcher = None
+        self._watcher_task: Optional[asyncio.Task] = None
+        self._watcher_ring = None  # created with the watcher itself
         # Peer-address guard state (see server_connect). The cache is
         # keyed by granted host; the poisoned set records hosts caught
         # rebinding so the L7 gate refuses them on the next request.
@@ -136,6 +146,7 @@ class Agentcage:
         self._poisoned_peers: set = set()
         self._running = False
         self._init_domain_requests()
+        self._init_watcher()
 
         # Audit log file — structured JSON lines for forensic analysis
         audit_path = os.environ.get(
@@ -227,6 +238,7 @@ class Agentcage:
         self._apply_passthrough()
         self._start_protocol_relays()
         self._start_policy_sweeper()
+        self._start_watcher_task()
 
     def _start_policy_sweeper(self) -> None:
         """Start the Policy API grant-TTL sweeper as an asyncio task."""
@@ -240,6 +252,74 @@ class Agentcage:
             # No running loop (e.g. some test contexts) — sweeper is
             # best-effort; expiry is also reconciled on overlay reload.
             self._policy_sweeper = None
+
+    def _init_watcher(self) -> None:
+        """Build (or rebuild) the traffic watcher from the live config.
+
+        Mirrors ``_init_domain_requests`` exactly (it is the pattern the
+        egress-local DNS-apply rework established for in-egress loops):
+        cancel any old task first — it polls the OLD watcher object —
+        then construct from the current config, and (re)start the task
+        when the proxy is already running so a hot-enabled watcher
+        actually starts scanning and a hot-disabled one stops.
+        """
+        if self._watcher_task is not None:
+            self._watcher_task.cancel()
+            self._watcher_task = None
+        w_cfg = self.cfg.get("watcher") or {}
+        if not w_cfg or not w_cfg.get("enable"):
+            self.traffic_watcher = None
+            self._watcher_ring = None
+            return
+        try:
+            from watcher import Watcher
+            # The audit ring: bounded, created here so it survives watcher
+            # rebuilds (a hot-reload of interval/model must not drop the
+            # fresh-traffic history the old watcher was holding).
+            if self._watcher_ring is None:
+                from collections import deque
+                from watcher import RING_MAX
+                self._watcher_ring = deque(maxlen=RING_MAX)
+            self.traffic_watcher = Watcher(
+                self.cfg, self._watcher_domain_inspector(),
+                self.domain_requests, self._audit_write, ctx.log,
+                self._watcher_ring, CAPTURE_PATH,
+            )
+            ctx.log.info(
+                f"agentcage: traffic watcher enabled "
+                f"(interval={self.traffic_watcher._interval}s, "
+                f"provider={self.traffic_watcher._provider})"
+            )
+        except Exception as e:
+            ctx.log.warn(f"agentcage: watcher init failed: {e}")
+            self.traffic_watcher = None
+            return
+        if self._running:
+            self._start_watcher_task()
+
+    def _watcher_domain_inspector(self):
+        """The DomainInspector instance, or None when not loaded.
+
+        The watcher uses it read-only for baseline/grant context and —
+        only for revocations — through the PolicyApi's overlay machinery;
+        a missing inspector just means the digest carries no domain
+        lists and revocations find no grants.
+        """
+        return next((i for i in self.inspectors
+                     if isinstance(i, DomainInspector)), None)
+
+    def _start_watcher_task(self) -> None:
+        """Start the watcher scan loop as an asyncio task."""
+        if self.traffic_watcher is None:
+            return
+        try:
+            self._watcher_task = asyncio.get_event_loop().create_task(
+                self.traffic_watcher.watcher_loop()
+            )
+        except RuntimeError:
+            # No running loop (test contexts) — best-effort, same as the
+            # policy sweeper.
+            self._watcher_task = None
 
     async def done(self) -> None:
         """Drain protocol relays cleanly on shutdown.
@@ -261,6 +341,15 @@ class Agentcage:
                 await self._policy_sweeper
             except asyncio.CancelledError:
                 pass
+        # The traffic watcher's scan loop rides the same lifecycle as
+        # the policy sweeper: cancelled here on orderly shutdown, and
+        # restarted/removed by _init_watcher on hot-reload.
+        if getattr(self, "_watcher_task", None) is not None:
+            self._watcher_task.cancel()
+            try:
+                await self._watcher_task
+            except asyncio.CancelledError:
+                pass
 
     def _audit_write(self, entry: dict) -> None:
         """Write a structured JSON line to the audit pipeline.
@@ -279,6 +368,16 @@ class Agentcage:
         """
         if "ts" not in entry:
             entry["ts"] = datetime.now(timezone.utc).isoformat()
+        # Traffic watcher ring: a copy of every audit entry, bounded,
+        # newest at the right. Created with the watcher (see
+        # _init_watcher) and only populated while it is enabled — the
+        # deque append is O(1) and the bound keeps memory flat, so the
+        # funnel never becomes a second cap to reason about.
+        if self._watcher_ring is not None:
+            try:
+                self._watcher_ring.append(dict(entry))
+            except Exception:  # pragma: no cover — defensive
+                pass
         line = json.dumps(entry)
         print(line, file=sys.stderr, flush=True)
         if self._audit_file:
@@ -583,6 +682,9 @@ class Agentcage:
         # and safe to call every reload (its docstring says so) — it no-ops
         # when disabled and re-reads the api_key from the re-staged secret.
         self._init_domain_requests()
+        # Same for the traffic watcher: enabling/disabling it, or changing
+        # its interval/model/key, takes effect on the live edit.
+        self._init_watcher()
 
         self._config_mtime = mtime
         names = [i.name for i in self.inspectors]

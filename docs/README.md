@@ -24,6 +24,7 @@ The operator's map of agentcage. Find your task; follow the link.
 - [Inspectors](reference/inspectors.md) — built-in checks and the custom inspector API.
 - [Configuration](reference/configuration.md) — every other `cage.yaml` setting.
 - [Capture](reference/capture.md) — HAR recording, inbound vs outbound perspectives.
+- [The traffic watcher](explain/traffic-watcher.md) — opt-in in-egress LLM agent that re-analyzes recent traffic after the fact and flags suspicious patterns; can revoke runtime grants (narrowing only).
 
 ## Operate a cage
 
@@ -41,6 +42,7 @@ The operator's map of agentcage. Find your task; follow the link.
 - [Architecture](explain/architecture.md) — topology, egress flow, inspector chain.
 - [Isolation modes](explain/isolation-modes.md) — container vs vm vs apple-container, when to use which.
 - [Security model](explain/security-model.md) — threat model, defense layers, known limitations.
+- [The traffic watcher](explain/traffic-watcher.md) — after-the-fact LLM traffic auditing inside the egress.
 
 ## Past audits
 

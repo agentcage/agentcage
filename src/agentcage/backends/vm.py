@@ -148,6 +148,37 @@ def ensure_grants_dir(name: str, inst: LimaInstance) -> None:
     inst.exec(["mkdir", "-p", abspath])
 
 
+def pull_watcher_output(name: str, inst: LimaInstance, rel: str) -> str | None:
+    """Read one traffic-watcher output file from inside the guest.
+
+    ``rel`` is a path relative to the watcher dir (``findings.jsonl`` /
+    ``state.json``). Mirrors ``pull_grants``' sentinel protocol: the
+    guest is probed with a shell script so "file missing" (the normal
+    state for a fresh cage or before the first scan) can be distinguished
+    from a real read failure — exit 42 → ``None``-vs-empty matters
+    because a findings reader must not treat an unreachable VM as "no
+    findings, all clear".
+
+    Returns the file's text, ``""`` when the file is absent (fresh
+    cage — the normal empty state), or ``None`` when the round-trip
+    itself failed (VM stopped / unreachable / read error).
+    """
+    from agentcage.quadlets import vm_local_watcher_dir
+    base = vm_local_watcher_dir(name)
+    try:
+        abspath = _abs_path(name, inst, base)
+        quoted = shlex.quote(f"{abspath}/{rel}")
+        script = f"if [ -f {quoted} ]; then cat {quoted}; else exit 42; fi"
+        res = inst.exec(["sh", "-c", script], check=False)
+    except Exception:
+        return None
+    if res.returncode == 42:
+        return ""
+    if res.returncode != 0:
+        return None
+    return res.stdout
+
+
 def pull_grants(name: str, inst: LimaInstance) -> list[dict] | None:
     """Read the VM-local grants overlay from inside the guest.
 
