@@ -104,6 +104,39 @@ class TestDomainInspector:
         assert r is not None
         assert r.action == "block"
 
+    # ── matches_baseline (review follow-up on PR #337) ──────
+    #
+    # Baseline-only counterpart to ``_matches``: the removal endpoint
+    # needs to tell whether a host stays reachable because of the
+    # operator's static baseline specifically (not a live grant), to set
+    # ``still_allowed_by_baseline`` truthfully and pick 403 vs 404.
+
+    def test_matches_baseline_plain_match(self):
+        d = DomainInspector()
+        d.configure({"allow": ["api.anthropic.com"]})
+        assert d.matches_baseline("api.anthropic.com") is True
+
+    def test_matches_baseline_suffix_match(self):
+        # A subdomain is covered by the broader baseline suffix.
+        d = DomainInspector()
+        d.configure({"allow": ["anthropic.com"]})
+        assert d.matches_baseline("api.anthropic.com") is True
+
+    def test_matches_baseline_grant_only_does_not_count(self):
+        # A host reachable only via a live grant is NOT baseline-covered.
+        d = DomainInspector()
+        d.configure({"allow": ["unrelated.com"]})
+        d.grant("api.anthropic.com")
+        assert d.matches_baseline("api.anthropic.com") is False
+        # Sanity: the union ``_matches`` DOES light on the grant, so this
+        # is a real divergence (not a tautology against an empty baseline).
+        assert d._matches("api.anthropic.com") is True
+
+    def test_matches_baseline_no_match(self):
+        d = DomainInspector()
+        d.configure({"allow": ["api.anthropic.com"]})
+        assert d.matches_baseline("evil.com") is False
+
 
 class TestDomainExpirySemantics:
     """Fix 2 (medium): ``_matched_expired`` suffix-shadowing must not block

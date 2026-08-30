@@ -276,6 +276,36 @@ class DomainInspector(Inspector):
             return False
         return any(sfx in self.granted for sfx in suffixes)
 
+    def matches_baseline(self, host: str) -> bool:
+        """True if *host* is covered by a baseline (operator static) suffix.
+
+        Baseline-only counterpart to :meth:`_matches`. ``_matches`` walks
+        ``domain_set`` = baseline ∪ *live grants*, so it cannot tell whether a
+        host stays reachable because of the operator's static policy or
+        because of a runtime grant the cage itself asked for. The removal
+        endpoint needs exactly that distinction — to set
+        ``still_allowed_by_baseline`` truthfully (a still-live sibling GRANT
+        keeping a domain reachable is not "the baseline" keeping it
+        reachable) and to pick 403 (operator-owned, the egress must not edit
+        it) vs 404 (not present at all) — so it walks ``_baseline`` alone
+        here, mirroring the baseline half of :meth:`is_grant_only`.
+        ``_matches`` itself is left untouched: other callers (the L7
+        ``inspect_request`` path, the request endpoint's already-allowed
+        fast path) rely on the union semantics, and a baseline-only flag
+        there would re-introduce the expired-grant shadowing the request
+        endpoint's comment warns about.
+
+        Expiry is deliberately NOT consulted here: an expired baseline
+        entry is still operator-owned (the egress must not retract it), so
+        the 403-vs-404 branch wants a structural answer. The removal
+        endpoint layers an active-coverage check on top for the
+        ``still_allowed_by_baseline`` flag, where an expired entry is
+        blocked at L7 and must not be reported as "still allowed".
+        """
+        parts = host.lower().rstrip(".").split(".")
+        return any(".".join(parts[i:]) in self._baseline
+                   for i in range(len(parts)))
+
     def drop_expired(self, now_iso: str = "") -> list[str]:
         """Remove & return domains whose ``expires_at`` has passed.
 

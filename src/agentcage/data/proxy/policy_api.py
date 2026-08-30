@@ -574,16 +574,23 @@ class PolicyApi:
         domain = str(payload.get("domain", "") or "").lower().rstrip(".")
         reason = str(payload.get("reason", "") or "")[:1000]
 
-        if not self._valid_domain(domain):
-            self._respond(flow, 400, {"error": f"invalid domain: {domain!r}"})
-            self._audit_event("policy_removal", {
-                "domain": domain, "decision": "rejected",
-                "reason": "invalid domain syntax",
-            })
+        # Allowlist mode is required (validated at config time, but a
+        # hot-reload could have flipped it — re-check). In blocklist mode
+        # ``_matches`` consults the block list, so the 403 reason and the
+        # ``still_allowed_by_baseline`` flag would invert; refuse up front
+        # instead, mirroring the request endpoint's guard.
+        if self.dom.mode != "allowlist":
+            self._respond(flow, 400, {"error": "removal endpoint requires allowlist mode"})
             return
 
         # Same per-cage bucket as the request endpoint: removal is cheap
         # (no LLM call), but the control plane as a whole stays bounded.
+        # Run the rate limit BEFORE the domain-syntax gate: otherwise the
+        # caged agent could emit unbounded ``policy_removal`` audit lines
+        # with a stream of syntactically-invalid domains (each 400s before
+        # a token is consumed). The 429 body + audit shape are unchanged;
+        # the invalid-domain audit below is now reachable only within the
+        # rate limit, which is the intended posture.
         if not self._check_rate_limit():
             self._respond(flow, 429, {
                 "id": _new_request_id(), "status": "denied", "domain": domain,
@@ -594,6 +601,14 @@ class PolicyApi:
             self._audit_event("policy_removal", {
                 "domain": domain, "decision": "rejected",
                 "reason": "rate limit",
+            })
+            return
+
+        if not self._valid_domain(domain):
+            self._respond(flow, 400, {"error": f"invalid domain: {domain!r}"})
+            self._audit_event("policy_removal", {
+                "domain": domain, "decision": "rejected",
+                "reason": "invalid domain syntax",
             })
             return
 
@@ -616,9 +631,50 @@ class PolicyApi:
             # A grant can shadow a baseline suffix (e.g. a re-grant made
             # while the baseline entry was expired). Removing the grant
             # then does NOT make the domain unreachable — say so, or the
-            # agent believes it narrowed more than it did.
-            if self.dom._matches(domain):
-                body["still_allowed_by_baseline"] = True
+            # agent believes it narrowed more than it did. The flag must
+            # report that the *baseline* (the operator's static policy)
+            # keeps it reachable, so it uses ``matches_baseline`` (baseline
+            # only), NOT ``_matches``: ``_matches`` walks ``domain_set`` =
+            # baseline ∪ live grants, so with sibling grants for both
+            # ``x.com`` and ``sub.x.com`` removing ``sub.x.com`` would
+            # light the flag off the surviving ``x.com`` GRANT — a sibling
+            # grant is not "the baseline" and the flag would lie about
+            # which source keeps the domain reachable.
+            #
+            # Expiry-aware (fix on top of the baseline-only check): the
+            # flag must reflect that the domain stays reachable via an
+            # ACTIVE (non-expired) baseline suffix. A baseline entry can
+            # be expired (``domains.expires`` / entry ``expires_at``), in
+            # which case L7 (``_matched_expired``) blocks the domain and
+            # the flag would mislead — precisely in the re-grant-over-
+            # expired-baseline scenario the comment above was written for.
+            # We cannot lean on ``_matched_expired`` here: after ``revoke``
+            # it consults ``domain_set`` = baseline ∪ granted, so a
+            # still-live sibling GRANT covering the domain makes it return
+            # None (allowed) and would flip the flag true even though the
+            # keeping-alive source is the grant, not the baseline. Walk
+            # the matching baseline suffixes ourselves and require at
+            # least one to be unexpired (fail-open on an unparseable /
+            # tz-naive expiry, matching ``_matched_expired``'s posture —
+            # never fail-closed on a malformed timestamp).
+            if self.dom.matches_baseline(domain):
+                parts = domain.split(".")
+                for i in range(len(parts)):
+                    sfx = ".".join(parts[i:])
+                    if sfx not in self.dom._baseline:
+                        continue
+                    exp = self.dom._expires.get(sfx, "")
+                    if not exp:
+                        body["still_allowed_by_baseline"] = True
+                        break
+                    try:
+                        active = (datetime.fromisoformat(exp)
+                                  > datetime.now(timezone.utc))
+                    except (ValueError, TypeError):
+                        active = True  # fail-open on the timestamp
+                    if active:
+                        body["still_allowed_by_baseline"] = True
+                        break
             self._respond(flow, 200, body)
             self._audit_event("policy_removal", {
                 "domain": domain, "decision": "removed",
@@ -629,8 +685,15 @@ class PolicyApi:
         # Not a live grant. Distinguish "operator baseline" (403 — the
         # egress must not edit the operator's static policy; a promoted
         # grant lives there too and is deliberately no longer the agent's
-        # to retract) from "not present at all" (404).
-        if self.dom._matches(domain):
+        # to retract) from "not present at all" (404). Baseline-only via
+        # ``matches_baseline``: ``_matches`` would also light on a sibling
+        # grant's suffix, mis-reporting a grant-covered-but-not-baseline
+        # domain as operator-owned (403) when it is in fact removable-by-
+        # removal-of-the-grant — i.e. it should 404 here, the agent then
+        # removes the covering grant instead. An expired baseline entry
+        # is still operator-owned (the egress must not retract it), so
+        # this branch is structural and ignores expiry.
+        if self.dom.matches_baseline(domain):
             self._respond(flow, 403, {
                 "id": _new_request_id(), "status": "denied", "domain": domain,
                 "reason": f"{domain} matches the operator's static baseline "
