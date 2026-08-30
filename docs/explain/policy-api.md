@@ -227,6 +227,42 @@ response with no usable tool call is treated as **deny** (fail-closed). The
 decider's `reason` is returned to the agent and written to `audit.jsonl` as
 the risk-assessment rationale.
 
+#### Operator context — telling the decider what the cage is FOR
+
+By default the decider has no idea *why* the cage exists, so it can only
+judge a domain request against the domain's own reputation and the shape of
+the agent's (adversarial) justification. An operator who knows the cage's
+purpose can supply a free-text `context` under `domains.auto`; it is appended
+to the decider's system prompt as **trusted operator context** — authored by
+the cage's operator (not the caged agent), so it is the one free-text allowed
+in the constant system prompt the way the decision rules are. The decider is
+told to use it to judge whether a requested domain fits the cage's stated
+function, and explicitly that it **does NOT override the hard rules** above it
+(`never_grant`, domain syntax, rate limits always apply). It is advisory only.
+
+The context is capped at **4096 chars** (measured after stripping
+whitespace) because it rides in every decider call's system prompt and
+through `proxy-config.yaml` — a huge blob is a prompt-bloat/abuse surface;
+`cage create`/`update` reject an over-long value with the length in the
+message. Empty/whitespace-only leaves the feature off (the bare core prompt).
+The caged agent can read the context via `GET /v1/allowlist` (the `context`
+field) so it can write justifications that match the cage's stated scope.
+
+```yaml
+domains:
+  auto:
+    enable: true
+    context: |
+      CI cage for the payments-reconciliation test suite. Talks to staging
+      APIs (api.stripe.com), publishes test coverage to codecov.io, and
+      installs dependencies from npm/pypi. Nothing else should be needed.
+```
+
+The context hot-reloads via `cage update` with no restart: the egress addon
+rebuilds the decider (`_init_domain_requests`) whenever `proxy-config.yaml`'s
+mtime changes, so editing `context:` and running `cage update` takes effect
+on the next domain request.
+
 The decider:
 
 - Has a timeout (default 15s) and retry policy.

@@ -84,7 +84,7 @@ def resp_status():
         _pa_mod.http.Response.make = orig
 
 
-def _make_pa(tmp_path, monkeypatch, *, rate_limit=None):
+def _make_pa(tmp_path, monkeypatch, *, rate_limit=None, context=None):
     """PolicyApi with a real temp grants dir and the LLM path configured
     (white-box secret injection), ready for handle() tests."""
     monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
@@ -97,6 +97,8 @@ def _make_pa(tmp_path, monkeypatch, *, rate_limit=None):
     }
     if rate_limit is not None:
         auto["rate_limit"] = rate_limit
+    if context is not None:
+        auto["context"] = context
     cfg = {"domains": {"allow": ["a.com"], "auto": auto}}
     pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
     pa._llm_secret = "sk-test"  # pretend the env resolved
@@ -658,3 +660,129 @@ class TestOExclTempCreation:
         pa._apply_grant("x.com", "reason", ttl_override=0,
                         decided_by="decider:agent:openrouter")
         assert set(os.listdir(tmp_path)) == {"grants.yaml"}
+
+
+# ── Operator context (domains.auto.context) ──────────────────
+
+
+class _RecordedResponse:
+    """Fake urllib response: returns a canned OpenAI-style deny verdict so
+    the decider path completes without a real network call. The request
+    bodies are captured for assertion via the sibling ``requests`` list."""
+
+    def __init__(self, requests, verdict=None):
+        self._requests = requests
+        self._verdict = verdict or {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "arguments": json.dumps({
+                                "decision": "deny", "reason": "denied",
+                            }),
+                        },
+                    }],
+                },
+            }],
+        }
+
+    def __call__(self, req, timeout=None):  # noqa: ARG002
+        # Record the JSON body the egress actually tried to send.
+        self._requests.append(json.loads(req.data.decode("utf-8", "replace")))
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(self._verdict).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: False
+        return resp
+
+
+class TestOperatorContextPrompt:
+    """The operator-provided ``context`` must flow into the decider's system
+    prompt (framed as trusted, advisory-only) at BOTH LLM call sites, and
+    must be absent from the system prompt when unset (bare core prompt)."""
+
+    _CTX = (
+        "CI cage for the payments-reconciliation test suite. Talks to "
+        "staging APIs (api.stripe.com), publishes test coverage to "
+        "codecov.io, and installs dependencies from npm/pypi."
+    )
+
+    def _record(self, pa, monkeypatch):
+        """Patch urllib.request.urlopen so the LLM call records its request
+        body (which carries the system content) and returns a canned deny."""
+        requests = []
+        monkeypatch.setattr(
+            _pa_mod.urllib.request, "urlopen",
+            _RecordedResponse(requests))
+        return requests
+
+    def test_context_appended_to_system_prompt(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch, context=self._CTX)
+        requests = self._record(pa, monkeypatch)
+        _handle(pa, _flow(domain="x.com", reason="need it"))
+        assert len(requests) == 1
+        system_content = requests[0]["messages"][0]["content"]
+        # The bare core prompt is still there (the wrapper appends, never
+        # replaces), so the static decision rules are intact.
+        assert "autonomous-approval gate" in system_content
+        # The operator context text rides in the system prompt.
+        assert self._CTX in system_content
+        # The trusted-operator framing is present verbatim.
+        assert "OPERATOR CONTEXT" in system_content
+        assert "trusted" in system_content
+        assert "does NOT override the hard rules" in system_content
+
+    def test_no_context_is_bare_core_prompt(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch)  # no context kwarg
+        requests = self._record(pa, monkeypatch)
+        _handle(pa, _flow(domain="x.com", reason="need it"))
+        assert len(requests) == 1
+        system_content = requests[0]["messages"][0]["content"]
+        # No operator-context section is appended when context is empty.
+        assert "OPERATOR CONTEXT" not in system_content
+        # The system prompt is exactly the static core (byte-for-byte).
+        assert system_content == pa._system_prompt()
+
+    def test_anthropic_call_site_also_appends_context(self, tmp_path,
+                                                       monkeypatch):
+        """The Anthropic /v1/messages site puts the system content under the
+        top-level ``system`` key (not in ``messages``); verify it carries
+        the context too — both call sites were updated to _decider_system_prompt."""
+        pa, _ = _make_pa(
+            tmp_path, monkeypatch, context=self._CTX)
+        pa._llm_provider = "anthropic"  # switch the dispatch target
+        requests = self._record(pa, monkeypatch)
+        _handle(pa, _flow(domain="x.com", reason="need it"))
+        assert len(requests) == 1
+        # Anthropic's wire format: top-level ``system`` string.
+        system_content = requests[0]["system"]
+        assert self._CTX in system_content
+        assert "OPERATOR CONTEXT" in system_content
+        # The agent's justification is in the user turn, NOT the system
+        # prompt — the prompt-injection invariant holds even with context.
+        assert "need it" not in system_content
+
+
+class TestOperatorContextAllowlist:
+    """The caged agent can read the operator context via GET /v1/allowlist so
+    it can see the scope it's operating in and write justifications that
+    match it."""
+
+    def test_allowlist_response_includes_context(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch, context="ci cage for tests")
+        body = pa._allowlist()
+        assert body["context"] == "ci cage for tests"
+        # The rest of the response shape is unchanged.
+        assert body["mode"] == "allowlist"
+        assert "baseline" in body and "granted" in body
+
+    def test_allowlist_context_empty_when_unset(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch)  # no context
+        assert pa._allowlist()["context"] == ""
+
+    def test_context_stripped_on_read(self, tmp_path, monkeypatch):
+        # Whitespace-only context collapses to "" (feature-off), matching
+        # validate_config's strip-before-measure and the proxy's read.
+        pa, _ = _make_pa(tmp_path, monkeypatch, context="   \n  ")
+        assert pa._context == ""
+        assert pa._allowlist()["context"] == ""

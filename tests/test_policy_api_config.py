@@ -197,6 +197,121 @@ class TestRateLimitZeroParse:
         assert cfg.domains.auto.rate_limit_burst == 10
 
 
+# ── operator context (domains.auto.context) ────────────────
+
+
+class TestOperatorContext:
+    """Operator-provided free-text describing the cage's purpose. Flows
+    into the decider's system prompt (advisory only — never overrides
+    never_grant/syntax/rate limits) and into the /v1/allowlist response.
+    Capped at 4096 chars (stripped) because it rides every decider call's
+    system prompt and through proxy-config.yaml."""
+
+    _CTX = (
+        "CI cage for the payments-reconciliation test suite. Talks to "
+        "staging APIs (api.stripe.com), publishes test coverage to "
+        "codecov.io, and installs dependencies from npm/pypi."
+    )
+
+    def _ctx_body(self, ctx_yaml):
+        # context: must sit under `auto:` alongside enable/decider.
+        return _enabled(
+            _agent_decider() + "\ncontext: " + ctx_yaml
+        )
+
+    def test_default_empty_when_omitted(self, tmp_path):
+        body = _enabled(_agent_decider())
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.context == ""
+        validate_config(cfg)  # omitted is legal (feature off)
+
+    def test_none_normalizes_to_empty(self, tmp_path):
+        # YAML `context: null` (or absent) → "". The proxy reads
+        # `cfg.get("context", "") or ""` the same way, so this stays in
+        # lockstep with the runtime parse.
+        body = _enabled(_agent_decider() + "\ncontext: null")
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.context == ""
+        validate_config(cfg)
+
+    def test_value_round_trips(self, tmp_path):
+        body = _enabled(
+            _agent_decider() + "\ncontext: \"" + self._CTX + "\"")
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.context == self._CTX
+        validate_config(cfg)
+
+    def test_multiline_block_scalar_round_trips(self, tmp_path):
+        # The canonical operator example uses a `|` block scalar; make sure
+        # the trailing newline it introduces is acceptable (validation
+        # strips before measuring, and the proxy strips on read).
+        body = _enabled(
+            _agent_decider() + "\ncontext: |\n  " + self._CTX + "\n")
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.context.rstrip() == self._CTX
+        validate_config(cfg)
+
+    def test_empty_and_whitespace_only_fine(self, tmp_path):
+        for val in ("\"\"", "'   '", "\"\n\n  \""):
+            body = _enabled(_agent_decider() + "\ncontext: " + val)
+            cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+            assert cfg.domains.auto.context.strip() == ""
+            validate_config(cfg)  # whitespace-only is the feature-off case
+
+    def test_non_string_rejected_with_actionable_message(self, tmp_path):
+        # A mapping (the natural typo: indenting prose under `context:`) is
+        # rejected at parse with a message naming the field and the actual
+        # type, so the operator can fix the YAML rather than getting a
+        # misleading repr like "{'enable': True}" in the system prompt.
+        body = _enabled(
+            _agent_decider() + "\ncontext:\n  purpose: ci\n  scope: payments")
+        with pytest.raises(ValueError, match="domains.auto.context must be a string"):
+            load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+
+    def test_non_string_list_rejected(self, tmp_path):
+        body = _enabled(_agent_decider() + "\ncontext: [a, b]")
+        with pytest.raises(ValueError, match="domains.auto.context must be a string"):
+            load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+
+    def test_too_long_rejected_with_length_in_message(self, tmp_path):
+        too_long = "x" * 4097
+        body = _enabled(_agent_decider() + "\ncontext: " + too_long)
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        with pytest.raises(ValueError, match=r"is too long \(4097 chars, max 4096\)"):
+            validate_config(cfg)
+
+    def test_exactly_4096_accepted(self, tmp_path):
+        # The cap is an explicit boundary: 4096 is still legal, 4097 is not.
+        exact = "a" * 4096
+        body = _enabled(_agent_decider() + "\ncontext: " + exact)
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.context == exact
+        validate_config(cfg)  # must not raise
+
+    def test_length_measured_after_strip(self, tmp_path):
+        # Leading/trailing whitespace doesn't count toward the cap (matches
+        # the proxy, which strips on read). 4097 chars with a newline at
+        # each end → 4095 after strip → legal.
+        body = "\n" + ("b" * 4095) + "\n"
+        body_yaml = _enabled(_agent_decider() + "\ncontext: \"" + body + "\"")
+        cfg = load_config(_write(tmp_path, body_yaml, env={"POLICY_LLM_KEY": "k"}))
+        validate_config(cfg)  # must not raise
+
+    def test_disabled_auto_skips_context_validation(self, tmp_path):
+        # A too-long context under a DISABLED auto block is never validated
+        # (the whole auto block is a no-op when enable is false). Guards
+        # against an over-eager check that runs regardless of enable.
+        body = (
+            "domains:\n  allow: [github.com]\n  auto:\n    enable: false\n"
+            "    context: " + ("x" * 5000) + "\n"
+        )
+        cfg = load_config(_write(tmp_path, body))
+        # enable=False → context not parsed into DomainsAutoConfig (the parse
+        # block only runs when auto_raw.get("enable")), so it stays "".
+        assert cfg.domains.auto.enable is False
+        validate_config(cfg)  # must not raise
+
+
 class TestApiKey:
     def test_bad_scheme_raises(self, tmp_path):
         body = _enabled(_agent_decider(api_key="bogus:TOKEN"))

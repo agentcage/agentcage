@@ -574,6 +574,13 @@ class DomainsAutoConfig:
     enable: bool = False  # master switch
     host: str = "agentcage.local"   # reserved synthetic control host
     decider: DeciderConfig = field(default_factory=DeciderConfig)
+    # Operator-provided free-text describing this cage's purpose and scope.
+    # Flows verbatim into the decider's system prompt (as trusted operator
+    # context) so decisions can account for what the cage is FOR; advisory
+    # only — it never overrides never_grant, syntax, or rate limits. Capped
+    # at 4096 chars because it rides in every decider call's system prompt
+    # and through proxy-config.yaml. Empty/whitespace-only = feature off.
+    context: str = ""
     # Per-cage request rate limit, independent of the egress HTTP rate
     # limit, to bound LLM cost / abuse of the request endpoint.
     rate_limit_rps: float = 1.0
@@ -1031,9 +1038,25 @@ def load_config(path: str) -> Config:
             # disagree with the proxy's parse.
             _rps_raw = rl_raw.get("requests_per_second")
             _burst_raw = rl_raw.get("burst")
+            # Operator context — optional free-text describing this cage's
+            # purpose. None → "" (feature off). Non-string (e.g. a mapping)
+            # is rejected here so it can't silently coerce to a misleading
+            # repr like "{'enable': True}" that would ride the system prompt.
+            # The 4096-char length cap is enforced in validate_config.
+            _ctx_raw = auto_raw.get("context")
+            if _ctx_raw is None:
+                _context = ""
+            elif isinstance(_ctx_raw, str):
+                _context = _ctx_raw
+            else:
+                raise ValueError(
+                    "domains.auto.context must be a string (got "
+                    f"{type(_ctx_raw).__name__})"
+                )
             auto = DomainsAutoConfig(
                 enable=True,
                 host=str(auto_raw.get("host", "agentcage.local") or "agentcage.local"),
+                context=_context,
                 decider=DeciderConfig(
                     kind=str(decider_raw.get("kind", "agent") or "agent"),
                     agent=AgentDeciderConfig(
@@ -1931,6 +1954,18 @@ def validate_config(config: Config) -> list[str]:
         if pa.rate_limit_rps < 0 or pa.rate_limit_burst < 0:
             raise ValueError(
                 "domains.auto.rate_limit requests_per_second/burst must be >= 0"
+            )
+        # Operator context length cap. The context rides in every decider
+        # call's system prompt and through proxy-config.yaml, so a huge blob
+        # is a prompt-bloat/abuse surface. Empty/whitespace-only is fine
+        # (feature off). 4096 is an explicit boundary: a value that long is
+        # still accepted, anything longer is rejected with the length in the
+        # message so the operator knows how much to trim.
+        _ctx_len = len(pa.context.strip())
+        if _ctx_len > 4096:
+            raise ValueError(
+                f"domains.auto.context is too long ({_ctx_len} chars, "
+                f"max 4096) — trim it or move details into a shorter summary"
             )
         # Control host is always in never_grant (operator can't remove it).
         if host not in pa.effective_never_grant():

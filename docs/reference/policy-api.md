@@ -155,6 +155,9 @@ domains:
   auto:                       # auto-manage this allowlist (opt-in, default off)
     enable: true              # master switch; off = no control host
     host: agentcage.local     # reserved synthetic control host (default)
+    context: |                # optional: tell the decider what this cage is FOR
+      CI cage for the payments-reconciliation test suite. Talks to staging
+      APIs (api.stripe.com) and installs deps from npm/pypi. Advisory only.
     decider:                  # the agent that decides each request
       kind: agent             # "agent" = built-in LLM cybersecurity expert (v1 only)
       provider: openrouter    # anthropic | openai | openrouter
@@ -187,6 +190,7 @@ domains:
 | `domains.auto.decider.api_key` | `string` | — | **Required** for `kind: agent`. The decider's own API key. Uses the `secret_injection.source` scheme (`env:NAME` / `systemd-creds:NAME` / `cmd:...`); egress-only. |
 | `domains.auto.decider.timeout_seconds` | `int` | `15` | Per-decision timeout. |
 | `domains.auto.decider.base_url` | `string` | provider default | Optional API base override (proxy/gateway/local server). |
+| `domains.auto.context` | `string` | `""` (off) | Optional free-text describing this cage's purpose and scope. Appended to the decider's system prompt as **trusted operator context** (advisory only — it never overrides `never_grant`, domain syntax, or rate limits) so decisions can account for what the cage is for. Capped at **4096 chars** (measured after strip) because it rides in every decider call's system prompt and through `proxy-config.yaml` — a huge blob is a prompt-bloat/abuse surface; an over-long value is rejected at `cage create`/`update` with the length in the message. Empty/whitespace-only = feature off. The caged agent can read it via `GET /v1/allowlist` (the `context` field) to write justifications that match the cage's stated scope. Hot-reloads via `cage update` with no restart (the egress addon rebuilds the decider on `proxy-config.yaml` mtime change). |
 | `domains.auto.rate_limit` | `{requests_per_second, burst}` | `{1, 5}` | Per-cage request rate limit, independent of the per-host HTTP rate limit. |
 
 When `auto.enable` is true, both the introspection and request endpoints are

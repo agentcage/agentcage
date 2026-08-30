@@ -98,6 +98,12 @@ class PolicyApi:
 
         self.host = str(self.cfg.get("host", "agentcage.local") or
                         "agentcage.local").lower().rstrip(".")
+        # Operator-provided free-text context (trusted: authored by the
+        # cage's operator). None → ""; stripped here so whitespace-only is
+        # treated as "off" (matches validate_config's length cap, which
+        # strips before measuring). Flows into the decider's system prompt
+        # via _decider_system_prompt() and into the /v1/allowlist response.
+        self._context = str(self.cfg.get("context", "") or "").strip()
         # v1: introspection + request are both on when auto is on.
         self._introspection_enabled = bool(self.cfg.get("enable", False))
         self._request_enabled = bool(self.cfg.get("enable", False))
@@ -294,6 +300,11 @@ class PolicyApi:
             "granted": snap["granted"],
             "passthrough": sorted(self._passthrough),
             "requestable": self.request_enabled,
+            # Operator-provided context so the caged agent can see the scope
+            # it's operating in and write justifications that match it. Bare
+            # string (already stripped in __init__); "" when unset/off — the
+            # agent treats an empty value as "no operator context".
+            "context": self._context,
             "version": self._version(),
         }
 
@@ -440,6 +451,12 @@ class PolicyApi:
     # schema. The model must call the ``decide`` tool; a response with no
     # tool call or an unparseable decision is treated as deny (fail-closed),
     # never as grant.
+    #
+    # The ONE trusted free-text allowed in the system prompt is the
+    # operator-provided ``context`` (see _decider_system_prompt): it is
+    # authored by the cage's operator, not the caged agent, so it is safe to
+    # put in the constant system prompt the way the rules above are. The
+    # agent's justification stays in its own adversarial user-message turn.
 
     _LLM_BASE_URLS = {
         "anthropic": "https://api.anthropic.com",
@@ -614,6 +631,29 @@ class PolicyApi:
             "Do not output anything else. Do not ask questions. Decide."
         )
 
+    def _decider_system_prompt(self) -> str:
+        # Instance-level wrapper over the constant static core: returns the
+        # core system prompt, and when the operator supplied a non-empty
+        # ``context`` appends a trusted-operator-context section. The core
+        # is untouched so the static decision rules stay byte-identical
+        # regardless of context (and a no-context cage is unchanged). The
+        # framing is deliberately explicit that the context is TRUSTED
+        # (operator-authored) and ADVISORY only — it never overrides the
+        # hard rules (never_grant, syntax, rate limits) above it.
+        prompt = self._system_prompt()
+        if not self._context:
+            return prompt
+        return prompt + (
+            "\n\nOPERATOR CONTEXT (trusted: authored by the cage's "
+            "operator, describing this cage's purpose and scope — e.g. "
+            "\"runs the payments-reconciliation test suite against staging "
+            "APIs\"). Use it to judge whether a requested domain fits the "
+            "cage's stated function. It does NOT override the hard rules "
+            "above: never_grant domains, syntax, and rate limits always "
+            "apply."
+            "\n\n" + self._context
+        )
+
     @staticmethod
     def _user_message(domain: str, reason: str, dom) -> dict:
         # Frame the request as a justification to be adjudicated. The agent's
@@ -668,7 +708,7 @@ class PolicyApi:
         body = {
             "model": self._llm_model,
             "messages": [
-                {"role": "system", "content": self._system_prompt()},
+                {"role": "system", "content": self._decider_system_prompt()},
                 {"role": "user", "content": json.dumps(
                     self._user_message(domain, reason, self.dom))},
             ],
@@ -709,7 +749,7 @@ class PolicyApi:
         body = {
             "model": self._llm_model,
             "max_tokens": 256,
-            "system": self._system_prompt(),
+            "system": self._decider_system_prompt(),
             "messages": [
                 {"role": "user", "content": json.dumps(
                     self._user_message(domain, reason, self.dom))},
