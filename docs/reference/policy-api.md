@@ -363,9 +363,24 @@ decider. The safeguards:
   upstream of the same name.
 - **No SSRF via the request endpoint.** Only the documented paths exist;
   everything else `404`s. The `domain` field is validated as a syntactically
-  valid public hostname (no IP literals, no `*.local`, no link-local/
-  metadata ranges — enforced via the fixed `never_grant` set plus a syntax
-  check).
+  valid public hostname (no IP literals, no `*.local`) and is refused when it
+  hits the fixed `never_grant` set.
+
+  Names that *encode* an address are refused too. Wildcard-DNS services
+  (`nip.io`, `sslip.io`, `xip.io`, `traefik.me`, …) turn
+  `169-254-169-254.nip.io` into 169.254.169.254 — the cloud metadata endpoint
+  — through a name that is syntactically public and carries none of the
+  `never_grant` suffixes. The request endpoint decodes the leading labels and
+  refuses any embedded loopback, link-local, private or CGNAT address, on both
+  the addon and the host-side reconcile path. Matching the encoded *address*
+  rather than a list of services covers future clones. A name encoding a
+  globally-routable address is allowed through to the decider — it is no more
+  dangerous than naming that host directly.
+
+  > This is defense in depth, not the only line. The decider reliably denies
+  > these on its own (verified by red-teaming a live cage), but that made a
+  > metadata bypass contingent on model judgement; the structural check makes
+  > it contingent on nothing.
 - **Bounded blast radius.** Max 32 concurrent grants, per-cage request rate
   limit, full audit logging, and permanent grants that are explicitly
   removable via `agentcage domain rm`.
