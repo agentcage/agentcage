@@ -1117,19 +1117,34 @@ class AppleContainerBackend:
           1. Validate the rewritten allowlist inside the egress
              (``dnsmasq --test``); on failure revert the file and raise,
              so a malformed allowlist can't silently break DNS.
-          2. SIGHUP both dnsmasq instances so they re-read the
-             ``--servers-file`` allowlist:
-               * the egress dnsmasq (pidfile ``/home/acdns/dnsmasq.pid``,
-                 run under ``setpriv --reuid=acdns`` — signal the pid, not
-                 ``pkill``);
-               * the **cage-local** dnsmasq (pidfile
-                 ``/run/agentcage/dnsmasq.pid``) — the load-bearing one,
-                 since the cage workload resolves via 127.0.0.1:53 served
-                 by that local dnsmasq (vmnet drops inter-microVM UDP, so
-                 the cage can't use the egress dnsmasq; see cage-init.sh
-                 stage A'). Best-effort: skipped if the cage has no
-                 dnsmasq.
-          3. Leave ``proxy-config.yaml`` to the mitmproxy addon, which
+          2. Make the egress pick up the new baseline. When the runtime
+             servers-file ``/run/agentcage/dns-allowlist.egress.conf``
+             exists, raise the supervisor's reload flag
+             (``: > /home/acproxy/dns/reload``) instead of regenerating
+             that file from the host. The supervisor (the single render
+             implementation — no drift between host and guest) runs inside
+             the egress microVM (same image); its 1s liveness loop sees the
+             flag, re-renders BASELINE + GRANTED zones (granted zones come
+             from ``/home/acproxy/dns/granted``, written by the proxy
+             addon inside the egress) and SIGHUPs dnsmasq within ~1s.
+             Regenerating from the host's baseline ALONE (the old ``sed`` of
+             ``/etc/agentcage/dns-allowlist.conf``) would overwrite the
+             served file with baseline-only lines, clobbering every
+             in-flight policy-API granted zone out of dnsmasq on every
+             operator domain add/rm (round-11 finding). Fallback: when
+             the runtime file is absent the egress reads the bind-mounted
+             file directly, so a plain SIGHUP via the pidfile
+             (``/home/acdns/dnsmasq.pid``, run under ``setpriv
+             --reuid=acdns`` — signal the pid, not ``pkill``) suffices.
+          3. Regenerate + SIGHUP the **cage-local** dnsmasq (pidfile
+             ``/run/agentcage/dnsmasq.pid``) — the load-bearing one, since
+             the cage workload resolves via 127.0.0.1:53 served by that
+             local dnsmasq (vmnet drops inter-microVM UDP, so the cage
+             can't use the egress dnsmasq; see cage-init.sh stage A').
+             This regeneration is from the BASELINE only and is
+             INTENTIONAL (see the inline step-3 comment).
+             Best-effort: skipped if the cage has no dnsmasq.
+          4. Leave ``proxy-config.yaml`` to the mitmproxy addon, which
              polls its mtime per request and hot-reloads in place
              (``data/proxy/addon.py``) — no signal needed.
 
@@ -1169,24 +1184,28 @@ class AppleContainerBackend:
                 f"{(test.stderr or test.stdout or '').strip()}"
             )
 
-        # 2. Regenerate the egress's runtime servers-file from the updated
-        # bind-mounted allowlist, then SIGHUP. dnsmasq serves
-        # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders
-        # re-pointed at the egress's upstream = its default route = the
-        # vmnet gateway), NOT the bind-mounted file — same rewrite
-        # supervisor-egress.sh does at start. Without the regeneration the
-        # new apex lands in the bind-mounted file but the served file is
-        # unchanged. dns-allowlist.conf is pure `server=/<apex>/<ip>` lines,
-        # so a trailing-field sed safely swaps just the upstream. Guarded
-        # on the runtime file existing (absent → egress fell back to the
-        # baked config and is reading the bind-mounted file directly).
+        # 2. Make the egress pick up the new baseline. When the runtime
+        # servers-file /run/agentcage/dns-allowlist.egress.conf exists, raise
+        # the supervisor's reload flag (`: > /home/acproxy/dns/reload`)
+        # instead of regenerating that file from the host. The supervisor
+        # runs inside the egress microVM (same image); its 1s liveness loop
+        # sees the flag, re-renders BASELINE + GRANTED zones (granted zones
+        # come from /home/acproxy/dns/granted, written by the proxy addon
+        # inside the egress) and SIGHUPs dnsmasq — the supervisor is the
+        # single render implementation, so there is no drift between host
+        # and guest. Regenerating from the host's baseline ALONE (the old
+        # `sed` of /etc/agentcage/dns-allowlist.conf > the runtime file)
+        # would overwrite the served file with baseline-only lines,
+        # clobbering every in-flight policy-API granted zone out of dnsmasq
+        # on every operator domain add/rm (round-11 finding). Fallback: when
+        # the runtime file is absent the egress reads the bind-mounted file
+        # directly, so a plain SIGHUP via the pidfile (/home/acdns/dnsmasq.pid)
+        # suffices.
         ac_cli.run(
             ["exec", container, "sh", "-c",
-             'up=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
-             '[ -n "$up" ] && [ -f /run/agentcage/dns-allowlist.egress.conf ] && '
-             'sed "s#/[^/]*\\$#/$up#" /etc/agentcage/dns-allowlist.conf '
-             '> /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; '
-             'kill -HUP "$(cat /home/acdns/dnsmasq.pid)"'],
+             'rt=/run/agentcage/dns-allowlist.egress.conf; '
+             'if [ -f "$rt" ]; then : > /home/acproxy/dns/reload; '
+             'else kill -HUP "$(cat /home/acdns/dnsmasq.pid)" 2>/dev/null || true; fi'],
             check=False,
         )
 
@@ -1201,6 +1220,16 @@ class AppleContainerBackend:
         # config and reads the bind-mounted file). Best-effort throughout:
         # the cage dnsmasq is itself optional (bases without dnsmasq), so
         # never fail the reload.
+        #
+        # NOTE: unlike step 2, regenerating the cage-local servers-file from
+        # the BASELINE only is INTENTIONAL and stays unchanged. The
+        # cage-local servers-file is baseline-scoped by design: unknown /
+        # granted zones get the TEST-NET sinkhole answer (address=/#/...) and
+        # still reach the egress's transparent interception, where SNI/Host
+        # is the enforcement authority; the actual upstream resolution
+        # happens at the egress, which carries the granted zones (see
+        # step 2). Do NOT "fix" this to raise a reload flag — the cage has
+        # no supervisor and no granted-zones source of its own.
         if self.is_running(name, "cage"):
             ac_cli.run(
                 ["exec", name, "sh", "-c",
@@ -1643,22 +1672,30 @@ class AppleContainerBackend:
             egress_argv += [
                 "--volume", f"{secrets_dir}:/home/acproxy/secrets:ro",
             ]
-        # domains.auto grants overlay — shared backing file with the host-side
-        # grants watcher. The watcher reads state.grants_file(name) (the canonical
-        # agentcage data dir, NOT this backend's _state_dir), so the bind source
-        # must be that exact path or the watcher and addon see different files.
-        # RW so the egress addon can write decided grants; the watcher (on the
-        # macOS host) reads + revokes through the same file. Only mount when the
-        # feature is on OR any allow entry has an expiry (watcher prunes).
+        # domains.auto grants overlay — backing file for decided grants.
+        # The host-side grants watcher (launchd plist
+        # io.agentcage.<name>.grants) is DELETED; it is no longer the live
+        # mechanism on apple-container. Granted DNS is now applied INSIDE
+        # the egress by the supervisor, which renders BASELINE + GRANTED
+        # zones into the servers-file (granted zones come from
+        # /home/acproxy/dns/granted, written by the proxy addon inside the
+        # egress). This bind persists the grants dir at the canonical
+        # agentcage data path (state.grants_file(name), NOT this backend's
+        # _state_dir) so the egress addon can write decided grants and a
+        # shared legacy cleanup helper can still reach it; the source path
+        # must match that canonical location exactly. RW so the addon can
+        # write. Only mount when the feature is on OR any allow entry has
+        # an expiry (the addon sweeps those and re-publishes the DNS zone
+        # list).
         if meta.get("domains_auto") or meta.get("has_expiring_domains"):
             from agentcage import state as _state_mod
             grants_dir = _state_mod.grants_dir(name)
             grants_dir.mkdir(parents=True, exist_ok=True)
-            # True dual-writer across the container userns: the egress addon
-            # (uid 200) and the host watcher (operator) both rewrite
-            # grants.yaml via atomic temp+rename, so the DIR must be writable
-            # by both. chmod 0777 (operator owns it; addon is "other" via the
-            # world bit). Don't chown to 200 — that would block the watcher.
+            # The egress addon (uid 200) rewrites grants.yaml via atomic
+            # temp+rename, so the DIR must be writable by it. chmod 0777
+            # (operator owns it; addon is "other" via the world bit). Don't
+            # chown to 200 — that would block the operator's / the shared
+            # cleanup helper's access.
             #
             # macOS hosts are single-user by default and the grants dir is
             # shared into the Lima VM over reverse-sshfs/virtiofs, a share
@@ -1666,9 +1703,9 @@ class AppleContainerBackend:
             # subgid mapping the container/Linux backend uses (podman unshare
             # chgrp → 0770) does not apply the same way here. On a SHARED macOS
             # host (multiple local accounts) this 0777 is a known limitation:
-            # another local user could plant grants.yaml entries the watcher
-            # promotes into the baseline. See egress.container.j2 for the
-            # hardened container/Linux path.
+            # another local user could plant grants.yaml entries that the
+            # egress addon promotes into the baseline. See egress.container.j2
+            # for the hardened container/Linux path.
             try:
                 grants_dir.chmod(0o777)
             except OSError:
