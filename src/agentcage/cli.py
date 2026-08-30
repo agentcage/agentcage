@@ -4586,7 +4586,7 @@ def _grant_domain_match(entry_domain: str, target: str) -> bool:
     return entry_domain.rstrip(".").lower() == target.rstrip(".").lower()
 
 
-def _watcher_never_grant(raw: dict) -> set[str]:
+def _host_never_grant(raw: dict) -> set[str]:
     """Built-in never_grant floor the grants reconcile applies on promote.
 
     Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
@@ -4806,7 +4806,7 @@ def grants_promote(domain: str):
         sys.exit(1)
     # Mirror the addon's never_grant floor: internal/localhost/control-host
     # zones are permanently denied by policy and must never be promoted.
-    if _is_never_grant(dl, _watcher_never_grant(raw)):
+    if _is_never_grant(dl, _host_never_grant(raw)):
         click.echo(
             f"error: '{domain}' is on the never_grant list and cannot be "
             f"promoted", err=True)
@@ -5217,7 +5217,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
                     list_key = "allow"
                     dom.setdefault(list_key, [])
                     allow_lower = {x.rstrip(".").lower() for x in dom[list_key]}
-                    never = _watcher_never_grant(raw)
+                    never = _host_never_grant(raw)
                     # Preserve each grant's TTL into domains.expires so step 0
                     # of the next tick prunes it (and the L7 inspector enforces
                     # it). Without this, a ttl_seconds grant is promoted into
