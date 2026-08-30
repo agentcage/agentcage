@@ -4329,8 +4329,17 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
     expires = _read_domain_expires(raw)
 
     for domain_name in domain_names:
-        already_in_list = domain_name in dom[list_key]
-        already_passthrough = domain_name in dom.get("passthrough", [])
+        # Canonical form (lowercased, trailing dots stripped) for the
+        # stored value + membership checks — the raw operator argument may
+        # be uppercase, and an uppercase entry lands in cage.yaml and is
+        # then REJECTED by ``validate_config`` (the regex is lowercase-only),
+        # making the cage's own config unparseable. Mirrors the grants
+        # watcher's promote step and ``grants promote``.
+        dn = domain_name.rstrip(".").lower()
+        already_in_list = any(x.rstrip(".").lower() == dn
+                              for x in dom[list_key])
+        already_passthrough = any(x.rstrip(".").lower() == dn
+                                 for x in dom.get("passthrough", []))
 
         if already_in_list and (not passthrough or already_passthrough) \
                 and not expires_iso:
@@ -4338,13 +4347,13 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
             continue
 
         if not already_in_list:
-            dom[list_key].append(domain_name)
+            dom[list_key].append(dn)
         if passthrough and not already_passthrough:
             if "passthrough" not in dom:
                 dom["passthrough"] = []
-            dom["passthrough"].append(domain_name)
+            dom["passthrough"].append(dn)
         if expires_iso:
-            expires[domain_name.lower().rstrip(".")] = expires_iso
+            expires[dn] = expires_iso
 
         changed = True
         messages.append(f"Added '{domain_name}'{pt_note}{exp_note} to cage '{name}'.")
@@ -4779,7 +4788,11 @@ def grants_promote(domain: str):
         expires[domain.lower().rstrip(".")] = expires_at
         _write_domain_expires(raw, expires)
 
-    already_baseline = domain in allow_list
+    # Canonical membership check (case- and trailing-dot-insensitive) so an
+    # operator who typed the domain in a different case still sees "already
+    # in the baseline" instead of appending a duplicate uppercase entry —
+    # and the appended value is the canonical lowercase form (see below).
+    already_baseline = any(x.rstrip(".").lower() == dl for x in allow_list)
     if already_baseline:
         click.echo(f"'{domain}' is already in the baseline.")
         # The domain is present, but a TTL'd grant still tightens it: the
@@ -4788,7 +4801,12 @@ def grants_promote(domain: str):
         if expires_at:
             _apply_baseline_change(name, raw)
     else:
-        allow_list.append(domain)
+        # Append the CANONICAL form (lowercased, trailing dots stripped) —
+        # not the operator's raw ``domain`` argument, which may be upper-
+        # case. An uppercase entry lands in cage.yaml and ``validate_config``
+        # then REJECTS it (the regex is lowercase-only), making the cage's
+        # own config unparseable.
+        allow_list.append(dl)
         # Live-reload chain via the shared helper (same path as
         # ``domain add`` and the grants watcher).
         _apply_baseline_change(name, raw)
@@ -5143,7 +5161,15 @@ def grants_watch(interval: float, once: bool):
                             _audit_reject(dl, "never_grant")
                             continue
                         if dl not in allow_lower:
-                            dom[list_key].append(d)
+                            # Append the CANONICAL form (lowercased, trailing
+                            # dots stripped — and newline-free by construction
+                            # since ``dl`` passed ``valid_domain`` whose regex
+                            # is ``\Z``-anchored). The raw overlay value ``d``
+                            # may be uppercase; an uppercase entry lands in
+                            # cage.yaml and ``validate_config`` then REJECTS it
+                            # (the regex is lowercase-only), making the cage's
+                            # own config unparseable.
+                            dom[list_key].append(dl)
                             allow_lower.add(dl)
                             baseline_touched = True
                         exp = str(e.get("expires_at", "") or "")

@@ -157,6 +157,22 @@ class TestRequestGates:
         _handle(pa, _flow(domain="bad..name"))
         assert resp_status[-1] == 400
 
+    def test_trailing_newline_domain_400(self, tmp_path, monkeypatch,
+                                         resp_status):
+        """The addon's ``_valid_domain`` is the trust-boundary gate that
+        stops overlay strings (which cross the trust boundary via the grants
+        dir) from being rendered into dnsmasq directives. ``$`` (vs the
+        ``\\Z`` anchor now used) matched before ONE trailing newline, so
+        ``"evil.com\\n"`` would have passed and reached the host watcher's
+        promote; the request endpoint must reject it with a 400 and never
+        grant it."""
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        _handle(pa, _flow(domain="evil.com\n"))
+        assert resp_status[-1] == 400
+        assert not dom.is_granted("evil.com\n")
+        assert not dom.is_granted("evil.com")
+        assert _overlay_domains(tmp_path) == set()
+
     def test_ip_literal_domain_400(self, tmp_path, monkeypatch, resp_status):
         pa, _ = _make_pa(tmp_path, monkeypatch)
         _handle(pa, _flow(domain="10.0.0.1"))

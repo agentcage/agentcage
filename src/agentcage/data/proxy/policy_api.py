@@ -49,11 +49,15 @@ from mitmproxy import http
 # A syntactically valid public-ish hostname: 2+ dotted labels, each label
 # alphanumeric/hyphen, not an IP literal, last label length >= 2 (rejects
 # single-letter/bare TLDs and overly-broad grants like ``com`` would still
-# pass this — breadth is bounded by never_grant + the decider).
+# pass this — breadth is bounded by never_grant + the decider). The anchor
+# is ``\Z`` (absolute end-of-string), not ``$``: ``$`` matches before ONE
+# trailing newline, so "evil.com\n" would pass and (via the host watcher's
+# promote) render as a split dnsmasq directive. Kept in sync with the
+# host-side copy in config.py (DOMAIN_RE) — same regex, same anchor.
 _DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)"
     r"([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
-    r"(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+    r"(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z"
 )
 
 # Hard cap on control-request body size (bytes). The general body-size
@@ -963,6 +967,13 @@ class PolicyApi:
     @staticmethod
     def _valid_domain(domain: str) -> bool:
         if not domain or len(domain) > 253:
+            return False
+        # Defence in depth (the char classes already exclude whitespace
+        # mid-string, but make it explicit): a value containing any
+        # whitespace — including the trailing newline that ``$`` (vs the
+        # ``\Z`` anchor used here) would otherwise let through — must be
+        # rejected so it can never reach the host-side dnsmasq renderer.
+        if any(c.isspace() for c in domain):
             return False
         if not _DOMAIN_RE.match(domain):
             return False

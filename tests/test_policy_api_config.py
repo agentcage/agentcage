@@ -11,7 +11,7 @@ loaded with ``load_config``; validation is driven through ``validate_config``.
 
 import pytest
 
-from agentcage.config import load_config, validate_config
+from agentcage.config import load_config, valid_domain, validate_config
 
 
 # ── Helpers ──────────────────────────────────────────────
@@ -397,3 +397,58 @@ class TestDomainSyntaxValidation:
         # The offending entry is named in the message (repr shows the newline
         # as an escape so it is greppable / not a literal break).
         assert "bad\\nline" in str(ei.value)
+
+
+# ── Fix: $ anchor accepts one trailing newline (HIGH) ────────────────────
+
+
+class TestDomainNewlineAnchor:
+    """``DOMAIN_RE``'s ``$`` anchor matched immediately before ONE trailing
+    newline, so ``"evil.com\\n"`` passed ``valid_domain``. Such a value
+    appended to ``domains.allow`` renders as a split dnsmasq directive
+    (``server=/evil.com/`` + a newline + the upstream on its own line) that
+    fails ``dnsmasq --test`` — persistent per-cage config corruption. The
+    anchor is now ``\\Z`` (absolute end-of-string) plus an explicit
+    whitespace guard in ``valid_domain``."""
+
+    @staticmethod
+    def _allow_body(*items):
+        return "domains:\n  allow:\n" + "\n".join(items) + "\n"
+
+    def test_valid_domain_rejects_trailing_newline(self):
+        # The regression the finding describes: ``$`` let this through; ``\Z``
+        # (and the whitespace guard) must not.
+        assert valid_domain("evil.com\n") is False
+
+    def test_valid_domain_accepts_plain_domain(self):
+        assert valid_domain("evil.com") is True
+
+    def test_valid_domain_rejects_any_whitespace(self):
+        # Defence in depth: leading/embedded/trailing whitespace of any
+        # kind is rejected, not just a single trailing newline.
+        assert valid_domain(" evil.com") is False
+        assert valid_domain("evil.com ") is False
+        assert valid_domain("evil.\tcom") is False
+        assert valid_domain("evil.com\r") is False
+
+    def test_newline_bearing_allow_entry_rejected_by_validate_config(
+        self, tmp_path
+    ):
+        # A YAML double-quoted ``"evil.com\n"`` decodes to a string ending
+        # in a real newline — the dnsmasq-injection payload. validate_config
+        # must reject it (pre-fix it passed because ``$`` matches before one
+        # trailing newline).
+        cfg = load_config(_write(tmp_path, self._allow_body(
+            '    - "evil.com\n"')))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_exactly_canonical_values_still_pass(self, tmp_path):
+        # Regression guard: the stricter anchor must not over-reject. A
+        # plain lowercase dotted hostname (the canonical form the promote
+        # paths now write) still validates cleanly.
+        cfg = load_config(_write(tmp_path, self._allow_body(
+            "    - api.example.com",
+            "    - github.com")))
+        validate_config(cfg)  # must not raise
+        assert cfg.domains.allow == ["api.example.com", "github.com"]
