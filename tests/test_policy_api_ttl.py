@@ -179,6 +179,126 @@ class TestWatchRemovesPromotedEntries:
             "2030-01-01T00:10:00+00:00"
 
 
+class TestWatchExpiredOverlayNotInBaseline:
+    """Step 1 must persist the overlay even when an expired entry's domain
+    is NOT in the baseline allow list — otherwise the entry reloads next
+    tick and re-audits (policy_grant_removed) every tick forever, never
+    converging."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_expired_overlay_not_in_baseline_is_persisted(
+        self, mock_state, mock_apply
+    ):
+        # The expired domain "x.com" is NOT in domains.allow.
+        mock_state.load_raw_config.return_value = {
+            "name": "basic",
+            "container": {"image": "node:22-slim",
+                          "command": ["node", "/app/agent.js"]},
+            "domains": {"allow": ["anthropic.com"]},
+        }
+        mock_state.load_grants.return_value = [{
+            "domain": "x.com",
+            "reason": "docs lookup",
+            "source": "decider:agent:openrouter",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2000-01-01T00:00:00+00:00",  # past → expired
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"]
+        )
+        assert result.exit_code == 0, result.output
+
+        # The overlay is re-saved WITHOUT the expired entry (step-3
+        # persistence fired because `changed` was set for any expired
+        # entry, not only when the baseline was edited)...
+        saved_overlay = mock_state.save_grants.call_args[0][1]
+        assert saved_overlay == []
+        # ...and _apply_baseline_change was NOT called (nothing was
+        # removed from the baseline — the domain wasn't in domains.allow).
+        mock_apply.assert_not_called()
+
+
+class TestWatchStaleExpiresNotInAllow:
+    """Step 0 must persist the shrunk ``domains.expires`` map even when the
+    expired domain is NOT in ``domains.allow`` — otherwise the stale entry
+    is popped in memory only, never persisted, and re-audited every tick
+    forever."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_stale_expires_persisted_without_baseline_change(
+        self, mock_state, mock_apply
+    ):
+        raw = {
+            "name": "basic",
+            "container": {"image": "node:22-slim",
+                          "command": ["node", "/app/agent.js"]},
+            "domains": {
+                "allow": ["anthropic.com"],
+                "expires": {"stale.com": "2000-01-01T00:00:00+00:00"},
+            },
+        }
+        mock_state.load_raw_config.return_value = raw
+        mock_state.load_grants.return_value = []
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"]
+        )
+        assert result.exit_code == 0, result.output
+
+        # The stale expires entry was popped and the shrunk config
+        # persisted via save_raw_config (the persist-without-baseline-edit
+        # path), so it won't reappear next tick.
+        saved_raw = mock_state.save_raw_config.call_args[0][1]
+        expires = saved_raw["domains"].get("expires", {})
+        assert "stale.com" not in expires
+        # _apply_baseline_change NOT called (removed_any was False — the
+        # domain wasn't in the allow list, so no real baseline edit).
+        mock_apply.assert_not_called()
+
+
+class TestWatchBlocklistModeSkipsPromotion:
+    """Step 2 must NOT promote grants in blocklist mode. A grant only widens
+    the allow set; appending a granted domain to the BLOCK list is the
+    exact opposite. Mirrors ``grants_promote``'s refusal: "cannot promote
+    into a blocklist-mode cage"."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_blocklist_mode_skips_promotion(
+        self, mock_state, mock_apply
+    ):
+        # Blocklist mode: domains.block present, domains.allow absent.
+        mock_state.load_raw_config.return_value = {
+            "name": "basic",
+            "container": {"image": "node:22-slim",
+                          "command": ["node", "/app/agent.js"]},
+            "domains": {"block": ["evil.com"]},
+        }
+        mock_state.load_grants.return_value = [{
+            "domain": "x.com",
+            "reason": "docs lookup",
+            "source": "decider:agent:openrouter",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2030-01-01T00:10:00+00:00",  # future → pending
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"]
+        )
+        assert result.exit_code == 0, result.output
+
+        # Promotion skipped: no baseline change, no overlay rewrite —
+        # the entry stays pending (step 1 still drops expired ones).
+        mock_apply.assert_not_called()
+        mock_state.save_grants.assert_not_called()
+
+
 class TestEnsureGrantsWatcherBackendGate:
     """_ensure_grants_watcher must never write a systemd unit at the
     apple-container launchd .plist path — the apple backend installs its

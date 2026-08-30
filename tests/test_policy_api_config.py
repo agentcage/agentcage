@@ -209,6 +209,22 @@ class TestApiKey:
         with pytest.raises(ValueError, match="api_key is required"):
             validate_config(cfg)
 
+    def test_cmd_scheme_api_key_rejected(self, tmp_path):
+        # cmd: would silently resolve to an empty key at runtime (the egress
+        # container has no shell). validate_config must reject it early with
+        # an actionable message.
+        body = _enabled(_agent_decider(api_key="cmd:cat /run/secrets/key"))
+        cfg = load_config(_write(tmp_path, body, env={}))
+        with pytest.raises(ValueError, match="cmd"):
+            validate_config(cfg)
+
+    def test_env_api_key_still_valid(self, tmp_path):
+        # env: is one of the supported schemes; it must validate cleanly.
+        body = _enabled(_agent_decider(api_key="env:OPENROUTER_API_KEY"))
+        cfg = load_config(_write(tmp_path, body, env={"OPENROUTER_API_KEY": "k"}))
+        validate_config(cfg)  # must not raise
+        assert cfg.domains.auto.decider.agent.api_key == "env:OPENROUTER_API_KEY"
+
 
 # ── decider kind ────────────────────────────────────────
 

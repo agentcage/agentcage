@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -231,3 +232,197 @@ class TestFeatureDisabled:
         pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
         _handle(pa, _flow(domain="x.com"))
         assert resp_status[-1] == 404
+
+
+class TestExpiredAlreadyAllowedFastPath:
+    """Fix 2 (low): the already_allowed fast path must NOT fire when the
+    matching baseline entry (or grant) is EXPIRED — L7 is blocking that
+    domain, so a 200 "already_allowed" would mislead the agent into
+    believing its traffic is allowed. An expired entry falls through to the
+    normal request flow so the decider can adjudicate a fresh grant."""
+
+    def test_expired_baseline_entry_proceeds_to_decider(
+        self, tmp_path, monkeypatch, resp_status
+    ):
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        dom = DomainInspector()
+        dom.configure({
+            "allow": ["a.com"],
+            "expires": {"a.com": "2000-01-01T00:00:00+00:00"},
+        })
+        auto = {
+            "enable": True,
+            "decider": {"kind": "agent", "provider": "openrouter",
+                        "model": "m", "api_key": "env:K"},
+        }
+        pa = PolicyApi({"domains": {"allow": ["a.com"], "auto": auto}},
+                       dom, lambda e: None, MagicMock())
+        pa._llm_secret = "sk-test"
+
+        # The baseline entry is expired → _matched_expired returns the suffix.
+        assert dom._matched_expired("a.com") == "a.com"
+        # Sanity: inspect_request would block it at L7.
+        assert dom._matches("a.com") is True
+
+        called = []
+        pa._llm_call_sync = lambda *a: called.append(1) or {
+            "decision": "deny", "reason": "expired, denied"
+        }
+        _handle(pa, _flow(domain="a.com"))
+        # The decider was invoked (NOT short-circuited as already_allowed).
+        assert called == [1], \
+            "expired baseline entry must fall through to the decider, " \
+            "not return already_allowed"
+
+    def test_expired_grant_proceeds_to_decider(
+        self, tmp_path, monkeypatch, resp_status
+    ):
+        # A granted domain whose grant is past its expires_at must also NOT
+        # take the already_allowed fast path.
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        # Plant an expired grant directly in the inspector.
+        dom.granted["a.com"] = {
+            "domain": "a.com",
+            "granted_at": "2000-01-01T00:00:00+00:00",
+            "expires_at": "2000-01-01T00:00:00+00:00",
+            "reason": "stale", "source": "decider",
+        }
+        assert dom.is_granted("a.com") is True  # is_granted ignores expiry
+        assert dom._matched_expired("a.com") == "a.com"
+
+        called = []
+        pa._llm_call_sync = lambda *a: called.append(1) or {
+            "decision": "deny", "reason": "expired grant, denied"
+        }
+        _handle(pa, _flow(domain="a.com"))
+        assert called == [1], \
+            "expired grant must fall through to the decider"
+
+    def test_unexpired_baseline_still_fast_paths(self, tmp_path, monkeypatch):
+        # Regression guard: a far-future expiry must STILL take the fast path
+        # (so the fix doesn't over-broaden and always invoke the decider).
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        dom = DomainInspector()
+        dom.configure({
+            "allow": ["a.com"],
+            "expires": {"a.com": "9999-01-01T00:00:00+00:00"},
+        })
+        auto = {
+            "enable": True,
+            "decider": {"kind": "agent", "provider": "openrouter",
+                        "model": "m", "api_key": "env:K"},
+        }
+        pa = PolicyApi({"domains": {"allow": ["a.com"], "auto": auto}},
+                       dom, lambda e: None, MagicMock())
+        pa._llm_secret = "sk-test"
+        assert dom._matched_expired("a.com") is None
+        called = []
+        pa._llm_call_sync = lambda *a: called.append(1)
+        _handle(pa, _flow(domain="a.com"))
+        assert called == [], \
+            "unexpired baseline entry must still take the already_allowed " \
+            "fast path (decider not invoked)"
+
+
+class TestUniqueTempFile:
+    """Fix 1 (medium): the overlay atomic-write temp filename must be
+    PID-suffixed so a concurrent addon+host-watcher write cannot clobber
+    each other's temp file (which would lose one side's writes on rename).
+    The grants dir must contain only grants.yaml after a persist — no
+    leftover ``grants.yaml.tmp`` (the old colliding name)."""
+
+    def test_persist_leaves_no_plain_tmp_file(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "reason", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        # Exactly grants.yaml — no stray .tmp (old or new PID-suffixed) lingers.
+        assert set(os.listdir(tmp_path)) == {"grants.yaml"}
+
+    def test_temp_filename_is_pid_suffixed(self, tmp_path, monkeypatch):
+        # White-box: the temp path constructed during a persist must include
+        # the PID, distinct from the host writer's ``grants.yaml.tmp``.
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        seen_tmp = []
+        import builtins
+        real_open = builtins.open
+
+        def spy_open(path, *a, **k):
+            p = str(path)
+            if p.endswith(".tmp"):
+                seen_tmp.append(p)
+            return real_open(path, *a, **k)
+
+        builtins.open = spy_open
+        try:
+            pa._apply_grant("y.com", "reason", ttl_override=0,
+                            decided_by="decider:agent:openrouter")
+        finally:
+            builtins.open = real_open
+        assert seen_tmp and any(
+            p == str(tmp_path / f"grants.yaml.{os.getpid()}.tmp")
+            for p in seen_tmp
+        ), f"temp path was not PID-suffixed: {seen_tmp!r}"
+
+
+class TestSweeperRobustness:
+    """Fix 3 (low): a malformed/non-UTF8 overlay must not kill the TTL
+    sweeper task permanently. ``_load_overlay`` returns [] on a UnicodeDecodeError
+    (caught via ValueError), and the per-tick body isolates any surprise so
+    the loop continues (``_sweeper_tick`` is the factored, testable body)."""
+
+    def test_load_overlay_garbage_bytes_returns_empty(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        (tmp_path / "grants.yaml").write_bytes(b"\xff\xfe\x00bad")
+        # Must NOT raise (UnicodeDecodeError is a ValueError subclass).
+        assert pa._load_overlay() == []
+
+    def test_maybe_reload_garbage_bytes_no_raise(self, tmp_path, monkeypatch):
+        pa, dom = _make_pa(tmp_path, monkeypatch)
+        # Seed an in-memory grant so the reconcile has something to do.
+        pa._apply_grant("x.com", "r", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        # Corrupt the overlay + bump mtime so maybe_reload_overlay sees a change.
+        overlay = tmp_path / "grants.yaml"
+        overlay.write_bytes(b"\xff\xfe\x00bad")
+        import time as _t, os as _os
+        ft = _t.time() + 100
+        _os.utime(overlay, (ft, ft))
+        # Must return True (reconciled / saw the change) WITHOUT raising.
+        assert pa.maybe_reload_overlay() is True
+        # The garbage overlay reconciled to empty → the grant is dropped.
+        assert not dom.is_granted("x.com")
+
+    def test_sweeper_tick_with_garbage_overlay_does_not_raise(
+        self, tmp_path, monkeypatch
+    ):
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        (tmp_path / "grants.yaml").write_bytes(b"\xff\xfe\x00bad")
+        import time as _t, os as _os
+        overlay = tmp_path / "grants.yaml"
+        ft = _t.time() + 100
+        _os.utime(overlay, (ft, ft))
+        # A single tick over a garbage overlay must complete without raising.
+        pa._sweeper_tick()
+
+    def test_sweeper_tick_isolates_internal_exception(self, tmp_path, monkeypatch):
+        # A surprise exception from inside the tick body must be caught by the
+        # loop and NOT propagate — simulate by monkeypatching a helper to raise.
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+
+        def boom():
+            raise RuntimeError("unexpected")
+        pa.maybe_reload_overlay = boom
+        import asyncio
+        # Drive exactly one tick via the loop with a patched sleep so it runs
+        # once then cancels. The internal RuntimeError must be caught and the
+        # task must NOT raise.
+        async def drive():
+            task = asyncio.ensure_future(pa.sweeper_loop())
+            await asyncio.sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(drive())  # must not raise (tick exception was logged)

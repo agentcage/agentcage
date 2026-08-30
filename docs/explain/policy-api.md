@@ -249,8 +249,9 @@ On `grant`:
    `audit.jsonl` as `policy_request`, with the domain, the decision, the
    decider's `reason`, and `decided_by` (`decider:agent:<provider>` for
    grants, `decider` for structural denials). The per-cage
-   `policy-audit.jsonl` carries `policy_grant_applied`,
-   `policy_grant_removed`, and `domain_allow_expired`.
+   `policy-audit.jsonl` (host-side, outside the grants bind mount — see §3.4)
+   carries `policy_grant_applied`, `policy_grant_removed`, and
+   `domain_allow_expired`.
 
 Grants are **additive only**:
 
@@ -432,8 +433,8 @@ parity.
   the proxy tmpfs (egress-only), pass `AGENTCAGE_DOMAIN_AUTO_*` env where
   helpful.
 - Audit: egress `audit.jsonl` `policy_request` (the decision) + per-cage
-  `policy-audit.jsonl` `policy_grant_applied`/`policy_grant_removed`/
-  `domain_allow_expired`.
+  `policy-audit.jsonl` (a sibling of `grants/`, outside the RW bind mount)
+  `policy_grant_applied`/`policy_grant_removed`/`domain_allow_expired`.
 - Tests: agent decider (grant/deny/timeout/fail-closed/malformed), grants
   promoted via `domain add` chain, `never_grant` enforcement, request rate
   limit, missing-`reason` rejection; e2e grant → immediate access to new host.

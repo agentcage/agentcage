@@ -1791,6 +1791,18 @@ def validate_config(config: Config) -> list[str]:
                 "source: scheme (e.g. 'systemd-creds:POLICY_LLM_KEY' or "
                 "'env:OPENROUTER_API_KEY')."
             )
+        # The egress addon's _read_secret resolves only `env:` and
+        # `systemd-creds:` (the egress container has no shell), so a `cmd:`
+        # source silently materializes as an empty key at runtime (fail-
+        # closed but confusing). Reject it at validate time with an
+        # actionable message instead.
+        _ag_scheme = (ag.api_key or "").partition(":")[0]
+        if _ag_scheme == "cmd":
+            raise ValueError(
+                "domains.auto.decider.agent.api_key does not support cmd: "
+                "sources (the egress container has no shell); use env:NAME or "
+                "systemd-creds:NAME"
+            )
         # https-only: the decider API key travels as a bearer header on
         # every call — an http:// base_url would leak it in cleartext.
         if ag.base_url:

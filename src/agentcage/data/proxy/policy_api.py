@@ -329,7 +329,16 @@ class PolicyApi:
             return
 
         # Already allowed (baseline or granted) → idempotent success, no hook.
-        if self.dom._matches(domain) or self.dom.is_granted(domain):
+        # BUT: if the matching baseline entry or grant is EXPIRED, L7
+        # (``inspect_request`` → ``_matched_expired``) is currently BLOCKING
+        # that domain, so a 200 "already_allowed" would be misleading — the
+        # traffic is denied while the agent believes it's allowed. Skip the
+        # fast path in that case and fall through to the normal request flow
+        # so the decider can adjudicate a fresh grant (the expired entry is
+        # effectively dead).
+        if self.dom._matched_expired(domain) is None and (
+            self.dom._matches(domain) or self.dom.is_granted(domain)
+        ):
             self._respond(flow, 200, {
                 "id": None, "status": "already_allowed",
                 "domain": domain,
@@ -761,10 +770,14 @@ class PolicyApi:
     # ── Grants overlay file ────────────────────────────────
 
     def _load_overlay(self) -> list[dict]:
+        # ``ValueError`` covers ``UnicodeDecodeError`` (a subclass) raised by
+        # ``yaml.safe_load`` when the overlay file is non-UTF8 garbage — a
+        # too-narrow catch (OSError + YAMLError alone) lets it escape and kill
+        # the sweeper task permanently. Treat any unreadable overlay as empty.
         try:
             with open(self._grants_path) as f:
                 data = yaml.safe_load(f)
-        except (OSError, yaml.YAMLError):
+        except (OSError, yaml.YAMLError, ValueError):
             return []
         if not isinstance(data, list):
             return []
@@ -789,11 +802,22 @@ class PolicyApi:
         reconcile read and this rename); if it fires, the watcher promotes
         the resurrected entry into the baseline — the operator's durable
         control is ``agentcage domain rm`` on the baseline itself.
+
+        Atomic write collision (6th-review): the temp filename is PID-suffixed
+        (``grants.yaml.<pid>.tmp``). The host-side writer (``state.save_grants``)
+        uses the same scheme, and the in-container addon and the host watcher
+        run in different PID namespaces (or different hosts), so the two
+        writers never collide on the same temp path — a concurrent
+        addon+watcher write can no longer clobber each other's temp file
+        (which would lose one side's writes on rename). Each writer is
+        single-threaded, so two concurrent writes from the SAME side also
+        get distinct PIDs only across processes — but a single process is
+        serialized here, so that's not a concern.
         """
         entries = self.dom.granted_entries()
         try:
             os.makedirs(self._grants_dir, exist_ok=True)
-            tmp = self._grants_path + ".tmp"
+            tmp = self._grants_path + f".{os.getpid()}.tmp"
             with open(tmp, "w") as f:
                 yaml.safe_dump(entries, f, default_flow_style=False,
                                sort_keys=False)
@@ -851,22 +875,45 @@ class PolicyApi:
         try:
             while True:
                 await asyncio.sleep(30)
-                # Pick up host-side revoke/promote FIRST: an expiry-triggered
-                # persist must not re-write an entry the host just revoked in
-                # the same tick (the addon would resurrect it before ever
-                # seeing the revoke — and the host watcher would then promote
-                # the resurrected entry into the baseline permanently).
-                self.maybe_reload_overlay()
-                now = _now_iso()
-                expired = self.dom.drop_expired(now)
-                if expired:
-                    self._persist_grants()
-                    for d in expired:
-                        self._audit_event("policy_grant_expired", {
-                            "domain": d, "reason": "ttl expired",
-                        })
+                # Per-tick isolation: a single surprise (e.g. a malformed
+                # overlay raising an exception the helpers don't catch) must
+                # NOT kill this task permanently — grants would stop expiring
+                # and overlay changes would stop reconciling until a restart.
+                # ``CancelledError`` is a ``BaseException`` (Py 3.8+) so it is
+                # NOT swallowed by ``except Exception`` here — it propagates
+                # to the outer ``except asyncio.CancelledError`` below, which
+                # is the orderly-shutdown path (``done()`` cancels the task).
+                # The tick body is factored into ``_sweeper_tick`` so the
+                # per-tick exception handling is unit-testable without the
+                # 30s ``asyncio.sleep``.
+                try:
+                    self._sweeper_tick()
+                except Exception as e:  # pragma: no cover — defensive
+                    self._log.warn(
+                        f"agentcage: policy-api sweeper tick failed: {e!r}"
+                    )
         except asyncio.CancelledError:
             return
+
+    def _sweeper_tick(self) -> None:
+        """One iteration of the sweeper body (factored out for tests).
+
+        Picks up host-side revoke/promote FIRST: an expiry-triggered persist
+        must not re-write an entry the host just revoked in the same tick
+        (the addon would resurrect it before ever seeing the revoke — and
+        the host watcher would then promote the resurrected entry into the
+        baseline permanently). Then drops expired grants and, if any were
+        dropped, re-persists the overlay.
+        """
+        self.maybe_reload_overlay()
+        now = _now_iso()
+        expired = self.dom.drop_expired(now)
+        if expired:
+            self._persist_grants()
+            for d in expired:
+                self._audit_event("policy_grant_expired", {
+                    "domain": d, "reason": "ttl expired",
+                })
 
     # ── Rate limit ─────────────────────────────────────────
 

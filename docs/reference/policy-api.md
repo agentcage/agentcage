@@ -302,10 +302,14 @@ Two audit streams record policy activity:
   `decider:agent:<provider>` (e.g. `decider:agent:openrouter`) for grants,
   and `decider` for structural denials (syntax, `never_grant`, not allowlist
   mode, already granted, rate-limited).
-- **`policy-audit.jsonl`** (per-cage) carries the lifecycle events:
-  `policy_grant_applied` (a grant was promoted into the baseline),
-  `policy_grant_removed` (a domain removed via `agentcage domain rm`), and
-  `domain_allow_expired` (a time-limited domain expired).
+- **`policy-audit.jsonl`** (per-cage, *outside* the grants bind mount) carries
+  the lifecycle events: `policy_grant_applied` (a grant was promoted into the
+  baseline), `policy_grant_removed` (a domain removed via `agentcage domain rm`),
+  and `domain_allow_expired` (a time-limited domain expired). It lives at
+  `~/.local/share/agentcage/<name>/policy-audit.jsonl` — a sibling of the
+  `grants/` subdirectory, deliberately NOT inside the grants dir (that dir is
+  chmod 0777 and bind-mounted RW into the egress, so a file inside it would be
+  forgeable/truncatable by the caged container).
 
 These are the forensic record for every egress widening.
 

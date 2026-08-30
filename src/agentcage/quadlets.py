@@ -1117,25 +1117,32 @@ def _grants_service_unit(name: str) -> str:
     Plain ``.service`` (not a quadlet): the watcher must run on the host so
     it can write the operator's ``cage.yaml`` baseline and exec into the
     egress to SIGHUP dnsmasq — neither of which the in-container addon can
-    do. It tracks the egress lifecycle (ordered after it, stops with it via
-    BindsTo/PartOf) and is pulled in at boot via ``WantedBy=default.target``
-    so the operator never starts or stops it by hand.
+    do. It is pulled in at boot via ``WantedBy=default.target`` so the
+    operator never starts or stops it by hand.
 
-    Deliberately ``Wants=`` not ``Requires=``: the watcher is useful with the
-    egress DOWN too (pruning expired baseline entries needs no proxy, and a
-    stopped cage is the common case at boot) — ``Requires=`` would boot the
-    whole egress just because the watcher started, e.g. when
-    ``domain add --expires-in`` installs it on demand on a stopped cage.
+    The watcher intentionally runs INDEPENDENTLY of egress state: it only
+    ``Wants=`` and is ordered ``After=`` the egress (a hard dependency /
+    ``Requires=`` would boot the whole egress just because the watcher
+    started, e.g. when ``domain add --expires-in`` installs it on demand on
+    a stopped cage). There is deliberately NO ``BindsTo=``/``PartOf=`` on
+    the egress — pruning expired baseline entries needs no proxy, so the
+    watcher must keep running even while the egress is down or after an
+    egress crash/restart. ``BindsTo=`` would stop the watcher on a clean
+    egress stop (and ``Restart=on-failure`` does NOT revive a unit stopped
+    cleanly), silently halting promotions after the first egress crash;
+    ``PartOf=`` would stop/restart it in lockstep with the egress for no
+    benefit. The container backend stops/starts this unit explicitly on
+    ``cage stop``/``destroy`` (see ``backends/container.py``), so lifecycle
+    is managed by hand there rather than by unit-level coupling.
     """
     return f"""[Unit]
 Description=agentcage policy-api grants watcher for {name}
-# Ordered after the egress and tracks its stop (BindsTo/PartOf) — but do
-# NOT Require it: the watcher prunes expired baseline entries even while
-# the egress is down, and must not boot it as a side effect.
+# Ordered after the egress, but only Wants= it (no BindsTo/PartOf): the
+# watcher intentionally runs independently of egress state — pruning
+# expired baseline entries needs no proxy, and the backend stops this
+# unit explicitly on `cage stop`/destroy.
 Wants={name}-egress.service
 After={name}-egress.service
-BindsTo={name}-egress.service
-PartOf={name}-egress.service
 
 [Service]
 Type=simple

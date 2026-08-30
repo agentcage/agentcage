@@ -4792,13 +4792,23 @@ def grants_watch(interval: float, once: bool):
                         "reason": "allowlist entry expired",
                         "action": "removed_from_baseline",
                     })
+                # Persist the shrunk expires map whenever any expired
+                # entry was processed — even when the domain wasn't in
+                # the allow list. Without this, a stale expires entry whose
+                # domain was removed from (or never in) domains.allow is
+                # popped in memory only, never persisted, and re-audited
+                # every tick forever.
+                _write_domain_expires(raw, expires)
                 if removed_any:
-                    _write_domain_expires(raw, expires)
                     try:
                         _apply_baseline_change(name, raw)
                     except (SystemExit, Exception):
                         pass
-                    changed = True
+                else:
+                    # No baseline edit, but the expires map shrank —
+                    # persist it so the stale entry doesn't reappear.
+                    state.save_raw_config(name, raw)
+                changed = True
         except FileNotFoundError:
             pass
         # 1. Drop expired grants from baseline + overlay (TTL enforcement).
@@ -4808,6 +4818,7 @@ def grants_watch(interval: float, once: bool):
         #    --expires-in entries still in the overlay).
         expired = [e for e in entries if _is_expired(e)]
         if expired:
+            baseline_changed = False
             try:
                 raw = state.load_raw_config(name)
                 _ensure_v022_cage(name)
@@ -4821,8 +4832,8 @@ def grants_watch(interval: float, once: bool):
                             if x.rstrip(".").lower() == d:
                                 allow.pop(i)
                                 break
-                        changed = True
-                if changed:
+                        baseline_changed = True
+                if baseline_changed:
                     # Tolerate a reload failure (e.g. egress not yet up,
                     # dnsmasq validation hiccup): the baseline is already
                     # written; record intent + audit, retry the SIGHUP next
@@ -4846,6 +4857,11 @@ def grants_watch(interval: float, once: bool):
             entries = [e for e in entries
                        if str(e.get("domain", "")).rstrip(".").lower()
                        not in expired_domains]
+            # The overlay shrank — it must be persisted even when the
+            # expired domain was NOT in the baseline, otherwise the entry
+            # reloads next tick and re-audits (policy_grant_removed) every
+            # tick forever (never converges).
+            changed = True
         # 2. Promote pending grants into the baseline.
         #    The addon writes every decided grant to the overlay (no `applied`
         #    flag); the watcher promotes all present entries and removes them.
@@ -4856,53 +4872,64 @@ def grants_watch(interval: float, once: bool):
                 _ensure_v022_cage(name)
                 _ensure_domain_section(raw)
                 dom = raw["domains"]
-                list_key = ("allow" if "allow" in dom
-                            else "block" if "block" in dom else "allow")
-                dom.setdefault(list_key, [])
-                allow_lower = {x.rstrip(".").lower() for x in dom[list_key]}
-                # Preserve each grant's TTL into domains.expires so step 0
-                # of the next tick prunes it (and the L7 inspector enforces
-                # it). Without this, a ttl_seconds grant is promoted into
-                # domains.allow and its expires_at (which lived only in the
-                # overlay entry) is deleted with that entry one tick later —
-                # silently turning a short-lived grant permanent.
-                expires = _read_domain_expires(raw)
-                for e in pending:
-                    d = str(e.get("domain", "")).rstrip(".")
-                    dl = d.lower()
-                    if dl not in allow_lower:
-                        dom[list_key].append(d)
-                        allow_lower.add(dl)
-                    exp = str(e.get("expires_at", "") or "")
-                    if exp:
-                        expires[dl] = exp
-                if expires:
-                    _write_domain_expires(raw, expires)
-                # Same tolerance as the expire path: the baseline write is
-                # the durable part; the live-reload SIGHUP is best-effort.
-                try:
-                    _apply_baseline_change(name, raw)
-                except (SystemExit, Exception):
-                    pass
-                promoted_domains = set()
-                for e in pending:
-                    d = str(e.get("domain", "")).rstrip(".").lower()
-                    promoted_domains.add(d)
-                    state.append_policy_audit(name, {
-                        "kind": "policy_grant_applied",
-                        "domain": e.get("domain"),
-                        "reason": e.get("reason", ""),
-                        "source": e.get("source", ""),
-                        "expires_at": e.get("expires_at", ""),
-                        "action": "added_to_baseline",
-                    })
-                # Remove promoted entries from the overlay — they now live
-                # in the baseline; keeping them would grow the file without
-                # bound and re-surface them in `cage grants list`.
-                entries = [e for e in entries
-                           if str(e.get("domain", "")).rstrip(".").lower()
-                           not in promoted_domains]
-                changed = True
+                # A grant only widens the allow set; in blocklist mode
+                # (block present, allow absent) a "grant" is meaningless —
+                # the manual ``cage grants promote`` command refuses with
+                # "cannot promote into a blocklist-mode cage" (see
+                # grants_promote), and the Policy API request endpoint
+                # refuses to run in blocklist mode. Mirror that here:
+                # leave overlay entries pending (step 1 still drops
+                # expired ones) rather than appending granted domains to
+                # the BLOCK list — the exact opposite of a grant.
+                if "block" in dom and "allow" not in dom:
+                    pass  # skip promotion in blocklist mode
+                else:
+                    list_key = "allow"
+                    dom.setdefault(list_key, [])
+                    allow_lower = {x.rstrip(".").lower() for x in dom[list_key]}
+                    # Preserve each grant's TTL into domains.expires so step 0
+                    # of the next tick prunes it (and the L7 inspector enforces
+                    # it). Without this, a ttl_seconds grant is promoted into
+                    # domains.allow and its expires_at (which lived only in the
+                    # overlay entry) is deleted with that entry one tick later —
+                    # silently turning a short-lived grant permanent.
+                    expires = _read_domain_expires(raw)
+                    for e in pending:
+                        d = str(e.get("domain", "")).rstrip(".")
+                        dl = d.lower()
+                        if dl not in allow_lower:
+                            dom[list_key].append(d)
+                            allow_lower.add(dl)
+                        exp = str(e.get("expires_at", "") or "")
+                        if exp:
+                            expires[dl] = exp
+                    if expires:
+                        _write_domain_expires(raw, expires)
+                    # Same tolerance as the expire path: the baseline write is
+                    # the durable part; the live-reload SIGHUP is best-effort.
+                    try:
+                        _apply_baseline_change(name, raw)
+                    except (SystemExit, Exception):
+                        pass
+                    promoted_domains = set()
+                    for e in pending:
+                        d = str(e.get("domain", "")).rstrip(".").lower()
+                        promoted_domains.add(d)
+                        state.append_policy_audit(name, {
+                            "kind": "policy_grant_applied",
+                            "domain": e.get("domain"),
+                            "reason": e.get("reason", ""),
+                            "source": e.get("source", ""),
+                            "expires_at": e.get("expires_at", ""),
+                            "action": "added_to_baseline",
+                        })
+                    # Remove promoted entries from the overlay — they now live
+                    # in the baseline; keeping them would grow the file without
+                    # bound and re-surface them in `cage grants list`.
+                    entries = [e for e in entries
+                               if str(e.get("domain", "")).rstrip(".").lower()
+                               not in promoted_domains]
+                    changed = True
             except FileNotFoundError:
                 pass
         # 3. Persist the overlay (marks promoted entries applied, drops
