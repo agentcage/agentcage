@@ -4148,20 +4148,95 @@ def test_egress_dnsmasq_listens_explicitly_and_forwards_to_gateway():
     assert "/run/agentcage/dns-allowlist.egress.conf" in script
 
 
-def test_reload_domains_regenerates_runtime_servers_before_sighup():
-    """Live `domain add/rm` must regenerate the runtime servers-file the
-    dnsmasq instances actually serve (/run/agentcage/dns-allowlist.{cage,
-    egress}.conf), re-pointing apexes at each VM's default-route upstream,
-    BEFORE the SIGHUP — otherwise the new apex lands only in the
-    bind-mounted file and the served set is stale."""
+def test_reload_domains_cage_regenerates_runtime_servers_before_sighup():
+    """Live `domain add/rm` regenerates the CAGE-LOCAL runtime servers-file
+    the cage dnsmasq actually serves (/run/agentcage/dns-allowlist.cage.conf),
+    re-pointing apexes at the cage's default-route upstream (the egress
+    sibling), BEFORE the SIGHUP — otherwise the new apex lands only in the
+    bind-mounted file and the served set is stale.
+
+    The EGRESS path no longer regenerates from the host: it raises the
+    supervisor's reload flag so the supervisor re-renders BASELINE+GRANTED
+    and SIGHUPs (covered by test_reload_domains_egress_raises_supervisor_
+    reload_flag). The cage-local regeneration is baseline-only and
+    intentional (see the inline step-3 comment in reload_domains)."""
     import inspect
     src = inspect.getsource(AppleContainerBackend.reload_domains)
-    # both instances re-point at their default route (cage→egress,
-    # egress→gateway) and rewrite the served runtime file before SIGHUP
-    assert "/run/agentcage/dns-allowlist.egress.conf" in src
+    # the cage-local instance re-points at its default route (cage→egress)
+    # and rewrites the served runtime file before SIGHUP
     assert "/run/agentcage/dns-allowlist.cage.conf" in src
     assert 'ip route' in src and '/^default/' in src
     assert "kill -HUP" in src
+    # the egress path references its runtime file too (the flag-raise is
+    # gated on it existing)
+    assert "/run/agentcage/dns-allowlist.egress.conf" in src
+
+
+def test_reload_domains_egress_raises_supervisor_reload_flag(tmp_path, monkeypatch):
+    """Round-11 finding: reload_domains must NOT regenerate the egress's
+    runtime servers-file from the BASELINE alone — the old `sed` of
+    /etc/agentcage/dns-allowlist.conf > /run/agentcage/dns-allowlist.egress.conf
+    clobbered every in-flight policy-API granted zone out of dnsmasq on
+    every operator domain add/rm. Instead, when the runtime servers-file
+    exists, raise the supervisor's reload flag (/home/acproxy/dns/reload)
+    so the supervisor re-renders BASELINE + GRANTED zones and SIGHUPs
+    within ~1s. The fallback (runtime file absent → egress reads the
+    bind-mounted file directly) keeps the plain pidfile SIGHUP on
+    /home/acdns/dnsmasq.pid."""
+    backend = AppleContainerBackend()
+    egress_dir = tmp_path / "egress"
+    egress_dir.mkdir()
+    allow = egress_dir / "dns-allowlist.conf"
+    allow.write_text("server=/old.example/1.1.1.1\n")
+
+    monkeypatch.setattr(backend, "egress_config_dir", lambda name: egress_dir)
+    monkeypatch.setattr(
+        backend, "_render_egress_config",
+        lambda cfg, name: allow.write_text("server=/new.example/1.1.1.1\n"),
+    )
+    monkeypatch.setattr(backend, "is_running", lambda name, svc: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ARG001
+        calls.append(argv)
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    cfg = Config(name="demo", isolation="apple-container")
+    cfg.container.image = "x"
+    with patch.object(ac_cli, "run", side_effect=fake_run):
+        backend.reload_domains(cfg, "demo")
+
+    # Isolate the egress step-2 exec: `exec demo-egress sh -c <script>`.
+    # (Step 1 is `exec demo-egress dnsmasq --test ...`; step 3 targets the
+    # cage, not the egress.)
+    egress_sh = [
+        a for a in calls
+        if a[:2] == ["exec", "demo-egress"] and a[2:4] == ["sh", "-c"]
+    ]
+    assert len(egress_sh) == 1, f"expected one egress sh -c exec, got {egress_sh!r}"
+    script = egress_sh[0][4]
+
+    # (a) does NOT regenerate from the baseline via sed into the runtime
+    # servers-file — that clobbers granted zones.
+    assert not (
+        "sed" in script and "> /run/agentcage/dns-allowlist.egress.conf" in script
+    ), (
+        f"egress exec must not sed-regenerate the runtime servers-file "
+        f"(clobbers granted zones): {script!r}"
+    )
+    # (b) raises the supervisor's reload flag so the supervisor re-renders
+    # BASELINE + GRANTED and SIGHUPs.
+    assert "/home/acproxy/dns/reload" in script, (
+        f"egress exec must raise the supervisor reload flag: {script!r}"
+    )
+    # (c) keeps the fallback pidfile SIGHUP for when the runtime file is
+    # absent (egress reads the bind-mounted file directly).
+    assert "/home/acdns/dnsmasq.pid" in script and "kill -HUP" in script, (
+        f"egress exec must keep the fallback pidfile SIGHUP: {script!r}"
+    )
+    # The flag-raise is gated on the runtime servers-file existing.
+    assert "/run/agentcage/dns-allowlist.egress.conf" in script
 
 
 def test_start_injects_agentcage_version_env(tmp_path, monkeypatch):
@@ -4177,3 +4252,212 @@ def test_start_injects_agentcage_version_env(tmp_path, monkeypatch):
     backend.start("demo", quiet=True)
     cage_argv = _cage_run_argv(captured)
     assert any(a.startswith("AGENTCAGE_VERSION=") for a in cage_argv)
+def test_generate_units_records_domains_auto_flag():
+    """generate_units bakes domains_auto + has_expiring_domains into the
+    unit metadata so start() knows whether to install the watcher plist."""
+    from agentcage.config import DomainsAutoConfig, DeciderConfig, AgentDeciderConfig
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.domains.mode = "allowlist"
+    cfg.domains.allow = ["anthropic.com"]
+    cfg.domains.auto = DomainsAutoConfig(
+        enable=True,
+        decider=DeciderConfig(kind="agent",
+                              agent=AgentDeciderConfig(provider="openrouter",
+                                                       model="m", api_key="env:K")),
+    )
+    units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
+    meta = json.loads(units["deploy.json"])
+    assert meta["domains_auto"] is True
+    assert meta["has_expiring_domains"] is False
+
+
+def test_generate_units_records_expiring_domains_flag():
+    """A cage with --expires-in entries but no domains.auto still needs the
+    watcher (to prune expired entries); has_expiring_domains captures that."""
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.domains.mode = "allowlist"
+    cfg.domains.allow = ["anthropic.com"]
+    cfg.domains.expires = {"anthropic.com": "2026-01-01T00:00:00+00:00"}
+    units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
+    meta = json.loads(units["deploy.json"])
+    assert meta["domains_auto"] is False
+    assert meta["has_expiring_domains"] is True
+
+def test_render_egress_config_includes_decider_provider_host(tmp_path, monkeypatch):
+    """_render_egress_config renders dnsmasq.conf with a server= line for the
+    decider's LLM provider host (e.g. openrouter.ai) so the egress-internal
+    urllib call can resolve it."""
+    from agentcage.config import DomainsAutoConfig, DeciderConfig, AgentDeciderConfig
+    backend = AppleContainerBackend()
+    monkeypatch.setattr(backend, "egress_config_dir", lambda name: tmp_path)
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.dns_servers = ["1.1.1.1"]
+    cfg.domains.mode = "allowlist"
+    cfg.domains.allow = ["anthropic.com"]
+    cfg.domains.auto = DomainsAutoConfig(
+        enable=True,
+        decider=DeciderConfig(kind="agent",
+                              agent=AgentDeciderConfig(provider="openrouter",
+                                                       model="m", api_key="env:K")),
+    )
+    # Avoid the save_dns_allowlist disk path (cage.yaml not on disk in test).
+    monkeypatch.setattr("agentcage.state.save_dns_allowlist",
+                        lambda name: (_ for _ in ()).throw(FileNotFoundError))
+    backend._render_egress_config(cfg, "t")
+    dnsmasq_conf = (tmp_path / "dnsmasq.conf").read_text()
+    assert "server=/openrouter.ai/1.1.1.1" in dnsmasq_conf, dnsmasq_conf
+    assert "server=/anthropic.com/1.1.1.1" in dnsmasq_conf
+    # dns-allowlist.conf (the --servers-file) must also include it.
+    allowlist_conf = (tmp_path / "dns-allowlist.conf").read_text()
+    assert "server=/openrouter.ai/1.1.1.1" in allowlist_conf, allowlist_conf
+
+
+# ── decider api_key staging: env: vs systemd-creds: (apple parity) ────────
+# Round-10 finding 3: ``generate_units`` collects the decider api_key's
+# VARIABLE NAME into ``relay_secret_envs`` (correct for ``env:NAME``) but
+# discarded the source scheme, so a ``systemd-creds:NAME`` key was staged
+# identically to an ``env:NAME`` key. On apple the staging resolves the
+# value by NAME from the configured secret store (``secret set`` is
+# scheme-agnostic on apple and stores the cleartext under NAME in the
+# keychain / legacy pending_secrets.json), and the bind-mount file
+# ``secrets_dir/NAME`` is the apple channel the addon's ``_read_secret``
+# reads at ``/home/acproxy/secrets/NAME`` — the apple equivalent of the
+# container backend's podman ``Secret=`` env. These tests pin that BOTH
+# schemes produce the file-based staging, and that the source scheme is now
+# recorded in the unit JSON (so the missing-value warning can name the
+# decider key accurately instead of mislabeling it a relay credential).
+
+
+def _decider_cfg(api_key):
+    """A minimal apple-container Config with domains.auto enabled."""
+    from agentcage.config import (
+        DomainsAutoConfig, DeciderConfig, AgentDeciderConfig,
+    )
+    cfg = Config(name="demo", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.domains.mode = "allowlist"
+    cfg.domains.allow = ["anthropic.com"]
+    cfg.domains.auto = DomainsAutoConfig(
+        enable=True,
+        decider=DeciderConfig(kind="agent",
+                              agent=AgentDeciderConfig(provider="openrouter",
+                                                       model="m", api_key=api_key)),
+    )
+    return cfg
+
+
+class TestDeciderApiKeyStagingScheme:
+    def test_generate_units_records_systemd_creds_source(self):
+        """``generate_units`` records the full ``systemd-creds:NAME`` source
+        in ``decider_api_key_source`` (pre-fix only the bare NAME was
+        collected into ``relay_secret_envs``)."""
+        cfg = _decider_cfg("systemd-creds:POLICY_LLM_KEY")
+        meta = json.loads(
+            AppleContainerBackend().generate_units(cfg, "/c", "/p", "demo")["demo.json"]
+        )
+        assert meta["decider_api_key_source"] == "systemd-creds:POLICY_LLM_KEY"
+        assert "POLICY_LLM_KEY" in meta["relay_secret_envs"]
+        # The decider key must NOT leak into the cage workload's secret_envs
+        # (it is egress-only, never `-e`'d to the cage).
+        assert "POLICY_LLM_KEY" not in meta["secret_envs"]
+
+    def test_generate_units_records_env_source(self):
+        cfg = _decider_cfg("env:OPENROUTER_API_KEY")
+        meta = json.loads(
+            AppleContainerBackend().generate_units(cfg, "/c", "/p", "demo")["demo.json"]
+        )
+        assert meta["decider_api_key_source"] == "env:OPENROUTER_API_KEY"
+        assert "OPENROUTER_API_KEY" in meta["relay_secret_envs"]
+
+    def test_generate_units_no_decider_source_when_auto_disabled(self):
+        cfg = Config(name="demo", isolation="apple-container")
+        cfg.container.image = "x"
+        meta = json.loads(
+            AppleContainerBackend().generate_units(cfg, "/c", "/p", "demo")["demo.json"]
+        )
+        assert meta["decider_api_key_source"] == ""
+        assert meta["relay_secret_envs"] == []
+
+    def _stage(self, tmp_path, monkeypatch, *, api_key, seed_name, seed_value):
+        """Drive ``_stage_secrets`` directly with a plaintext backend +
+        seeded pending_secrets.json (mirrors how ``secret set`` on apple
+        stores the cleartext under NAME, scheme-agnostic)."""
+        import agentcage.state as _state
+        monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
+        backend = AppleContainerBackend()
+        meta = json.loads(
+            AppleContainerBackend().generate_units(
+                _decider_cfg(api_key), "/c", "/p", "demo")["demo.json"]
+        )
+        # The plaintext backend (ApplePlaintextStore) reads pending_secrets.json.
+        meta["secrets_backend"] = "plaintext"
+        deploy_dir = _state.deployment_dir("demo")
+        deploy_dir.mkdir(parents=True, exist_ok=True)
+        (deploy_dir / "pending_secrets.json").write_text(
+            json.dumps([[seed_name, seed_value]])
+        )
+        secrets_dir = tmp_path / "secrets"
+        monkeypatch.setattr(backend, "secrets_dir", lambda _n: secrets_dir)
+        staged = backend._stage_secrets("demo", meta)
+        return backend, meta, secrets_dir, staged
+
+    def test_systemd_creds_api_key_produces_file_based_staging(
+        self, tmp_path, monkeypatch,
+    ):
+        """``systemd-creds:NAME`` decider api_key → ``_stage_secrets`` writes
+        the cleartext to ``secrets_dir/NAME`` so the addon's ``_read_secret``
+        finds it at ``/home/acproxy/secrets/NAME`` (the apple channel that
+        stands in for the container backend's podman ``Secret=`` env)."""
+        _backend, meta, secrets_dir, staged = self._stage(
+            tmp_path, monkeypatch,
+            api_key="systemd-creds:POLICY_LLM_KEY",
+            seed_name="POLICY_LLM_KEY", seed_value="sk-decider-real",
+        )
+        # File staged 0600 with the real value.
+        f = secrets_dir / "POLICY_LLM_KEY"
+        assert f.is_file(), sorted(secrets_dir.iterdir())
+        assert f.read_text() == "sk-decider-real"
+        assert oct(f.stat().st_mode & 0o777) == "0o600"
+        # The decider key is egress-only: it is NOT in the returned
+        # ``staged`` set (that set drives which ``-e NAME={{NAME}}`` flags
+        # land on the cage workload — relay/decider creds never do).
+        assert "POLICY_LLM_KEY" not in staged
+        assert staged == set()
+
+    def test_env_api_key_staging_unchanged(self, tmp_path, monkeypatch):
+        """``env:NAME`` decider api_key stages identically (by NAME from the
+        configured store) — the source scheme is decorative on apple, so the
+        tightening for ``systemd-creds:`` must not perturb the ``env:`` path."""
+        _backend, meta, secrets_dir, staged = self._stage(
+            tmp_path, monkeypatch,
+            api_key="env:OPENROUTER_API_KEY",
+            seed_name="OPENROUTER_API_KEY", seed_value="sk-env-real",
+        )
+        f = secrets_dir / "OPENROUTER_API_KEY"
+        assert f.is_file()
+        assert f.read_text() == "sk-env-real"
+        assert oct(f.stat().st_mode & 0o777) == "0o600"
+        assert "OPENROUTER_API_KEY" not in staged
+        assert staged == set()
+
+    def test_missing_systemd_creds_api_key_warns_decider_not_relay(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """When the decider key value isn't provided, the warning must name
+        the decider api_key (and the 503 fail-closed consequence) rather than
+        mislabeling it a ``protocol_relays env`` credential."""
+        _backend, meta, secrets_dir, staged = self._stage(
+            tmp_path, monkeypatch,
+            api_key="systemd-creds:POLICY_LLM_KEY",
+            seed_name="UNRELATED", seed_value="x",  # NAME not seeded
+        )
+        assert not (secrets_dir / "POLICY_LLM_KEY").exists()
+        err = capsys.readouterr().err
+        assert "decider.agent.api_key" in err
+        assert "POLICY_LLM_KEY" in err
+        assert "503" in err
+        # Must NOT be mislabeled as a relay credential.
+        assert "protocol_relays env" not in err

@@ -122,15 +122,32 @@ class ContainerBackend:
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/containers/systemd"))
 
+    def user_unit_dir(self) -> Path:
+        """Directory for plain (non-quadlet) systemd user units.
+
+        Quadlet ``.container``/``.network``/``.volume`` files live in
+        :meth:`unit_dir` and are transpiled by the quadlet generator. A plain
+        ``.service`` (like the Policy API grants watcher) must be installed
+        here so systemd-user picks it up directly.
+        """
+        return Path(os.path.expanduser("~/.config/systemd/user"))
+
     def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
+        user_dest = self.user_unit_dir()
+        user_dest.mkdir(parents=True, exist_ok=True)
         # The deploy_name isn't threaded down here; pull it from any unit name
         # (units are keyed "<name>-cage.container" / etc.). Best-effort.
         cage = _cage_from_units(units)
         with Phase("deploy.quadlets", cage=cage):
             for filename, content in units.items():
-                (dest / filename).write_text(content)
+                # Plain .service units go to the systemd user dir; quadlet
+                # types (.container/.network/.volume) go to the quadlet dir.
+                if filename.endswith(".service"):
+                    (user_dest / filename).write_text(content)
+                else:
+                    (dest / filename).write_text(content)
             if not quiet:
                 click.echo(f"Installed quadlet files to {dest}/")
             systemd.daemon_reload()

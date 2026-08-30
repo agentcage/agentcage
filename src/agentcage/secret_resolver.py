@@ -200,6 +200,42 @@ def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
             resolved.add(rule.env)
         elif result.action == ResolveAction.QUADLET_HANDLED:
             resolved.add(rule.env)
+
+    # domains.auto decider api_key. It is NOT a secret_injection rule (it is
+    # egress-only and never injected into cage traffic), but quadlets emits a
+    # ``Secret=`` directive for it and quadlets._boot_resolvable green-lights
+    # env:/cmd: schemes precisely BECAUSE this function is expected to
+    # materialize them. Without this block that promise is unkept: the egress
+    # unit references a podman secret nobody ever creates and the container
+    # dies at start with `no such secret` — taking the whole cage down, not
+    # just the decider.
+    auto = getattr(getattr(cfg, "domains", None), "auto", None)
+    if auto is not None and getattr(auto, "enable", False):
+        source = auto.decider.agent.api_key or ""
+        _scheme, _, arg = source.partition(":")
+        if arg and arg not in skip and arg not in resolved:
+            try:
+                result = resolve(source, arg, state_dir)
+            except ValueError as e:
+                if strict:
+                    raise ValueError(
+                        f"failed to resolve domains.auto decider api_key "
+                        f"'{arg}': {e}"
+                    ) from e
+                click.echo(
+                    f"warning: failed to resolve decider api_key {arg}: {e}",
+                    err=True,
+                )
+                result = None
+            if result is not None:
+                if result.action == ResolveAction.RESOLVED:
+                    full = f"{deploy_name}.{arg}"
+                    if podman.secret_exists(full):
+                        podman.secret_remove(full)
+                    podman.secret_create(full, result.value)
+                    resolved.add(arg)
+                elif result.action == ResolveAction.QUADLET_HANDLED:
+                    resolved.add(arg)
     return resolved
 
 

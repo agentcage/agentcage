@@ -2,28 +2,86 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from inspectors.base import Inspector, InspectionContext, InspectionResult
 
 
 class DomainInspector(Inspector):
-    """Blocks or allows requests based on the target domain."""
+    """Blocks or allows requests based on the target domain.
+
+    Holds two layers of allow state:
+
+    * ``_baseline`` — the operator's static ``domains.allow`` from
+      ``config.yaml``. Rebuilt by :meth:`configure` on every hot-reload.
+    * ``granted`` — runtime overlay entries added by the Policy API request
+      endpoint (see docs/explain/policy-api.md). :meth:`configure` NEVER
+      clears ``granted``, so a ``config.yaml`` mtime hot-reload reapplies
+      the baseline on top of live grants without dropping them. Grants are
+      additive only: they widen the allow set and never weaken the SNI/Host
+      check, secret/entropy/content-type/body-size inspectors, or rate
+      limits — those still run on traffic to granted domains.
+    """
 
     name = "domain"
+
+    def __init__(self) -> None:
+        # ``mode`` is read by callers; keep it as a plain attribute.
+        self.mode: str = ""
+        self._baseline: set[str] = set()
+        # Domain → ISO expires_at for allowlist entries with a TTL. Empty
+        # value / absent key = permanent. Enforced in ``inspect_request``
+        # so an expired domain is blocked at L7 immediately, even before
+        # the in-egress addon sweeper drops it and re-publishes the zone
+        # list. Robust regardless of host-side reconcile timing.
+        self._expires: dict[str, str] = {}
+        # granted[domain_lower] = {granted_at, expires_at, reason, source}
+        self.granted: dict[str, dict] = {}
+
+    # ── Configuration (hot-reload safe) ──────────────────────
 
     def configure(self, config: dict) -> None:
         # New format: allow/block keys
         if "allow" in config:
             self.mode = "allowlist"
-            self.domain_set: set[str] = {d.lower() for d in config.get("allow", [])}
+            self._baseline = {d.lower() for d in config.get("allow", [])}
         elif "block" in config:
             self.mode = "blocklist"
-            self.domain_set = {d.lower() for d in config.get("block", [])}
+            self._baseline = {d.lower() for d in config.get("block", [])}
         else:
             # Backward compat: mode + list
             self.mode = config.get("mode")  # "allowlist" | "blocklist" | None
-            self.domain_set = {d.lower() for d in config.get("list", [])}
+            self._baseline = {d.lower() for d in config.get("list", [])}
+        # Per-domain expiry (allowlist mode). Lowercase, trailing-dot-stripped
+        # keys to match ``_matches`` suffix semantics. ``expires`` may be a
+        # ``{domain: iso}`` map or a list of ``{domain, expires_at}`` objects —
+        # accept both (the proxy-config mirror of cage.yaml's ``domains.expires``).
+        self._expires = {}
+        raw_expires = config.get("expires") or {}
+        if isinstance(raw_expires, dict):
+            for k, v in raw_expires.items():
+                if k and v:
+                    self._expires[str(k).lower().rstrip(".")] = str(v)
+        elif isinstance(raw_expires, list):
+            for e in raw_expires:
+                if isinstance(e, dict) and e.get("domain") and e.get("expires_at"):
+                    self._expires[str(e["domain"]).lower().rstrip(".")] = str(e["expires_at"])
+        # NOTE: intentionally do NOT touch self.granted here. Hot-reload of
+        # config.yaml rebuilds the baseline; live grants survive and remain
+        # effective (replayed on top). The addon's _maybe_reload calls
+        # configure() then re-persists/loads the overlay.
+
+    @property
+    def domain_set(self) -> set[str]:
+        """Effective allow set: baseline ∪ granted (allowlist mode)."""
+        if self.mode == "allowlist":
+            return self._baseline | set(self.granted)
+        # In blocklist mode grants are no-ops (everything not blocked is
+        # already reachable); return the baseline so _matches behaves.
+        return self._baseline
+
+    # ── Matching ────────────────────────────────────────────
 
     def _matches(self, host: str) -> bool:
         parts = host.lower().split(".")
@@ -31,6 +89,78 @@ class DomainInspector(Inspector):
             if ".".join(parts[i:]) in self.domain_set:
                 return True
         return False
+
+    def _matched_expired(self, host: str) -> Optional[str]:
+        """If the host would be blocked by expiry, return the longest
+        matching expired suffix (for the block reason); else None.
+
+        Semantics: would this host still match the allow set if all
+        expired entries were removed?
+
+        * If ANY matching suffix is valid (in ``domain_set`` with no
+          ``expires_at``, or with a future ``expires_at``) → the host is
+          allowed → return ``None``.
+        * If EVERY matching suffix is expired → return the LONGEST (most
+          specific) expired suffix, for the error message.
+
+        Expiry is supposed to REMOVE an allow entry, not introduce a deny
+        rule: a shorter expired suffix must not block traffic that a
+        longer permanent (or future-dated) suffix allows, and vice versa.
+        The expiry source is the baseline ``domains.expires`` map
+        (operator ``domain add --expires-in``), falling back to the
+        matching GRANT entry's own ``expires_at`` — a TTL'd grant must
+        expire at L7 immediately, not keep passing for up to the sweeper's
+        30s poll. An unparseable ``expires_at`` is treated as "no expiry"
+        (fail-open on the timestamp, never fail-closed on a malformed
+        value). Two passes over the suffixes — O(suffixes).
+
+        Comparison is by parsed timezone-aware datetimes, NOT a lexical
+        string compare. Both programmatic producers (cli
+        ``_expires_at_from_now`` and the PolicyApi ``_expires_at`` grant
+        path) emit ``datetime.now(timezone.utc).isoformat()`` (UTC,
+        ``+00:00``), but operator-typed values in cage.yaml's
+        ``domains.expires`` are kept as raw ISO-8601 strings with NO offset
+        normalization (config.py validates them loosely), so a non-UTC
+        offset (e.g. ``-05:00``) is representable. A lexical compare of
+        such a value against the always-``+00:00`` ``now`` would order the
+        same UTC instant as ~5h earlier and expire the domain early
+        (blocking legitimate traffic), so we parse with
+        ``datetime.fromisoformat`` (>=3.11) which normalizes offsets.
+        Malformed values — unparseable strings, or a tz-naive value that
+        cannot compare against the aware ``now`` — raise
+        ``ValueError``/``TypeError`` and are treated as no expiry (fail-open
+        on timestamps, by design).
+        """
+        now_dt = datetime.now(timezone.utc)
+        parts = host.lower().split(".")
+        expired_longest: Optional[str] = None
+        for i in range(len(parts)):
+            suffix = ".".join(parts[i:])
+            if suffix not in self.domain_set:
+                continue
+            exp = self._expires.get(suffix, "")
+            if not exp and suffix in self.granted:
+                exp = (self.granted[suffix].get("expires_at") or "")
+            if not exp:
+                # Permanent entry — host is allowed regardless of other
+                # expired suffixes.
+                return None
+            try:
+                # Parse the operator/grant ISO-8601 expiry and compare as
+                # timezone-aware datetimes (offsets normalized). Malformed /
+                # tz-naive values raise ValueError/TypeError → fail-open.
+                if datetime.fromisoformat(exp) > now_dt:
+                    # Future expiry — host is allowed.
+                    return None
+            except (ValueError, TypeError):
+                # Unparseable / tz-naive expiry → treat as no expiry
+                # (fail-open on the timestamp, by design).
+                return None
+            # This suffix is expired. Track the longest (first encountered
+            # since we walk longest-first).
+            if expired_longest is None:
+                expired_longest = suffix
+        return expired_longest
 
     def inspect_request(
         self, ctx: InspectionContext
@@ -48,13 +178,35 @@ class DomainInspector(Inspector):
                 severity="error",
             )
         matched = self._matches(ctx.host)
-        if self.mode == "allowlist" and not matched:
-            return InspectionResult(
-                inspector=self.name,
-                action="block",
-                reason=f"domain not in allowlist: {ctx.host}",
-                severity="error",
-            )
+        if self.mode == "allowlist":
+            if not matched:
+                return InspectionResult(
+                    inspector=self.name,
+                    action="block",
+                    reason=f"domain not in allowlist: {ctx.host}",
+                    severity="error",
+                )
+            # Expiry enforcement (allowlist mode only): if the allowlist
+            # entry that matched has an expires_at in the past, treat the
+            # domain as no-longer-allowed. This makes a time-limited domain
+            # (``domain add --expires-in`` or a TTL'd grant) stop working the
+            # moment it expires, in-process, without waiting for the
+            # in-egress sweeper to drop it or the reconcile to prune the
+            # baseline. An unparseable expires_at is treated as
+            # "no expiry" (fail-open on the timestamp, never fail-closed on
+            # a malformed value).
+            expired_entry = self._matched_expired(ctx.host)
+            if expired_entry is not None:
+                return InspectionResult(
+                    inspector=self.name,
+                    action="block",
+                    reason=(
+                        f"domain allowlist entry expired: "
+                        f"{expired_entry} (was allowed until its TTL elapsed)"
+                    ),
+                    severity="error",
+                )
+            return None
         if self.mode == "blocklist" and matched:
             return InspectionResult(
                 inspector=self.name,
@@ -63,3 +215,96 @@ class DomainInspector(Inspector):
                 severity="error",
             )
         return None
+
+    # ── Policy API: runtime grants ──────────────────────────
+
+    def grant(
+        self,
+        domain: str,
+        *,
+        expires_at: str = "",
+        reason: str = "",
+        source: str = "policy-hook",
+    ) -> None:
+        """Add *domain* to the live allow overlay (allowlist mode only).
+
+        Takes effect immediately for the next request — at the L7 domain
+        inspector, including the entry's own ``expires_at`` (``_matched_expired``
+        consults it, so an expired grant blocks before the sweeper even
+        drops it). DNS-layer reachability for the granted zone is applied
+        in-egress: the addon publishes the zone to ``/home/acproxy/dns/granted``
+        and raises a reload flag, and the egress supervisor's 1 s liveness
+        loop re-renders dnsmasq's servers-file (baseline + granted) and
+        SIGHUPs it — the addon process lacks the privileges to signal
+        dnsmasq itself (different uid, no ``CAP_KILL``). Promotion into the
+        static baseline is lazy, via ``cage grants sync`` / ``domain list``
+        reconcile. See docs/explain/policy-api.md and
+        docs/explain/egress-local-dns-apply.md.
+        """
+        if self.mode != "allowlist":
+            return
+        d = domain.lower().rstrip(".")
+        if not d:
+            return
+        self.granted[d] = {
+            "domain": d,
+            "granted_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at or "",
+            "reason": reason or "",
+            "source": source or "policy-hook",
+        }
+
+    def revoke(self, domain: str) -> bool:
+        """Remove *domain* from the live overlay. Returns True if present."""
+        return self.granted.pop(domain.lower().rstrip("."), None) is not None
+
+    def is_granted(self, domain: str) -> bool:
+        return domain.lower().rstrip(".") in self.granted
+
+    def is_grant_only(self, host: str) -> bool:
+        """True if *host* is reachable ONLY because of a policy-API grant.
+
+        A grant for ``example.com`` covers ``sub.example.com``, so this
+        suffix-matches rather than looking the host up exactly. A host that
+        also matches the operator's static baseline is NOT grant-only: the
+        operator vetted it, and extra restrictions keyed on "the cage asked
+        for this" must not apply to what the operator chose themselves.
+        """
+        parts = host.lower().rstrip(".").split(".")
+        suffixes = [".".join(parts[i:]) for i in range(len(parts))]
+        if any(sfx in self._baseline for sfx in suffixes):
+            return False
+        return any(sfx in self.granted for sfx in suffixes)
+
+    def drop_expired(self, now_iso: str = "") -> list[str]:
+        """Remove & return domains whose ``expires_at`` has passed.
+
+        ``now_iso`` is injected (rather than read from the clock) so tests
+        are deterministic and the addon's sweeper can pass the same
+        timestamp it logs.
+        """
+        if not now_iso:
+            now_iso = datetime.now(timezone.utc).isoformat()
+        expired: list[str] = []
+        for d, meta in list(self.granted.items()):
+            exp = meta.get("expires_at") or ""
+            if exp and exp <= now_iso:
+                self.granted.pop(d, None)
+                expired.append(d)
+        return expired
+
+    def granted_entries(self) -> list[dict]:
+        """Snapshot of overlay entries (sorted by domain for stable output)."""
+        return [self.granted[d] for d in sorted(self.granted)]
+
+    def baseline_list(self) -> list[str]:
+        """Sorted baseline allow/block list (operator's static policy)."""
+        return sorted(self._baseline)
+
+    def snapshot(self) -> dict:
+        """Effective policy for the introspection endpoint."""
+        return {
+            "mode": self.mode,
+            "baseline": self.baseline_list(),
+            "granted": self.granted_entries(),
+        }

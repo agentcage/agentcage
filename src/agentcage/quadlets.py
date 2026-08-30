@@ -149,10 +149,27 @@ def _passthrough_regex(domains: list[str]) -> str:
 
 
 def _effective_dns_allowlist(config: Config) -> list[str]:
-    """Merge passthrough domains into the DNS allowlist.
+    """Merge passthrough + egress-internal hosts into the DNS allowlist.
 
-    Passthrough domains must resolve via upstream DNS (not the sinkhole),
-    so they are auto-added to the allowlist when in allowlist mode.
+    These hosts must resolve via upstream DNS (not the sinkhole) because a
+    component *inside the egress* connects to them directly — not through
+    mitmproxy, so the L7 allowlist never sees them and the sinkhole would
+    just break the connection:
+
+    * ``passthrough`` domains (cage traffic that bypasses TLS interception).
+    * protocol-relay upstream hosts — the relay opens its own socket to the
+      upstream (``asyncio.open_connection``), so it resolves via the egress's
+      dnsmasq. The operator drops these from ``domains.allow`` so the *cage*
+      can't reach them (only the relay can); but they must still resolve, so
+      they're auto-added here.
+    * the ``domains.auto`` decider agent's LLM provider host — the decider
+      calls the model via ``urllib`` from the addon process, again outside
+      mitmproxy. Without DNS resolution the decider 502s on every request.
+
+    Being in the DNS allowlist only makes a host *resolvable*; it does NOT
+    add it to the cage's HTTP allowlist (``DomainInspector``), so the cage
+    still can't reach these hosts over HTTP — only the egress-internal
+    component that needs them can.
     """
     if config.domains.mode != "allowlist":
         return []
@@ -160,6 +177,31 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
     for d in config.domains.passthrough:
         if d not in merged:
             merged.append(d)
+    # Protocol-relay upstream hosts.
+    for relay in getattr(config, "protocol_relays", []) or []:
+        host = getattr(relay.upstream, "host", "") or ""
+        if host and host not in merged:
+            merged.append(host)
+    # domains.auto decider agent's LLM provider host. Resolve the provider
+    # name to a base host (api.openrouter.ai, api.anthropic.com,
+    # api.openai.com) so the egress's urllib call can reach it. If the operator
+    # set a custom base_url, parse ITS host instead (a self-hosted/proxy
+    # decider endpoint won't be in the provider map).
+    auto = getattr(getattr(config, "domains", None), "auto", None)
+    if auto is not None and getattr(auto, "enable", False):
+        base_url = (auto.decider.agent.base_url or "").rstrip("/")
+        if base_url:
+            from urllib.parse import urlsplit
+            host = urlsplit(base_url).hostname or ""
+        else:
+            provider = (auto.decider.agent.provider or "").lower()
+            host = {
+                "anthropic": "api.anthropic.com",
+                "openai": "api.openai.com",
+                "openrouter": "openrouter.ai",
+            }.get(provider, "")
+        if host and host not in merged:
+            merged.append(host)
     return merged
 
 
@@ -256,6 +298,31 @@ def vm_local_cage_env_dir(name: str) -> str:
 def vm_local_placeholders_env_path(name: str) -> str:
     """VM-local path of placeholders.env. See ``vm_local_config_dir``."""
     return f"{vm_local_cage_env_dir(name)}/placeholders.env"
+
+
+def vm_local_grants_dir(name: str) -> str:
+    """VM-local dir of the Policy-API grants overlay.
+
+    Like the other ``vm_local_*`` paths, this lives OUTSIDE any Lima mount:
+    the in-guest egress addon writes ``grants.yaml`` here (atomic
+    temp+rename), and the reconcile (``cage grants sync`` / ``domain
+    list``) pulls it back over ``limactl shell`` and pushes removals back
+    via base64 (see ``backends.vm.pull_grants`` / ``push_grants``). Keeping
+    the overlay
+    guest-local avoids Lima's reverse-sshfs host→guest write caching
+    (host-side rewrites of a mounted file would be invisible to the
+    addon's mtime-poll) and keeps the host-side
+    ``~/.local/share/agentcage/<name>/grants/`` dir operator-owned
+    (never world-writable) — the guest container writes only inside the
+    VM's own filesystem. Returned with the systemd ``%h`` specifier; see
+    ``vm_local_config_dir`` for why.
+    """
+    return f"{vm_local_config_dir(name)}/grants"
+
+
+def vm_local_grants_file(name: str) -> str:
+    """VM-local path of the grants overlay file. See ``vm_local_grants_dir``."""
+    return f"{vm_local_grants_dir(name)}/grants.yaml"
 
 
 # Note: a render_dns_quadlet() helper used to live here for the 3-service
@@ -520,6 +587,7 @@ def generate_quadlets(
     env = _make_env()
     name = config.name
     cc = config.container
+    from agentcage import state as _state
     files: dict[str, str] = {}
 
     # Expand ~ and env vars in volume paths and env values. The inline ``np``
@@ -774,6 +842,25 @@ def generate_quadlets(
                 creds_secrets.append(arg)
             proxy_secrets.append(arg)
 
+    # Policy API decision-hook auth credential — same shape and same
+    # egress-only invariant as a relay credential: it uses a ``*_source``
+    # scheme (env:/cmd:/systemd-creds:) and must NEVER reach the cage (the
+    # domains.auto.decider.agent.api_key — the decider agent's own API key,
+    # an egress-only credential (the CLI parser already stripped it from
+    # cage env/podman_secrets in config.load_config). Stage it into the
+    # proxy's tmpfs secret files so the addon can read the real value when
+    # calling the decider. Same relay-auth staging path.
+    auto = getattr(getattr(config, "domains", None), "auto", None)
+    if auto is not None and getattr(auto, "enable", False):
+        api_key = auto.decider.agent.api_key
+        scheme, _, arg = (api_key or "").partition(":")
+        if arg and arg not in proxy_secrets:
+            has_cred_file = (_state_creds_dir / f"{arg}.cred").exists()
+            if _boot_resolvable(arg, scheme, has_cred_file):
+                if scheme == "systemd-creds" or has_cred_file:
+                    creds_secrets.append(arg)
+                proxy_secrets.append(arg)
+
     # Direct podman_secrets on the cage container hit the same boot
     # failure when their store entry was `secret rm`'d — gate them with
     # the same store-aware rule (no source: concept here; a .cred blob
@@ -899,8 +986,14 @@ def generate_quadlets(
     # mitmproxy's mtime-poll hot-reload.
     if config.isolation == "vm":
         proxy_config_path = vm_local_proxy_config_path(deploy_name or name)
+        # Grants overlay: VM-local too. The addon writes it in-guest (atomic
+        # rename, no sshfs cache) and the reconcile round-trips it via
+        # limactl (backends.vm.pull_grants/push_grants). See
+        # vm_local_grants_dir.
+        grants_dir_str = vm_local_grants_dir(deploy_name or name)
     else:
         proxy_config_path = config_host_path
+        grants_dir_str = str(_state.grants_dir(name))
 
     files[f"{name}-egress.container"] = env.get_template("egress.container.j2").render(
         **common,
@@ -920,6 +1013,9 @@ def generate_quadlets(
         inbound_forwards=inbound_forwards,
         capture_enabled=capture_enabled,
         capture_host_dir=capture_host_dir,
+        domains_auto_enabled=bool(getattr(config.domains.auto, "enable", False))
+            or bool(getattr(config.domains, "expires", None)),
+        grants_host_dir=grants_dir_str,
         passthrough_regex=pt_regex,
         rootless=rootless,
         inspected_tcp_ports=_inspected_tcp,
@@ -1022,3 +1118,9 @@ def generate_quadlets(
     )
 
     return files
+
+
+def _agentcage_cli() -> str:
+    """Absolute path to the agentcage CLI for use in generated units."""
+    path = shutil.which("agentcage")
+    return path or "agentcage"

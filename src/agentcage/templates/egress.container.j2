@@ -31,6 +31,12 @@ Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z
 {% endif %}
 Environment="PYTHONUNBUFFERED=1"
+Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
+# Upstream resolvers for policy-api granted zones. The supervisor
+# forwards a granted zone here (plus the default-route gateway when
+# derivable) rather than scraping the rendered baseline — under full
+# default-deny that baseline is EMPTY, and a grant must still resolve.
+Environment="AGENTCAGE_DNS_UPSTREAMS={{ dns_servers|join(' ') }}"
 Volume={{ name }}-certs.volume:/home/acproxy/.mitmproxy:Z
 # Public-only cert publish dir — see quadlets.py for why this is a
 # separate volume. supervisor-egress.sh Step E installs the public
@@ -40,6 +46,19 @@ Volume={{ name }}-public-certs.volume:/home/acproxy/public-certs:Z
 {% if capture_enabled %}
 Volume={{ capture_host_dir }}:/var/log/agentcage/capture:Z
 Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
+{% endif %}
+{% if domains_auto_enabled %}
+# domains.auto grants overlay — shared between the egress addon (which
+# writes decided grants here) and the host-side grants watcher (which reads
+# them and promotes into the static baseline via the ``domain add`` chain).
+# RW + acproxy-owned so the addon can write; the cage is in a separate
+# netns and cannot read it. On container/apple backends this is the host
+# dir state.grants_file(name) points at; on the vm backend it is a
+# VM-LOCAL dir (quadlets.vm_local_grants_dir — Lima mounts can't be
+# trusted for host↔guest rewrites), round-tripped by the host watcher
+# via limactl (backends.vm.pull_grants / push_grants).
+Volume={{ grants_host_dir }}:/var/lib/agentcage:Z
+Environment="AGENTCAGE_GRANTS_DIR=/var/lib/agentcage"
 {% endif %}
 AddCapability=NET_ADMIN
 AddCapability=NET_BIND_SERVICE
@@ -194,6 +213,41 @@ ExecStartPre=/bin/bash -c 'mp=$(podman volume inspect agentcage-certs-{{ name }}
    is unaffected. #}
 {% if capture_enabled %}
 ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ capture_host_dir }}" 2>/dev/null || chmod 1777 "{{ capture_host_dir }}"{% else %}chown 200:200 "{{ capture_host_dir }}"{% endif %}'
+{% endif %}
+{% if domains_auto_enabled %}
+# The grants overlay dir is a TRUE DUAL-WRITER across the rootless user
+# namespace: the egress addon (container uid 200, mapped to a subuid on the
+# host — egress sets no UserNS=) writes grants.yaml when the decider grants
+# a domain, AND the host watcher (the operator) rewrites grants.yaml on
+# every tick to remove promoted entries. Both use atomic temp+rename
+# (save_grants), so only DIRECTORY write+execute matters; the file's own
+# owner/perms are irrelevant. The operator owns the dir (state.grants_dir
+# mkdirs it).
+#
+# Write access is granted to EXACTLY the two legitimate writers — the
+# operator (dir owner) and the container's mapped gid — using rootless
+# podman's user-namespace mapping: ``podman unshare chgrp 200`` runs chgrp
+# INSIDE the container's user namespace, so in-container gid 200 maps to the
+# host subgid that the addon's gid maps to, and the host-side dir's group
+# becomes that mapped gid. ``chmod 0770`` then gives the operator (owner)
+# rwx and the container process (group = mapped gid) rwx; every other local
+# user gets nothing. We chgrp (not chown) so the operator stays the owner
+# and the watcher can still remove promoted entries (chowning to 200 would
+# make the operator "other" and grants would pile up forever).
+#
+# THREAT MODEL: on a multi-user host the grants dir must NOT be world-
+# writable. A local user who can write the dir can plant grants.yaml entries
+# that the operator's watcher promotes into the baseline config within ~1s,
+# forging the audit trail. The operator-owned baseline (~/.config/agentcage)
+# is NOT writable by such a user, so the previous "an attacker who can write
+# here can already edit the baseline directly" justification was FALSE. 0770
+# closes that path: only operator + mapped container gid can write. If
+# ``podman unshare chgrp`` is unavailable (no userns mapping, e.g. a
+# stripped/non-rootless podman) the fallback opens the dir 0777 so the
+# feature still works on single-user hosts — and warns to stderr so a
+# multi-user host operator notices. The cage itself can't reach the dir
+# (separate netns).
+ExecStartPre=/bin/bash -c 'podman unshare chgrp 200 "{{ grants_host_dir }}" 2>/dev/null && chmod 0770 "{{ grants_host_dir }}" || { echo "agentcage: WARN: podman unshare chgrp failed for grants dir {{ grants_host_dir }} — falling back to 0777 (multi-user hosts: grants.yaml forge risk)" >&2; chmod 0777 "{{ grants_host_dir }}"; }'
 {% endif %}
 Restart=on-failure
 

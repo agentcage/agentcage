@@ -47,6 +47,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import time
 from importlib.metadata import version as _pkg_version
 from pathlib import Path, PurePosixPath
@@ -290,6 +291,32 @@ def _normalize_memory(value: str) -> str:
         return value
     number, suffix = m.group(1), (m.group(2) or "")
     return f"{number}{suffix.upper()}"
+
+def _gui_domain_reachable(uid: int) -> bool:
+    """Probe whether the ``gui/<uid>`` launchd domain is reachable now.
+
+    ``~/Library/LaunchAgents/`` plists live in the per-user *GUI* domain,
+    which is only addressable from a session that owns the Aqua console (a
+    local Terminal.app window, or a GUI login). Over SSH the user session
+    runs in the non-GUI ``user/<uid>`` context: ``launchctl bootstrap
+    gui/<uid>`` exits 0 but silently no-ops, so the agent would appear
+    "installed" and never load. Probe first and, when unavailable, leave
+    the plist on disk — the FILE is the persistence; it loads at the next
+    GUI login.
+
+    Lived in ``agentcage.watcher`` while the grants watcher shared it; that
+    module is gone (grants are applied inside the egress now), and the cage
+    autostart plist is the only remaining caller.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}"],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
 
 
 class AppleContainerBackend:
@@ -679,39 +706,6 @@ class AppleContainerBackend:
             os.path.expanduser(f"~/Library/LaunchAgents/io.agentcage.{name}.plist")
         )
 
-    def _gui_domain_reachable(self, uid: int) -> bool:
-        """Probe whether the `gui/<uid>` launchd domain is reachable now.
-
-        `~/Library/LaunchAgents/` plists live in the per-user *GUI* domain.
-        That domain is only addressable from a session that owns the
-        Aqua console (a local Terminal.app window, or a GUI login). Over
-        SSH the user session runs in the non-GUI `user/<uid>` context:
-        `launchctl bootstrap gui/<uid>` exits 0 but silently no-ops,
-        because the GUI domain isn't actually reachable from the SSH
-        context — so the cage never auto-starts and the operator gets a
-        misleading "installed" status. See issue #185.
-
-        We probe reachability by asking launchd to print the gui domain;
-        it returns non-zero ("Domain does not support specified action")
-        when the GUI session isn't reachable from the current context.
-
-        If `launchctl` isn't on PATH (a stripped/over-SSH environment) or
-        the `print` subcommand is absent on an old macOS, ``subprocess.run``
-        raises ``OSError``/``FileNotFoundError``. We treat "can't probe" the
-        same as "unreachable" — the plist file is already on disk (the real
-        persistence; see ``_install_launchd_plist``), so returning ``False``
-        skips the immediate-load with the honest informational message
-        rather than propagating an exception out of ``start()`` after a
-        successful container launch. See #185.
-        """
-        import subprocess as _sp
-        try:
-            probe = _sp.run(["launchctl", "print", f"gui/{uid}"],
-                            check=False, capture_output=True, text=True)
-        except OSError:
-            return False
-        return probe.returncode == 0
-
     def _install_launchd_plist(self, name: str) -> None:
         """Write + load the per-cage launchd plist.
 
@@ -776,7 +770,7 @@ class AppleContainerBackend:
         # by another user, `who -u` empty). Probe the domain first; if it
         # isn't reachable, skip the immediate-load and emit an honest
         # informational message instead of the pre-#185 silent no-op.
-        if not self._gui_domain_reachable(uid):
+        if not _gui_domain_reachable(uid):
             click.echo(
                 f"note: plist written to {plist}; autostart will activate at "
                 f"next GUI login (immediate-load not available from this "
@@ -833,7 +827,6 @@ class AppleContainerBackend:
                 check=False, capture_output=True)
         plist.unlink(missing_ok=True)
 
-    # --- Backend protocol -----------------------------------------------------
 
     def check_prerequisites(self, config: Config) -> list[str]:  # noqa: ARG002
         return ac_prereq.check_prerequisites()
@@ -1076,25 +1069,31 @@ class AppleContainerBackend:
 
         # dnsmasq.conf — same template as the legacy single-VM model.
         # Just write the rendered bytes to disk instead of into the
-        # wrapper build context.
+        # wrapper build context. Use the EFFECTIVE DNS allowlist (allow +
+        # passthrough + relay upstreams + domains.auto decider host) so the
+        # same egress-internal hosts that must resolve on container/vm also
+        # resolve here — single source of truth (quadlets._effective_dns_allowlist).
+        from agentcage.quadlets import _effective_dns_allowlist
+        effective_allow = _effective_dns_allowlist(config)
         (dest / "dnsmasq.conf").write_text(
             ac_wrapper.render_dnsmasq_conf(
-                list(config.domains.allow or []),
+                effective_allow,
                 dns_servers=list(config.dns_servers or []),
             )
         )
 
         # dns-allowlist.conf — same shape state.save_dns_allowlist
-        # produces for the container backend. Re-use the helper for
-        # parity; fall back to in-line rendering if the cage.yaml isn't
-        # on disk yet (pre-create path).
+        # produces for the container backend (it also uses
+        # _effective_dns_allowlist, so the two files stay in sync). Re-use
+        # the helper for parity; fall back to in-line rendering from the
+        # effective allowlist if the cage.yaml isn't on disk yet (pre-create).
         try:
             allowlist_path = Path(_state.save_dns_allowlist(deploy_name))
             shutil.copy2(allowlist_path, dest / "dns-allowlist.conf")
         except FileNotFoundError:
             lines = [
                 f"server=/{d}/{srv}"
-                for d in (config.domains.allow or [])
+                for d in effective_allow
                 for srv in (config.dns_servers or ["1.1.1.1", "8.8.8.8"])
             ]
             (dest / "dns-allowlist.conf").write_text(
@@ -1118,19 +1117,34 @@ class AppleContainerBackend:
           1. Validate the rewritten allowlist inside the egress
              (``dnsmasq --test``); on failure revert the file and raise,
              so a malformed allowlist can't silently break DNS.
-          2. SIGHUP both dnsmasq instances so they re-read the
-             ``--servers-file`` allowlist:
-               * the egress dnsmasq (pidfile ``/home/acdns/dnsmasq.pid``,
-                 run under ``setpriv --reuid=acdns`` — signal the pid, not
-                 ``pkill``);
-               * the **cage-local** dnsmasq (pidfile
-                 ``/run/agentcage/dnsmasq.pid``) — the load-bearing one,
-                 since the cage workload resolves via 127.0.0.1:53 served
-                 by that local dnsmasq (vmnet drops inter-microVM UDP, so
-                 the cage can't use the egress dnsmasq; see cage-init.sh
-                 stage A'). Best-effort: skipped if the cage has no
-                 dnsmasq.
-          3. Leave ``proxy-config.yaml`` to the mitmproxy addon, which
+          2. Make the egress pick up the new baseline. When the runtime
+             servers-file ``/run/agentcage/dns-allowlist.egress.conf``
+             exists, raise the supervisor's reload flag
+             (``: > /home/acproxy/dns/reload``) instead of regenerating
+             that file from the host. The supervisor (the single render
+             implementation — no drift between host and guest) runs inside
+             the egress microVM (same image); its 1s liveness loop sees the
+             flag, re-renders BASELINE + GRANTED zones (granted zones come
+             from ``/home/acproxy/dns/granted``, written by the proxy
+             addon inside the egress) and SIGHUPs dnsmasq within ~1s.
+             Regenerating from the host's baseline ALONE (the old ``sed`` of
+             ``/etc/agentcage/dns-allowlist.conf``) would overwrite the
+             served file with baseline-only lines, clobbering every
+             in-flight policy-API granted zone out of dnsmasq on every
+             operator domain add/rm (round-11 finding). Fallback: when
+             the runtime file is absent the egress reads the bind-mounted
+             file directly, so a plain SIGHUP via the pidfile
+             (``/home/acdns/dnsmasq.pid``, run under ``setpriv
+             --reuid=acdns`` — signal the pid, not ``pkill``) suffices.
+          3. Regenerate + SIGHUP the **cage-local** dnsmasq (pidfile
+             ``/run/agentcage/dnsmasq.pid``) — the load-bearing one, since
+             the cage workload resolves via 127.0.0.1:53 served by that
+             local dnsmasq (vmnet drops inter-microVM UDP, so the cage
+             can't use the egress dnsmasq; see cage-init.sh stage A').
+             This regeneration is from the BASELINE only and is
+             INTENTIONAL (see the inline step-3 comment).
+             Best-effort: skipped if the cage has no dnsmasq.
+          4. Leave ``proxy-config.yaml`` to the mitmproxy addon, which
              polls its mtime per request and hot-reloads in place
              (``data/proxy/addon.py``) — no signal needed.
 
@@ -1170,24 +1184,28 @@ class AppleContainerBackend:
                 f"{(test.stderr or test.stdout or '').strip()}"
             )
 
-        # 2. Regenerate the egress's runtime servers-file from the updated
-        # bind-mounted allowlist, then SIGHUP. dnsmasq serves
-        # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders
-        # re-pointed at the egress's upstream = its default route = the
-        # vmnet gateway), NOT the bind-mounted file — same rewrite
-        # supervisor-egress.sh does at start. Without the regeneration the
-        # new apex lands in the bind-mounted file but the served file is
-        # unchanged. dns-allowlist.conf is pure `server=/<apex>/<ip>` lines,
-        # so a trailing-field sed safely swaps just the upstream. Guarded
-        # on the runtime file existing (absent → egress fell back to the
-        # baked config and is reading the bind-mounted file directly).
+        # 2. Make the egress pick up the new baseline. When the runtime
+        # servers-file /run/agentcage/dns-allowlist.egress.conf exists, raise
+        # the supervisor's reload flag (`: > /home/acproxy/dns/reload`)
+        # instead of regenerating that file from the host. The supervisor
+        # runs inside the egress microVM (same image); its 1s liveness loop
+        # sees the flag, re-renders BASELINE + GRANTED zones (granted zones
+        # come from /home/acproxy/dns/granted, written by the proxy addon
+        # inside the egress) and SIGHUPs dnsmasq — the supervisor is the
+        # single render implementation, so there is no drift between host
+        # and guest. Regenerating from the host's baseline ALONE (the old
+        # `sed` of /etc/agentcage/dns-allowlist.conf > the runtime file)
+        # would overwrite the served file with baseline-only lines,
+        # clobbering every in-flight policy-API granted zone out of dnsmasq
+        # on every operator domain add/rm (round-11 finding). Fallback: when
+        # the runtime file is absent the egress reads the bind-mounted file
+        # directly, so a plain SIGHUP via the pidfile (/home/acdns/dnsmasq.pid)
+        # suffices.
         ac_cli.run(
             ["exec", container, "sh", "-c",
-             'up=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
-             '[ -n "$up" ] && [ -f /run/agentcage/dns-allowlist.egress.conf ] && '
-             'sed "s#/[^/]*\\$#/$up#" /etc/agentcage/dns-allowlist.conf '
-             '> /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; '
-             'kill -HUP "$(cat /home/acdns/dnsmasq.pid)"'],
+             'rt=/run/agentcage/dns-allowlist.egress.conf; '
+             'if [ -f "$rt" ]; then : > /home/acproxy/dns/reload; '
+             'else kill -HUP "$(cat /home/acdns/dnsmasq.pid)" 2>/dev/null || true; fi'],
             check=False,
         )
 
@@ -1202,6 +1220,16 @@ class AppleContainerBackend:
         # config and reads the bind-mounted file). Best-effort throughout:
         # the cage dnsmasq is itself optional (bases without dnsmasq), so
         # never fail the reload.
+        #
+        # NOTE: unlike step 2, regenerating the cage-local servers-file from
+        # the BASELINE only is INTENTIONAL and stays unchanged. The
+        # cage-local servers-file is baseline-scoped by design: unknown /
+        # granted zones get the TEST-NET sinkhole answer (address=/#/...) and
+        # still reach the egress's transparent interception, where SNI/Host
+        # is the enforcement authority; the actual upstream resolution
+        # happens at the egress, which carries the granted zones (see
+        # step 2). Do NOT "fix" this to raise a reload flag — the cage has
+        # no supervisor and no granted-zones source of its own.
         if self.is_running(name, "cage"):
             ac_cli.run(
                 ["exec", name, "sh", "-c",
@@ -1282,6 +1310,34 @@ class AppleContainerBackend:
                 scheme, _, var = (src or "").partition(":")
                 if scheme and var and var not in relay_secret_envs:
                     relay_secret_envs.append(var)
+        # domains.auto decider api_key — same egress-only invariant as a relay
+        # credential: staged into the secrets bind mount, never `-e`'d to the
+        # cage workload. Mirrors quadlets.py's proxy_secrets staging. We carry
+        # the api_key's full SOURCE scheme (``env:NAME`` / ``systemd-creds:NAME``)
+        # into the unit JSON as ``decider_api_key_source`` so ``_stage_secrets``
+        # can stage it scheme-appropriately — pre-this-fix only the VARIABLE
+        # NAME was collected, so a ``systemd-creds:NAME`` key was staged
+        # identically to an ``env:NAME`` key. On apple that happens to resolve
+        # (``secret set`` is scheme-agnostic and stores the cleartext under NAME
+        # in the keychain/plaintext store, which ``_stage_secrets`` reads by
+        # NAME — see ``_stage_secrets``), but recording the scheme makes the
+        # ``systemd-creds:`` path explicit instead of a silent same-as-env:
+        # no-op, and lets the missing-value warning name the decider key
+        # accurately rather than mislabeling it a relay credential. ``cmd:`` is
+        # rejected at config time, so only ``env:`` / ``systemd-creds:`` reach
+        # here. (The container backend's quadlet path adds a ``systemd-creds:``
+        # key to ``creds_secrets`` for an ExecStartPre decrypt; apple has no
+        # systemd-creds runtime, so the apple equivalent is the keychain-held
+        # cleartext staged into the bind-mount file — see ``_stage_secrets``.)
+        _auto = getattr(getattr(config, "domains", None), "auto", None)
+        decider_api_key_source = ""
+        if _auto is not None and getattr(_auto, "enable", False):
+            _api_key = _auto.decider.agent.api_key or ""
+            _scheme, _, _var = _api_key.partition(":")
+            if _scheme and _var:
+                decider_api_key_source = _api_key
+                if _var not in relay_secret_envs:
+                    relay_secret_envs.append(_var)
         # Resolve cage.yaml's nested ``ports.*`` into the three int lists the
         # egress supervisor's Step A turns into iptables rules. Computed HERE
         # (at unit-generation time, when we have a live Config) and persisted
@@ -1302,11 +1358,25 @@ class AppleContainerBackend:
                 "secret_envs": secret_envs,
                 "secret_env_placeholders": secret_env_placeholders,
                 "relay_secret_envs": relay_secret_envs,
+                # domains.auto decider api_key source scheme (``env:NAME`` /
+                # ``systemd-creds:NAME``) — see the staging comment above.
+                # ``_stage_secrets`` reads this to stage the decider key
+                # scheme-appropriately and emit an accurate missing-value
+                # warning. Empty when domains.auto is disabled.
+                "decider_api_key_source": decider_api_key_source,
+                # Upstream resolvers, so start() (meta-driven, no Config) can
+                # hand them to the egress for policy-api granted zones.
+                "dns_servers": list(config.dns_servers or []),
                 # Secret backend choice, baked in so start() (which is
                 # meta-driven, no Config) can resolve the right store.
                 "secrets_backend": config.secrets.backend,
                 "secrets_allow_plaintext": bool(config.secrets.allow_plaintext),
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
+                # Whether to bind-mount the grants overlay into the egress:
+                # the feature is on, OR an allow entry has an expiry (the
+                # addon sweeps those and re-publishes the DNS zone list).
+                "domains_auto": bool(getattr(config.domains.auto, "enable", False)),
+                "has_expiring_domains": bool(getattr(config.domains, "expires", None)),
                 # User-defined host bind mounts. Apple's `container run`
                 # accepts `--volume host:cage[:mode]` just like podman.
                 # Expand + validate the host path HERE (at generate_units
@@ -1586,6 +1656,11 @@ class AppleContainerBackend:
             # CA private key — see public_certs_dir() docstring + the
             # CTF F1 finding on 0.22.5).
             "--volume", f"{public_certs_dir}:/home/acproxy/public-certs",
+            "-e", f"AGENTCAGE_VERSION={_agentcage_version()}",
+            # Upstreams for policy-api granted zones — see the same env in
+            # egress.container.j2 (the baseline is empty under default-deny,
+            # so the supervisor cannot scrape upstreams from it).
+            "-e", "AGENTCAGE_DNS_UPSTREAMS=" + " ".join(meta.get("dns_servers") or []),
             "--volume", f"{egress_cfg_dir}/proxy-config.yaml:/etc/agentcage/config.yaml:ro",
             "--volume", f"{egress_cfg_dir}/dnsmasq.conf:/etc/agentcage/dnsmasq.conf:ro",
             "--volume", f"{egress_cfg_dir}/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro",
@@ -1596,6 +1671,48 @@ class AppleContainerBackend:
         if secrets_dir.is_dir() and any(secrets_dir.iterdir()):
             egress_argv += [
                 "--volume", f"{secrets_dir}:/home/acproxy/secrets:ro",
+            ]
+        # domains.auto grants overlay — backing file for decided grants.
+        # The host-side grants watcher (launchd plist
+        # io.agentcage.<name>.grants) is DELETED; it is no longer the live
+        # mechanism on apple-container. Granted DNS is now applied INSIDE
+        # the egress by the supervisor, which renders BASELINE + GRANTED
+        # zones into the servers-file (granted zones come from
+        # /home/acproxy/dns/granted, written by the proxy addon inside the
+        # egress). This bind persists the grants dir at the canonical
+        # agentcage data path (state.grants_file(name), NOT this backend's
+        # _state_dir) so the egress addon can write decided grants and a
+        # shared legacy cleanup helper can still reach it; the source path
+        # must match that canonical location exactly. RW so the addon can
+        # write. Only mount when the feature is on OR any allow entry has
+        # an expiry (the addon sweeps those and re-publishes the DNS zone
+        # list).
+        if meta.get("domains_auto") or meta.get("has_expiring_domains"):
+            from agentcage import state as _state_mod
+            grants_dir = _state_mod.grants_dir(name)
+            grants_dir.mkdir(parents=True, exist_ok=True)
+            # The egress addon (uid 200) rewrites grants.yaml via atomic
+            # temp+rename, so the DIR must be writable by it. chmod 0777
+            # (operator owns it; addon is "other" via the world bit). Don't
+            # chown to 200 — that would block the operator's / the shared
+            # cleanup helper's access.
+            #
+            # macOS hosts are single-user by default and the grants dir is
+            # shared into the Lima VM over reverse-sshfs/virtiofs, a share
+            # only traversable by the operator's account, so the host-side
+            # subgid mapping the container/Linux backend uses (podman unshare
+            # chgrp → 0770) does not apply the same way here. On a SHARED macOS
+            # host (multiple local accounts) this 0777 is a known limitation:
+            # another local user could plant grants.yaml entries that the
+            # egress addon promotes into the baseline. See egress.container.j2
+            # for the hardened container/Linux path.
+            try:
+                grants_dir.chmod(0o777)
+            except OSError:
+                pass
+            egress_argv += [
+                "--volume", f"{grants_dir}:/var/lib/agentcage",
+                "-e", "AGENTCAGE_GRANTS_DIR=/var/lib/agentcage",
             ]
         # Egress runs the agentcage addon — point it at the bind-mounted
         # config + capture jsonl. Same env vars data/proxy/addon.py reads.
@@ -1922,6 +2039,16 @@ class AppleContainerBackend:
         placeholders = meta.get("secret_env_placeholders") or {}
         secret_envs = meta.get("secret_envs") or list(placeholders.keys())
         relay_secret_envs = meta.get("relay_secret_envs") or []
+        # domains.auto decider api_key source (``env:NAME`` /
+        # ``systemd-creds:NAME``). The decider key is ALSO in
+        # ``relay_secret_envs`` (added by ``generate_units``) so it is
+        # staged into the bind mount like a relay credential; we parse the
+        # source here only to (a) stage it scheme-appropriately and (b)
+        # name it accurately in the missing-value warning instead of
+        # mislabeling it a relay credential. ``cmd:`` is rejected at config
+        # time, so only ``env:`` / ``systemd-creds:`` reach here.
+        _decider_src = meta.get("decider_api_key_source") or ""
+        _decider_name = _decider_src.partition(":")[2] if _decider_src else ""
         all_secret_envs = list(secret_envs) + [
             v for v in relay_secret_envs if v not in secret_envs
         ]
@@ -1948,6 +2075,29 @@ class AppleContainerBackend:
                 scope="auto",
             ),
         )
+        # NOTE on ``systemd-creds:`` staging (apple parity with the
+        # container backend). The container backend's quadlet path, for a
+        # ``systemd-creds:NAME`` decider key, adds NAME to ``creds_secrets``
+        # (a systemd ExecStartPre decrypts ``<state>/creds/NAME.cred``) and
+        # ``proxy_secrets`` (a podman ``Secret=`` directive exposes the value
+        # as env ``$NAME`` inside the proxy); the addon's ``_read_secret``
+        # then finds it via ``os.environ[NAME]``. Apple's runtime has neither
+        # systemd-creds nor a podman secret store, so the apple equivalent
+        # is: ``secret set`` is scheme-agnostic on apple (``cli.secret_set``
+        # calls ``_store_secret`` with NO source_scheme for the apple branch)
+        # and stores the cleartext under NAME in the keychain (or the legacy
+        # ``pending_secrets.json`` under ``secrets.backend: plaintext``).
+        # ``_stage_secrets`` retrieves it by NAME from that SAME store and
+        # writes it to ``secrets_dir/NAME``; the bind-mounted file is read by
+        # the addon's ``_read_secret`` at ``/home/acproxy/secrets/NAME`` —
+        # the apple channel that stands in for the container backend's podman
+        # ``Secret=`` env. So both ``env:NAME`` and ``systemd-creds:NAME``
+        # resolve identically here (by NAME from the configured store); the
+        # ``systemd-creds:`` scheme is effectively decorative on apple, and
+        # the value reaches the addon either way. We do NOT pass
+        # ``source_scheme="systemd-creds"`` to ``resolve_store`` here — that
+        # would select ``SystemdCredsStore`` (whose ``get`` raises on apple,
+        # where the systemd-creds binary is absent) and break staging.
         provided: dict[str, str] = {}
         try:
             store = resolve_store(cfg_shim)
@@ -1971,7 +2121,20 @@ class AppleContainerBackend:
         for env_name in all_secret_envs:
             value = provided.get(env_name)
             if value is None:
-                if env_name in relay_only:
+                if env_name == _decider_name and _decider_name:
+                    # The decider agent's api_key (egress-only). A missing
+                    # value means every domain-request fails closed with
+                    # 503 "llm provider not configured" — name it
+                    # accurately rather than as a relay credential.
+                    click.echo(
+                        f"warning: domains.auto.decider.agent.api_key env "
+                        f"{_decider_name!r} not provided via "
+                        f"--set-secret; the decider will fail closed (503 "
+                        f"'llm provider not configured') on every domain "
+                        f"request",
+                        err=True,
+                    )
+                elif env_name in relay_only:
                     click.echo(
                         f"warning: protocol_relays env {env_name!r} not "
                         f"provided via --set-secret; the relay will fail "

@@ -8,6 +8,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -101,6 +102,125 @@ VM_USER_SESSION_TIMEOUT_S = 20
 VM_USER_SESSION_POLL_INTERVAL_S = 1.0
 PROXY_READINESS_TIMEOUT_S = 30
 PROXY_READINESS_POLL_INTERVAL_S = 0.25
+
+
+# Cache of the guest user's $HOME per cage name. The home directory
+# never changes for a given Lima instance (and a destroyed/recreated VM
+# lands on the identical path), so resolving it once per cage lets a
+# reconcile skip up to two extra ``limactl shell`` round-trips per
+# overlay round-trip (ensure/pull/push each used to re-run ``echo ~``).
+# Keyed by cage name — NOT by LimaInstance object — so a fresh
+# LimaInstance per call still hits the cache.
+_guest_home: dict[str, str] = {}
+
+
+def _abs_path(name: str, inst: LimaInstance, p: str) -> str:
+    """Resolve a ``%h``-prefixed vm_local path to a guest-absolute path.
+
+    The ``vm_local_*`` helpers emit ``%h/...`` (the systemd home specifier
+    for quadlet ``Volume=`` lines); bash does not expand ``%h``, so for
+    shell-context use we must substitute the guest ``$HOME`` ourselves.
+    The resolution is cached in ``_guest_home`` per cage name — on a cache
+    miss the ``echo ~`` exec runs and the result is stored.
+    """
+    if not p.startswith("%h"):
+        return p
+    home = _guest_home.get(name)
+    if home is None:
+        home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
+        _guest_home[name] = home
+    return home + p[2:]
+
+
+def ensure_grants_dir(name: str, inst: LimaInstance) -> None:
+    """Create the VM-local grants overlay dir inside the guest.
+
+    The egress quadlet's ExecStartPre chmods this dir (podman-in-guest
+    ``unshare chgrp`` + 0770) BEFORE podman run processes the Volume bind,
+    so it must already exist at unit start — podman's implicit
+    volume-source mkdir only happens later. Idempotent; the home
+    resolution is cached (see ``_abs_path``) so repeat ticks cost a
+    single ``mkdir`` exec round-trip.
+    """
+    from agentcage.quadlets import vm_local_grants_dir
+    p = vm_local_grants_dir(name)
+    abspath = _abs_path(name, inst, p)
+    inst.exec(["mkdir", "-p", abspath])
+
+
+def pull_grants(name: str, inst: LimaInstance) -> list[dict] | None:
+    """Read the VM-local grants overlay from inside the guest.
+
+    Returns the parsed entries, ``[]`` when the overlay is absent (a
+    fresh cage — the normal empty state), or ``None`` when the round-trip
+    itself failed OR the guest reported a read failure that is NOT
+    "file missing" (permission error, I/O error, a truncated SSH stream
+    with a nonzero exit). Callers treat ``None`` as "don't know / VM not
+    reachable, skip this pass" rather than "empty overlay": conflating a
+    read failure with a real empty overlay would let the reconcile's
+    merge-on-write treat the wipe as genuine and persist it on the next
+    push (``None`` is guarded against by the merge; a false ``[]`` is
+    not).
+
+    The guest is probed with a small shell script so "file missing" can
+    be distinguished from any other read failure: exit 0 → parse stdout
+    as YAML; exit 42 (sentinel) → file absent → ``[]``; any OTHER nonzero
+    exit (or an exception from the round-trip) → ``None``.
+    """
+    import yaml
+    from agentcage.quadlets import vm_local_grants_file
+    p = vm_local_grants_file(name)
+    try:
+        abspath = _abs_path(name, inst, p)
+        quoted = shlex.quote(abspath)
+        script = f"if [ -f {quoted} ]; then cat {quoted}; else exit 42; fi"
+        res = inst.exec(["sh", "-c", script], check=False)
+    except Exception:
+        return None
+    if res.returncode == 42:
+        # File absent — fresh cage, the normal empty state.
+        return []
+    if res.returncode != 0:
+        # Not missing, not OK: a genuine read failure (permission error,
+        # I/O error, truncated stream). Don't masquerade as empty — the
+        # reconcile would persist the wipe on the next push.
+        return None
+    try:
+        data = yaml.safe_load(res.stdout or "")
+    except (yaml.YAMLError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return data
+
+
+def push_grants(name: str, entries: list[dict], inst: LimaInstance) -> None:
+    """Write the VM-local grants overlay inside the guest (atomic).
+
+    Base64 over ``limactl shell`` — the same reliable host→guest channel
+    ``push_config_files`` uses (the Lima mounts cannot be trusted for
+    host→guest writes). The write is ``mktemp`` + ``mv``: ``mktemp``
+    creates the temp with O_EXCL semantics (a planted symlink at a
+    predictable ``<path>.tmp`` would otherwise be written through in a
+    shared dir), and the atomic ``mv`` means the in-guest addon's
+    mtime-poll never observes a truncated file mid-write.
+    """
+    import yaml
+    from agentcage.quadlets import vm_local_grants_file
+    p = vm_local_grants_file(name)
+    abspath = _abs_path(name, inst, p)
+    encoded = base64.b64encode(
+        yaml.safe_dump(entries, default_flow_style=False,
+                       sort_keys=False).encode()
+    ).decode()
+    target = shlex.quote(abspath)
+    directory = shlex.quote(os.path.dirname(abspath))
+    script = (
+        f"tmp=$(mktemp {directory}/XXXXXX) && "
+        f"echo '{encoded}' | base64 -d > \"$tmp\" && "
+        f"mv \"$tmp\" {target}"
+    )
+    inst.exec(["sh", "-c", script])
 
 
 def _dump_service_failure(inst: LimaInstance, svc: str) -> None:
@@ -644,6 +764,11 @@ class VmBackend:
         # ``push_config_files`` and ``cli._update_dns_quadlet``.
         with Phase("deploy.vm_local_config", cage=name):
             push_config_files(name, inst)
+            # The grants overlay dir must exist BEFORE the egress unit's
+            # ExecStartPre chmods it (podman's implicit volume-source mkdir
+            # runs later). Also gives the in-guest addon a fresh empty
+            # overlay on first deploy.
+            ensure_grants_dir(name, inst)
 
         # Bridge secrets from host Podman into VM's Podman
         with Phase("deploy.bridge_secrets", cage=name):
@@ -652,6 +777,17 @@ class VmBackend:
         # Create any pending secrets (from cage create --set-secret)
         with Phase("deploy.pending_secrets", cage=name):
             self._create_pending_secrets(name, inst)
+
+        # Resolve env:/cmd: `source:` secrets straight into the GUEST store.
+        # The container backend gets these from cli's resolve_and_populate,
+        # which is gated to isolation == "container"; and _bridge_secrets
+        # only mirrors an existing HOST podman store, which a macOS host
+        # does not have. Without this, a `source:`-schemed secret — most
+        # visibly domains.auto's decider api_key — is referenced by the
+        # egress unit but never created, and the egress dies at start with
+        # `no such secret`, taking the whole cage down.
+        with Phase("deploy.source_secrets", cage=name):
+            self._resolve_source_secrets(name, inst, config)
 
         # Build container images and pull cage image inside the VM
         self.build_artifacts(config, name)
@@ -783,6 +919,110 @@ class VmBackend:
         finally:
             # Always clean up secrets file, even on error
             secrets_file.unlink(missing_ok=True)
+
+    def _resolve_source_secrets(
+        self, name: str, inst: LimaInstance, config,
+    ) -> None:
+        """Resolve ``source:``-schemed secrets into the guest podman store.
+
+        Mirrors ``secret_resolver.resolve_and_populate`` but writes into the
+        VM rather than a host podman store, so it works on a macOS host
+        (which has no host podman to bridge from). Best-effort per secret:
+        one unresolvable source warns rather than aborting the deploy, and
+        the egress's own ExecStartPre tolerates a missing staged file — the
+        decider then fails closed, which is the designed posture.
+        """
+        if config is None:
+            # _deploy_cage is also reached on paths that have no live Config
+            # (restart//reconcile); there is nothing to resolve without one,
+            # and the already-created guest secrets stay valid.
+            return
+
+        from agentcage import state as _state
+        from agentcage.secret_resolver import ResolveAction, resolve
+
+        sources: list[tuple[str, str]] = []
+        for rule in (config.secret_injection or []):
+            if rule.source:
+                sources.append((rule.env, rule.source))
+        for relay in (config.protocol_relays or []):
+            for src in (relay.auth.user_source, relay.auth.password_source):
+                scheme, _, var = (src or "").partition(":")
+                if scheme and var:
+                    sources.append((var, src))
+        auto = getattr(getattr(config, "domains", None), "auto", None)
+        if auto is not None and getattr(auto, "enable", False):
+            src = auto.decider.agent.api_key or ""
+            scheme, _, var = src.partition(":")
+            if scheme and var:
+                sources.append((var, src))
+
+        seen: set[str] = set()
+        state_dir = _state.deployment_dir(name)
+        for env_name, source in sources:
+            if env_name in seen:
+                continue
+            seen.add(env_name)
+            try:
+                result = resolve(source, env_name, state_dir)
+            except ValueError as e:
+                click.echo(
+                    f"warning: could not resolve secret {env_name!r} "
+                    f"({source.partition(':')[0]}: source): {e}",
+                    err=True,
+                )
+                continue
+            if result.action != ResolveAction.RESOLVED:
+                continue
+            full = f"{name}.{env_name}"
+            try:
+                inst.exec(["podman", "secret", "rm", full], check=False)
+                inst.exec(
+                    ["podman", "secret", "create", full, "-"],
+                    input=result.value,
+                )
+            except Exception as e:
+                click.echo(
+                    f"warning: failed to create secret {full} in the VM: {e}",
+                    err=True,
+                )
+
+        # Store-held values (`agentcage secret set`, no `source:` scheme).
+        # On a macOS host these live in the login keychain — _bridge_secrets
+        # only mirrors a host PODMAN store, which macOS does not have, so
+        # without this the value never reaches the guest.
+        try:
+            from agentcage.secret_store import SecretStoreError, resolve_store
+            from agentcage.services import expected_secrets
+            store = resolve_store(config)
+        except (SecretStoreError, Exception):
+            return
+        wanted = list(expected_secrets(config))
+        if auto is not None and getattr(auto, "enable", False):
+            _, _, var = (auto.decider.agent.api_key or "").partition(":")
+            if var and var not in wanted:
+                wanted.append(var)
+        for env_name in wanted:
+            if env_name in seen:
+                continue
+            try:
+                value = store.get(name, env_name, state_dir=state_dir)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            seen.add(env_name)
+            full = f"{name}.{env_name}"
+            try:
+                inst.exec(["podman", "secret", "rm", full], check=False)
+                inst.exec(
+                    ["podman", "secret", "create", full, "-"], input=value,
+                )
+            except Exception as e:
+                click.echo(
+                    f"warning: failed to create secret {full} in the VM: {e}",
+                    err=True,
+                )
 
     def _bridge_secrets(self, name: str, inst: LimaInstance) -> None:
         """Copy secrets from the host into the VM's Podman store.

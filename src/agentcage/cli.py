@@ -1174,6 +1174,20 @@ def cage_update(name: str | None, config_path: str | None,
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
 
+    # Pre-egress-rework cages carry a legacy host-side grants watcher whose
+    # command (``agentcage cage grants <name> watch``) no longer exists; on an
+    # upgraded host the unit/plist crash-loops on every boot (systemd start
+    # limit / launchd KeepAlive). Remove those artifacts now (best-effort,
+    # idempotent — a post-rework cage has nothing to remove and the helper
+    # never raises). For a VM cage this also needs the VM running, which is
+    # still the case here (update stops services only later).
+    from agentcage.legacy_watcher import remove_legacy_grants_watcher
+    try:
+        remove_legacy_grants_watcher(cfg.name, cfg.isolation)
+    except Exception:
+        # A stale watcher must never block an update.
+        pass
+
     # Merge into existing metadata so scaffold/network_octet/etc. survive updates
     meta = state.load_metadata(name) or {}
     meta["agentcage_version"] = version("agentcage")
@@ -1389,6 +1403,28 @@ def cage_destroy(name: str, yes: bool, keep_secrets: bool):
             f'Destroy cage "{name}"? ' + detail,
             abort=True,
         )
+
+    # Pre-egress-rework cages carry a legacy host-side grants watcher — a
+    # {name}-grants.service systemd user unit on Linux, an
+    # io.agentcage.{name}.grants.plist launchd plist on macOS, and (for VM
+    # cages) an in-guest systemd user unit. The watcher command
+    # (``agentcage cage grants <name> watch``) was deleted with the watcher,
+    # so on an upgraded host the unit/plist crash-loops on every boot
+    # (systemd start limit / launchd KeepAlive). Remove those artifacts
+    # BEFORE stopping the cage so the in-VM cleanup (needs a running VM) can
+    # still run. Best-effort + idempotent: a post-rework cage has nothing
+    # to remove and the helper never raises.
+    if state.deployment_exists(name):
+        try:
+            _legacy_cfg = state.load_deployment_config(name)
+            from agentcage.legacy_watcher import remove_legacy_grants_watcher
+            remove_legacy_grants_watcher(
+                _legacy_cfg.name, _legacy_cfg.isolation,
+            )
+        except Exception:
+            # A stale watcher must never block a destroy — the cage's own
+            # resources are removed below regardless.
+            pass
 
     removed = _destroy_cage(name, keep_secrets=keep_secrets, echo=click.echo)
 
@@ -2050,9 +2086,15 @@ def cage_start(name: str):
         podman = Podman()
         _ensure_patches(podman)
 
-        # Refresh env:/cmd: secrets before starting (they may have changed)
-        from agentcage.secret_resolver import resolve_and_populate
-        resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
+        # Refresh env:/cmd: secrets before starting (they may have changed).
+        # Container only — matching `cage create`. A vm cage's secrets live
+        # in the GUEST podman store; the host store is the wrong target (and
+        # on a macOS host there is no host podman at all, so this raised).
+        # backends.vm._resolve_source_secrets does the equivalent guest-side
+        # during _deploy_cage.
+        if cfg.isolation == "container":
+            from agentcage.secret_resolver import resolve_and_populate
+            resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
 
         # Regenerate derived files from cage.yaml so any edits made while
         # the cage was stopped are applied on the next start. The dns
@@ -3589,6 +3631,26 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     """
     expected = _expected_secrets(cfg)
     injection_names = {r.env for r in cfg.secret_injection}
+    # domains.auto's decider api_key is a real consumer of a stored secret
+    # but is not a secret_injection rule, so it fell through to "orphan" —
+    # inviting an operator to `secret rm` the one credential the decider
+    # needs. Classify it as "decider" instead.
+    decider_names: set[str] = set()
+    _api_key = getattr(
+        getattr(getattr(getattr(cfg, "domains", None), "auto", None),
+                "decider", None),
+        "agent", None,
+    )
+    _api_key = getattr(_api_key, "api_key", "")
+    # isinstance guard: `cfg` is a MagicMock in much of the CLI test suite,
+    # where every attribute access yields another mock that would partition
+    # into garbage.
+    if isinstance(_api_key, str) and _api_key:
+        _, _, _arg = _api_key.partition(":")
+        if _arg:
+            decider_names.add(_arg)
+            if _arg not in expected:
+                expected = list(expected) + [_arg]
     # Placeholders are decoy tokens (never sensitive) — show them so a
     # generated value is discoverable without opening the stored cage.yaml.
     placeholders = {r.env: r.placeholder for r in cfg.secret_injection}
@@ -3600,7 +3662,12 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     click.echo(f"{'NAME':<30} {'TYPE':<12} {'STATUS':<8} PLACEHOLDER")
     any_missing = False
     for key in expected:
-        stype = "injection" if key in injection_names else "direct"
+        if key in injection_names:
+            stype = "injection"
+        elif key in decider_names:
+            stype = "decider"
+        else:
+            stype = "direct"
         if key in present_keys:
             status = "ok"
         else:
@@ -4049,6 +4116,11 @@ def _ensure_domain_section(raw: dict) -> None:
 @click.argument("name")
 def domain_list(name: str):
     """List domains for a cage."""
+    # Converge the baseline first so what we print is the truth. Grants are
+    # applied live inside the egress; writing them into cage.yaml is lazy
+    # bookkeeping, and this is the command where the lag would be visible.
+    # No-op when there is nothing pending.
+    _reconcile_grants(name, quiet=True)
     try:
         raw = state.load_raw_config(name)
     except FileNotFoundError:
@@ -4058,15 +4130,72 @@ def domain_list(name: str):
 
     mode, domain_entries, passthrough = _read_domain_config(raw)
     pt_set = set(passthrough)
+    expires = _read_domain_expires(raw)
 
     click.echo(f"Mode: {mode}")
     for d in sorted(domain_entries):
-        suffix = " [passthrough]" if d in pt_set else ""
-        click.echo(f"{d}{suffix}")
+        tags = ""
+        if d in pt_set:
+            tags += " [passthrough]"
+        exp = expires.get(d.lower().rstrip("."))
+        if exp:
+            tags += f" (expires {exp})"
+        click.echo(f"{d}{tags}")
     # Show passthrough-only domains (in passthrough but not in the main list)
     for d in sorted(passthrough):
         if d not in domain_entries:
             click.echo(f"{d} [passthrough only]")
+
+
+def _parse_duration(duration: str) -> int:
+    """Parse a human duration like ``1h`` / ``30m`` / ``2d`` / ``3600`` into
+    seconds. Raises ValueError with a helpful message on bad input.
+
+    Units: s (seconds), m (minutes), h (hours), d (days). A bare integer is
+    seconds. Used by ``domain add --expires-in``.
+    """
+    s = str(duration).strip().lower()
+    if not s:
+        raise ValueError("empty duration")
+    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if s[-1] in mult and s[:-1].isdigit():
+        return int(s[:-1]) * mult[s[-1]]
+    if s.isdigit():
+        return int(s)
+    raise ValueError(
+        f"invalid duration {duration!r}: use a number with a unit suffix "
+        f"(e.g. 30s, 10m, 1h, 2d) or a bare number of seconds"
+    )
+
+
+def _expires_at_from_now(seconds: int) -> str:
+    from datetime import datetime, timezone, timedelta
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _read_domain_expires(raw: dict) -> dict[str, str]:
+    """Read the ``domains.expires`` map from raw config (lowercased keys)."""
+    dom = raw.get("domains") or {}
+    raw_expires = dom.get("expires") or {}
+    out: dict[str, str] = {}
+    if isinstance(raw_expires, dict):
+        for k, v in raw_expires.items():
+            if k and v:
+                out[str(k).lower().rstrip(".")] = str(v)
+    elif isinstance(raw_expires, list):
+        for e in raw_expires:
+            if isinstance(e, dict) and e.get("domain") and e.get("expires_at"):
+                out[str(e["domain"]).lower().rstrip(".")] = str(e["expires_at"])
+    return out
+
+
+def _write_domain_expires(raw: dict, expires: dict[str, str]) -> None:
+    """Write the ``domains.expires`` map back into raw config (sorted)."""
+    dom = raw.setdefault("domains", {})
+    if expires:
+        dom["expires"] = {k: expires[k] for k in sorted(expires)}
+    else:
+        dom.pop("expires", None)
 
 
 def _update_dns_quadlet(cfg) -> None:
@@ -4188,15 +4317,25 @@ def _update_dns_quadlet(cfg) -> None:
             click.echo(err, err=True)
         sys.exit(1)
 
-    # Regenerate the gateway-rewritten runtime servers-file (if the egress is
-    # using it) from the freshly-written allowlist, then SIGHUP. When a
-    # default-route gateway was derived at start, dnsmasq serves
-    # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders =
-    # gateway-primary + baked-fallback), NOT the bind-mounted file — so we must
-    # re-derive those lines from the updated allowlist before signaling, the
-    # same rewrite supervisor-egress.sh does at start. When that runtime file
-    # is absent (no gateway / fallback mode) dnsmasq reads the bind-mounted file
-    # directly, so a plain SIGHUP suffices.
+    # Raise the egress supervisor's reload flag (if the egress is serving the
+    # rendered runtime servers-file) so its 1s liveness loop re-renders
+    # BASELINE + GRANTED zones and SIGHUPs dnsmasq — do NOT regenerate the
+    # runtime servers-file from the host. supervisor-egress.sh
+    # ``_render_servers_file`` is the single implementation of that rewrite
+    # (per-zone forwarders = default-route gateway-primary + baked-fallback,
+    # then the granted zones appended); rendering it again here from the
+    # baseline ALONE would strip every in-flight policy-API granted zone out
+    # of dnsmasq's servers-file on every ``domain add``/``domain rm``/
+    # ``cage update``/lazy reconcile (the round-11 review finding). The host
+    # just raises the flag (``: > /home/acproxy/dns/reload``); the supervisor
+    # re-renders baseline+granted and SIGHUPs within ~1s. We exec as
+    # container root and /home/acproxy/dns exists in the image
+    # (Containerfile.egress creates it), so the flag file is writable.
+    #
+    # When the runtime servers-file is ABSENT (fallback mode: no gateway was
+    # derived at start, so dnsmasq reads the bind-mounted
+    # /etc/agentcage/dns-allowlist.conf directly) there is nothing for the
+    # supervisor to re-render — a plain SIGHUP via the pidfile is enough.
     #
     # SIGHUP via the pidfile the supervisor writes at /home/acdns/dnsmasq.pid
     # (pre-chowned dir, no runtime CAP_CHOWN). The `[ -n "$pid" ]` guard keeps a
@@ -4204,12 +4343,8 @@ def _update_dns_quadlet(cfg) -> None:
     _runtime_exec([
         "sh", "-c",
         'rt=/run/agentcage/dns-allowlist.egress.conf; '
-        'if [ -f "$rt" ]; then '
-        'gw=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
-        '[ -n "$gw" ] && { sed "s#/[^/]*\\$#/$gw#" /etc/agentcage/dns-allowlist.conf; '
-        'cat /etc/agentcage/dns-allowlist.conf; } > "$rt" 2>/dev/null; '
-        'fi; '
-        'pid="$(cat /home/acdns/dnsmasq.pid)" && [ -n "$pid" ] && kill -HUP "$pid"',
+        'if [ -f "$rt" ]; then : > /home/acproxy/dns/reload; '
+        'else pid="$(cat /home/acdns/dnsmasq.pid)" && [ -n "$pid" ] && kill -HUP "$pid"; fi',
     ])
 
 
@@ -4218,10 +4353,22 @@ def _update_dns_quadlet(cfg) -> None:
 @click.argument("domain_names", nargs=-1, required=True)
 @click.option("--passthrough", is_flag=True,
               help="Also add to TLS passthrough list (no MITM interception).")
-def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
+@click.option("--expires-in", "expires_in", default=None,
+              help="Time-limit the entry: e.g. 30m, 1h, 2d (or a bare number "
+                   "of seconds). After it expires the domain is blocked at "
+                   "the proxy and pruned from the allowlist. Useful for a "
+                   "one-off task like `npm install`. Only valid in allowlist "
+                   "mode.")
+def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
+               expires_in: str | None):
     """Add one or more domains to a cage's filter list.
 
     Multiple domains may be passed; the cage is reloaded at most once.
+    With ``--expires-in`` the entry is time-limited (allowlist mode only):
+    it works until its TTL elapses, then the proxy blocks it at L7 and the
+    next reconcile (``cage grants <name> sync``, which also runs implicitly
+    from the CLI paths that read a cage) prunes it from the allowlist +
+    dnsmasq. Permanent by default.
     """
     try:
         raw = state.load_raw_config(name)
@@ -4237,40 +4384,108 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool):
     if list_key not in dom:
         dom[list_key] = []
 
+    # --expires-in only makes sense in allowlist mode (a blocklist entry's
+    # expiry is meaningless — blocklist denies by membership, not time).
+    expires_iso = ""
+    if expires_in is not None:
+        if list_key != "allow":
+            click.echo(
+                "error: --expires-in is only valid in allowlist mode "
+                "(a blocklist entry can't be time-limited)",
+                err=True,
+            )
+            sys.exit(1)
+        try:
+            expires_iso = _expires_at_from_now(_parse_duration(expires_in))
+        except ValueError as e:
+            click.echo(f"error: invalid --expires-in: {e}", err=True)
+            sys.exit(1)
+
     pt_note = " (passthrough)" if passthrough else ""
+    exp_note = f" (expires {expires_iso})" if expires_iso else ""
     changed = False
     messages: list[str] = []
 
-    for domain_name in domain_names:
-        already_in_list = domain_name in dom[list_key]
-        already_passthrough = domain_name in dom.get("passthrough", [])
+    expires = _read_domain_expires(raw)
 
-        if already_in_list and (not passthrough or already_passthrough):
+    # Validate domain syntax UP FRONT, before any append / baseline change
+    # (Fix 2): ``dom[list_key].append(dn)`` previously appended without
+    # syntax-validating, so ``agentcage cage <name> domain add "foo.com/x"``
+    # wrote a cage.yaml that ``validate_config`` (and ``valid_domain``)
+    # REJECTS on next load — bricking the cage. Validate the canonical
+    # (lowercased, trailing-dot-stripped) form, the exact string that would
+    # land in cage.yaml; on failure echo an error in the command's existing
+    # style (mirrors ``grants promote``'s "cannot promote into a
+    # blocklist-mode cage" / "invalid domain" refusal) and exit 1, so
+    # nothing is written.
+    for domain_name in domain_names:
+        dn = domain_name.rstrip(".").lower()
+        if not state.valid_domain(dn):
+            click.echo(f"error: invalid domain: {domain_name!r}", err=True)
+            sys.exit(1)
+
+    for domain_name in domain_names:
+        # Canonical form (lowercased, trailing dots stripped) for the
+        # stored value + membership checks — the raw operator argument may
+        # be uppercase, and an uppercase entry lands in cage.yaml and is
+        # then REJECTED by ``validate_config`` (the regex is lowercase-only),
+        # making the cage's own config unparseable. Mirrors the grants
+        # reconcile (``grants sync``) promote step and ``grants promote``.
+        dn = domain_name.rstrip(".").lower()
+        already_in_list = any(x.rstrip(".").lower() == dn
+                              for x in dom[list_key])
+        already_passthrough = any(x.rstrip(".").lower() == dn
+                                 for x in dom.get("passthrough", []))
+
+        if already_in_list and (not passthrough or already_passthrough) \
+                and not expires_iso:
             messages.append(f"'{domain_name}' is already in cage '{name}'.")
             continue
 
         if not already_in_list:
-            dom[list_key].append(domain_name)
+            dom[list_key].append(dn)
         if passthrough and not already_passthrough:
             if "passthrough" not in dom:
                 dom["passthrough"] = []
-            dom["passthrough"].append(domain_name)
+            dom["passthrough"].append(dn)
+        if expires_iso:
+            expires[dn] = expires_iso
 
         changed = True
-        messages.append(f"Added '{domain_name}'{pt_note} to cage '{name}'.")
+        messages.append(f"Added '{domain_name}'{pt_note}{exp_note} to cage '{name}'.")
+
+    _write_domain_expires(raw, expires)
 
     if changed:
-        state.save_raw_config(name, raw)
-        state.save_proxy_config(name)
-
+        _apply_baseline_change(name, raw)
         cfg = state.load_deployment_config(name)
-        _update_dns_quadlet(cfg)
-
         if get_backend(cfg).is_running(cfg.name, "cage"):
             messages.append("DNS and proxy updated.")
+        # Nothing to schedule: an expired entry is blocked by the L7
+        # inspector immediately and unconditionally, and the baseline is
+        # tidied by the next reconcile (`cage grants <name> sync`, which
+        # also runs implicitly from the CLI paths that read a cage).
 
     for line in messages:
         click.echo(line)
+
+
+def _apply_baseline_change(name: str, raw: dict) -> None:
+    """Persist a raw cage.yaml edit and live-reload the egress.
+
+    The shared tail of ``domain add`` / ``domain rm`` / the Policy API
+    grants reconcile (``grants sync``): write the modified config, re-render
+    the proxy subset, then re-publish the dnsmasq allowlist + SIGHUP dnsmasq
+    so the change is live without a cage restart (the mitmproxy addon
+    hot-reloads proxy-config.yaml via its mtime poll). Reusing this one
+    function is what makes every grant path apply domains the *exact* same
+    way a manual ``agentcage domain add`` does — single source of truth for
+    the write + reload chain.
+    """
+    state.save_raw_config(name, raw)
+    state.save_proxy_config(name)
+    cfg = state.load_deployment_config(name)
+    _update_dns_quadlet(cfg)
 
 
 @domain.command("rm")
@@ -4309,16 +4524,875 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
         dom[list_key].remove(domain_name)
         if domain_name in pt_entries:
             dom["passthrough"].remove(domain_name)
+        # Drop any expiry entry for the removed domain too.
+        expires = _read_domain_expires(raw)
+        if expires.pop(domain_name.lower().rstrip("."), None) is not None:
+            _write_domain_expires(raw, expires)
 
-    state.save_raw_config(name, raw)
-    state.save_proxy_config(name)
+    _apply_baseline_change(name, raw)
 
-    cfg = state.load_deployment_config(name)
-    _update_dns_quadlet(cfg)
+    # Audit the removal. The reference docs list `policy_grant_removed` as
+    # "a domain removed via `agentcage domain rm`", but only the reconcile's
+    # TTL-expiry path emitted it — so an operator revoking a decider-granted
+    # domain left no trace in the forensic record of egress widenings.
+    try:
+        state.append_policy_audit(name, {
+            "kind": "policy_grant_removed",
+            "domain": domain_name,
+            "reason": "removed by operator via 'domain rm'",
+            "source": "operator",
+            "action": "removed_from_passthrough" if passthrough
+                      else "removed_from_baseline",
+        })
+    except Exception:
+        pass
 
     msg = f"Removed '{domain_name}' from cage '{name}'."
-    if get_backend(cfg).is_running(cfg.name, "cage"):
+    if get_backend(state.load_deployment_config(name)).is_running(name, "cage"):
         msg += " DNS and proxy updated."
     click.echo(msg)
 
+
+# ── cage grants: Policy API runtime domain grants ────────────
+# Host-side management of the per-cage grants overlay (see
+# docs/explain/policy-api.md §3.4–3.5). The overlay is an additive
+# list of domains the egress granted at the agent's request, on top of
+# the operator's static ``domains.allow`` baseline. These commands only
+# touch the host-side overlay file + (for promote) the stored cage.yaml;
+# they never exec into the egress. ``promote`` reuses the battle-tested
+# ``domain add`` live-reload chain (save_raw_config → save_proxy_config
+# → _update_dns_quadlet) so a promoted grant becomes durable and visible
+# to the operator exactly like a hand-added domain.
+#
+# Command shape: ``agentcage cage grants <name> <list|promote|revoke>``.
+# The cage name is a positional argument on the *group* itself (not each
+# subcommand) so it always comes first — ``cage grants NOPE list`` rather
+# than ``cage grants list NOPE`` — matching the rest of the cage CLI's
+# ``cage <verb> <name>`` shape and the usage in the design doc. Click's
+# group parser consumes the leading positional as the group's argument
+# and dispatches the remaining token as the subcommand, so this just
+# works; the subcommands pull the name back out of the parent context
+# via :func:`_grants_name`.
+
+
+def _grant_domain_match(entry_domain: str, target: str) -> bool:
+    """Case-insensitive, trailing-dot-insensitive domain match.
+
+    DNS is case-insensitive and treats ``foo.com`` and ``foo.com.`` as the
+    same name, so grant lookups must too — otherwise an operator typing
+    ``revoke Foo.COM`` against an overlay entry written as ``foo.com``
+    would silently miss it and report the grant as absent.
+    """
+    return entry_domain.rstrip(".").lower() == target.rstrip(".").lower()
+
+
+def _host_never_grant(raw: dict) -> set[str]:
+    """Built-in never_grant floor the grants reconcile applies on promote.
+
+    Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
+    ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
+    ``{internal, local, localhost}`` plus the control host from
+    ``domains.auto.host`` (default ``agentcage.local``). The reconcile runs
+    on the HOST (``grants sync`` / the implicit ``domain list`` reconcile)
+    and cannot import the addon (which lives in the egress image), so this
+    is a deliberate mirror kept in sync with
+    ``config._AUTO_NEVER_GRANT`` / ``DomainsAutoConfig.host``. Suffix-matched
+    so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
+    and ``local`` covers the default control host's TLD family.
+    """
+    from agentcage.config import _AUTO_NEVER_GRANT
+    out = {str(h).lower().rstrip(".") for h in _AUTO_NEVER_GRANT}
+    auto = (raw.get("domains") or {}).get("auto") or {}
+    host = str(auto.get("host", "agentcage.local") or "agentcage.local")
+    out.add(host.lower().rstrip("."))
+    return out
+
+
+def _is_never_grant(domain: str, never: set[str]) -> bool:
+    """Suffix-match *domain* against the never_grant set (addon mirror).
+
+    Also rejects hostnames that ENCODE a non-global IP (nip.io / sslip.io and
+    clones) — the case suffix matching structurally cannot see. Mirrors the
+    addon's ``_is_never_grant``; this copy is what stops the reconcile step
+    promoting such a domain into the operator's baseline from an overlay that
+    was hand-edited or written by an older addon.
+    """
+    from agentcage.config import encoded_private_ip
+    if encoded_private_ip(domain) is not None:
+        return True
+    parts = domain.lower().rstrip(".").split(".")
+    for i in range(len(parts)):
+        if ".".join(parts[i:]) in never:
+            return True
+    return False
+
+
+def _safe_tick(tick_fn, name: str) -> None:
+    """Run one grants-reconcile tick, isolating ANY exception so it survives.
+
+    Mirrors ``data/proxy/policy_api.py`` ``sweeper_loop``'s per-tick
+    isolation. Historically this guarded the continuous ``grants watch``
+    loop: a malformed overlay (YAML/JSON/decode error — another agent is
+    hardening the state.py loaders, but the reconcile must survive ANY
+    exception) killed the watcher; with ``Restart=on-failure RestartSec=2``
+    the unit then hit systemd's start limit and died permanently —
+    promotions and pruning silently stopped. The continuous watcher was
+    deleted in the egress-local DNS-apply rework (expired grants are now
+    pruned in-egress by the sweeper and drop out of the runtime DNS via
+    the supervisor render; promotion into the static baseline is lazy via
+    ``grants sync`` / the implicit ``domain list`` reconcile), but this
+    helper still wraps the single reconcile tick so a malformed overlay
+    can't abort a ``domain list`` / ``grants sync`` partway through.
+
+    ``KeyboardInterrupt`` is a ``BaseException`` (Py 3.8+) so it is NOT
+    swallowed by ``except Exception`` here — it propagates to the caller.
+    The tick body is factored into this helper so the per-tick exception
+    handling is unit-testable without the loop + ``sleep``.
+    """
+    try:
+        tick_fn()
+    except Exception as e:  # pragma: no cover — defensive
+        click.echo(
+            f"warning: grants reconcile tick for '{name}' failed: {e!r}",
+            err=True,
+        )
+
+
+def _grants_name() -> str:
+    """Return the cage name parsed by the ``cage grants`` group.
+
+    The group carries ``name`` as its own positional argument (see the
+    module comment above); subcommands read it from the parent context
+    rather than declaring a duplicate argument of their own.
+    """
+    return click.get_current_context().parent.params["name"]
+
+
+@cage.group("grants", cls=AliasGroup, aliases={"ls": "list"})
+@click.argument("name")
+def grants(name: str):
+    """Manage Policy API runtime domain grants (see docs/explain/policy-api.md)."""
+
+
+def _load_grants_overlay(name: str, cfg) -> list[dict] | None:
+    """Load the grants overlay for a cage, isolation-aware.
+
+    Container/apple cages: the host-side file (``state.load_grants``).
+    VM cages: the overlay lives VM-LOCAL inside the guest (see
+    ``quadlets.vm_local_grants_dir`` — Lima mounts can't be trusted for
+    host→guest rewrites), so it is pulled over ``limactl shell``
+    (``backends.vm.pull_grants``). Returns ``None`` when the VM round-trip
+    failed (VM stopped / unreachable) — callers distinguish that from an
+    empty overlay: for the reconcile it means "skip this tick quietly",
+    for manual commands it is an error.
+    """
+    if getattr(cfg, "isolation", "container") == "vm":
+        from agentcage.lima.instance import LimaInstance
+        from agentcage.backends.vm import pull_grants
+        return pull_grants(name, LimaInstance(name))
+    return state.load_grants(name)
+
+
+def _save_grants_overlay(name: str, cfg, entries: list[dict]) -> None:
+    """Write the grants overlay for a cage, isolation-aware.
+
+    VM cages: pushed guest-side via base64 over ``limactl shell`` (atomic
+    temp+``mv`` so the in-guest addon's mtime-poll never sees a truncated
+    file). Other backends: the host-side atomic write.
+    """
+    if getattr(cfg, "isolation", "container") == "vm":
+        from agentcage.lima.instance import LimaInstance
+        from agentcage.backends.vm import push_grants
+        push_grants(name, entries, LimaInstance(name))
+        return
+    state.save_grants(name, entries)
+
+
+def _grants_vm_unreachable(name: str) -> None:
+    """Error out: a manual grants command needs the VM running."""
+    click.echo(
+        f"error: could not reach the VM for cage '{name}' — the grants "
+        f"overlay lives guest-side. Start the cage and retry.", err=True)
+    sys.exit(1)
+
+@grants.command("list")
+def grants_list():
+    """List runtime grants (overlay) and the static baseline for a cage."""
+    name = _grants_name()
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+
+    # Baseline comes from the validated Config object so it reflects the
+    # same allowlist the egress enforces, not a raw-dict re-interpretation.
+    try:
+        cfg = state.load_deployment_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    baseline = list(cfg.domains.allow)
+    click.echo("Baseline: " + (" ".join(sorted(baseline)) if baseline else "(empty)"))
+
+    entries = _load_grants_overlay(name, cfg)
+    if entries is None:
+        _grants_vm_unreachable(name)
+    if not entries:
+        click.echo("(no runtime grants)")
+        return
+
+    # Fixed-width column layout keeps the output greppable / parseable.
+    click.echo(f"{'DOMAIN':32} {'GRANTED_AT':26} {'EXPIRES_AT':26} {'REASON':24} SOURCE")
+    for e in entries:
+        click.echo(
+            f"{str(e.get('domain', '')):32} "
+            f"{str(e.get('granted_at', '')):26} "
+            f"{str(e.get('expires_at', '')):26} "
+            f"{str(e.get('reason', '')):24} "
+            f"{e.get('source', '')}"
+        )
+
+
+@grants.command("promote")
+@click.argument("domain")
+def grants_promote(domain: str):
+    """Promote a runtime grant into the permanent baseline, then drop it from the overlay."""
+    name = _grants_name()
+    try:
+        raw = state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    cfg = state.load_deployment_config(name)
+    _ensure_v022_cage(name)
+    _ensure_domain_section(raw)
+    dom = raw["domains"]
+
+    # A grant only widens the allow set; blocklist mode allows everything
+    # except the listed names, so a "grant" is meaningless there and the
+    # request endpoint refuses to run in that mode (policy-api.md §2/§3.6).
+    # Mirroring that invariant host-side keeps promotion honest.
+    if "block" in dom and "allow" not in dom:
+        click.echo("error: cannot promote into a blocklist-mode cage", err=True)
+        sys.exit(1)
+
+    if "allow" not in dom:
+        dom["allow"] = []
+    allow_list = dom["allow"]
+
+    # Look up the overlay entry (if any) to preserve its TTL into
+    # domains.expires — otherwise a ttl_seconds grant promoted by hand
+    # silently becomes permanent (the reconcile's auto-promote has the same
+    # fix; see _tick step 2).
+    overlay_entries = _load_grants_overlay(name, cfg)
+    if overlay_entries is None:
+        _grants_vm_unreachable(name)
+    grant_entry = next(
+        (e for e in overlay_entries
+         if _grant_domain_match(str(e.get("domain", "")), domain)),
+        None,
+    )
+    # ``promote`` is for RUNTIME grants only: a domain not in the overlay is
+    # not a Policy-API grant, so promoting it would be a disguised, unaudited
+    # ``domain add`` (the operator gets a baseline edit + dnsmasq change with
+    # no ``policy_grant_promoted`` audit). Refuse and point at the real
+    # command, mirroring ``grants_revoke``'s "is not a runtime grant"
+    # refusal.
+    if grant_entry is None:
+        click.echo(
+            f"error: '{domain}' is not a runtime grant — use "
+            f"`agentcage cage {name} domain add` instead", err=True)
+        sys.exit(1)
+    # Validate the domain syntax before it lands in domains.allow and is
+    # interpolated into the dnsmasq allowlist (dnsmasq directive injection:
+    # a value containing '\n' or '/' would emit extra ``server=`` lines —
+    # see Fix 3 / config.valid_domain). The in-container addon validates
+    # BEFORE granting (policy_api._valid_domain); the host promote path
+    # now does too.
+    dl = domain.rstrip(".").lower()
+    if not state.valid_domain(dl):
+        click.echo(f"error: invalid domain: {domain!r}", err=True)
+        sys.exit(1)
+    # Mirror the addon's never_grant floor: internal/localhost/control-host
+    # zones are permanently denied by policy and must never be promoted.
+    if _is_never_grant(dl, _host_never_grant(raw)):
+        click.echo(
+            f"error: '{domain}' is on the never_grant list and cannot be "
+            f"promoted", err=True)
+        sys.exit(1)
+    expires_at = str((grant_entry or {}).get("expires_at", "") or "")
+    if expires_at:
+        expires = _read_domain_expires(raw)
+        expires[domain.lower().rstrip(".")] = expires_at
+        _write_domain_expires(raw, expires)
+
+    # Canonical membership check (case- and trailing-dot-insensitive) so an
+    # operator who typed the domain in a different case still sees "already
+    # in the baseline" instead of appending a duplicate uppercase entry —
+    # and the appended value is the canonical lowercase form (see below).
+    already_baseline = any(x.rstrip(".").lower() == dl for x in allow_list)
+    if already_baseline:
+        click.echo(f"'{domain}' is already in the baseline.")
+        # The domain is present, but a TTL'd grant still tightens it: the
+        # expires write above must be persisted too, not silently dropped
+        # (raw was mutated by _write_domain_expires but nothing saved it).
+        if expires_at:
+            _apply_baseline_change(name, raw)
+    else:
+        # Append the CANONICAL form (lowercased, trailing dots stripped) —
+        # not the operator's raw ``domain`` argument, which may be upper-
+        # case. An uppercase entry lands in cage.yaml and ``validate_config``
+        # then REJECTS it (the regex is lowercase-only), making the cage's
+        # own config unparseable.
+        allow_list.append(dl)
+        # Live-reload chain via the shared helper (same path as
+        # ``domain add`` and the grants reconcile).
+        _apply_baseline_change(name, raw)
+        state.append_policy_audit(name, {
+            "kind": "policy_grant_promoted",
+            "domain": domain,
+            "reason": "operator promote",
+            "expires_at": expires_at,
+            "action": "added_to_baseline",
+        })
+        if get_backend(state.load_deployment_config(name)).is_running(name, "cage"):
+            click.echo("DNS and proxy updated.")
+
+    # The grant is now redundant with the baseline — drop it from the
+    # overlay so list/show reflect reality and the egress stops carrying
+    # a duplicate entry. Case-insensitive, trailing-dot-insensitive match
+    # (see _grant_domain_match) so the operator's casing doesn't matter.
+    # Merge-on-write: re-read the CURRENT on-disk overlay and drop ONLY the
+    # promoted domain, so a grant the egress addon persisted between the
+    # load at the top and this save is not silently lost (the same
+    # lost-update race the reconcile's _tick step 3 guards — see Fix 1).
+    # A None re-read (VM transiently unreachable) must NOT be treated as an
+    # empty overlay — merging against a fabricated [] would push an EMPTY
+    # overlay and wipe every grant decided in the window. Fall back to the
+    # initial snapshot's filtered list instead (still correct for the
+    # promoted domain; the skipped merge only re-risks the pre-fix race,
+    # never a wipe).
+    revoked_dl = domain.rstrip(".").lower()
+    current = _load_grants_overlay(name, cfg)
+    if current is None:
+        click.echo(
+            "warning: could not re-read the runtime overlay (VM "
+            "unreachable) — wrote the snapshot view; re-run `grants list` "
+            "once the cage is up to confirm", err=True)
+        base = overlay_entries
+    else:
+        base = current
+    remaining = [
+        e for e in base
+        if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
+    ]
+    _save_grants_overlay(name, cfg, remaining)
+    click.echo(
+        f"Promoted '{domain}' into the baseline and removed it from the "
+        f"runtime overlay."
+    )
+
+
+@grants.command("revoke")
+@click.argument("domain")
+def grants_revoke(domain: str):
+    """Remove a runtime grant from the overlay (does not touch the baseline).
+
+    The addon hot-reloads the overlay on its mtime poll, so the grant stops
+    being effective on the next proxied request — no explicit signal needed.
+    """
+    name = _grants_name()
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    cfg = state.load_deployment_config(name)
+
+    entries = _load_grants_overlay(name, cfg)
+    if entries is None:
+        _grants_vm_unreachable(name)
+    remaining = [
+        e for e in entries
+        if not _grant_domain_match(str(e.get("domain", "")), domain)
+    ]
+    if len(remaining) == len(entries):
+        # Nothing matched — surface a clear error rather than a silent no-op
+        # that would leave the operator believing the grant was revoked.
+        click.echo(f"error: '{domain}' is not a runtime grant", err=True)
+        sys.exit(1)
+    # Merge-on-write: re-read the CURRENT on-disk overlay and drop ONLY the
+    # revoked domain, so a grant the egress addon persisted between the
+    # load above and this save is not silently lost (the lost-update race
+    # the reconcile's _tick step 3 guards — see Fix 1). The earlier
+    # ``remaining`` check against the snapshot still authorizes the revoke;
+    # this re-filter is the durable write. A None re-read (VM transiently
+    # unreachable) must NOT be treated as an empty overlay — merging
+    # against a fabricated [] would push an EMPTY overlay and wipe every
+    # grant decided in the window. Fall back to the initial snapshot's
+    # filtered list instead.
+    revoked_dl = domain.rstrip(".").lower()
+    current = _load_grants_overlay(name, cfg)
+    if current is None:
+        click.echo(
+            "warning: could not re-read the runtime overlay (VM "
+            "unreachable) — wrote the snapshot view; re-run `grants list` "
+            "once the cage is up to confirm", err=True)
+        base = entries
+    else:
+        base = current
+    merged = [
+        e for e in base
+        if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
+    ]
+    _save_grants_overlay(name, cfg, merged)
+    state.append_policy_audit(name, {
+        "kind": "policy_grant_revoked",
+        "domain": domain,
+        "reason": "operator revoke",
+        "action": "overlay_entry_removed",
+    })
+    click.echo(f"Revoked runtime grant for '{domain}'.")
+    click.echo("(takes effect within ~30s — the egress's overlay poll "
+              "interval; a restart applies it immediately)")
+
+
+@grants.command("sync")
+def grants_sync():
+    """Reconcile decided grants into the operator's cage.yaml baseline.
+
+    This is bookkeeping, not enforcement. A granted domain is already live:
+    the addon applies it to the L7 inspector in-memory and publishes the zone
+    to the egress supervisor, which re-renders dnsmasq's servers-file and
+    SIGHUPs it. This command makes the grant DURABLE — it writes the domain
+    into the operator's ``domains.allow`` so it survives a cage rebuild and
+    shows up in ``domain list`` — and prunes entries whose expiry has passed.
+
+    It runs implicitly from the CLI paths that read a cage, so an operator
+    normally never types it. See docs/explain/egress-local-dns-apply.md.
+
+    Mirrors ``agentcage domain add`` exactly: for each grant the egress's
+    decider approved (an overlay entry), this command appends the domain to
+    the static ``domains.allow`` baseline (preserving its TTL into
+    ``domains.expires``) and runs the live-reload chain
+    (``save_raw_config`` → ``save_proxy_config`` →
+    ``_update_dns_quadlet`` → dnsmasq SIGHUP). That is what makes a granted
+    domain actually *reachable*: mitmproxy resolves its upstreams through
+    dnsmasq, so the L7 ``DomainInspector.grant()`` alone (which the addon
+    also applies) is not enough — the domain must be resolvable too, and
+    the only component that can write the dnsmasq allowlist + SIGHUP it is
+    the host CLI (the addon runs as ``acproxy``, uid 200, no ``CAP_KILL``).
+
+    Robustness:
+      * Idempotent — promoted entries are removed from the overlay (they
+        now live in the baseline), so a duplicate decision never
+        re-promotes the same domain.
+      * TTL-aware — when an entry's ``expires_at`` passes, the domain is
+        removed from the baseline (via the ``domain rm`` chain) and the
+        entry dropped from the overlay, so a TTL'd grant stops being
+        reachable instead of silently becoming permanent.
+      * Serial — pending grants are promoted in one batch (one
+        ``save_raw_config`` + one reload) so a burst of decisions makes one
+        atomic baseline edit, not a thundering herd of read-modify-writes.
+
+    Grants are APPLIED in-egress automatically: the addon publishes the
+    decided zone and raises the supervisor's reload flag, the supervisor
+    re-renders dnsmasq's servers-file (baseline + granted) and SIGHUPs it,
+    and the in-egress sweeper prunes expired grants (30s poll) so they drop
+    out of the runtime DNS via the next render. This command only PROMOTES
+    a decided grant into the operator's STATIC baseline so it survives a
+    cage rebuild — there is no continuous watcher to run, so it needs no
+    supervision unit.
+    """
+    _reconcile_grants(_grants_name())
+
+
+def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
+    """One reconcile pass: promote decided grants, prune expired entries.
+
+    Factored out of the ``grants sync`` command so the CLI paths that read a
+    cage can converge the baseline implicitly — the operator should not have
+    to know this step exists. ``quiet`` suppresses the not-found error exit
+    for those implicit callers (a missing cage is the caller's problem to
+    report, not this helper's).
+    """
+    import time as _time
+    from datetime import datetime, timezone
+    # Existence check up front so a typo isn't a silent no-op.
+    try:
+        state.load_raw_config(name)
+    except FileNotFoundError:
+        if quiet:
+            return
+        click.echo(f"error: cage '{name}' does not exist", err=True)
+        sys.exit(1)
+    # Isolation-aware overlay IO (see _load_grants_overlay): VM cages
+    # round-trip the guest-local overlay via limactl, others use the
+    # host-side file. Loaded once here; the config's isolation does not
+    # change across reconcile passes.
+    _watch_cfg = state.load_deployment_config(name)
+    _is_vm = getattr(_watch_cfg, "isolation", "container") == "vm"
+
+    def _is_expired(entry: dict) -> bool:
+        exp = str(entry.get("expires_at", "") or "")
+        if not exp:
+            return False
+        try:
+            return exp <= datetime.now(timezone.utc).isoformat()
+        except ValueError:
+            return False
+
+    # Per-process seen-set for rejected-overlay-entry auditing. An entry
+    # that fails validation (invalid syntax / never_grant) stays in the
+    # overlay (it is NOT promoted and NOT removed), so it would re-audit
+    # every tick forever; dedup to at most one ``policy_grant_rejected``
+    # audit record per distinct domain per reconcile run. Cleared only by a
+    # process restart.
+    rejected_seen: set[str] = set()
+
+    def _audit_reject(dl: str, reason: str) -> None:
+        if dl in rejected_seen:
+            return
+        rejected_seen.add(dl)
+        state.append_policy_audit(name, {
+            "kind": "policy_grant_rejected",
+            "domain": dl,
+            "reason": reason,
+            "action": "not_promoted",
+        })
+
+    def _tick() -> bool:
+        """Process the overlay once. Returns True if anything changed."""
+        # VM cages: the overlay lives guest-side. Pull it over limactl;
+        # an unreachable VM (stopped cage) is a quiet no-op tick, not an
+        # error — the next reconcile pass picks up the overlay again once
+        # the cage starts. (L7 enforcement inside the egress is unaffected
+        # either way.)
+        if _is_vm:
+            from agentcage.lima.instance import LimaInstance
+            inst = LimaInstance(name)
+            if not inst.is_running():
+                return False
+        entries = _load_grants_overlay(name, _watch_cfg)
+        if entries is None:
+            return False
+        changed = False
+        # Domains this tick intentionally REMOVES from the overlay (expired
+        # in step 1, promoted in step 2), keyed by domain with the SNAPSHOT
+        # entry's granted_at as the value. Tracked explicitly so the step-3
+        # write can MERGE against a fresh re-read of the on-disk overlay
+        # instead of clobbering it with this tick's stale snapshot — a
+        # grant the egress addon persisted during the (podman-exec-spanning)
+        # step-2 window would otherwise be silently lost (Fix 1). The
+        # reconcile only ever REMOVES overlay entries (steps 1/2 never add),
+        # so ``merged = on_disk − removed`` preserves every fresh on-disk
+        # entry written after the snapshot. The granted_at value lets the
+        # merge keep a fresh RE-GRANT of the same domain whose granted_at
+        # is strictly newer than the snapshot entry this tick removed
+        # (Fix 3): the addon re-decided the domain during the tick window
+        # and the new entry must survive, not be dropped as a stale
+        # duplicate.
+        removed: dict[str, str] = {}
+        # 0. Prune expired allowlist entries that came from
+        #    ``domain add --expires-in`` (they live in domains.expires, not
+        #    the grants overlay). The L7 inspector already blocks them; this
+        #    keeps the baseline + dnsmasq tidy so `domain list` and DNS stay
+        #    accurate. Audit each removal.
+        try:
+            raw = state.load_raw_config(name)
+            _ensure_v022_cage(name)
+            _ensure_domain_section(raw)
+            dom = raw["domains"]
+            expires = _read_domain_expires(raw)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            expired_baseline = [
+                d for d, exp in expires.items() if exp and exp <= now_iso
+            ]
+            if expired_baseline:
+                allow = dom.get("allow") or []
+                allow_lower = {x.rstrip(".").lower() for x in allow}
+                removed_any = False
+                for d in expired_baseline:
+                    if d in allow_lower:
+                        for i, x in enumerate(allow):
+                            if x.rstrip(".").lower() == d:
+                                allow.pop(i)
+                                removed_any = True
+                                break
+                    expires.pop(d, None)
+                    state.append_policy_audit(name, {
+                        "kind": "domain_allow_expired",
+                        "domain": d,
+                        "reason": "allowlist entry expired",
+                        "action": "removed_from_baseline",
+                    })
+                # Persist the shrunk expires map whenever any expired
+                # entry was processed — even when the domain wasn't in
+                # the allow list. Without this, a stale expires entry whose
+                # domain was removed from (or never in) domains.allow is
+                # popped in memory only, never persisted, and re-audited
+                # every tick forever.
+                _write_domain_expires(raw, expires)
+                if removed_any:
+                    try:
+                        _apply_baseline_change(name, raw)
+                    except (SystemExit, Exception):
+                        pass
+                else:
+                    # No baseline edit, but the expires map shrank —
+                    # persist it so the stale entry doesn't reappear.
+                    state.save_raw_config(name, raw)
+                changed = True
+        except FileNotFoundError:
+            pass
+        # 1. Drop expired grants from baseline + overlay (TTL enforcement).
+        #    Any entry with a past expires_at — promoted entries are removed
+        #    from the overlay on promotion, so this catches entries that were
+        #    granted with a TTL but whose promotion raced (or operator-added
+        #    --expires-in entries still in the overlay).
+        expired = [e for e in entries if _is_expired(e)]
+        if expired:
+            baseline_changed = False
+            try:
+                raw = state.load_raw_config(name)
+                _ensure_v022_cage(name)
+                _ensure_domain_section(raw)
+                dom = raw["domains"]
+                allow = dom.get("allow") or []
+                for e in expired:
+                    d = str(e.get("domain", "")).rstrip(".").lower()
+                    if d in [x.rstrip(".").lower() for x in allow]:
+                        for i, x in enumerate(allow):
+                            if x.rstrip(".").lower() == d:
+                                allow.pop(i)
+                                break
+                        baseline_changed = True
+                if baseline_changed:
+                    # Tolerate a reload failure (e.g. egress not yet up,
+                    # dnsmasq validation hiccup): the baseline is already
+                    # written; record intent + audit, retry the SIGHUP next
+                    # tick. A stopped cage is the common case at startup.
+                    try:
+                        _apply_baseline_change(name, raw)
+                    except (SystemExit, Exception):
+                        pass
+            except FileNotFoundError:
+                pass
+            expired_domains = {str(e.get("domain", "")).rstrip(".").lower()
+                               for e in expired}
+            for e in expired:
+                dl = str(e.get("domain", "")).rstrip(".").lower()
+                # Track the snapshot entry's granted_at so step 3's merge
+                # can keep a fresh re-grant of the same domain whose
+                # granted_at is strictly newer (Fix 3).
+                removed[dl] = str(e.get("granted_at", "") or "")
+                state.append_policy_audit(name, {
+                    "kind": "policy_grant_removed",
+                    "domain": e.get("domain"),
+                    "reason": "ttl expired",
+                    "source": e.get("source", ""),
+                    "action": "removed_from_baseline",
+                })
+            entries = [e for e in entries
+                       if str(e.get("domain", "")).rstrip(".").lower()
+                       not in expired_domains]
+            # The overlay shrank — it must be persisted even when the
+            # expired domain was NOT in the baseline, otherwise the entry
+            # reloads next tick and re-audits (policy_grant_removed) every
+            # tick forever (never converges).
+            changed = True
+        # 2. Promote pending grants into the baseline.
+        #    The addon writes every decided grant to the overlay (no `applied`
+        #    flag); the reconcile promotes all present entries and removes them.
+        pending = list(entries)
+        if pending:
+            try:
+                raw = state.load_raw_config(name)
+                _ensure_v022_cage(name)
+                _ensure_domain_section(raw)
+                dom = raw["domains"]
+                # A grant only widens the allow set; in blocklist mode
+                # (block present, allow absent) a "grant" is meaningless —
+                # the manual ``cage grants promote`` command refuses with
+                # "cannot promote into a blocklist-mode cage" (see
+                # grants_promote), and the Policy API request endpoint
+                # refuses to run in blocklist mode. Mirror that here:
+                # leave overlay entries pending (step 1 still drops
+                # expired ones) rather than appending granted domains to
+                # the BLOCK list — the exact opposite of a grant.
+                if "block" in dom and "allow" not in dom:
+                    pass  # skip promotion in blocklist mode
+                else:
+                    list_key = "allow"
+                    dom.setdefault(list_key, [])
+                    allow_lower = {x.rstrip(".").lower() for x in dom[list_key]}
+                    never = _host_never_grant(raw)
+                    # Preserve each grant's TTL into domains.expires so step 0
+                    # of the next tick prunes it (and the L7 inspector enforces
+                    # it). Without this, a ttl_seconds grant is promoted into
+                    # domains.allow and its expires_at (which lived only in the
+                    # overlay entry) is deleted with that entry one tick later —
+                    # silently turning a short-lived grant permanent.
+                    expires = _read_domain_expires(raw)
+                    promoted_domains = set()
+                    baseline_touched = False
+                    for e in pending:
+                        d = str(e.get("domain", "")).rstrip(".")
+                        dl = d.lower()
+                        # Validate syntax BEFORE the string lands in
+                        # domains.allow and is interpolated into the dnsmasq
+                        # allowlist (dnsmasq directive injection: a value
+                        # containing '\n' or '/' renders as multiple valid
+                        # ``server=`` lines in dns-allowlist.conf and
+                        # ``dnsmasq --test`` PASSES — Fix 3). The in-container
+                        # addon validates BEFORE granting (policy_api._valid_domain);
+                        # the host reconcile now does too. Do NOT promote and
+                        # do NOT remove from the overlay (the entry stays so
+                        # the operator can see the rejected grant); audit
+                        # once per distinct domain per process run.
+                        if not state.valid_domain(dl):
+                            _audit_reject(dl, "invalid domain syntax")
+                            continue
+                        # Mirror the addon's never_grant floor (internal /
+                        # localhost / control host): these zones are
+                        # permanently denied by policy and must never be
+                        # promoted into the baseline.
+                        if _is_never_grant(dl, never):
+                            _audit_reject(dl, "never_grant")
+                            continue
+                        if dl not in allow_lower:
+                            # Append the CANONICAL form (lowercased, trailing
+                            # dots stripped — and newline-free by construction
+                            # since ``dl`` passed ``valid_domain`` whose regex
+                            # is ``\Z``-anchored). The raw overlay value ``d``
+                            # may be uppercase; an uppercase entry lands in
+                            # cage.yaml and ``validate_config`` then REJECTS it
+                            # (the regex is lowercase-only), making the cage's
+                            # own config unparseable.
+                            dom[list_key].append(dl)
+                            allow_lower.add(dl)
+                            baseline_touched = True
+                            # Preserve the grant's TTL into domains.expires
+                            # ONLY when this promotion actually ADDED the
+                            # domain to the allow list (Fix 1). The manual
+                            # ``cage grants promote`` command deliberately
+                            # writes the overlay TTL onto an ALREADY-permanent
+                            # baseline entry too — that is intentional
+                            # TIGHTENING by an explicit operator act (the
+                            # operator chose to promote this exact grant with
+                            # this exact TTL; see grants_promote). The reconcile
+                            # is AUTOMATIC and must be more conservative: a
+                            # stale overlay TTL (from an old grant decision)
+                            # must NOT narrow or prune the operator's own
+                            # permanent entry (set via ``domain add`` with no
+                            # --expires-in). Writing expires[dl] here for an
+                            # already-present domain would let step 0 of a
+                            # later tick prune the operator's permanent allow
+                            # entry — silently weakening an explicit operator
+                            # decision with stale automatic data.
+                            exp = str(e.get("expires_at", "") or "")
+                            if exp:
+                                expires[dl] = exp
+                            # Audit ONLY actual baseline additions (Fix 4):
+                            # an entry already in the baseline is a no-op
+                            # promotion, not a spam-worthy repeat record
+                            # every tick. The overlay entry IS still removed
+                            # below (the observable change) — just without a
+                            # redundant ``policy_grant_applied`` line.
+                            state.append_policy_audit(name, {
+                                "kind": "policy_grant_applied",
+                                "domain": e.get("domain"),
+                                "reason": e.get("reason", ""),
+                                "source": e.get("source", ""),
+                                "expires_at": e.get("expires_at", ""),
+                                "action": "added_to_baseline",
+                            })
+                        # The domain is removed from the overlay whether it
+                        # was newly added or already in the baseline (it now
+                        # lives in the baseline either way; keeping it would
+                        # grow the file without bound). Track the snapshot
+                        # entry's granted_at so step 3's merge can keep a
+                        # fresh re-grant whose granted_at is strictly newer
+                        # (Fix 3).
+                        promoted_domains.add(dl)
+                        removed[dl] = str(e.get("granted_at", "") or "")
+                    if expires:
+                        _write_domain_expires(raw, expires)
+                    # Only run the live-reload chain (which execs podman —
+                    # hundreds of ms) when a domain was actually appended to
+                    # the baseline. When every pending entry was rejected
+                    # (invalid / never_grant), the baseline is untouched and
+                    # there is nothing to SIGHUP; skip the save below too.
+                    if baseline_touched:
+                        # Same tolerance as the expire path: the baseline
+                        # write is the durable part; the live-reload SIGHUP
+                        # is best-effort.
+                        try:
+                            _apply_baseline_change(name, raw)
+                        except (SystemExit, Exception):
+                            pass
+                    # Remove promoted entries from the overlay — they now
+                    # live in the baseline; keeping them would grow the file
+                    # without bound and re-surface them in `cage grants list`.
+                    # Rejected entries are deliberately NOT removed (they
+                    # stay so the operator sees them and the rejection is
+                    # auditable) and thus NOT in ``removed``.
+                    entries = [e for e in entries
+                               if str(e.get("domain", "")).rstrip(".").lower()
+                               not in promoted_domains]
+                    if promoted_domains:
+                        changed = True
+            except FileNotFoundError:
+                pass
+        # 3. Persist the overlay (marks promoted entries applied, drops
+        #    expired). MERGE-ON-WRITE (Fix 1): re-read the CURRENT on-disk
+        #    overlay and drop only this tick's intentional removals
+        #    (``removed``), so a grant the egress addon persisted AFTER
+        #    this tick's top-of-``_tick`` snapshot — i.e. during the
+        #    podman-exec-spanning step-2 window — survives. The reconcile
+        #    only ever REMOVES overlay entries (steps 1/2 never add), so
+        #    ``merged = on_disk − removed`` is the correct merge. Fix 3:
+        #    ``removed`` carries the SNAPSHOT entry's granted_at, so a
+        #    fresh re-grant of a domain this tick expired-and-removed but
+        #    the addon freshly re-decided during the tick window (a newer
+        #    granted_at) survives the domain-keyed drop instead of being
+        #    lost as a stale duplicate.
+        #    Only write if something actually changed to avoid churning
+        #    the mtime the addon hot-reloads on.
+        if changed:
+            current = _load_grants_overlay(name, _watch_cfg)
+            if current is None:
+                # VM went away mid-tick (stopped between the pull above
+                # and this write): keep the tick's baseline changes (they
+                # are already durable host-side) and skip the overlay
+                # write — the next reachable tick re-merges.
+                return changed
+
+            def _dropped_by_tick(e: dict) -> bool:
+                """True if ``e`` is one this tick intentionally removed.
+
+                A fresh re-grant the addon persisted AFTER this tick's
+                snapshot has a strictly NEWER granted_at than the snapshot
+                entry this tick removed — keep it (Fix 3). Compare ISO
+                strings lexically (both come from the same producer, so
+                lexical == chronological); defensive: on any comparison
+                surprise fall back to dropping (never resurrect a
+                genuinely-removed entry on a malformed granted_at).
+                """
+                dl = str(e.get("domain", "")).rstrip(".").lower()
+                if dl not in removed:
+                    return False
+                snap_ga = removed[dl]
+                cur_ga = str(e.get("granted_at", "") or "")
+                try:
+                    return not (cur_ga > snap_ga)
+                except Exception:
+                    return True
+
+            merged = [e for e in current if not _dropped_by_tick(e)]
+            _save_grants_overlay(name, _watch_cfg, merged)
+        return changed
+
+    _safe_tick(_tick, name)
 

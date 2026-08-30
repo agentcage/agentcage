@@ -6,7 +6,10 @@ inside the cage (e.g. ``agentcage run``) need to survive a config update.
 v0.22 shape (cage + egress):
   - Container backend: validate the new allowlist via ``dnsmasq --test
     --servers-file=<allowlist>`` run inside the egress container, then
-    SIGHUP dnsmasq via the pidfile the supervisor writes at
+    raise the egress supervisor's reload flag (``: > /home/acproxy/dns/reload``)
+    when the runtime servers-file exists so the supervisor re-renders
+    BASELINE+GRANTED and SIGHUPs within ~1s; in fallback mode (no runtime
+    servers-file) SIGHUP dnsmasq via the pidfile the supervisor writes at
     ``/home/acdns/dnsmasq.pid``. Both steps use ``podman exec
     <name>-egress …``.
   - VM backend: same shape, wrapped in ``limactl shell <vm> -- podman
@@ -16,6 +19,11 @@ v0.22 shape (cage + egress):
   - Apple-container backend: allowlist is image-baked, so the path
     stays "stop + rebuild + start". Unchanged.
 
+The host does NOT regenerate the runtime servers-file from the baseline:
+that would strip every in-flight policy-API granted zone out of dnsmasq's
+servers-file on every edit (the round-11 review finding). The supervisor's
+``_render_servers_file`` is the single implementation of the rewrite.
+
 The pidfile lives under acdns's pre-chowned home dir (set up at image
 build time in Containerfile.egress) instead of /run because /run is a
 fresh tmpfs at container start. The earlier /run/agentcage path needed
@@ -23,8 +31,8 @@ a runtime ``chown acdns:acdns`` which required CAP_CHOWN; rootless
 podman setups with ``default_capabilities = []`` in containers.conf
 drop that and the supervisor died on the first chown call.
 
-``kill -HUP $(cat /home/acdns/dnsmasq.pid)`` rather than ``pkill -HUP
-dnsmasq`` because the supervisor uses ``setpriv --reuid=acdns`` —
+``kill -HUP $(cat /home/acdns/dnsmasq.pid)`` (fallback branch) rather than
+``pkill -HUP dnsmasq`` because the supervisor uses ``setpriv --reuid=acdns`` —
 pkill from the supervisor's process tree wouldn't find dnsmasq, and
 ``podman kill --signal HUP`` would hit tini at PID 1. The pidfile is
 the reliable handle.
@@ -436,7 +444,14 @@ def test_supervisor_container_path_forwards_to_default_route_gateway():
     internal."""
     s = _read_src("data", "containers", "supervisor-egress.sh")
     assert "ip route 2>/dev/null | awk '/^default/{print $3; exit}'" in s
-    assert 'sed "s#/[^/]*\\$#/$_gw#" /etc/agentcage/dns-allowlist.conf' in s
+    # The gateway rewrite now lives in _render_servers_file (so the same
+    # recipe can be re-run when the addon publishes a grant), parameterised
+    # over $SERVERS_BASE rather than the literal bind-mount path. Same
+    # behavior: gateway-rewritten lines first, baked resolver lines kept.
+    assert 'sed "s#/[^/]*\\$#/$_SF_GW#" \\\n        "$SERVERS_BASE"' in s \
+        or 'sed "s#/[^/]*\\$#/$_SF_GW#" "$SERVERS_BASE"' in s
+    assert 'SERVERS_BASE=/etc/agentcage/dns-allowlist.conf' in s
+    assert '_SF_STYLE=prepend' in s
     assert "/run/agentcage/dns-allowlist.egress.conf" in s
     assert '_all_servers="--all-servers"' in s
     assert "$_all_servers" in s
@@ -478,14 +493,169 @@ def test_supervisor_points_mitmproxy_resolver_at_local_dnsmasq():
     assert ":/etc/resolv.conf:ro,Z" not in j2
 
 
-def test_update_dns_quadlet_regenerates_runtime_servers_file_for_linux():
-    """Live `domain add/rm` on container/vm regenerates the gateway-rewritten
-    runtime servers-file (which dnsmasq actually serves) from the updated
-    bind-mounted allowlist before the SIGHUP — else the new apex lands only in
-    the fallback source and the served set is stale."""
+def test_update_dns_quadlet_raises_supervisor_reload_flag_for_linux():
+    """Live `domain add/rm` on container/vm must NOT regenerate the gateway-
+    rewritten runtime servers-file from the baseline on the host — that would
+    strip every in-flight policy-API granted zone out of dnsmasq's servers-file
+    on every edit (the round-11 review finding). Instead the host raises the
+    egress supervisor's reload flag (``: > /home/acproxy/dns/reload``); the
+    supervisor's 1s liveness loop re-renders BASELINE+GRANTED and SIGHUPs.
+    In fallback mode (no runtime servers-file) it SIGHUPs via the pidfile."""
     import inspect
     from agentcage.cli import _update_dns_quadlet
     src = inspect.getsource(_update_dns_quadlet)
     assert "/run/agentcage/dns-allowlist.egress.conf" in src
-    assert "ip route" in src and "/^default/" in src
-    assert "kill -HUP" in src
+    # The host NO LONGER writes the runtime servers-file from the baseline.
+    assert 'sed "s#/[^/]*' not in src, (
+        "host must not regenerate the runtime servers-file from the baseline "
+        "(would clobber in-flight granted zones)"
+    )
+    assert 'cat /etc/agentcage/dns-allowlist.conf; } > "$rt"' not in src
+    # It raises the supervisor's reload flag, guarded on $rt existing.
+    assert ': > /home/acproxy/dns/reload' in src
+    assert 'if [ -f "$rt" ]' in src
+    # Fallback branch still SIGHUPs via the pidfile.
+    assert 'kill -HUP' in src
+    assert '/home/acdns/dnsmasq.pid' in src
+
+
+class TestSupervisorFlagReload:
+    """The host-side sh -c raises the supervisor's reload flag instead of
+    regenerating the runtime servers-file from the baseline (which would
+    clobber in-flight granted zones). Behavioral assertions on the actual
+    ``podman exec … sh -c`` argv emitted by ``_update_dns_quadlet``."""
+
+    @staticmethod
+    def _sh_c_argv(mock_run):
+        """Return the single sh -c script string emitted, or None."""
+        for call in mock_run.call_args_list:
+            argv = call.args[0]
+            if isinstance(argv, list) and argv[:3] == ["podman", "exec", "demo-egress"]:
+                # ["podman","exec","demo-egress","sh","-c", <script>]
+                if "sh" in argv and "-c" in argv:
+                    idx = argv.index("-c")
+                    if idx + 1 < len(argv):
+                        return argv[idx + 1]
+        return None
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_sh_c_raises_reload_flag_guarded_on_rt(
+        self, mock_state, mock_get_backend, mock_run,
+    ):
+        from agentcage.cli import _update_dns_quadlet
+        cfg = _mock_cfg("container")
+        backend = MagicMock()
+        backend.is_running.return_value = True
+        mock_get_backend.return_value = backend
+        state_path = MagicMock()
+        state_path.is_file.return_value = True
+        state_path.read_text.return_value = ""
+        mock_state.dns_allowlist_path.return_value = state_path
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        _update_dns_quadlet(cfg)
+
+        script = self._sh_c_argv(mock_run)
+        assert script is not None, "no sh -c invocation found"
+        # The flag raise, guarded on $rt existing.
+        assert 'rt=/run/agentcage/dns-allowlist.egress.conf' in script
+        assert 'if [ -f "$rt" ]' in script
+        assert ': > /home/acproxy/dns/reload' in script
+        # The host MUST NOT write $rt from the baseline (would clobber grants).
+        assert 'sed "s#/[^/]*' not in script
+        assert '> "$rt"' not in script
+        assert 'cat /etc/agentcage/dns-allowlist.conf' not in script
+
+    @patch("agentcage.cli.subprocess.run")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_sh_c_fallback_branch_sighups_via_pidfile(
+        self, mock_state, mock_get_backend, mock_run,
+    ):
+        """The else (fallback) branch still SIGHUPs via the pidfile so a
+        no-gateway cage reloads its bind-mounted allowlist directly."""
+        from agentcage.cli import _update_dns_quadlet
+        cfg = _mock_cfg("container")
+        backend = MagicMock()
+        backend.is_running.return_value = True
+        mock_get_backend.return_value = backend
+        state_path = MagicMock()
+        state_path.is_file.return_value = True
+        state_path.read_text.return_value = ""
+        mock_state.dns_allowlist_path.return_value = state_path
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        _update_dns_quadlet(cfg)
+
+        script = self._sh_c_argv(mock_run)
+        assert script is not None
+        # else branch: pidfile SIGHUP.
+        assert 'else' in script
+        assert '/home/acdns/dnsmasq.pid' in script
+        assert 'kill -HUP "$pid"' in script
+
+
+class TestDestroyCleansLegacyWatcher:
+    """``cage destroy`` removes the legacy host-side grants-watcher
+    artifacts (pre-rework cages) before stopping the cage, so an upgraded
+    cage doesn't leave a crash-looping unit/plist behind."""
+
+    @patch("agentcage.cli._destroy_cage")
+    @patch("agentcage.cli.state")
+    def test_destroy_calls_remove_legacy_grants_watcher(
+        self, mock_state, mock_destroy,
+    ):
+        from click.testing import CliRunner
+        from agentcage.cli import main
+        from agentcage import legacy_watcher
+
+        mock_state.deployment_exists.return_value = True
+        cfg = MagicMock()
+        cfg.name = "demo"
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+        mock_destroy.return_value = ["state:demo"]
+
+        called = []
+
+        def _fake_remove(name, isolation=""):
+            called.append((name, isolation))
+
+        # Patch where the destroy flow imports it: the source module, so the
+        # lazy ``from agentcage.legacy_watcher import remove_legacy_grants_watcher``
+        # picks up the stub.
+        with patch.object(
+            legacy_watcher, "remove_legacy_grants_watcher", _fake_remove,
+        ):
+            result = CliRunner().invoke(main, ["cage", "destroy", "demo", "-y"])
+
+        assert result.exit_code == 0, result.output
+        assert called == [("demo", "vm")]
+        mock_destroy.assert_called_once()
+
+    @patch("agentcage.cli._destroy_cage")
+    @patch("agentcage.cli.state")
+    def test_destroy_skips_cleanup_when_cage_missing(
+        self, mock_state, mock_destroy,
+    ):
+        """A cage that was never created has no watcher artifacts and no
+        stored config — cleanup must be skipped, not crash destroy."""
+        from click.testing import CliRunner
+        from agentcage.cli import main
+        from agentcage import legacy_watcher
+
+        mock_state.deployment_exists.return_value = False
+        mock_destroy.return_value = []
+
+        called = []
+        with patch.object(
+            legacy_watcher, "remove_legacy_grants_watcher",
+            lambda *a, **k: called.append(a),
+        ):
+            result = CliRunner().invoke(main, ["cage", "destroy", "ghost", "-y"])
+
+        assert result.exit_code == 0, result.output
+        assert called == []  # nothing to clean
+        mock_destroy.assert_called_once()

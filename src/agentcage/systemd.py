@@ -52,3 +52,37 @@ def restart_unit(name: str) -> None:
     if not _systemctl_available():
         return
     subprocess.run([*_systemctl_cmd(), "restart", name], check=True)
+
+
+def enable_unit(name: str) -> None:
+    """Enable a unit so it is pulled in at future boots/logins.
+
+    Needed for NATIVE ``.service`` units: unlike quadlet-generated units,
+    which the systemd generator activates automatically, a native unit's
+    ``[Install] WantedBy=`` stanza only names the symlink that
+    ``systemctl enable`` creates — nothing creates it unless enable is
+    called explicitly. Currently has no live caller: the host-side grants
+    watcher it once started was removed (see
+    ``legacy_watcher.remove_legacy_grants_watcher``), and that helper shells
+    out directly for ``disable --now`` rather than calling this. Kept for
+    parity / legacy-cleanup use.
+    """
+    if not _systemctl_available():
+        return
+    subprocess.run([*_systemctl_cmd(), "enable", name], check=True)
+
+
+def disable_unit(name: str) -> None:
+    """Disable a unit so it is no longer pulled in at future boots/logins.
+
+    The undo of :func:`enable_unit`: removes the ``WantedBy=`` symlink that
+    ``systemctl enable`` created. Currently has no live caller — the host-
+    side grants watcher it once tore down was removed, and the legacy
+    cleanup helper (``legacy_watcher.remove_legacy_grants_watcher``) shells
+    out directly for ``disable --now`` (its ``disable`` alone does not stop a
+    running instance). Kept for parity / legacy-cleanup use. No-op on hosts
+    without systemd (see :func:`enable_unit`).
+    """
+    if not _systemctl_available():
+        return
+    subprocess.run([*_systemctl_cmd(), "disable", name], check=True)

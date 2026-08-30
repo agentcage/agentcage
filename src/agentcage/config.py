@@ -37,6 +37,114 @@ _BUILTIN_INSPECTOR_NAMES = frozenset({
 
 _VALID_SECRET_SCOPES = ("auto", "user", "system")
 
+# Domain-syntax validator for host-side code paths (domains.allow / .block /
+# .passthrough parse here, the grants reconcile's promote step in cli.py,
+# re-exported via state.py). Kept in sync with the in-container copy in
+# data/proxy/policy_api.py (_DOMAIN_RE + _valid_domain): the addon cannot
+# import this module, so the REGEX is deliberately duplicated, and the
+# extra checks beyond the regex (IP-literal rejection + last-label length
+# >= 2) are mirrored here too so the two gates agree on what a "valid
+# domain" is. It is the gate that stops overlay strings (which cross the
+# trust boundary via the grants dir) from being rendered into dnsmasq
+# directives unvalidated: a value containing '\n' or '/' would emit extra
+# ``server=`` lines in dns-allowlist.conf.
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)"
+    r"([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
+    r"(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z"
+)
+
+
+# Wildcard-DNS services (nip.io, sslip.io, xip.io, traefik.me, localtest.me
+# and clones) encode an IP in the hostname and resolve to it, so
+# ``169-254-169-254.nip.io`` reaches the cloud metadata endpoint while being a
+# syntactically valid PUBLIC name carrying none of the never_grant suffixes.
+# Matching the ENCODED ADDRESS rather than keeping a service denylist covers
+# every present and future clone, because the encoding is the trick itself.
+#
+# Mirrored in the in-container addon (data/proxy/policy_api.py
+# ``_encoded_private_ip``) for the same reason DOMAIN_RE is duplicated: the
+# addon cannot import this module, and both gates must agree.
+_IP_LABEL_RE = re.compile(
+    r"^(\d{1,3})[-.](\d{1,3})[-.](\d{1,3})[-.](\d{1,3})(?:$|[-.])"
+)
+
+
+def encoded_private_ip(domain: str) -> str | None:
+    """Return the embedded address when *domain* encodes a non-global IP.
+
+    ``None`` when it embeds no IP, or embeds a globally-routable one — naming
+    a public host the long way round is no more dangerous than naming it
+    directly. Only the leftmost labels are inspected: that is where these
+    services put the address, so a legitimate name that merely starts with
+    digits (``10-years.example.com``) is not misread.
+    """
+    m = _IP_LABEL_RE.match(domain.lower().rstrip("."))
+    if not m:
+        return None
+    octets = m.groups()
+    if any(len(o) > 1 and o[0] == "0" for o in octets):
+        return None  # not how these services encode; avoid octal ambiguity
+    try:
+        ip = ipaddress.ip_address(".".join(octets))
+    except ValueError:
+        return None
+    return None if ip.is_global else str(ip)
+
+
+def valid_domain(domain: str) -> bool:
+    """True if *domain* is a syntactically valid lowercase DNS domain.
+
+    Rejects anything that is not a plain dotted hostname — in particular
+    strings containing newlines, slashes, or other characters that would
+    inject additional directives when interpolated into dnsmasq config.
+
+    Mirrors the in-container addon's ``_valid_domain`` (data/proxy/
+    policy_api.py) so a domain the host accepts at parse time is the same
+    shape the addon accepts at grant time. Two checks beyond the regex
+    (which the regex alone does NOT enforce) are ported from the addon:
+
+    * **IP-literal rejection.** The regex's char classes are all-digits-
+      friendly, so ``1.2.3.4`` and ``8.8.8.8`` match the dotted-label
+      shape. An IP literal in ``domains.allow`` is nonsensical (dnsmasq
+      ``server=/`` keys are DNS names, not addresses) and would be a
+      confusing no-op, so reject it via ``ipaddress.ip_address``.
+    * **Last label length >= 2.** The regex permits a single-character
+      last label (``[a-z0-9](?:...)?`` with the optional group unmatched),
+      so ``x.c`` passes the shape test. A single-letter/bare TLD is not a
+      real public suffix and makes an overly-broad grant; require >= 2
+      chars (``com``, ``io``, ``uk``-style — bare ccTLDs like ``.c`` are
+      not real TLDs).
+
+    The anchor is ``\\Z`` (absolute end-of-string), not ``$``: Python's ``$``
+    matches immediately before ONE trailing newline, so ``"evil.com\\n"``
+    would otherwise pass validation and render as a split dnsmasq directive
+    (``server=/evil.com/`` + a newline + the upstream on its own line) that
+    fails ``dnsmasq --test`` — persistent per-cage config corruption. The
+    whitespace guard below is defence-in-depth (the char classes already
+    exclude it mid-string, but make it explicit so a future regex tweak
+    can't silently re-open the injection).
+    """
+    if (
+        not isinstance(domain, str)
+        or any(c.isspace() for c in domain)
+        or not DOMAIN_RE.match(domain)
+    ):
+        return False
+    # Reject IP literals (v4/v6). IPv6 literals already fail the regex
+    # (``:`` is not in the char classes), but IPv4 literals like ``1.2.3.4``
+    # match the dotted-label shape, so reject them explicitly — mirroring
+    # the addon's ``ipaddress.ip_address`` check.
+    try:
+        ipaddress.ip_address(domain)
+        return False
+    except ValueError:
+        pass
+    # Last label must be >= 2 chars (rejects bare/single-letter TLDs like
+    # ``x.c``). The regex allows a 1-char last label; the addon enforces
+    # this separately, so mirror it here.
+    return len(domain.split(".")[-1]) >= 2
+
 
 @dataclass
 class SecretsConfig:
@@ -202,6 +310,20 @@ class DomainConfig:
     allow: list[str] = field(default_factory=list)
     block: list[str] = field(default_factory=list)
     passthrough: list[str] = field(default_factory=list)
+    # Per-domain expiry (allowlist mode): domain → ISO-8601 expires_at.
+    # Absent key (or empty value) = permanent. Backward compatible: an
+    # operator who never uses ``--expires-in`` has an empty map and zero
+    # behavior change. Enforced two ways: the L7 DomainInspector blocks an
+    # expired domain in-process (immediate, robust regardless of any host
+    # command), and in-egress the addon's own TTL sweeper drops an expired
+    # grant and re-publishes the zone list so dnsmasq stops forwarding it.
+    # Static-baseline entries with ``expires`` (``domain add --expires-in``)
+    # are pruned lazily by the ``cage grants sync`` / ``domain list``
+    # reconcile. See docs/explain/policy-api.md §expiry.
+    expires: dict[str, str] = field(default_factory=dict)
+    # Auto-managed allowlist (opt-in): the caged agent can request new
+    # domains, adjudicated by a decider agent. See DomainsAutoConfig.
+    auto: "DomainsAutoConfig" = field(default_factory=lambda: DomainsAutoConfig())
 
     @property
     def list(self) -> list[str]:
@@ -405,6 +527,117 @@ class ProtocolRelay:
     policy: RelayPolicy = field(default_factory=RelayPolicy)
 
 
+# ── Policy API (opt-in allowlist introspection + on-demand requests) ──
+#
+# See docs/explain/policy-api.md. Two opt-in capabilities served by the
+# egress on a reserved control hostname so they work under full default-
+# deny: introspection (GET the effective allow/block policy) and request
+# (POST a new domain, gated by an operator-configured decision hook).
+# Disabled by default; ``policy_api:`` absent ⇒ zero new surface and the
+# control host is not even resolved.
+#
+# Auth for the decision hook follows the protocol-relay precedent (a
+# ``*_source`` scheme: ``env:`` / ``cmd:`` / ``systemd-creds:``) rather
+# than ``secret_injection`` — the hook credential is an egress-only
+# secret that must never appear in cage traffic, so piggy-backing on a
+# secret-injection rule (which exists to substitute placeholders INTO
+# cage traffic) would be the wrong abstraction. The quadlet renderer
+# stages it into the proxy's tmpfs secret files exactly like a relay
+# credential.
+
+
+# ── domains.auto — auto-managed allowlist (opt-in) ──────────
+#
+# Nests under ``domains:`` so an operator reading cage.yaml sees one
+# namespace for everything about domain egress: the static ``allow``/
+# ``block``/``passthrough``/``expires`` policy PLUS its auto-management.
+# ``auto`` is the "auto mode" for that allowlist (Claude Code "auto" for
+# egress): the caged agent can request a new domain, and a decider agent
+# (a senior cybersecurity expert) adjudicates it. On grant, the domain
+# takes effect immediately in-egress (L7 inspector + dnsmasq zone), and
+# the reconcile (``cage grants sync`` / ``domain list``) later promotes
+# it into the static baseline via the literal ``domain add`` chain, so
+# it's permanent. Off by default; an absent ``auto:`` block adds zero
+# surface.
+#
+# v1 ships the ``agent`` decider (a built-in LLM call) only. The webhook
+# decider is deferred. Grant behavior (TTL, max_grants, never_grant,
+# require_allowlist_mode) uses fixed safe defaults for now — see
+# _AUTO_DEFAULTS below — so the operator config is just ``enable`` + the
+# decider.
+
+# Fixed defaults for grant behavior (no operator knob yet). Kept as a
+# module constant so the addon and validation share one source of truth.
+_AUTO_TTL_SECONDS = 0          # 0 = permanent (grant lives until `domain rm`)
+_AUTO_MAX_GRANTS = 32          # cap concurrent live grants
+# Suffix-matched; the control host is always added. ``metadata.goog`` is
+# GCP's public metadata alias — the only cloud metadata NAME that does not
+# end in ``.internal`` (AWS and Azure address theirs by IP, which the
+# domain syntax check already rejects).
+_AUTO_NEVER_GRANT = ("internal", "local", "localhost", "metadata.goog")
+_AUTO_REQUIRE_ALLOWLIST_MODE = True   # refuse in blocklist mode (a grant is meaningless there)
+
+
+@dataclass
+class AgentDeciderConfig:
+    # The built-in LLM decider. The egress calls the provider directly over
+    # HTTPS (no SDK — keeps the egress image lean) and interprets a forced
+    # ``decide`` tool-call response as the grant/deny decision. OpenAI and
+    # OpenRouter share the OpenAI chat-completions wire format
+    # (``/v1/chat/completions``); Anthropic uses ``/v1/messages``.
+    #
+    # The decider agent's API key is a SEPARATE, required credential — an
+    # egress-only secret (never cage-visible, even as a placeholder). It
+    # uses the same ``source:`` scheme as ``secret_injection.source``
+    # (``env:NAME`` | ``systemd-creds:NAME`` | ``cmd:...``), staged into the
+    # proxy's tmpfs secret files (relay-auth precedent).
+    provider: str = ""   # "anthropic" | "openai" | "openrouter"
+    model: str = ""
+    api_key: str = ""    # source: scheme; required when auto.enable
+    timeout_seconds: float = 15.0
+    # Optional API base URL override. Defaults per provider:
+    #   anthropic  -> https://api.anthropic.com
+    #   openai     -> https://api.openai.com
+    #   openrouter -> https://openrouter.ai/api/v1
+    base_url: str = ""
+
+
+@dataclass
+class DeciderConfig:
+    # The decider — what adjudicates each domain request. ``kind`` picks the
+    # implementation; v1 supports ``agent`` (a built-in LLM cybersecurity
+    # expert). ``webhook`` is reserved for a follow-up (your own approver
+    # service) and rejected at validation until it ships.
+    kind: str = "agent"  # "agent" | "webhook" (webhook not yet implemented)
+    agent: AgentDeciderConfig = field(default_factory=AgentDeciderConfig)
+
+
+@dataclass
+class DomainsAutoConfig:
+    # ``domains.auto`` — auto-managed allowlist. See module comment above.
+    enable: bool = False  # master switch
+    host: str = "agentcage.local"   # reserved synthetic control host
+    decider: DeciderConfig = field(default_factory=DeciderConfig)
+    # Operator-provided free-text describing this cage's purpose and scope.
+    # Flows verbatim into the decider's system prompt (as trusted operator
+    # context) so decisions can account for what the cage is FOR; advisory
+    # only — it never overrides never_grant, syntax, or rate limits. Capped
+    # at 4096 chars because it rides in every decider call's system prompt
+    # and through proxy-config.yaml. Empty/whitespace-only = feature off.
+    context: str = ""
+    # Per-cage request rate limit, independent of the egress HTTP rate
+    # limit, to bound LLM cost / abuse of the request endpoint.
+    rate_limit_rps: float = 1.0
+    rate_limit_burst: int = 5
+
+    def effective_never_grant(self) -> set[str]:
+        """Built-in set ∪ {control host}. (Operator never_grant is deferred;
+        the fixed defaults are the hard floor the decider can't override.)"""
+        out = {h.lower().rstrip(".") for h in _AUTO_NEVER_GRANT}
+        out.add(self.host.lower().rstrip("."))
+        return out
+
+
 _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
 
 
@@ -424,6 +657,11 @@ class Config:
     # See data/proxy/addon.py ``_load_custom_inspectors`` for the dispatch.
     inspectors: list[dict] = field(default_factory=list)
     protocol_relays: list[ProtocolRelay] = field(default_factory=list)
+    # Opt-in Policy API (allowlist introspection + on-demand domain
+    # requests gated by an external decision hook). Disabled by default;
+    # see docs/explain/policy-api.md. Parsed here, plumbed into the
+    # egress's proxy-config.yaml via state._PROXY_KEYS, and enforced by
+    # the mitmproxy addon on a reserved control hostname.
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -816,6 +1054,90 @@ def load_config(path: str) -> Config:
             k: v for k, v in cc.env.items() if k not in relay_secret_names
         }
 
+    # Policy API — opt-in allowlist introspection + on-demand requests.
+    # Parses the section into typed config; validation lives in
+    # validate_config. The decision-hook auth secret uses the relay-auth
+    # ``*_source`` scheme and is collected here so it can be stripped from
+    # the cage env / podman_secrets (it must never reach the cage, even as
+    # a placeholder) and staged into the proxy's tmpfs secret files by the
+    # quadlet renderer — exactly like a relay credential.
+    # domains.auto — parse the decider agent config. The auto block nests
+    # under ``domains:`` (parsed below); we collect its secret here so it's
+    # stripped from the cage env/podman_secrets like a relay credential
+    # (egress-only, never cage-visible, even as a placeholder).
+    policy_secret_names: set[str] = set()
+    _dom_raw = raw.get("domains") or {}
+    if isinstance(_dom_raw, dict):
+        auto_raw = _dom_raw.get("auto") or {}
+        if isinstance(auto_raw, dict) and auto_raw.get("enable"):
+            decider_raw = auto_raw.get("decider") or {}
+            # For kind=agent the provider/model/api_key sit flat under
+            # ``decider:`` (only one decider kind in v1, so no extra nesting).
+            agent_raw = decider_raw
+            rl_raw = auto_raw.get("rate_limit") or {}
+            # Preserve an explicit 0 (rate limiting disabled — the
+            # operator's deliberate choice; the proxy parses 0 the same
+            # way). Only absent/null/empty falls back to the default. A
+            # bare `or` would coerce an explicit 0 to the default and
+            # disagree with the proxy's parse.
+            _rps_raw = rl_raw.get("requests_per_second")
+            _burst_raw = rl_raw.get("burst")
+            # Operator context — optional free-text describing this cage's
+            # purpose. None → "" (feature off). Non-string (e.g. a mapping)
+            # is rejected here so it can't silently coerce to a misleading
+            # repr like "{'enable': True}" that would ride the system prompt.
+            # The 4096-char length cap is enforced in validate_config.
+            _ctx_raw = auto_raw.get("context")
+            if _ctx_raw is None:
+                _context = ""
+            elif isinstance(_ctx_raw, str):
+                _context = _ctx_raw
+            else:
+                raise ValueError(
+                    "domains.auto.context must be a string (got "
+                    f"{type(_ctx_raw).__name__})"
+                )
+            auto = DomainsAutoConfig(
+                enable=True,
+                host=str(auto_raw.get("host", "agentcage.local") or "agentcage.local"),
+                context=_context,
+                decider=DeciderConfig(
+                    kind=str(decider_raw.get("kind", "agent") or "agent"),
+                    agent=AgentDeciderConfig(
+                        provider=str(agent_raw.get("provider", "") or ""),
+                        model=str(agent_raw.get("model", "") or ""),
+                        api_key=str(agent_raw.get("api_key", "") or ""),
+                        timeout_seconds=float(agent_raw.get("timeout_seconds", 15.0) or 15.0),
+                        base_url=str(agent_raw.get("base_url", "") or ""),
+                    ),
+                ),
+                    # Preserve an explicit 0 — see the comment above the
+                    # DomainsAutoConfig(...) call.
+                    rate_limit_rps=float(
+                        _rps_raw if _rps_raw not in (None, "") else 1.0),
+                    rate_limit_burst=int(
+                        _burst_raw if _burst_raw not in (None, "") else 5),
+            )
+            # Stash on a temp; the Domains block below will attach it to dc.
+            _pending_auto = auto
+            api_key = auto.decider.agent.api_key
+            scheme, _, arg = (api_key or "").partition(":")
+            if scheme and arg:
+                validate_source(api_key)
+                policy_secret_names.add(arg)
+        else:
+            _pending_auto = None
+    else:
+        _pending_auto = None
+
+    if policy_secret_names:
+        cc.podman_secrets = [
+            s for s in cc.podman_secrets if s not in policy_secret_names
+        ]
+        cc.env = {
+            k: v for k, v in cc.env.items() if k not in policy_secret_names
+        }
+
     # DNS servers (default to host resolvers if not specified)
     cfg.dns_servers = list(raw.get("dns_servers") or _host_dns_servers())
 
@@ -841,6 +1163,27 @@ def load_config(path: str) -> Config:
             dc.allow = entries
         elif dc.mode == "blocklist":
             dc.block = entries
+
+    # Per-domain expiry map (allowlist mode). Accepts either a flat
+    # mapping ``{domain: expires_at}`` or a list of ``{domain, expires_at}``
+    # objects for readability. Domains not in allow are ignored; an expires
+    # value for a blocklisted domain is meaningless (blocklist denies by
+    # membership, not time). All values are kept as ISO-8601 strings and
+    # validated loosely (the inspector and the grants reconcile parse them
+    # at check time and treat an unparseable value as "no expiry").
+    expires_raw = dom_raw.get("expires") or {}
+    expires: dict[str, str] = {}
+    if isinstance(expires_raw, dict):
+        for k, v in expires_raw.items():
+            if k and v:
+                expires[str(k).lower().rstrip(".")] = str(v)
+    elif isinstance(expires_raw, list):
+        for e in expires_raw:
+            if isinstance(e, dict) and e.get("domain") and e.get("expires_at"):
+                expires[str(e["domain"]).lower().rstrip(".")] = str(e["expires_at"])
+    dc.expires = expires
+    if _pending_auto is not None:
+        dc.auto = _pending_auto
     cfg.domains = dc
 
     # Logging
@@ -1156,6 +1499,48 @@ def validate_config(config: Config) -> list[str]:
     if config.domains.allow and config.domains.block:
         raise ValueError(
             "domains: cannot specify both 'allow' and 'block' lists"
+        )
+
+    # Per-entry syntax validation for allow/block/passthrough lists AND the
+    # domains.expires keys. All of these flow verbatim into the same dnsmasq
+    # ``server=/`` rendering chain — ``domains.allow``/``block`` directly via
+    # state.save_dns_allowlist, ``domains.passthrough`` via quadlets'
+    # ``_effective_dns_allowlist`` / the in-container addon's ``_apply_
+    # passthrough`` (both ``re.escape(domain)`` the entry into a mitmproxy
+    # ``--ignore-hosts`` regex AND merge it into the DNS allowlist so the
+    # bypassed host still resolves), and ``domains.expires`` KEYS are domains
+    # (per-domain expiry map; ``load_config`` already lowercases + strips a
+    # trailing dot off the key). A string containing a newline or slash in
+    # ANY of these would inject extra directives or break the regex. The
+    # regex is lowercase-only on purpose: the DNS pipeline lowercases
+    # (``.rstrip(".").lower()`` in cli) but the config value itself is
+    # rendered unmodified — being strict here is safe (no scaffold/test uses
+    # uppercase domains) and keeps the trust boundary at parse time rather
+    # than at render time. ``valid_domain`` is the same validator the grants
+    # reconcile and the in-container addon use.
+    #
+    # ``domains.passthrough`` entries are plain dotted hostnames (e.g.
+    # ``whatsapp.com``) — the consumers add the subdomain-wildcard prefix
+    # themselves (``^(.+\.)?<escaped>``), so NO leading-dot / bare-TLD
+    # wildcard form is accepted at the config layer; a ``.example.com`` or
+    # bare ``com`` entry would be escaped verbatim and silently fail to
+    # match the intended hosts. ``valid_domain`` therefore applies directly.
+    _bad_allow = [d for d in config.domains.allow if not valid_domain(d)]
+    _bad_block = [d for d in config.domains.block if not valid_domain(d)]
+    _bad_passthrough = [
+        d for d in config.domains.passthrough if not valid_domain(d)
+    ]
+    _bad_expires = [
+        k for k in config.domains.expires if not valid_domain(k)
+    ]
+    if _bad_allow or _bad_block or _bad_passthrough or _bad_expires:
+        offenders = ", ".join(
+            repr(d) for d in (_bad_allow + _bad_block + _bad_passthrough
+                              + _bad_expires)
+        )
+        raise ValueError(
+            f"invalid domain syntax: {offenders} — expected a plain "
+            f"lowercase dotted hostname (e.g. 'api.example.com')"
         )
 
     warnings = []
@@ -1518,5 +1903,119 @@ def validate_config(config: Config) -> list[str]:
                     f"env var reference ${{{varname}}} is unset (key: {key})"
                 )
             start = end + 1
+
+    # ── Policy API validation ───────────────────────────────
+    # ── domains.auto validation ──────────────────────────────
+    # All rules are no-ops when the feature is disabled (the default): an
+    # omitted ``auto:`` block yields enable=False and adds zero new
+    # surface — the control host is not even resolved.
+    pa = config.domains.auto
+    if pa.enable:
+        import re as _re
+        # Control host: a dotted hostname, not an IP literal, not colliding
+        # with a domain the operator already allow/passthrough'd (that would
+        # make the synthetic control host also a real egress target).
+        host = pa.host.lower().rstrip(".")
+        if not _re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$", host) or "." not in host:
+            raise ValueError(
+                f"domains.auto.host {pa.host!r} must be a dotted hostname "
+                f"(e.g. 'agentcage.local'), not an IP literal or single label"
+            )
+        all_named = set(map(str.lower, config.domains.allow)) | set(
+            map(str.lower, config.domains.block)
+        ) | set(map(str.lower, config.domains.passthrough))
+        if host in all_named:
+            raise ValueError(
+                f"domains.auto.host {pa.host!r} must not appear in "
+                f"domains.allow/block/passthrough — the control host is a "
+                f"synthetic, non-forwardable endpoint"
+            )
+
+        # auto requires allowlist mode (a grant is meaningless in blocklist
+        # mode — blocklist already allows everything not listed). Fixed
+        # default; the operator can't turn this off in v1.
+        if config.domains.mode != "allowlist":
+            raise ValueError(
+                "domains.auto requires domains allowlist mode (a grant only "
+                "widens an allowlist; in blocklist mode everything not blocked "
+                "is already reachable)."
+            )
+
+        dec = pa.decider
+        if dec.kind not in ("agent", "webhook"):
+            raise ValueError(
+                f"domains.auto.decider.kind must be 'agent' or 'webhook' "
+                f"(got {dec.kind!r})"
+            )
+        if dec.kind == "webhook":
+            # v1 ships the agent decider only; webhook is a follow-up.
+            raise ValueError(
+                "domains.auto.decider.kind=webhook is not implemented yet; "
+                "use kind: agent (the built-in LLM decider)."
+            )
+        # kind == "agent"
+        ag = dec.agent
+        if ag.provider not in ("anthropic", "openai", "openrouter"):
+            raise ValueError(
+                f"domains.auto.decider.agent.provider must be 'anthropic', "
+                f"'openai', or 'openrouter' (got {ag.provider!r})"
+            )
+        if not ag.model:
+            raise ValueError("domains.auto.decider.agent.model is required")
+        # The decider agent's API key is a REQUIRED, egress-only credential
+        # using the same source: scheme as secret_injection.source.
+        if not ag.api_key:
+            raise ValueError(
+                "domains.auto.decider.agent.api_key is required — the decider "
+                "agent needs its own API key, an egress-only secret using the "
+                "source: scheme (e.g. 'systemd-creds:POLICY_LLM_KEY' or "
+                "'env:OPENROUTER_API_KEY')."
+            )
+        # The egress addon's _read_secret resolves only `env:` and
+        # `systemd-creds:` (the egress container has no shell), so a `cmd:`
+        # source silently materializes as an empty key at runtime (fail-
+        # closed but confusing). Reject it at validate time with an
+        # actionable message instead.
+        _ag_scheme = (ag.api_key or "").partition(":")[0]
+        if _ag_scheme == "cmd":
+            raise ValueError(
+                "domains.auto.decider.agent.api_key does not support cmd: "
+                "sources (the egress container has no shell); use env:NAME or "
+                "systemd-creds:NAME"
+            )
+        # https-only: the decider API key travels as a bearer header on
+        # every call — an http:// base_url would leak it in cleartext.
+        if ag.base_url:
+            from urllib.parse import urlsplit
+            parts = urlsplit(ag.base_url)
+            if parts.scheme != "https" or not parts.hostname:
+                raise ValueError(
+                    "domains.auto.decider.agent.base_url must be an "
+                    "https:// URL (the decider API key is sent on every "
+                    f"call; http:// would leak it in cleartext — got {ag.base_url!r})"
+                )
+
+        if pa.rate_limit_rps < 0 or pa.rate_limit_burst < 0:
+            raise ValueError(
+                "domains.auto.rate_limit requests_per_second/burst must be >= 0"
+            )
+        # Operator context length cap. The context rides in every decider
+        # call's system prompt and through proxy-config.yaml, so a huge blob
+        # is a prompt-bloat/abuse surface. Empty/whitespace-only is fine
+        # (feature off). 4096 is an explicit boundary: a value that long is
+        # still accepted, anything longer is rejected with the length in the
+        # message so the operator knows how much to trim.
+        _ctx_len = len(pa.context.strip())
+        if _ctx_len > 4096:
+            raise ValueError(
+                f"domains.auto.context is too long ({_ctx_len} chars, "
+                f"max 4096) — trim it or move details into a shorter summary"
+            )
+        # Control host is always in never_grant (operator can't remove it).
+        if host not in pa.effective_never_grant():
+            raise ValueError(
+                "domains.auto.host must always be in never_grant "
+                "(internal invariant violated)"
+            )
 
     return warnings

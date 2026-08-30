@@ -358,6 +358,51 @@ class TestEgressQuadlet:
         assert "/var/log/agentcage/capture" not in content
         assert "AGENTCAGE_CAPTURE" not in content
 
+    def test_egress_grants_dir_uses_unshare_chgrp_0770_with_fallback(self):
+        """When domains.auto is on, the grants overlay dir ExecStartPre grants
+        write to exactly the two legitimate writers (operator + the mapped
+        container gid) via `podman unshare chgrp 200` + `chmod 0770`, falling
+        back to 0777 (with a stderr warning) only when no userns mapping is
+        available. A bare unconditional `chmod 0777` as the PRIMARY path is a
+        regression: on multi-user hosts any local UID could then plant
+        grants.yaml entries the operator's watcher promotes into the
+        baseline, forging the audit trail.
+
+        REGRESSION GUARD: the old template did `chmod 0777` unconditionally with
+        a false "an attacker who can write here can already edit the baseline
+        config directly" justification — false on multi-user hosts where
+        ~/.config is operator-owned but the 0777 grants dir is world-writable.
+        """
+        from agentcage.config import (
+            Config, DomainsAutoConfig, DeciderConfig, AgentDeciderConfig,
+        )
+        cfg = Config(name="test")
+        cfg.container.image = "test:latest"
+        cfg.domains.mode = "allowlist"
+        cfg.domains.allow = ["anthropic.com"]
+        cfg.domains.auto = DomainsAutoConfig(
+            enable=True,
+            decider=DeciderConfig(
+                kind="agent",
+                agent=AgentDeciderConfig(
+                    provider="openrouter", model="m", api_key="env:K",
+                ),
+            ),
+        )
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        # The hardened primary path: chgrp inside the userns + 0770.
+        assert "podman unshare chgrp 200" in content
+        assert "chmod 0770" in content
+        # 0770 must come BEFORE any 0777 fallback (the primary path is the
+        # hardened one; 0777 is only the fallback branch).
+        assert content.index("chmod 0770") < content.index("0777")
+        # The fallback branch warns to stderr (multi-user hosts).
+        assert "WARN" in content and ">&2" in content
+        # The grants bind mount + env are still emitted.
+        assert 'Environment="AGENTCAGE_GRANTS_DIR=/var/lib/agentcage"' in content
+        assert ":/var/lib/agentcage:Z" in content
+
     def test_egress_secrets_unprefixed(self, tmp_path):
         """secret_injection entries without a deploy_name land on the
         egress container's Secret= directives so the proxy can resolve
@@ -1529,3 +1574,65 @@ class TestPassthroughSidecarFiles:
         state.save_deployment("test", str(p))
         body = open(state.save_dns_allowlist("test")).read()
         assert "server=/api.anthropic.com/100.100.100.100" in body
+
+
+class TestVmLocalGrantsOverlayPath:
+    """VM backend: the grants overlay dir must be VM-local (like the
+    proxy-config / dns-allowlist copies) — Lima's mounts can't be trusted
+    for host↔guest rewrites, and the host watcher round-trips the overlay
+    via limactl instead (backends.vm.pull_grants/push_grants)."""
+
+    def _vm_files(self, tmp_path, domains_extra=""):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent(f"""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+              auto:
+                enable: true
+        """) + domains_extra)
+        cfg = load_config(str(p))
+        return generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+
+    def test_egress_quadlet_uses_vm_local_grants_dir(self, tmp_path):
+        files = self._vm_files(tmp_path)
+        content = files["test-egress.container"]
+        assert (
+            "Volume=%h/.config/agentcage-vm/cages/test/grants:/var/lib/agentcage:Z"
+            in content
+        )
+        # NOT the host-side state dir (Lima-mount path).
+        assert "/grants:/var/lib/agentcage" in content
+        assert f"{os.path.expanduser('~/.local/share/agentcage')}" not in content
+
+    def test_container_backend_uses_host_grants_dir(self, tmp_path):
+        """Regression guard: container cages keep mounting the host dir the
+        watcher reads/writes directly."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+              auto:
+                enable: true
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        content = files["test-egress.container"]
+        assert "Volume=" in content
+        assert ":/var/lib/agentcage:Z" in content
+        assert "%h/.config/agentcage-vm" not in content
+
+    def test_vm_does_not_emit_guest_grants_service(self, tmp_path):
+        """The watcher unit must NOT go into the guest quadlet set (it
+        runs on the HOST; a plain .service in the guest systemd dir never
+        loads)."""
+        files = self._vm_files(tmp_path)
+        assert "test-grants.service" not in files

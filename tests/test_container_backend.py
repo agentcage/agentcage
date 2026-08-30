@@ -515,3 +515,8 @@ class TestAuditSourceSelection:
         assert self._backend("journald").audit_reads_journal("c") is True
         assert self._backend("k8s-file").audit_reads_journal("c") is False
         assert self._backend(None).audit_reads_journal("c") is True
+
+
+# ---------------------------------------------------------------------------
+# grants-watcher enable on start (Fix 1, reboot durability)
+# ---------------------------------------------------------------------------

@@ -2,8 +2,10 @@
 
 import asyncio
 import dataclasses
+import ipaddress
 import json
 import os
+import socket
 import sys
 import time
 from collections import defaultdict
@@ -14,6 +16,12 @@ import yaml
 from mitmproxy import ctx, http
 from mitmproxy.proxy.mode_specs import ReverseMode
 
+# Hard cap for the in-container audit log. The caged agent can reach the
+# control endpoints (introspection is unauthenticated by design), and
+# every request writes a record — without a cap that is an unbounded
+# disk-fill vector against the egress container.
+_AUDIT_CAP_BYTES = 16 * 1024 * 1024
+
 from inspectors._chain import run_inspector_chain
 from inspectors.base import InspectionContext, InspectionResult, Inspector
 from inspectors.body_size import BodySizeInspector
@@ -23,7 +31,6 @@ from inspectors.entropy import EntropyInspector
 from inspectors.secrets import SecretsInspector
 from inspectors.util import load_inspector_from_file, shannon_entropy
 from secret_injector import SecretInjector
-
 CONFIG_PATH = os.environ.get("AGENTCAGE_CONFIG", "/etc/agentcage/config.yaml")
 CAPTURE_PATH = os.environ.get("AGENTCAGE_CAPTURE", "")
 
@@ -115,11 +122,27 @@ class Agentcage:
         self._load_builtin_inspectors()
         self._load_custom_inspectors()
 
+        # domains.auto — opt-in auto-managed allowlist (introspection + on-demand requests).
+        # Constructed only when ``policy_api.enable`` is set in the proxy
+        # config; absent → None → zero new surface (the control host is not
+        # even resolved). See docs/explain/policy-api.md and
+        # data/proxy/policy_api.py.
+        self.domain_requests = None
+        self._policy_sweeper: Optional[asyncio.Task] = None
+        # Peer-address guard state (see server_connect). The cache is
+        # keyed by granted host; the poisoned set records hosts caught
+        # rebinding so the L7 gate refuses them on the next request.
+        self._peer_dns_cache: dict = {}
+        self._poisoned_peers: set = set()
+        self._running = False
+        self._init_domain_requests()
+
         # Audit log file — structured JSON lines for forensic analysis
         audit_path = os.environ.get(
             "AGENTCAGE_AUDIT_LOG", "/var/log/agentcage/audit.jsonl"
         )
         self._audit_file = None
+        self._audit_capped = False
         if audit_path:
             try:
                 os.makedirs(os.path.dirname(audit_path), exist_ok=True)
@@ -147,11 +170,76 @@ class Agentcage:
             f"injection_rules={len(self.injector.rules)}"
         )
 
+    def _init_domain_requests(self) -> None:
+        """Build (or rebuild) the Policy API controller from the live config.
+
+        Rebuild on hot-reload is safe: grants live in the ``DomainInspector``
+        overlay + the persisted grants file, and ``PolicyApi`` replays the
+        overlay on construction, so a rebuild never drops a live grant.
+
+        Also owns the sweeper task lifecycle: a rebuild cancels the old
+        task (it polls the OLD controller object) and starts a new one, so
+        ENABLING domains.auto on a live cage actually starts the TTL
+        sweeper and DISABLING it stops the stale one — without this, a
+        hot-enabled feature would leave grants permanently unswept and
+        host overlay changes unreconciled.
+        """
+        if self._policy_sweeper is not None:
+            self._policy_sweeper.cancel()
+            self._policy_sweeper = None
+        pa_cfg = (self.cfg.get("domains") or {}).get("auto") or {}
+        if not pa_cfg or not pa_cfg.get("enable"):
+            self.domain_requests = None
+            return
+        dom = next((i for i in self.inspectors
+                    if isinstance(i, DomainInspector)), None)
+        if dom is None:
+            ctx.log.warn(
+                "agentcage: domains.auto enabled but no domain inspector "
+                "loaded; control endpoints disabled"
+            )
+            self.domain_requests = None
+            return
+        try:
+            from policy_api import PolicyApi
+            self.domain_requests = PolicyApi(
+                self.cfg, dom, self._audit_write, ctx.log
+            )
+            ctx.log.info(
+                f"agentcage: domains.auto enabled (host={self.domain_requests.host}, "
+                f"introspection={self.domain_requests.introspection_enabled}, "
+                f"request={self.domain_requests.request_enabled})"
+            )
+        except Exception as e:
+            ctx.log.warn(f"agentcage: domains.auto init failed: {e}")
+            self.domain_requests = None
+            return
+        # Start the sweeper immediately when the proxy is already running
+        # (hot-reload path); at load time running() starts it once the loop
+        # is live.
+        if self._running:
+            self._start_policy_sweeper()
+
     def running(self) -> None:
         """Called after the proxy is fully started — apply TLS passthrough
         and start any non-HTTP protocol relay listeners."""
+        self._running = True
         self._apply_passthrough()
         self._start_protocol_relays()
+        self._start_policy_sweeper()
+
+    def _start_policy_sweeper(self) -> None:
+        """Start the Policy API grant-TTL sweeper as an asyncio task."""
+        if self.domain_requests is None:
+            return
+        try:
+            self._policy_sweeper = asyncio.get_event_loop().create_task(
+                self.domain_requests.sweeper_loop()
+            )
+        except RuntimeError:
+            # No running loop (e.g. some test contexts) — sweeper is
+            # best-effort; expiry is also reconciled on overlay reload.
+            self._policy_sweeper = None
 
     async def done(self) -> None:
         """Drain protocol relays cleanly on shutdown.
@@ -161,12 +249,18 @@ class Agentcage:
         TCP reset. Without this hook the careful shutdown logic in the
         relay is never invoked; mitmproxy just tears down the loop.
         """
+        self._running = False
         relays = list(getattr(self, "_relays", []) or [])
-        if not relays:
-            return
-        await asyncio.gather(
-            *[r.stop() for r in relays], return_exceptions=True
-        )
+        if relays:
+            await asyncio.gather(
+                *[r.stop() for r in relays], return_exceptions=True
+            )
+        if getattr(self, "_policy_sweeper", None) is not None:
+            self._policy_sweeper.cancel()
+            try:
+                await self._policy_sweeper
+            except asyncio.CancelledError:
+                pass
 
     def _audit_write(self, entry: dict) -> None:
         """Write a structured JSON line to the audit pipeline.
@@ -174,6 +268,14 @@ class Agentcage:
         Same sink as ``_log()``: stderr (always) and ``audit.jsonl``
         (when configured). Used by protocol relays so per-decision
         records land in the same place HTTP decisions do.
+
+        Hard-capped at ``_AUDIT_CAP_BYTES`` (16 MB): the caged agent can
+        reach the control endpoints (introspection is unauthenticated and
+        un-rate-limited by design), and every call writes an audit record
+        — without a cap that is an unbounded disk-fill vector against
+        the egress container. Past the cap, records still go to stderr
+        (journald's own rotation applies) but the file is left alone; the
+        operator can rotate or truncate it.
         """
         if "ts" not in entry:
             entry["ts"] = datetime.now(timezone.utc).isoformat()
@@ -181,8 +283,22 @@ class Agentcage:
         print(line, file=sys.stderr, flush=True)
         if self._audit_file:
             try:
-                self._audit_file.write(line + "\n")
-                self._audit_file.flush()
+                if not self._audit_capped:
+                    import os as _os
+                    try:
+                        if self._audit_file.tell() > _AUDIT_CAP_BYTES:
+                            self._audit_capped = True
+                            ctx.log.warn(
+                                "agentcage: audit log at cap "
+                                f"({_AUDIT_CAP_BYTES} bytes); file writes "
+                                "suspended (stderr only) — rotate the file "
+                                "to resume"
+                            )
+                    except OSError:
+                        pass
+                if not self._audit_capped:
+                    self._audit_file.write(line + "\n")
+                    self._audit_file.flush()
             except OSError:
                 pass
 
@@ -461,6 +577,13 @@ class Agentcage:
         # Update TLS passthrough (--ignore-hosts)
         self._apply_passthrough()
 
+        # Rebuild the Policy API (domains.auto) controller: enabling /
+        # disabling auto, or changing the decider/host/rate-limit, must take
+        # effect on live config edit, not only on egress restart. Idempotent
+        # and safe to call every reload (its docstring says so) — it no-ops
+        # when disabled and re-reads the api_key from the re-staged secret.
+        self._init_domain_requests()
+
         self._config_mtime = mtime
         names = [i.name for i in self.inspectors]
         ctx.log.info(f"agentcage: config reloaded, inspectors={names}")
@@ -485,11 +608,41 @@ class Agentcage:
         self._maybe_reload()
 
         # Reverse proxy flows are inbound traffic (host → cage via proxy).
-        # Detect early so we can guard the transparent-mode host rewrite.
+        # Detect early so we can guard the transparent-mode host rewrite AND
+        # gate the control-host short-circuit below on the egress path only.
         is_reverse = isinstance(
             getattr(flow.client_conn, "proxy_mode", None), ReverseMode
         )
         direction = "inbound" if is_reverse else "outbound"
+
+        # ── Policy API control host (egress path only) ───────────
+        # Short-circuit BEFORE the SNI/Host strict check, rate limiter,
+        # secret-injection policy, and the inspector chain. The control
+        # host is a synthetic local endpoint (never forwarded upstream), so
+        # none of those gates apply. Matching requires both SNI and Host to
+        # equal the control host for TLS flows (a mismatch falls through to
+        # the SNI check below, which rejects it). See docs/explain/policy-api.md.
+        #
+        # The control host must be unreachable on inbound reverse flows
+        # because Host/SNI are client-controlled there: a cage with
+        # published inbound ports (container.ports, wired as mitmproxy
+        # reverse listeners) forwards client traffic with the client's Host
+        # preserved, so ANY client that can reach a published port could
+        # call the unauthenticated control plane (GET /v1/allowlist,
+        # POST /v1/allowlist/requests). The design reserves the control
+        # host for the caged agent on the EGRESS path only, so gate the
+        # short-circuit on the flow NOT being a reverse-mode (inbound) flow.
+        pa = getattr(self, "domain_requests", None)
+        if pa is not None and pa.enabled and not is_reverse:
+            sni = getattr(getattr(flow, "client_conn", None), "sni", None)
+            if isinstance(sni, bytes):
+                try:
+                    sni = sni.decode("idna")
+                except UnicodeError:
+                    sni = sni.decode("utf-8", "replace")
+            if pa.is_control_host(sni, flow.request.host_header):
+                await pa.handle(flow)
+                return
 
         # In transparent mode, flow.request.host is the raw destination IP
         # (from SO_ORIGINAL_DST).  Rewrite it to the actual hostname from the
@@ -568,6 +721,36 @@ class Agentcage:
             flow.metadata["agentcage_blocked"] = True
             self._log(flow, "blocked", "rate limit exceeded", [])
             return
+
+        # ── Rebind backstop ──────────────────────────────────────
+        # A granted host caught resolving to a non-global address in
+        # server_connected (too late to stop THAT request — mitmproxy does
+        # not re-read connection.error after connecting) is poisoned here,
+        # so every subsequent request to it is refused at L7. The normal
+        # path is server_connect, which aborts before any socket opens;
+        # this only fires when the answer changed underneath us.
+        # getattr: tests and hot-reload paths construct the addon without
+        # running __init__, and this gate must never be the thing that
+        # breaks the request path.
+        _poisoned = getattr(self, "_poisoned_peers", None)
+        if _poisoned:
+            _pk = (flow.request.host or "").lower().rstrip(".")
+            if _pk in _poisoned:
+                reason = (
+                    f"granted domain {_pk} was observed resolving to a "
+                    f"non-global address; refusing further requests"
+                )
+                flow.response = http.Response.make(
+                    403,
+                    json.dumps(
+                        {"blocked": True, "reason": reason,
+                         "host": flow.request.host, "by": "agentcage"}
+                    ).encode(),
+                    {"Content-Type": "application/json"},
+                )
+                flow.metadata["agentcage_blocked"] = True
+                self._log(flow, "blocked", reason, [])
+                return
 
         # Check for placeholder-to-unauthorized-domain violations first
         # (this does NOT modify the flow — only checks domain restrictions)
@@ -682,6 +865,10 @@ class Agentcage:
                 }
 
     async def response(self, flow: http.HTTPFlow) -> None:
+        # Control-host responses are synthesized by the addon; never run
+        # response inspectors or secret redaction on them.
+        if flow.metadata.get("agentcage_control"):
+            return
         # Only run response inspectors if the request wasn't blocked
         if flow.metadata.get("agentcage_blocked"):
             self._cap_pending.pop(flow.id, None)
@@ -868,6 +1055,205 @@ class Agentcage:
                 if isinstance(host, str) and host:
                     return f"{host}:{port}" if port is not None else host
         return "<unknown>"
+
+    # ── Peer-address validation for granted hosts ───────────
+    # Every name-based check — never_grant, the IP-encoding guard, the
+    # decider itself — reasons about the NAME. DNS answers the name, and the
+    # answer can change after the grant. A domain granted while it resolved
+    # somewhere harmless can have its A record repointed at 169.254.169.254
+    # a second later (classic DNS rebinding), and nothing keyed on the name
+    # would notice. `localtest.me` needs no rebinding at all: it is a real
+    # public domain whose A record is 127.0.0.1.
+    #
+    # So this is the one check that looks at the ADDRESS, at the moment it
+    # matters — when mitmproxy is about to talk to it.
+    #
+    # Scoped deliberately to GRANT-ONLY hosts. Baseline domains are the
+    # operator's own choice: an internal artifact mirror on 10.x in
+    # `domains.allow` is a legitimate, deliberate configuration, and this
+    # must not break it. Inbound port-forwards are the same story from the
+    # other direction — mitmproxy runs `--mode reverse:http://<cage-ip>` and
+    # connects to the cage's private address on purpose. Neither is a
+    # granted domain, so neither is affected.
+
+    def _domain_inspector(self) -> Optional[DomainInspector]:
+        return next((i for i in self.inspectors
+                     if isinstance(i, DomainInspector)), None)
+
+    @staticmethod
+    def _non_global_ip(value) -> Optional[str]:
+        """Return *value* as a string when it is a non-global IP address.
+
+        ``None`` when it is not an IP at all (a hostname, at the point in
+        the connection where mitmproxy has not resolved it yet) or when it
+        is globally routable.
+        """
+        if not value:
+            return None
+        host = value[0] if isinstance(value, (tuple, list)) else value
+        if not isinstance(host, str):
+            return None
+        # IPv6 scope suffix (fe80::1%eth0) is not part of the address.
+        host = host.split("%", 1)[0].strip("[]")
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return None  # a hostname; nothing to judge yet
+        # Unwrap ::ffff:169.254.169.254 — an IPv4 target reached over a
+        # v6 socket must not launder itself past this check.
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        return None if ip.is_global else str(ip)
+
+    def _guard_peer(self, data, phase: str) -> None:
+        """Refuse a granted host that resolves to a non-global address."""
+        server = getattr(data, "server", None)
+        if server is None:
+            return
+        dom = self._domain_inspector()
+        if dom is None or not getattr(dom, "granted", None):
+            return  # no grants in play; nothing this check applies to
+        host = ""
+        addr = getattr(server, "address", None)
+        if addr:
+            host = str(addr[0] if isinstance(addr, (tuple, list)) else addr)
+        # `sni` is set for TLS flows before the upstream connect and is the
+        # name the allowlist was evaluated against.
+        sni = getattr(server, "sni", None)
+        candidates = [h for h in (host, sni) if h]
+        if not any(dom.is_grant_only(h) for h in candidates):
+            return
+        for value in (getattr(server, "peername", None), addr):
+            bad = self._non_global_ip(value)
+            if not bad:
+                continue
+            target = next(
+                (h for h in candidates if dom.is_grant_only(h)), host or "?"
+            )
+            self._refuse_peer(server, target, bad, phase)
+            return
+
+    def _log_peer_block(self, host: str, ip: str, phase: str,
+                        reason: str) -> None:
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "kind": "private_peer_blocked",
+            "direction": "outbound",
+            "decision": "blocked",
+            "reason": reason,
+            "host": host,
+            "peer_ip": ip,
+            "phase": phase,
+        }
+        line = json.dumps(entry)
+        print(line, file=sys.stderr, flush=True)
+        if self._audit_file:
+            try:
+                self._audit_file.write(line + "\n")
+                self._audit_file.flush()
+            except Exception:
+                pass
+
+    def _resolve_all(self, host: str) -> list:
+        """Every address *host* resolves to, cached briefly.
+
+        Called only for grant-only hosts, and only from ``server_connect``.
+        That placement is what makes the lookup safe: the host is ALREADY
+        granted, so the cage can already resolve it through the egress's
+        dnsmasq — this adds no DNS the cage could not trigger itself. (The
+        same lookup at *request* time, against an arbitrary not-yet-granted
+        string, would be a DNS exfiltration channel: non-allowlisted names
+        are sinkholed locally today and never leave the host.)
+
+        The cache keeps a burst of requests to one granted host from
+        re-resolving on every connection; the window is deliberately short
+        so a rebind is caught on the next connect rather than after a
+        normal DNS TTL.
+        """
+        now = time.time()
+        hit = self._peer_dns_cache.get(host)
+        if hit and now - hit[0] < 5.0:
+            return hit[1]
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+            addrs = [i[4][0] for i in infos]
+        except OSError:
+            addrs = []
+        self._peer_dns_cache[host] = (now, addrs)
+        if len(self._peer_dns_cache) > 256:      # bound the cache
+            self._peer_dns_cache.clear()
+        return addrs
+
+    def server_connect(self, data) -> None:
+        """Refuse before the socket opens — the only hook that can.
+
+        mitmproxy reads ``connection.error`` after this hook and aborts
+        without connecting. It does NOT re-check after
+        ``ServerConnectedHook``, so a verdict reached later cannot stop the
+        request that is already in flight — which is why the resolution
+        happens here rather than reusing mitmproxy's own.
+
+        EVERY answer is checked, not just the first: a rebinding payload
+        commonly returns a public address alongside the internal one and
+        relies on the client picking either.
+        """
+        try:
+            server = getattr(data, "server", None)
+            if server is None:
+                return
+            dom = self._domain_inspector()
+            if dom is None or not getattr(dom, "granted", None):
+                return
+            addr = getattr(server, "address", None)
+            host = ""
+            if addr:
+                host = str(addr[0] if isinstance(addr, (tuple, list)) else addr)
+            sni = getattr(server, "sni", None)
+            target = next(
+                (h for h in (host, sni) if h and dom.is_grant_only(h)), ""
+            )
+            if not target:
+                return
+            # The address itself may already be an IP (transparent mode).
+            candidates = [host] if host else []
+            candidates += self._resolve_all(target)
+            for value in candidates:
+                bad = self._non_global_ip(value)
+                if bad:
+                    self._refuse_peer(server, target, bad, "server_connect")
+                    return
+        except Exception as e:  # never break the proxy over this check
+            print(f"agentcage: peer guard error: {e!r}", file=sys.stderr,
+                  flush=True)
+
+    def server_connected(self, data) -> None:
+        """Backstop: catch a rebind between our lookup and mitmproxy's.
+
+        This CANNOT stop the request already in flight — mitmproxy does not
+        re-read ``connection.error`` after this hook. It audits the event and
+        poisons the host so the next request to it is refused at the L7
+        ``request()`` gate, which can still return a 403.
+        """
+        try:
+            self._guard_peer(data, "server_connected")
+        except Exception as e:
+            print(f"agentcage: peer guard error: {e!r}", file=sys.stderr,
+                  flush=True)
+
+    def _refuse_peer(self, server, host: str, ip: str, phase: str) -> None:
+        reason = (
+            f"granted domain {host} resolves to non-global address {ip}; "
+            f"refusing the upstream connection. A grant is a NAME, and DNS "
+            f"can point that name at an internal address after the fact "
+            f"(rebinding) or by design (localtest.me). Operator-configured "
+            f"baseline domains are unaffected."
+        )
+        try:
+            server.error = reason
+        except Exception:
+            pass
+        self._poisoned_peers.add(host.lower().rstrip("."))
+        self._log_peer_block(host, ip, phase, reason)
 
     def tcp_start(self, flow) -> None:
         """Block raw TCP / non-HTTP flows that bypass the L7 hooks.
