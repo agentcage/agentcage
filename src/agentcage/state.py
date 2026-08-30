@@ -262,12 +262,14 @@ def policy_audit_file(name: str) -> Path:
     is greppable alongside the overlay that drove it.
 
     This file MUST NOT live inside ``grants_dir(name)``: that directory is
-    deliberately chmod 0777 (the egress addon writes the runtime overlay
-    there) and is bind-mounted read-write into the egress container
-    (``egress.container.j2``). A file inside it would therefore be readable,
-    forgeable, and TRUNCATABLE by the caged agent's container side — a host
-    forensic trail cannot be editable by the thing it is auditing. So it
-    sits one level up, at ``~/.local/share/agentcage/<name>/policy-audit.jsonl``
+    writable by the egress container (group-shared with the operator via
+    the podman user-namespace mapping — 0770 on the container backend,
+    0777 on the apple backend) and is bind-mounted read-write into the
+    egress container (``egress.container.j2``). A file inside it would
+    therefore be readable, forgeable, and TRUNCATABLE by the caged agent's
+    container side — a host forensic trail cannot be editable by the thing
+    it is auditing. So it sits one level up, at
+    ``~/.local/share/agentcage/<name>/policy-audit.jsonl``
     (a sibling of the ``grants/`` subdirectory), outside the bind mount.
     """
     return _DATA_DIR / name / "policy-audit.jsonl"
@@ -285,8 +287,8 @@ def append_policy_audit(name: str, entry: dict) -> None:
     entry = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
     try:
         # Ensure the audit file's parent exists. It is a SIBLING of the
-        # grants dir (outside the 0777 + RW bind mount — see policy_audit_file),
-        # so grants_dir's own mkdir does not cover it.
+        # grants dir (outside the container-writable + RW bind mount — see
+        # policy_audit_file), so grants_dir's own mkdir does not cover it.
         policy_audit_file(name).parent.mkdir(parents=True, exist_ok=True)
         with open(policy_audit_file(name), "a") as f:
             f.write(json.dumps(entry) + "\n")
