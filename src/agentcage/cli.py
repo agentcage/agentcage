@@ -4609,7 +4609,17 @@ def _host_never_grant(raw: dict) -> set[str]:
 
 
 def _is_never_grant(domain: str, never: set[str]) -> bool:
-    """Suffix-match *domain* against the never_grant set (addon mirror)."""
+    """Suffix-match *domain* against the never_grant set (addon mirror).
+
+    Also rejects hostnames that ENCODE a non-global IP (nip.io / sslip.io and
+    clones) — the case suffix matching structurally cannot see. Mirrors the
+    addon's ``_is_never_grant``; this copy is what stops the reconcile step
+    promoting such a domain into the operator's baseline from an overlay that
+    was hand-edited or written by an older addon.
+    """
+    from agentcage.config import encoded_private_ip
+    if encoded_private_ip(domain) is not None:
+        return True
     parts = domain.lower().rstrip(".").split(".")
     for i in range(len(parts)):
         if ".".join(parts[i:]) in never:

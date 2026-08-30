@@ -55,6 +55,43 @@ DOMAIN_RE = re.compile(
 )
 
 
+# Wildcard-DNS services (nip.io, sslip.io, xip.io, traefik.me, localtest.me
+# and clones) encode an IP in the hostname and resolve to it, so
+# ``169-254-169-254.nip.io`` reaches the cloud metadata endpoint while being a
+# syntactically valid PUBLIC name carrying none of the never_grant suffixes.
+# Matching the ENCODED ADDRESS rather than keeping a service denylist covers
+# every present and future clone, because the encoding is the trick itself.
+#
+# Mirrored in the in-container addon (data/proxy/policy_api.py
+# ``_encoded_private_ip``) for the same reason DOMAIN_RE is duplicated: the
+# addon cannot import this module, and both gates must agree.
+_IP_LABEL_RE = re.compile(
+    r"^(\d{1,3})[-.](\d{1,3})[-.](\d{1,3})[-.](\d{1,3})(?:$|[-.])"
+)
+
+
+def encoded_private_ip(domain: str) -> str | None:
+    """Return the embedded address when *domain* encodes a non-global IP.
+
+    ``None`` when it embeds no IP, or embeds a globally-routable one — naming
+    a public host the long way round is no more dangerous than naming it
+    directly. Only the leftmost labels are inspected: that is where these
+    services put the address, so a legitimate name that merely starts with
+    digits (``10-years.example.com``) is not misread.
+    """
+    m = _IP_LABEL_RE.match(domain.lower().rstrip("."))
+    if not m:
+        return None
+    octets = m.groups()
+    if any(len(o) > 1 and o[0] == "0" for o in octets):
+        return None  # not how these services encode; avoid octal ambiguity
+    try:
+        ip = ipaddress.ip_address(".".join(octets))
+    except ValueError:
+        return None
+    return None if ip.is_global else str(ip)
+
+
 def valid_domain(domain: str) -> bool:
     """True if *domain* is a syntactically valid lowercase DNS domain.
 
@@ -533,7 +570,11 @@ class ProtocolRelay:
 # module constant so the addon and validation share one source of truth.
 _AUTO_TTL_SECONDS = 0          # 0 = permanent (grant lives until `domain rm`)
 _AUTO_MAX_GRANTS = 32          # cap concurrent live grants
-_AUTO_NEVER_GRANT = ("internal", "local", "localhost")  # suffix-matched; control host always added
+# Suffix-matched; the control host is always added. ``metadata.goog`` is
+# GCP's public metadata alias — the only cloud metadata NAME that does not
+# end in ``.internal`` (AWS and Azure address theirs by IP, which the
+# domain syntax check already rejects).
+_AUTO_NEVER_GRANT = ("internal", "local", "localhost", "metadata.goog")
 _AUTO_REQUIRE_ALLOWLIST_MODE = True   # refuse in blocklist mode (a grant is meaningless there)
 
 
