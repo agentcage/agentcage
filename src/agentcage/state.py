@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 # Domain-syntax validator shared by host-side code paths (this module, the
-# grants watcher's promote step in cli.py). Kept in sync with the in-container
+# grants reconcile's promote step in cli.py). Kept in sync with the in-container
 # copy in data/proxy/policy_api.py (_DOMAIN_RE) — the addon cannot import this
 # module, so the regex is deliberately duplicated. It is the gate that stops
 # overlay strings (which cross the trust boundary via the grants dir) from
@@ -93,7 +93,7 @@ def _atomic_write_text(p: Path, text: str) -> None:
     The temp lives in the same directory (so ``os.replace`` is atomic on a
     single filesystem) and is opened with ``O_CREAT | O_EXCL`` so a planted
     symlink at the temp path cannot be written through. The base temp name
-    is PID-suffixed (``<p>.<pid>.tmp``); the host watcher and any ``cage
+    is PID-suffixed (``<p>.<pid>.tmp``); the grants reconcile and any ``cage
     update`` / ``domain add`` run on the host, and the in-container addon
     runs in a different PID namespace (or on a different host), so the two
     sides normally never collide on the same numeric PID.
@@ -112,10 +112,11 @@ def _atomic_write_text(p: Path, text: str) -> None:
     publish.
 
     Used by ``save_raw_config``, ``save_metadata``, and ``save_grants`` so
-    the 1Hz host-side grants watcher (and any concurrent ``cage update`` /
-    ``domain add``) never observes a half-written file: it sees either the
-    old contents or the new contents, never a truncated prefix that would
-    raise YAMLError / JSONDecodeError and kill the watcher loop.
+    the grants reconcile (``cage grants sync`` / ``domain list``) and any
+    concurrent ``cage update`` / ``domain add`` never observe a half-written
+    file: they see either the old contents or the new contents, never a
+    truncated prefix that would raise YAMLError / JSONDecodeError and abort
+    the reconcile.
     """
     p.parent.mkdir(parents=True, exist_ok=True)
     base = p.with_name(f"{p.name}.{os.getpid()}.tmp")
@@ -154,7 +155,7 @@ def save_raw_config(name: str, raw: dict) -> None:
     """Write raw config dict back to state dir (atomically).
 
     See :func:`_atomic_write_text` for why this is temp+rename rather than a
-    bare ``open(p, "w")``: the grants watcher and ``cage update`` can read
+    bare ``open(p, "w")``: the grants reconcile and ``cage update`` can read
     ``cage.yaml`` mid-write and die on a truncated YAML.
     """
     p = _deploy_dir(name) / "cage.yaml"
@@ -226,8 +227,8 @@ def capture_file(name: str) -> Path:
 def cage_data_dir(name: str) -> Path:
     """Return (and create) ~/.local/share/agentcage/<name>/.
 
-    The per-cage data root: grants/, capture/, policy-audit.jsonl, and
-    watcher logs live under it.
+    The per-cage data root: grants/, capture/, and policy-audit.jsonl live
+    under it.
     """
     d = _DATA_DIR / name
     d.mkdir(parents=True, exist_ok=True)
@@ -252,8 +253,8 @@ def load_grants(name: str) -> list[dict]:
     ``ValueError`` covers ``UnicodeDecodeError`` (a subclass) raised by
     ``read_text`` / ``yaml.safe_load`` when the overlay file is non-UTF8
     garbage — a too-narrow catch (``OSError`` + ``YAMLError`` alone) lets it
-    escape and crash the host-side grants watcher loop (and any ``cage
-    grants`` CLI) permanently. Treat any unreadable overlay as empty.
+    escape and crash the grants reconcile (and any ``cage grants`` CLI)
+    permanently. Treat any unreadable overlay as empty.
     Mirrors the in-container twin ``policy_api._load_overlay``.
     """
     p = grants_file(name)
@@ -271,12 +272,12 @@ def load_grants(name: str) -> list[dict]:
 def save_grants(name: str, entries: list[dict]) -> None:
     """Atomically write the grants overlay (temp file + rename).
 
-    The temp file name embeds the writer's PID so the host-side watcher and
-    the in-container addon (separate PID namespaces) can each write their
-    own temp concurrently without clobbering each other's file — the
-    resolved final path is shared, but the temps never collide. The temp is
-    opened with ``O_EXCL`` (see :func:`_atomic_write_text`) so a planted
-    symlink can't be written through.
+    The temp file name embeds the writer's PID so the host-side grants
+    reconcile and the in-container addon (separate PID namespaces) can each
+    write their own temp concurrently without clobbering each other's file
+    — the resolved final path is shared, but the temps never collide. The
+    temp is opened with ``O_EXCL`` (see :func:`_atomic_write_text`) so a
+    planted symlink can't be written through.
     """
     p = grants_file(name)
     _atomic_write_text(
@@ -287,9 +288,9 @@ def policy_audit_file(name: str) -> Path:
     """Per-cage Policy-API audit log (JSONL) — a SIBLING of the grants dir.
 
     The egress addon writes its own ``audit.jsonl`` (decisions, inspector
-    verdicts) inside the container. The host-side grants watcher mutates
-    the static baseline (``domain add``/``rm`` equivalent) — those mutations
-    are operator-visible as stdout, but a structured record belongs here so
+    verdicts) inside the container. The grants reconcile mutates the static
+    baseline (``domain add``/``rm`` equivalent) — those mutations are
+    operator-visible as stdout, but a structured record belongs here so
     the forensic trail of *which grant was applied/removed when and by whom*
     is greppable alongside the overlay that drove it.
 
@@ -332,7 +333,7 @@ def save_metadata(name: str, metadata: dict) -> None:
     """Write metadata.json to the deployment state directory (atomically).
 
     Atomic (temp + rename via :func:`_atomic_write_text`) so the grants
-    watcher and any concurrent ``cage update`` never read a half-written
+    reconcile and any concurrent ``cage update`` never read a half-written
     JSON file and die on ``JSONDecodeError``.
     """
     d = _deploy_dir(name)

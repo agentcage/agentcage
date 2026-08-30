@@ -305,9 +305,10 @@ def vm_local_grants_dir(name: str) -> str:
 
     Like the other ``vm_local_*`` paths, this lives OUTSIDE any Lima mount:
     the in-guest egress addon writes ``grants.yaml`` here (atomic
-    temp+rename), and the HOST-side grants watcher pulls it back via
-    ``limactl shell cat`` and pushes removals back via base64 (see
-    ``backends.vm.pull_grants`` / ``push_grants``). Keeping the overlay
+    temp+rename), and the reconcile (``cage grants sync`` / ``domain
+    list``) pulls it back over ``limactl shell`` and pushes removals back
+    via base64 (see ``backends.vm.pull_grants`` / ``push_grants``). Keeping
+    the overlay
     guest-local avoids Lima's reverse-sshfs host→guest write caching
     (host-side rewrites of a mounted file would be invisible to the
     addon's mtime-poll) and keeps the host-side
@@ -986,7 +987,7 @@ def generate_quadlets(
     if config.isolation == "vm":
         proxy_config_path = vm_local_proxy_config_path(deploy_name or name)
         # Grants overlay: VM-local too. The addon writes it in-guest (atomic
-        # rename, no sshfs cache) and the host watcher round-trips it via
+        # rename, no sshfs cache) and the reconcile round-trips it via
         # limactl (backends.vm.pull_grants/push_grants). See
         # vm_local_grants_dir.
         grants_dir_str = vm_local_grants_dir(deploy_name or name)

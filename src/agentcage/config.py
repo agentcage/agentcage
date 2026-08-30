@@ -38,7 +38,7 @@ _BUILTIN_INSPECTOR_NAMES = frozenset({
 _VALID_SECRET_SCOPES = ("auto", "user", "system")
 
 # Domain-syntax validator for host-side code paths (domains.allow / .block /
-# .passthrough parse here, the grants watcher's promote step in cli.py,
+# .passthrough parse here, the grants reconcile's promote step in cli.py,
 # re-exported via state.py). Kept in sync with the in-container copy in
 # data/proxy/policy_api.py (_DOMAIN_RE + _valid_domain): the addon cannot
 # import this module, so the REGEX is deliberately duplicated, and the
@@ -277,10 +277,12 @@ class DomainConfig:
     # Absent key (or empty value) = permanent. Backward compatible: an
     # operator who never uses ``--expires-in`` has an empty map and zero
     # behavior change. Enforced two ways: the L7 DomainInspector blocks an
-    # expired domain in-process (immediate, robust even if the watcher is
-    # down), and the auto-started grants watcher prunes expired entries from
-    # the baseline + dnsmasq so the lists stay tidy. See
-    # docs/explain/policy-api.md §expiry.
+    # expired domain in-process (immediate, robust regardless of any host
+    # command), and in-egress the addon's own TTL sweeper drops an expired
+    # grant and re-publishes the zone list so dnsmasq stops forwarding it.
+    # Static-baseline entries with ``expires`` (``domain add --expires-in``)
+    # are pruned lazily by the ``cage grants sync`` / ``domain list``
+    # reconcile. See docs/explain/policy-api.md §expiry.
     expires: dict[str, str] = field(default_factory=dict)
     # Auto-managed allowlist (opt-in): the caged agent can request new
     # domains, adjudicated by a decider agent. See DomainsAutoConfig.
@@ -514,10 +516,12 @@ class ProtocolRelay:
 # ``block``/``passthrough``/``expires`` policy PLUS its auto-management.
 # ``auto`` is the "auto mode" for that allowlist (Claude Code "auto" for
 # egress): the caged agent can request a new domain, and a decider agent
-# (a senior cybersecurity expert) adjudicates it. On grant, the
-# auto-started watcher promotes the domain into the static baseline via
-# the literal ``domain add`` chain, so it's immediately reachable and
-# permanent. Off by default; an absent ``auto:`` block adds zero surface.
+# (a senior cybersecurity expert) adjudicates it. On grant, the domain
+# takes effect immediately in-egress (L7 inspector + dnsmasq zone), and
+# the reconcile (``cage grants sync`` / ``domain list``) later promotes
+# it into the static baseline via the literal ``domain add`` chain, so
+# it's permanent. Off by default; an absent ``auto:`` block adds zero
+# surface.
 #
 # v1 ships the ``agent`` decider (a built-in LLM call) only. The webhook
 # decider is deferred. Grant behavior (TTL, max_grants, never_grant,
@@ -526,8 +530,7 @@ class ProtocolRelay:
 # decider.
 
 # Fixed defaults for grant behavior (no operator knob yet). Kept as a
-# module constant so the addon, the watcher, and validation share one
-# source of truth.
+# module constant so the addon and validation share one source of truth.
 _AUTO_TTL_SECONDS = 0          # 0 = permanent (grant lives until `domain rm`)
 _AUTO_MAX_GRANTS = 32          # cap concurrent live grants
 _AUTO_NEVER_GRANT = ("internal", "local", "localhost")  # suffix-matched; control host always added
@@ -1125,8 +1128,8 @@ def load_config(path: str) -> Config:
     # objects for readability. Domains not in allow are ignored; an expires
     # value for a blocklisted domain is meaningless (blocklist denies by
     # membership, not time). All values are kept as ISO-8601 strings and
-    # validated loosely (the inspector/watcher parse them at check time and
-    # treat an unparseable value as "no expiry").
+    # validated loosely (the inspector and the grants reconcile parse them
+    # at check time and treat an unparseable value as "no expiry").
     expires_raw = dom_raw.get("expires") or {}
     expires: dict[str, str] = {}
     if isinstance(expires_raw, dict):
@@ -1473,7 +1476,7 @@ def validate_config(config: Config) -> list[str]:
     # rendered unmodified — being strict here is safe (no scaffold/test uses
     # uppercase domains) and keeps the trust boundary at parse time rather
     # than at render time. ``valid_domain`` is the same validator the grants
-    # watcher and the in-container addon use.
+    # reconcile and the in-container addon use.
     #
     # ``domains.passthrough`` entries are plain dotted hostnames (e.g.
     # ``whatsapp.com``) — the consumers add the subdomain-wildcard prefix

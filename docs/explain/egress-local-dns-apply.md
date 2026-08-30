@@ -95,6 +95,23 @@ avoids `chown` at runtime because hardened rootless podman
 (`default_capabilities = []`) drops `CAP_CHOWN`. The file is written
 temp+rename so the supervisor never observes a partial list.
 
+### Cage-local DNS on apple-container
+
+On the apple-container backend the cage workload runs its **own**
+baseline-scoped resolver — `cage-init.sh` stage A' starts a `dnsmasq` on
+`127.0.0.1:53` inside the cage — so a granted zone does **not** get a real
+in-cage `A` record: it gets the intentional TEST-NET (`198.51.100.1`)
+sinkhole answer, the same as any non-baseline name. Only allowlisted
+**baseline** domains get real in-cage `A` records. This is by design and
+grants still **work** end-to-end: the connection to that sinkhole IP is
+transparently intercepted at the egress, the proxy re-derives the real
+destination from SNI/Host (`flow.request.host = pretty_host` in the addon),
+enforces the grant, and resolves the upstream itself via the egress resolver
+— which *does* serve the granted zone. Think "DNS answer vs. connectivity":
+the sinkhole answer is a scoped-DNS artifact of the cage-local resolver,
+not a grant failure. The container and vm backends resolve granted zones
+directly via the egress `dnsmasq` and see real `A` records.
+
 ## What happens on the host
 
 The host keeps exactly one job: writing the durable `domains.allow` baseline in

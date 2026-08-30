@@ -254,8 +254,10 @@ operator-configurable:
 - Grants default to **permanent** (`ttl_seconds: 0`), but the decider may
   return a `ttl_seconds` on a grant it judges transient — the system prompt
   asks it to. Any decider-supplied TTL is **clamped to 24h** and recorded in
-  `domains.expires`, and the watcher prunes the entry when it expires. To
-  time-limit a domain yourself, use `agentcage domain add --expires-in 30m`.
+  `domains.expires`, and the addon's own in-egress sweeper prunes the entry
+  when it expires (re-publishing the zone list); the baseline's
+  `domains.expires` entry is tidied by the next reconcile. To time-limit a
+  domain yourself, use `agentcage domain add --expires-in 30m`.
 - **Max 32 concurrent** grants per cage.
 - A **`never_grant`** set — `internal`, `local`, `localhost`, and the control
   host itself — is **always** unioned in; the decider cannot override or
@@ -306,9 +308,17 @@ baseline.
 - **Time-limit a domain:** `agentcage domain add <domain> --expires-in 30m` —
   records an expiry in `domains.expires`; the domain is removed automatically
   when it expires.
-- **Debug the watcher:** `agentcage cage grants <name> watch` still exists for
-  debugging the auto-promotion flow (there is no manual `watch` to start; the
-  watcher starts itself when `auto.enable` is true).
+- **How grants apply:** granted DNS is applied automatically in-egress — the
+  addon publishes the zone and raises a reload flag; the egress supervisor's
+  1 s liveness loop re-renders dnsmasq's servers-file (baseline + granted)
+  and SIGHUPs it, so the name resolves within ~1 s (see
+  [Egress-local DNS apply](../explain/egress-local-dns-apply.md)).
+  `agentcage cage grants <name> sync` (also run implicitly by
+  `agentcage domain list`) promotes decided grants into the static baseline
+  when you want them permanent. Expired grants are pruned automatically by
+  the in-egress sweeper (30 s poll); expired baseline entries are tidied by
+  the next reconcile. There is no `grants watch` subcommand and no host-side
+  watcher.
 
 The egress itself never writes `config.yaml` directly for a grant — promotion
 goes through the host-side `domain add` machinery, so the operator's static
@@ -339,8 +349,8 @@ Two audit streams record policy activity:
   > `0770`, group-shared with the egress via the podman subgid mapping. On
   > **apple-container** there is no equivalent host-side mapping, so the dir
   > is `0777`; on a shared macOS host another local account could plant
-  > `grants.yaml` entries the watcher then promotes. On **vm** the overlay is
-  > VM-local (inside the guest) and the host-side dir stays operator-owned,
+  > `grants.yaml` entries the reconcile then promotes. On **vm** the overlay
+  > is VM-local (inside the guest) and the host-side dir stays operator-owned,
   > which avoids the problem entirely.
 
 These are the forensic record for every egress widening.
