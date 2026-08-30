@@ -173,11 +173,11 @@ agent can re-request the domain later and the decider adjudicates fresh.
 
 | Status | Meaning |
 |--------|---------|
-| `200` | Removed (`status: removed`). Carries `still_allowed_by_baseline: true` when the domain also suffix-matches the static baseline, so the agent knows the narrowing was partial. |
-| `400` | Bad domain syntax. |
+| `200` | Removed (`status: removed`). Carries `still_allowed_by_baseline: true` when an **active** (unexpired) baseline suffix still covers the domain — an expired baseline entry keeps the flag absent, since L7 blocks the domain and the "partial narrowing" would be a lie. A surviving sibling **grant** (e.g. a still-live `x.com` grant after removing `sub.x.com`) never sets the flag — that reachability is the agent's own to retract, not the operator's. |
+| `400` | Bad domain syntax, a malformed JSON body, or the cage is not in allowlist mode (a hot-reload can flip it — the same re-check the request endpoint makes). |
 | `403` | The domain matches the operator baseline (possibly a promoted grant) — not the agent's to retract. |
-| `404` | Not a live runtime grant (`status: not_found`). |
-| `429` | Rate limited (shares the request endpoint's per-cage bucket). |
+| `404` | Not a live runtime grant (`status: not_found`) — includes a domain covered only by another grant's suffix: retract that grant instead. |
+| `429` | Rate limited (shares the request endpoint's per-cage bucket; the limit is checked before syntax validation, so a flood of malformed bodies cannot emit unbounded audit lines). |
 
 Audited as `policy_removal` lines in `audit.jsonl`. Enabled together with
 the request endpoint by `auto.enable` (the `/v1/health` features object
