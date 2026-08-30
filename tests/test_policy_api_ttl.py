@@ -971,3 +971,69 @@ class TestVmOverlayDispatch:
         # The promoted domain is gone from the pushed overlay.
         assert all(e["domain"] != overlay[0]["domain"]
                    for e in saved["entries"])
+
+
+class TestMergeNoneNeverWipes:
+    """Round-9 finding 4: a transient VM-unreachable None from the
+    merge-on-write re-read must NEVER be treated as an empty overlay —
+    merging against a fabricated [] would push an EMPTY overlay and wipe
+    every grant decided in the window. Fall back to the snapshot view."""
+
+    @patch("agentcage.cli.state")
+    @patch("agentcage.cli._apply_baseline_change")
+    def test_promote_none_reread_uses_snapshot(self, mock_apply, mock_state):
+        mock_state.load_raw_config.return_value = _raw()
+        cfg = _make_cfg()
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+        overlay = _overlay_entries()
+        saved = {}
+
+        def _save(name, cfg_, entries):
+            saved["entries"] = entries
+
+        with patch("agentcage.cli._load_grants_overlay",
+                   side_effect=[overlay, None]), \
+             patch("agentcage.cli._save_grants_overlay",
+                   side_effect=_save), \
+             patch("agentcage.cli.get_backend") as mock_backend:
+            mock_backend.return_value.is_running.return_value = False
+            result = _runner().invoke(
+                main, ["cage", "grants", "basic", "promote",
+                       overlay[0]["domain"]])
+        assert result.exit_code == 0, result.output
+        # NOT empty: the snapshot minus the promoted domain survives.
+        assert saved["entries"] is not None and len(saved["entries"]) >= 0
+        assert all(e["domain"] != overlay[0]["domain"]
+                   for e in saved["entries"])
+        assert "could not re-read" in result.output
+
+    @patch("agentcage.cli.state")
+    def test_revoke_none_reread_uses_snapshot(self, mock_state):
+        mock_state.load_raw_config.return_value = _raw()
+        cfg = _make_cfg()
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+        overlay = _overlay_entries() + [
+            {"domain": "other.example.org", "reason": "other",
+             "source": "decider:agent:test", "granted_at": "2024-01-01",
+             "expires_at": ""}
+        ]
+        saved = {}
+
+        def _save(name, cfg_, entries):
+            saved["entries"] = entries
+
+        with patch("agentcage.cli._load_grants_overlay",
+                   side_effect=[overlay, None]), \
+             patch("agentcage.cli._save_grants_overlay",
+                   side_effect=_save):
+            result = _runner().invoke(
+                main, ["cage", "grants", "basic", "revoke",
+                       overlay[0]["domain"]])
+        assert result.exit_code == 0, result.output
+        # The snapshot minus the revoked domain — never a fabricated [].
+        assert all(e["domain"] != overlay[0]["domain"]
+                   for e in saved["entries"])
+        assert saved["entries"]  # non-empty: other grants survive
+        assert "could not re-read" in result.output

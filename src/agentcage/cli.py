@@ -4828,9 +4828,24 @@ def grants_promote(domain: str):
     # promoted domain, so a grant the egress addon persisted between the
     # load at the top and this save is not silently lost (the same
     # lost-update race the watcher's _tick step 3 guards — see Fix 1).
+    # A None re-read (VM transiently unreachable) must NOT be treated as an
+    # empty overlay — merging against a fabricated [] would push an EMPTY
+    # overlay and wipe every grant decided in the window. Fall back to the
+    # initial snapshot's filtered list instead (still correct for the
+    # promoted domain; the skipped merge only re-risks the pre-fix race,
+    # never a wipe).
     revoked_dl = domain.rstrip(".").lower()
+    current = _load_grants_overlay(name, cfg)
+    if current is None:
+        click.echo(
+            "warning: could not re-read the runtime overlay (VM "
+            "unreachable) — wrote the snapshot view; re-run `grants list` "
+            "once the cage is up to confirm", err=True)
+        base = overlay_entries
+    else:
+        base = current
     remaining = [
-        e for e in (_load_grants_overlay(name, cfg) or [])
+        e for e in base
         if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
     ]
     _save_grants_overlay(name, cfg, remaining)
@@ -4873,10 +4888,23 @@ def grants_revoke(domain: str):
     # load above and this save is not silently lost (the lost-update race
     # the watcher's _tick step 3 guards — see Fix 1). The earlier
     # ``remaining`` check against the snapshot still authorizes the revoke;
-    # this re-filter is the durable write.
+    # this re-filter is the durable write. A None re-read (VM transiently
+    # unreachable) must NOT be treated as an empty overlay — merging
+    # against a fabricated [] would push an EMPTY overlay and wipe every
+    # grant decided in the window. Fall back to the initial snapshot's
+    # filtered list instead.
     revoked_dl = domain.rstrip(".").lower()
+    current = _load_grants_overlay(name, cfg)
+    if current is None:
+        click.echo(
+            "warning: could not re-read the runtime overlay (VM "
+            "unreachable) — wrote the snapshot view; re-run `grants list` "
+            "once the cage is up to confirm", err=True)
+        base = entries
+    else:
+        base = current
     merged = [
-        e for e in (_load_grants_overlay(name, cfg) or [])
+        e for e in base
         if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
     ]
     _save_grants_overlay(name, cfg, merged)
