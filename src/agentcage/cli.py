@@ -4420,7 +4420,10 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
     # nothing is written.
     for domain_name in domain_names:
         dn = domain_name.rstrip(".").lower()
-        if not state.valid_domain(dn):
+        # allow_single_label: `domain add` is the operator speaking — same
+        # trust as editing cage.yaml, where a bare LAN hostname is valid.
+        # The runtime-grant paths (reconcile / promote) stay strict-dotted.
+        if not state.valid_domain(dn, allow_single_label=True):
             click.echo(f"error: invalid domain: {domain_name!r}", err=True)
             sys.exit(1)
 
