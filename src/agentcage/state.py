@@ -367,6 +367,14 @@ def save_proxy_config(name: str) -> str:
     # in-memory raw config (and from there into a cage.yaml rewrite),
     # which would replace the operator's path with a wall of PEM.
     proxy_cfg = resolve_relay_ca_files(copy.deepcopy(proxy_cfg))
+    # Stamp the version so the Policy API's introspection payloads can
+    # report it without depending on AGENTCAGE_VERSION reaching the
+    # egress environment (it is not set there on every backend).
+    try:
+        from importlib.metadata import version as _v
+        proxy_cfg["agentcage_version"] = _v("agentcage")
+    except Exception:
+        pass
     p = _deploy_dir(name) / "proxy-config.yaml"
     with open(p, "w") as f:
         yaml.safe_dump(proxy_cfg, f, default_flow_style=False, sort_keys=False)

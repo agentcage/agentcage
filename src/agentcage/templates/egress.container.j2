@@ -31,6 +31,7 @@ Volume={{ config_host_path }}:/etc/agentcage/config.yaml:ro,Z
 Volume={{ dns_allowlist_host_path }}:/etc/agentcage/dns-allowlist.conf:ro,Z
 {% endif %}
 Environment="PYTHONUNBUFFERED=1"
+Environment="AGENTCAGE_VERSION={{ agentcage_version }}"
 Volume={{ name }}-certs.volume:/home/acproxy/.mitmproxy:Z
 # Public-only cert publish dir — see quadlets.py for why this is a
 # separate volume. supervisor-egress.sh Step E installs the public
