@@ -2,8 +2,10 @@
 
 import asyncio
 import dataclasses
+import ipaddress
 import json
 import os
+import socket
 import sys
 import time
 from collections import defaultdict
@@ -127,6 +129,11 @@ class Agentcage:
         # data/proxy/policy_api.py.
         self.domain_requests = None
         self._policy_sweeper: Optional[asyncio.Task] = None
+        # Peer-address guard state (see server_connect). The cache is
+        # keyed by granted host; the poisoned set records hosts caught
+        # rebinding so the L7 gate refuses them on the next request.
+        self._peer_dns_cache: dict = {}
+        self._poisoned_peers: set = set()
         self._running = False
         self._init_domain_requests()
 
@@ -715,6 +722,36 @@ class Agentcage:
             self._log(flow, "blocked", "rate limit exceeded", [])
             return
 
+        # ── Rebind backstop ──────────────────────────────────────
+        # A granted host caught resolving to a non-global address in
+        # server_connected (too late to stop THAT request — mitmproxy does
+        # not re-read connection.error after connecting) is poisoned here,
+        # so every subsequent request to it is refused at L7. The normal
+        # path is server_connect, which aborts before any socket opens;
+        # this only fires when the answer changed underneath us.
+        # getattr: tests and hot-reload paths construct the addon without
+        # running __init__, and this gate must never be the thing that
+        # breaks the request path.
+        _poisoned = getattr(self, "_poisoned_peers", None)
+        if _poisoned:
+            _pk = (flow.request.host or "").lower().rstrip(".")
+            if _pk in _poisoned:
+                reason = (
+                    f"granted domain {_pk} was observed resolving to a "
+                    f"non-global address; refusing further requests"
+                )
+                flow.response = http.Response.make(
+                    403,
+                    json.dumps(
+                        {"blocked": True, "reason": reason,
+                         "host": flow.request.host, "by": "agentcage"}
+                    ).encode(),
+                    {"Content-Type": "application/json"},
+                )
+                flow.metadata["agentcage_blocked"] = True
+                self._log(flow, "blocked", reason, [])
+                return
+
         # Check for placeholder-to-unauthorized-domain violations first
         # (this does NOT modify the flow — only checks domain restrictions)
         inject_result = self.injector.check_injection_policy(flow)
@@ -1018,6 +1055,205 @@ class Agentcage:
                 if isinstance(host, str) and host:
                     return f"{host}:{port}" if port is not None else host
         return "<unknown>"
+
+    # ── Peer-address validation for granted hosts ───────────
+    # Every name-based check — never_grant, the IP-encoding guard, the
+    # decider itself — reasons about the NAME. DNS answers the name, and the
+    # answer can change after the grant. A domain granted while it resolved
+    # somewhere harmless can have its A record repointed at 169.254.169.254
+    # a second later (classic DNS rebinding), and nothing keyed on the name
+    # would notice. `localtest.me` needs no rebinding at all: it is a real
+    # public domain whose A record is 127.0.0.1.
+    #
+    # So this is the one check that looks at the ADDRESS, at the moment it
+    # matters — when mitmproxy is about to talk to it.
+    #
+    # Scoped deliberately to GRANT-ONLY hosts. Baseline domains are the
+    # operator's own choice: an internal artifact mirror on 10.x in
+    # `domains.allow` is a legitimate, deliberate configuration, and this
+    # must not break it. Inbound port-forwards are the same story from the
+    # other direction — mitmproxy runs `--mode reverse:http://<cage-ip>` and
+    # connects to the cage's private address on purpose. Neither is a
+    # granted domain, so neither is affected.
+
+    def _domain_inspector(self) -> Optional[DomainInspector]:
+        return next((i for i in self.inspectors
+                     if isinstance(i, DomainInspector)), None)
+
+    @staticmethod
+    def _non_global_ip(value) -> Optional[str]:
+        """Return *value* as a string when it is a non-global IP address.
+
+        ``None`` when it is not an IP at all (a hostname, at the point in
+        the connection where mitmproxy has not resolved it yet) or when it
+        is globally routable.
+        """
+        if not value:
+            return None
+        host = value[0] if isinstance(value, (tuple, list)) else value
+        if not isinstance(host, str):
+            return None
+        # IPv6 scope suffix (fe80::1%eth0) is not part of the address.
+        host = host.split("%", 1)[0].strip("[]")
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return None  # a hostname; nothing to judge yet
+        # Unwrap ::ffff:169.254.169.254 — an IPv4 target reached over a
+        # v6 socket must not launder itself past this check.
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        return None if ip.is_global else str(ip)
+
+    def _guard_peer(self, data, phase: str) -> None:
+        """Refuse a granted host that resolves to a non-global address."""
+        server = getattr(data, "server", None)
+        if server is None:
+            return
+        dom = self._domain_inspector()
+        if dom is None or not getattr(dom, "granted", None):
+            return  # no grants in play; nothing this check applies to
+        host = ""
+        addr = getattr(server, "address", None)
+        if addr:
+            host = str(addr[0] if isinstance(addr, (tuple, list)) else addr)
+        # `sni` is set for TLS flows before the upstream connect and is the
+        # name the allowlist was evaluated against.
+        sni = getattr(server, "sni", None)
+        candidates = [h for h in (host, sni) if h]
+        if not any(dom.is_grant_only(h) for h in candidates):
+            return
+        for value in (getattr(server, "peername", None), addr):
+            bad = self._non_global_ip(value)
+            if not bad:
+                continue
+            target = next(
+                (h for h in candidates if dom.is_grant_only(h)), host or "?"
+            )
+            self._refuse_peer(server, target, bad, phase)
+            return
+
+    def _log_peer_block(self, host: str, ip: str, phase: str,
+                        reason: str) -> None:
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "kind": "private_peer_blocked",
+            "direction": "outbound",
+            "decision": "blocked",
+            "reason": reason,
+            "host": host,
+            "peer_ip": ip,
+            "phase": phase,
+        }
+        line = json.dumps(entry)
+        print(line, file=sys.stderr, flush=True)
+        if self._audit_file:
+            try:
+                self._audit_file.write(line + "\n")
+                self._audit_file.flush()
+            except Exception:
+                pass
+
+    def _resolve_all(self, host: str) -> list:
+        """Every address *host* resolves to, cached briefly.
+
+        Called only for grant-only hosts, and only from ``server_connect``.
+        That placement is what makes the lookup safe: the host is ALREADY
+        granted, so the cage can already resolve it through the egress's
+        dnsmasq — this adds no DNS the cage could not trigger itself. (The
+        same lookup at *request* time, against an arbitrary not-yet-granted
+        string, would be a DNS exfiltration channel: non-allowlisted names
+        are sinkholed locally today and never leave the host.)
+
+        The cache keeps a burst of requests to one granted host from
+        re-resolving on every connection; the window is deliberately short
+        so a rebind is caught on the next connect rather than after a
+        normal DNS TTL.
+        """
+        now = time.time()
+        hit = self._peer_dns_cache.get(host)
+        if hit and now - hit[0] < 5.0:
+            return hit[1]
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+            addrs = [i[4][0] for i in infos]
+        except OSError:
+            addrs = []
+        self._peer_dns_cache[host] = (now, addrs)
+        if len(self._peer_dns_cache) > 256:      # bound the cache
+            self._peer_dns_cache.clear()
+        return addrs
+
+    def server_connect(self, data) -> None:
+        """Refuse before the socket opens — the only hook that can.
+
+        mitmproxy reads ``connection.error`` after this hook and aborts
+        without connecting. It does NOT re-check after
+        ``ServerConnectedHook``, so a verdict reached later cannot stop the
+        request that is already in flight — which is why the resolution
+        happens here rather than reusing mitmproxy's own.
+
+        EVERY answer is checked, not just the first: a rebinding payload
+        commonly returns a public address alongside the internal one and
+        relies on the client picking either.
+        """
+        try:
+            server = getattr(data, "server", None)
+            if server is None:
+                return
+            dom = self._domain_inspector()
+            if dom is None or not getattr(dom, "granted", None):
+                return
+            addr = getattr(server, "address", None)
+            host = ""
+            if addr:
+                host = str(addr[0] if isinstance(addr, (tuple, list)) else addr)
+            sni = getattr(server, "sni", None)
+            target = next(
+                (h for h in (host, sni) if h and dom.is_grant_only(h)), ""
+            )
+            if not target:
+                return
+            # The address itself may already be an IP (transparent mode).
+            candidates = [host] if host else []
+            candidates += self._resolve_all(target)
+            for value in candidates:
+                bad = self._non_global_ip(value)
+                if bad:
+                    self._refuse_peer(server, target, bad, "server_connect")
+                    return
+        except Exception as e:  # never break the proxy over this check
+            print(f"agentcage: peer guard error: {e!r}", file=sys.stderr,
+                  flush=True)
+
+    def server_connected(self, data) -> None:
+        """Backstop: catch a rebind between our lookup and mitmproxy's.
+
+        This CANNOT stop the request already in flight — mitmproxy does not
+        re-read ``connection.error`` after this hook. It audits the event and
+        poisons the host so the next request to it is refused at the L7
+        ``request()`` gate, which can still return a 403.
+        """
+        try:
+            self._guard_peer(data, "server_connected")
+        except Exception as e:
+            print(f"agentcage: peer guard error: {e!r}", file=sys.stderr,
+                  flush=True)
+
+    def _refuse_peer(self, server, host: str, ip: str, phase: str) -> None:
+        reason = (
+            f"granted domain {host} resolves to non-global address {ip}; "
+            f"refusing the upstream connection. A grant is a NAME, and DNS "
+            f"can point that name at an internal address after the fact "
+            f"(rebinding) or by design (localtest.me). Operator-configured "
+            f"baseline domains are unaffected."
+        )
+        try:
+            server.error = reason
+        except Exception:
+            pass
+        self._poisoned_peers.add(host.lower().rstrip("."))
+        self._log_peer_block(host, ip, phase, reason)
 
     def tcp_start(self, flow) -> None:
         """Block raw TCP / non-HTTP flows that bypass the L7 hooks.

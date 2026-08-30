@@ -261,6 +261,21 @@ class DomainInspector(Inspector):
     def is_granted(self, domain: str) -> bool:
         return domain.lower().rstrip(".") in self.granted
 
+    def is_grant_only(self, host: str) -> bool:
+        """True if *host* is reachable ONLY because of a policy-API grant.
+
+        A grant for ``example.com`` covers ``sub.example.com``, so this
+        suffix-matches rather than looking the host up exactly. A host that
+        also matches the operator's static baseline is NOT grant-only: the
+        operator vetted it, and extra restrictions keyed on "the cage asked
+        for this" must not apply to what the operator chose themselves.
+        """
+        parts = host.lower().rstrip(".").split(".")
+        suffixes = [".".join(parts[i:]) for i in range(len(parts))]
+        if any(sfx in self._baseline for sfx in suffixes):
+            return False
+        return any(sfx in self.granted for sfx in suffixes)
+
     def drop_expired(self, now_iso: str = "") -> list[str]:
         """Remove & return domains whose ``expires_at`` has passed.
 
