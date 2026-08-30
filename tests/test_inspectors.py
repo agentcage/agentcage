@@ -203,6 +203,108 @@ class TestDomainExpirySemantics:
         assert "past.com" in r.reason
 
 
+class TestExpiryOffsetNormalization:
+    """Fix 2 (nit): ``_matched_expired`` compares expiry timestamps by PARSED
+    timezone-aware datetimes, not a lexical string compare. Both programmatic
+    producers (cli ``_expires_at_from_now`` and the PolicyApi ``_expires_at``
+    grant path) emit ``datetime.now(timezone.utc).isoformat()`` (UTC,
+    ``+00:00``), but operator-typed values in cage.yaml's ``domains.expires``
+    are kept as raw ISO-8601 strings with NO offset normalization (config.py
+    validates them loosely), so a non-UTC offset is representable. A lexical
+    compare would order the same UTC instant wrong and block legitimate
+    traffic; parsing with ``datetime.fromisoformat`` normalizes the offset.
+    Malformed / tz-naive values fail open (no expiry) by design.
+
+    These pin ``now`` via the module-level ``datetime`` so the offset cases are
+    deterministic; the two distinguishing cases below are ones where a lexical
+    compare would give the WRONG answer (blocked when allowed, or allowed
+    when expired).
+    """
+
+    def _pin_now(self, monkeypatch, now_iso):
+        import inspectors.domain as _dom
+        from datetime import datetime as _real
+        now_dt = _real.fromisoformat(now_iso)
+
+        class _Clock:
+            # Stand-in for the ``datetime`` class: ``now()`` returns the
+            # pinned aware datetime; ``fromisoformat`` delegates to the real
+            # one (so offsets are normalized on parse).
+            now = staticmethod(lambda tz=None: now_dt)
+            fromisoformat = staticmethod(_real.fromisoformat)
+
+        monkeypatch.setattr(_dom, "datetime", _Clock)
+
+    def test_positive_offset_past_is_blocked(self, monkeypatch):
+        """A ``+05:00`` expiry at the SAME wall-clock as ``now`` is 5h in the
+        PAST (UTC) → must be blocked. A lexical compare of ``+05:00`` vs
+        ``+00:00`` would order it AFTER now (``5`` > ``0``) and wrongly ALLOW
+        — this is the distinguishing case the parse fixes."""
+        self._pin_now(monkeypatch, "2026-08-30T14:20:00+00:00")
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com"],
+            "expires": {"example.com": "2026-08-30T14:20:00+05:00"},
+        })
+        assert d._matched_expired("example.com") == "example.com"
+        r = d.inspect_request(_ctx(host="example.com"))
+        assert r is not None and r.action == "block"
+
+    def test_negative_offset_future_is_allowed(self, monkeypatch):
+        """A ``-05:00`` expiry whose wall-clock is 1m BEFORE ``now`` is ~5h in
+        the FUTURE (UTC) → must be allowed. A lexical compare would order the
+        earlier wall-clock minute as past and wrongly BLOCK — this is the
+        distinguishing case the parse fixes."""
+        self._pin_now(monkeypatch, "2026-08-30T14:20:00+00:00")
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com"],
+            "expires": {"example.com": "2026-08-30T14:19:00-05:00"},
+        })
+        assert d._matched_expired("example.com") is None
+        assert d.inspect_request(_ctx(host="example.com")) is None
+
+    def test_same_instant_different_offsets_both_expired(self, monkeypatch):
+        """Two expiries for the SAME UTC instant expressed with different
+        offsets (``+00:00`` and ``-05:00``) are treated identically. A lexical
+        compare would order them differently relative to ``now``; parsing
+        normalizes the offset so both are expired here."""
+        self._pin_now(monkeypatch, "2026-08-30T14:20:01+00:00")
+        d = DomainInspector()
+        d.configure({
+            "allow": ["a.com", "b.com"],
+            "expires": {
+                "a.com": "2026-08-30T14:20:00+00:00",
+                "b.com": "2026-08-30T09:20:00-05:00",  # same UTC instant
+            },
+        })
+        assert d._matched_expired("a.com") == "a.com"
+        assert d._matched_expired("b.com") == "b.com"
+
+    def test_malformed_expires_at_fails_open(self, monkeypatch):
+        """An unparseable ``expires_at`` is treated as no expiry (fail-open),
+        never fail-closed on a malformed value."""
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com"],
+            "expires": {"example.com": "not-a-date"},
+        })
+        assert d._matched_expired("example.com") is None
+        assert d.inspect_request(_ctx(host="example.com")) is None
+
+    def test_tznaive_expires_at_fails_open(self, monkeypatch):
+        """A tz-naive ``expires_at`` (no offset) cannot compare against the
+        aware ``now`` (TypeError) → treated as no expiry (fail-open), per the
+        codebase convention that producers always emit aware datetimes."""
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com"],
+            "expires": {"example.com": "2000-01-01T00:00:00"},
+        })
+        assert d._matched_expired("example.com") is None
+        assert d.inspect_request(_ctx(host="example.com")) is None
+
+
 # ── SecretsInspector ─────────────────────────────────────
 
 

@@ -113,9 +113,25 @@ class DomainInspector(Inspector):
         30s poll. An unparseable ``expires_at`` is treated as "no expiry"
         (fail-open on the timestamp, never fail-closed on a malformed
         value). Two passes over the suffixes — O(suffixes).
+
+        Comparison is by parsed timezone-aware datetimes, NOT a lexical
+        string compare. Both programmatic producers (cli
+        ``_expires_at_from_now`` and the PolicyApi ``_expires_at`` grant
+        path) emit ``datetime.now(timezone.utc).isoformat()`` (UTC,
+        ``+00:00``), but operator-typed values in cage.yaml's
+        ``domains.expires`` are kept as raw ISO-8601 strings with NO offset
+        normalization (config.py validates them loosely), so a non-UTC
+        offset (e.g. ``-05:00``) is representable. A lexical compare of
+        such a value against the always-``+00:00`` ``now`` would order the
+        same UTC instant as ~5h earlier and expire the domain early
+        (blocking legitimate traffic), so we parse with
+        ``datetime.fromisoformat`` (>=3.11) which normalizes offsets.
+        Malformed values — unparseable strings, or a tz-naive value that
+        cannot compare against the aware ``now`` — raise
+        ``ValueError``/``TypeError`` and are treated as no expiry (fail-open
+        on timestamps, by design).
         """
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
         parts = host.lower().split(".")
         expired_longest: Optional[str] = None
         for i in range(len(parts)):
@@ -130,11 +146,15 @@ class DomainInspector(Inspector):
                 # expired suffixes.
                 return None
             try:
-                if exp > now:
+                # Parse the operator/grant ISO-8601 expiry and compare as
+                # timezone-aware datetimes (offsets normalized). Malformed /
+                # tz-naive values raise ValueError/TypeError → fail-open.
+                if datetime.fromisoformat(exp) > now_dt:
                     # Future expiry — host is allowed.
                     return None
-            except ValueError:
-                # Unparseable expiry → treat as no expiry (fail-open).
+            except (ValueError, TypeError):
+                # Unparseable / tz-naive expiry → treat as no expiry
+                # (fail-open on the timestamp, by design).
                 return None
             # This suffix is expired. Track the longest (first encountered
             # since we walk longest-first).

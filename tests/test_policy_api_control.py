@@ -594,37 +594,62 @@ class TestControlHostEgressOnly:
 class TestOExclTempCreation:
     """Fix 3 (defense-in-depth): the overlay temp is created with O_EXCL so
     a planted symlink at the predictable PID-suffixed temp path cannot be
-    written through. On FileExistsError the temp is unlinked and retried
-    once; the persist aborts if it still exists."""
+    written through. Fix 1: on FileExistsError the colliding temp is NOT
+    unlinked (it may be a concurrent writer's in-flight temp at a
+    colliding numeric PID); the persist retries ONCE with a
+    counter-suffixed name and aborts if that also exists."""
 
-    def test_preplanted_symlink_unlinked_and_replaced(
-        self, tmp_path, monkeypatch
-    ):
+    def test_preplanted_symlink_not_written_through(self, tmp_path, monkeypatch):
         """A pre-planted symlink at the PID-suffixed temp path (pointing at
-        an outside file) must be unlinked and replaced with a real temp —
-        the outside file's content is unchanged and grants.yaml is written
-        correctly."""
+        an outside file) must NOT be written through (O_EXCL). Fix 1: the
+        symlink is NOT unlinked — the persist retries once with a
+        counter-suffixed name; the symlink survives, the outside file's
+        content is unchanged, and grants.yaml is written correctly."""
         pa, _ = _make_pa(tmp_path, monkeypatch)
         # Plant a symlink at the exact temp path the addon will use.
         target = tmp_path.parent / f"fix3_target_{os.getpid()}.txt"
         target.write_text("outside content — must not be overwritten")
-        tmp = tmp_path / f"grants.yaml.{os.getpid()}.tmp"
-        os.symlink(target, tmp)
-        assert tmp.is_symlink()
+        symlink_tmp = tmp_path / f"grants.yaml.{os.getpid()}.tmp"
+        os.symlink(target, symlink_tmp)
+        assert symlink_tmp.is_symlink()
 
         pa._apply_grant("z.com", "reason", ttl_override=0,
                         decided_by="decider:agent:openrouter")
 
-        # The grants dir contains only grants.yaml — the symlink was unlinked.
-        assert set(os.listdir(tmp_path)) == {"grants.yaml"}
+        # The symlink still exists (never unlinked) — Fix 1.
+        assert symlink_tmp.is_symlink(), \
+            "planted symlink was unlinked (Fix 1 regression)"
         # The outside file's content is unchanged (never written through).
         assert target.read_text() == "outside content — must not be overwritten"
-        # grants.yaml has the correct content.
+        # grants.yaml has the correct content (persist succeeded via the
+        # counter-suffixed name, now renamed away).
         import yaml as _yaml
         entries = _yaml.safe_load((tmp_path / "grants.yaml").read_text())
         assert any(e["domain"] == "z.com" for e in entries)
+        # No counter-suffixed temp lingers (it was renamed to grants.yaml).
+        assert not list(tmp_path.glob("*.1.tmp"))
+        # The only ``*.tmp`` present is the planted symlink.
+        assert [f.name for f in tmp_path.glob("*.tmp")] == [symlink_tmp.name]
         # Clean up the outside target.
         target.unlink(missing_ok=True)
+
+    def test_preplanted_stale_temp_not_unlinked(self, tmp_path, monkeypatch):
+        """Fix 1: a planted stale temp at the exact PID-suffixed path the
+        addon uses is NOT unlinked by a subsequent persist — the persist
+        retries once with a counter-suffixed name and the planted temp
+        survives; the save succeeds via the counter-suffixed name."""
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        leftover = tmp_path / f"grants.yaml.{os.getpid()}.tmp"
+        leftover.write_text("stale")
+        pa._apply_grant("z.com", "reason", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        assert leftover.exists(), "planted temp was unlinked (Fix 1 regression)"
+        assert leftover.read_text() == "stale", "planted temp was modified"
+        import yaml as _yaml
+        entries = _yaml.safe_load((tmp_path / "grants.yaml").read_text())
+        assert any(e["domain"] == "z.com" for e in entries)
+        assert not list(tmp_path.glob("*.1.tmp")), "counter-suffixed temp not published"
+        assert [f.name for f in tmp_path.glob("*.tmp")] == [leftover.name]
 
     def test_persist_leaves_no_plain_tmp_file(self, tmp_path, monkeypatch):
         """After a normal persist, the grants dir contains exactly
