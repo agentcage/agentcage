@@ -300,6 +300,30 @@ def vm_local_placeholders_env_path(name: str) -> str:
     return f"{vm_local_cage_env_dir(name)}/placeholders.env"
 
 
+def vm_local_grants_dir(name: str) -> str:
+    """VM-local dir of the Policy-API grants overlay.
+
+    Like the other ``vm_local_*`` paths, this lives OUTSIDE any Lima mount:
+    the in-guest egress addon writes ``grants.yaml`` here (atomic
+    temp+rename), and the HOST-side grants watcher pulls it back via
+    ``limactl shell cat`` and pushes removals back via base64 (see
+    ``backends.vm.pull_grants`` / ``push_grants``). Keeping the overlay
+    guest-local avoids Lima's reverse-sshfs host→guest write caching
+    (host-side rewrites of a mounted file would be invisible to the
+    addon's mtime-poll) and keeps the host-side
+    ``~/.local/share/agentcage/<name>/grants/`` dir operator-owned
+    (never world-writable) — the guest container writes only inside the
+    VM's own filesystem. Returned with the systemd ``%h`` specifier; see
+    ``vm_local_config_dir`` for why.
+    """
+    return f"{vm_local_config_dir(name)}/grants"
+
+
+def vm_local_grants_file(name: str) -> str:
+    """VM-local path of the grants overlay file. See ``vm_local_grants_dir``."""
+    return f"{vm_local_grants_dir(name)}/grants.yaml"
+
+
 # Note: a render_dns_quadlet() helper used to live here for the 3-service
 # shape so ``domain add`` / ``domain rm`` could regenerate just the dns
 # sidecar's quadlet when its --servers-file shape changed. In the 2-
@@ -961,8 +985,14 @@ def generate_quadlets(
     # mitmproxy's mtime-poll hot-reload.
     if config.isolation == "vm":
         proxy_config_path = vm_local_proxy_config_path(deploy_name or name)
+        # Grants overlay: VM-local too. The addon writes it in-guest (atomic
+        # rename, no sshfs cache) and the host watcher round-trips it via
+        # limactl (backends.vm.pull_grants/push_grants). See
+        # vm_local_grants_dir.
+        grants_dir_str = vm_local_grants_dir(deploy_name or name)
     else:
         proxy_config_path = config_host_path
+        grants_dir_str = str(_state.grants_dir(name))
 
     files[f"{name}-egress.container"] = env.get_template("egress.container.j2").render(
         **common,
@@ -984,7 +1014,7 @@ def generate_quadlets(
         capture_host_dir=capture_host_dir,
         domains_auto_enabled=bool(getattr(config.domains.auto, "enable", False))
             or bool(getattr(config.domains, "expires", None)),
-        grants_host_dir=str(_state.grants_dir(name)),
+        grants_host_dir=grants_dir_str,
         passthrough_regex=pt_regex,
         rootless=rootless,
         inspected_tcp_ports=_inspected_tcp,
@@ -1100,19 +1130,25 @@ def generate_quadlets(
         or bool(getattr(config.domains, "expires", None))
     )
     # VM deploys skip the unit: the file would be copied into the guest's
-    # systemd dir where plain .service files never load (not Quadlets), and
-    # the host CLI can't run the watcher against a guest-side overlay.
-    # domains.auto on the vm backend is not supported in v1 (the CLI warns
-    # in _ensure_grants_watcher); container deploys install it into the
-    # host's systemd user dir via the container backend.
+    # systemd dir where plain .service files never load (not Quadlets) —
+    # and the watcher must run on the HOST anyway (it writes the
+    # operator's cage.yaml baseline and drives the VM-aware live-reload
+    # chain via limactl). VM cages get the unit installed host-side by
+    # ``cli._ensure_grants_watcher`` instead (systemd on Linux hosts,
+    # launchd on macOS hosts).
     if needs_watcher and config.isolation != "vm":
         files[f"{name}-grants.service"] = _grants_service_unit(name)
 
     return files
 
 
-def _grants_service_unit(name: str) -> str:
+def _grants_service_unit(name: str, interval: int = 1) -> str:
     """Render the auto-start grants-watcher systemd user unit.
+
+    ``interval`` is the poll interval in seconds. VM cages use a longer
+    interval (each tick is a ``limactl shell`` SSH round-trip to pull the
+    guest-local overlay, so 1 Hz would be chatty; 5 s keeps grant
+    promotion latency negligible).
 
     Plain ``.service`` (not a quadlet): the watcher must run on the host so
     it can write the operator's ``cage.yaml`` baseline and exec into the
@@ -1152,7 +1188,7 @@ After={name}-egress.service
 [Service]
 Type=simple
 # Reuses the literal ``domain add`` live-reload chain for every grant.
-ExecStart={shlex.quote(_agentcage_cli())} cage grants {shlex.quote(name)} watch --interval 1
+ExecStart={shlex.quote(_agentcage_cli())} cage grants {shlex.quote(name)} watch --interval {interval}
 Restart=on-failure
 RestartSec=2
 # Stop cleanly on shutdown so a restart doesn't leave a stale loop.

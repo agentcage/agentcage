@@ -1574,3 +1574,70 @@ class TestPassthroughSidecarFiles:
         state.save_deployment("test", str(p))
         body = open(state.save_dns_allowlist("test")).read()
         assert "server=/api.anthropic.com/100.100.100.100" in body
+
+
+class TestVmLocalGrantsOverlayPath:
+    """VM backend: the grants overlay dir must be VM-local (like the
+    proxy-config / dns-allowlist copies) — Lima's mounts can't be trusted
+    for host↔guest rewrites, and the host watcher round-trips the overlay
+    via limactl instead (backends.vm.pull_grants/push_grants)."""
+
+    def _vm_files(self, tmp_path, domains_extra=""):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent(f"""\
+            name: test
+            isolation: vm
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+              auto:
+                enable: true
+        """) + domains_extra)
+        cfg = load_config(str(p))
+        return generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+
+    def test_egress_quadlet_uses_vm_local_grants_dir(self, tmp_path):
+        files = self._vm_files(tmp_path)
+        content = files["test-egress.container"]
+        assert (
+            "Volume=%h/.config/agentcage-vm/cages/test/grants:/var/lib/agentcage:Z"
+            in content
+        )
+        # NOT the host-side state dir (Lima-mount path).
+        assert "/grants:/var/lib/agentcage" in content
+        assert f"{os.path.expanduser('~/.local/share/agentcage')}" not in content
+
+    def test_container_backend_uses_host_grants_dir(self, tmp_path):
+        """Regression guard: container cages keep mounting the host dir the
+        watcher reads/writes directly."""
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - example.com
+              auto:
+                enable: true
+        """))
+        cfg = load_config(str(p))
+        files = generate_quadlets(cfg, "/host/c.yaml", "/host/patches", "test")
+        content = files["test-egress.container"]
+        assert "Volume=" in content
+        assert ":/var/lib/agentcage:Z" in content
+        assert "%h/.config/agentcage-vm" not in content
+
+    def test_vm_does_not_emit_guest_grants_service(self, tmp_path):
+        """The watcher unit must NOT go into the guest quadlet set (it
+        runs on the HOST; a plain .service in the guest systemd dir never
+        loads)."""
+        files = self._vm_files(tmp_path)
+        assert "test-grants.service" not in files
+
+    def test_grants_service_unit_interval(self):
+        from agentcage.quadlets import _grants_service_unit
+        assert "--interval 1" in _grants_service_unit("test")
+        assert "--interval 5" in _grants_service_unit("test", interval=5)

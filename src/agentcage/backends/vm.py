@@ -103,6 +103,81 @@ PROXY_READINESS_TIMEOUT_S = 30
 PROXY_READINESS_POLL_INTERVAL_S = 0.25
 
 
+def ensure_grants_dir(name: str, inst: LimaInstance) -> None:
+    """Create the VM-local grants overlay dir inside the guest.
+
+    The egress quadlet's ExecStartPre chmods this dir (podman-in-guest
+    ``unshare chgrp`` + 0770) BEFORE podman run processes the Volume bind,
+    so it must already exist at unit start — podman's implicit
+    volume-source mkdir only happens later. Idempotent; one exec
+    round-trip.
+    """
+    from agentcage.quadlets import vm_local_grants_dir
+    home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
+    p = vm_local_grants_dir(name)
+    abspath = home + p[2:] if p.startswith("%h") else p
+    inst.exec(["mkdir", "-p", abspath])
+
+
+def pull_grants(name: str, inst: LimaInstance) -> list[dict] | None:
+    """Read the VM-local grants overlay from inside the guest.
+
+    Returns the parsed entries, ``[]`` when the overlay is absent or
+    unreadable (mirroring ``state.load_grants`` semantics), or ``None``
+    when the round-trip itself failed — callers treat ``None`` as
+    "VM not reachable, skip this tick" rather than "empty overlay"
+    (a stopped VM must not look like a mass revoke of every overlay
+    entry... the watcher only READS, but conflating the two would also
+    re-audit and re-prune on every unreachable tick).
+    """
+    import yaml
+    from agentcage.quadlets import vm_local_grants_file
+    try:
+        home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
+        p = vm_local_grants_file(name)
+        abspath = home + p[2:] if p.startswith("%h") else p
+        res = inst.exec(["cat", abspath], check=False)
+    except Exception:
+        return None
+    if res.returncode != 0:
+        # Missing file (fresh cage) or transient guest error. A missing
+        # overlay is the normal empty state; anything else still degrades
+        # to empty rather than killing the watcher tick.
+        return []
+    try:
+        data = yaml.safe_load(res.stdout or "")
+    except (yaml.YAMLError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return data
+
+
+def push_grants(name: str, entries: list[dict], inst: LimaInstance) -> None:
+    """Write the VM-local grants overlay inside the guest (atomic).
+
+    Base64 over ``limactl shell`` — the same reliable host→guest channel
+    ``push_config_files`` uses (the Lima mounts cannot be trusted for
+    host→guest writes). The write is temp+``mv`` so the in-guest addon's
+    mtime-poll never observes a truncated file mid-write.
+    """
+    import yaml
+    from agentcage.quadlets import vm_local_grants_file
+    home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
+    p = vm_local_grants_file(name)
+    abspath = home + p[2:] if p.startswith("%h") else p
+    encoded = base64.b64encode(
+        yaml.safe_dump(entries, default_flow_style=False,
+                       sort_keys=False).encode()
+    ).decode()
+    inst.exec([
+        "bash", "-c",
+        f"echo '{encoded}' | base64 -d > {shlex.quote(abspath)}.tmp "
+        f"&& mv {shlex.quote(abspath)}.tmp {shlex.quote(abspath)}",
+    ])
+
+
+
 def _dump_service_failure(inst: LimaInstance, svc: str) -> None:
     """Print ``systemctl status`` + last ``journalctl`` lines for ``svc``.
 
@@ -528,6 +603,18 @@ class VmBackend:
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/agentcage/lima"))
 
+    def grants_unit_path(self, name: str) -> Path:
+        """Host-side systemd user-unit path for the grants watcher.
+
+        The watcher itself runs on the HOST (it writes the operator's
+        cage.yaml and drives the VM-aware live-reload chain via
+        ``limactl shell``), so its unit is a native systemd USER unit in
+        ``~/.config/systemd/user/`` — the same location the container
+        backend uses — NOT in the guest's quadlet dir that
+        ``install_units`` targets.
+        """
+        return Path(os.path.expanduser("~/.config/systemd/user")) / f"{name}-grants.service"
+
     def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
@@ -644,6 +731,11 @@ class VmBackend:
         # ``push_config_files`` and ``cli._update_dns_quadlet``.
         with Phase("deploy.vm_local_config", cage=name):
             push_config_files(name, inst)
+            # The grants overlay dir must exist BEFORE the egress unit's
+            # ExecStartPre chmods it (podman's implicit volume-source mkdir
+            # runs later). Also gives the in-guest addon a fresh empty
+            # overlay on first deploy.
+            ensure_grants_dir(name, inst)
 
         # Bridge secrets from host Podman into VM's Podman
         with Phase("deploy.bridge_secrets", cage=name):

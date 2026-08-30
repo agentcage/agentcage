@@ -46,8 +46,11 @@ Environment="AGENTCAGE_CAPTURE=/var/log/agentcage/capture/capture.jsonl"
 # writes decided grants here) and the host-side grants watcher (which reads
 # them and promotes into the static baseline via the ``domain add`` chain).
 # RW + acproxy-owned so the addon can write; the cage is in a separate
-# netns and cannot read it. Same per-cage host dir the CLI's
-# state.grants_file(name) points at, so the two see one backing file.
+# netns and cannot read it. On container/apple backends this is the host
+# dir state.grants_file(name) points at; on the vm backend it is a
+# VM-LOCAL dir (quadlets.vm_local_grants_dir — Lima mounts can't be
+# trusted for host↔guest rewrites), round-tripped by the host watcher
+# via limactl (backends.vm.pull_grants / push_grants).
 Volume={{ grants_host_dir }}:/var/lib/agentcage:Z
 Environment="AGENTCAGE_GRANTS_DIR=/var/lib/agentcage"
 {% endif %}

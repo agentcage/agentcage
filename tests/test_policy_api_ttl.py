@@ -304,8 +304,10 @@ class TestWatchBlocklistModeSkipsPromotion:
 class TestEnsureGrantsWatcherBackendGate:
     """_ensure_grants_watcher must never write a systemd unit at the
     apple-container launchd .plist path — the apple backend installs its
-    own plist. And it must warn (not silently no-op) on the vm backend,
-    where the watcher is unsupported in v1."""
+    own plist. VM cages now get a real host-side watcher: launchd plist
+    on macOS hosts, the same systemd user unit as the container backend
+    on Linux hosts (with a 5s poll interval — each tick is a limactl SSH
+    round-trip)."""
 
     @patch("agentcage.cli.get_backend")
     def test_apple_delegates_to_install_plist(self, mock_backend):
@@ -329,17 +331,60 @@ class TestEnsureGrantsWatcherBackendGate:
         assert not Path("/tmp/io.agentcage.x.grants.plist").exists()
 
     @patch("agentcage.cli.get_backend")
-    def test_vm_warns_and_skips(self, mock_backend, capsys):
-        backend = MagicMock(spec=[])
+    def test_vm_linux_writes_unit_with_5s_interval(self, mock_backend, tmp_path):
+        # Linux host (qemu Lima): the watcher is the SAME systemd user
+        # unit the container backend installs — host-side path, 5s
+        # interval (limactl round-trips make 1 Hz chatty).
+        backend = MagicMock()
+        unit = tmp_path / "x-grants.service"
+        backend.grants_unit_path.return_value = unit
+        del backend._install_grants_plist
         mock_backend.return_value = backend
 
         from agentcage.cli import _ensure_grants_watcher
+        import agentcage.systemd as _systemd
         cfg = MagicMock()
         cfg.isolation = "vm"
-        _ensure_grants_watcher("x", cfg)
+        with patch.object(_systemd, "start_unit") as mock_start, \
+             patch.object(_systemd, "enable_unit") as mock_enable:
+            _ensure_grants_watcher("x", cfg)
 
-        out = capsys.readouterr().err
-        assert "not supported on the vm backend" in out
+        assert unit.exists()
+        assert "--interval 5" in unit.read_text()
+        mock_start.assert_called_once_with("x-grants.service")
+        mock_enable.assert_called_once_with("x-grants.service")
+
+    @patch("agentcage.cli.get_backend")
+    def test_vm_darwin_installs_plist(self, mock_backend, tmp_path, monkeypatch):
+        # macOS host (Lima/vz): launchd plist via the shared installer in
+        # agentcage.watcher (same one the apple-container backend uses),
+        # 5s interval.
+        backend = MagicMock()
+        backend.grants_unit_path.return_value = tmp_path / "x-grants.service"
+        del backend._install_grants_plist
+        mock_backend.return_value = backend
+
+        from agentcage import watcher as _watcher
+        calls = {}
+
+        def _fake_install(name, *, log_dir, interval=1, plist_path=None):
+            calls["name"] = name
+            calls["interval"] = interval
+
+        monkeypatch.setattr(_watcher, "install_grants_watcher_plist",
+                            _fake_install)
+        monkeypatch.setattr("agentcage.cli.sys.platform", "darwin")
+
+        from agentcage.cli import _ensure_grants_watcher
+        import agentcage.systemd as _systemd
+        cfg = MagicMock()
+        cfg.isolation = "vm"
+        with patch.object(_systemd, "start_unit") as mock_start:
+            _ensure_grants_watcher("x", cfg)
+
+        assert calls == {"name": "x", "interval": 5}
+        mock_start.assert_not_called()  # launchd, not systemd
+        assert not (tmp_path / "x-grants.service").exists()
 
     @patch("agentcage.cli.get_backend")
     def test_container_backend_still_writes_unit(self, mock_backend, tmp_path):
@@ -646,3 +691,107 @@ class TestSafeTickIsolation:
 
         with pytest.raises(KeyboardInterrupt):
             _safe_tick(kb, "x")
+
+
+# ── VM backend: isolation-aware overlay IO ──────────────────────────────
+
+
+class TestVmOverlayDispatch:
+    """_load_grants_overlay / _save_grants_overlay must route VM cages
+    through the limactl channel (backends.vm.pull_grants/push_grants) and
+    everything else through the host-side state file. A manual grants
+    command on an unreachable VM errors instead of treating the overlay
+    as empty."""
+
+    def test_load_dispatches_vm(self):
+        from agentcage.cli import _load_grants_overlay
+        cfg = MagicMock()
+        cfg.isolation = "vm"
+        with patch("agentcage.lima.instance.LimaInstance") as mock_li, \
+             patch("agentcage.backends.vm.pull_grants",
+                   return_value=[{"domain": "a.com"}]) as mock_pull:
+            assert _load_grants_overlay("x", cfg) == [{"domain": "a.com"}]
+        mock_pull.assert_called_once_with("x", mock_li.return_value)
+
+    def test_load_dispatches_container(self):
+        from agentcage.cli import _load_grants_overlay
+        cfg = MagicMock()
+        cfg.isolation = "container"
+        with patch("agentcage.cli.state") as mock_state:
+            mock_state.load_grants.return_value = []
+            assert _load_grants_overlay("x", cfg) == []
+            mock_state.load_grants.assert_called_once_with("x")
+
+    def test_save_dispatches_vm(self):
+        from agentcage.cli import _save_grants_overlay
+        cfg = MagicMock()
+        cfg.isolation = "vm"
+        with patch("agentcage.lima.instance.LimaInstance") as mock_li, \
+             patch("agentcage.backends.vm.push_grants") as mock_push:
+            _save_grants_overlay("x", cfg, [])
+        mock_push.assert_called_once_with("x", [], mock_li.return_value)
+
+    @patch("agentcage.cli.state")
+    def test_grants_list_errors_when_vm_unreachable(self, mock_state):
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_deployment_config.return_value = _make_cfg()
+        cfg = _make_cfg()
+        mock_state.load_deployment_config.return_value = cfg
+        with patch("agentcage.cli._load_grants_overlay", return_value=None):
+            result = _runner().invoke(
+                main, ["cage", "grants", "basic", "list"])
+        assert result.exit_code != 0
+        assert "could not reach the VM" in result.output
+
+    @patch("agentcage.cli.state")
+    @patch("agentcage.cli._apply_baseline_change")
+    def test_watch_tick_skips_quietly_when_vm_down(
+            self, mock_apply, mock_state):
+        """A stopped VM is a quiet no-op tick — not an error, not an
+        empty-overlay promotion storm. The watcher keeps running and picks
+        the overlay up again once the cage starts."""
+        mock_state.load_raw_config.return_value = _raw()
+        cfg = _make_cfg()
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+        with patch("agentcage.lima.instance.LimaInstance") as mock_li, \
+             patch("agentcage.cli._load_grants_overlay", return_value=None) as lo:
+            mock_li.return_value.is_running.return_value = False
+            result = _runner().invoke(
+                main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0
+        lo.assert_not_called()  # is_running gate short-circuits the pull
+        mock_apply.assert_not_called()
+
+    @patch("agentcage.cli.state")
+    @patch("agentcage.cli._apply_baseline_change")
+    def test_watch_tick_promotes_from_vm_overlay(
+            self, mock_apply, mock_state):
+        """End-to-end VM tick: pull the guest-local overlay, promote into
+        the baseline, push the shrunk overlay back through the same
+        channel."""
+        from agentcage.cli import _save_grants_overlay
+        mock_state.load_raw_config.return_value = _raw()
+        cfg = _make_cfg()
+        cfg.isolation = "vm"
+        mock_state.load_deployment_config.return_value = cfg
+        overlay = _overlay_entries()
+        saved = {}
+
+        def _save(name, cfg_, entries):
+            saved["entries"] = entries
+
+        with patch("agentcage.lima.instance.LimaInstance") as mock_li, \
+             patch("agentcage.cli._load_grants_overlay",
+                   side_effect=[overlay, overlay]) as lo, \
+             patch("agentcage.cli._save_grants_overlay",
+                   side_effect=_save) as sv:
+            mock_li.return_value.is_running.return_value = True
+            result = _runner().invoke(
+                main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+        assert lo.call_count == 2  # tick snapshot + merge re-read
+        sv.assert_called_once()
+        # The promoted domain is gone from the pushed overlay.
+        assert all(e["domain"] != overlay[0]["domain"]
+                   for e in saved["entries"])

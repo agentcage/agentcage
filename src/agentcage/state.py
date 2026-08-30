@@ -202,6 +202,17 @@ def capture_file(name: str) -> Path:
 # the per-cage request rate limit; last-writer-wins on the rare overlap.
 
 
+def cage_data_dir(name: str) -> Path:
+    """Return (and create) ~/.local/share/agentcage/<name>/.
+
+    The per-cage data root: grants/, capture/, policy-audit.jsonl, and
+    watcher logs live under it.
+    """
+    d = _DATA_DIR / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def grants_dir(name: str) -> Path:
     """Return (and create) ~/.local/share/agentcage/<name>/grants/."""
     d = _DATA_DIR / name / "grants"

@@ -68,11 +68,16 @@ approved grants into the static baseline and prunes expired entries — runs
 on the **container** backend (systemd user unit; explicitly `systemctl
 --user enable`d so it survives host reboots — the egress quadlet units are
 generator-activated at boot, and without the enable the watcher would stay
-dead after a reboot while the cage came up) and **apple-container**
-(launchd plist). The **vm** backend is not supported in v1: the host CLI
-cannot watch a guest-side overlay, so `domains.auto` grants are decided and
-L7-enforced but never promoted to the baseline/DNS (the CLI warns when this
-matters, e.g. `domain add --expires-in` on a vm cage).
+dead after a reboot while the cage came up), the **apple-container**
+backend (launchd plist), and the **vm** backend (systemd user unit on Linux
+hosts, launchd plist on macOS hosts; 5s poll — each tick is an SSH
+round-trip). On vm cages the grants overlay lives VM-LOCAL
+(`~/.config/agentcage-vm/cages/<name>/grants/` inside the guest, like the
+other hot-reloaded config files): the in-guest egress addon writes it with
+no Lima-mount staleness, and the host watcher pulls/pushes it over
+`limactl shell` (the same reliable base64 channel used for
+`dns-allowlist.conf`). A stopped VM is a quiet no-op tick; grants decided
+while the cage is down are promoted when it next runs.
 | `GET`  | `/v1/health` | Liveness + feature flags (which endpoints are enabled). |
 
 ### `GET /v1/allowlist`

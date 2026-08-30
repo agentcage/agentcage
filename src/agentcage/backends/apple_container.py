@@ -860,55 +860,13 @@ class AppleContainerBackend:
     def _install_grants_plist(self, name: str) -> None:
         """Write + load the per-cage grants-watcher launchd plist.
 
-        Keeps the watcher alive across restarts (``KeepAlive=true``, unlike
-        the cage autostart plist which is ``RunAtLoad`` only) so approved
-        grants are promoted promptly and expired ``--expires-in`` entries
-        pruned. Idempotent. Best-effort immediate-load (same SSH reachability
-        caveat as the cage plist); the FILE is the persistence.
+        Delegates to :func:`agentcage.watcher.install_grants_watcher_plist`
+        (shared with the vm backend on macOS hosts).
         """
-        import shutil as _shutil, subprocess as _sp
-        binary = _shutil.which("agentcage") or "agentcage"
-        plist = self._grants_plist_path(name)
-        plist.parent.mkdir(parents=True, exist_ok=True)
-        state_dir = self._state_dir(name)
-        state_dir.mkdir(parents=True, exist_ok=True)
-        label = f"io.agentcage.{name}.grants"
-        plist_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{binary}</string>
-        <string>cage</string>
-        <string>grants</string>
-        <string>{name}</string>
-        <string>watch</string>
-        <string>--interval</string>
-        <string>1</string>
-    </array>
-    <key>StandardOutPath</key>
-    <string>{state_dir}/grants.out.log</string>
-    <key>StandardErrorPath</key>
-    <string>{state_dir}/grants.err.log</string>
-</dict>
-</plist>
-"""
-        plist.write_text(plist_xml)
-        uid = os.getuid()
-        domain = f"gui/{uid}"
-        if not self._gui_domain_reachable(uid):
-            return  # file is persistence; immediate-load not available over SSH
-        _sp.run(["launchctl", "bootout", f"{domain}/{label}"],
-                check=False, capture_output=True)
-        _sp.run(["launchctl", "bootstrap", domain, str(plist)],
-                check=False, capture_output=True)
+        from agentcage.watcher import install_grants_watcher_plist
+        install_grants_watcher_plist(
+            name, log_dir=self._state_dir(name), plist_path=self._grants_plist_path(name),
+        )
 
     def _uninstall_grants_plist(self, name: str) -> None:
         """Unload + remove the per-cage grants-watcher plist. No-op if absent."""

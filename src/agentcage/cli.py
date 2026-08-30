@@ -4417,25 +4417,36 @@ def _ensure_grants_watcher(name: str, cfg) -> None:
         return
     unit_path_fn = getattr(backend, "grants_unit_path", None)
     if unit_path_fn is None:
-        # VM backend: no host-side watcher in v1. The entry is still
-        # enforced at L7 immediately; but the baseline + dnsmasq are not
-        # pruned and Policy-API grants are not promoted on VM.
-        if isolation == "vm":
-            click.echo(
-                "warning: the grants watcher is not supported on the vm "
-                "backend in v1 — expiry is enforced at the proxy (L7), but "
-                "the baseline/DNS are not pruned and domains.auto grants "
-                "are not promoted on VM", err=True)
         return  # backend without host-side systemd units
+    if isolation == "vm" and sys.platform == "darwin":
+        # VM cage on a macOS host (Lima/vz): the watcher runs on the host
+        # like any other backend, supervised by launchd instead of
+        # systemd. Same plist the apple-container backend installs —
+        # the watcher command is isolation-agnostic (the overlay IO and
+        # the live-reload chain dispatch on isolation internally). A 5s
+        # interval: each tick is a limactl SSH round-trip to pull the
+        # guest-local overlay, so 1 Hz would be chatty for no benefit.
+        try:
+            from agentcage.watcher import install_grants_watcher_plist
+            install_grants_watcher_plist(
+                name, log_dir=state.cage_data_dir(name), interval=5)
+        except Exception as e:
+            click.echo(f"warning: could not install grants watcher: {e}",
+                        err=True)
+        return
     unit_path = unit_path_fn(name)
     if unit_path is None:
         return
     # Render + install the unit if missing (mirrors quadlets._grants_service_unit).
+    # VM cages poll at 5s: each tick is a limactl SSH round-trip to pull
+    # the guest-local overlay (container/apple ticks are a local file
+    # read, so 1s is fine there).
+    _interval = 5 if isolation == "vm" else 1
     if not unit_path.exists():
         try:
             from agentcage.quadlets import _grants_service_unit
             unit_path.parent.mkdir(parents=True, exist_ok=True)
-            unit_path.write_text(_grants_service_unit(name))
+            unit_path.write_text(_grants_service_unit(name, interval=_interval))
             from agentcage import systemd as _systemd
             _systemd.daemon_reload()
         except Exception as e:
@@ -4615,6 +4626,47 @@ def grants(name: str):
     """Manage Policy API runtime domain grants (see docs/explain/policy-api.md)."""
 
 
+def _load_grants_overlay(name: str, cfg) -> list[dict] | None:
+    """Load the grants overlay for a cage, isolation-aware.
+
+    Container/apple cages: the host-side file (``state.load_grants``).
+    VM cages: the overlay lives VM-LOCAL inside the guest (see
+    ``quadlets.vm_local_grants_dir`` — Lima mounts can't be trusted for
+    host→guest rewrites), so it is pulled over ``limactl shell``
+    (``backends.vm.pull_grants``). Returns ``None`` when the VM round-trip
+    failed (VM stopped / unreachable) — callers distinguish that from an
+    empty overlay: for the watcher it means "skip this tick quietly",
+    for manual commands it is an error.
+    """
+    if getattr(cfg, "isolation", "container") == "vm":
+        from agentcage.lima.instance import LimaInstance
+        from agentcage.backends.vm import pull_grants
+        return pull_grants(name, LimaInstance(name))
+    return state.load_grants(name)
+
+
+def _save_grants_overlay(name: str, cfg, entries: list[dict]) -> None:
+    """Write the grants overlay for a cage, isolation-aware.
+
+    VM cages: pushed guest-side via base64 over ``limactl shell`` (atomic
+    temp+``mv`` so the in-guest addon's mtime-poll never sees a truncated
+    file). Other backends: the host-side atomic write.
+    """
+    if getattr(cfg, "isolation", "container") == "vm":
+        from agentcage.lima.instance import LimaInstance
+        from agentcage.backends.vm import push_grants
+        push_grants(name, entries, LimaInstance(name))
+        return
+    state.save_grants(name, entries)
+
+
+def _grants_vm_unreachable(name: str) -> None:
+    """Error out: a manual grants command needs the VM running."""
+    click.echo(
+        f"error: could not reach the VM for cage '{name}' — the grants "
+        f"overlay lives guest-side. Start the cage and retry.", err=True)
+    sys.exit(1)
+
 @grants.command("list")
 def grants_list():
     """List runtime grants (overlay) and the static baseline for a cage."""
@@ -4635,7 +4687,9 @@ def grants_list():
     baseline = list(cfg.domains.allow)
     click.echo("Baseline: " + (" ".join(sorted(baseline)) if baseline else "(empty)"))
 
-    entries = state.load_grants(name)
+    entries = _load_grants_overlay(name, cfg)
+    if entries is None:
+        _grants_vm_unreachable(name)
     if not entries:
         click.echo("(no runtime grants)")
         return
@@ -4662,6 +4716,7 @@ def grants_promote(domain: str):
     except FileNotFoundError:
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    cfg = state.load_deployment_config(name)
     _ensure_v022_cage(name)
     _ensure_domain_section(raw)
     dom = raw["domains"]
@@ -4682,7 +4737,9 @@ def grants_promote(domain: str):
     # domains.expires — otherwise a ttl_seconds grant promoted by hand
     # silently becomes permanent (the watcher's auto-promote has the same
     # fix; see _tick step 2).
-    overlay_entries = state.load_grants(name)
+    overlay_entries = _load_grants_overlay(name, cfg)
+    if overlay_entries is None:
+        _grants_vm_unreachable(name)
     grant_entry = next(
         (e for e in overlay_entries
          if _grant_domain_match(str(e.get("domain", "")), domain)),
@@ -4755,10 +4812,10 @@ def grants_promote(domain: str):
     # lost-update race the watcher's _tick step 3 guards — see Fix 1).
     revoked_dl = domain.rstrip(".").lower()
     remaining = [
-        e for e in state.load_grants(name)
+        e for e in (_load_grants_overlay(name, cfg) or [])
         if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
     ]
-    state.save_grants(name, remaining)
+    _save_grants_overlay(name, cfg, remaining)
     click.echo(
         f"Promoted '{domain}' into the baseline and removed it from the "
         f"runtime overlay."
@@ -4779,8 +4836,11 @@ def grants_revoke(domain: str):
     except FileNotFoundError:
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    cfg = state.load_deployment_config(name)
 
-    entries = state.load_grants(name)
+    entries = _load_grants_overlay(name, cfg)
+    if entries is None:
+        _grants_vm_unreachable(name)
     remaining = [
         e for e in entries
         if not _grant_domain_match(str(e.get("domain", "")), domain)
@@ -4798,10 +4858,10 @@ def grants_revoke(domain: str):
     # this re-filter is the durable write.
     revoked_dl = domain.rstrip(".").lower()
     merged = [
-        e for e in state.load_grants(name)
+        e for e in (_load_grants_overlay(name, cfg) or [])
         if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
     ]
-    state.save_grants(name, merged)
+    _save_grants_overlay(name, cfg, merged)
     state.append_policy_audit(name, {
         "kind": "policy_grant_revoked",
         "domain": domain,
@@ -4858,6 +4918,12 @@ def grants_watch(interval: float, once: bool):
     except FileNotFoundError:
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
+    # Isolation-aware overlay IO (see _load_grants_overlay): VM cages
+    # round-trip the guest-local overlay via limactl, others use the
+    # host-side file. Loaded once here; the config's isolation does not
+    # change while the watcher runs.
+    _watch_cfg = state.load_deployment_config(name)
+    _is_vm = getattr(_watch_cfg, "isolation", "container") == "vm"
 
     def _is_expired(entry: dict) -> bool:
         exp = str(entry.get("expires_at", "") or "")
@@ -4889,7 +4955,19 @@ def grants_watch(interval: float, once: bool):
 
     def _tick() -> bool:
         """Process the overlay once. Returns True if anything changed."""
-        entries = state.load_grants(name)
+        # VM cages: the overlay lives guest-side. Pull it over limactl;
+        # an unreachable VM (stopped cage) is a quiet no-op tick, not an
+        # error — the watcher keeps running so it picks up the overlay
+        # again once the cage starts. (L7 enforcement inside the egress
+        # is unaffected either way.)
+        if _is_vm:
+            from agentcage.lima.instance import LimaInstance
+            inst = LimaInstance(name)
+            if not inst.is_running():
+                return False
+        entries = _load_grants_overlay(name, _watch_cfg)
+        if entries is None:
+            return False
         changed = False
         # Domains this tick intentionally REMOVES from the overlay (expired
         # in step 1, promoted in step 2). Tracked explicitly so the step-3
@@ -5120,13 +5198,19 @@ def grants_watch(interval: float, once: bool):
         #    Only write if something actually changed to avoid churning
         #    the mtime the addon hot-reloads on.
         if changed:
-            current = state.load_grants(name)
+            current = _load_grants_overlay(name, _watch_cfg)
+            if current is None:
+                # VM went away mid-tick (stopped between the pull above
+                # and this write): keep the tick's baseline changes (they
+                # are already durable host-side) and skip the overlay
+                # write — the next reachable tick re-merges.
+                return changed
             merged = [
                 e for e in current
                 if str(e.get("domain", "")).rstrip(".").lower()
                 not in removed_domains
             ]
-            state.save_grants(name, merged)
+            _save_grants_overlay(name, _watch_cfg, merged)
         return changed
 
     if once:
