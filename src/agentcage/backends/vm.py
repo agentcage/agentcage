@@ -104,47 +104,87 @@ PROXY_READINESS_TIMEOUT_S = 30
 PROXY_READINESS_POLL_INTERVAL_S = 0.25
 
 
+# Cache of the guest user's $HOME per cage name. The home directory
+# never changes for a given Lima instance (and a destroyed/recreated VM
+# lands on the identical path), so resolving it once per cage lets a
+# watcher tick skip up to two extra ``limactl shell`` round-trips per
+# overlay round-trip (ensure/pull/push each used to re-run ``echo ~``).
+# Keyed by cage name — NOT by LimaInstance object — so a fresh
+# LimaInstance per tick still hits the cache.
+_guest_home: dict[str, str] = {}
+
+
+def _abs_path(name: str, inst: LimaInstance, p: str) -> str:
+    """Resolve a ``%h``-prefixed vm_local path to a guest-absolute path.
+
+    The ``vm_local_*`` helpers emit ``%h/...`` (the systemd home specifier
+    for quadlet ``Volume=`` lines); bash does not expand ``%h``, so for
+    shell-context use we must substitute the guest ``$HOME`` ourselves.
+    The resolution is cached in ``_guest_home`` per cage name — on a cache
+    miss the ``echo ~`` exec runs and the result is stored.
+    """
+    if not p.startswith("%h"):
+        return p
+    home = _guest_home.get(name)
+    if home is None:
+        home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
+        _guest_home[name] = home
+    return home + p[2:]
+
+
 def ensure_grants_dir(name: str, inst: LimaInstance) -> None:
     """Create the VM-local grants overlay dir inside the guest.
 
     The egress quadlet's ExecStartPre chmods this dir (podman-in-guest
     ``unshare chgrp`` + 0770) BEFORE podman run processes the Volume bind,
     so it must already exist at unit start — podman's implicit
-    volume-source mkdir only happens later. Idempotent; one exec
-    round-trip.
+    volume-source mkdir only happens later. Idempotent; the home
+    resolution is cached (see ``_abs_path``) so repeat ticks cost a
+    single ``mkdir`` exec round-trip.
     """
     from agentcage.quadlets import vm_local_grants_dir
-    home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
     p = vm_local_grants_dir(name)
-    abspath = home + p[2:] if p.startswith("%h") else p
+    abspath = _abs_path(name, inst, p)
     inst.exec(["mkdir", "-p", abspath])
 
 
 def pull_grants(name: str, inst: LimaInstance) -> list[dict] | None:
     """Read the VM-local grants overlay from inside the guest.
 
-    Returns the parsed entries, ``[]`` when the overlay is absent or
-    unreadable (mirroring ``state.load_grants`` semantics), or ``None``
-    when the round-trip itself failed — callers treat ``None`` as
-    "VM not reachable, skip this tick" rather than "empty overlay"
-    (a stopped VM must not look like a mass revoke of every overlay
-    entry... the watcher only READS, but conflating the two would also
-    re-audit and re-prune on every unreachable tick).
+    Returns the parsed entries, ``[]`` when the overlay is absent (a
+    fresh cage — the normal empty state), or ``None`` when the round-trip
+    itself failed OR the guest reported a read failure that is NOT
+    "file missing" (permission error, I/O error, a truncated SSH stream
+    with a nonzero exit). Callers treat ``None`` as "don't know / VM not
+    reachable, skip this tick" rather than "empty overlay": conflating a
+    read failure with a real empty overlay would let the watcher's
+    merge-on-write treat the wipe as genuine and persist it on the next
+    push (``None`` is guarded against by the merge; a false ``[]`` is
+    not).
+
+    The guest is probed with a small shell script so "file missing" can
+    be distinguished from any other read failure: exit 0 → parse stdout
+    as YAML; exit 42 (sentinel) → file absent → ``[]``; any OTHER nonzero
+    exit (or an exception from the round-trip) → ``None``.
     """
     import yaml
     from agentcage.quadlets import vm_local_grants_file
+    p = vm_local_grants_file(name)
     try:
-        home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
-        p = vm_local_grants_file(name)
-        abspath = home + p[2:] if p.startswith("%h") else p
-        res = inst.exec(["cat", abspath], check=False)
+        abspath = _abs_path(name, inst, p)
+        quoted = shlex.quote(abspath)
+        script = f"if [ -f {quoted} ]; then cat {quoted}; else exit 42; fi"
+        res = inst.exec(["sh", "-c", script], check=False)
     except Exception:
         return None
-    if res.returncode != 0:
-        # Missing file (fresh cage) or transient guest error. A missing
-        # overlay is the normal empty state; anything else still degrades
-        # to empty rather than killing the watcher tick.
+    if res.returncode == 42:
+        # File absent — fresh cage, the normal empty state.
         return []
+    if res.returncode != 0:
+        # Not missing, not OK: a genuine read failure (permission error,
+        # I/O error, truncated stream). Don't masquerade as empty — the
+        # watcher would persist the wipe on the next push.
+        return None
     try:
         data = yaml.safe_load(res.stdout or "")
     except (yaml.YAMLError, ValueError):
@@ -159,24 +199,28 @@ def push_grants(name: str, entries: list[dict], inst: LimaInstance) -> None:
 
     Base64 over ``limactl shell`` — the same reliable host→guest channel
     ``push_config_files`` uses (the Lima mounts cannot be trusted for
-    host→guest writes). The write is temp+``mv`` so the in-guest addon's
+    host→guest writes). The write is ``mktemp`` + ``mv``: ``mktemp``
+    creates the temp with O_EXCL semantics (a planted symlink at a
+    predictable ``<path>.tmp`` would otherwise be written through in a
+    shared dir), and the atomic ``mv`` means the in-guest addon's
     mtime-poll never observes a truncated file mid-write.
     """
     import yaml
     from agentcage.quadlets import vm_local_grants_file
-    home = inst.exec(["bash", "-c", "echo ~"]).stdout.strip()
     p = vm_local_grants_file(name)
-    abspath = home + p[2:] if p.startswith("%h") else p
+    abspath = _abs_path(name, inst, p)
     encoded = base64.b64encode(
         yaml.safe_dump(entries, default_flow_style=False,
                        sort_keys=False).encode()
     ).decode()
-    inst.exec([
-        "bash", "-c",
-        f"echo '{encoded}' | base64 -d > {shlex.quote(abspath)}.tmp "
-        f"&& mv {shlex.quote(abspath)}.tmp {shlex.quote(abspath)}",
-    ])
-
+    target = shlex.quote(abspath)
+    directory = shlex.quote(os.path.dirname(abspath))
+    script = (
+        f"tmp=$(mktemp {directory}/XXXXXX) && "
+        f"echo '{encoded}' | base64 -d > \"$tmp\" && "
+        f"mv \"$tmp\" {target}"
+    )
+    inst.exec(["sh", "-c", script])
 
 
 def _dump_service_failure(inst: LimaInstance, svc: str) -> None:
