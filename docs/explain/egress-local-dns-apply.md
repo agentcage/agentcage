@@ -103,9 +103,14 @@ and must stay authoritative across a guest compromise. That job has no deadline
 anymore, so it needs no daemon:
 
 - `agentcage cage grants <name> sync` applies the overlay explicitly.
-- The same reconcile runs implicitly on CLI paths that already read the cage
-  (`domain list`, `cage status`, `cage stop`, `cage update`), so the baseline
-  converges the next time the operator touches the cage.
+- The same reconcile runs implicitly from `agentcage domain list`, which is
+  where the lag would otherwise be visible — so what the operator reads is
+  always the truth, and they never have to know `sync` exists. It is a no-op
+  when nothing is pending.
+
+Deliberately NOT hooked into `cage status`: reconciling writes `cage.yaml` and
+drives the live-reload chain, and a read-only status command should not have
+that side effect.
 
 Enforcement durability does not depend on this. The overlay (`grants.yaml`) is
 the addon's own persistence: it reloads it at startup and re-publishes the DNS

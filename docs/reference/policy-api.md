@@ -63,21 +63,18 @@ on — there are no separate `introspection:`/`request:` enable flags.
 | `POST` | `/v1/allowlist/requests` | Request a new domain. Invokes the decider (synchronous — the decision is in the response body). |
 | `GET`  | `/v1/health` | Liveness + feature flags. |
 
-**Backend support (v1):** the grants watcher — the component that promotes
-approved grants into the static baseline and prunes expired entries — runs
-on the **container** backend (systemd user unit; explicitly `systemctl
---user enable`d so it survives host reboots — the egress quadlet units are
-generator-activated at boot, and without the enable the watcher would stay
-dead after a reboot while the cage came up), the **apple-container**
-backend (launchd plist), and the **vm** backend (systemd user unit on Linux
-hosts, launchd plist on macOS hosts; 5s poll — each tick is an SSH
-round-trip). On vm cages the grants overlay lives VM-LOCAL
+**Backend support:** identical on all three backends. A grant is applied
+entirely inside the egress container — the addon publishes the granted zone
+list and the supervisor re-renders dnsmasq's servers-file and SIGHUPs it from
+the liveness loop it already runs — so there is no host-side watcher, no
+systemd unit and no launchd plist. See
+[Egress-local DNS apply](../explain/egress-local-dns-apply.md).
+
+On vm cages the grants overlay still lives VM-LOCAL
 (`~/.config/agentcage-vm/cages/<name>/grants/` inside the guest, like the
-other hot-reloaded config files): the in-guest egress addon writes it with
-no Lima-mount staleness, and the host watcher pulls/pushes it over
-`limactl shell` (the same reliable base64 channel used for
-`dns-allowlist.conf`). A stopped VM is a quiet no-op tick; grants decided
-while the cage is down are promoted when it next runs.
+other hot-reloaded config files) so the in-guest addon writes it with no
+Lima-mount staleness; the host reads it over `limactl shell` when it
+reconciles the durable baseline.
 | `GET`  | `/v1/health` | Liveness + feature flags (which endpoints are enabled). |
 
 ### `GET /v1/allowlist`
@@ -99,7 +96,7 @@ while the cage is down are promoted when it next runs.
 
 - `baseline` — the operator's static `domains.allow` from `config.yaml`.
 - `granted` — domains admitted by the decider and promoted into the baseline
-  by the grants watcher (empty when auto-management is disabled). An entry
+  and reconciled into the baseline (empty when auto-management is disabled). An entry
   carries `expires_at` when it is time-limited: the decider may attach a
   `ttl_seconds` to a grant it judges transient (clamped to 24h), and
   `agentcage domain add --expires-in` sets one explicitly. A grant with no
@@ -271,22 +268,24 @@ operator-configurable:
 
 ## How grants take effect
 
-On a `grant` decision, the **auto-started grants watcher** promotes the
-domain into the static baseline via the literal `domain add` chain:
+A `grant` decision takes effect in two steps, both immediate:
 
 1. **L7 — immediate.** The addon calls `DomainInspector.grant(domain)`,
    which adds the domain to its in-memory `domain_set` (allowlist mode). The
    very next request to that domain passes the domain inspector — no restart,
    no SIGHUP, no upstream reconnect.
-2. **Baseline — permanent.** The grants watcher (which auto-starts whenever
-   `auto.enable` is true) runs the same logic as `agentcage domain add`:
-   `save_raw_config` → `save_proxy_config` → `save_dns_allowlist` → SIGHUP
-   dnsmasq, and the addon hot-reloads on `config.yaml`'s mtime. The domain is
-   now baked into the operator's `cage.yaml` baseline — immediately reachable
-   and permanent, surviving `cage destroy`/`recreate`.
+2. **DNS — immediate.** The addon publishes the granted zone to
+   `/home/acproxy/dns/granted`; the egress supervisor re-renders dnsmasq's
+   servers-file (baseline + granted zones) and SIGHUPs it, so the name
+   resolves. The addon cannot signal dnsmasq itself — different uid, no
+   `CAP_KILL` — which is why the supervisor does this half.
 
-Because the watcher auto-starts, there is no manual `watch` step and no
-separate overlay file to manage. Grants only ever *widen* the allow set.
+**Durability** is separate and lazy. The grant is persisted to the overlay,
+which the addon reloads (and re-publishes) at startup, so it survives an
+egress restart. Writing it into the operator's `cage.yaml` baseline — so it
+shows in `domain list` and survives `cage destroy`/recreate — happens on the
+next reconcile: `agentcage cage grants <name> sync`, which `domain list` also
+runs implicitly. Grants only ever *widen* the allow set.
 
 > **Grants are additive-only.** A grant only ever *widens* the allow set. It
 > never bypasses the SNI/Host-equality check, the `secrets`/`entropy`/
@@ -295,11 +294,12 @@ separate overlay file to manage. Grants only ever *widen* the allow set.
 
 ## Promoting & revoking grants
 
-The auto-started watcher promotes each grant into the static `cage.yaml`
-baseline via the existing `domain add` live-reload path, so there is no
-manual `promote` step — grants are durable by default. A grant is permanent
-unless the decider attached a `ttl_seconds` (see above), in which case the
-watcher prunes it at expiry.
+Reconciling promotes each grant into the static `cage.yaml` baseline via the
+existing `domain add` live-reload path, so there is no manual `promote` step —
+grants are durable by default. A grant is permanent unless the decider
+attached a `ttl_seconds` (see above); the addon's own sweeper drops it at
+expiry and re-publishes the zone list, and the next reconcile tidies the
+baseline.
 
 - **Remove a granted domain:** `agentcage domain rm <domain>` — drops it from
   the baseline and live-reloads it away.
