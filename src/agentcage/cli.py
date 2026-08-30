@@ -4553,6 +4553,22 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
 
     _apply_baseline_change(name, raw)
 
+    # Audit the removal. The reference docs list `policy_grant_removed` as
+    # "a domain removed via `agentcage domain rm`", but only the watcher's
+    # TTL-expiry path emitted it — so an operator revoking a decider-granted
+    # domain left no trace in the forensic record of egress widenings.
+    try:
+        state.append_policy_audit(name, {
+            "kind": "policy_grant_removed",
+            "domain": domain_name,
+            "reason": "removed by operator via 'domain rm'",
+            "source": "operator",
+            "action": "removed_from_passthrough" if passthrough
+                      else "removed_from_baseline",
+        })
+    except Exception:
+        pass
+
     msg = f"Removed '{domain_name}' from cage '{name}'."
     if get_backend(state.load_deployment_config(name)).is_running(name, "cage"):
         msg += " DNS and proxy updated."
