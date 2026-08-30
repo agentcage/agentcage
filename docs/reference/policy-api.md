@@ -99,9 +99,11 @@ while the cage is down are promoted when it next runs.
 
 - `baseline` — the operator's static `domains.allow` from `config.yaml`.
 - `granted` — domains admitted by the decider and promoted into the baseline
-  by the grants watcher (empty when auto-management is disabled). Entries are
-  permanent; an `expires_at` field appears only for domains time-limited via
-  `agentcage domain add --expires-in`.
+  by the grants watcher (empty when auto-management is disabled). An entry
+  carries `expires_at` when it is time-limited: the decider may attach a
+  `ttl_seconds` to a grant it judges transient (clamped to 24h), and
+  `agentcage domain add --expires-in` sets one explicitly. A grant with no
+  TTL is permanent until `agentcage domain rm`.
 - `requestable` — whether `POST /v1/allowlist/requests` is enabled, so the
   agent knows before trying.
 
@@ -132,10 +134,15 @@ Errors:
 
 | Status | Meaning |
 |--------|---------|
+| `200` | Granted, or already reachable (`status: already_allowed`). |
 | `400` | Bad domain syntax, not in allowlist mode, or missing `reason` justification. |
-| `409` | Domain already granted. |
+| `403` | Denied — by the decider, or structurally (`never_grant`, not in allowlist mode). The body carries `status: denied` with an actionable `reason`. |
+| `409` | Grant cap reached (`max_grants`). |
 | `429` | Request rate limit exceeded. |
-| `503` | Decider unavailable (fail-closed by default = deny; see below). |
+| `503` | Decider unavailable (fail-closed = deny; see below). |
+
+Every response carries an `id` (`req_<hex>`) that correlates it with the
+`policy_request` line in `audit.jsonl`.
 
 ## Config schema
 
@@ -243,8 +250,11 @@ bound LLM cost and abuse of the request endpoint.
 There is **no `grant:` block** — v1 uses fixed safe defaults that are not
 operator-configurable:
 
-- Grants are **permanent** (`ttl_seconds: 0`). To time-limit a domain, use
-  `agentcage domain add --expires-in 30m` (recorded in `domains.expires`).
+- Grants default to **permanent** (`ttl_seconds: 0`), but the decider may
+  return a `ttl_seconds` on a grant it judges transient — the system prompt
+  asks it to. Any decider-supplied TTL is **clamped to 24h** and recorded in
+  `domains.expires`, and the watcher prunes the entry when it expires. To
+  time-limit a domain yourself, use `agentcage domain add --expires-in 30m`.
 - **Max 32 concurrent** grants per cage.
 - A **`never_grant`** set — `internal`, `local`, `localhost`, and the control
   host itself — is **always** unioned in; the decider cannot override or
@@ -281,10 +291,11 @@ separate overlay file to manage. Grants only ever *widen* the allow set.
 
 ## Promoting & revoking grants
 
-Grants are **permanent** — the auto-started watcher promotes each grant into
-the static `cage.yaml` baseline via the existing `domain add` live-reload
-path, so there is no manual `promote` step. The `cage grants promote`/`revoke`
-commands were removed; grants are durable by default.
+The auto-started watcher promotes each grant into the static `cage.yaml`
+baseline via the existing `domain add` live-reload path, so there is no
+manual `promote` step — grants are durable by default. A grant is permanent
+unless the decider attached a `ttl_seconds` (see above), in which case the
+watcher prunes it at expiry.
 
 - **Remove a granted domain:** `agentcage domain rm <domain>` — drops it from
   the baseline and live-reloads it away.
@@ -319,6 +330,14 @@ Two audit streams record policy activity:
   writable by the egress container — group-shared with the operator via the
   podman user-namespace mapping and bind-mounted RW — so a file inside it
   would be forgeable/truncatable by the caged container).
+
+  > **Grants-dir permissions differ by backend.** On **container** the dir is
+  > `0770`, group-shared with the egress via the podman subgid mapping. On
+  > **apple-container** there is no equivalent host-side mapping, so the dir
+  > is `0777`; on a shared macOS host another local account could plant
+  > `grants.yaml` entries the watcher then promotes. On **vm** the overlay is
+  > VM-local (inside the guest) and the host-side dir stays operator-owned,
+  > which avoids the problem entirely.
 
 These are the forensic record for every egress widening.
 

@@ -1652,6 +1652,7 @@ class AppleContainerBackend:
             # CA private key — see public_certs_dir() docstring + the
             # CTF F1 finding on 0.22.5).
             "--volume", f"{public_certs_dir}:/home/acproxy/public-certs",
+            "-e", f"AGENTCAGE_VERSION={_agentcage_version()}",
             "--volume", f"{egress_cfg_dir}/proxy-config.yaml:/etc/agentcage/config.yaml:ro",
             "--volume", f"{egress_cfg_dir}/dnsmasq.conf:/etc/agentcage/dnsmasq.conf:ro",
             "--volume", f"{egress_cfg_dir}/dns-allowlist.conf:/etc/agentcage/dns-allowlist.conf:ro",

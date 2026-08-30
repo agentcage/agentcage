@@ -69,6 +69,39 @@ def grants_watcher_plist_path(name: str) -> Path:
     )
 
 
+def _watcher_path(binary: str) -> str:
+    """PATH for the watcher process.
+
+    launchd starts agents with a bare
+    ``/usr/bin:/bin:/usr/sbin:/sbin`` — it does NOT inherit the operator's
+    shell PATH. That is fine for an apple-container cage, but a vm cage's
+    watcher shells out to ``limactl`` on every tick to pull the guest-local
+    grants overlay and to drive the live-reload chain. Homebrew installs
+    ``limactl`` in ``/opt/homebrew/bin`` (or ``/usr/local/bin`` on Intel),
+    so without this the watcher loads, runs, and fails every single tick
+    with ``FileNotFoundError`` — a watcher that is up but can never promote
+    a grant.
+
+    Includes the resolved ``agentcage`` and ``limactl`` directories so a
+    pipx/venv/Homebrew layout works without the operator configuring
+    anything.
+    """
+    entries: list[str] = []
+    for tool in (binary, shutil.which("limactl")):
+        if not tool:
+            continue
+        parent = str(Path(tool).resolve().parent)
+        if parent not in entries:
+            entries.append(parent)
+    for default in (
+        "/opt/homebrew/bin", "/usr/local/bin",
+        "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+    ):
+        if default not in entries:
+            entries.append(default)
+    return ":".join(entries)
+
+
 def uninstall_grants_watcher(name: str, *, darwin: bool) -> None:
     """Best-effort, idempotent removal of a cage's host-side grants watcher.
 
@@ -148,6 +181,7 @@ def install_grants_watcher_plist(
     """
     binary = shutil.which("agentcage") or "agentcage"
     plist = plist_path or grants_watcher_plist_path(name)
+    watcher_path = _watcher_path(binary)
     plist.parent.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     label = f"io.agentcage.{name}.grants"
@@ -171,6 +205,11 @@ def install_grants_watcher_plist(
         <string>--interval</string>
         <string>{interval}</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{watcher_path}</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>{log_dir}/grants.out.log</string>
     <key>StandardErrorPath</key>

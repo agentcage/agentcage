@@ -507,7 +507,9 @@ class TestEnsureGrantsWatcherBackendGate:
         assert not Path("/tmp/io.agentcage.x.grants.plist").exists()
 
     @patch("agentcage.cli.get_backend")
-    def test_vm_linux_writes_unit_with_5s_interval(self, mock_backend, tmp_path):
+    def test_vm_linux_writes_unit_with_5s_interval(
+        self, mock_backend, tmp_path, monkeypatch,
+    ):
         # Linux host (qemu Lima): the watcher is the SAME systemd user
         # unit the container backend installs — host-side path, 5s
         # interval (limactl round-trips make 1 Hz chatty).
@@ -516,6 +518,12 @@ class TestEnsureGrantsWatcherBackendGate:
         backend.grants_unit_path.return_value = unit
         del backend._install_grants_plist
         mock_backend.return_value = backend
+
+        # _ensure_grants_watcher branches on sys.platform; without pinning
+        # it this test took the darwin (plist) path and failed on macOS,
+        # so the Linux behavior it exists to cover was only ever asserted
+        # on Linux CI.
+        monkeypatch.setattr("agentcage.cli.sys.platform", "linux")
 
         from agentcage.cli import _ensure_grants_watcher
         import agentcage.systemd as _systemd

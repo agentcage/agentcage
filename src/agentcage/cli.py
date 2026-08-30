@@ -2050,9 +2050,15 @@ def cage_start(name: str):
         podman = Podman()
         _ensure_patches(podman)
 
-        # Refresh env:/cmd: secrets before starting (they may have changed)
-        from agentcage.secret_resolver import resolve_and_populate
-        resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
+        # Refresh env:/cmd: secrets before starting (they may have changed).
+        # Container only — matching `cage create`. A vm cage's secrets live
+        # in the GUEST podman store; the host store is the wrong target (and
+        # on a macOS host there is no host podman at all, so this raised).
+        # backends.vm._resolve_source_secrets does the equivalent guest-side
+        # during _deploy_cage.
+        if cfg.isolation == "container":
+            from agentcage.secret_resolver import resolve_and_populate
+            resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
 
         # Regenerate derived files from cage.yaml so any edits made while
         # the cage was stopped are applied on the next start. The dns
@@ -3589,6 +3595,26 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     """
     expected = _expected_secrets(cfg)
     injection_names = {r.env for r in cfg.secret_injection}
+    # domains.auto's decider api_key is a real consumer of a stored secret
+    # but is not a secret_injection rule, so it fell through to "orphan" —
+    # inviting an operator to `secret rm` the one credential the decider
+    # needs. Classify it as "decider" instead.
+    decider_names: set[str] = set()
+    _api_key = getattr(
+        getattr(getattr(getattr(cfg, "domains", None), "auto", None),
+                "decider", None),
+        "agent", None,
+    )
+    _api_key = getattr(_api_key, "api_key", "")
+    # isinstance guard: `cfg` is a MagicMock in much of the CLI test suite,
+    # where every attribute access yields another mock that would partition
+    # into garbage.
+    if isinstance(_api_key, str) and _api_key:
+        _, _, _arg = _api_key.partition(":")
+        if _arg:
+            decider_names.add(_arg)
+            if _arg not in expected:
+                expected = list(expected) + [_arg]
     # Placeholders are decoy tokens (never sensitive) — show them so a
     # generated value is discoverable without opening the stored cage.yaml.
     placeholders = {r.env: r.placeholder for r in cfg.secret_injection}
@@ -3600,7 +3626,12 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     click.echo(f"{'NAME':<30} {'TYPE':<12} {'STATUS':<8} PLACEHOLDER")
     any_missing = False
     for key in expected:
-        stype = "injection" if key in injection_names else "direct"
+        if key in injection_names:
+            stype = "injection"
+        elif key in decider_names:
+            stype = "decider"
+        else:
+            stype = "direct"
         if key in present_keys:
             status = "ok"
         else:
@@ -4545,6 +4576,22 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
             _write_domain_expires(raw, expires)
 
     _apply_baseline_change(name, raw)
+
+    # Audit the removal. The reference docs list `policy_grant_removed` as
+    # "a domain removed via `agentcage domain rm`", but only the watcher's
+    # TTL-expiry path emitted it — so an operator revoking a decider-granted
+    # domain left no trace in the forensic record of egress widenings.
+    try:
+        state.append_policy_audit(name, {
+            "kind": "policy_grant_removed",
+            "domain": domain_name,
+            "reason": "removed by operator via 'domain rm'",
+            "source": "operator",
+            "action": "removed_from_passthrough" if passthrough
+                      else "removed_from_baseline",
+        })
+    except Exception:
+        pass
 
     msg = f"Removed '{domain_name}' from cage '{name}'."
     if get_backend(state.load_deployment_config(name)).is_running(name, "cage"):

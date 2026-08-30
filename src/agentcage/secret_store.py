@@ -353,12 +353,22 @@ def resolve_store(cfg, *, podman=None, source_scheme: str = "") -> SecretStore:
     sec = cfg.secrets
     allow_plaintext = bool(getattr(sec, "allow_plaintext", False))
     is_apple = getattr(cfg, "isolation", "") == "apple-container"
+    # A vm cage on a macOS host stores its secrets on the HOST (that is
+    # where `secret set` runs); systemd-creds lives in the guest and is
+    # not reachable from here, so `auto` would find no encrypting backend
+    # and refuse every `secret set` — which made domains.auto, whose
+    # decider api_key is mandatory, unusable on a Mac without opting into
+    # plaintext. The keychain is the host's encrypting store; the vm
+    # backend bridges the value into the guest at deploy time.
+    host_keychain = is_apple or (
+        getattr(cfg, "isolation", "") == "vm" and sys.platform == "darwin"
+    )
 
     # Platform-appropriate stores.
     plaintext = ApplePlaintextStore() if is_apple else PlaintextStore(podman)
 
     def encrypting():
-        return KeychainStore() if is_apple else SystemdCredsStore(
+        return KeychainStore() if host_keychain else SystemdCredsStore(
             scope=sec.scope, podman=podman)
 
     # Explicit per-rule scheme wins (container/vm only).

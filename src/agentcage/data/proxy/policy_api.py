@@ -69,6 +69,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _new_request_id() -> str:
+    """Correlation id for one adjudication.
+
+    The reference docs advertise an ``id`` on every request response; it
+    is what ties a response the agent sees to the ``policy_request``
+    line in ``audit.jsonl``. ``os.urandom`` rather than ``uuid4`` to keep
+    the egress import surface minimal.
+    """
+    return "req_" + os.urandom(12).hex()
+
+
 class PolicyApi:
     """Control-plane state + request handling for the Policy API."""
 
@@ -267,7 +278,7 @@ class PolicyApi:
     def _health(self) -> dict:
         return {
             "status": "ok",
-            "version": os.environ.get("AGENTCAGE_VERSION", ""),
+            "version": self._version(),
             "features": {
                 "introspection": self.introspection_enabled,
                 "request": self.request_enabled,
@@ -283,7 +294,7 @@ class PolicyApi:
             "granted": snap["granted"],
             "passthrough": sorted(self._passthrough),
             "requestable": self.request_enabled,
-            "version": os.environ.get("AGENTCAGE_VERSION", ""),
+            "version": self._version(),
         }
 
     # ── POST /v1/allowlist/requests ────────────────────────
@@ -344,7 +355,7 @@ class PolicyApi:
             self.dom._matches(domain) or self.dom.is_granted(domain)
         ):
             self._respond(flow, 200, {
-                "id": None, "status": "already_allowed",
+                "id": _new_request_id(), "status": "already_allowed",
                 "domain": domain,
                 "reason": "already in baseline or granted",
             })
@@ -358,7 +369,7 @@ class PolicyApi:
         # different, non-internal domain.
         if self._is_never_grant(domain):
             self._respond(flow, 403, {
-                "id": None, "status": "denied", "domain": domain,
+                "id": _new_request_id(), "status": "denied", "domain": domain,
                 "reason": f"{domain} is on the operator's never_grant list and "
                           f"cannot be granted by the policy API",
                 "suggestion": "request a different, non-internal domain; "
@@ -376,7 +387,7 @@ class PolicyApi:
         # one. Tell the agent what to do.
         if self._max_grants and len(self.dom.granted) >= self._max_grants:
             self._respond(flow, 409, {
-                "id": None, "status": "denied", "domain": domain,
+                "id": _new_request_id(), "status": "denied", "domain": domain,
                 "reason": f"max_grants ({self._max_grants}) reached; no room "
                           f"for another grant",
                 "suggestion": "wait for an existing grant to expire, or ask "
@@ -394,7 +405,7 @@ class PolicyApi:
         # Per-cage request rate limit — retryable after a short wait.
         if not self._check_rate_limit():
             self._respond(flow, 429, {
-                "id": None, "status": "denied", "domain": domain,
+                "id": _new_request_id(), "status": "denied", "domain": domain,
                 "reason": "request rate limit exceeded",
                 "suggestion": "wait a few seconds and re-request the same domain",
                 "retryable": True,
@@ -470,7 +481,7 @@ class PolicyApi:
         # otherwise live ~30 years. 0 = permanent (the v1 default) is allowed.
 
         if decision != "grant":
-            self._respond(flow, 200, self._deny_response(
+            self._respond(flow, 403, self._deny_response(
                 domain, llm_reason or "denied by the llm decider agent; no reason provided",
                 decided_by,
             ))
@@ -488,7 +499,7 @@ class PolicyApi:
         # as a malformed response and DENY — fail-closed — rather than
         # letting ``_expires_at`` collapse it to a permanent grant.
         if ttl < 0:
-            self._respond(flow, 200, self._deny_response(
+            self._respond(flow, 403, self._deny_response(
                 domain,
                 "denied: malformed decider response (negative ttl_seconds)",
                 decided_by,
@@ -1013,6 +1024,19 @@ class PolicyApi:
         )
         flow.metadata["agentcage_control"] = True
 
+    def _version(self) -> str:
+        """agentcage version for the introspection payloads.
+
+        ``AGENTCAGE_VERSION`` is set on the egress by every backend; the
+        proxy-config fallback keeps the field populated on an egress
+        started before that env var was plumbed through (the addon
+        hot-reloads config.yaml, so it converges without a rebuild).
+        """
+        env = os.environ.get("AGENTCAGE_VERSION", "").strip()
+        if env:
+            return env
+        return str(self.proxy_cfg.get("agentcage_version", "") or "")
+
     def _audit_event(self, kind: str, extra: dict) -> None:
         entry = {"kind": kind, "ts": _now_iso()}
         entry.update(extra)
@@ -1026,7 +1050,7 @@ class PolicyApi:
         # timestamp (empty when permanent). ``reason`` is the decider agent's
         # risk-assessment record (the audit trail).
         return {
-            "id": None, "status": "granted", "domain": domain,
+            "id": _new_request_id(), "status": "granted", "domain": domain,
             "reason": reason, "expires_at": expires_at,
             "ttl_seconds": ttl,
             "decided_by": decided_by,
@@ -1041,7 +1065,7 @@ class PolicyApi:
         # always true for a hook decision — a better-justified request may
         # succeed, subject to the per-cage rate limit.
         return {
-            "id": None, "status": "denied", "domain": domain,
+            "id": _new_request_id(), "status": "denied", "domain": domain,
             "reason": reason,
             "suggestion": reason,
             "retryable": True,
