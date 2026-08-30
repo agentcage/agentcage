@@ -21,6 +21,7 @@ import pytest
 from click.testing import CliRunner
 
 from agentcage.cli import main
+from agentcage.config import load_config, valid_domain, validate_config
 
 
 def _runner():
@@ -142,6 +143,181 @@ class TestManualPromotePreservesTtl:
         assert "x.com" in saved["domains"]["allow"]
         assert "expires" not in saved["domains"] or \
             "x.com" not in saved["domains"]["expires"]
+
+
+# ── Fix: un-normalized domain appended to domains.allow (MEDIUM) ────────
+
+
+class TestPromoteNormalizesDomain:
+    """Both promote paths validated the LOWERCASED form (``dl = d.lower()``)
+    but appended the RAW original — so an uppercase (or, pre-Fix-2,
+    newline-bearing) overlay entry landed in cage.yaml, which
+    ``validate_config`` then REJECTED (the regex is lowercase-only), making
+    the cage's own config unparseable. The appended value must be the
+    CANONICAL form: lowercased, trailing dots stripped, newline-free by
+    construction."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_watch_promotes_uppercase_as_lowercase(self, mock_state, mock_apply):
+        """An overlay entry whose ``domain`` is uppercase (the overlay is
+        host-writable, so casing is not guaranteed) promotes into
+        ``domains.allow`` as the lowercase canonical form."""
+        # Use the REAL validator so the test also confirms the lowered form
+        # is genuinely valid (not just that the append happened).
+        mock_state.valid_domain.side_effect = valid_domain
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_grants.return_value = [{
+            "domain": "API.Example.com",
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "",
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+
+        saved = mock_apply.call_args[0][1]
+        allow = saved["domains"]["allow"]
+        # The appended value is the canonical lowercase form, NOT the raw
+        # uppercase overlay value.
+        assert "api.example.com" in allow
+        assert "API.Example.com" not in allow
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_manual_promote_uppercase_as_lowercase(
+        self, mock_state, mock_apply, mock_backend
+    ):
+        """``grants promote API.Example.com`` stores the canonical lowercase
+        form in the baseline (the operator's raw argument is not appended
+        verbatim)."""
+        mock_state.valid_domain.side_effect = valid_domain
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_grants.return_value = [{
+            "domain": "api.example.com",
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "",
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+        mock_backend.return_value.is_running.return_value = False
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "promote", "API.Example.com"])
+        assert result.exit_code == 0, result.output
+
+        saved = mock_apply.call_args[0][1]
+        allow = saved["domains"]["allow"]
+        assert "api.example.com" in allow
+        assert "API.Example.com" not in allow
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_watch_rejects_newline_bearing_overlay_entry(
+        self, mock_state, mock_apply
+    ):
+        """An overlay entry whose ``domain`` ends with a newline is rejected
+        (the addon's request path would have rejected it at grant time, but
+        the overlay is host-writable so the watcher must too): not promoted,
+        not removed from the overlay, and audited once as
+        ``policy_grant_rejected``."""
+        mock_state.valid_domain.side_effect = valid_domain
+        malicious = "evil.com\n"
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_grants.return_value = [{
+            "domain": malicious,
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2030-01-01T00:10:00+00:00",  # future → pending
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+
+        # Not promoted, not removed.
+        mock_apply.assert_not_called()
+        mock_state.save_grants.assert_not_called()
+        audits = [c.args[1]
+                  for c in mock_state.append_policy_audit.call_args_list]
+        rejected = [a for a in audits
+                    if a.get("kind") == "policy_grant_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["reason"] == "invalid domain syntax"
+
+
+class TestPromoteRoundTripValidates:
+    """Round-trip guard for the regression the finding describes: after a
+    promote of a mixed-case entry, the resulting cage.yaml's ``domains.allow``
+    must pass its OWN ``validate_config`` — pre-fix an uppercase entry landed
+    in the file and the cage's config became unparseable."""
+
+    @staticmethod
+    def _round_trip_validate(saved_raw, tmp_path):
+        """Dump the saved raw config to a file and load+validate it."""
+        import yaml
+        # load_config requires ``dns_servers`` (autodetect fails in CI); the
+        # watcher's raw fixture omits it, so ensure it is present.
+        raw = dict(saved_raw)
+        raw.setdefault("dns_servers", ["1.1.1.1"])
+        p = tmp_path / "round-trip.yaml"
+        p.write_text(yaml.safe_dump(raw))
+        cfg = load_config(str(p))
+        validate_config(cfg)  # must not raise
+        return cfg
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_watch_promote_yields_self_validating_config(
+        self, mock_state, mock_apply, tmp_path
+    ):
+        mock_state.valid_domain.side_effect = valid_domain
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_grants.return_value = [{
+            "domain": "API.Example.com",
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "",
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"])
+        assert result.exit_code == 0, result.output
+
+        saved = mock_apply.call_args[0][1]
+        cfg = self._round_trip_validate(saved, tmp_path)
+        assert cfg.domains.allow == ["anthropic.com", "api.example.com"]
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_manual_promote_yields_self_validating_config(
+        self, mock_state, mock_apply, mock_backend, tmp_path
+    ):
+        mock_state.valid_domain.side_effect = valid_domain
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_grants.return_value = [{
+            "domain": "api.example.com",
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "",
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+        mock_backend.return_value.is_running.return_value = False
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "promote", "API.Example.com"])
+        assert result.exit_code == 0, result.output
+
+        saved = mock_apply.call_args[0][1]
+        cfg = self._round_trip_validate(saved, tmp_path)
+        assert cfg.domains.allow == ["anthropic.com", "api.example.com"]
 
 
 def _make_cfg():

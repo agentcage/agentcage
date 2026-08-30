@@ -48,7 +48,7 @@ _VALID_SECRET_SCOPES = ("auto", "user", "system")
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)"
     r"([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
-    r"(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+    r"(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\Z"
 )
 
 
@@ -58,8 +58,21 @@ def valid_domain(domain: str) -> bool:
     Rejects anything that is not a plain dotted hostname — in particular
     strings containing newlines, slashes, or other characters that would
     inject additional directives when interpolated into dnsmasq config.
+
+    The anchor is ``\\Z`` (absolute end-of-string), not ``$``: Python's ``$``
+    matches immediately before ONE trailing newline, so ``"evil.com\\n"``
+    would otherwise pass validation and render as a split dnsmasq directive
+    (``server=/evil.com/`` + a newline + the upstream on its own line) that
+    fails ``dnsmasq --test`` — persistent per-cage config corruption. The
+    whitespace guard below is defence-in-depth (the char classes already
+    exclude it mid-string, but make it explicit so a future regex tweak
+    can't silently re-open the injection).
     """
-    return isinstance(domain, str) and bool(DOMAIN_RE.match(domain))
+    return (
+        isinstance(domain, str)
+        and not any(c.isspace() for c in domain)
+        and bool(DOMAIN_RE.match(domain))
+    )
 
 
 @dataclass
