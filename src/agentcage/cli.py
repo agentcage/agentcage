@@ -2050,9 +2050,15 @@ def cage_start(name: str):
         podman = Podman()
         _ensure_patches(podman)
 
-        # Refresh env:/cmd: secrets before starting (they may have changed)
-        from agentcage.secret_resolver import resolve_and_populate
-        resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
+        # Refresh env:/cmd: secrets before starting (they may have changed).
+        # Container only — matching `cage create`. A vm cage's secrets live
+        # in the GUEST podman store; the host store is the wrong target (and
+        # on a macOS host there is no host podman at all, so this raised).
+        # backends.vm._resolve_source_secrets does the equivalent guest-side
+        # during _deploy_cage.
+        if cfg.isolation == "container":
+            from agentcage.secret_resolver import resolve_and_populate
+            resolve_and_populate(podman, cfg, name, state.deployment_dir(name))
 
         # Regenerate derived files from cage.yaml so any edits made while
         # the cage was stopped are applied on the next start. The dns

@@ -746,6 +746,17 @@ class VmBackend:
         with Phase("deploy.pending_secrets", cage=name):
             self._create_pending_secrets(name, inst)
 
+        # Resolve env:/cmd: `source:` secrets straight into the GUEST store.
+        # The container backend gets these from cli's resolve_and_populate,
+        # which is gated to isolation == "container"; and _bridge_secrets
+        # only mirrors an existing HOST podman store, which a macOS host
+        # does not have. Without this, a `source:`-schemed secret — most
+        # visibly domains.auto's decider api_key — is referenced by the
+        # egress unit but never created, and the egress dies at start with
+        # `no such secret`, taking the whole cage down.
+        with Phase("deploy.source_secrets", cage=name):
+            self._resolve_source_secrets(name, inst, config)
+
         # Build container images and pull cage image inside the VM
         self.build_artifacts(config, name)
 
@@ -892,6 +903,110 @@ class VmBackend:
         finally:
             # Always clean up secrets file, even on error
             secrets_file.unlink(missing_ok=True)
+
+    def _resolve_source_secrets(
+        self, name: str, inst: LimaInstance, config,
+    ) -> None:
+        """Resolve ``source:``-schemed secrets into the guest podman store.
+
+        Mirrors ``secret_resolver.resolve_and_populate`` but writes into the
+        VM rather than a host podman store, so it works on a macOS host
+        (which has no host podman to bridge from). Best-effort per secret:
+        one unresolvable source warns rather than aborting the deploy, and
+        the egress's own ExecStartPre tolerates a missing staged file — the
+        decider then fails closed, which is the designed posture.
+        """
+        if config is None:
+            # _deploy_cage is also reached on paths that have no live Config
+            # (restart//reconcile); there is nothing to resolve without one,
+            # and the already-created guest secrets stay valid.
+            return
+
+        from agentcage import state as _state
+        from agentcage.secret_resolver import ResolveAction, resolve
+
+        sources: list[tuple[str, str]] = []
+        for rule in (config.secret_injection or []):
+            if rule.source:
+                sources.append((rule.env, rule.source))
+        for relay in (config.protocol_relays or []):
+            for src in (relay.auth.user_source, relay.auth.password_source):
+                scheme, _, var = (src or "").partition(":")
+                if scheme and var:
+                    sources.append((var, src))
+        auto = getattr(getattr(config, "domains", None), "auto", None)
+        if auto is not None and getattr(auto, "enable", False):
+            src = auto.decider.agent.api_key or ""
+            scheme, _, var = src.partition(":")
+            if scheme and var:
+                sources.append((var, src))
+
+        seen: set[str] = set()
+        state_dir = _state.deployment_dir(name)
+        for env_name, source in sources:
+            if env_name in seen:
+                continue
+            seen.add(env_name)
+            try:
+                result = resolve(source, env_name, state_dir)
+            except ValueError as e:
+                click.echo(
+                    f"warning: could not resolve secret {env_name!r} "
+                    f"({source.partition(':')[0]}: source): {e}",
+                    err=True,
+                )
+                continue
+            if result.action != ResolveAction.RESOLVED:
+                continue
+            full = f"{name}.{env_name}"
+            try:
+                inst.exec(["podman", "secret", "rm", full], check=False)
+                inst.exec(
+                    ["podman", "secret", "create", full, "-"],
+                    input=result.value,
+                )
+            except Exception as e:
+                click.echo(
+                    f"warning: failed to create secret {full} in the VM: {e}",
+                    err=True,
+                )
+
+        # Store-held values (`agentcage secret set`, no `source:` scheme).
+        # On a macOS host these live in the login keychain — _bridge_secrets
+        # only mirrors a host PODMAN store, which macOS does not have, so
+        # without this the value never reaches the guest.
+        try:
+            from agentcage.secret_store import SecretStoreError, resolve_store
+            from agentcage.services import expected_secrets
+            store = resolve_store(config)
+        except (SecretStoreError, Exception):
+            return
+        wanted = list(expected_secrets(config))
+        if auto is not None and getattr(auto, "enable", False):
+            _, _, var = (auto.decider.agent.api_key or "").partition(":")
+            if var and var not in wanted:
+                wanted.append(var)
+        for env_name in wanted:
+            if env_name in seen:
+                continue
+            try:
+                value = store.get(name, env_name, state_dir=state_dir)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            seen.add(env_name)
+            full = f"{name}.{env_name}"
+            try:
+                inst.exec(["podman", "secret", "rm", full], check=False)
+                inst.exec(
+                    ["podman", "secret", "create", full, "-"], input=value,
+                )
+            except Exception as e:
+                click.echo(
+                    f"warning: failed to create secret {full} in the VM: {e}",
+                    err=True,
+                )
 
     def _bridge_secrets(self, name: str, inst: LimaInstance) -> None:
         """Copy secrets from the host into the VM's Podman store.
