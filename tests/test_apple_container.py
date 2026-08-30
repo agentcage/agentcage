@@ -4202,8 +4202,13 @@ def test_install_grants_plist_writes_watcher_xml(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "_state_dir",
                         lambda name: tmp_path / f"state-{name}")
     monkeypatch.setattr("os.getuid", lambda: 501)
+    # ``_install_grants_plist`` delegates to the shared
+    # ``agentcage.watcher.install_grants_watcher_plist``, which probes the
+    # gui domain via the shared ``watcher._gui_domain_reachable`` (the
+    # per-backend copy was removed as a round-10 extraction leftover).
+    # Patch the shared probe so the install takes the reachable branch.
     with patch("shutil.which", return_value="/opt/agentcage"), \
-         patch.object(backend, "_gui_domain_reachable", return_value=True), \
+         patch("agentcage.watcher._gui_domain_reachable", return_value=True), \
          patch("subprocess.run",
                return_value=type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()):
         backend._install_grants_plist("demo")
@@ -4346,3 +4351,151 @@ def test_render_egress_config_includes_decider_provider_host(tmp_path, monkeypat
     # dns-allowlist.conf (the --servers-file) must also include it.
     allowlist_conf = (tmp_path / "dns-allowlist.conf").read_text()
     assert "server=/openrouter.ai/1.1.1.1" in allowlist_conf, allowlist_conf
+
+
+# ── decider api_key staging: env: vs systemd-creds: (apple parity) ────────
+# Round-10 finding 3: ``generate_units`` collects the decider api_key's
+# VARIABLE NAME into ``relay_secret_envs`` (correct for ``env:NAME``) but
+# discarded the source scheme, so a ``systemd-creds:NAME`` key was staged
+# identically to an ``env:NAME`` key. On apple the staging resolves the
+# value by NAME from the configured secret store (``secret set`` is
+# scheme-agnostic on apple and stores the cleartext under NAME in the
+# keychain / legacy pending_secrets.json), and the bind-mount file
+# ``secrets_dir/NAME`` is the apple channel the addon's ``_read_secret``
+# reads at ``/home/acproxy/secrets/NAME`` — the apple equivalent of the
+# container backend's podman ``Secret=`` env. These tests pin that BOTH
+# schemes produce the file-based staging, and that the source scheme is now
+# recorded in the unit JSON (so the missing-value warning can name the
+# decider key accurately instead of mislabeling it a relay credential).
+
+
+def _decider_cfg(api_key):
+    """A minimal apple-container Config with domains.auto enabled."""
+    from agentcage.config import (
+        DomainsAutoConfig, DeciderConfig, AgentDeciderConfig,
+    )
+    cfg = Config(name="demo", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.domains.mode = "allowlist"
+    cfg.domains.allow = ["anthropic.com"]
+    cfg.domains.auto = DomainsAutoConfig(
+        enable=True,
+        decider=DeciderConfig(kind="agent",
+                              agent=AgentDeciderConfig(provider="openrouter",
+                                                       model="m", api_key=api_key)),
+    )
+    return cfg
+
+
+class TestDeciderApiKeyStagingScheme:
+    def test_generate_units_records_systemd_creds_source(self):
+        """``generate_units`` records the full ``systemd-creds:NAME`` source
+        in ``decider_api_key_source`` (pre-fix only the bare NAME was
+        collected into ``relay_secret_envs``)."""
+        cfg = _decider_cfg("systemd-creds:POLICY_LLM_KEY")
+        meta = json.loads(
+            AppleContainerBackend().generate_units(cfg, "/c", "/p", "demo")["demo.json"]
+        )
+        assert meta["decider_api_key_source"] == "systemd-creds:POLICY_LLM_KEY"
+        assert "POLICY_LLM_KEY" in meta["relay_secret_envs"]
+        # The decider key must NOT leak into the cage workload's secret_envs
+        # (it is egress-only, never `-e`'d to the cage).
+        assert "POLICY_LLM_KEY" not in meta["secret_envs"]
+
+    def test_generate_units_records_env_source(self):
+        cfg = _decider_cfg("env:OPENROUTER_API_KEY")
+        meta = json.loads(
+            AppleContainerBackend().generate_units(cfg, "/c", "/p", "demo")["demo.json"]
+        )
+        assert meta["decider_api_key_source"] == "env:OPENROUTER_API_KEY"
+        assert "OPENROUTER_API_KEY" in meta["relay_secret_envs"]
+
+    def test_generate_units_no_decider_source_when_auto_disabled(self):
+        cfg = Config(name="demo", isolation="apple-container")
+        cfg.container.image = "x"
+        meta = json.loads(
+            AppleContainerBackend().generate_units(cfg, "/c", "/p", "demo")["demo.json"]
+        )
+        assert meta["decider_api_key_source"] == ""
+        assert meta["relay_secret_envs"] == []
+
+    def _stage(self, tmp_path, monkeypatch, *, api_key, seed_name, seed_value):
+        """Drive ``_stage_secrets`` directly with a plaintext backend +
+        seeded pending_secrets.json (mirrors how ``secret set`` on apple
+        stores the cleartext under NAME, scheme-agnostic)."""
+        import agentcage.state as _state
+        monkeypatch.setattr(_state, "_DEPLOYMENTS_DIR", tmp_path / "cages")
+        backend = AppleContainerBackend()
+        meta = json.loads(
+            AppleContainerBackend().generate_units(
+                _decider_cfg(api_key), "/c", "/p", "demo")["demo.json"]
+        )
+        # The plaintext backend (ApplePlaintextStore) reads pending_secrets.json.
+        meta["secrets_backend"] = "plaintext"
+        deploy_dir = _state.deployment_dir("demo")
+        deploy_dir.mkdir(parents=True, exist_ok=True)
+        (deploy_dir / "pending_secrets.json").write_text(
+            json.dumps([[seed_name, seed_value]])
+        )
+        secrets_dir = tmp_path / "secrets"
+        monkeypatch.setattr(backend, "secrets_dir", lambda _n: secrets_dir)
+        staged = backend._stage_secrets("demo", meta)
+        return backend, meta, secrets_dir, staged
+
+    def test_systemd_creds_api_key_produces_file_based_staging(
+        self, tmp_path, monkeypatch,
+    ):
+        """``systemd-creds:NAME`` decider api_key → ``_stage_secrets`` writes
+        the cleartext to ``secrets_dir/NAME`` so the addon's ``_read_secret``
+        finds it at ``/home/acproxy/secrets/NAME`` (the apple channel that
+        stands in for the container backend's podman ``Secret=`` env)."""
+        _backend, meta, secrets_dir, staged = self._stage(
+            tmp_path, monkeypatch,
+            api_key="systemd-creds:POLICY_LLM_KEY",
+            seed_name="POLICY_LLM_KEY", seed_value="sk-decider-real",
+        )
+        # File staged 0600 with the real value.
+        f = secrets_dir / "POLICY_LLM_KEY"
+        assert f.is_file(), sorted(secrets_dir.iterdir())
+        assert f.read_text() == "sk-decider-real"
+        assert oct(f.stat().st_mode & 0o777) == "0o600"
+        # The decider key is egress-only: it is NOT in the returned
+        # ``staged`` set (that set drives which ``-e NAME={{NAME}}`` flags
+        # land on the cage workload — relay/decider creds never do).
+        assert "POLICY_LLM_KEY" not in staged
+        assert staged == set()
+
+    def test_env_api_key_staging_unchanged(self, tmp_path, monkeypatch):
+        """``env:NAME`` decider api_key stages identically (by NAME from the
+        configured store) — the source scheme is decorative on apple, so the
+        tightening for ``systemd-creds:`` must not perturb the ``env:`` path."""
+        _backend, meta, secrets_dir, staged = self._stage(
+            tmp_path, monkeypatch,
+            api_key="env:OPENROUTER_API_KEY",
+            seed_name="OPENROUTER_API_KEY", seed_value="sk-env-real",
+        )
+        f = secrets_dir / "OPENROUTER_API_KEY"
+        assert f.is_file()
+        assert f.read_text() == "sk-env-real"
+        assert oct(f.stat().st_mode & 0o777) == "0o600"
+        assert "OPENROUTER_API_KEY" not in staged
+        assert staged == set()
+
+    def test_missing_systemd_creds_api_key_warns_decider_not_relay(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """When the decider key value isn't provided, the warning must name
+        the decider api_key (and the 503 fail-closed consequence) rather than
+        mislabeling it a ``protocol_relays env`` credential."""
+        _backend, meta, secrets_dir, staged = self._stage(
+            tmp_path, monkeypatch,
+            api_key="systemd-creds:POLICY_LLM_KEY",
+            seed_name="UNRELATED", seed_value="x",  # NAME not seeded
+        )
+        assert not (secrets_dir / "POLICY_LLM_KEY").exists()
+        err = capsys.readouterr().err
+        assert "decider.agent.api_key" in err
+        assert "POLICY_LLM_KEY" in err
+        assert "503" in err
+        # Must NOT be mislabeled as a relay credential.
+        assert "protocol_relays env" not in err

@@ -37,14 +37,17 @@ _BUILTIN_INSPECTOR_NAMES = frozenset({
 
 _VALID_SECRET_SCOPES = ("auto", "user", "system")
 
-# Domain-syntax validator for host-side code paths (domains.allow parse here,
-# the grants watcher's promote step in cli.py, re-exported via state.py).
-# Kept in sync with the in-container copy in data/proxy/policy_api.py
-# (_DOMAIN_RE) — the addon cannot import this module, so the regex is
-# deliberately duplicated. It is the gate that stops overlay strings (which
-# cross the trust boundary via the grants dir) from being rendered into
-# dnsmasq directives unvalidated: a value containing '\n' or '/' would emit
-# extra ``server=`` lines in dns-allowlist.conf.
+# Domain-syntax validator for host-side code paths (domains.allow / .block /
+# .passthrough parse here, the grants watcher's promote step in cli.py,
+# re-exported via state.py). Kept in sync with the in-container copy in
+# data/proxy/policy_api.py (_DOMAIN_RE + _valid_domain): the addon cannot
+# import this module, so the REGEX is deliberately duplicated, and the
+# extra checks beyond the regex (IP-literal rejection + last-label length
+# >= 2) are mirrored here too so the two gates agree on what a "valid
+# domain" is. It is the gate that stops overlay strings (which cross the
+# trust boundary via the grants dir) from being rendered into dnsmasq
+# directives unvalidated: a value containing '\n' or '/' would emit extra
+# ``server=`` lines in dns-allowlist.conf.
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)"
     r"([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
@@ -59,6 +62,23 @@ def valid_domain(domain: str) -> bool:
     strings containing newlines, slashes, or other characters that would
     inject additional directives when interpolated into dnsmasq config.
 
+    Mirrors the in-container addon's ``_valid_domain`` (data/proxy/
+    policy_api.py) so a domain the host accepts at parse time is the same
+    shape the addon accepts at grant time. Two checks beyond the regex
+    (which the regex alone does NOT enforce) are ported from the addon:
+
+    * **IP-literal rejection.** The regex's char classes are all-digits-
+      friendly, so ``1.2.3.4`` and ``8.8.8.8`` match the dotted-label
+      shape. An IP literal in ``domains.allow`` is nonsensical (dnsmasq
+      ``server=/`` keys are DNS names, not addresses) and would be a
+      confusing no-op, so reject it via ``ipaddress.ip_address``.
+    * **Last label length >= 2.** The regex permits a single-character
+      last label (``[a-z0-9](?:...)?`` with the optional group unmatched),
+      so ``x.c`` passes the shape test. A single-letter/bare TLD is not a
+      real public suffix and makes an overly-broad grant; require >= 2
+      chars (``com``, ``io``, ``uk``-style — bare ccTLDs like ``.c`` are
+      not real TLDs).
+
     The anchor is ``\\Z`` (absolute end-of-string), not ``$``: Python's ``$``
     matches immediately before ONE trailing newline, so ``"evil.com\\n"``
     would otherwise pass validation and render as a split dnsmasq directive
@@ -68,11 +88,25 @@ def valid_domain(domain: str) -> bool:
     exclude it mid-string, but make it explicit so a future regex tweak
     can't silently re-open the injection).
     """
-    return (
-        isinstance(domain, str)
-        and not any(c.isspace() for c in domain)
-        and bool(DOMAIN_RE.match(domain))
-    )
+    if (
+        not isinstance(domain, str)
+        or any(c.isspace() for c in domain)
+        or not DOMAIN_RE.match(domain)
+    ):
+        return False
+    # Reject IP literals (v4/v6). IPv6 literals already fail the regex
+    # (``:`` is not in the char classes), but IPv4 literals like ``1.2.3.4``
+    # match the dotted-label shape, so reject them explicitly — mirroring
+    # the addon's ``ipaddress.ip_address`` check.
+    try:
+        ipaddress.ip_address(domain)
+        return False
+    except ValueError:
+        pass
+    # Last label must be >= 2 chars (rejects bare/single-letter TLDs like
+    # ``x.c``). The regex allows a 1-char last label; the addon enforces
+    # this separately, so mirror it here.
+    return len(domain.split(".")[-1]) >= 2
 
 
 @dataclass
@@ -1400,19 +1434,43 @@ def validate_config(config: Config) -> list[str]:
             "domains: cannot specify both 'allow' and 'block' lists"
         )
 
-    # Per-entry syntax validation for allow/block lists. The values flow
-    # verbatim into dnsmasq ``server=/`` directives (state.save_dns_allowlist)
-    # and the grants overlay, so a string containing a newline or slash would
-    # inject extra directives. The regex is lowercase-only on purpose: the
-    # DNS pipeline lowercases (``.rstrip(".").lower()`` in cli) but the
-    # config value itself is rendered unmodified — being strict here is safe
-    # (no scaffold/test uses uppercase domains) and keeps the trust boundary
-    # at parse time rather than at render time. ``valid_domain`` is the same
-    # validator the grants watcher and the in-container addon use.
+    # Per-entry syntax validation for allow/block/passthrough lists AND the
+    # domains.expires keys. All of these flow verbatim into the same dnsmasq
+    # ``server=/`` rendering chain — ``domains.allow``/``block`` directly via
+    # state.save_dns_allowlist, ``domains.passthrough`` via quadlets'
+    # ``_effective_dns_allowlist`` / the in-container addon's ``_apply_
+    # passthrough`` (both ``re.escape(domain)`` the entry into a mitmproxy
+    # ``--ignore-hosts`` regex AND merge it into the DNS allowlist so the
+    # bypassed host still resolves), and ``domains.expires`` KEYS are domains
+    # (per-domain expiry map; ``load_config`` already lowercases + strips a
+    # trailing dot off the key). A string containing a newline or slash in
+    # ANY of these would inject extra directives or break the regex. The
+    # regex is lowercase-only on purpose: the DNS pipeline lowercases
+    # (``.rstrip(".").lower()`` in cli) but the config value itself is
+    # rendered unmodified — being strict here is safe (no scaffold/test uses
+    # uppercase domains) and keeps the trust boundary at parse time rather
+    # than at render time. ``valid_domain`` is the same validator the grants
+    # watcher and the in-container addon use.
+    #
+    # ``domains.passthrough`` entries are plain dotted hostnames (e.g.
+    # ``whatsapp.com``) — the consumers add the subdomain-wildcard prefix
+    # themselves (``^(.+\.)?<escaped>``), so NO leading-dot / bare-TLD
+    # wildcard form is accepted at the config layer; a ``.example.com`` or
+    # bare ``com`` entry would be escaped verbatim and silently fail to
+    # match the intended hosts. ``valid_domain`` therefore applies directly.
     _bad_allow = [d for d in config.domains.allow if not valid_domain(d)]
     _bad_block = [d for d in config.domains.block if not valid_domain(d)]
-    if _bad_allow or _bad_block:
-        offenders = ", ".join(repr(d) for d in (_bad_allow + _bad_block))
+    _bad_passthrough = [
+        d for d in config.domains.passthrough if not valid_domain(d)
+    ]
+    _bad_expires = [
+        k for k in config.domains.expires if not valid_domain(k)
+    ]
+    if _bad_allow or _bad_block or _bad_passthrough or _bad_expires:
+        offenders = ", ".join(
+            repr(d) for d in (_bad_allow + _bad_block + _bad_passthrough
+                              + _bad_expires)
+        )
         raise ValueError(
             f"invalid domain syntax: {offenders} — expected a plain "
             f"lowercase dotted hostname (e.g. 'api.example.com')"

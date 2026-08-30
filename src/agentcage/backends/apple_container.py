@@ -679,39 +679,6 @@ class AppleContainerBackend:
             os.path.expanduser(f"~/Library/LaunchAgents/io.agentcage.{name}.plist")
         )
 
-    def _gui_domain_reachable(self, uid: int) -> bool:
-        """Probe whether the `gui/<uid>` launchd domain is reachable now.
-
-        `~/Library/LaunchAgents/` plists live in the per-user *GUI* domain.
-        That domain is only addressable from a session that owns the
-        Aqua console (a local Terminal.app window, or a GUI login). Over
-        SSH the user session runs in the non-GUI `user/<uid>` context:
-        `launchctl bootstrap gui/<uid>` exits 0 but silently no-ops,
-        because the GUI domain isn't actually reachable from the SSH
-        context — so the cage never auto-starts and the operator gets a
-        misleading "installed" status. See issue #185.
-
-        We probe reachability by asking launchd to print the gui domain;
-        it returns non-zero ("Domain does not support specified action")
-        when the GUI session isn't reachable from the current context.
-
-        If `launchctl` isn't on PATH (a stripped/over-SSH environment) or
-        the `print` subcommand is absent on an old macOS, ``subprocess.run``
-        raises ``OSError``/``FileNotFoundError``. We treat "can't probe" the
-        same as "unreachable" — the plist file is already on disk (the real
-        persistence; see ``_install_launchd_plist``), so returning ``False``
-        skips the immediate-load with the honest informational message
-        rather than propagating an exception out of ``start()`` after a
-        successful container launch. See #185.
-        """
-        import subprocess as _sp
-        try:
-            probe = _sp.run(["launchctl", "print", f"gui/{uid}"],
-                            check=False, capture_output=True, text=True)
-        except OSError:
-            return False
-        return probe.returncode == 0
-
     def _install_launchd_plist(self, name: str) -> None:
         """Write + load the per-cage launchd plist.
 
@@ -776,7 +743,12 @@ class AppleContainerBackend:
         # by another user, `who -u` empty). Probe the domain first; if it
         # isn't reachable, skip the immediate-load and emit an honest
         # informational message instead of the pre-#185 silent no-op.
-        if not self._gui_domain_reachable(uid):
+        # The probe is the shared ``agentcage.watcher._gui_domain_
+        # reachable`` (identical implementation, also used by the grants-
+        # watcher plist install) — the per-backend copy was a round-9
+        # extraction leftover; delegate so there's one source of truth.
+        from agentcage.watcher import _gui_domain_reachable
+        if not _gui_domain_reachable(uid):
             click.echo(
                 f"note: plist written to {plist}; autostart will activate at "
                 f"next GUI login (immediate-load not available from this "
@@ -1339,12 +1311,32 @@ class AppleContainerBackend:
                     relay_secret_envs.append(var)
         # domains.auto decider api_key — same egress-only invariant as a relay
         # credential: staged into the secrets bind mount, never `-e`'d to the
-        # cage workload. Mirrors quadlets.py's proxy_secrets staging.
+        # cage workload. Mirrors quadlets.py's proxy_secrets staging. We carry
+        # the api_key's full SOURCE scheme (``env:NAME`` / ``systemd-creds:NAME``)
+        # into the unit JSON as ``decider_api_key_source`` so ``_stage_secrets``
+        # can stage it scheme-appropriately — pre-this-fix only the VARIABLE
+        # NAME was collected, so a ``systemd-creds:NAME`` key was staged
+        # identically to an ``env:NAME`` key. On apple that happens to resolve
+        # (``secret set`` is scheme-agnostic and stores the cleartext under NAME
+        # in the keychain/plaintext store, which ``_stage_secrets`` reads by
+        # NAME — see ``_stage_secrets``), but recording the scheme makes the
+        # ``systemd-creds:`` path explicit instead of a silent same-as-env:
+        # no-op, and lets the missing-value warning name the decider key
+        # accurately rather than mislabeling it a relay credential. ``cmd:`` is
+        # rejected at config time, so only ``env:`` / ``systemd-creds:`` reach
+        # here. (The container backend's quadlet path adds a ``systemd-creds:``
+        # key to ``creds_secrets`` for an ExecStartPre decrypt; apple has no
+        # systemd-creds runtime, so the apple equivalent is the keychain-held
+        # cleartext staged into the bind-mount file — see ``_stage_secrets``.)
         _auto = getattr(getattr(config, "domains", None), "auto", None)
+        decider_api_key_source = ""
         if _auto is not None and getattr(_auto, "enable", False):
-            _scheme, _, _var = (_auto.decider.agent.api_key or "").partition(":")
-            if _scheme and _var and _var not in relay_secret_envs:
-                relay_secret_envs.append(_var)
+            _api_key = _auto.decider.agent.api_key or ""
+            _scheme, _, _var = _api_key.partition(":")
+            if _scheme and _var:
+                decider_api_key_source = _api_key
+                if _var not in relay_secret_envs:
+                    relay_secret_envs.append(_var)
         # Resolve cage.yaml's nested ``ports.*`` into the three int lists the
         # egress supervisor's Step A turns into iptables rules. Computed HERE
         # (at unit-generation time, when we have a live Config) and persisted
@@ -1365,6 +1357,12 @@ class AppleContainerBackend:
                 "secret_envs": secret_envs,
                 "secret_env_placeholders": secret_env_placeholders,
                 "relay_secret_envs": relay_secret_envs,
+                # domains.auto decider api_key source scheme (``env:NAME`` /
+                # ``systemd-creds:NAME``) — see the staging comment above.
+                # ``_stage_secrets`` reads this to stage the decider key
+                # scheme-appropriately and emit an accurate missing-value
+                # warning. Empty when domains.auto is disabled.
+                "decider_api_key_source": decider_api_key_source,
                 # Secret backend choice, baked in so start() (which is
                 # meta-driven, no Config) can resolve the right store.
                 "secrets_backend": config.secrets.backend,
@@ -2029,6 +2027,16 @@ class AppleContainerBackend:
         placeholders = meta.get("secret_env_placeholders") or {}
         secret_envs = meta.get("secret_envs") or list(placeholders.keys())
         relay_secret_envs = meta.get("relay_secret_envs") or []
+        # domains.auto decider api_key source (``env:NAME`` /
+        # ``systemd-creds:NAME``). The decider key is ALSO in
+        # ``relay_secret_envs`` (added by ``generate_units``) so it is
+        # staged into the bind mount like a relay credential; we parse the
+        # source here only to (a) stage it scheme-appropriately and (b)
+        # name it accurately in the missing-value warning instead of
+        # mislabeling it a relay credential. ``cmd:`` is rejected at config
+        # time, so only ``env:`` / ``systemd-creds:`` reach here.
+        _decider_src = meta.get("decider_api_key_source") or ""
+        _decider_name = _decider_src.partition(":")[2] if _decider_src else ""
         all_secret_envs = list(secret_envs) + [
             v for v in relay_secret_envs if v not in secret_envs
         ]
@@ -2055,6 +2063,29 @@ class AppleContainerBackend:
                 scope="auto",
             ),
         )
+        # NOTE on ``systemd-creds:`` staging (apple parity with the
+        # container backend). The container backend's quadlet path, for a
+        # ``systemd-creds:NAME`` decider key, adds NAME to ``creds_secrets``
+        # (a systemd ExecStartPre decrypts ``<state>/creds/NAME.cred``) and
+        # ``proxy_secrets`` (a podman ``Secret=`` directive exposes the value
+        # as env ``$NAME`` inside the proxy); the addon's ``_read_secret``
+        # then finds it via ``os.environ[NAME]``. Apple's runtime has neither
+        # systemd-creds nor a podman secret store, so the apple equivalent
+        # is: ``secret set`` is scheme-agnostic on apple (``cli.secret_set``
+        # calls ``_store_secret`` with NO source_scheme for the apple branch)
+        # and stores the cleartext under NAME in the keychain (or the legacy
+        # ``pending_secrets.json`` under ``secrets.backend: plaintext``).
+        # ``_stage_secrets`` retrieves it by NAME from that SAME store and
+        # writes it to ``secrets_dir/NAME``; the bind-mounted file is read by
+        # the addon's ``_read_secret`` at ``/home/acproxy/secrets/NAME`` —
+        # the apple channel that stands in for the container backend's podman
+        # ``Secret=`` env. So both ``env:NAME`` and ``systemd-creds:NAME``
+        # resolve identically here (by NAME from the configured store); the
+        # ``systemd-creds:`` scheme is effectively decorative on apple, and
+        # the value reaches the addon either way. We do NOT pass
+        # ``source_scheme="systemd-creds"`` to ``resolve_store`` here — that
+        # would select ``SystemdCredsStore`` (whose ``get`` raises on apple,
+        # where the systemd-creds binary is absent) and break staging.
         provided: dict[str, str] = {}
         try:
             store = resolve_store(cfg_shim)
@@ -2078,7 +2109,20 @@ class AppleContainerBackend:
         for env_name in all_secret_envs:
             value = provided.get(env_name)
             if value is None:
-                if env_name in relay_only:
+                if env_name == _decider_name and _decider_name:
+                    # The decider agent's api_key (egress-only). A missing
+                    # value means every domain-request fails closed with
+                    # 503 "llm provider not configured" — name it
+                    # accurately rather than as a relay credential.
+                    click.echo(
+                        f"warning: domains.auto.decider.agent.api_key env "
+                        f"{_decider_name!r} not provided via "
+                        f"--set-secret; the decider will fail closed (503 "
+                        f"'llm provider not configured') on every domain "
+                        f"request",
+                        err=True,
+                    )
+                elif env_name in relay_only:
                     click.echo(
                         f"warning: protocol_relays env {env_name!r} not "
                         f"provided via --set-secret; the relay will fail "

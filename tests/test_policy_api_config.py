@@ -452,3 +452,162 @@ class TestDomainNewlineAnchor:
             "    - github.com")))
         validate_config(cfg)  # must not raise
         assert cfg.domains.allow == ["api.example.com", "github.com"]
+
+
+# ── Fix 1: domains.passthrough / domains.expires syntax validation ──────
+
+
+class TestPassthroughSyntaxValidation:
+    """``domains.passthrough`` entries flow into the same dnsmasq rendering
+    chain as ``domains.allow`` (quadlets ``_effective_dns_allowlist`` merges
+    them into the DNS allowlist; the in-container addon's ``_apply_
+    passthrough`` escapes each entry into a mitmproxy ``--ignore-hosts``
+    regex). They were never syntax-validated, so a newline/slash-bearing
+    entry would inject extra ``server=`` directives or break the regex
+    silently. The consumers add the subdomain-wildcard prefix themselves
+    (``^(.+\\.)?<escaped>``), so passthrough entries are plain dotted
+    hostnames — NO leading-dot ``.example.com`` / bare-TLD wildcard form is
+    accepted at the config layer; ``valid_domain`` therefore applies
+    directly (no stripping)."""
+
+    @staticmethod
+    def _passthrough_body(*items, allow=("anthropic.com",)):
+        allows = "\n".join("    - " + d for d in allow)
+        passes = "\n".join(items)
+        return (
+            "domains:\n  allow:\n"
+            f"{allows}\n"
+            "  passthrough:\n"
+            f"{passes}\n"
+        )
+
+    def test_valid_passthrough_passes(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._passthrough_body(
+            "    - whatsapp.com", "    - api.example.com")))
+        validate_config(cfg)  # must not raise
+        assert cfg.domains.passthrough == ["whatsapp.com", "api.example.com"]
+
+    def test_invalid_passthrough_entry_rejected(self, tmp_path):
+        # A newline/slash-bearing entry would inject extra dnsmasq
+        # directives — reject at parse time, matching the allow/block style.
+        cfg = load_config(_write(tmp_path, self._passthrough_body(
+            "    - whatsapp.com",
+            '    - "bad\\ninjected/line"')))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_passthrough_error_message_names_offending_entry(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._passthrough_body(
+            '    - "bad/line"')))
+        with pytest.raises(ValueError, match="invalid domain syntax") as ei:
+            validate_config(cfg)
+        assert "bad/line" in str(ei.value)
+
+    def test_passthrough_ip_literal_rejected(self, tmp_path):
+        # An IP literal is nonsensical as a ``server=/`` key / ignore-hosts
+        # match; the tightened ``valid_domain`` rejects it.
+        cfg = load_config(_write(tmp_path, self._passthrough_body(
+            "    - 8.8.8.8")))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+
+class TestExpiresKeySyntaxValidation:
+    """``domains.expires`` KEYS are domains (the per-domain expiry map).
+    ``load_config`` lowercases + strips a trailing dot off each key, but
+    never validated the syntax — a newline/slash-bearing key would render
+    into a dnsmasq ``server=/`` directive when the watcher promotes the
+    entry. Validate every key with ``valid_domain``."""
+
+    @staticmethod
+    def _expires_body(allow, expires_yaml):
+        allows = "\n".join("    - " + d for d in allow)
+        return (
+            "domains:\n  allow:\n"
+            f"{allows}\n"
+            "  expires:\n"
+            f"{expires_yaml}\n"
+        )
+
+    def test_valid_expires_key_passes(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._expires_body(
+            ("anthropic.com",),
+            "    anthropic.com: \"2026-01-01T00:00:00+00:00\"")))
+        validate_config(cfg)  # must not raise
+        assert cfg.domains.expires == {"anthropic.com": "2026-01-01T00:00:00+00:00"}
+
+    def test_invalid_expires_key_rejected(self, tmp_path):
+        # A slash-bearing key would break the dnsmasq directive.
+        cfg = load_config(_write(tmp_path, self._expires_body(
+            ("anthropic.com",),
+            '    "bad/line": "2026-01-01T00:00:00+00:00"')))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_invalid_expires_key_alongside_valid_one(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._expires_body(
+            ("anthropic.com",),
+            "    anthropic.com: \"2026-01-01T00:00:00+00:00\"\n"
+            '    "evil.com\\n": "2026-01-01T00:00:00+00:00"')))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_expires_key_ip_literal_rejected(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._expires_body(
+            ("anthropic.com",),
+            "    1.2.3.4: \"2026-01-01T00:00:00+00:00\"")))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+
+# ── Fix 2: host valid_domain tightened to match the addon's _valid_domain ──
+
+
+class TestValidDomainTightening:
+    """The host ``valid_domain`` used to accept IP literals (``1.2.3.4``
+    matches the regex's all-digits labels) and single-character last labels
+    (``x.c``), while the in-container addon's ``_valid_domain`` rejected
+    both — despite the \"kept in sync\" comment. The host validator now
+    ports the addon's two extra checks (IP-literal rejection via
+    ``ipaddress.ip_address`` and last-label length >= 2) so the two gates
+    agree. The addon's copy is NOT changed."""
+
+    def test_ip_literal_v4_rejected(self):
+        assert valid_domain("1.2.3.4") is False
+
+    def test_ip_literal_v4_octets_rejected(self):
+        assert valid_domain("8.8.8.8") is False
+        assert valid_domain("255.255.255.255") is False
+
+    def test_ip_literal_v6_rejected(self):
+        assert valid_domain("::1") is False
+        assert valid_domain("2001:db8::1") is False
+
+    def test_single_char_tld_rejected(self):
+        # ``x.c`` passes the regex's dotted-label shape but a single-letter
+        # last label is not a real public suffix — mirror the addon.
+        assert valid_domain("x.c") is False
+
+    def test_two_char_tld_accepted(self):
+        assert valid_domain("a.co") is True
+        assert valid_domain("x.io") is True
+
+    def test_normal_domains_still_accepted(self):
+        for d in ("x.com", "evil.com", "api.example.com", "github.com"):
+            assert valid_domain(d) is True, d
+
+    def test_ip_literal_in_allow_rejected_by_validate_config(self, tmp_path):
+        # The tightened validator flows into the allow-list parse: an IP
+        # literal in domains.allow is now rejected at config time (pre-fix
+        # it passed ``valid_domain`` and would have rendered as a nonsense
+        # dnsmasq ``server=/1.2.3.4/`` key).
+        body = "domains:\n  allow:\n    - 1.2.3.4\n"
+        cfg = load_config(_write(tmp_path, body))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_single_char_tld_in_allow_rejected_by_validate_config(self, tmp_path):
+        body = "domains:\n  allow:\n    - x.c\n"
+        cfg = load_config(_write(tmp_path, body))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
