@@ -106,6 +106,80 @@ _ensure_log() {
 # without restarting the egress container.
 DNSMASQ_PID_FILE=/home/acdns/dnsmasq.pid
 
+#-- Servers-file rendering (baseline + policy-api grants) ------------------
+# dnsmasq re-reads ONLY the file named by --servers-file on SIGHUP; it never
+# re-reads its main config. That file is therefore the single seam for live
+# DNS changes, and we always render it into /run (tmpfs, writable) instead of
+# pointing dnsmasq at the read-only bind mount — so the same path can be
+# regenerated in place when the addon publishes a new grant.
+#
+# SERVERS_BASE    read-only operator baseline (bind-mounted, never mutated)
+# SERVERS_OUT     what dnsmasq actually reads
+# GRANTED_DOMAINS newline-delimited DOMAIN NAMES published by the addon
+#
+# The addon emits bare domain names, never `server=` directives: the upstream
+# for a granted zone is chosen HERE, from the same set the baseline uses. A
+# compromised addon can therefore name a zone but cannot choose where it is
+# forwarded — it cannot point a zone at a resolver it controls.
+SERVERS_BASE=/etc/agentcage/dns-allowlist.conf
+SERVERS_OUT=/run/agentcage/dns-allowlist.egress.conf
+GRANTED_DOMAINS=/home/acproxy/dns/granted
+
+# Per-branch rendering style, set before the first _render_servers_file call:
+#   replace — apple-container: each baseline zone's upstream is REPLACED by
+#             the vmnet gateway (host-tracking).
+#   prepend — container/vm: gateway-rewritten lines FIRST, baked resolver
+#             lines kept after as fallback (paired with --all-servers).
+_SF_STYLE=plain
+_SF_GW=""
+
+# Render SERVERS_OUT from SERVERS_BASE + GRANTED_DOMAINS. Atomic
+# (temp+rename) so dnsmasq can never read a half-written file, and so the
+# `-nt` check in the monitor loop flips only on a complete render.
+_render_servers_file() {
+  mkdir -p /run/agentcage 2>/dev/null || return 1
+  _sf_tmp="${SERVERS_OUT}.tmp"
+  : > "$_sf_tmp" || return 1
+
+  if [ -f "$SERVERS_BASE" ]; then
+    if [ -n "$_SF_GW" ] && [ "$_SF_STYLE" = "replace" ]; then
+      awk -F/ -v up="$_SF_GW" '/^server=\//{print "server=/" $2 "/" up}' \
+        "$SERVERS_BASE" >> "$_sf_tmp" || return 1
+    elif [ -n "$_SF_GW" ] && [ "$_SF_STYLE" = "prepend" ]; then
+      sed "s#/[^/]*\$#/$_SF_GW#" "$SERVERS_BASE" >> "$_sf_tmp" || return 1
+      cat "$SERVERS_BASE" >> "$_sf_tmp" || return 1
+    else
+      cat "$SERVERS_BASE" >> "$_sf_tmp" || return 1
+    fi
+  fi
+
+  # Granted zones. Upstreams: the gateway (when derivable) plus the baked
+  # resolvers the quadlet passed in. Deliberately NOT scraped from the
+  # rendered baseline — under full default-deny the baseline is EMPTY, and a
+  # grant must still resolve (that is the whole point of the feature).
+  if [ -s "$GRANTED_DOMAINS" ]; then
+    _sf_ups="$_SF_GW ${AGENTCAGE_DNS_UPSTREAMS:-}"
+    if [ -n "$(printf '%s' "$_sf_ups" | tr -d ' ')" ]; then
+      # Re-validate the domain syntax here even though the addon already
+      # does: this file is the one thing a lower-privileged uid writes into
+      # a root-rendered dnsmasq config, so it gets its own gate. Anything
+      # that is not a plain lowercase dotted hostname is dropped silently.
+      grep -E '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' \
+        "$GRANTED_DOMAINS" 2>/dev/null | sort -u | while read -r _sf_dom; do
+          [ -n "$_sf_dom" ] || continue
+          for _sf_up in $_sf_ups; do
+            [ -n "$_sf_up" ] || continue
+            printf 'server=/%s/%s\n' "$_sf_dom" "$_sf_up"
+          done
+        done >> "$_sf_tmp"
+    fi
+  fi
+
+  chmod 0644 "$_sf_tmp" 2>/dev/null || true
+  mv -f "$_sf_tmp" "$SERVERS_OUT" || return 1
+  return 0
+}
+
 # dnsmasq listen IP. We need to bind to a SPECIFIC IP rather than 0.0.0.0
 # in this two-network shape. Empirically `--listen-address=0.0.0.0` does
 # not respond to queries from the cage in rootless podman containers
@@ -301,13 +375,13 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
   _gw=$(printf '%s\n' "${_eth0_ip}" \
     | awk -F. 'NF==4 {print $1"."$2"."$3".1"}')
   mkdir -p /run/agentcage
+  _SF_STYLE=replace
+  _SF_GW="${_gw}"
   if [ -n "${_eth0_ip}" ] && [ -n "${_gw}" ] \
      && grep -vE '^(server=/|listen-address=)' /etc/agentcage/dnsmasq.conf \
           > /run/agentcage/dnsmasq.egress.conf 2>/dev/null \
-     && awk -F/ -v up="${_gw}" '/^server=\//{print "server=/" $2 "/" up}' \
-          /etc/agentcage/dns-allowlist.conf \
-          > /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; then
-    chmod 0644 /run/agentcage/dnsmasq.egress.conf /run/agentcage/dns-allowlist.egress.conf
+     && _render_servers_file; then
+    chmod 0644 /run/agentcage/dnsmasq.egress.conf
     log "step B: apple-container path — dnsmasq listen ${_eth0_ip}, forwarding allowlisted zones to vmnet gateway ${_gw} (host-tracking)"
     prlimit --as=$((256 * 1024 * 1024)) -- \
       setpriv --reuid=acdns --regid=acdns --clear-groups \
@@ -327,6 +401,13 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
     # its own local dnsmasq, which forwards here; a stale baked upstream
     # is recoverable with `cage update`).
     log "warn: egress DNS rewrite failed (eth0=${_eth0_ip:-?} gw=${_gw:-?}); using baked config"
+    # Still render the RUNTIME servers-file (plain copy of the baseline, no
+    # gateway rewrite) so live grant application has one writable target on
+    # every path — otherwise dnsmasq would read the read-only bind mount here
+    # and a grant could never be applied without a restart.
+    _SF_STYLE=plain
+    _SF_GW=""
+    _render_servers_file || log "warn: could not render runtime servers-file"
     prlimit --as=$((256 * 1024 * 1024)) -- \
       setpriv --reuid=acdns --regid=acdns --clear-groups \
               --bounding-set=-all,+net_bind_service --inh-caps=-all -- \
@@ -334,7 +415,7 @@ if [ -f /etc/agentcage/dnsmasq.conf ]; then
         /usr/sbin/dnsmasq -k \
           --pid-file="$DNSMASQ_PID_FILE" \
           --conf-file=/etc/agentcage/dnsmasq.conf \
-          --servers-file=/etc/agentcage/dns-allowlist.conf \
+          --servers-file="$SERVERS_OUT" \
       &
   fi
 elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
@@ -366,7 +447,7 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # the DEFAULT ROUTE, not <eth0-subnet>.1: the egress is dual-homed and
   # which NIC is eth0 is non-deterministic, and <name>-net is internal.
   _gw=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
-  _servers_file=/etc/agentcage/dns-allowlist.conf
+  _servers_file="$SERVERS_OUT"
   # --all-servers is UNCONDITIONAL. dnsmasq then queries every per-zone
   # upstream in parallel and prefers a positive answer over a public
   # resolver's NXDOMAIN — which is what lets a split-horizon apex (one only a
@@ -375,13 +456,17 @@ elif [ -f /etc/agentcage/dns-allowlist.conf ]; then
   # now resolves THROUGH this dnsmasq (the resolv.conf step below), so this
   # correctness covers the egress's own getaddrinfo, not just the cage's.
   _all_servers="--all-servers"
-  if [ -n "$_gw" ] && mkdir -p /run/agentcage 2>/dev/null \
-     && { sed "s#/[^/]*\$#/$_gw#" /etc/agentcage/dns-allowlist.conf; \
-          cat /etc/agentcage/dns-allowlist.conf; } \
-          > /run/agentcage/dns-allowlist.egress.conf 2>/dev/null; then
-    _servers_file=/run/agentcage/dns-allowlist.egress.conf
+  _SF_STYLE=prepend
+  _SF_GW="$_gw"
+  if [ -n "$_gw" ] && _render_servers_file; then
     log "step B: forwarding allowlisted zones via default-route gateway ${_gw} (host-tracking) + baked-resolver fallback"
   else
+    # No gateway (or the render failed): fall back to a plain copy of the
+    # baseline. Still the RUNTIME path, so grants stay live-applicable.
+    _SF_STYLE=plain
+    _SF_GW=""
+    _render_servers_file \
+      || log "warn: could not render runtime servers-file; DNS updates will need a restart"
     log "warn: could not derive default-route gateway; forwarding allowlisted zones to the baked dns_servers only (DNS may go stale on host network change)"
   fi
   # ``--no-hosts``: dnsmasq must NOT honor /etc/hosts inside the egress
@@ -610,7 +695,39 @@ log "step F: ready marker written; entering monitor loop"
 # propagation, so once either child dies the kill -0 fails on the next
 # iteration and we exit 1 — tini will then propagate the exit to the
 # container runtime.
+#
+# The loop also picks up policy-api grants. The addon (uid 200) cannot signal
+# dnsmasq (uid 201) — it has no CAP_KILL — so it publishes the granted zone
+# list to $GRANTED_DOMAINS and we render + SIGHUP here, as root. This adds a
+# single `-nt` comparison to an iteration that already exists and already
+# sleeps 1s for liveness: no new process, no new service, and no new wakeups.
+# It replaces the host-side grants watcher (a systemd user unit on Linux, a
+# launchd plist on macOS) entirely.
+#
+# `-nt` rather than a stored mtime: _render_servers_file rewrites SERVERS_OUT,
+# so a successful render makes the condition false again by construction, and
+# a failed render leaves it true and simply retries on the next iteration.
 while kill -0 "$DNSMASQ_PID" 2>/dev/null && kill -0 "$MITMPROXY_PID" 2>/dev/null; do
+  if [ -f "$GRANTED_DOMAINS" ] && [ "$GRANTED_DOMAINS" -nt "$SERVERS_OUT" ]; then
+    if _render_servers_file; then
+      # dnsmasq re-reads --servers-file on SIGHUP (it does NOT re-read its
+      # main config), so the granted zone is forwardable immediately.
+      # Signal the pidfile PID, NOT $DNSMASQ_PID: the latter is the
+      # dns-audit.sh WRAPPER, and SIGHUP is fatal to a plain shell — HUPing
+      # it kills the wrapper, the liveness poll below sees a dead child, and
+      # the whole egress exits. dnsmasq writes its own pid to
+      # $DNSMASQ_PID_FILE, which is what the host-side `domain add` path has
+      # always signalled for the same reason.
+      _hup_pid=$(cat "$DNSMASQ_PID_FILE" 2>/dev/null || true)
+      if [ -n "$_hup_pid" ] && kill -HUP "$_hup_pid" 2>/dev/null; then
+        log "applied policy-api grants to dnsmasq (servers-file reloaded)"
+      else
+        log "warn: could not SIGHUP dnsmasq after a grant; DNS will lag"
+      fi
+    else
+      log "warn: failed to render servers-file for a grant; retrying"
+    fi
+  fi
   sleep 1
 done
 echo "child died, exiting" >&2

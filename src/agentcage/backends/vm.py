@@ -648,18 +648,6 @@ class VmBackend:
     def unit_dir(self) -> Path:
         return Path(os.path.expanduser("~/.config/agentcage/lima"))
 
-    def grants_unit_path(self, name: str) -> Path:
-        """Host-side systemd user-unit path for the grants watcher.
-
-        The watcher itself runs on the HOST (it writes the operator's
-        cage.yaml and drives the VM-aware live-reload chain via
-        ``limactl shell``), so its unit is a native systemd USER unit in
-        ``~/.config/systemd/user/`` — the same location the container
-        backend uses — NOT in the guest's quadlet dir that
-        ``install_units`` targets.
-        """
-        return Path(os.path.expanduser("~/.config/systemd/user")) / f"{name}-grants.service"
-
     def install_units(self, units: dict[str, str], *, quiet: bool = False) -> None:
         dest = self.unit_dir()
         dest.mkdir(parents=True, exist_ok=True)
@@ -901,22 +889,6 @@ class VmBackend:
                         f"(state={final.stdout.strip() or 'unknown'}); see "
                         f"diagnostic output above"
                     )
-        # Install + enable + start the host-side grants watcher so LLM-
-        # decided grants in the guest-local overlay are promoted into the
-        # operator's cage.yaml baseline. The cli helper is idempotent and
-        # best-effort; the late function-local import avoids a backend->cli
-        # import cycle (cli imports backends). Only when a live Config is
-        # available — without it the helper would fall through to the
-        # container-backend path and write the wrong unit for a vm cage.
-        if config is not None:
-            try:
-                from agentcage.cli import _ensure_grants_watcher
-                _ensure_grants_watcher(name, config)
-            except Exception as e:
-                click.echo(
-                    f"warning: could not install grants watcher: {e}",
-                    err=True,
-                )
 
     def _create_pending_secrets(self, name: str, inst: LimaInstance) -> None:
         """Create secrets from cage create --set-secret inside the VM."""
@@ -1143,31 +1115,6 @@ class VmBackend:
                 except Exception:
                     pass
             inst.stop()
-        # Mirror ContainerBackend.stop exactly: stop the host-side grants
-        # watcher too IF its supervisor file exists (the unit on Linux, the
-        # plist on macOS). The watcher's prune loop has nothing to do
-        # against a stopped cage, and leaving a ``KeepAlive=true`` launchd
-        # agent / enabled systemd unit running would spin against a dead
-        # VM. The supervisor file itself is left in place (uninstalled only
-        # on ``destroy``) so a later ``start`` re-activates it via
-        # ``_deploy_cage`` -> ``_ensure_grants_watcher``.
-        try:
-            if sys.platform == "darwin":
-                from agentcage.watcher import grants_watcher_plist_path
-                if grants_watcher_plist_path(name).exists():
-                    uid = os.getuid()
-                    label = f"io.agentcage.{name}.grants"
-                    subprocess.run(
-                        ["launchctl", "bootout", f"gui/{uid}/{label}"],
-                        check=False, capture_output=True,
-                    )
-            else:
-                from agentcage.watcher import grants_watcher_unit_path
-                if grants_watcher_unit_path(name).exists():
-                    from agentcage import systemd as _systemd
-                    _systemd.stop_unit(f"{name}-grants.service")
-        except Exception:
-            pass
 
     def restart(self, name: str) -> None:
         self.stop(name)
@@ -1175,16 +1122,6 @@ class VmBackend:
 
     def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:
         removed: list[str] = []
-        # Uninstall the host-side grants watcher BEFORE removing the Lima
-        # instance: an enabled systemd unit / KeepAlive=true launchd agent
-        # polling a nonexistent cage would otherwise relaunch forever
-        # (macOS) or fail every tick (Linux). Best-effort — the cage is
-        # being torn down regardless.
-        try:
-            from agentcage.watcher import uninstall_grants_watcher
-            uninstall_grants_watcher(name, darwin=(sys.platform == "darwin"))
-        except Exception:
-            pass
         inst = self._instance(name)
         if inst.exists():
             inst.delete()

@@ -101,6 +101,15 @@ RUN mkdir -p /home/acproxy/.mitmproxy /var/log/agentcage \
 RUN mkdir -p /home/acdns \
     && chown acdns:acdns /home/acdns
 
+# Egress-local DNS apply: the addon publishes the granted zone list here and
+# the supervisor renders it into dnsmasq's servers-file. Pre-chowned in an
+# image layer for the same reason /home/acdns is — the supervisor must not
+# need CAP_CHOWN at runtime (hardened rootless podman drops it). 0700: only
+# the addon writes, only root (the supervisor) reads.
+RUN mkdir -p /home/acproxy/dns \
+    && chown acproxy:acproxy /home/acproxy/dns \
+    && chmod 0700 /home/acproxy/dns
+
 # The upstream mitmproxy image's ENTRYPOINT runs a script that chowns
 # /home/mitmproxy at runtime — fails under rootless Podman + irrelevant
 # for our supervisor anyway. Override to use tini → our supervisor.

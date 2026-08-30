@@ -63,7 +63,7 @@ class TestWatchPromotesTtl:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -87,7 +87,7 @@ class TestWatchPromotesTtl:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -176,7 +176,7 @@ class TestPromoteNormalizesDomain:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
 
         saved = mock_apply.call_args[0][1]
@@ -237,7 +237,7 @@ class TestPromoteNormalizesDomain:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
 
         # Not promoted, not removed.
@@ -287,7 +287,7 @@ class TestPromoteRoundTripValidates:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
 
         saved = mock_apply.call_args[0][1]
@@ -344,7 +344,7 @@ class TestWatchRemovesPromotedEntries:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -385,7 +385,7 @@ class TestWatchExpiredOverlayNotInBaseline:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -424,7 +424,7 @@ class TestWatchStaleExpiresNotInAllow:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -467,7 +467,7 @@ class TestWatchBlocklistModeSkipsPromotion:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -475,130 +475,6 @@ class TestWatchBlocklistModeSkipsPromotion:
         # the entry stays pending (step 1 still drops expired ones).
         mock_apply.assert_not_called()
         mock_state.save_grants.assert_not_called()
-
-
-class TestEnsureGrantsWatcherBackendGate:
-    """_ensure_grants_watcher must never write a systemd unit at the
-    apple-container launchd .plist path — the apple backend installs its
-    own plist. VM cages now get a real host-side watcher: launchd plist
-    on macOS hosts, the same systemd user unit as the container backend
-    on Linux hosts (with a 5s poll interval — each tick is a limactl SSH
-    round-trip)."""
-
-    @patch("agentcage.cli.get_backend")
-    def test_apple_delegates_to_install_plist(self, mock_backend):
-        backend = MagicMock()
-        # grants_unit_path returns a .plist path — the trap: writing the
-        # systemd unit there would corrupt it.
-        from pathlib import Path
-        backend.grants_unit_path.return_value = Path(
-            "/tmp/io.agentcage.x.grants.plist")
-        install = backend._install_grants_plist
-        mock_backend.return_value = backend
-
-        from agentcage.cli import _ensure_grants_watcher
-        cfg = MagicMock()
-        cfg.isolation = "apple-container"
-        _ensure_grants_watcher("x", cfg)
-
-        install.assert_called_once_with("x")
-        # And the systemd-unit write path was never taken: the plist path
-        # must still not exist (no unit string written into it).
-        assert not Path("/tmp/io.agentcage.x.grants.plist").exists()
-
-    @patch("agentcage.cli.get_backend")
-    def test_vm_linux_writes_unit_with_5s_interval(
-        self, mock_backend, tmp_path, monkeypatch,
-    ):
-        # Linux host (qemu Lima): the watcher is the SAME systemd user
-        # unit the container backend installs — host-side path, 5s
-        # interval (limactl round-trips make 1 Hz chatty).
-        backend = MagicMock()
-        unit = tmp_path / "x-grants.service"
-        backend.grants_unit_path.return_value = unit
-        del backend._install_grants_plist
-        mock_backend.return_value = backend
-
-        # _ensure_grants_watcher branches on sys.platform; without pinning
-        # it this test took the darwin (plist) path and failed on macOS,
-        # so the Linux behavior it exists to cover was only ever asserted
-        # on Linux CI.
-        monkeypatch.setattr("agentcage.cli.sys.platform", "linux")
-
-        from agentcage.cli import _ensure_grants_watcher
-        import agentcage.systemd as _systemd
-        cfg = MagicMock()
-        cfg.isolation = "vm"
-        with patch.object(_systemd, "start_unit") as mock_start, \
-             patch.object(_systemd, "enable_unit") as mock_enable:
-            _ensure_grants_watcher("x", cfg)
-
-        assert unit.exists()
-        assert "--interval 5" in unit.read_text()
-        mock_start.assert_called_once_with("x-grants.service")
-        mock_enable.assert_called_once_with("x-grants.service")
-
-    @patch("agentcage.cli.get_backend")
-    def test_vm_darwin_installs_plist(self, mock_backend, tmp_path, monkeypatch):
-        # macOS host (Lima/vz): launchd plist via the shared installer in
-        # agentcage.watcher (same one the apple-container backend uses),
-        # 5s interval.
-        backend = MagicMock()
-        backend.grants_unit_path.return_value = tmp_path / "x-grants.service"
-        del backend._install_grants_plist
-        mock_backend.return_value = backend
-
-        from agentcage import watcher as _watcher
-        calls = {}
-
-        def _fake_install(name, *, log_dir, interval=1, plist_path=None):
-            calls["name"] = name
-            calls["interval"] = interval
-
-        monkeypatch.setattr(_watcher, "install_grants_watcher_plist",
-                            _fake_install)
-        monkeypatch.setattr("agentcage.cli.sys.platform", "darwin")
-
-        from agentcage.cli import _ensure_grants_watcher
-        import agentcage.systemd as _systemd
-        cfg = MagicMock()
-        cfg.isolation = "vm"
-        with patch.object(_systemd, "start_unit") as mock_start:
-            _ensure_grants_watcher("x", cfg)
-
-        assert calls == {"name": "x", "interval": 5}
-        mock_start.assert_not_called()  # launchd, not systemd
-        assert not (tmp_path / "x-grants.service").exists()
-
-    @patch("agentcage.cli.get_backend")
-    def test_container_backend_still_writes_unit(self, mock_backend, tmp_path):
-        backend = MagicMock()
-        unit = tmp_path / "x-grants.service"
-        backend.grants_unit_path.return_value = unit
-        # No _install_grants_plist on the container backend.
-        del backend._install_grants_plist
-        mock_backend.return_value = backend
-
-        from agentcage.cli import _ensure_grants_watcher
-        import agentcage.systemd as _systemd
-        cfg = MagicMock()
-        cfg.isolation = "container"
-        with patch.object(_systemd, "start_unit") as mock_start, \
-             patch.object(_systemd, "enable_unit") as mock_enable:
-            _ensure_grants_watcher("x", cfg)
-
-        assert unit.exists()
-        assert "[Unit]" in unit.read_text()
-        mock_start.assert_called_once_with("x-grants.service")
-        # Fix 4: the native .service must be ENABLED so it survives a
-        # host reboot (quadlet units are generator-activated; this native
-        # unit is not — without enable it stays dead after reboot while
-        # the egress and cage come up).
-        mock_enable.assert_called_once_with("x-grants.service")
-
-
-# ── Fix 1: watcher _tick lost-update race (merge-on-write) ───────────────
-
 
 class TestTickMergeOnWrite:
     """Lost-update race: a grant the egress addon persisted DURING the
@@ -635,7 +511,7 @@ class TestTickMergeOnWrite:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -714,7 +590,7 @@ class TestTickRejectsInvalidDomain:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -747,7 +623,7 @@ class TestTickRejectsInvalidDomain:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"]
+            main, ["cage", "grants", "basic", "sync"]
         )
         assert result.exit_code == 0, result.output
 
@@ -942,7 +818,7 @@ class TestVmOverlayDispatch:
              patch("agentcage.cli._load_grants_overlay", return_value=None) as lo:
             mock_li.return_value.is_running.return_value = False
             result = _runner().invoke(
-                main, ["cage", "grants", "basic", "watch", "--once"])
+                main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0
         lo.assert_not_called()  # is_running gate short-circuits the pull
         mock_apply.assert_not_called()
@@ -972,7 +848,7 @@ class TestVmOverlayDispatch:
                    side_effect=_save) as sv:
             mock_li.return_value.is_running.return_value = True
             result = _runner().invoke(
-                main, ["cage", "grants", "basic", "watch", "--once"])
+                main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
         assert lo.call_count == 2  # tick snapshot + merge re-read
         sv.assert_called_once()
@@ -1087,7 +963,7 @@ class TestWatchDoesNotTightenPermanentBaseline:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
 
         saved = mock_apply.call_args[0][1]
@@ -1204,7 +1080,7 @@ class TestTickMergeKeepsFreshRegrant:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
 
         # The fresh re-grant (granted_at T2 > the removed T1) survives the
@@ -1237,7 +1113,7 @@ class TestTickMergeKeepsFreshRegrant:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
         saved = mock_state.save_grants.call_args[0][1]
         assert saved == []  # not a fresh re-grant → dropped
@@ -1277,7 +1153,7 @@ class TestWatchNoAuditForAlreadyBaseline:
         mock_state.load_deployment_config.return_value = _make_cfg()
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         assert result.exit_code == 0, result.output
 
         # No policy_grant_applied audit: nothing was added to the baseline.
@@ -1319,7 +1195,7 @@ class TestWatchOnceSafeTick:
             _raw(), RuntimeError("boom")]
 
         result = _runner().invoke(
-            main, ["cage", "grants", "basic", "watch", "--once"])
+            main, ["cage", "grants", "basic", "sync"])
         # Exit 0 (warning, not a crash) — _safe_tick swallowed the tick.
         assert result.exit_code == 0, result.output
         assert "boom" in result.output

@@ -4080,6 +4080,11 @@ def _ensure_domain_section(raw: dict) -> None:
 @click.argument("name")
 def domain_list(name: str):
     """List domains for a cage."""
+    # Converge the baseline first so what we print is the truth. Grants are
+    # applied live inside the egress; writing them into cage.yaml is lazy
+    # bookkeeping, and this is the command where the lag would be visible.
+    # No-op when there is nothing pending.
+    _reconcile_grants(name, quiet=True)
     try:
         raw = state.load_raw_config(name)
     except FileNotFoundError:
@@ -4412,12 +4417,10 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
         cfg = state.load_deployment_config(name)
         if get_backend(cfg).is_running(cfg.name, "cage"):
             messages.append("DNS and proxy updated.")
-        # A time-limited entry needs the grants watcher running to prune it
-        # from the baseline + dnsmasq when it expires (the L7 inspector blocks
-        # it immediately regardless, but tidiness depends on the watcher).
-        # Ensure the watcher unit is installed + started; idempotent.
-        if expires_iso:
-            _ensure_grants_watcher(name, cfg)
+        # Nothing to schedule: an expired entry is blocked by the L7
+        # inspector immediately and unconditionally, and the baseline is
+        # tidied by the next reconcile (`cage grants <name> sync`, which
+        # also runs implicitly from the CLI paths that read a cage).
 
     for line in messages:
         click.echo(line)
@@ -4439,99 +4442,6 @@ def _apply_baseline_change(name: str, raw: dict) -> None:
     state.save_proxy_config(name)
     cfg = state.load_deployment_config(name)
     _update_dns_quadlet(cfg)
-
-
-def _ensure_grants_watcher(name: str, cfg) -> None:
-    """Install + start the grants watcher for a cage if it isn't running.
-
-    The watcher promotes Policy-API grants AND prunes expired allowlist
-    entries (from ``domain add --expires-in`` or a TTL'd grant). It is
-    normally installed on ``cage create``/``update`` when ``domains.auto.enable``
-    is set, but a time-limited ``domain add --expires-in`` on a cage that
-    isn't using the Policy API still needs pruning — so this helper writes
-    the unit on demand and starts it. Idempotent: a present, running watcher
-    is a no-op. Best-effort: a failure to start is warned, not fatal (the L7
-    inspector still enforces expiry immediately; the watcher only keeps the
-    baseline + dnsmasq tidy).
-    """
-    try:
-        backend = get_backend(cfg)
-    except Exception:
-        return
-    isolation = getattr(cfg, "isolation", "container") or "container"
-    # Apple-container: the watcher is a LAUNCHD PLIST the backend installs
-    # itself (_install_grants_plist). Never write a systemd unit at that
-    # path — grants_unit_path() returns a .plist there, and a systemd unit
-    # string written into it would corrupt the plist.
-    install_plist = getattr(backend, "_install_grants_plist", None)
-    if install_plist is not None:
-        try:
-            install_plist(name)
-        except Exception as e:
-            click.echo(f"warning: could not install grants watcher: {e}",
-                        err=True)
-        return
-    unit_path_fn = getattr(backend, "grants_unit_path", None)
-    if unit_path_fn is None:
-        return  # backend without host-side systemd units
-    if isolation == "vm" and sys.platform == "darwin":
-        # VM cage on a macOS host (Lima/vz): the watcher runs on the host
-        # like any other backend, supervised by launchd instead of
-        # systemd. Same plist the apple-container backend installs —
-        # the watcher command is isolation-agnostic (the overlay IO and
-        # the live-reload chain dispatch on isolation internally). A 5s
-        # interval: each tick is a limactl SSH round-trip to pull the
-        # guest-local overlay, so 1 Hz would be chatty for no benefit.
-        try:
-            from agentcage.watcher import install_grants_watcher_plist
-            install_grants_watcher_plist(
-                name, log_dir=state.cage_data_dir(name), interval=5)
-        except Exception as e:
-            click.echo(f"warning: could not install grants watcher: {e}",
-                        err=True)
-        return
-    unit_path = unit_path_fn(name)
-    if unit_path is None:
-        return
-    # Render + install the unit if missing (mirrors quadlets._grants_service_unit).
-    # VM cages poll at 5s: each tick is a limactl SSH round-trip to pull
-    # the guest-local overlay (container/apple ticks are a local file
-    # read, so 1s is fine there).
-    _interval = 5 if isolation == "vm" else 1
-    if not unit_path.exists():
-        try:
-            from agentcage.quadlets import _grants_service_unit
-            unit_path.parent.mkdir(parents=True, exist_ok=True)
-            # Pass is_vm so the unit omits the egress Wants=/After= lines
-            # for VM cages (Fix 6): the egress service is a GUEST-only unit
-            # (it lives inside the Lima VM's systemd), so a host-side
-            # watcher that ``Wants={name}-egress.service`` references a
-            # nonexistent host unit. NOTE: only written when missing, so
-            # already-installed VM units keep their old (harmless but
-            # noisy) dependency lines until a reinstall regenerates them.
-            unit_path.write_text(_grants_service_unit(
-                name, interval=_interval, is_vm=(isolation == "vm")))
-            from agentcage import systemd as _systemd
-            _systemd.daemon_reload()
-        except Exception as e:
-            click.echo(f"warning: could not install grants watcher unit: {e}", err=True)
-            return
-    try:
-        from agentcage import systemd as _systemd
-        _systemd.start_unit(f"{name}-grants.service")
-    except Exception as e:
-        click.echo(f"warning: could not start grants watcher: {e}", err=True)
-    # Enable the unit so it survives a host reboot. A NATIVE ``.service``'s
-    # ``[Install] WantedBy=`` stanza only names the symlink that
-    # ``systemctl enable`` creates; nothing created it, so before this the
-    # watcher stayed dead after a reboot while the egress and cage came up
-    # (quadlet units are generator-activated, this native unit is not).
-    # Best-effort, same tolerance as the start call above.
-    try:
-        from agentcage import systemd as _systemd
-        _systemd.enable_unit(f"{name}-grants.service")
-    except Exception as e:
-        click.echo(f"warning: could not enable grants watcher: {e}", err=True)
 
 
 @domain.command("rm")
@@ -4990,14 +4900,19 @@ def grants_revoke(domain: str):
               "interval; a restart applies it immediately)")
 
 
-@grants.command("watch")
-@click.option("--interval", default=1.0, show_default=True,
-              help="Seconds between overlay checks.")
-@click.option("--once", is_flag=True,
-              help="Process pending/expired grants once and exit "
-                   "(no continuous loop). Useful for testing or a cron job.")
-def grants_watch(interval: float, once: bool):
-    """Apply runtime grants into the baseline as they are decided.
+@grants.command("sync")
+def grants_sync():
+    """Reconcile decided grants into the operator's cage.yaml baseline.
+
+    This is bookkeeping, not enforcement. A granted domain is already live:
+    the addon applies it to the L7 inspector in-memory and publishes the zone
+    to the egress supervisor, which re-renders dnsmasq's servers-file and
+    SIGHUPs it. This command makes the grant DURABLE — it writes the domain
+    into the operator's ``domains.allow`` so it survives a cage rebuild and
+    shows up in ``domain list`` — and prunes entries whose expiry has passed.
+
+    It runs implicitly from the CLI paths that read a cage, so an operator
+    normally never types it. See docs/explain/egress-local-dns-apply.md.
 
     Mirrors ``agentcage domain add`` exactly: for each grant the egress's
     decider approved (an overlay entry), this command appends the domain to
@@ -5026,13 +4941,26 @@ def grants_watch(interval: float, once: bool):
     Run this in the foreground during a session, or as a systemd user unit
     (``agentcage cage grants <name> watch``) for an always-on cage.
     """
+    _reconcile_grants(_grants_name())
+
+
+def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
+    """One reconcile pass: promote decided grants, prune expired entries.
+
+    Factored out of the ``grants sync`` command so the CLI paths that read a
+    cage can converge the baseline implicitly — the operator should not have
+    to know this step exists. ``quiet`` suppresses the not-found error exit
+    for those implicit callers (a missing cage is the caller's problem to
+    report, not this helper's).
+    """
     import time as _time
     from datetime import datetime, timezone
-    name = _grants_name()
-    # Existence check up front so a typo isn't a silent empty-overlay loop.
+    # Existence check up front so a typo isn't a silent no-op.
     try:
         state.load_raw_config(name)
     except FileNotFoundError:
+        if quiet:
+            return
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
     # Isolation-aware overlay IO (see _load_grants_overlay): VM cages
@@ -5402,31 +5330,5 @@ def grants_watch(interval: float, once: bool):
             _save_grants_overlay(name, _watch_cfg, merged)
         return changed
 
-    if once:
-        # Route the one-shot path through ``_safe_tick`` too (Fix 5): a
-        # single surprise (malformed overlay / decode error) must be a
-        # logged warning, not an uncaught traceback — mirrors the
-        # continuous loop's per-tick isolation so ``--once`` (a cron job,
-        # or a test harness) never exits non-zero on a transient tick
-        # failure the loop would have survived.
-        _safe_tick(_tick, name)
-        return
-    click.echo(f"Watching grants overlay for cage '{name}' (interval {interval}s). Ctrl-C to stop.")
-    try:
-        while True:
-            # Per-tick isolation (Fix 2): a single surprise (malformed
-            # overlay raising an exception the step-0/1/2 ``except
-            # FileNotFoundError`` guards don't catch — e.g. a YAML/JSON/
-            # decode error, or a surprise from the step-3 save) must NOT
-            # kill ``grants watch``; with ``Restart=on-failure`` the unit
-            # would then hit systemd's start limit and die permanently,
-            # silently stopping promotions and pruning. ``_safe_tick``
-            # mirrors ``data/proxy/policy_api.py`` ``sweeper_loop``'s
-            # per-tick isolation; ``KeyboardInterrupt`` is a ``BaseException``
-            # so it propagates through to the outer handler below (the
-            # orderly Ctrl-C stop).
-            _safe_tick(_tick, name)
-            _time.sleep(interval)
-    except KeyboardInterrupt:
-        click.echo("stopped.")
+    _safe_tick(_tick, name)
 

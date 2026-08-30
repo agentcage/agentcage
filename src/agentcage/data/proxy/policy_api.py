@@ -167,6 +167,14 @@ class PolicyApi:
             "AGENTCAGE_GRANTS_DIR", "/var/lib/agentcage"
         )
         self._grants_path = os.path.join(self._grants_dir, "grants.yaml")
+        # Egress-local DNS apply: the granted zone list the supervisor reads
+        # to re-render dnsmasq's servers-file. Separate from the overlay —
+        # the overlay is durable state shared with the host, this is a
+        # transient, in-container control file. See
+        # docs/explain/egress-local-dns-apply.md.
+        self._dns_publish_path = os.environ.get(
+            "AGENTCAGE_DNS_PUBLISH", "/home/acproxy/dns/granted"
+        )
         self._grants_mtime: float = 0.0
 
         self._reconcile_from_overlay()
@@ -960,6 +968,56 @@ class PolicyApi:
             self._grants_mtime = os.stat(self._grants_path).st_mtime
         except OSError as e:
             self._log.warn(f"agentcage: cannot persist grants overlay: {e}")
+        # Publish the zone list for the supervisor REGARDLESS of whether the
+        # overlay write succeeded: the overlay is durability, this is
+        # enforcement. A cage that cannot persist should still get the DNS it
+        # was just granted (and a grant that is not persisted is simply lost
+        # on restart, which is the safe direction).
+        self._publish_dns_domains()
+
+    def _publish_dns_domains(self) -> None:
+        """Publish currently-granted domains for the egress supervisor.
+
+        The addon runs as ``acproxy`` (uid 200) with an empty bounding set,
+        so it cannot signal dnsmasq (``acdns``, uid 201) to re-read its
+        servers-file. Instead it writes the zone list here; the supervisor's
+        existing step-G liveness loop notices the newer mtime, re-renders the
+        servers-file as root, and SIGHUPs dnsmasq.
+
+        Deliberately writes bare DOMAIN NAMES, never ``server=`` directives:
+        the upstream for a granted zone is chosen by the supervisor from the
+        set the operator configured. This addon can name a zone — which is
+        the authority it already has, being the component that decides grants
+        — but it cannot choose where that zone is forwarded, so a compromised
+        addon cannot redirect a zone to a resolver it controls.
+
+        Atomic temp+rename so the supervisor never renders a partial list,
+        and so the mtime flips exactly once per change.
+        """
+        try:
+            domains = sorted(
+                d for d in self.dom.granted
+                if d and _DOMAIN_RE.match(d)
+            )
+            d_dir = os.path.dirname(self._dns_publish_path)
+            if d_dir:
+                os.makedirs(d_dir, exist_ok=True)
+            tmp = f"{self._dns_publish_path}.{os.getpid()}.tmp"
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write("".join(f"{d}\n" for d in domains))
+            os.replace(tmp, self._dns_publish_path)
+        except OSError as e:
+            # Non-fatal: the grant is still enforced at L7 (the inspector is
+            # in-memory and already updated). Only DNS lags, and the operator
+            # sees it in the egress log.
+            self._log.warn(
+                f"agentcage: cannot publish granted domains for DNS: {e}"
+            )
 
     def _reconcile_from_overlay(self) -> None:
         """Sync DomainInspector.granted from the overlay file.

@@ -436,7 +436,14 @@ def test_supervisor_container_path_forwards_to_default_route_gateway():
     internal."""
     s = _read_src("data", "containers", "supervisor-egress.sh")
     assert "ip route 2>/dev/null | awk '/^default/{print $3; exit}'" in s
-    assert 'sed "s#/[^/]*\\$#/$_gw#" /etc/agentcage/dns-allowlist.conf' in s
+    # The gateway rewrite now lives in _render_servers_file (so the same
+    # recipe can be re-run when the addon publishes a grant), parameterised
+    # over $SERVERS_BASE rather than the literal bind-mount path. Same
+    # behavior: gateway-rewritten lines first, baked resolver lines kept.
+    assert 'sed "s#/[^/]*\\$#/$_SF_GW#" \\\n        "$SERVERS_BASE"' in s \
+        or 'sed "s#/[^/]*\\$#/$_SF_GW#" "$SERVERS_BASE"' in s
+    assert 'SERVERS_BASE=/etc/agentcage/dns-allowlist.conf' in s
+    assert '_SF_STYLE=prepend' in s
     assert "/run/agentcage/dns-allowlist.egress.conf" in s
     assert '_all_servers="--all-servers"' in s
     assert "$_all_servers" in s
