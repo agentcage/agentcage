@@ -3595,6 +3595,26 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     """
     expected = _expected_secrets(cfg)
     injection_names = {r.env for r in cfg.secret_injection}
+    # domains.auto's decider api_key is a real consumer of a stored secret
+    # but is not a secret_injection rule, so it fell through to "orphan" —
+    # inviting an operator to `secret rm` the one credential the decider
+    # needs. Classify it as "decider" instead.
+    decider_names: set[str] = set()
+    _api_key = getattr(
+        getattr(getattr(getattr(cfg, "domains", None), "auto", None),
+                "decider", None),
+        "agent", None,
+    )
+    _api_key = getattr(_api_key, "api_key", "")
+    # isinstance guard: `cfg` is a MagicMock in much of the CLI test suite,
+    # where every attribute access yields another mock that would partition
+    # into garbage.
+    if isinstance(_api_key, str) and _api_key:
+        _, _, _arg = _api_key.partition(":")
+        if _arg:
+            decider_names.add(_arg)
+            if _arg not in expected:
+                expected = list(expected) + [_arg]
     # Placeholders are decoy tokens (never sensitive) — show them so a
     # generated value is discoverable without opening the stored cage.yaml.
     placeholders = {r.env: r.placeholder for r in cfg.secret_injection}
@@ -3606,7 +3626,12 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     click.echo(f"{'NAME':<30} {'TYPE':<12} {'STATUS':<8} PLACEHOLDER")
     any_missing = False
     for key in expected:
-        stype = "injection" if key in injection_names else "direct"
+        if key in injection_names:
+            stype = "injection"
+        elif key in decider_names:
+            stype = "decider"
+        else:
+            stype = "direct"
         if key in present_keys:
             status = "ok"
         else:
