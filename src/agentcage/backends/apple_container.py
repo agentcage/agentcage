@@ -1379,6 +1379,14 @@ class AppleContainerBackend:
                 scheme, _, var = (src or "").partition(":")
                 if scheme and var and var not in relay_secret_envs:
                     relay_secret_envs.append(var)
+        # domains.auto decider api_key — same egress-only invariant as a relay
+        # credential: staged into the secrets bind mount, never `-e`'d to the
+        # cage workload. Mirrors quadlets.py's proxy_secrets staging.
+        _auto = getattr(getattr(config, "domains", None), "auto", None)
+        if _auto is not None and getattr(_auto, "enable", False):
+            _scheme, _, _var = (_auto.decider.agent.api_key or "").partition(":")
+            if _scheme and _var and _var not in relay_secret_envs:
+                relay_secret_envs.append(_var)
         # Resolve cage.yaml's nested ``ports.*`` into the three int lists the
         # egress supervisor's Step A turns into iptables rules. Computed HERE
         # (at unit-generation time, when we have a live Config) and persisted
