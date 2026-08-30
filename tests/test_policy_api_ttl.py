@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from click.testing import CliRunner
 
 from agentcage.cli import main
@@ -352,9 +354,295 @@ class TestEnsureGrantsWatcherBackendGate:
         import agentcage.systemd as _systemd
         cfg = MagicMock()
         cfg.isolation = "container"
-        with patch.object(_systemd, "start_unit") as mock_start:
+        with patch.object(_systemd, "start_unit") as mock_start, \
+             patch.object(_systemd, "enable_unit") as mock_enable:
             _ensure_grants_watcher("x", cfg)
 
         assert unit.exists()
         assert "[Unit]" in unit.read_text()
         mock_start.assert_called_once_with("x-grants.service")
+        # Fix 4: the native .service must be ENABLED so it survives a
+        # host reboot (quadlet units are generator-activated; this native
+        # unit is not — without enable it stays dead after reboot while
+        # the egress and cage come up).
+        mock_enable.assert_called_once_with("x-grants.service")
+
+
+# ── Fix 1: watcher _tick lost-update race (merge-on-write) ───────────────
+
+
+class TestTickMergeOnWrite:
+    """Lost-update race: a grant the egress addon persisted DURING the
+    watcher's step-2 podman-exec window (after the top-of-``_tick``
+    snapshot but before the step-3 save) must survive the tick's overlay
+    write. The snapshot is stale by the time step 3 runs; the fix
+    re-reads the on-disk overlay at write time and drops only this tick's
+    intentional removals (``removed_domains``)."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_fresh_grant_survives_tick(self, mock_state, mock_apply):
+        mock_state.valid_domain.return_value = True
+        snapshot = [{
+            "domain": "old.com",
+            "reason": "r",
+            "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2030-01-01T00:10:00+00:00",  # future → pending
+        }]
+        fresh = {
+            "domain": "fresh.com",
+            "reason": "addon wrote this during step 2",
+            "source": "decider",
+            "granted_at": "2026-01-01T00:00:01+00:00",
+            "expires_at": "2030-01-01T00:10:00+00:00",
+        }
+        # 1st load_grants = top-of-_tick snapshot; 2nd = step-3 re-read,
+        # by which point the addon has persisted `fresh`.
+        mock_state.load_grants.side_effect = [
+            list(snapshot), snapshot + [fresh],
+        ]
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"]
+        )
+        assert result.exit_code == 0, result.output
+
+        # old.com was promoted → removed from the overlay; fresh.com was
+        # written by the addon AFTER the snapshot and MUST survive the
+        # merge-on-write (it is not in any removal set).
+        saved = mock_state.save_grants.call_args[0][1]
+        saved_domains = {
+            str(e.get("domain", "")).rstrip(".").lower() for e in saved
+        }
+        assert "fresh.com" in saved_domains
+        assert "old.com" not in saved_domains
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_revoke_merges_on_write(self, mock_state, mock_apply):
+        """grants_revoke must drop ONLY the revoked domain — a grant the
+        addon persisted between the load and the save survives (Fix 1)."""
+        mock_state.valid_domain.return_value = True
+        revoke_target = [{
+            "domain": "evil.com",
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "",
+        }]
+        fresh = {
+            "domain": "fresh.com",
+            "reason": "addon wrote this",
+            "source": "decider",
+            "granted_at": "2026-01-01T00:00:01+00:00",
+            "expires_at": "",
+        }
+        # 1st load_grants (presence check) = [evil]; 2nd (merge re-read)
+        # = [evil, fresh] — the addon persisted fresh in between.
+        mock_state.load_grants.side_effect = [
+            list(revoke_target), revoke_target + [fresh],
+        ]
+        mock_state.load_raw_config.return_value = _raw()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "revoke", "evil.com"]
+        )
+        assert result.exit_code == 0, result.output
+
+        saved = mock_state.save_grants.call_args[0][1]
+        saved_domains = {
+            str(e.get("domain", "")).rstrip(".").lower() for e in saved
+        }
+        assert "evil.com" not in saved_domains
+        assert "fresh.com" in saved_domains  # survived the merge
+
+
+# ── Fix 3: no domain-syntax validation on promote (dnsmasq injection) ────
+
+
+class TestTickRejectsInvalidDomain:
+    """An overlay entry with invalid domain syntax (a dnsmasq directive
+    injection payload like ``foo.com/\\nserver=/#``) must NOT be promoted,
+    must NOT be removed from the overlay (the operator can still see the
+    rejected grant), and must be audited exactly once per run."""
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_invalid_domain_not_promoted_and_audited_once(
+        self, mock_state, mock_apply
+    ):
+        mock_state.valid_domain.return_value = False  # every domain invalid
+        malicious = "foo.com/\nserver=/#"
+        mock_state.load_grants.return_value = [{
+            "domain": malicious,
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2030-01-01T00:10:00+00:00",  # future → pending
+        }]
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"]
+        )
+        assert result.exit_code == 0, result.output
+
+        # Not promoted: no baseline change at all.
+        mock_apply.assert_not_called()
+        # Not removed: nothing written — the entry stays on disk.
+        mock_state.save_grants.assert_not_called()
+        # Audited once with the rejection kind/reason.
+        audits = [c.args[1]
+                  for c in mock_state.append_policy_audit.call_args_list]
+        rejected = [a for a in audits
+                    if a.get("kind") == "policy_grant_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["reason"] == "invalid domain syntax"
+
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_never_grant_domain_not_promoted(self, mock_state, mock_apply):
+        """An overlay entry matching the never_grant floor (internal /
+        localhost / control host) must be rejected + audited, never
+        promoted — mirroring the addon's PolicyApi._is_never_grant."""
+        mock_state.valid_domain.return_value = True  # syntax OK
+        mock_state.load_grants.return_value = [{
+            "domain": "metadata.google.internal",
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2030-01-01T00:10:00+00:00",
+        }]
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_deployment_config.return_value = _make_cfg()
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "watch", "--once"]
+        )
+        assert result.exit_code == 0, result.output
+
+        mock_apply.assert_not_called()
+        mock_state.save_grants.assert_not_called()
+        audits = [c.args[1]
+                  for c in mock_state.append_policy_audit.call_args_list]
+        rejected = [a for a in audits
+                    if a.get("kind") == "policy_grant_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["reason"] == "never_grant"
+
+
+# ── Fix 3 (manual promote): refuse invalid / not-in-overlay ──────────────
+
+
+class TestPromoteRefuses:
+    """``grants promote`` must refuse (not silently ``domain add``) when
+    the domain is not a runtime grant, and refuse invalid-syntax overlay
+    domains — mirroring ``grants_revoke``'s refusal pattern."""
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_promote_refuses_domain_not_in_overlay(
+        self, mock_state, mock_apply, mock_backend
+    ):
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_grants.return_value = []  # no runtime grant
+        mock_state.load_deployment_config.return_value = _make_cfg()
+        mock_state.valid_domain.return_value = True
+        mock_backend.return_value.is_running.return_value = False
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "promote", "evil.com"]
+        )
+        assert result.exit_code != 0
+        assert "is not a runtime grant" in result.output
+        assert "domain add" in result.output
+        mock_apply.assert_not_called()
+        mock_state.save_grants.assert_not_called()
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_promote_refuses_invalid_domain_syntax(
+        self, mock_state, mock_apply, mock_backend
+    ):
+        mock_state.load_raw_config.return_value = _raw()
+        malicious = "foo.com/\nserver=/#"
+        mock_state.load_grants.return_value = [{
+            "domain": malicious,
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "",
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+        mock_state.valid_domain.return_value = False
+        mock_backend.return_value.is_running.return_value = False
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "promote", malicious]
+        )
+        assert result.exit_code != 0
+        assert "invalid domain" in result.output
+        mock_apply.assert_not_called()
+        mock_state.save_grants.assert_not_called()
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli._apply_baseline_change")
+    @patch("agentcage.cli.state")
+    def test_promote_refuses_never_grant(self, mock_state, mock_apply,
+                                         mock_backend):
+        mock_state.load_raw_config.return_value = _raw()
+        mock_state.load_grants.return_value = [{
+            "domain": "agentcage.local",  # the control host
+            "reason": "r", "source": "decider",
+            "granted_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "",
+        }]
+        mock_state.load_deployment_config.return_value = _make_cfg()
+        mock_state.valid_domain.return_value = True
+        mock_backend.return_value.is_running.return_value = False
+
+        result = _runner().invoke(
+            main, ["cage", "grants", "basic", "promote", "agentcage.local"]
+        )
+        assert result.exit_code != 0
+        assert "never_grant" in result.output
+        mock_apply.assert_not_called()
+        mock_state.save_grants.assert_not_called()
+
+
+# ── Fix 2: whole-tick exception isolation in the watch loop ──────────────
+
+
+class TestSafeTickIsolation:
+    """A ``_tick`` that raises must NOT kill the continuous watch loop
+    (Fix 2). ``_safe_tick`` wraps the tick in ``try/except Exception``,
+    logging a warning and continuing; ``KeyboardInterrupt`` (a
+    ``BaseException``) still propagates."""
+
+    def test_safe_tick_swallows_exception(self, capsys):
+        from agentcage.cli import _safe_tick
+
+        def boom():
+            raise RuntimeError("kaboom")
+
+        _safe_tick(boom, "x")  # must NOT propagate
+        err = capsys.readouterr().err
+        assert "kaboom" in err
+        assert "x" in err  # the cage name is in the warning
+
+    def test_safe_tick_runs_normal_tick(self):
+        from agentcage.cli import _safe_tick
+        called = []
+        _safe_tick(lambda: called.append(1), "x")
+        assert called == [1]
+
+    def test_safe_tick_lets_keyboardinterrupt_propagate(self):
+        from agentcage.cli import _safe_tick
+
+        def kb():
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            _safe_tick(kb, "x")

@@ -111,7 +111,11 @@ A reserved hostname, default `agentcage.local`, served entirely by the egress:
 - **Interception**: the addon short-circuits in `request()` **before** the
   SNI check, the rate limiter, the secret-injection policy check, and the
   inspector chain whenever `flow.request.host` (after pretty-host rewrite)
-  equals the control host **and** the feature is enabled. It synthesizes an
+  equals the control host **and** the feature is enabled **and** the flow is
+  an egress-path flow (reverse-mode *inbound* flows — published
+  `container.ports` listeners — never reach the control host, because their
+  Host/SNI are client-controlled and the control plane is reserved for the
+  caged agent). It synthesizes an
   `http.Response` and never opens an upstream connection. `agentcage.local`
   is therefore unreachable as a real upstream and cannot be forwarded.
 

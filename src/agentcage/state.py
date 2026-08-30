@@ -10,7 +10,16 @@ from pathlib import Path
 
 import yaml
 
-from agentcage.config import Config, load_config
+# Domain-syntax validator shared by host-side code paths (this module, the
+# grants watcher's promote step in cli.py). Kept in sync with the in-container
+# copy in data/proxy/policy_api.py (_DOMAIN_RE) — the addon cannot import this
+# module, so the regex is deliberately duplicated. It is the gate that stops
+# overlay strings (which cross the trust boundary via the grants dir) from
+# being rendered into dnsmasq directives unvalidated: a value containing '\n'
+# or '/' would emit extra ``server=`` lines in dns-allowlist.conf.
+from agentcage.config import Config, DOMAIN_RE, load_config, valid_domain  # noqa: F401
+
+__all__ = ["DOMAIN_RE", "valid_domain"]
 
 _CONFIG_DIR = Path(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
@@ -78,11 +87,58 @@ def load_raw_config(name: str) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _atomic_write_text(p: Path, text: str) -> None:
+    """Atomically write *text* to *p* via a PID-suffixed temp + rename.
+
+    The temp lives in the same directory (so ``os.replace`` is atomic on a
+    single filesystem) and is opened with ``O_CREAT | O_EXCL`` so a planted
+    symlink at the temp path cannot be written through — a pre-existing
+    temp (left over from a crashed writer) is unlinked and the open retried
+    once. The final ``tmp.replace(p)`` is the atomic publish.
+
+    Used by ``save_raw_config``, ``save_metadata``, and ``save_grants`` so
+    the 1Hz host-side grants watcher (and any concurrent ``cage update`` /
+    ``domain add``) never observes a half-written file: it sees either the
+    old contents or the new contents, never a truncated prefix that would
+    raise YAMLError / JSONDecodeError and kill the watcher loop.
+    """
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(2):
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            # Leftover temp from a previous crash — clear it and retry once.
+            if attempt:
+                raise
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            continue
+        break
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    tmp.replace(p)
+
+
 def save_raw_config(name: str, raw: dict) -> None:
-    """Write raw config dict back to state dir."""
+    """Write raw config dict back to state dir (atomically).
+
+    See :func:`_atomic_write_text` for why this is temp+rename rather than a
+    bare ``open(p, "w")``: the grants watcher and ``cage update`` can read
+    ``cage.yaml`` mid-write and die on a truncated YAML.
+    """
     p = _deploy_dir(name) / "cage.yaml"
-    with open(p, "w") as f:
-        yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
+    _atomic_write_text(
+        p, yaml.safe_dump(raw, default_flow_style=False, sort_keys=False))
 
 
 def fill_placeholders(name: str, prev_raw: dict | None = None) -> bool:
@@ -159,13 +215,21 @@ def grants_file(name: str) -> Path:
 
 
 def load_grants(name: str) -> list[dict]:
-    """Read the grants overlay as a list of entry dicts (empty if absent)."""
+    """Read the grants overlay as a list of entry dicts (empty if absent).
+
+    ``ValueError`` covers ``UnicodeDecodeError`` (a subclass) raised by
+    ``read_text`` / ``yaml.safe_load`` when the overlay file is non-UTF8
+    garbage — a too-narrow catch (``OSError`` + ``YAMLError`` alone) lets it
+    escape and crash the host-side grants watcher loop (and any ``cage
+    grants`` CLI) permanently. Treat any unreadable overlay as empty.
+    Mirrors the in-container twin ``policy_api._load_overlay``.
+    """
     p = grants_file(name)
     if not p.is_file():
         return []
     try:
         data = yaml.safe_load(p.read_text())
-    except (OSError, yaml.YAMLError):
+    except (OSError, yaml.YAMLError, ValueError):
         return []
     if not isinstance(data, list):
         return []
@@ -178,13 +242,13 @@ def save_grants(name: str, entries: list[dict]) -> None:
     The temp file name embeds the writer's PID so the host-side watcher and
     the in-container addon (separate PID namespaces) can each write their
     own temp concurrently without clobbering each other's file — the
-    resolved final path is shared, but the temps never collide.
+    resolved final path is shared, but the temps never collide. The temp is
+    opened with ``O_EXCL`` (see :func:`_atomic_write_text`) so a planted
+    symlink can't be written through.
     """
     p = grants_file(name)
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-    tmp.write_text(yaml.safe_dump(entries, default_flow_style=False,
-                                  sort_keys=False))
-    tmp.replace(p)
+    _atomic_write_text(
+        p, yaml.safe_dump(entries, default_flow_style=False, sort_keys=False))
 
 
 def policy_audit_file(name: str) -> Path:
@@ -231,11 +295,15 @@ def append_policy_audit(name: str, entry: dict) -> None:
 
 
 def save_metadata(name: str, metadata: dict) -> None:
-    """Write metadata.json to the deployment state directory."""
+    """Write metadata.json to the deployment state directory (atomically).
+
+    Atomic (temp + rename via :func:`_atomic_write_text`) so the grants
+    watcher and any concurrent ``cage update`` never read a half-written
+    JSON file and die on ``JSONDecodeError``.
+    """
     d = _deploy_dir(name)
     d.mkdir(parents=True, exist_ok=True)
-    with open(d / "metadata.json", "w") as f:
-        json.dump(metadata, f)
+    _atomic_write_text(d / "metadata.json", json.dumps(metadata))
 
 
 def load_metadata(name: str) -> dict:

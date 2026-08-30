@@ -600,15 +600,33 @@ class Agentcage:
     async def request(self, flow: http.HTTPFlow) -> None:
         self._maybe_reload()
 
-        # ── Policy API control host ────────────────────────────
+        # Reverse proxy flows are inbound traffic (host → cage via proxy).
+        # Detect early so we can guard the transparent-mode host rewrite AND
+        # gate the control-host short-circuit below on the egress path only.
+        is_reverse = isinstance(
+            getattr(flow.client_conn, "proxy_mode", None), ReverseMode
+        )
+        direction = "inbound" if is_reverse else "outbound"
+
+        # ── Policy API control host (egress path only) ───────────
         # Short-circuit BEFORE the SNI/Host strict check, rate limiter,
         # secret-injection policy, and the inspector chain. The control
         # host is a synthetic local endpoint (never forwarded upstream), so
         # none of those gates apply. Matching requires both SNI and Host to
         # equal the control host for TLS flows (a mismatch falls through to
         # the SNI check below, which rejects it). See docs/explain/policy-api.md.
+        #
+        # The control host must be unreachable on inbound reverse flows
+        # because Host/SNI are client-controlled there: a cage with
+        # published inbound ports (container.ports, wired as mitmproxy
+        # reverse listeners) forwards client traffic with the client's Host
+        # preserved, so ANY client that can reach a published port could
+        # call the unauthenticated control plane (GET /v1/allowlist,
+        # POST /v1/allowlist/requests). The design reserves the control
+        # host for the caged agent on the EGRESS path only, so gate the
+        # short-circuit on the flow NOT being a reverse-mode (inbound) flow.
         pa = getattr(self, "domain_requests", None)
-        if pa is not None and pa.enabled:
+        if pa is not None and pa.enabled and not is_reverse:
             sni = getattr(getattr(flow, "client_conn", None), "sni", None)
             if isinstance(sni, bytes):
                 try:
@@ -618,13 +636,6 @@ class Agentcage:
             if pa.is_control_host(sni, flow.request.host_header):
                 await pa.handle(flow)
                 return
-
-        # Reverse proxy flows are inbound traffic (host → cage via proxy).
-        # Detect early so we can guard the transparent-mode host rewrite.
-        is_reverse = isinstance(
-            getattr(flow.client_conn, "proxy_mode", None), ReverseMode
-        )
-        direction = "inbound" if is_reverse else "outbound"
 
         # In transparent mode, flow.request.host is the raw destination IP
         # (from SO_ORIGINAL_DST).  Rewrite it to the actual hostname from the

@@ -37,6 +37,30 @@ _BUILTIN_INSPECTOR_NAMES = frozenset({
 
 _VALID_SECRET_SCOPES = ("auto", "user", "system")
 
+# Domain-syntax validator for host-side code paths (domains.allow parse here,
+# the grants watcher's promote step in cli.py, re-exported via state.py).
+# Kept in sync with the in-container copy in data/proxy/policy_api.py
+# (_DOMAIN_RE) — the addon cannot import this module, so the regex is
+# deliberately duplicated. It is the gate that stops overlay strings (which
+# cross the trust boundary via the grants dir) from being rendered into
+# dnsmasq directives unvalidated: a value containing '\n' or '/' would emit
+# extra ``server=`` lines in dns-allowlist.conf.
+DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)"
+    r"([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
+    r"(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+
+
+def valid_domain(domain: str) -> bool:
+    """True if *domain* is a syntactically valid lowercase DNS domain.
+
+    Rejects anything that is not a plain dotted hostname — in particular
+    strings containing newlines, slashes, or other characters that would
+    inject additional directives when interpolated into dnsmasq config.
+    """
+    return isinstance(domain, str) and bool(DOMAIN_RE.match(domain))
+
 
 @dataclass
 class SecretsConfig:
@@ -1361,6 +1385,24 @@ def validate_config(config: Config) -> list[str]:
     if config.domains.allow and config.domains.block:
         raise ValueError(
             "domains: cannot specify both 'allow' and 'block' lists"
+        )
+
+    # Per-entry syntax validation for allow/block lists. The values flow
+    # verbatim into dnsmasq ``server=/`` directives (state.save_dns_allowlist)
+    # and the grants overlay, so a string containing a newline or slash would
+    # inject extra directives. The regex is lowercase-only on purpose: the
+    # DNS pipeline lowercases (``.rstrip(".").lower()`` in cli) but the
+    # config value itself is rendered unmodified — being strict here is safe
+    # (no scaffold/test uses uppercase domains) and keeps the trust boundary
+    # at parse time rather than at render time. ``valid_domain`` is the same
+    # validator the grants watcher and the in-container addon use.
+    _bad_allow = [d for d in config.domains.allow if not valid_domain(d)]
+    _bad_block = [d for d in config.domains.block if not valid_domain(d)]
+    if _bad_allow or _bad_block:
+        offenders = ", ".join(repr(d) for d in (_bad_allow + _bad_block))
+        raise ValueError(
+            f"invalid domain syntax: {offenders} — expected a plain "
+            f"lowercase dotted hostname (e.g. 'api.example.com')"
         )
 
     warnings = []

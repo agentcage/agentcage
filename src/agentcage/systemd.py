@@ -52,3 +52,17 @@ def restart_unit(name: str) -> None:
     if not _systemctl_available():
         return
     subprocess.run([*_systemctl_cmd(), "restart", name], check=True)
+
+
+def enable_unit(name: str) -> None:
+    """Enable a unit so it is pulled in at future boots/logins.
+
+    Needed for NATIVE ``.service`` units (e.g. the grants watcher): unlike
+    quadlet-generated units, which the systemd generator activates
+    automatically, a native unit's ``[Install] WantedBy=`` stanza only names
+    the symlink that ``systemctl enable`` creates — nothing creates it unless
+    enable is called explicitly.
+    """
+    if not _systemctl_available():
+        return
+    subprocess.run([*_systemctl_cmd(), "enable", name], check=True)

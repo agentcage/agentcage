@@ -213,17 +213,32 @@ ExecStartPre=/bin/bash -c '{% if rootless %}podman unshare chown 200:200 "{{ cap
 # every tick to remove promoted entries. Both use atomic temp+rename
 # (save_grants), so only DIRECTORY write+execute matters; the file's own
 # owner/perms are irrelevant. The operator owns the dir (state.grants_dir
-# mkdirs it); the addon is "other". chmod 0777 grants write to both (operator
-# as owner, addon as other via the world bit). Do NOT chown to 200 — that
-# would make the operator "other" and block the watcher from removing
-# promoted entries (grants would pile up forever).
+# mkdirs it).
 #
-# This is deliberately world-writable, unlike a secrets dir. The grants
-# overlay is host-side state; an attacker who can write here can already
-# edit the baseline config (~/.config/agentcage/<name>/config.yaml)
-# directly — the host is the trust boundary, not this dir. The cage itself
-# can't reach it (separate netns).
-ExecStartPre=/bin/bash -c 'chmod 0777 "{{ grants_host_dir }}" 2>/dev/null || true'
+# Write access is granted to EXACTLY the two legitimate writers — the
+# operator (dir owner) and the container's mapped gid — using rootless
+# podman's user-namespace mapping: ``podman unshare chgrp 200`` runs chgrp
+# INSIDE the container's user namespace, so in-container gid 200 maps to the
+# host subgid that the addon's gid maps to, and the host-side dir's group
+# becomes that mapped gid. ``chmod 0770`` then gives the operator (owner)
+# rwx and the container process (group = mapped gid) rwx; every other local
+# user gets nothing. We chgrp (not chown) so the operator stays the owner
+# and the watcher can still remove promoted entries (chowning to 200 would
+# make the operator "other" and grants would pile up forever).
+#
+# THREAT MODEL: on a multi-user host the grants dir must NOT be world-
+# writable. A local user who can write the dir can plant grants.yaml entries
+# that the operator's watcher promotes into the baseline config within ~1s,
+# forging the audit trail. The operator-owned baseline (~/.config/agentcage)
+# is NOT writable by such a user, so the previous "an attacker who can write
+# here can already edit the baseline directly" justification was FALSE. 0770
+# closes that path: only operator + mapped container gid can write. If
+# ``podman unshare chgrp`` is unavailable (no userns mapping, e.g. a
+# stripped/non-rootless podman) the fallback opens the dir 0777 so the
+# feature still works on single-user hosts — and warns to stderr so a
+# multi-user host operator notices. The cage itself can't reach the dir
+# (separate netns).
+ExecStartPre=/bin/bash -c 'podman unshare chgrp 200 "{{ grants_host_dir }}" 2>/dev/null && chmod 0770 "{{ grants_host_dir }}" || { echo "agentcage: WARN: podman unshare chgrp failed for grants dir {{ grants_host_dir }} — falling back to 0777 (multi-user hosts: grants.yaml forge risk)" >&2; chmod 0777 "{{ grants_host_dir }}"; }'
 {% endif %}
 Restart=on-failure
 

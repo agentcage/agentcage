@@ -337,3 +337,63 @@ class TestSecretStripping:
         ))
         assert "POLICY_LLM_KEY" not in cfg.container.podman_secrets
         assert "KEEP_SECRET" in cfg.container.podman_secrets
+
+
+# ── domains.allow / domains.block per-entry syntax validation ──────
+
+
+class TestDomainSyntaxValidation:
+    """Per-entry syntax validation of ``domains.allow`` / ``domains.block``.
+
+    The values flow verbatim into dnsmasq ``server=`` directives and the
+    grants overlay, so a string containing a newline or slash would inject
+    extra directives. Validate at parse time (via ``validate_config``) so a
+    bad entry is rejected loudly rather than rendered into dns-allowlist.conf.
+    """
+
+    def _allow_body(self, *items):
+        # ``items`` are already-formatted YAML list-item lines (indented).
+        return "domains:\n  allow:\n" + "\n".join(items) + "\n"
+
+    def _block_body(self, *items):
+        return "domains:\n  block:\n" + "\n".join(items) + "\n"
+
+    def test_valid_allow_passes(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._allow_body("    - good.com")))
+        # No ValueError: validate_config returns warnings (default-deny note
+        # does not apply — allowlist mode with a non-empty list).
+        validate_config(cfg)
+        assert cfg.domains.allow == ["good.com"]
+
+    def test_invalid_allow_entry_rejected(self, tmp_path):
+        # YAML double-quoted string: \n is a real newline, / a slash — both
+        # would inject extra dnsmasq directives.
+        cfg = load_config(_write(tmp_path, self._allow_body(
+            "    - good.com",
+            '    - "bad\\ninjected/line"')))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_block_list_checked_too(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._block_body(
+            "    - ok.com", "    - bad/line")))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_uppercase_domain_rejected(self, tmp_path):
+        # The regex is lowercase-only; the config value flows verbatim into
+        # dnsmasq, so reject uppercase rather than relying on a downstream
+        # ``.lower()`` that may not run on every path.
+        cfg = load_config(_write(
+            tmp_path, self._allow_body("    - API.Example.COM")))
+        with pytest.raises(ValueError, match="invalid domain syntax"):
+            validate_config(cfg)
+
+    def test_error_message_names_offending_entry(self, tmp_path):
+        cfg = load_config(_write(tmp_path, self._allow_body(
+            '    - "bad\\nline"')))
+        with pytest.raises(ValueError, match="invalid domain syntax") as ei:
+            validate_config(cfg)
+        # The offending entry is named in the message (repr shows the newline
+        # as an escape so it is greppable / not a literal break).
+        assert "bad\\nline" in str(ei.value)

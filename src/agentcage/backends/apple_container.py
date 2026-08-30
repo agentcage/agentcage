@@ -1715,7 +1715,16 @@ class AppleContainerBackend:
             # grants.yaml via atomic temp+rename, so the DIR must be writable
             # by both. chmod 0777 (operator owns it; addon is "other" via the
             # world bit). Don't chown to 200 — that would block the watcher.
-            # See egress.container.j2 for the full rationale.
+            #
+            # macOS hosts are single-user by default and the grants dir is
+            # shared into the Lima VM over reverse-sshfs/virtiofs, a share
+            # only traversable by the operator's account, so the host-side
+            # subgid mapping the container/Linux backend uses (podman unshare
+            # chgrp → 0770) does not apply the same way here. On a SHARED macOS
+            # host (multiple local accounts) this 0777 is a known limitation:
+            # another local user could plant grants.yaml entries the watcher
+            # promotes into the baseline. See egress.container.j2 for the
+            # hardened container/Linux path.
             try:
                 grants_dir.chmod(0o777)
             except OSError:

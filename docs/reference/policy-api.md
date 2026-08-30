@@ -65,7 +65,10 @@ on — there are no separate `introspection:`/`request:` enable flags.
 
 **Backend support (v1):** the grants watcher — the component that promotes
 approved grants into the static baseline and prunes expired entries — runs
-on the **container** backend (systemd user unit) and **apple-container**
+on the **container** backend (systemd user unit; explicitly `systemctl
+--user enable`d so it survives host reboots — the egress quadlet units are
+generator-activated at boot, and without the enable the watcher would stay
+dead after a reboot while the cage came up) and **apple-container**
 (launchd plist). The **vm** backend is not supported in v1: the host CLI
 cannot watch a guest-side overlay, so `domains.auto` grants are decided and
 L7-enforced but never promoted to the baseline/DNS (the CLI warns when this
@@ -308,8 +311,9 @@ Two audit streams record policy activity:
   and `domain_allow_expired` (a time-limited domain expired). It lives at
   `~/.local/share/agentcage/<name>/policy-audit.jsonl` — a sibling of the
   `grants/` subdirectory, deliberately NOT inside the grants dir (that dir is
-  chmod 0777 and bind-mounted RW into the egress, so a file inside it would be
-  forgeable/truncatable by the caged container).
+  writable by the egress container — group-shared with the operator via the
+  podman user-namespace mapping and bind-mounted RW — so a file inside it
+  would be forgeable/truncatable by the caged container).
 
 These are the forensic record for every egress widening.
 

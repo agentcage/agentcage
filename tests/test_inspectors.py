@@ -105,6 +105,104 @@ class TestDomainInspector:
         assert r.action == "block"
 
 
+class TestDomainExpirySemantics:
+    """Fix 2 (medium): ``_matched_expired`` suffix-shadowing must not block
+    legitimately-allowed traffic.
+
+    New semantics: a host is expiry-blocked only if NO matching suffix
+    would allow it if expired entries were removed. If ANY matching suffix
+    is valid (in the allow set with no expires_at, or with a future
+    expires_at), the host is allowed. Only if EVERY matching suffix is
+    expired do we return the longest expired suffix for the error message.
+
+    Expiry is supposed to REMOVE an allow entry, not introduce a deny rule.
+    """
+
+    def test_permanent_specific_unblocked_by_expired_broader(self):
+        """allow=[api.example.com (permanent), example.com (expired)] →
+        api.example.com is NOT blocked (the most-specific permanent entry
+        allows it)."""
+        d = DomainInspector()
+        d.configure({
+            "allow": ["api.example.com", "example.com"],
+            "expires": {"example.com": "2000-01-01T00:00:00+00:00"},
+        })
+        assert d._matched_expired("api.example.com") is None
+        assert d.inspect_request(_ctx(host="api.example.com")) is None
+
+    def test_permanent_broader_unblocks_expired_specific(self):
+        """allow=[example.com (permanent), sub.example.com (expired)] →
+        sub.example.com is NOT blocked (matches via the broader permanent
+        entry)."""
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com", "sub.example.com"],
+            "expires": {"sub.example.com": "2000-01-01T00:00:00+00:00"},
+        })
+        assert d._matched_expired("sub.example.com") is None
+        assert d.inspect_request(_ctx(host="sub.example.com")) is None
+
+    def test_only_expired_entry_is_blocked(self):
+        """allow=[example.com (expired)] → example.com IS blocked, with the
+        error message naming example.com."""
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com"],
+            "expires": {"example.com": "2000-01-01T00:00:00+00:00"},
+        })
+        assert d._matched_expired("example.com") == "example.com"
+        r = d.inspect_request(_ctx(host="example.com"))
+        assert r is not None
+        assert r.action == "block"
+        assert "example.com" in r.reason
+        assert "expired" in r.reason
+
+    def test_future_dated_expiry_not_blocked(self):
+        """allow=[example.com (future expiry)] → not blocked."""
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com"],
+            "expires": {"example.com": "2999-01-01T00:00:00+00:00"},
+        })
+        assert d._matched_expired("example.com") is None
+        assert d.inspect_request(_ctx(host="example.com")) is None
+
+    def test_subdomain_of_only_expired_is_blocked(self):
+        """allow=[example.com (expired)] → sub.example.com is blocked (the
+        only matching suffix is the expired example.com)."""
+        d = DomainInspector()
+        d.configure({
+            "allow": ["example.com"],
+            "expires": {"example.com": "2000-01-01T00:00:00+00:00"},
+        })
+        assert d._matched_expired("sub.example.com") == "example.com"
+        r = d.inspect_request(_ctx(host="sub.example.com"))
+        assert r is not None
+        assert r.action == "block"
+        assert "example.com" in r.reason
+
+    def test_expired_grant_shadowed_by_permanent_baseline(self):
+        """A permanent baseline entry for example.com plus an expired grant
+        for sub.example.com → sub.example.com is allowed via the broader
+        permanent baseline."""
+        d = DomainInspector()
+        d.configure({"allow": ["example.com"]})
+        d.grant("sub.example.com", expires_at="2000-01-01T00:00:00+00:00")
+        assert d._matched_expired("sub.example.com") is None
+        assert d.inspect_request(_ctx(host="sub.example.com")) is None
+
+    def test_only_expired_grant_is_blocked(self):
+        """An expired grant with no broader permanent entry → blocked."""
+        d = DomainInspector()
+        d.configure({"allow": ["unrelated.com"]})
+        d.grant("past.com", expires_at="2000-01-01T00:00:00+00:00")
+        assert d._matched_expired("past.com") == "past.com"
+        r = d.inspect_request(_ctx(host="past.com"))
+        assert r is not None
+        assert r.action == "block"
+        assert "past.com" in r.reason
+
+
 # ── SecretsInspector ─────────────────────────────────────
 
 

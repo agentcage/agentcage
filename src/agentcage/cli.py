@@ -4446,6 +4446,17 @@ def _ensure_grants_watcher(name: str, cfg) -> None:
         _systemd.start_unit(f"{name}-grants.service")
     except Exception as e:
         click.echo(f"warning: could not start grants watcher: {e}", err=True)
+    # Enable the unit so it survives a host reboot. A NATIVE ``.service``'s
+    # ``[Install] WantedBy=`` stanza only names the symlink that
+    # ``systemctl enable`` creates; nothing created it, so before this the
+    # watcher stayed dead after a reboot while the egress and cage came up
+    # (quadlet units are generator-activated, this native unit is not).
+    # Best-effort, same tolerance as the start call above.
+    try:
+        from agentcage import systemd as _systemd
+        _systemd.enable_unit(f"{name}-grants.service")
+    except Exception as e:
+        click.echo(f"warning: could not enable grants watcher: {e}", err=True)
 
 
 @domain.command("rm")
@@ -4528,6 +4539,64 @@ def _grant_domain_match(entry_domain: str, target: str) -> bool:
     would silently miss it and report the grant as absent.
     """
     return entry_domain.rstrip(".").lower() == target.rstrip(".").lower()
+
+
+def _watcher_never_grant(raw: dict) -> set[str]:
+    """Built-in never_grant floor the grants watcher applies on promote.
+
+    Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
+    ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
+    ``{internal, local, localhost}`` plus the control host from
+    ``domains.auto.host`` (default ``agentcage.local``). The watcher runs on
+    the HOST and cannot import the addon (which lives in the egress image),
+    so this is a deliberate mirror kept in sync with
+    ``config._AUTO_NEVER_GRANT`` / ``DomainsAutoConfig.host``. Suffix-matched
+    so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
+    and ``local`` covers the default control host's TLD family.
+    """
+    from agentcage.config import _AUTO_NEVER_GRANT
+    out = {str(h).lower().rstrip(".") for h in _AUTO_NEVER_GRANT}
+    auto = (raw.get("domains") or {}).get("auto") or {}
+    host = str(auto.get("host", "agentcage.local") or "agentcage.local")
+    out.add(host.lower().rstrip("."))
+    return out
+
+
+def _is_never_grant(domain: str, never: set[str]) -> bool:
+    """Suffix-match *domain* against the never_grant set (addon mirror)."""
+    parts = domain.lower().rstrip(".").split(".")
+    for i in range(len(parts)):
+        if ".".join(parts[i:]) in never:
+            return True
+    return False
+
+
+def _safe_tick(tick_fn, name: str) -> None:
+    """Run one grants-watcher tick, isolating ANY exception so the loop survives.
+
+    Mirrors ``data/proxy/policy_api.py`` ``sweeper_loop``'s per-tick
+    isolation: the continuous ``grants watch`` loop previously caught only
+    ``KeyboardInterrupt``; step-0/1/2 try blocks caught only ``FileNotFoundError``;
+    and the step-3 ``state.save_grants`` sat outside any guard. A malformed
+    overlay (YAML/JSON/decode error — another agent is hardening the state.py
+    loaders, but the watcher must survive ANY exception) killed ``grants
+    watch``; with ``Restart=on-failure RestartSec=2`` the unit then hit
+    systemd's start limit and died permanently — promotions and pruning
+    silently stopped.
+
+    ``KeyboardInterrupt`` is a ``BaseException`` (Py 3.8+) so it is NOT
+    swallowed by ``except Exception`` here — it propagates to the loop's
+    outer ``except KeyboardInterrupt`` handler (the orderly-stop path).
+    The tick body is factored into this helper so the per-tick exception
+    handling is unit-testable without the continuous loop + ``sleep``.
+    """
+    try:
+        tick_fn()
+    except Exception as e:  # pragma: no cover — defensive
+        click.echo(
+            f"warning: grants watcher tick for '{name}' failed: {e!r}",
+            err=True,
+        )
 
 
 def _grants_name() -> str:
@@ -4619,6 +4688,34 @@ def grants_promote(domain: str):
          if _grant_domain_match(str(e.get("domain", "")), domain)),
         None,
     )
+    # ``promote`` is for RUNTIME grants only: a domain not in the overlay is
+    # not a Policy-API grant, so promoting it would be a disguised, unaudited
+    # ``domain add`` (the operator gets a baseline edit + dnsmasq change with
+    # no ``policy_grant_promoted`` audit). Refuse and point at the real
+    # command, mirroring ``grants_revoke``'s "is not a runtime grant"
+    # refusal.
+    if grant_entry is None:
+        click.echo(
+            f"error: '{domain}' is not a runtime grant — use "
+            f"`agentcage cage {name} domain add` instead", err=True)
+        sys.exit(1)
+    # Validate the domain syntax before it lands in domains.allow and is
+    # interpolated into the dnsmasq allowlist (dnsmasq directive injection:
+    # a value containing '\n' or '/' would emit extra ``server=`` lines —
+    # see Fix 3 / config.valid_domain). The in-container addon validates
+    # BEFORE granting (policy_api._valid_domain); the host promote path
+    # now does too.
+    dl = domain.rstrip(".").lower()
+    if not state.valid_domain(dl):
+        click.echo(f"error: invalid domain: {domain!r}", err=True)
+        sys.exit(1)
+    # Mirror the addon's never_grant floor: internal/localhost/control-host
+    # zones are permanently denied by policy and must never be promoted.
+    if _is_never_grant(dl, _watcher_never_grant(raw)):
+        click.echo(
+            f"error: '{domain}' is on the never_grant list and cannot be "
+            f"promoted", err=True)
+        sys.exit(1)
     expires_at = str((grant_entry or {}).get("expires_at", "") or "")
     if expires_at:
         expires = _read_domain_expires(raw)
@@ -4652,9 +4749,14 @@ def grants_promote(domain: str):
     # overlay so list/show reflect reality and the egress stops carrying
     # a duplicate entry. Case-insensitive, trailing-dot-insensitive match
     # (see _grant_domain_match) so the operator's casing doesn't matter.
+    # Merge-on-write: re-read the CURRENT on-disk overlay and drop ONLY the
+    # promoted domain, so a grant the egress addon persisted between the
+    # load at the top and this save is not silently lost (the same
+    # lost-update race the watcher's _tick step 3 guards — see Fix 1).
+    revoked_dl = domain.rstrip(".").lower()
     remaining = [
         e for e in state.load_grants(name)
-        if not _grant_domain_match(str(e.get("domain", "")), domain)
+        if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
     ]
     state.save_grants(name, remaining)
     click.echo(
@@ -4688,7 +4790,18 @@ def grants_revoke(domain: str):
         # that would leave the operator believing the grant was revoked.
         click.echo(f"error: '{domain}' is not a runtime grant", err=True)
         sys.exit(1)
-    state.save_grants(name, remaining)
+    # Merge-on-write: re-read the CURRENT on-disk overlay and drop ONLY the
+    # revoked domain, so a grant the egress addon persisted between the
+    # load above and this save is not silently lost (the lost-update race
+    # the watcher's _tick step 3 guards — see Fix 1). The earlier
+    # ``remaining`` check against the snapshot still authorizes the revoke;
+    # this re-filter is the durable write.
+    revoked_dl = domain.rstrip(".").lower()
+    merged = [
+        e for e in state.load_grants(name)
+        if str(e.get("domain", "")).rstrip(".").lower() != revoked_dl
+    ]
+    state.save_grants(name, merged)
     state.append_policy_audit(name, {
         "kind": "policy_grant_revoked",
         "domain": domain,
@@ -4755,10 +4868,39 @@ def grants_watch(interval: float, once: bool):
         except ValueError:
             return False
 
+    # Per-process seen-set for rejected-overlay-entry auditing. An entry
+    # that fails validation (invalid syntax / never_grant) stays in the
+    # overlay (it is NOT promoted and NOT removed), so it would re-audit
+    # every tick forever; dedup to at most one ``policy_grant_rejected``
+    # audit record per distinct domain per watcher run. Cleared only by a
+    # process restart.
+    rejected_seen: set[str] = set()
+
+    def _audit_reject(dl: str, reason: str) -> None:
+        if dl in rejected_seen:
+            return
+        rejected_seen.add(dl)
+        state.append_policy_audit(name, {
+            "kind": "policy_grant_rejected",
+            "domain": dl,
+            "reason": reason,
+            "action": "not_promoted",
+        })
+
     def _tick() -> bool:
         """Process the overlay once. Returns True if anything changed."""
         entries = state.load_grants(name)
         changed = False
+        # Domains this tick intentionally REMOVES from the overlay (expired
+        # in step 1, promoted in step 2). Tracked explicitly so the step-3
+        # write can MERGE against a fresh re-read of the on-disk overlay
+        # instead of clobbering it with this tick's stale snapshot — a
+        # grant the egress addon persisted during the (podman-exec-spanning)
+        # step-2 window would otherwise be silently lost (Fix 1). The
+        # watcher only ever REMOVES overlay entries (steps 1/2 never add),
+        # so ``merged = on_disk − removed_domains`` preserves every fresh
+        # on-disk entry written after the snapshot.
+        removed_domains: set[str] = set()
         # 0. Prune expired allowlist entries that came from
         #    ``domain add --expires-in`` (they live in domains.expires, not
         #    the grants overlay). The L7 inspector already blocks them; this
@@ -4846,6 +4988,7 @@ def grants_watch(interval: float, once: bool):
                 pass
             expired_domains = {str(e.get("domain", "")).rstrip(".").lower()
                                for e in expired}
+            removed_domains |= expired_domains
             for e in expired:
                 state.append_policy_audit(name, {
                     "kind": "policy_grant_removed",
@@ -4887,6 +5030,7 @@ def grants_watch(interval: float, once: bool):
                     list_key = "allow"
                     dom.setdefault(list_key, [])
                     allow_lower = {x.rstrip(".").lower() for x in dom[list_key]}
+                    never = _watcher_never_grant(raw)
                     # Preserve each grant's TTL into domains.expires so step 0
                     # of the next tick prunes it (and the L7 inspector enforces
                     # it). Without this, a ttl_seconds grant is promoted into
@@ -4894,27 +5038,40 @@ def grants_watch(interval: float, once: bool):
                     # overlay entry) is deleted with that entry one tick later —
                     # silently turning a short-lived grant permanent.
                     expires = _read_domain_expires(raw)
+                    promoted_domains = set()
+                    baseline_touched = False
                     for e in pending:
                         d = str(e.get("domain", "")).rstrip(".")
                         dl = d.lower()
+                        # Validate syntax BEFORE the string lands in
+                        # domains.allow and is interpolated into the dnsmasq
+                        # allowlist (dnsmasq directive injection: a value
+                        # containing '\n' or '/' renders as multiple valid
+                        # ``server=`` lines in dns-allowlist.conf and
+                        # ``dnsmasq --test`` PASSES — Fix 3). The in-container
+                        # addon validates BEFORE granting (policy_api._valid_domain);
+                        # the host watcher now does too. Do NOT promote and
+                        # do NOT remove from the overlay (the entry stays so
+                        # the operator can see the rejected grant); audit
+                        # once per distinct domain per process run.
+                        if not state.valid_domain(dl):
+                            _audit_reject(dl, "invalid domain syntax")
+                            continue
+                        # Mirror the addon's never_grant floor (internal /
+                        # localhost / control host): these zones are
+                        # permanently denied by policy and must never be
+                        # promoted into the baseline.
+                        if _is_never_grant(dl, never):
+                            _audit_reject(dl, "never_grant")
+                            continue
                         if dl not in allow_lower:
                             dom[list_key].append(d)
                             allow_lower.add(dl)
+                            baseline_touched = True
                         exp = str(e.get("expires_at", "") or "")
                         if exp:
                             expires[dl] = exp
-                    if expires:
-                        _write_domain_expires(raw, expires)
-                    # Same tolerance as the expire path: the baseline write is
-                    # the durable part; the live-reload SIGHUP is best-effort.
-                    try:
-                        _apply_baseline_change(name, raw)
-                    except (SystemExit, Exception):
-                        pass
-                    promoted_domains = set()
-                    for e in pending:
-                        d = str(e.get("domain", "")).rstrip(".").lower()
-                        promoted_domains.add(d)
+                        promoted_domains.add(dl)
                         state.append_policy_audit(name, {
                             "kind": "policy_grant_applied",
                             "domain": e.get("domain"),
@@ -4923,20 +5080,53 @@ def grants_watch(interval: float, once: bool):
                             "expires_at": e.get("expires_at", ""),
                             "action": "added_to_baseline",
                         })
-                    # Remove promoted entries from the overlay — they now live
-                    # in the baseline; keeping them would grow the file without
-                    # bound and re-surface them in `cage grants list`.
+                    if expires:
+                        _write_domain_expires(raw, expires)
+                    # Only run the live-reload chain (which execs podman —
+                    # hundreds of ms) when a domain was actually appended to
+                    # the baseline. When every pending entry was rejected
+                    # (invalid / never_grant), the baseline is untouched and
+                    # there is nothing to SIGHUP; skip the save below too.
+                    if baseline_touched:
+                        # Same tolerance as the expire path: the baseline
+                        # write is the durable part; the live-reload SIGHUP
+                        # is best-effort.
+                        try:
+                            _apply_baseline_change(name, raw)
+                        except (SystemExit, Exception):
+                            pass
+                    # Remove promoted entries from the overlay — they now
+                    # live in the baseline; keeping them would grow the file
+                    # without bound and re-surface them in `cage grants list`.
+                    # Rejected entries are deliberately NOT removed (they
+                    # stay so the operator sees them and the rejection is
+                    # auditable) and thus NOT in removed_domains.
+                    removed_domains |= promoted_domains
                     entries = [e for e in entries
                                if str(e.get("domain", "")).rstrip(".").lower()
                                not in promoted_domains]
-                    changed = True
+                    if promoted_domains:
+                        changed = True
             except FileNotFoundError:
                 pass
         # 3. Persist the overlay (marks promoted entries applied, drops
-        #    expired). Only write if something actually changed to avoid
-        #    churning the mtime the addon hot-reloads on.
+        #    expired). MERGE-ON-WRITE (Fix 1): re-read the CURRENT on-disk
+        #    overlay and drop only this tick's intentional removals
+        #    (``removed_domains``), so a grant the egress addon persisted
+        #    AFTER this tick's top-of-``_tick`` snapshot — i.e. during the
+        #    podman-exec-spanning step-2 window — survives. The watcher
+        #    only ever REMOVES overlay entries (steps 1/2 never add), so
+        #    ``merged = on_disk − removed_domains`` is the correct merge.
+        #    Only write if something actually changed to avoid churning
+        #    the mtime the addon hot-reloads on.
         if changed:
-            state.save_grants(name, entries)
+            current = state.load_grants(name)
+            merged = [
+                e for e in current
+                if str(e.get("domain", "")).rstrip(".").lower()
+                not in removed_domains
+            ]
+            state.save_grants(name, merged)
         return changed
 
     if once:
@@ -4945,8 +5135,18 @@ def grants_watch(interval: float, once: bool):
     click.echo(f"Watching grants overlay for cage '{name}' (interval {interval}s). Ctrl-C to stop.")
     try:
         while True:
-            if _tick():
-                pass  # could log per-change; keep quiet to be cron-friendly
+            # Per-tick isolation (Fix 2): a single surprise (malformed
+            # overlay raising an exception the step-0/1/2 ``except
+            # FileNotFoundError`` guards don't catch — e.g. a YAML/JSON/
+            # decode error, or a surprise from the step-3 save) must NOT
+            # kill ``grants watch``; with ``Restart=on-failure`` the unit
+            # would then hit systemd's start limit and die permanently,
+            # silently stopping promotions and pruning. ``_safe_tick``
+            # mirrors ``data/proxy/policy_api.py`` ``sweeper_loop``'s
+            # per-tick isolation; ``KeyboardInterrupt`` is a ``BaseException``
+            # so it propagates through to the outer handler below (the
+            # orderly Ctrl-C stop).
+            _safe_tick(_tick, name)
             _time.sleep(interval)
     except KeyboardInterrupt:
         click.echo("stopped.")

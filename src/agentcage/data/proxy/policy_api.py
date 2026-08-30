@@ -813,12 +813,40 @@ class PolicyApi:
         single-threaded, so two concurrent writes from the SAME side also
         get distinct PIDs only across processes — but a single process is
         serialized here, so that's not a concern.
+
+        Defense-in-depth (O_EXCL): the temp is created with ``O_CREAT |
+        O_EXCL`` so a planted symlink at the predictable PID-suffixed temp
+        path (in a writable-by-others directory) cannot be written through
+        — arbitrary-file clobber with the grants YAML. On
+        ``FileExistsError`` (leftover temp from a crash or a plant) the
+        temp is unlinked and retried ONCE; if it still exists the persist
+        is aborted (never write through an existing file).
         """
         entries = self.dom.granted_entries()
         try:
             os.makedirs(self._grants_dir, exist_ok=True)
             tmp = self._grants_path + f".{os.getpid()}.tmp"
-            with open(tmp, "w") as f:
+            fd = None
+            for _attempt in range(2):
+                try:
+                    fd = os.open(
+                        tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+                    )
+                    break
+                except FileExistsError:
+                    # Leftover temp from a crash or a planted symlink.
+                    # Unlink and retry ONCE; if it fails again, abort.
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+            if fd is None:
+                self._log.warn(
+                    f"agentcage: cannot persist grants overlay: temp file "
+                    f"{tmp} exists after retry; aborting persist"
+                )
+                return
+            with os.fdopen(fd, "w") as f:
                 yaml.safe_dump(entries, f, default_flow_style=False,
                                sort_keys=False)
             os.replace(tmp, self._grants_path)

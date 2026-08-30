@@ -1117,8 +1117,13 @@ def _grants_service_unit(name: str) -> str:
     Plain ``.service`` (not a quadlet): the watcher must run on the host so
     it can write the operator's ``cage.yaml`` baseline and exec into the
     egress to SIGHUP dnsmasq — neither of which the in-container addon can
-    do. It is pulled in at boot via ``WantedBy=default.target`` so the
-    operator never starts or stops it by hand.
+    do. It is explicitly enabled and started by the CLI's
+    ``_ensure_grants_watcher`` (``systemctl --user enable`` + ``start``) —
+    the operator does not start/stop it by hand. ``WantedBy=default.target``
+    only names the boot symlink that ``systemctl enable`` creates, so once
+    enabled the unit is pulled in at subsequent boots; the enable+start CALL
+    itself is what brings it up the first time (a native ``.service``'s
+    ``WantedBy`` field alone does not start anything).
 
     The watcher intentionally runs INDEPENDENTLY of egress state: it only
     ``Wants=`` and is ordered ``After=`` the egress (a hard dependency /

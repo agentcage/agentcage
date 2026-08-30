@@ -91,33 +91,56 @@ class DomainInspector(Inspector):
         return False
 
     def _matched_expired(self, host: str) -> Optional[str]:
-        """If the allowlist entry matching *host* has expired, return its
-        domain name (for the block reason); else None.
+        """If the host would be blocked by expiry, return the longest
+        matching expired suffix (for the block reason); else None.
 
-        Walks the host's suffixes (longest first, like ``_matches``) and
-        checks the first suffix that is BOTH in the allow set AND has an
-        expires_at. The expiry source is the baseline ``domains.expires``
-        map (operator ``domain add --expires-in``), falling back to the
+        Semantics: would this host still match the allow set if all
+        expired entries were removed?
+
+        * If ANY matching suffix is valid (in ``domain_set`` with no
+          ``expires_at``, or with a future ``expires_at``) → the host is
+          allowed → return ``None``.
+        * If EVERY matching suffix is expired → return the LONGEST (most
+          specific) expired suffix, for the error message.
+
+        Expiry is supposed to REMOVE an allow entry, not introduce a deny
+        rule: a shorter expired suffix must not block traffic that a
+        longer permanent (or future-dated) suffix allows, and vice versa.
+        The expiry source is the baseline ``domains.expires`` map
+        (operator ``domain add --expires-in``), falling back to the
         matching GRANT entry's own ``expires_at`` — a TTL'd grant must
         expire at L7 immediately, not keep passing for up to the sweeper's
-        30s poll. An expires_at that parses as a past timestamp → expired.
+        30s poll. An unparseable ``expires_at`` is treated as "no expiry"
+        (fail-open on the timestamp, never fail-closed on a malformed
+        value). Two passes over the suffixes — O(suffixes).
         """
         from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
         parts = host.lower().split(".")
+        expired_longest: Optional[str] = None
         for i in range(len(parts)):
             suffix = ".".join(parts[i:])
-            if suffix in self.domain_set:
-                exp = self._expires.get(suffix, "")
-                if not exp and suffix in self.granted:
-                    exp = (self.granted[suffix].get("expires_at") or "")
-                if not exp:
-                    continue
-                try:
-                    if exp <= datetime.now(timezone.utc).isoformat():
-                        return suffix
-                except ValueError:
-                    continue
-        return None
+            if suffix not in self.domain_set:
+                continue
+            exp = self._expires.get(suffix, "")
+            if not exp and suffix in self.granted:
+                exp = (self.granted[suffix].get("expires_at") or "")
+            if not exp:
+                # Permanent entry — host is allowed regardless of other
+                # expired suffixes.
+                return None
+            try:
+                if exp > now:
+                    # Future expiry — host is allowed.
+                    return None
+            except ValueError:
+                # Unparseable expiry → treat as no expiry (fail-open).
+                return None
+            # This suffix is expired. Track the longest (first encountered
+            # since we walk longest-first).
+            if expired_longest is None:
+                expired_longest = suffix
+        return expired_longest
 
     def inspect_request(
         self, ctx: InspectionContext

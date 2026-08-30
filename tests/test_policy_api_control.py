@@ -45,6 +45,26 @@ from inspectors.domain import DomainInspector  # noqa: E402
 import policy_api as _pa_mod  # noqa: E402
 from policy_api import PolicyApi  # noqa: E402
 
+# ── Stub ReverseMode as a real class so the addon's isinstance check works ──
+# conftest.py stubs ``ReverseMode`` as a MagicMock at collection time, which
+# makes ``isinstance(proxy_mode, ReverseMode)`` in ``addon.request()`` crash
+# with TypeError. Overwrite it with a real class BEFORE importing the addon
+# module (the addon does ``from mitmproxy.proxy.mode_specs import ReverseMode``
+# at module load and caches the binding). Pop any cached addon module so it
+# re-imports with the patched binding.
+
+
+class _StubReverseMode:
+    """Standin so ``isinstance(x, ReverseMode)`` evaluates cleanly."""
+    pass
+
+
+sys.modules["mitmproxy.proxy.mode_specs"].ReverseMode = _StubReverseMode
+for _mod in ("addon", "secret_injector"):
+    sys.modules.pop(_mod, None)
+from addon import Agentcage  # noqa: E402
+from secret_injector import SecretInjector  # noqa: E402
+
 
 @pytest.fixture
 def resp_status():
@@ -341,23 +361,22 @@ class TestUniqueTempFile:
     def test_temp_filename_is_pid_suffixed(self, tmp_path, monkeypatch):
         # White-box: the temp path constructed during a persist must include
         # the PID, distinct from the host writer's ``grants.yaml.tmp``.
+        # The persist now uses ``os.open`` (O_EXCL) rather than
+        # ``builtins.open``, so spy on ``os.open``.
         pa, _ = _make_pa(tmp_path, monkeypatch)
         seen_tmp = []
-        import builtins
-        real_open = builtins.open
+        import os as _os
+        real_os_open = _os.open
 
-        def spy_open(path, *a, **k):
+        def spy_open(path, flags, *a, **k):
             p = str(path)
             if p.endswith(".tmp"):
                 seen_tmp.append(p)
-            return real_open(path, *a, **k)
+            return real_os_open(path, flags, *a, **k)
 
-        builtins.open = spy_open
-        try:
-            pa._apply_grant("y.com", "reason", ttl_override=0,
-                            decided_by="decider:agent:openrouter")
-        finally:
-            builtins.open = real_open
+        monkeypatch.setattr("os.open", spy_open)
+        pa._apply_grant("y.com", "reason", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
         assert seen_tmp and any(
             p == str(tmp_path / f"grants.yaml.{os.getpid()}.tmp")
             for p in seen_tmp
@@ -426,3 +445,175 @@ class TestSweeperRobustness:
                 pass
 
         asyncio.run(drive())  # must not raise (tick exception was logged)
+
+# ── Headers helper for addon.request() tests ──────────────
+
+
+class _Headers(dict):
+    def items(self, multi=False):  # noqa: ARG002
+        return list(super().items())
+
+    def get(self, key, default=None):  # type: ignore[override]
+        kl = key.lower()
+        for k, v in super().items():
+            if k.lower() == kl:
+                return v
+        return default
+
+    def keys(self):  # type: ignore[override]
+        return list(super().keys())
+
+
+class TestControlHostEgressOnly:
+    """Fix 1 (medium): the control-host short-circuit must NOT fire on
+    inbound reverse-mode flows. Cages with published inbound ports
+    (container.ports, wired as mitmproxy reverse listeners) forward client
+    traffic with the client's Host preserved, so any client that can reach
+    a published port could call the unauthenticated control plane if the
+    check ran before the reverse-mode determination. The fix moves the
+    control-host short-circuit to AFTER the ``is_reverse`` determination
+    and gates it on ``not is_reverse`` (egress path only)."""
+
+    def _build_addon(self, tmp_path, monkeypatch, pa):
+        """Minimal Agentcage wired with a PolicyApi on domain_requests."""
+        addon = Agentcage()
+        addon.cfg = {}
+        addon.log_allowed = False
+        addon.inspectors = []
+        addon._rl_rate = 0.0
+        addon._rl_burst = 0
+        addon._rl_buckets = {}
+        addon._audit_file = (tmp_path / "audit.jsonl").open("a")
+        addon._cap_pending = {}
+        addon.injector = SecretInjector()
+        addon.injector.rules = []
+        addon.injector.redact_to = []
+        addon._capture = None
+        addon._running = False
+        addon._policy_sweeper = None
+        addon.domain_requests = pa
+
+        # mitmproxy.http.Response.make is a MagicMock — make it return a
+        # sentinel the tests can introspect.
+        from mitmproxy import http as _http
+        def _make_response(status, body, headers):
+            resp = MagicMock()
+            resp.status_code = status
+            resp.content = body
+            resp.headers = headers
+            return resp
+        _http.Response.make.side_effect = _make_response
+        return addon
+
+    def _make_flow(self, *, reverse_mode=False, sni=None,
+                   host_header="agentcage.local"):
+        flow = MagicMock()
+        flow.id = "test-flow-control-egress"
+        flow.metadata = {}
+        flow.request.url = f"https://{host_header}/v1/allowlist"
+        flow.request.host = host_header or "1.2.3.4"
+        flow.request.pretty_host = host_header or "1.2.3.4"
+        flow.request.host_header = host_header
+        flow.request.pretty_url = flow.request.url
+        flow.request.path = "/v1/allowlist"
+        flow.request.port = 443
+        flow.request.method = "GET"
+        flow.request.http_version = "HTTP/1.1"
+        h = {"Content-Type": "application/json"}
+        if host_header:
+            h["Host"] = host_header
+        flow.request.headers = _Headers(h)
+        flow.request.content = b""
+        flow.request.get_text.side_effect = (
+            lambda strict=False: flow.request.content.decode("utf-8", "replace")
+        )
+        flow.client_conn.sni = sni
+        flow.client_conn.tls_established = sni is not None
+        flow.client_conn.address = ("10.0.0.1", 54321)
+        if reverse_mode:
+            flow.client_conn.proxy_mode = _StubReverseMode()
+        else:
+            flow.client_conn.proxy_mode = MagicMock()
+        flow.response = None
+        return flow
+
+    def test_reverse_flow_skips_control_host(self, tmp_path, monkeypatch):
+        """A reverse-mode (inbound) flow whose Host = control host must NOT
+        trigger ``pa.handle`` — the control plane is egress-only."""
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        called = []
+
+        async def _handle_spy(flow):
+            called.append(flow)
+        pa.handle = _handle_spy
+
+        addon = self._build_addon(tmp_path, monkeypatch, pa)
+        flow = self._make_flow(reverse_mode=True, sni="agentcage.local")
+        asyncio.run(addon.request(flow))
+        assert called == [], (
+            "pa.handle must NOT be called for a reverse-mode (inbound) flow "
+            "even when Host/SNI match the control host"
+        )
+
+    def test_egress_flow_hits_control_host(self, tmp_path, monkeypatch):
+        """Regression guard: an egress (non-reverse) flow whose Host/SNI =
+        control host must STILL trigger ``pa.handle`` (the fix must not
+        break the normal egress control-plane path)."""
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        called = []
+
+        async def _handle_spy(flow):
+            called.append(flow)
+        pa.handle = _handle_spy
+
+        addon = self._build_addon(tmp_path, monkeypatch, pa)
+        flow = self._make_flow(reverse_mode=False, sni="agentcage.local")
+        asyncio.run(addon.request(flow))
+        assert len(called) == 1, (
+            "pa.handle must be called for an egress flow targeting the "
+            "control host (the fix only gates reverse/inbound flows)"
+        )
+
+
+class TestOExclTempCreation:
+    """Fix 3 (defense-in-depth): the overlay temp is created with O_EXCL so
+    a planted symlink at the predictable PID-suffixed temp path cannot be
+    written through. On FileExistsError the temp is unlinked and retried
+    once; the persist aborts if it still exists."""
+
+    def test_preplanted_symlink_unlinked_and_replaced(
+        self, tmp_path, monkeypatch
+    ):
+        """A pre-planted symlink at the PID-suffixed temp path (pointing at
+        an outside file) must be unlinked and replaced with a real temp —
+        the outside file's content is unchanged and grants.yaml is written
+        correctly."""
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        # Plant a symlink at the exact temp path the addon will use.
+        target = tmp_path.parent / f"fix3_target_{os.getpid()}.txt"
+        target.write_text("outside content — must not be overwritten")
+        tmp = tmp_path / f"grants.yaml.{os.getpid()}.tmp"
+        os.symlink(target, tmp)
+        assert tmp.is_symlink()
+
+        pa._apply_grant("z.com", "reason", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+
+        # The grants dir contains only grants.yaml — the symlink was unlinked.
+        assert set(os.listdir(tmp_path)) == {"grants.yaml"}
+        # The outside file's content is unchanged (never written through).
+        assert target.read_text() == "outside content — must not be overwritten"
+        # grants.yaml has the correct content.
+        import yaml as _yaml
+        entries = _yaml.safe_load((tmp_path / "grants.yaml").read_text())
+        assert any(e["domain"] == "z.com" for e in entries)
+        # Clean up the outside target.
+        target.unlink(missing_ok=True)
+
+    def test_persist_leaves_no_plain_tmp_file(self, tmp_path, monkeypatch):
+        """After a normal persist, the grants dir contains exactly
+        grants.yaml — no leftover temp."""
+        pa, _ = _make_pa(tmp_path, monkeypatch)
+        pa._apply_grant("x.com", "reason", ttl_override=0,
+                        decided_by="decider:agent:openrouter")
+        assert set(os.listdir(tmp_path)) == {"grants.yaml"}
