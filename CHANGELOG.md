@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web interface round 2: live tailing (SSE), DNS decisions, capture/HAR,
+  and a doctor panel.** The read-only dashboard (`agentcage web`) gained
+  the four surfaces its first release deliberately left as `cage …
+  [-f]`-only, without adding a dependency or a write verb. (1) **Live
+  streams**: `GET /api/v1/cages/{name}/traffic/stream` and
+  `/logs/stream` speak Server-Sent Events — the web twins of `cage audit
+  -f --json` and `cage logs -f`, reusing the same backend follow readers
+  (`journalctl -f` / `tail -f` / `podman logs -f`). A `LiveStream` handle
+  wraps the reader subprocess so the *consumer* can vanish at any
+  moment: the request thread runs the reader through a queue with a 15 s
+  heartbeat (which both survives idle cages' silent connections and
+  turns a dead client into a write error within one interval), and on
+  disconnect it terminates the subprocess — which is what unblocks the
+  blocked `readline`, since closing a mid-execution generator from
+  another thread is not possible. One reader per connection, exactly one
+  `cage audit -f` per terminal; no shared fan-out process to leak. (2)
+  **DNS panel**: the egress's `dns-audit.sh` wrapper already emits one
+  structured audit entry per DNS decision (`method: "DNS"` — allowed
+  lookups and sinkholed non-allowlisted names), so `GET
+  /api/v1/cages/{name}/dns` is that slice of the audit stream — summary
+  chips, top queried/blocked domains, recent queries — with CLI twin
+  `agentcage cage audit NAME --method DNS --summary`; no new CLI surface
+  needed, and the same filter machinery means web and CLI counts cannot
+  drift. (3) **Capture + HAR**: `GET /api/v1/cages/{name}/capture` shows
+  capture status and recent flows, and `…/capture/har` serves a HAR 1.2
+  download (CLI twin `agentcage cage har`, which defaults to the same
+  inbound view). Capture entries record both perspectives of every flow
+  — inbound (what the cage saw: placeholders, redacted secrets) and
+  outbound (the wire: real injected secrets) — and the web interface
+  serves **inbound only, by construction**: the provider has no view
+  knob, panel entries are rebuilt as metadata-only summaries, and the
+  round-trip is asserted by tests that plant a `REAL-SECRET` marker in
+  the outbound perspective and require it absent from every capture
+  payload. The wire view stays in the CLI, warning and all. The HAR
+  download is capped at 5000 entries to keep one request from
+  materializing an unbounded cage history. (4) **Doctor panel**: `GET
+  /api/v1/doctor` runs the same checks as `agentcage doctor` (stdout is
+  captured so check banners don't interleave into the server log) and
+  reports pass/warn/error counts. The panel manifest grew a `stream`
+  field advertising the SSE variant of each panel, `cage traffic`'s
+  `?method=` filter adds `cage audit --method` parity, and the dashboard
+  wires it all up: live toggles on the traffic and logs cards (the 5 s
+  polling refresh stands down while a stream is open so re-renders can
+  never stack a second EventSource), a DNS card, a capture card with the
+  HAR download link, and a doctor page. Still GET-only, still loopback
+  by default, still zero new dependencies. Round 2 is pinned by 22 new
+  tests in `tests/test_web.py` (live-stream filtering and close-unblocks
+  semantics, SSE framing/heartbeat/error-event over real subprocesses,
+  DNS slicing, capture sanitization, HAR download headers, doctor
+  payload + stdout capture).
+
 - **`agentcage web` — a read-only operator dashboard, served from the stdlib.** Cage visibility — processes, secrets, the domain allowlist, traffic — lived entirely in `cage list` / `cage show` / `cage audit` output, which meant assembling a picture of a running sandbox meant a terminal session per panel. `agentcage web` serves a single-file dashboard (overview table of all cages; per-cage services, secrets, allowlist + runtime grants, traffic summary + recent decisions, service logs; 5 s auto-refresh) plus the versioned JSON API behind it — six GET endpoints under `/api/v1/` backed by one new module, `agentcage.web.providers`, with **no new dependency**: the server is `http.server`, the frontend is one static HTML file with vanilla JS. The contract the feature is built under is that the web interface is a **view, never a capability**: every panel has a CLI twin (`agentcage overview`, `cage show`, `secret list`, `domain list` + `cage grants list`, `cage audit`, `cage logs`), the new `overview` command is the terminal twin of the landing page (`--json` is byte-identical to `GET /api/v1/overview`), and `GET /api/v1/manifest` advertises the mapping so the parity is machine-checkable. Providers reuse the existing machinery rather than re-deriving it — backend `is_running`/`service_names`/`logs_argv`/`audit_argv` for status and streams, `audit.py`'s filter + summary for traffic (so the web numbers can never drift from `cage audit`), the CLI's version guard for legacy v0.21 cages (rendered as an annotated row, not a mislabeled "stopped") — and they degrade per-panel instead of per-page: a cage with a broken config or missing backend tooling (no podman on PATH) is an inline `detail`/`error` field, never a blank page or a 500. Security posture: GET-only (writes stay in the CLI, where they are reviewed commands), secret **names and presence only** — values never cross the boundary, loopback bind by default with a printed warning for non-loopback `--host`, `Cache-Control: no-store` + `nosniff` on every response, cage names regex-validated before any filesystem use, and reader subprocesses timeboxed. Extensibility is a registry: a panel is a provider function + a `PANELS` entry (route, CLI twin, description) — the server serves whatever is registered and the dashboard renders the manifest, so adding a panel touches exactly one module plus one CLI command. Pinned by `tests/test_web.py` from three sides: providers, live HTTP server (real requests against an ephemeral port), and CLI parity. See `docs/reference/web.md`.
 - **`agentcage overview` — all cages at a glance.** The new top-level command (terminal twin of the dashboard landing page) prints one row per cage: name, status (`running (2/2)` / `degraded` / `stopped` / `legacy v0.21` / `config error`), lifecycle, isolation, secrets (`1/1`, `!2 missing`), domains (`allowlist:5`), and version; `--json` emits the same payload as `GET /api/v1/overview`.
 

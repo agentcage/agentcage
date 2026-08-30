@@ -681,11 +681,13 @@ def overview(as_json):
               help="Do not open the dashboard in a browser.")
 def web(host, port, no_browser):
     """Serve the read-only web dashboard (visibility into cages,
-    secrets, the domain allowlist, and proxy traffic).
+    secrets, the domain allowlist, DNS decisions, captured traffic,
+    and proxy logs — with live tailing via SSE).
 
-    Every panel is also a CLI command (`agentcage overview`, `cage show`,
-    `secret list`, `domain list`, `cage grants list`, `cage audit`,
-    `cage logs`); the web interface adds a view, never a capability.
+    Every panel is also a CLI command (`agentcage overview`, `agentcage
+    doctor`, `cage show`, `secret list`, `domain list`, `cage grants
+    list`, `cage audit [--method DNS] [-f]`, `cage har`, `cage logs
+    [-f]`); the web interface adds a view, never a capability.
     """
     from agentcage.web.server import serve
 

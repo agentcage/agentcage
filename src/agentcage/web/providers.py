@@ -24,9 +24,14 @@ Design rules, so the panel registry stays a real extensibility contract:
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
 
 import agentcage.state as state
 from agentcage.audit import (
@@ -70,7 +75,9 @@ class Panel:
     """One dashboard panel: a route, its provider, and its CLI twin.
 
     ``cli`` is the command that renders the same data in the terminal —
-    the parity contract the web interface is built under.
+    the parity contract the web interface is built under. ``stream``
+    (optional) is the SSE live-tail variant of the panel, where the CLI
+    twin takes ``-f``.
     """
 
     key: str                     # "traffic" — stable identifier
@@ -79,6 +86,7 @@ class Panel:
     cli: str                      # "agentcage cage audit NAME"
     description: str
     cage_scoped: bool            # True → path carries a {name} segment
+    stream: str = ""            # SSE variant, e.g. "/api/v1/cages/{name}/traffic/stream"
 
 
 #: Registered panels, in dashboard order. To add a panel: write a provider
@@ -88,6 +96,10 @@ class Panel:
 PANELS: list[Panel] = [
     Panel("overview", "Overview", "/api/v1/overview",
           "agentcage overview", "All cages: status, isolation, secrets, domains.",
+          cage_scoped=False),
+    Panel("doctor", "Doctor", "/api/v1/doctor",
+          "agentcage doctor",
+          "System health checks (Podman, systemd, secret backend, ...).",
           cage_scoped=False),
     Panel("cage", "Cage detail", "/api/v1/cages/{name}",
           "agentcage cage show NAME",
@@ -104,11 +116,21 @@ PANELS: list[Panel] = [
     Panel("traffic", "Traffic", "/api/v1/cages/{name}/traffic",
           "agentcage cage audit NAME [--summary]",
           "Proxy decisions: recent entries and aggregate statistics.",
+          cage_scoped=True,
+          stream="/api/v1/cages/{name}/traffic/stream"),
+    Panel("dns", "DNS", "/api/v1/cages/{name}/dns",
+          "agentcage cage audit NAME --method DNS --summary",
+          "DNS decisions from the egress resolver: queries, sinkholed lookups, top domains.",
+          cage_scoped=True),
+    Panel("capture", "Capture", "/api/v1/cages/{name}/capture",
+          "agentcage cage har NAME [--json-lines]",
+          "Captured HTTP flows (inbound view only) with HAR export.",
           cage_scoped=True),
     Panel("logs", "Logs", "/api/v1/cages/{name}/logs",
           "agentcage cage logs NAME",
           "Recent service journal output for the cage and egress units.",
-          cage_scoped=True),
+          cage_scoped=True,
+          stream="/api/v1/cages/{name}/logs/stream"),
 ]
 
 
@@ -122,6 +144,7 @@ def manifest() -> list[dict]:
             "cli": p.cli,
             "description": p.description,
             "cage_scoped": p.cage_scoped,
+            **({"stream": p.stream} if p.stream else {}),
         }
         for p in PANELS
     ]
@@ -493,12 +516,46 @@ def cage_allowlist(name: str) -> dict:
     return data
 
 
+def _audit_stream_argv(name: str, cfg, *, follow: bool) -> list[str]:
+    """The backend's audit reader argv (batch or follow).
+
+    apple-container tails a host-side bind-mounted audit.jsonl; a missing
+    file means "no traffic yet" for that backend, and the CLI reports it
+    the same way.
+    """
+    if getattr(cfg, "isolation", None) == "apple-container":
+        from agentcage.backends.apple_container import AppleContainerBackend
+        path = AppleContainerBackend().logs_dir(name) / "audit.jsonl"
+        if not path.is_file():
+            raise ProviderError(
+                f"no audit log yet for cage '{name}' (no proxy traffic "
+                f"since start)"
+            )
+    return get_backend(cfg).audit_argv(name, follow=follow)
+
+
+def _read_audit_entries(name: str, cfg, filt: AuditFilter) -> list[AuditEntry]:
+    """All audit entries matching *filt* (the batch panels' shared reader)."""
+    argv = _audit_stream_argv(name, cfg, follow=False)
+    out = _run_capture(argv)
+    entries: list[AuditEntry] = []
+    for line in out.splitlines():
+        d = extract_audit_json(line)
+        if d is None:
+            continue
+        entry = AuditEntry.from_dict(d)
+        if filt.matches(entry):
+            entries.append(entry)
+    return entries
+
+
 def cage_traffic(
     name: str,
     *,
     limit: int = 100,
     decisions: list[str] | None = None,
     hosts: list[str] | None = None,
+    methods: list[str] | None = None,
     since: str | None = None,
 ) -> dict:
     """Proxy decisions for a cage: recent entries + aggregate summary.
@@ -512,18 +569,6 @@ def cage_traffic(
 
     cfg = state.load_deployment_config(name)
 
-    if getattr(cfg, "isolation", None) == "apple-container":
-        # apple-container tails a host-side bind-mounted audit.jsonl; a
-        # missing file means "no traffic yet", not "reader broken".
-        from agentcage.backends.apple_container import AppleContainerBackend
-        path = AppleContainerBackend().logs_dir(name) / "audit.jsonl"
-        if not path.is_file():
-            return {
-                "name": name, "entries": [], "count": 0,
-                "summary": compute_summary([]),
-                "note": "no audit log yet (no proxy traffic since start)",
-            }
-
     since_dt = None
     if since:
         from agentcage.har import parse_since
@@ -536,19 +581,10 @@ def cage_traffic(
     filt = AuditFilter(
         decisions=list(decisions or []),
         hosts=list(hosts or []),
+        methods=list(methods or []),
         since=since_dt,
     )
-    argv = get_backend(cfg).audit_argv(name, follow=False)
-    out = _run_capture(argv)
-
-    entries: list[AuditEntry] = []
-    for line in out.splitlines():
-        d = extract_audit_json(line)
-        if d is None:
-            continue
-        entry = AuditEntry.from_dict(d)
-        if filt.matches(entry):
-            entries.append(entry)
+    entries = _read_audit_entries(name, cfg, filt)
 
     # Summary over *all* filtered entries (parity with `cage audit
     # --summary`), then the display limit — otherwise ?limit= would shrink
@@ -563,6 +599,21 @@ def cage_traffic(
         "summary": summary,
         "entries": [e.raw for e in entries],
     }
+
+
+def cage_dns(name: str, *, limit: int = 100, since: str | None = None) -> dict:
+    """DNS decisions for a cage: queries, sinkholes, top domains.
+
+    The egress's dnsmasq wrapper (dns-audit.sh) emits one audit entry per
+    DNS decision (method ``DNS``); this panel is that slice of the audit
+    stream. CLI twin: ``agentcage cage audit NAME --method DNS
+    [--summary]``.
+    """
+    data = cage_traffic(
+        name, limit=limit, methods=["DNS"], since=since,
+    )
+    data["panel"] = "dns"
+    return data
 
 
 def cage_logs(
@@ -595,4 +646,266 @@ def cage_logs(
         "name": name,
         "services": selected,
         "lines": tail,
+    }
+
+
+# ── live streams (SSE backing) ──────────────────────────────
+
+
+class LiveStream:
+    """A follow-mode reader subprocess wrapped as an iterable of dicts.
+
+    The CLI tails audit/log streams with ``Popen`` + a blocking read loop
+    (``cage audit -f`` / ``cage logs -f``); this is the same reader
+    reshaped for a server, where the *consumer* may vanish at any moment.
+    ``close()`` is safe to call from a different thread than the
+    iteration: it terminates the subprocess, which is what unblocks the
+    blocked ``readline`` — closing a mid-execution generator from another
+    thread is not, so the handle owns the process instead of the frame.
+    """
+
+    def __init__(self, argv: list[str], transform: Callable[[str], dict | None]):
+        try:
+            self._proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise ProviderError(f"reader not available: {argv[0]} ({exc})") from exc
+        self._transform = transform
+        self._closed = False
+
+    def __iter__(self):
+        assert self._proc.stdout is not None
+        try:
+            for line in self._proc.stdout:
+                if self._closed:
+                    return
+                item = self._transform(line)
+                if item is not None:
+                    yield item
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """Terminate the reader (idempotent, thread-safe)."""
+        self._closed = True
+        if self._proc.poll() is None:
+            self._proc.terminate()
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait(timeout=5)
+
+
+def follow_traffic(
+    name: str,
+    *,
+    decisions: list[str] | None = None,
+    hosts: list[str] | None = None,
+    methods: list[str] | None = None,
+) -> "LiveStream":
+    """Live audit decisions for a cage, one dict per entry.
+
+    CLI twin: ``agentcage cage audit NAME -f --json``. Filters apply
+    stream-side, exactly like the CLI's follow path.
+    """
+    _require_cage(name)
+    _require_v022(name)
+
+    cfg = state.load_deployment_config(name)
+    filt = AuditFilter(
+        decisions=list(decisions or []),
+        hosts=list(hosts or []),
+        methods=list(methods or []),
+    )
+    argv = _audit_stream_argv(name, cfg, follow=True)
+
+    def transform(line: str) -> dict | None:
+        d = extract_audit_json(line)
+        if d is None:
+            return None
+        if not filt.matches(AuditEntry.from_dict(d)):
+            return None
+        return d
+
+    return LiveStream(argv, transform)
+
+
+def follow_logs(
+    name: str,
+    *,
+    services: list[str] | None = None,
+    lines: int = 50,
+) -> "LiveStream":
+    """Live service journal output for a cage, one dict per line.
+
+    CLI twin: ``agentcage cage logs NAME -f``.
+    """
+    _require_cage(name)
+    _require_v022(name)
+
+    cfg = state.load_deployment_config(name)
+    backend = get_backend(cfg)
+    allowed = backend.service_names(name)
+    selected = [s for s in (services or allowed) if s in allowed] or allowed
+    argv = backend.logs_argv(
+        name, selected, follow=True, lines=max(0, lines),
+    )
+    return LiveStream(
+        argv, lambda line: {"line": line.rstrip("\n")},
+    )
+
+
+# ── capture (HAR) ───────────────────────────────────────────
+
+
+def _capture_path(name: str, cfg) -> Path:
+    """Host-visible capture.jsonl for the cage (backend-aware)."""
+    if getattr(cfg, "isolation", None) == "apple-container":
+        from agentcage.backends.apple_container import AppleContainerBackend
+        return AppleContainerBackend().logs_dir(name) / "capture.jsonl"
+    return state.capture_file(name)
+
+
+def _read_capture_entries(path: Path, *, limit: int = 0) -> list[dict]:
+    """Parsed capture entries (most recent last); *limit* keeps last N."""
+    entries: list[dict] = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+    if limit > 0:
+        entries = entries[-limit:]
+    return entries
+
+
+# Capture entries carry both perspectives — inbound (what the cage saw:
+# placeholders, redacted secrets) and outbound (the wire: real secrets).
+# The web interface serves inbound only; the outbound view is the CLI's
+# `cage har --view outbound` and it stays there, warning and all.
+_INBOUND_ONLY_NOTE = (
+    "web capture views are inbound-only (redacted); use "
+    "'agentcage cage har --view outbound' for the wire perspective"
+)
+
+
+def cage_capture(name: str, *, limit: int = 100) -> dict:
+    """Captured HTTP flows for a cage — status + recent entries.
+
+    CLI twin: ``agentcage cage har NAME --json-lines`` (which can also
+    print the outbound perspective; this panel cannot, by design).
+    """
+    _require_cage(name)
+    _require_v022(name)
+
+    cfg = state.load_deployment_config(name)
+    path = _capture_path(name, cfg)
+    enabled = bool(getattr(cfg, "capture", None) and cfg.capture.enable_har)
+
+    data: dict = {
+        "name": name,
+        "enabled": enabled,
+        "note": _INBOUND_ONLY_NOTE,
+    }
+    if not path.is_file():
+        data.update({
+            "captured": False,
+            "count": 0,
+            "entries": [],
+            "detail": (
+                "no capture file — add 'capture: {enable_har: true}' to "
+                "cage.yaml and run 'agentcage cage update'"
+            ),
+        })
+        return data
+
+    entries = _read_capture_entries(path)
+    data.update({
+        "captured": True,
+        "count": len(entries),
+        "size": path.stat().st_size,
+        "har": f"/api/v1/cages/{name}/capture/har",
+    })
+    if limit > 0:
+        entries = entries[-limit:]
+
+    # Sanitized summaries: inbound perspective only, metadata only — no
+    # bodies (they can be megabytes) and never the outbound perspective.
+    data["entries"] = [
+        {
+            "ts": e.get("ts", ""),
+            "flow_id": e.get("flow_id", ""),
+            "direction": e.get("direction", ""),
+            "decision": e.get("decision", ""),
+            "host": e.get("host", ""),
+            "method": e.get("method", ""),
+            "status": (e.get("inbound") or {}).get("response", {})
+                        .get("status"),
+            "resp_size": (e.get("inbound") or {}).get("response", {})
+                        .get("bodySize", 0),
+        }
+        for e in entries
+    ]
+    return data
+
+
+def cage_har(name: str, *, limit: int = 0) -> dict:
+    """Full HAR 1.2 export of a cage's captured traffic — inbound view.
+
+    CLI twin: ``agentcage cage har NAME`` (inbound is its default view
+    too). The outbound (wire, secrets) perspective is deliberately not
+    reachable from the web interface.
+    """
+    from agentcage.har import capture_to_har
+
+    _require_cage(name)
+    _require_v022(name)
+
+    cfg = state.load_deployment_config(name)
+    path = _capture_path(name, cfg)
+    if not path.is_file():
+        raise ProviderError(
+            f"no capture file found for cage '{name}' (enable "
+            f"'capture: {{enable_har: true}}' and run 'agentcage cage update')"
+        )
+    entries = _read_capture_entries(path, limit=limit)
+    return capture_to_har(entries, view="inbound")
+
+
+# ── doctor ──────────────────────────────────────────────────
+
+
+def doctor() -> dict:
+    """System health checks — the doctor panel.
+
+    CLI twin: ``agentcage doctor``. ``run_doctor`` prints as it checks;
+    the server captures that output so a dashboard request doesn't
+    interleave check banners into the server log. The printed text and
+    the returned results are the same data the CLI shows.
+    """
+    from agentcage.doctor import run_doctor
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        results = run_doctor()
+    checks = [
+        {"level": r.level, "message": r.message, "hint": r.hint}
+        for r in results
+    ]
+    return {
+        "ok": not any(r.level == "error" for r in results),
+        "pass": sum(1 for r in results if r.level == "pass"),
+        "warn": sum(1 for r in results if r.level == "warn"),
+        "error": sum(1 for r in results if r.level == "error"),
+        "checks": checks,
     }

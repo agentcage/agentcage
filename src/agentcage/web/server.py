@@ -28,7 +28,10 @@ Security posture:
 from __future__ import annotations
 
 import json
+import queue
 import re
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -41,8 +44,19 @@ _STATIC_DIR = Path(__file__).parent / "static"
 # the CLI accepts at create time; providers re-validate against state.
 _CAGE_ROUTE = re.compile(r"^/api/v1/cages/([a-z0-9][a-z0-9-]{0,62})(?:/(\w+))?$")
 
+# Live variants (SSE) and the HAR download need their own patterns — two
+# segments after the name, which _CAGE_ROUTE deliberately doesn't match.
+_CAGE_STREAM = re.compile(
+    r"^/api/v1/cages/([a-z0-9][a-z0-9-]{0,62})/(traffic|logs)/stream$"
+)
+_CAGE_HAR = re.compile(
+    r"^/api/v1/cages/([a-z0-9][a-z0-9-]{0,62})/capture/har$"
+)
+
 _MAX_QUERY_ITEMS = 32  # per repeated query param — a guard, not a feature
 _MAX_LIMIT = 1000       # traffic/logs cap; the CLI is unlimited, the API is not
+_MAX_HAR_ENTRIES = 5000  # HAR download cap — a full cage export can be huge
+_HEARTBEAT_S = 15       # SSE keepalive: detects dead clients, survives proxies
 
 # Panel key → provider function name. Built from PANELS so an
 # unregistered panel can never be routed; then "cage" (the detail panel)
@@ -139,7 +153,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"panels": providers.manifest()})
         elif path == "/api/v1/overview":
             self._send_json(200, providers.overview())
+        elif path == "/api/v1/doctor":
+            self._send_json(200, providers.doctor())
         else:
+            m = _CAGE_HAR.match(path)
+            if m:
+                self._handle_har_download(m.group(1), query)
+                return
+            m = _CAGE_STREAM.match(path)
+            if m:
+                self._handle_stream(m.group(1), m.group(2), query)
+                return
             m = _CAGE_ROUTE.match(path)
             if not m:
                 raise ApiError(404, f"not found: {path}")
@@ -154,8 +178,14 @@ class _Handler(BaseHTTPRequestHandler):
         if fn is None:
             raise ApiError(404, f"unknown panel: {panel}")
 
-        if panel in ("cage", "secrets", "allowlist"):
+        if panel in ("cage", "secrets", "allowlist", "dns"):
             self._send_json(200, fn(name))
+        elif panel == "capture":
+            self._send_json(200, fn(
+                name,
+                limit=self._int_query(query, "limit", default=100,
+                                      maximum=_MAX_LIMIT),
+            ))
         elif panel == "traffic":
             self._send_json(200, fn(
                 name,
@@ -163,6 +193,7 @@ class _Handler(BaseHTTPRequestHandler):
                                       maximum=_MAX_LIMIT),
                 decisions=self._list_query(query, "decision"),
                 hosts=self._list_query(query, "host"),
+                methods=self._list_query(query, "method"),
                 since=self._one_query(query, "since"),
             ))
         elif panel == "logs":
@@ -178,6 +209,123 @@ class _Handler(BaseHTTPRequestHandler):
             ))
         else:  # pragma: no cover — guarded by _PANEL_FN
             raise ApiError(404, f"unknown panel: {panel}")
+
+    # ── live streams + HAR download ───────────────────────
+
+    def _handle_stream(
+        self, name: str, kind: str, query: dict[str, list[str]]
+    ) -> None:
+        """SSE live tail — the web twin of `cage audit -f` / `cage logs -f`.
+
+        Providers are resolved BEFORE headers are written, so unknown
+        cages / panels still get a clean JSON error; once the event stream
+        opens, failures become ``event: error`` frames and the stream ends.
+        """
+        if kind == "traffic":
+            live = providers.follow_traffic(
+                name,
+                decisions=self._list_query(query, "decision"),
+                hosts=self._list_query(query, "host"),
+                methods=self._list_query(query, "method"),
+            )
+        else:
+            services = self._list_query(query, "service")
+            unknown = [s for s in services if not re.match(r"^\w+$", s)]
+            if unknown:
+                raise ApiError(400, f"invalid service: {unknown[0]!r}")
+            live = providers.follow_logs(
+                name,
+                services=services,
+                lines=self._int_query(query, "lines", default=50,
+                                      maximum=_MAX_LIMIT),
+            )
+        self._stream_sse(live)
+
+    def _stream_sse(self, live: "providers.LiveStream") -> None:
+        """Write a LiveStream as text/event-stream until it ends or the
+        client disconnects.
+
+        A producer thread iterates the reader subprocess (blocked in
+        readline most of the time) and pushes items onto a queue; the
+        request thread drains the queue with a timeout so it can emit a
+        heartbeat even when the cage is idle — the heartbeat is what
+        both keeps proxies from reaping the connection and turns a dead
+        client into a write error within one interval. On disconnect the
+        request thread closes the LiveStream (terminating the subprocess,
+        which is what unblocks the producer) instead of leaking a tail.
+        """
+        items: "queue.Queue[dict | None]" = queue.Queue()
+
+        def produce() -> None:
+            try:
+                for item in live:
+                    items.put(item)
+            except Exception as exc:  # noqa: BLE001 — surface in-stream
+                items.put({"event": "error", "message": f"{exc}"})
+            finally:
+                items.put(None)  # sentinel: reader exited
+
+        producer = threading.Thread(target=produce, daemon=True)
+        producer.start()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        # Bound every write so a wedged client cannot pin a server thread.
+        self.connection.settimeout(_HEARTBEAT_S + 5)
+
+        try:
+            while True:
+                try:
+                    item = items.get(timeout=_HEARTBEAT_S)
+                except queue.Empty:
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                    continue
+                if item is None:
+                    break
+                if item.get("event") == "error":
+                    self.wfile.write(
+                        b"event: error\ndata: "
+                        + json.dumps(item).encode("utf-8") + b"\n\n"
+                    )
+                    break
+                self.wfile.write(
+                    b"data: " + json.dumps(item).encode("utf-8") + b"\n\n"
+                )
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            pass  # client went away — that IS the disconnect path
+        finally:
+            live.close()
+            producer.join(timeout=5)
+
+    def _handle_har_download(
+        self, name: str, query: dict[str, list[str]]
+    ) -> None:
+        """Inbound-view HAR download — the web twin of `cage har`'s default.
+
+        Served as an attachment; the outbound (wire) perspective is not
+        reachable here by construction — the provider has no view knob.
+        """
+        har = providers.cage_har(
+            name,
+            limit=self._int_query(query, "limit", default=0,
+                                  maximum=_MAX_HAR_ENTRIES),
+        )
+        body = json.dumps(har, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{name}-inbound.har"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
 
     # ── query parsing ─────────────────────────────────────
 

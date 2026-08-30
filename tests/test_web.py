@@ -9,10 +9,12 @@ sides — the provider data layer, the HTTP surface, and the CLI commands
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import urllib.error
 import urllib.request
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -28,6 +30,8 @@ CAGE_YAML = """\
 name: demo
 container:
   image: localhost/demo:latest
+capture:
+  enable_har: true
 domains:
   allow:
     - api.example.com
@@ -344,8 +348,16 @@ class TestServer:
         status, body, _ = client("/api/v1/manifest")
         panels = json.loads(body)["panels"]
         keys = {p["key"] for p in panels}
-        assert keys == {"overview", "cage", "secrets", "allowlist",
-                        "traffic", "logs"}
+        assert keys == {"overview", "doctor", "cage", "secrets", "allowlist",
+                        "traffic", "dns", "capture", "logs"}
+        # every panel declares a CLI twin (the parity contract)
+        for p in panels:
+            assert p["cli"].startswith("agentcage "), p["key"]
+        # live variants are advertised where the CLI twin takes -f
+        by_key = {p["key"]: p for p in panels}
+        assert by_key["traffic"]["stream"].endswith("/traffic/stream")
+        assert by_key["logs"]["stream"].endswith("/logs/stream")
+        assert "stream" not in by_key["secrets"]
 
     def test_overview_endpoint(self, client):
         status, body, _ = client("/api/v1/overview")
@@ -353,7 +365,8 @@ class TestServer:
         assert json.loads(body)["cages"][0]["name"] == "demo"
 
     def test_cage_panel_routes(self, client):
-        for panel in ("", "/secrets", "/allowlist", "/traffic", "/logs"):
+        for panel in ("", "/secrets", "/allowlist", "/traffic", "/dns",
+                      "/capture", "/logs"):
             status, body, _ = client(f"/api/v1/cages/demo{panel}")
             assert status == 200, panel
             assert json.loads(body)["name"] == "demo"
@@ -447,3 +460,350 @@ class TestCliParity:
         )
         assert result.exit_code == 1
         assert "error" in result.output
+
+
+# ── live streams ──────────────────────────────────────────────
+
+
+class FakeLive:
+    """A LiveStream stand-in for server-side error-path tests."""
+
+    def __iter__(self):
+        raise RuntimeError("reader exploded")
+
+    def close(self):
+        pass
+
+
+def _py_reader(lines: list[str], *, sleep_before_exit: float = 0) -> list[str]:
+    """A real reader argv: prints *lines*, optionally stalls, then exits.
+
+    The payload rides sys.argv (not stdin) so the argv works as a Popen
+    command with no shell plumbing.
+    """
+    import json as _json
+    body = _json.dumps({"lines": lines, "sleep": sleep_before_exit})
+    return [sys.executable, "-c",
+            "import json,sys,time; d=json.loads(sys.argv[1]); "
+            "[print(l, flush=True) for l in d['lines']]; "
+            "time.sleep(d['sleep'])", body]
+
+
+class TestLiveStreams:
+    def test_follow_traffic_yields_filtered_entries(self, web_env, monkeypatch):
+        entries = [
+            {"ts": "2026-01-01T00:00:01+00:00", "direction": "outbound",
+             "method": "GET", "host": "api.example.com", "decision": "allowed",
+             "inspectors": []},
+            "not json at all",
+            {"ts": "2026-01-01T00:00:02+00:00", "direction": "outbound",
+             "method": "POST", "host": "evil.example", "decision": "blocked",
+             "inspectors": []},
+        ]
+        monkeypatch.setattr(
+            providers, "_audit_stream_argv",
+            lambda name, cfg, follow: _py_reader(
+                [json.dumps(e) if isinstance(e, dict) else e for e in entries]),
+        )
+        live = providers.follow_traffic("demo", decisions=["blocked"])
+        got = [item for item in live]
+        assert len(got) == 1
+        assert got[0]["host"] == "evil.example"
+
+    def test_follow_logs_yields_lines(self, web_env, monkeypatch):
+        monkeypatch.setattr(
+            providers, "get_backend",
+            lambda cfg: SimpleBackend(logs_argv_value=_py_reader(["a", "b"])),
+        )
+        live = providers.follow_logs("demo", lines=10)
+        assert [i for i in live] == [{"line": "a"}, {"line": "b"}]
+
+    def test_livestream_close_is_idempotent_and_unblocks(self, web_env):
+        import time
+        # a reader that hangs after one line — close() from the main
+        # thread must terminate it (the server's disconnect path)
+        argv = _py_reader([], sleep_before_exit=60)
+        live = providers.LiveStream(argv, lambda line: {"line": line})
+        start = time.monotonic()
+        live.close()
+        live.close()  # idempotent
+        assert time.monotonic() - start < 10
+        assert live._proc.poll() is not None
+
+
+class SimpleBackend(FakeBackend):
+    """FakeBackend with an injectable logs_argv."""
+
+    def __init__(self, logs_argv_value):
+        super().__init__()
+        self._logs_argv_value = logs_argv_value
+
+    def logs_argv(self, name, services, *, follow=False, lines=0, **kw):
+        return self._logs_argv_value
+
+
+class TestServerStreams:
+    @pytest.fixture
+    def client(self, web_env):
+        get, httpd = _make_client()
+        yield get
+        httpd.shutdown()
+        httpd.server_close()
+
+    def test_traffic_stream_sse(self, client, monkeypatch):
+        entries = [
+            {"ts": "2026-01-01T00:00:01+00:00", "direction": "outbound",
+             "method": "GET", "host": "api.example.com", "decision": "allowed",
+             "inspectors": []},
+        ]
+        monkeypatch.setattr(
+            providers, "_audit_stream_argv",
+            lambda name, cfg, follow: _py_reader([json.dumps(entries[0])]),
+        )
+        status, body, headers = client(
+            "/api/v1/cages/demo/traffic/stream")
+        assert status == 200
+        assert headers["Content-Type"].startswith("text/event-stream")
+        assert headers["Cache-Control"] == "no-store"
+        assert body.startswith("data: ")
+        assert "api.example.com" in body
+        assert body.endswith("\n\n")
+
+    def test_logs_stream_sse(self, client, monkeypatch):
+        monkeypatch.setattr(
+            providers, "get_backend",
+            lambda cfg: SimpleBackend(_py_reader(["line-1"])),
+        )
+        status, body, _ = client("/api/v1/cages/demo/logs/stream")
+        assert status == 200
+        assert "data:" in body
+        assert "line-1" in body
+
+    def test_stream_error_becomes_sse_error_event(self, client, monkeypatch):
+        monkeypatch.setattr(providers, "follow_traffic",
+                            lambda *a, **kw: FakeLive())
+        status, body, _ = client("/api/v1/cages/demo/traffic/stream")
+        assert status == 200
+        assert "event: error" in body
+        assert "reader exploded" in body
+
+    def test_stream_heartbeats_when_idle(self, client, monkeypatch):
+        from agentcage.web import server as web_server
+        monkeypatch.setattr(web_server, "_HEARTBEAT_S", 0.2)
+        monkeypatch.setattr(
+            providers, "_audit_stream_argv",
+            lambda name, cfg, follow: _py_reader([], sleep_before_exit=1.0),
+        )
+        status, body, _ = client("/api/v1/cages/demo/traffic/stream")
+        assert status == 200
+        assert ": heartbeat" in body
+
+    def test_stream_unknown_cage_is_json_404(self, client):
+        # provider resolution happens before the SSE headers
+        status, body, headers = client("/api/v1/cages/nope/traffic/stream")
+        assert status == 404
+        assert headers["Content-Type"].startswith("application/json")
+
+    def test_stream_bad_query_is_400(self, client):
+        status, _, _ = client("/api/v1/cages/demo/logs/stream?service=x!")
+        assert status == 400
+
+    def test_stream_writes_rejected(self, client):
+        status, body, _ = client("/api/v1/cages/demo/traffic/stream",
+                                 method="POST", data=b"{}")
+        assert status == 405
+
+
+# ── DNS panel ────────────────────────────────────────────────
+
+
+DNS_LINES = [
+    {"ts": "2026-01-01T00:00:01+00:00", "direction": "outbound",
+     "method": "DNS", "host": "api.example.com", "decision": "allowed",
+     "inspectors": [{"name": "dns", "severity": "info"}]},
+    {"ts": "2026-01-01T00:00:02+00:00", "direction": "outbound",
+     "method": "DNS", "host": "evil.example", "decision": "blocked",
+     "reason": "domain not in allowlist",
+     "inspectors": [{"name": "dns", "severity": "warning"}]},
+    {"ts": "2026-01-01T00:00:03+00:00", "direction": "outbound",
+     "method": "GET", "host": "api.example.com", "decision": "allowed",
+     "inspectors": []},
+]
+
+
+class TestDnsPanel:
+    @pytest.fixture
+    def client(self, web_env):
+        get, httpd = _make_client()
+        yield get
+        httpd.shutdown()
+        httpd.server_close()
+
+    def test_dns_only_dns_entries(self, web_env, monkeypatch):
+        monkeypatch.setattr(
+            providers, "_run_capture",
+            lambda argv, **kw: "\n".join(json.dumps(e) for e in DNS_LINES),
+        )
+        data = providers.cage_dns("demo")
+        assert data["panel"] == "dns"
+        assert data["count"] == 2
+        assert all(e["method"] == "DNS" for e in data["entries"])
+        assert data["summary"]["decisions"] == {"allowed": 1, "blocked": 1}
+        assert "evil.example" in data["summary"]["top_blocked_hosts"]
+
+    def test_dns_endpoint(self, client, monkeypatch):  # noqa: F811
+        monkeypatch.setattr(
+            providers, "_run_capture",
+            lambda argv, **kw: "\n".join(json.dumps(e) for e in DNS_LINES),
+        )
+        status, body, _ = client("/api/v1/cages/demo/dns")
+        assert status == 200
+        data = json.loads(body)
+        assert data["count"] == 2
+
+
+# ── capture / HAR ─────────────────────────────────────────────
+
+
+CAPTURE_ENTRY = {
+    "ts": "2026-01-01T00:00:01+00:00",
+    "flow_id": "f-1",
+    "direction": "outbound",
+    "decision": "allowed",
+    "host": "api.example.com",
+    "method": "GET",
+    "inbound": {
+        "request": {"method": "GET", "url": "https://api.example.com/v1",
+                    "headers": [["Authorization", "agentcage:secret:API_KEY:00000000000000000000000000000000"]],
+                    "body": "", "bodySize": 0},
+        "response": {"status": 200, "body": "", "bodySize": 42,
+                     "headers": []},
+    },
+    "outbound": {
+        "request": {"method": "GET", "url": "https://api.example.com/v1",
+                    "headers": [["Authorization", "Bearer REAL-SECRET-VALUE"]],
+                    "body": "", "bodySize": 0},
+        "response": {"status": 200, "body": "REAL-BODY", "bodySize": 42,
+                     "headers": []},
+    },
+}
+
+
+class TestCapturePanel:
+    @pytest.fixture
+    def client(self, web_env):
+        get, httpd = _make_client()
+        yield get
+        httpd.shutdown()
+        httpd.server_close()
+
+    def _write_capture(self, lines):
+        path = state.capture_file("demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_capture_panel_never_exposes_outbound(self, web_env):
+        self._write_capture([json.dumps(CAPTURE_ENTRY)])
+        data = providers.cage_capture("demo")
+        assert data["captured"] is True
+        assert data["enabled"] is True
+        assert data["count"] == 1
+        entry = data["entries"][0]
+        assert entry["status"] == 200
+        assert entry["resp_size"] == 42
+        # the outbound perspective (real secrets) must not cross the wire:
+        # no perspective objects, no wire values (direction metadata is fine)
+        blob = json.dumps(data)
+        assert "outbound" not in data["entries"][0]
+        assert "REAL-SECRET-VALUE" not in blob
+        assert "REAL-BODY" not in blob
+
+    def test_capture_panel_without_file(self, web_env):
+        data = providers.cage_capture("demo")
+        assert data["captured"] is False
+        assert "enable_har" in data["detail"]
+
+    def test_har_export_is_inbound_view(self, web_env):
+        self._write_capture([json.dumps(CAPTURE_ENTRY)])
+        har = providers.cage_har("demo")
+        assert har["log"]["version"] == "1.2"
+        assert len(har["log"]["entries"]) == 1
+        blob = json.dumps(har)
+        assert "REAL-SECRET-VALUE" not in blob
+        assert "REAL-BODY" not in blob
+        # the inbound placeholder IS present — that's the whole point of
+        # the inbound view: what the cage saw, redacted
+        assert "agentcage:secret:API_KEY" in blob
+
+    def test_har_missing_capture_is_provider_error(self, web_env):
+        with pytest.raises(providers.ProviderError):
+            providers.cage_har("demo")
+
+    def test_har_download_endpoint(self, client, monkeypatch):
+        path = state.capture_file("demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(CAPTURE_ENTRY) + "\n")
+        status, body, headers = client("/api/v1/cages/demo/capture/har")
+        assert status == 200
+        assert headers["Content-Disposition"] == \
+            'attachment; filename="demo-inbound.har"'
+        har = json.loads(body)
+        assert har["log"]["version"] == "1.2"
+        assert "REAL-SECRET-VALUE" not in body
+
+    def test_har_download_missing_capture_is_503(self, client):
+        status, body, _ = client("/api/v1/cages/demo/capture/har")
+        assert status == 503
+
+    def test_capture_endpoint(self, client, monkeypatch):
+        path = state.capture_file("demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(CAPTURE_ENTRY) + "\n")
+        status, body, _ = client("/api/v1/cages/demo/capture")
+        assert status == 200
+        assert json.loads(body)["count"] == 1
+
+
+# ── doctor panel ──────────────────────────────────────────────
+
+
+class TestDoctorPanel:
+    @pytest.fixture
+    def client(self, web_env):
+        get, httpd = _make_client()
+        yield get
+        httpd.shutdown()
+        httpd.server_close()
+
+    def test_doctor_payload_and_stdout_capture(self, monkeypatch, capsys):
+        from agentcage.doctor import CheckResult
+        import agentcage.doctor as doctor_mod
+
+        def fake_run_doctor():
+            click.echo("banner that must not leak")
+            return [
+                CheckResult("pass", "podman ok"),
+                CheckResult("warn", "lima stale", hint="limactl start"),
+                CheckResult("error", "no secret backend", hint="see docs"),
+            ]
+
+        monkeypatch.setattr(doctor_mod, "run_doctor", fake_run_doctor)
+        data = providers.doctor()
+        assert data["ok"] is False
+        assert data["pass"] == 1 and data["warn"] == 1 and data["error"] == 1
+        assert data["checks"][1]["hint"] == "limactl start"
+        # the banner went to the StringIO, not the test's captured stdout
+        assert "banner that must not leak" not in capsys.readouterr().out
+
+    def test_doctor_endpoint(self, client, monkeypatch):
+        from agentcage.doctor import CheckResult
+        import agentcage.doctor as doctor_mod
+
+        monkeypatch.setattr(doctor_mod, "run_doctor",
+                            lambda: [CheckResult("pass", "all good")])
+        status, body, _ = client("/api/v1/doctor")
+        assert status == 200
+        data = json.loads(body)
+        assert data["ok"] is True
+        assert data["checks"][0]["level"] == "pass"
