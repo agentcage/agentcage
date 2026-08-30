@@ -32,9 +32,9 @@ class DomainInspector(Inspector):
         self._baseline: set[str] = set()
         # Domain → ISO expires_at for allowlist entries with a TTL. Empty
         # value / absent key = permanent. Enforced in ``inspect_request``
-        # so an expired domain is blocked at L7 immediately, even before the
-        # grants watcher prunes it from the baseline + dnsmasq. Robust against
-        # a stopped watcher.
+        # so an expired domain is blocked at L7 immediately, even before
+        # the in-egress addon sweeper drops it and re-publishes the zone
+        # list. Robust regardless of host-side reconcile timing.
         self._expires: dict[str, str] = {}
         # granted[domain_lower] = {granted_at, expires_at, reason, source}
         self.granted: dict[str, dict] = {}
@@ -190,8 +190,9 @@ class DomainInspector(Inspector):
             # entry that matched has an expires_at in the past, treat the
             # domain as no-longer-allowed. This makes a time-limited domain
             # (``domain add --expires-in`` or a TTL'd grant) stop working the
-            # moment it expires, in-process, without waiting for the watcher
-            # to prune the baseline. An unparseable expires_at is treated as
+            # moment it expires, in-process, without waiting for the
+            # in-egress sweeper to drop it or the reconcile to prune the
+            # baseline. An unparseable expires_at is treated as
             # "no expiry" (fail-open on the timestamp, never fail-closed on
             # a malformed value).
             expired_entry = self._matched_expired(ctx.host)
@@ -230,11 +231,15 @@ class DomainInspector(Inspector):
         Takes effect immediately for the next request — at the L7 domain
         inspector, including the entry's own ``expires_at`` (``_matched_expired``
         consults it, so an expired grant blocks before the sweeper even
-        drops it). DNS-layer reachability for the granted zone is applied by
-        the HOST-side grants watcher, which promotes the overlay entry into
-        the static baseline via the ``domain add`` chain (dnsmasq allowlist
-        rewrite + SIGHUP) — the addon process lacks the privileges to do
-        that itself. See docs/explain/policy-api.md §3.4.
+        drops it). DNS-layer reachability for the granted zone is applied
+        in-egress: the addon publishes the zone to ``/home/acproxy/dns/granted``
+        and raises a reload flag, and the egress supervisor's 1 s liveness
+        loop re-renders dnsmasq's servers-file (baseline + granted) and
+        SIGHUPs it — the addon process lacks the privileges to signal
+        dnsmasq itself (different uid, no ``CAP_KILL``). Promotion into the
+        static baseline is lazy, via ``cage grants sync`` / ``domain list``
+        reconcile. See docs/explain/policy-api.md and
+        docs/explain/egress-local-dns-apply.md.
         """
         if self.mode != "allowlist":
             return

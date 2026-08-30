@@ -1,9 +1,12 @@
 """Regression tests for grant TTL preservation on promotion.
 
-Both promote paths — the watcher's `_tick` step 2 (``cage grants watch
---once``) and the operator's ``cage grants promote`` — must copy a grant's
-``expires_at`` from the overlay entry into the baseline's
-``domains.expires`` map. Without that, the overlay entry (the only place
+Both promote paths — the reconcile's `_tick` step 2 (``cage grants
+<name> sync``) and the operator's ``cage grants <name> promote`` — must
+copy a grant's ``expires_at`` from the overlay entry into the baseline's
+``domains.expires`` map. (Live grant expiry is enforced in-egress — the
+addon's own sweeper re-publishes the zone list and the supervisor
+re-renders dnsmasq — so the reconcile here only tidies the static
+baseline.) Without that, the overlay entry (the only place
 the TTL lived) is deleted on promotion one tick later, silently turning a
 short-lived ``ttl_seconds`` grant into a permanent baseline entry:
 step-0 pruning reads ``domains.expires`` (now empty for that domain) and

@@ -321,9 +321,16 @@ manual `promote` step and no separate overlay to manage. The
 - **Time-limit a domain:** `agentcage domain add <domain> --expires-in 30m` —
   records an expiry in `domains.expires`; the domain is removed automatically
   when it expires (`domain_allow_expired` in `policy-audit.jsonl`).
-- **Debug the watcher:** `agentcage cage grants <name> watch` still exists for
-  debugging the auto-promotion flow. There is no manual `watch` to start — the
-  watcher starts itself when `auto.enable` is true.
+- **How grants apply:** granted DNS is applied automatically in-egress — the
+  addon publishes the zone to `/home/acproxy/dns/granted` and raises a reload
+  flag; the egress supervisor's 1 s liveness loop re-renders dnsmasq's
+  servers-file (baseline + granted) and SIGHUPs it, so the name resolves
+  within ~1 s. `agentcage cage grants <name> sync` (also run implicitly by
+  `agentcage domain list`) promotes decided grants into the static `cage.yaml`
+  baseline when the operator wants them permanent. Expired grants are pruned
+  automatically by the in-egress sweeper (30 s poll); expired baseline entries
+  are tidied by the next reconcile. There is no `grants watch` subcommand and
+  no host-side watcher.
 
 This deliberately reuses the battle-tested `domain add`/`domain rm` machinery
 rather than inventing a second write path.
@@ -497,7 +504,8 @@ parity.
 
 ### M5 — Host-side grants management
 - CLI: `agentcage cage grants <name> list` (show promoted grants) and
-  `agentcage cage grants <name> watch` (debug the auto-promotion flow).
+  `agentcage cage grants <name> sync` (debug the auto-promotion flow;
+  `grants watch` was removed — granted DNS is applied in-egress).
   `promote`/`revoke` were removed — grants are permanent; removal is
   `agentcage domain rm <domain>`, time-limiting is
   `agentcage domain add <domain> --expires-in`.

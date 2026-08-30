@@ -107,10 +107,10 @@ PROXY_READINESS_POLL_INTERVAL_S = 0.25
 # Cache of the guest user's $HOME per cage name. The home directory
 # never changes for a given Lima instance (and a destroyed/recreated VM
 # lands on the identical path), so resolving it once per cage lets a
-# watcher tick skip up to two extra ``limactl shell`` round-trips per
+# reconcile skip up to two extra ``limactl shell`` round-trips per
 # overlay round-trip (ensure/pull/push each used to re-run ``echo ~``).
 # Keyed by cage name — NOT by LimaInstance object — so a fresh
-# LimaInstance per tick still hits the cache.
+# LimaInstance per call still hits the cache.
 _guest_home: dict[str, str] = {}
 
 
@@ -156,8 +156,8 @@ def pull_grants(name: str, inst: LimaInstance) -> list[dict] | None:
     itself failed OR the guest reported a read failure that is NOT
     "file missing" (permission error, I/O error, a truncated SSH stream
     with a nonzero exit). Callers treat ``None`` as "don't know / VM not
-    reachable, skip this tick" rather than "empty overlay": conflating a
-    read failure with a real empty overlay would let the watcher's
+    reachable, skip this pass" rather than "empty overlay": conflating a
+    read failure with a real empty overlay would let the reconcile's
     merge-on-write treat the wipe as genuine and persist it on the next
     push (``None`` is guarded against by the merge; a false ``[]`` is
     not).
@@ -183,7 +183,7 @@ def pull_grants(name: str, inst: LimaInstance) -> list[dict] | None:
     if res.returncode != 0:
         # Not missing, not OK: a genuine read failure (permission error,
         # I/O error, truncated stream). Don't masquerade as empty — the
-        # watcher would persist the wipe on the next push.
+        # reconcile would persist the wipe on the next push.
         return None
     try:
         data = yaml.safe_load(res.stdout or "")
