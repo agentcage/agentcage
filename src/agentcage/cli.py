@@ -1174,6 +1174,20 @@ def cage_update(name: str | None, config_path: str | None,
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
 
+    # Pre-egress-rework cages carry a legacy host-side grants watcher whose
+    # command (``agentcage cage grants <name> watch``) no longer exists; on an
+    # upgraded host the unit/plist crash-loops on every boot (systemd start
+    # limit / launchd KeepAlive). Remove those artifacts now (best-effort,
+    # idempotent — a post-rework cage has nothing to remove and the helper
+    # never raises). For a VM cage this also needs the VM running, which is
+    # still the case here (update stops services only later).
+    from agentcage.legacy_watcher import remove_legacy_grants_watcher
+    try:
+        remove_legacy_grants_watcher(cfg.name, cfg.isolation)
+    except Exception:
+        # A stale watcher must never block an update.
+        pass
+
     # Merge into existing metadata so scaffold/network_octet/etc. survive updates
     meta = state.load_metadata(name) or {}
     meta["agentcage_version"] = version("agentcage")
@@ -1389,6 +1403,28 @@ def cage_destroy(name: str, yes: bool, keep_secrets: bool):
             f'Destroy cage "{name}"? ' + detail,
             abort=True,
         )
+
+    # Pre-egress-rework cages carry a legacy host-side grants watcher — a
+    # {name}-grants.service systemd user unit on Linux, an
+    # io.agentcage.{name}.grants.plist launchd plist on macOS, and (for VM
+    # cages) an in-guest systemd user unit. The watcher command
+    # (``agentcage cage grants <name> watch``) was deleted with the watcher,
+    # so on an upgraded host the unit/plist crash-loops on every boot
+    # (systemd start limit / launchd KeepAlive). Remove those artifacts
+    # BEFORE stopping the cage so the in-VM cleanup (needs a running VM) can
+    # still run. Best-effort + idempotent: a post-rework cage has nothing
+    # to remove and the helper never raises.
+    if state.deployment_exists(name):
+        try:
+            _legacy_cfg = state.load_deployment_config(name)
+            from agentcage.legacy_watcher import remove_legacy_grants_watcher
+            remove_legacy_grants_watcher(
+                _legacy_cfg.name, _legacy_cfg.isolation,
+            )
+        except Exception:
+            # A stale watcher must never block a destroy — the cage's own
+            # resources are removed below regardless.
+            pass
 
     removed = _destroy_cage(name, keep_secrets=keep_secrets, echo=click.echo)
 
@@ -4281,15 +4317,25 @@ def _update_dns_quadlet(cfg) -> None:
             click.echo(err, err=True)
         sys.exit(1)
 
-    # Regenerate the gateway-rewritten runtime servers-file (if the egress is
-    # using it) from the freshly-written allowlist, then SIGHUP. When a
-    # default-route gateway was derived at start, dnsmasq serves
-    # /run/agentcage/dns-allowlist.egress.conf (per-zone forwarders =
-    # gateway-primary + baked-fallback), NOT the bind-mounted file — so we must
-    # re-derive those lines from the updated allowlist before signaling, the
-    # same rewrite supervisor-egress.sh does at start. When that runtime file
-    # is absent (no gateway / fallback mode) dnsmasq reads the bind-mounted file
-    # directly, so a plain SIGHUP suffices.
+    # Raise the egress supervisor's reload flag (if the egress is serving the
+    # rendered runtime servers-file) so its 1s liveness loop re-renders
+    # BASELINE + GRANTED zones and SIGHUPs dnsmasq — do NOT regenerate the
+    # runtime servers-file from the host. supervisor-egress.sh
+    # ``_render_servers_file`` is the single implementation of that rewrite
+    # (per-zone forwarders = default-route gateway-primary + baked-fallback,
+    # then the granted zones appended); rendering it again here from the
+    # baseline ALONE would strip every in-flight policy-API granted zone out
+    # of dnsmasq's servers-file on every ``domain add``/``domain rm``/
+    # ``cage update``/lazy reconcile (the round-11 review finding). The host
+    # just raises the flag (``: > /home/acproxy/dns/reload``); the supervisor
+    # re-renders baseline+granted and SIGHUPs within ~1s. We exec as
+    # container root and /home/acproxy/dns exists in the image
+    # (Containerfile.egress creates it), so the flag file is writable.
+    #
+    # When the runtime servers-file is ABSENT (fallback mode: no gateway was
+    # derived at start, so dnsmasq reads the bind-mounted
+    # /etc/agentcage/dns-allowlist.conf directly) there is nothing for the
+    # supervisor to re-render — a plain SIGHUP via the pidfile is enough.
     #
     # SIGHUP via the pidfile the supervisor writes at /home/acdns/dnsmasq.pid
     # (pre-chowned dir, no runtime CAP_CHOWN). The `[ -n "$pid" ]` guard keeps a
@@ -4297,12 +4343,8 @@ def _update_dns_quadlet(cfg) -> None:
     _runtime_exec([
         "sh", "-c",
         'rt=/run/agentcage/dns-allowlist.egress.conf; '
-        'if [ -f "$rt" ]; then '
-        'gw=$(ip route 2>/dev/null | awk "/^default/{print \\$3; exit}"); '
-        '[ -n "$gw" ] && { sed "s#/[^/]*\\$#/$gw#" /etc/agentcage/dns-allowlist.conf; '
-        'cat /etc/agentcage/dns-allowlist.conf; } > "$rt" 2>/dev/null; '
-        'fi; '
-        'pid="$(cat /home/acdns/dnsmasq.pid)" && [ -n "$pid" ] && kill -HUP "$pid"',
+        'if [ -f "$rt" ]; then : > /home/acproxy/dns/reload; '
+        'else pid="$(cat /home/acdns/dnsmasq.pid)" && [ -n "$pid" ] && kill -HUP "$pid"; fi',
     ])
 
 
@@ -4323,8 +4365,10 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
 
     Multiple domains may be passed; the cage is reloaded at most once.
     With ``--expires-in`` the entry is time-limited (allowlist mode only):
-    it works until its TTL elapses, then the proxy blocks it and the grants
-    watcher prunes it from the allowlist + dnsmasq. Permanent by default.
+    it works until its TTL elapses, then the proxy blocks it at L7 and the
+    next reconcile (``cage grants <name> sync``, which also runs implicitly
+    from the CLI paths that read a cage) prunes it from the allowlist +
+    dnsmasq. Permanent by default.
     """
     try:
         raw = state.load_raw_config(name)
@@ -4386,7 +4430,7 @@ def domain_add(name: str, domain_names: tuple[str, ...], passthrough: bool,
         # be uppercase, and an uppercase entry lands in cage.yaml and is
         # then REJECTED by ``validate_config`` (the regex is lowercase-only),
         # making the cage's own config unparseable. Mirrors the grants
-        # watcher's promote step and ``grants promote``.
+        # reconcile (``grants sync``) promote step and ``grants promote``.
         dn = domain_name.rstrip(".").lower()
         already_in_list = any(x.rstrip(".").lower() == dn
                               for x in dom[list_key])
@@ -4430,13 +4474,13 @@ def _apply_baseline_change(name: str, raw: dict) -> None:
     """Persist a raw cage.yaml edit and live-reload the egress.
 
     The shared tail of ``domain add`` / ``domain rm`` / the Policy API
-    grants watcher: write the modified config, re-render the proxy subset,
-    then re-publish the dnsmasq allowlist + SIGHUP dnsmasq so the change is
-    live without a cage restart (the mitmproxy addon hot-reloads
-    proxy-config.yaml via its mtime poll). Reusing this one function is what
-    makes every grant path apply domains the *exact* same way a manual
-    ``agentcage domain add`` does — single source of truth for the write
-    + reload chain.
+    grants reconcile (``grants sync``): write the modified config, re-render
+    the proxy subset, then re-publish the dnsmasq allowlist + SIGHUP dnsmasq
+    so the change is live without a cage restart (the mitmproxy addon
+    hot-reloads proxy-config.yaml via its mtime poll). Reusing this one
+    function is what makes every grant path apply domains the *exact* same
+    way a manual ``agentcage domain add`` does — single source of truth for
+    the write + reload chain.
     """
     state.save_raw_config(name, raw)
     state.save_proxy_config(name)
@@ -4488,7 +4532,7 @@ def domain_rm(name: str, domain_name: str, passthrough: bool):
     _apply_baseline_change(name, raw)
 
     # Audit the removal. The reference docs list `policy_grant_removed` as
-    # "a domain removed via `agentcage domain rm`", but only the watcher's
+    # "a domain removed via `agentcage domain rm`", but only the reconcile's
     # TTL-expiry path emitted it — so an operator revoking a decider-granted
     # domain left no trace in the forensic record of egress widenings.
     try:
@@ -4543,14 +4587,15 @@ def _grant_domain_match(entry_domain: str, target: str) -> bool:
 
 
 def _watcher_never_grant(raw: dict) -> set[str]:
-    """Built-in never_grant floor the grants watcher applies on promote.
+    """Built-in never_grant floor the grants reconcile applies on promote.
 
     Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
     ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
     ``{internal, local, localhost}`` plus the control host from
-    ``domains.auto.host`` (default ``agentcage.local``). The watcher runs on
-    the HOST and cannot import the addon (which lives in the egress image),
-    so this is a deliberate mirror kept in sync with
+    ``domains.auto.host`` (default ``agentcage.local``). The reconcile runs
+    on the HOST (``grants sync`` / the implicit ``domain list`` reconcile)
+    and cannot import the addon (which lives in the egress image), so this
+    is a deliberate mirror kept in sync with
     ``config._AUTO_NEVER_GRANT`` / ``DomainsAutoConfig.host``. Suffix-matched
     so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
     and ``local`` covers the default control host's TLD family.
@@ -4573,29 +4618,32 @@ def _is_never_grant(domain: str, never: set[str]) -> bool:
 
 
 def _safe_tick(tick_fn, name: str) -> None:
-    """Run one grants-watcher tick, isolating ANY exception so the loop survives.
+    """Run one grants-reconcile tick, isolating ANY exception so it survives.
 
     Mirrors ``data/proxy/policy_api.py`` ``sweeper_loop``'s per-tick
-    isolation: the continuous ``grants watch`` loop previously caught only
-    ``KeyboardInterrupt``; step-0/1/2 try blocks caught only ``FileNotFoundError``;
-    and the step-3 ``state.save_grants`` sat outside any guard. A malformed
-    overlay (YAML/JSON/decode error — another agent is hardening the state.py
-    loaders, but the watcher must survive ANY exception) killed ``grants
-    watch``; with ``Restart=on-failure RestartSec=2`` the unit then hit
-    systemd's start limit and died permanently — promotions and pruning
-    silently stopped.
+    isolation. Historically this guarded the continuous ``grants watch``
+    loop: a malformed overlay (YAML/JSON/decode error — another agent is
+    hardening the state.py loaders, but the reconcile must survive ANY
+    exception) killed the watcher; with ``Restart=on-failure RestartSec=2``
+    the unit then hit systemd's start limit and died permanently —
+    promotions and pruning silently stopped. The continuous watcher was
+    deleted in the egress-local DNS-apply rework (expired grants are now
+    pruned in-egress by the sweeper and drop out of the runtime DNS via
+    the supervisor render; promotion into the static baseline is lazy via
+    ``grants sync`` / the implicit ``domain list`` reconcile), but this
+    helper still wraps the single reconcile tick so a malformed overlay
+    can't abort a ``domain list`` / ``grants sync`` partway through.
 
     ``KeyboardInterrupt`` is a ``BaseException`` (Py 3.8+) so it is NOT
-    swallowed by ``except Exception`` here — it propagates to the loop's
-    outer ``except KeyboardInterrupt`` handler (the orderly-stop path).
+    swallowed by ``except Exception`` here — it propagates to the caller.
     The tick body is factored into this helper so the per-tick exception
-    handling is unit-testable without the continuous loop + ``sleep``.
+    handling is unit-testable without the loop + ``sleep``.
     """
     try:
         tick_fn()
     except Exception as e:  # pragma: no cover — defensive
         click.echo(
-            f"warning: grants watcher tick for '{name}' failed: {e!r}",
+            f"warning: grants reconcile tick for '{name}' failed: {e!r}",
             err=True,
         )
 
@@ -4625,7 +4673,7 @@ def _load_grants_overlay(name: str, cfg) -> list[dict] | None:
     host→guest rewrites), so it is pulled over ``limactl shell``
     (``backends.vm.pull_grants``). Returns ``None`` when the VM round-trip
     failed (VM stopped / unreachable) — callers distinguish that from an
-    empty overlay: for the watcher it means "skip this tick quietly",
+    empty overlay: for the reconcile it means "skip this tick quietly",
     for manual commands it is an error.
     """
     if getattr(cfg, "isolation", "container") == "vm":
@@ -4725,7 +4773,7 @@ def grants_promote(domain: str):
 
     # Look up the overlay entry (if any) to preserve its TTL into
     # domains.expires — otherwise a ttl_seconds grant promoted by hand
-    # silently becomes permanent (the watcher's auto-promote has the same
+    # silently becomes permanent (the reconcile's auto-promote has the same
     # fix; see _tick step 2).
     overlay_entries = _load_grants_overlay(name, cfg)
     if overlay_entries is None:
@@ -4789,7 +4837,7 @@ def grants_promote(domain: str):
         # own config unparseable.
         allow_list.append(dl)
         # Live-reload chain via the shared helper (same path as
-        # ``domain add`` and the grants watcher).
+        # ``domain add`` and the grants reconcile).
         _apply_baseline_change(name, raw)
         state.append_policy_audit(name, {
             "kind": "policy_grant_promoted",
@@ -4808,7 +4856,7 @@ def grants_promote(domain: str):
     # Merge-on-write: re-read the CURRENT on-disk overlay and drop ONLY the
     # promoted domain, so a grant the egress addon persisted between the
     # load at the top and this save is not silently lost (the same
-    # lost-update race the watcher's _tick step 3 guards — see Fix 1).
+    # lost-update race the reconcile's _tick step 3 guards — see Fix 1).
     # A None re-read (VM transiently unreachable) must NOT be treated as an
     # empty overlay — merging against a fabricated [] would push an EMPTY
     # overlay and wipe every grant decided in the window. Fall back to the
@@ -4867,7 +4915,7 @@ def grants_revoke(domain: str):
     # Merge-on-write: re-read the CURRENT on-disk overlay and drop ONLY the
     # revoked domain, so a grant the egress addon persisted between the
     # load above and this save is not silently lost (the lost-update race
-    # the watcher's _tick step 3 guards — see Fix 1). The earlier
+    # the reconcile's _tick step 3 guards — see Fix 1). The earlier
     # ``remaining`` check against the snapshot still authorizes the revoke;
     # this re-filter is the durable write. A None re-read (VM transiently
     # unreachable) must NOT be treated as an empty overlay — merging
@@ -4928,8 +4976,8 @@ def grants_sync():
 
     Robustness:
       * Idempotent — promoted entries are removed from the overlay (they
-        now live in the baseline), so a restart of the watcher or a
-        duplicate decision never re-promotes the same domain.
+        now live in the baseline), so a duplicate decision never
+        re-promotes the same domain.
       * TTL-aware — when an entry's ``expires_at`` passes, the domain is
         removed from the baseline (via the ``domain rm`` chain) and the
         entry dropped from the overlay, so a TTL'd grant stops being
@@ -4938,8 +4986,14 @@ def grants_sync():
         ``save_raw_config`` + one reload) so a burst of decisions makes one
         atomic baseline edit, not a thundering herd of read-modify-writes.
 
-    Run this in the foreground during a session, or as a systemd user unit
-    (``agentcage cage grants <name> watch``) for an always-on cage.
+    Grants are APPLIED in-egress automatically: the addon publishes the
+    decided zone and raises the supervisor's reload flag, the supervisor
+    re-renders dnsmasq's servers-file (baseline + granted) and SIGHUPs it,
+    and the in-egress sweeper prunes expired grants (30s poll) so they drop
+    out of the runtime DNS via the next render. This command only PROMOTES
+    a decided grant into the operator's STATIC baseline so it survives a
+    cage rebuild — there is no continuous watcher to run, so it needs no
+    supervision unit.
     """
     _reconcile_grants(_grants_name())
 
@@ -4966,7 +5020,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
     # Isolation-aware overlay IO (see _load_grants_overlay): VM cages
     # round-trip the guest-local overlay via limactl, others use the
     # host-side file. Loaded once here; the config's isolation does not
-    # change while the watcher runs.
+    # change across reconcile passes.
     _watch_cfg = state.load_deployment_config(name)
     _is_vm = getattr(_watch_cfg, "isolation", "container") == "vm"
 
@@ -4983,7 +5037,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
     # that fails validation (invalid syntax / never_grant) stays in the
     # overlay (it is NOT promoted and NOT removed), so it would re-audit
     # every tick forever; dedup to at most one ``policy_grant_rejected``
-    # audit record per distinct domain per watcher run. Cleared only by a
+    # audit record per distinct domain per reconcile run. Cleared only by a
     # process restart.
     rejected_seen: set[str] = set()
 
@@ -5002,9 +5056,9 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
         """Process the overlay once. Returns True if anything changed."""
         # VM cages: the overlay lives guest-side. Pull it over limactl;
         # an unreachable VM (stopped cage) is a quiet no-op tick, not an
-        # error — the watcher keeps running so it picks up the overlay
-        # again once the cage starts. (L7 enforcement inside the egress
-        # is unaffected either way.)
+        # error — the next reconcile pass picks up the overlay again once
+        # the cage starts. (L7 enforcement inside the egress is unaffected
+        # either way.)
         if _is_vm:
             from agentcage.lima.instance import LimaInstance
             inst = LimaInstance(name)
@@ -5021,7 +5075,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
         # instead of clobbering it with this tick's stale snapshot — a
         # grant the egress addon persisted during the (podman-exec-spanning)
         # step-2 window would otherwise be silently lost (Fix 1). The
-        # watcher only ever REMOVES overlay entries (steps 1/2 never add),
+        # reconcile only ever REMOVES overlay entries (steps 1/2 never add),
         # so ``merged = on_disk − removed`` preserves every fresh on-disk
         # entry written after the snapshot. The granted_at value lets the
         # merge keep a fresh RE-GRANT of the same domain whose granted_at
@@ -5140,7 +5194,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
             changed = True
         # 2. Promote pending grants into the baseline.
         #    The addon writes every decided grant to the overlay (no `applied`
-        #    flag); the watcher promotes all present entries and removes them.
+        #    flag); the reconcile promotes all present entries and removes them.
         pending = list(entries)
         if pending:
             try:
@@ -5183,7 +5237,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
                         # ``server=`` lines in dns-allowlist.conf and
                         # ``dnsmasq --test`` PASSES — Fix 3). The in-container
                         # addon validates BEFORE granting (policy_api._valid_domain);
-                        # the host watcher now does too. Do NOT promote and
+                        # the host reconcile now does too. Do NOT promote and
                         # do NOT remove from the overlay (the entry stays so
                         # the operator can see the rejected grant); audit
                         # once per distinct domain per process run.
@@ -5217,7 +5271,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
                             # baseline entry too — that is intentional
                             # TIGHTENING by an explicit operator act (the
                             # operator chose to promote this exact grant with
-                            # this exact TTL; see grants_promote). The watcher
+                            # this exact TTL; see grants_promote). The reconcile
                             # is AUTOMATIC and must be more conservative: a
                             # stale overlay TTL (from an old grant decision)
                             # must NOT narrow or prune the operator's own
@@ -5286,7 +5340,7 @@ def _reconcile_grants(name: str, *, quiet: bool = False) -> None:
         #    overlay and drop only this tick's intentional removals
         #    (``removed``), so a grant the egress addon persisted AFTER
         #    this tick's top-of-``_tick`` snapshot — i.e. during the
-        #    podman-exec-spanning step-2 window — survives. The watcher
+        #    podman-exec-spanning step-2 window — survives. The reconcile
         #    only ever REMOVES overlay entries (steps 1/2 never add), so
         #    ``merged = on_disk − removed`` is the correct merge. Fix 3:
         #    ``removed`` carries the SNAPSHOT entry's granted_at, so a
