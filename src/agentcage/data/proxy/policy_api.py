@@ -822,32 +822,45 @@ class PolicyApi:
         O_EXCL`` so a planted symlink at the predictable PID-suffixed temp
         path (in a writable-by-others directory) cannot be written through
         — arbitrary-file clobber with the grants YAML. On
-        ``FileExistsError`` (leftover temp from a crash or a plant) the
-        temp is unlinked and retried ONCE; if it still exists the persist
-        is aborted (never write through an existing file).
+        ``FileExistsError`` (a leftover temp from a crash, a plant, OR —
+        because the addon and the host watcher share a numeric PID space
+        across PID namespaces — a *different* writer's in-flight temp at
+        the same numeric PID) the colliding temp is NOT unlinked: unlinking
+        a concurrent writer's in-flight file would make its later rename
+        fail (a lost write). Instead the persist retries ONCE with a
+        counter-suffixed name (``grants.yaml.<pid>.1.tmp``); a concurrent
+        writer using the same base cannot be using the counter-suffixed
+        name unless it too collided, in which case its own counter differs
+        (or both abort — neither loses its write). If the retry also hits
+        ``FileExistsError`` the persist is aborted (never write through /
+        delete an existing file). This never deletes anything.
         """
         entries = self.dom.granted_entries()
         try:
             os.makedirs(self._grants_dir, exist_ok=True)
-            tmp = self._grants_path + f".{os.getpid()}.tmp"
+            base = self._grants_path + f".{os.getpid()}.tmp"
+            # Base PID-suffixed name, then a single counter-suffixed retry.
+            # Never unlink a colliding temp: a cross-PID-namespace numeric
+            # PID collision means the base name may be another writer's
+            # in-flight file.
+            candidates = (base, self._grants_path + f".{os.getpid()}.1.tmp")
             fd = None
-            for _attempt in range(2):
+            tmp = base
+            for tmp in candidates:
                 try:
                     fd = os.open(
                         tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
                     )
                     break
                 except FileExistsError:
-                    # Leftover temp from a crash or a planted symlink.
-                    # Unlink and retry ONCE; if it fails again, abort.
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
+                    continue
             if fd is None:
                 self._log.warn(
-                    f"agentcage: cannot persist grants overlay: temp file "
-                    f"{tmp} exists after retry; aborting persist"
+                    f"agentcage: cannot persist grants overlay: temp files "
+                    f"{os.path.basename(candidates[0])} and "
+                    f"{os.path.basename(candidates[1])} both exist after "
+                    f"retry; aborting persist (not unlinking a possible "
+                    f"concurrent writer's in-flight temp)"
                 )
                 return
             with os.fdopen(fd, "w") as f:

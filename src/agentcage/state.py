@@ -92,9 +92,24 @@ def _atomic_write_text(p: Path, text: str) -> None:
 
     The temp lives in the same directory (so ``os.replace`` is atomic on a
     single filesystem) and is opened with ``O_CREAT | O_EXCL`` so a planted
-    symlink at the temp path cannot be written through — a pre-existing
-    temp (left over from a crashed writer) is unlinked and the open retried
-    once. The final ``tmp.replace(p)`` is the atomic publish.
+    symlink at the temp path cannot be written through. The base temp name
+    is PID-suffixed (``<p>.<pid>.tmp``); the host watcher and any ``cage
+    update`` / ``domain add`` run on the host, and the in-container addon
+    runs in a different PID namespace (or on a different host), so the two
+    sides normally never collide on the same numeric PID.
+
+    On ``FileExistsError`` (a leftover temp from a crashed writer, OR —
+    because PID namespaces share a numeric space — a *different* writer's
+    in-flight temp at the same numeric PID) the writer does NOT unlink the
+    colliding temp: unlinking a concurrent writer's in-flight file would
+    make its later rename fail (a lost write). Instead it retries ONCE
+    with a counter-suffixed name (``<p>.<pid>.1.tmp``); a concurrent writer
+    using the same base cannot be using the counter-suffixed name unless it
+    too collided, in which case its own counter differs (or both abort —
+    neither loses its write). If the retry also hits ``FileExistsError`` the
+    write is aborted (never write through / delete an existing file). This
+    never deletes anything. The final ``tmp.replace(p)`` is the atomic
+    publish.
 
     Used by ``save_raw_config``, ``save_metadata``, and ``save_grants`` so
     the 1Hz host-side grants watcher (and any concurrent ``cage update`` /
@@ -102,21 +117,27 @@ def _atomic_write_text(p: Path, text: str) -> None:
     old contents or the new contents, never a truncated prefix that would
     raise YAMLError / JSONDecodeError and kill the watcher loop.
     """
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     p.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(2):
+    base = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    # Base PID-suffixed name, then a single counter-suffixed retry. We never
+    # unlink a colliding temp: a cross-PID-namespace numeric-PID collision
+    # means the base name may be ANOTHER writer's in-flight file.
+    candidates = (base, p.with_name(f"{p.name}.{os.getpid()}.1.tmp"))
+    fd = None
+    tmp = base
+    for tmp in candidates:
         try:
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            break
         except FileExistsError:
-            # Leftover temp from a previous crash — clear it and retry once.
-            if attempt:
-                raise
-            try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
             continue
-        break
+    if fd is None:
+        # Both names exist — abort rather than unlink a possible concurrent
+        # writer's in-flight temp.
+        raise FileExistsError(
+            f"cannot create atomic temp for {p}: both {candidates[0].name} "
+            f"and {candidates[1].name} exist"
+        )
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
