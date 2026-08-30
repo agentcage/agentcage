@@ -730,7 +730,16 @@ class TestOperatorContextPrompt:
         # The trusted-operator framing is present verbatim.
         assert "OPERATOR CONTEXT" in system_content
         assert "trusted" in system_content
-        assert "does NOT override the hard rules" in system_content
+        # Advisory-only framing (round-10: the gates are enforced in code,
+        # outside the model — not "rules above", which the core never states).
+        assert "ADVISORY ONLY" in system_content
+        assert "enforced in code" in system_content
+        # The context block is delimited and followed by a restatement of
+        # the output contract (operator prose never has last position).
+        assert "----- BEGIN OPERATOR CONTEXT -----" in system_content
+        assert "----- END OPERATOR CONTEXT -----" in system_content
+        tail = system_content.split("----- END OPERATOR CONTEXT -----")[1]
+        assert "output contract" in tail
 
     def test_no_context_is_bare_core_prompt(self, tmp_path, monkeypatch):
         pa, _ = _make_pa(tmp_path, monkeypatch)  # no context kwarg
@@ -786,3 +795,111 @@ class TestOperatorContextAllowlist:
         pa, _ = _make_pa(tmp_path, monkeypatch, context="   \n  ")
         assert pa._context == ""
         assert pa._allowlist()["context"] == ""
+
+
+class TestContextHotReload:
+    """Round-10 finding 2: the docs promise that editing
+    ``domains.auto.context`` + ``cage update`` takes effect on the next
+    domain request — via the addon's mtime-poll rebuild of the PolicyApi
+    (``_maybe_reload`` → ``_init_domain_requests``). The other context
+    tests instantiate PolicyApi directly and bypass that chain; this one
+    drives the real reload path end to end."""
+
+    def test_maybe_reload_reinits_decider_with_new_context(
+        self, tmp_path, monkeypatch,
+    ):
+        import os
+        import yaml
+        from agentcage.data.proxy import addon as addon_mod
+
+        cfg_path = tmp_path / "config.yaml"
+
+        def _write(context):
+            cfg_path.write_text(yaml.safe_dump({
+                "domains": {
+                    "mode": "allowlist",
+                    "allow": ["example.com"],
+                    "auto": {
+                        "enable": True,
+                        "host": "agentcage.local",
+                        "context": context,
+                        "decider": {"kind": "agent", "agent": {
+                            "provider": "openrouter",
+                            "model": "test-model",
+                            "api_key": "env:TEST_KEY",
+                            "base_url": "https://example.com",
+                        }},
+                    },
+                },
+            }))
+
+        _write("context-v1")
+        monkeypatch.setattr(addon_mod, "CONFIG_PATH", str(cfg_path))
+        addon = addon_mod.Agentcage()
+        addon.load(loader=None)
+        assert addon.domain_requests is not None
+        assert addon.domain_requests._context == "context-v1"
+
+        # cage update rewrites proxy-config.yaml → new mtime → the addon's
+        # next _maybe_reload rebuilds the PolicyApi with the new context.
+        _write("context-v2")
+        os.utime(cfg_path, (0, os.stat(cfg_path).st_mtime + 5))
+        addon._maybe_reload()
+        assert addon.domain_requests is not None
+        assert addon.domain_requests._context == "context-v2"
+
+    def test_maybe_reload_drops_context_to_empty_when_removed(
+        self, tmp_path, monkeypatch,
+    ):
+        import os
+        import yaml
+        from agentcage.data.proxy import addon as addon_mod
+
+        cfg_path = tmp_path / "config.yaml"
+
+        def _write(context):
+            auto = {
+                "enable": True, "host": "agentcage.local",
+                "decider": {"kind": "agent", "agent": {
+                    "provider": "openrouter", "model": "test-model",
+                    "api_key": "env:TEST_KEY",
+                    "base_url": "https://example.com",
+                }},
+            }
+            if context is not None:
+                auto["context"] = context
+            cfg_path.write_text(yaml.safe_dump({
+                "domains": {
+                    "mode": "allowlist",
+                    "allow": ["example.com"],
+                    "auto": auto,
+                },
+            }))
+
+        _write("context-v1")
+        monkeypatch.setattr(addon_mod, "CONFIG_PATH", str(cfg_path))
+        addon = addon_mod.Agentcage()
+        addon.load(loader=None)
+        assert addon.domain_requests._context == "context-v1"
+        # Removing the key entirely (not just emptying it) → bare core.
+        _write(None)
+        os.utime(cfg_path, (0, os.stat(cfg_path).st_mtime + 5))
+        addon._maybe_reload()
+        assert addon.domain_requests._context == ""
+
+
+class TestContextRuntimeHardening:
+    """Round-10 finding 1: the runtime consumer must enforce the cap and
+    type check the config layer promises, because the addon builds the
+    PolicyApi from RAW proxy-config.yaml — which unvalidated write paths
+    (clone/restore/_apply_baseline_change) can produce."""
+
+    def test_oversized_context_truncated_at_4096(self, tmp_path, monkeypatch):
+        pa, _ = _make_pa(tmp_path, monkeypatch, context="x" * 5000)
+        assert len(pa._context) == 4096
+
+    def test_nonstring_context_ignored_not_coerced(self, tmp_path, monkeypatch):
+        # A mapping must NOT be str()-coerced into a misleading repr that
+        # would ride the system prompt (config.py's stated rationale).
+        pa, _ = _make_pa(tmp_path, monkeypatch, context={"purpose": "ci"})
+        assert pa._context == ""

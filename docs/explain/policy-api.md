@@ -261,7 +261,13 @@ domains:
 The context hot-reloads via `cage update` with no restart: the egress addon
 rebuilds the decider (`_init_domain_requests`) whenever `proxy-config.yaml`'s
 mtime changes, so editing `context:` and running `cage update` takes effect
-on the next domain request.
+on the next domain request. **Known trade-off — adversarial tailoring:** the
+caged agent can READ the context (via `GET /v1/allowlist`) and may shape its
+justification wording to match it. This is deliberate — the decider still
+independently verifies domain legitimacy and exfiltration risk, and the
+hard gates (never_grant, syntax, rate limits) are enforced in code outside
+the model — but write the context as scope description, not secrets or
+grantable-domain lists you wouldn't want the agent quoting back.
 
 The decider:
 
