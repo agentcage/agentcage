@@ -124,6 +124,11 @@ DNSMASQ_PID_FILE=/home/acdns/dnsmasq.pid
 SERVERS_BASE=/etc/agentcage/dns-allowlist.conf
 SERVERS_OUT=/run/agentcage/dns-allowlist.egress.conf
 GRANTED_DOMAINS=/home/acproxy/dns/granted
+# Explicit reload signal from the addon, rather than comparing mtimes:
+# `-nt` is a bash/dash extension, not POSIX (shellcheck SC3013), and a
+# `stat` comparison would fork a process every second in a loop whose
+# whole appeal is that it costs nothing. `[ -f ]` is a shell builtin.
+GRANTS_RELOAD=/home/acproxy/dns/reload
 
 # Per-branch rendering style, set before the first _render_servers_file call:
 #   replace — apple-container: each baseline zone's upstream is REPLACED by
@@ -134,8 +139,7 @@ _SF_STYLE=plain
 _SF_GW=""
 
 # Render SERVERS_OUT from SERVERS_BASE + GRANTED_DOMAINS. Atomic
-# (temp+rename) so dnsmasq can never read a half-written file, and so the
-# `-nt` check in the monitor loop flips only on a complete render.
+# (temp+rename) so dnsmasq can never read a half-written file.
 _render_servers_file() {
   mkdir -p /run/agentcage 2>/dev/null || return 1
   _sf_tmp="${SERVERS_OUT}.tmp"
@@ -699,16 +703,17 @@ log "step F: ready marker written; entering monitor loop"
 # The loop also picks up policy-api grants. The addon (uid 200) cannot signal
 # dnsmasq (uid 201) — it has no CAP_KILL — so it publishes the granted zone
 # list to $GRANTED_DOMAINS and we render + SIGHUP here, as root. This adds a
-# single `-nt` comparison to an iteration that already exists and already
+# single builtin `[ -f ]` test to an iteration that already exists and already
 # sleeps 1s for liveness: no new process, no new service, and no new wakeups.
 # It replaces the host-side grants watcher (a systemd user unit on Linux, a
 # launchd plist on macOS) entirely.
 #
-# `-nt` rather than a stored mtime: _render_servers_file rewrites SERVERS_OUT,
-# so a successful render makes the condition false again by construction, and
-# a failed render leaves it true and simply retries on the next iteration.
+# The flag is cleared BEFORE rendering, so a grant decided while a render is
+# in flight re-creates it and gets its own pass rather than being swallowed.
+# A failed render puts it back, so the next iteration retries.
 while kill -0 "$DNSMASQ_PID" 2>/dev/null && kill -0 "$MITMPROXY_PID" 2>/dev/null; do
-  if [ -f "$GRANTED_DOMAINS" ] && [ "$GRANTED_DOMAINS" -nt "$SERVERS_OUT" ]; then
+  if [ -f "$GRANTS_RELOAD" ]; then
+    rm -f "$GRANTS_RELOAD"
     if _render_servers_file; then
       # dnsmasq re-reads --servers-file on SIGHUP (it does NOT re-read its
       # main config), so the granted zone is forwardable immediately.
@@ -726,6 +731,7 @@ while kill -0 "$DNSMASQ_PID" 2>/dev/null && kill -0 "$MITMPROXY_PID" 2>/dev/null
       fi
     else
       log "warn: failed to render servers-file for a grant; retrying"
+      : > "$GRANTS_RELOAD" 2>/dev/null || true
     fi
   fi
   sleep 1

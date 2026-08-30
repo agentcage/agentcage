@@ -25,7 +25,25 @@ class TestSupervisorAppliesGrants:
         # The whole point: no new process, no new service. The check rides
         # the loop that already polls both children for liveness.
         assert 'while kill -0 "$DNSMASQ_PID"' in SUPERVISOR
-        assert '[ "$GRANTED_DOMAINS" -nt "$SERVERS_OUT" ]' in SUPERVISOR
+        assert 'if [ -f "$GRANTS_RELOAD" ]; then' in SUPERVISOR
+
+    def test_reload_signal_is_posix(self):
+        """`-nt` is a bash/dash extension, not POSIX (shellcheck SC3013).
+
+        The script is `#!/bin/sh` and CI lints it as POSIX sh. A `stat`
+        comparison would also work but forks a process every second inside
+        the loop whose entire appeal is that it costs nothing.
+        """
+        assert "-nt" not in SUPERVISOR.replace("`-nt`", "")
+
+    def test_flag_is_cleared_before_rendering(self):
+        """A grant decided mid-render must not be swallowed."""
+        i = SUPERVISOR.index('if [ -f "$GRANTS_RELOAD" ]; then')
+        clear = SUPERVISOR.index('rm -f "$GRANTS_RELOAD"', i)
+        render = SUPERVISOR.index("_render_servers_file", i)
+        assert clear < render
+        # ...and a failed render puts it back so the next tick retries.
+        assert ': > "$GRANTS_RELOAD"' in SUPERVISOR
 
     def test_sighup_targets_the_pidfile_not_the_wrapper(self):
         """Regression: SIGHUPing $DNSMASQ_PID kills the whole egress.
@@ -99,6 +117,7 @@ class TestAddonPublishesDomains:
         from agentcage.data.proxy import policy_api as pa
         api = pa.PolicyApi.__new__(pa.PolicyApi)
         api._dns_publish_path = str(tmp_path / "dns" / "granted")
+        api._dns_reload_path = str(tmp_path / "dns" / "reload")
         api._log = MagicMock()
         api.dom = MagicMock()
         api.dom.granted = granted
@@ -109,6 +128,8 @@ class TestAddonPublishesDomains:
         api._publish_dns_domains()
         out = Path(api._dns_publish_path).read_text()
         assert out == "a.example.com\nb.example.com\n"
+        # ...and the supervisor is told to pick it up.
+        assert Path(api._dns_reload_path).exists()
 
     def test_drops_anything_that_is_not_a_hostname(self, tmp_path):
         """Defense in depth against a malformed in-memory entry.
@@ -136,6 +157,7 @@ class TestAddonPublishesDomains:
         """A grant is already enforced at L7; only DNS lags."""
         api = self._api(tmp_path, {"a.example.com": {}})
         api._dns_publish_path = "/proc/nonexistent/granted"
+        api._dns_reload_path = "/proc/nonexistent/reload"
         api._publish_dns_domains()  # must not raise
         assert api._log.warn.called
 

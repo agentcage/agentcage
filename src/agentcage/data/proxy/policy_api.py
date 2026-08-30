@@ -175,6 +175,13 @@ class PolicyApi:
         self._dns_publish_path = os.environ.get(
             "AGENTCAGE_DNS_PUBLISH", "/home/acproxy/dns/granted"
         )
+        # Explicit reload signal for the supervisor. An mtime comparison
+        # would need either a bash-only `-nt` test (not POSIX) or a `stat`
+        # fork every second in the supervisor's liveness loop; a flag file
+        # is a shell builtin `[ -f ]` and self-clears.
+        self._dns_reload_path = os.path.join(
+            os.path.dirname(self._dns_publish_path) or ".", "reload"
+        )
         self._grants_mtime: float = 0.0
 
         self._reconcile_from_overlay()
@@ -1011,6 +1018,10 @@ class PolicyApi:
             with os.fdopen(fd, "w") as f:
                 f.write("".join(f"{d}\n" for d in domains))
             os.replace(tmp, self._dns_publish_path)
+            # Raise the flag only AFTER the list is in place, so the
+            # supervisor never renders a stale list on a fresh signal.
+            with open(self._dns_reload_path, "w"):
+                pass
         except OSError as e:
             # Non-fatal: the grant is still enforced at L7 (the inspector is
             # in-memory and already updated). Only DNS lags, and the operator
