@@ -22,6 +22,23 @@ import subprocess
 from pathlib import Path
 
 
+def grants_watcher_unit_path(name: str) -> Path:
+    """Host-side systemd user-unit path for the grants watcher.
+
+    Mirrors :meth:`agentcage.backends.vm.VmBackend.grants_unit_path` and
+    :meth:`agentcage.backends.container.ContainerBackend.grants_unit_path`:
+    the watcher is a NATIVE ``.service`` (not a quadlet) in
+    ``~/.config/systemd/user/``. Centralized here so
+    :func:`uninstall_grants_watcher` can unlink the file without importing
+    a backend (it is called from ``cage destroy``, which dispatches on
+    isolation before the backend is even constructed for the resource
+    teardown — and on macOS hosts the vm backend's
+    ``grants_unit_path`` would still point here, but importing the backend
+    module pulls in Lima code that is irrelevant to a plist teardown).
+    """
+    return Path(os.path.expanduser("~/.config/systemd/user")) / f"{name}-grants.service"
+
+
 def _gui_domain_reachable(uid: int) -> bool:
     """Probe whether the ``gui/<uid>`` launchd domain is reachable now.
 
@@ -50,6 +67,64 @@ def grants_watcher_plist_path(name: str) -> Path:
     return Path(
         os.path.expanduser(f"~/Library/LaunchAgents/io.agentcage.{name}.grants.plist")
     )
+
+
+def uninstall_grants_watcher(name: str, *, darwin: bool) -> None:
+    """Best-effort, idempotent removal of a cage's host-side grants watcher.
+
+    Undoes :func:`install_grants_watcher_plist` (macOS) and the systemd
+    user unit installed by ``cli._ensure_grants_watcher`` (Linux). Called
+    from ``VmBackend.destroy_resources`` and ``ContainerBackend``'s
+    teardown so a destroyed cage does not leave an ENABLED systemd unit
+    polling a nonexistent cage (or, on macOS, a ``KeepAlive=true``
+    launchd agent that relaunches forever).
+
+    Never raises: every step is wrapped so a half-installed watcher (e.g.
+    the unit file was written but ``systemctl enable`` failed) still cleans
+    up as much as exists. ``systemd`` is imported lazily because this
+    module is imported on macOS too, where ``systemctl`` is absent —
+    :mod:`agentcage.systemd` is already no-op-safe there.
+    """
+    if darwin:
+        uid = os.getuid()
+        domain = f"gui/{uid}"
+        label = f"io.agentcage.{name}.grants"
+        try:
+            subprocess.run(
+                ["launchctl", "bootout", f"{domain}/{label}"],
+                check=False, capture_output=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        plist = grants_watcher_plist_path(name)
+        if plist.exists():
+            try:
+                plist.unlink()
+            except OSError:
+                pass
+        return
+
+    # Linux / systemd host.
+    from agentcage import systemd
+    unit = f"{name}-grants.service"
+    try:
+        systemd.stop_unit(unit)
+    except Exception:
+        pass  # unit may not exist (never installed, or already gone)
+    try:
+        systemd.disable_unit(unit)
+    except Exception:
+        pass  # best-effort; mirroring enable_unit's tolerance
+    try:
+        systemd.daemon_reload()
+    except Exception:
+        pass
+    unit_path = grants_watcher_unit_path(name)
+    if unit_path.exists():
+        try:
+            unit_path.unlink()
+        except OSError:
+            pass
 
 
 def install_grants_watcher_plist(

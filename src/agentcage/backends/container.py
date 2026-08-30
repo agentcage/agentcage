@@ -194,6 +194,22 @@ class ContainerBackend:
                         f"warning: failed to start grants watcher: {e}",
                         err=True,
                     )
+            # Enable the unit so it survives a host reboot. A NATIVE
+            # ``.service``'s ``[Install] WantedBy=`` stanza only names the
+            # symlink that ``systemctl enable`` creates; nothing creates it
+            # automatically (quadlet units are generator-activated, this
+            # native unit is not). Before this, the watcher stayed dead
+            # after a reboot unless the operator had once run
+            # ``domain add --expires-in``. Best-effort, mirroring the
+            # start call's tolerance above.
+            try:
+                systemd.enable_unit(f"{name}-grants.service")
+            except Exception as e:
+                if not quiet:
+                    click.echo(
+                        f"warning: failed to enable grants watcher: {e}",
+                        err=True,
+                    )
         if not quiet:
             click.echo(f"Started {name}-cage")
 
