@@ -66,3 +66,17 @@ def enable_unit(name: str) -> None:
     if not _systemctl_available():
         return
     subprocess.run([*_systemctl_cmd(), "enable", name], check=True)
+
+
+def disable_unit(name: str) -> None:
+    """Disable a unit so it is no longer pulled in at future boots/logins.
+
+    The undo of :func:`enable_unit`: removes the ``WantedBy=`` symlink that
+    ``systemctl enable`` created. Called from
+    :func:`agentcage.watcher.uninstall_grants_watcher` during ``cage
+    destroy`` so a removed cage's grants-watcher does not survive the next
+    host boot. No-op on hosts without systemd (see :func:`enable_unit`).
+    """
+    if not _systemctl_available():
+        return
+    subprocess.run([*_systemctl_cmd(), "disable", name], check=True)
