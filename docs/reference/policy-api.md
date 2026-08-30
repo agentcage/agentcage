@@ -381,6 +381,29 @@ decider. The safeguards:
   > these on its own (verified by red-teaming a live cage), but that made a
   > metadata bypass contingent on model judgement; the structural check makes
   > it contingent on nothing.
+
+- **Granted domains are checked against the address they resolve to.** Every
+  check above reasons about the *name*, and DNS answers the name — the answer
+  can change after the grant (rebinding), or be internal from the start with
+  nothing odd about the name at all (`localtest.me` is a real public domain
+  whose A record is `127.0.0.1`). Before the egress opens an upstream
+  connection for a **granted** host it resolves the name and refuses if *any*
+  answer is loopback, link-local, private or CGNAT — every answer, since a
+  rebinding payload commonly returns a public address alongside the internal
+  one.
+
+  This runs at mitmproxy's `server_connect` hook, which is the only point
+  that can abort: mitmproxy reads `connection.error` there and skips
+  connecting, but proceeds unconditionally after `server_connected`, so a
+  verdict reached later cannot stop the request already in flight. A host
+  caught rebinding between the lookup and the connect is refused at L7 on its
+  next request.
+
+  Scoped to **grant-derived** hosts only. A baseline domain is the operator's
+  own choice — an internal artifact mirror on `10.x` in `domains.allow` is a
+  legitimate configuration — and inbound port-forwarding connects to the
+  cage's private address by design. Neither is affected. Blocks are audited
+  as `private_peer_blocked`.
 - **Bounded blast radius.** Max 32 concurrent grants, per-cage request rate
   limit, full audit logging, and permanent grants that are explicitly
   removable via `agentcage domain rm`.
