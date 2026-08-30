@@ -831,3 +831,40 @@ class TestDoctorPanel:
         data = json.loads(body)
         assert data["ok"] is True
         assert data["checks"][0]["level"] == "pass"
+
+
+class TestDashboardSource:
+    """Source-level guards for bugs a backend test can't see.
+
+    The dashboard has no DOM test harness; these pin the two regressions
+    that actually shipped: an un-awaited async render (the summary page
+    rendered "[object Promise]") and duplicated filter/summary chips.
+    """
+
+    def _html(self):
+        from agentcage.web.server import _STATIC_DIR
+        return (_STATIC_DIR / "index.html").read_text()
+
+    def test_every_page_body_is_awaited(self):
+        html = self._html()
+        # every ASYNC page function assigned to `body` must be awaited
+        # (an un-awaited one renders "[object Promise]" into the page)
+        import re
+        async_fns = set(re.findall(r"async function (\w+)", html))
+        assert async_fns, "expected async page functions in the dashboard"
+        for m in re.finditer(r"body = (\w+)\(", html):
+            func = m.group(1)
+            if func in async_fns:
+                assert f"body = await {func}(" in html, (
+                    f"page function {func}() is async and must be awaited"
+                )
+
+    def test_traffic_and_dns_share_one_chip_row(self):
+        html = self._html()
+        # the count chips double as filters — one component, both pages
+        assert "statChips(mode, s)" in html
+        assert "decisionChips" not in html      # removed duplicate
+        assert "summaryChips" not in html       # removed duplicate
+        # decision filtering is client-side so counts stay real while a
+        # filter is active
+        assert "decision === 'all' || e.decision === decision" in html

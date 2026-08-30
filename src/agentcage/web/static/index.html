@@ -229,30 +229,29 @@ function renderServices(services) {
     .join(' ');
 }
 
-function decisionChips(mode) {
-  const f = filters[mode];
-  const mk = (val, label, cls) =>
-    `<span class="fchip ${f.decision === val ? 'on-' + val : ''}" data-decision="${val}">${label}</span>`;
-  return mk('all', 'all') + mk('allowed', 'allowed') +
-         mk('blocked', 'blocked') + mk('flagged', 'flagged');
-}
-
 function filterQuery(mode) {
   const f = filters[mode];
   const qs = [`limit=100`];
-  if (f.decision !== 'all') qs.push(`decision=${encodeURIComponent(f.decision)}`);
+  // Decision stays client-side: the count chips below double as filters,
+  // so the summary must keep counting every decision even while one is
+  // selected — filtering server-side would zero out the other chips.
   if (f.host.trim()) qs.push(`host=${encodeURIComponent(f.host.trim())}`);
   return qs.join('&');
 }
 
-function summaryChips(s) {
-  return [
-    ['total', s.total || 0],
-    ['allowed', (s.decisions || {}).allowed || 0],
-    ['blocked', (s.decisions || {}).blocked || 0, 'var(--err)'],
-    ['flagged', (s.decisions || {}).flagged || 0, 'var(--warn)'],
-  ].map(([k, v, c]) =>
-    `<span class="chip"${c ? ` style="color:${c}"` : ''}>${esc(k)} <b>${v}</b></span>`).join('');
+// One chip row, two jobs: each chip shows a decision's real count (from
+// the unfiltered summary) AND filters the table to it when clicked.
+// Shared by the traffic and DNS pages.
+function statChips(mode, s) {
+  const active = filters[mode].decision;
+  const mk = (decision, count, dim) =>
+    `<span class="fchip ${active === decision ? 'on-' + decision : ''}" data-decision="${decision}">` +
+    `${decision} <b${dim ? ` style="color:${dim}"` : ''}>${count}</b></span>`;
+  const d = s.decisions || {};
+  return mk('all', s.total || 0)
+       + mk('allowed', d.allowed || 0, 'var(--ok)')
+       + mk('blocked', d.blocked || 0, 'var(--err)')
+       + mk('flagged', d.flagged || 0, 'var(--warn)');
 }
 
 function entryRow(e, isDns) {
@@ -312,7 +311,7 @@ async function renderCagePage(name, tab) {
     case 'allowlist': body = allowlistPage(await api(`/api/v1/cages/${name}/allowlist`)); break;
     case 'capture': body = capturePage(await api(`/api/v1/cages/${name}/capture`), name); break;
     case 'logs':    body = await logsPage(await api(`/api/v1/cages/${name}/logs?lines=100`), name); break;
-    default:        body = summaryPage(detail, name); break;
+    default:        body = await summaryPage(detail, name); break;
   }
   $view.innerHTML = cagePageHead(detail, tab) + body;
   wirePage(name, tab);
@@ -338,21 +337,21 @@ async function trafficPage(name, isDns) {
   const mode = isDns ? 'dns' : 'traffic';
   const data = await api(`/api/v1/cages/${name}/${mode}?${filterQuery(mode)}`);
   const s = data.summary || {};
+  const decision = filters[mode].decision;
+  const visible = (data.entries || []).filter(e =>
+    decision === 'all' || e.decision === decision);
   const topHosts = Object.entries(s.top_hosts || {}).slice(0, 8)
     .map(([h, n]) => `<span class="chip">${esc(h)} <b>${n}</b></span>`).join('');
-  const rows = (data.entries || []).slice().reverse().map(e => entryRow(e, isDns)).join('');
+  const rows = visible.slice().reverse().map(e => entryRow(e, isDns)).join('');
   const liveBtn = isDns ? '' :
     `<button id="live-traffic" class="${liveWanted.traffic ? 'live-on' : ''}">${liveWanted.traffic ? '● live' : '○ live'}</button>`;
-  return `<div class="chips">${liveBtn}
-      <span class="fchip-label" style="color:var(--dim);font-size:12px">status:</span>
-      ${decisionChips(mode)}
+  return `<div class="chips">${liveBtn}${statChips(mode, s)}
       <input type="text" id="host-filter" placeholder="filter by host…"
              value="${esc(filters[mode].host)}" style="margin-left:auto">
     </div>
-    <div class="chips">${summaryChips(s)}</div>
     ${topHosts ? '<div class="chips">' + topHosts + '</div>' : ''}
     ${!isDns && liveWanted.traffic ? `<table style="margin-bottom:8px"><thead>${ENTRY_HEADER(false)}</thead><tbody id="live-rows"></tbody></table>` : ''}
-    ${data.count ? `<table><thead>${ENTRY_HEADER(isDns)}</thead><tbody>${rows}</tbody></table>`
+    ${visible.length ? `<table><thead>${ENTRY_HEADER(isDns)}</thead><tbody>${rows}</tbody></table>`
       : `<div class="empty">No ${isDns ? 'DNS queries' : 'audit entries'} match.</div>`}`;
 }
 
@@ -468,12 +467,15 @@ function wirePage(name, tab) {
 }
 
 function startLiveTraffic(name) {
-  // The stream carries the same filters the table shows.
+  // One stream per page, unfiltered server-side; the decision filter is
+  // applied per event so switching chips never re-opens the socket.
   const qs = filterQuery('traffic').split('&').filter(q => !q.startsWith('limit='));
   const sock = new EventSource(`/api/v1/cages/${name}/traffic/stream?${qs.join('&')}`);
   liveSocks.traffic = sock;
   sock.onmessage = ev => {
     const e = JSON.parse(ev.data);
+    const d = filters.traffic.decision;
+    if (d !== 'all' && e.decision !== d) return;
     const body = document.getElementById('live-rows');
     if (!body) return;   // user left the page mid-event
     body.insertAdjacentHTML('afterbegin', entryRow(e, false));
