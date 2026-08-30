@@ -7,7 +7,7 @@ Reference for every `agentcage` command, subcommand, and flag. Pair with [Config
 agentcage <command> [args] [options]
 ```
 
-Top-level commands: `run` (alias of `cage run`), `init`, `doctor`. Command groups: `cage`, `secret`, `domain`, `scaffold`.
+Top-level commands: `run` (alias of `cage run`), `init`, `doctor`, `overview`, `web`. Command groups: `cage`, `secret`, `domain`, `scaffold`. The [web interface](web.md) is the browser twin of these commands.
 
 ## init
 
@@ -59,6 +59,31 @@ Check that all required tools are installed and properly configured (Podman, sys
 ```bash
 agentcage doctor
 ```
+
+## overview
+
+Every cage at a glance: status, lifecycle, isolation, secrets, domains. The terminal twin of the web dashboard's landing page.
+
+```bash
+agentcage overview [--json]
+```
+
+`--json` emits the same payload as `GET /api/v1/overview` — see [Web interface](web.md).
+
+## web
+
+Serve the read-only web dashboard (visibility into cages, secrets, the domain allowlist, and proxy traffic). Every panel is also a CLI command; the web interface adds a view, never a capability.
+
+```bash
+agentcage web [--host HOST] [--port PORT] [--no-browser]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--host` | string | `127.0.0.1` | Interface to bind — keep it on loopback unless you mean to share it |
+| `--port` | int | `7635` | Port to serve on |
+| `--no-browser` | flag | | Don't open a browser tab on start |
+
 
 ## cage
 
