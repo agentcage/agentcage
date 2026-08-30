@@ -375,3 +375,123 @@ class TestHostAtomicWriters:
         loaded = host_state.load_grants("c")
         assert loaded and loaded[0]["domain"] == "x.com"
         assert not list(gd.glob("*.tmp")), "leftover temp file after save"
+
+
+# ── Egress-local DNS publish on reconcile ─────────────────────
+
+
+class TestReconcileRepublishesDns:
+    """The egress-local DNS-apply rework moved granted-domain DNS application
+    inside the egress: the addon publishes the granted zone list to
+    /home/acproxy/dns and the supervisor re-renders dnsmasq's servers-file.
+    The publish MUST run on overlay reconcile — at construction (egress
+    restart → /home/acproxy/dns is image-layer, gone, so the supervisor's
+    initial render is baseline-only) and on every mtime change (host-side
+    revoke narrows, promote widens). These guard both the restart-republish
+    and the revoke-narrow paths, plus the expired-entry hardening (an entry
+    whose ``expires_at`` passed while the egress was down must NOT be
+    re-installed in DNS at publish time)."""
+
+    @staticmethod
+    def _entry(domain, *, expires_at="", reason="r", source="decider"):
+        return {"domain": domain,
+                "granted_at": "2024-01-01T00:00:00+00:00",
+                "expires_at": expires_at, "reason": reason, "source": source}
+
+    def _published_domains(self, publish):
+        return {ln for ln in publish.read_text().splitlines() if ln}
+
+    def test_startup_republishes_overlay_grant_seeded(self, tmp_path, monkeypatch):
+        """Seed the overlay with a non-expired grant, THEN construct
+        PolicyApi: the ctor's reconcile must republish it to the publish
+        file (restart-republish)."""
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        publish = tmp_path / "dns" / "granted"
+        monkeypatch.setenv("AGENTCAGE_DNS_PUBLISH", str(publish))
+        overlay = tmp_path / "grants.yaml"
+        overlay.write_text(yaml.safe_dump([self._entry("x.com")]))
+        ft = time.time() + 100
+        os.utime(overlay, (ft, ft))
+
+        dom = DomainInspector()
+        dom.configure({"allow": ["a.com"]})
+        cfg = {"domains": {"allow": ["a.com"], "auto": {
+            "enable": True,
+            "decider": {"kind": "agent", "provider": "openrouter",
+                        "model": "m", "api_key": "env:K"},
+        }}}
+        PolicyApi(cfg, dom, lambda e: None, MagicMock())
+
+        assert publish.exists(), \
+            "reconcile-at-construction did not republish granted zones"
+        assert "x.com" in self._published_domains(publish), \
+            "startup republish dropped a non-expired overlay grant"
+
+    def test_expired_overlay_entry_not_republished(self, tmp_path, monkeypatch):
+        """An overlay entry whose ``expires_at`` passed while the egress was
+        down must NOT be re-installed in DNS at publish time (the sweeper
+        would prune it from L7 within 30s, but the publish would otherwise
+        re-install it immediately). Only non-expired entries are published."""
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        publish = tmp_path / "dns" / "granted"
+        monkeypatch.setenv("AGENTCAGE_DNS_PUBLISH", str(publish))
+        overlay = tmp_path / "grants.yaml"
+        past = "2020-01-01T00:00:00+00:00"
+        overlay.write_text(yaml.safe_dump([
+            self._entry("live.com"),            # non-expired (no expiry)
+            self._entry("dead.com", expires_at=past),  # expired
+        ]))
+        ft = time.time() + 100
+        os.utime(overlay, (ft, ft))
+
+        dom = DomainInspector()
+        dom.configure({"allow": ["a.com"]})
+        cfg = {"domains": {"allow": ["a.com"], "auto": {
+            "enable": True,
+            "decider": {"kind": "agent", "provider": "openrouter",
+                        "model": "m", "api_key": "env:K"},
+        }}}
+        PolicyApi(cfg, dom, lambda e: None, MagicMock())
+
+        published = self._published_domains(publish)
+        assert "live.com" in published, "non-expired grant not republished"
+        assert "dead.com" not in published, \
+            "expired overlay entry was re-installed in DNS at publish time"
+
+    def test_revoke_narrows_dns_publish(self, tmp_path, monkeypatch):
+        """A host-side revoke rewrites the overlay (removing a domain); the
+        sweeper's mtime-gated poll reconciles and MUST re-publish so the
+        revoked zone stops resolving at DNS (not just at L7)."""
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        publish = tmp_path / "dns" / "granted"
+        monkeypatch.setenv("AGENTCAGE_DNS_PUBLISH", str(publish))
+        overlay = tmp_path / "grants.yaml"
+        overlay.write_text(yaml.safe_dump([
+            self._entry("keep.com"),
+            self._entry("drop.com"),
+        ]))
+        ft = time.time() + 100
+        os.utime(overlay, (ft, ft))
+
+        dom = DomainInspector()
+        dom.configure({"allow": ["a.com"]})
+        cfg = {"domains": {"allow": ["a.com"], "auto": {
+            "enable": True,
+            "decider": {"kind": "agent", "provider": "openrouter",
+                        "model": "m", "api_key": "env:K"},
+        }}}
+        pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
+
+        published = self._published_domains(publish)
+        assert published == {"keep.com", "drop.com"}, \
+            "initial publish did not contain both grants"
+
+        # Host revokes drop.com: rewrite the overlay without it, bump mtime.
+        overlay.write_text(yaml.safe_dump([self._entry("keep.com")]))
+        ft2 = time.time() + 200
+        os.utime(overlay, (ft2, ft2))
+        assert pa.maybe_reload_overlay() is True
+
+        published = self._published_domains(publish)
+        assert published == {"keep.com"}, \
+            "revoked zone still resolving in DNS after reconcile republish"

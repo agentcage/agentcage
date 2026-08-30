@@ -21,12 +21,13 @@ Trust model: the egress never grants without a positive decision from the
 operator's decider; decider failure defaults to deny (the feature is
 fail-closed — a decider error NEVER grants). Grants are additive-only at the
 L7 ``DomainInspector``; DNS-layer reachability for a granted zone is applied
-by the HOST-side grants watcher (a systemd user unit on container deploys,
-a launchd plist on apple-container), which promotes overlay grants into the
-static baseline via the literal ``domain add`` chain (``save_raw_config`` →
-``save_proxy_config`` → ``_update_dns_quadlet`` → dnsmasq SIGHUP) — the
-addon process (``acproxy``, uid 200, ``--bounding-set=-all``) cannot write
-the dnsmasq allowlist or signal dnsmasq itself.
+inside the egress: this addon publishes the granted zone list (and a reload
+flag) to ``/home/acproxy/dns`` on grant/persist AND on overlay reconcile
+(startup replay + host-side revoke/promote picked up by the sweeper's
+mtime-gated poll). The egress supervisor's liveness loop renders dnsmasq's
+servers-file as root and SIGHUPs dnsmasq — the addon process (``acproxy``,
+uid 200, ``--bounding-set=-all``) cannot write the dnsmasq allowlist or
+signal dnsmasq (``acdns``, uid 201) itself.
 """
 
 from __future__ import annotations
@@ -1002,9 +1003,21 @@ class PolicyApi:
         and so the mtime flips exactly once per change.
         """
         try:
+            # Strictly safer: skip entries whose ``expires_at`` has already
+            # passed at publish time. On the restart path the overlay may
+            # contain entries that expired while the egress was down; the
+            # sweeper would prune them from L7 within 30s, but publishing
+            # them here would re-install them in DNS immediately. Reading
+            # dict fields on entries is safe (no raise) so this stays inside
+            # the OSError guard — the publish never raises.
+            now = datetime.now(timezone.utc).isoformat()
             domains = sorted(
                 d for d in self.dom.granted
                 if d and _DOMAIN_RE.match(d)
+                and not (
+                    (self.dom.granted[d].get("expires_at") or "")
+                    and (self.dom.granted[d].get("expires_at") or "") <= now
+                )
             )
             d_dir = os.path.dirname(self._dns_publish_path)
             if d_dir:
@@ -1052,6 +1065,14 @@ class PolicyApi:
         for d, e in new.items():
             if d not in self.dom.granted:
                 self.dom.granted[d] = e
+        # Republish the granted zone list on every reconcile: the ctor runs
+        # this at construction (egress restart → the /home/acproxy/dns
+        # image-layer dir is empty, so the supervisor's initial render is
+        # baseline-only — republish so previously-granted zones keep
+        # resolving), and the sweeper runs it on overlay-mtime change
+        # (host-side revoke narrows, promote widens). Without this, a
+        # revoked zone keeps resolving in DNS until an unrelated persist.
+        self._publish_dns_domains()
 
     def maybe_reload_overlay(self) -> bool:
         """Reconcile if the overlay file changed. Returns True if reconciled."""
