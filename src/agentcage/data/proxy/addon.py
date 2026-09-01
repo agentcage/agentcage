@@ -504,7 +504,26 @@ class Agentcage:
                     continue
                 inspector = _BUILTIN_INSPECTORS[name]()
             elif path:
+                # Reconfigure-in-place when an inspector of this name is
+                # already loaded (the hot-reload path calls this method on
+                # every config change — appending again would run the
+                # inspector twice per request). Matched by the entry's
+                # declared name falling back to the loaded class's name on
+                # the append below; the file itself is NOT re-imported on
+                # reload — a changed implementation needs an egress restart.
+                existing = next(
+                    (i for i in self.inspectors
+                     if name and i.name == name), None)
+                if existing is not None:
+                    existing.configure(cfg)
+                    continue
                 inspector = load_inspector_from_file(path)
+                existing = next(
+                    (i for i in self.inspectors
+                     if i.name == inspector.name), None)
+                if existing is not None:
+                    existing.configure(cfg)
+                    continue
             else:
                 ctx.log.warn(f"skipping unknown inspector: {name}")
                 continue
@@ -552,6 +571,22 @@ class Agentcage:
         for inspector in self.inspectors:
             if inspector.name in legacy_map and legacy_map[inspector.name] is not None:
                 inspector.configure(legacy_map[inspector.name])
+
+        # Re-apply the explicit ``inspectors:`` section AFTER the legacy
+        # map, mirroring the initial-load precedence (legacy first, the
+        # explicit section wins). Without this, every hot reload silently
+        # RESET any builtin configured only via ``inspectors:`` back to
+        # legacy/default config — for a cage whose content-type exemptions
+        # live in that section, the first ``domain add``/``domain rm`` or
+        # domains.auto grant after egress start wiped
+        # ``host_exempt_content_types`` in place and multipart uploads
+        # started 403ing on body entropy (hit in production 2026-09-01:
+        # ElevenLabs STT voice-note uploads). ``_load_custom_inspectors``
+        # is reload-safe: it reconfigures in place and never appends a
+        # duplicate. An entry REMOVED from the section keeps its last
+        # config until restart — acceptable; removal is not a live-reload
+        # operation for any other section either.
+        self._load_custom_inspectors()
 
         # Reconfigure the secret injector too — it is NOT part of the
         # inspector chain (inspectors must see placeholders, injection
