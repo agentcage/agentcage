@@ -137,14 +137,26 @@ added to the cage's HTTP allowlist).
             agentcage watcher findings <name> / watcher status <name>   (host)
 ```
 
-- **Audit ring**: `addon._audit_write` is the single funnel every audit
-  entry already passes through; when the watcher is enabled the addon
-  appends a copy to a bounded `deque` (order preserved, recent-N kept).
-  The digest consumes entries newer than the watcher's cursor.
-- **Capture tail**: the watcher tails `capture.jsonl` from a byte-offset
-  cursor, incrementally while running; on (re)start it scans the file
-  once, keeping entries inside `window_seconds`. Only the **inbound
-  view** of a body is ever excerpted into the digest — the inbound
+- **Audit ring**: EVERY audit producer rides one funnel —
+  `addon._audit_write` → `addon._ring_ingest` — including ordinary
+  HTTP/WebSocket decisions via `addon._log` (which historically wrote
+  its own sinks; it funnels now, or the watcher would be blind to the
+  default mode's traffic). When `logging.allowed_requests` suppresses
+  ALLOWED traffic from the durable log, the ring still ingests it:
+  suppression is a journald/disk concern, and exfiltration patterns live
+  in traffic that was *allowed*. The ring is a bounded `deque` (order
+  preserved, recent-N kept) that the watcher **drains in ingestion
+  order** — a timestamp cursor would let one future-dated entry skip
+  real traffic, so there is none. The watcher's own audit records
+  (`watcher_finding`/`watcher_revoke`) are discarded on drain, never fed
+  back into the model's evidence.
+- **Capture tail**: the watcher tails `capture.jsonl` from a staged
+  byte-offset cursor, incrementally while running; on (re)start (or on
+  rotation — tracked by file identity, not just size) it scans the file
+  once, keeping entries inside `window_seconds`. The offset advances
+  only past COMPLETE lines, so an in-flight write's torn tail is
+  re-read whole on the next tick. Only the **inbound**
+  view of a body is ever excerpted into the digest — the inbound
   perspective holds *placeholders*, while the outbound perspective holds
   the *real* secrets secret-injection put on the wire, and those must
   never ride to a third-party LLM. Sensitive headers
@@ -186,10 +198,28 @@ baseline_recommendations: [{domain, reason}]   # operator applies, egress never 
 
 **Applying the verdict** (each step fails safe):
 
+- The scan's LLM call runs via `asyncio.to_thread` (mirroring the
+  decider), so a slow provider never stalls mitmproxy's event loop —
+  the cage's own traffic, the relays and config reload all ride it.
+- **No evidence is lost to a failed scan**: the drained ring batch is
+  pushed back to the front of the ring (bounded retry), the capture
+  offset is not committed, and the next tick re-analyzes the same
+  window plus anything newer. The `watcher_scan_failed` finding is
+  throttled (first failure, then every 10th consecutive) so a dead
+  provider cannot flood the findings file.
 - *Findings* are appended to `watcher/findings.jsonl` on the grants
   volume and re-emitted into the audit stream as `kind: watcher_finding`
   with `decision: flagged`, so `cage audit --decision flagged` surfaces
-  them next to the inspector findings that caused them.
+  them next to the inspector findings that caused them. Their severity
+  rides the model's vocabulary (info/low/medium/high/critical), which
+  the audit tooling's ladder ranks alongside the inspector one
+  (`low≙info`, `medium≙warning`, `high≙error`), so
+  `cage audit --severity warning` sees a `high` finding.
+- *Revocations* persist per-revocation (the removal endpoint's
+  posture), and a grant that an ACTIVE baseline suffix also covers is
+  revoked with `still_allowed_by_baseline: true` in the audit record —
+  never a bare "blocked" that the traffic would disprove — plus a
+  baseline-removal recommendation for the operator.
 - *Removals* — only when `auto_revoke` — are validated the way the
   request endpoint validates grants (`_DOMAIN_RE` syntax, the
   `never_grant` suffix floor, no IP-encoded hostnames) **and must be a
@@ -209,7 +239,11 @@ when the window contained traffic (a quiet cage costs nothing). The loop
 mirrors `sweeper_loop`: per-tick exception isolation (a malformed capture
 line or an LLM hiccup kills one tick, never the task), `CancelledError`
 propagates for orderly shutdown, and the tick body is factored out
-(`_tick`) for unit tests.
+(`_tick`) for unit tests. A hot-reload that leaves the `watcher:` block
+unchanged is a no-op (scan state — capture offset, counters — survives
+unrelated config edits); a rebuild constructs the replacement BEFORE
+cancelling the old task, so a malformed edit keeps the last working
+watcher running.
 
 ## Host surface
 
@@ -227,14 +261,20 @@ propagates for orderly shutdown, and the tick body is factored out
 
 1. The watcher can only ever **narrow** runtime grants; it never grants,
    never edits the baseline, never touches `never_grant` policy.
-2. Fail-closed on every LLM outcome — error, timeout, missing tool call,
-   or malformed verdict is a *recorded scan failure*, not a silent pass
-   and not a revocation spree.
-3. No real secret values ever leave the egress toward the model:
+2. Fail-closed on every LLM outcome — error, timeout, missing tool
+   call, wrong tool NAME, or a verdict that violates the output
+   contract's SHAPE is a *recorded scan failure*, not a silent pass and
+   not a revocation spree.
+3. No evidence is lost to a failed scan — drained ring entries are
+   pushed back and the capture offset is not committed until the scan
+   that consumed them succeeded.
+4. No real secret values ever leave the egress toward the model:
    outbound-view bodies are excluded by construction, sensitive headers
    dropped by name, secret *names* only.
-4. An absent `watcher:` block is zero surface — module not imported, no
+5. The scan never blocks mitmproxy's event loop — only the LLM network
+   call leaves it, via `asyncio.to_thread`.
+6. An absent `watcher:` block is zero surface — module not imported, no
    task, no DNS entry, no credential.
-5. Same config → same behavior on all three backends; nothing in the
+7. Same config → same behavior on all three backends; nothing in the
    watcher is backend-aware (the grants volume and audit funnel already
    are).

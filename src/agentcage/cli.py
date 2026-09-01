@@ -3631,26 +3631,31 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     """
     expected = _expected_secrets(cfg)
     injection_names = {r.env for r in cfg.secret_injection}
-    # domains.auto's decider api_key is a real consumer of a stored secret
-    # but is not a secret_injection rule, so it fell through to "orphan" —
-    # inviting an operator to `secret rm` the one credential the decider
-    # needs. Classify it as "decider" instead.
+    # The egress LLM agents' api_keys are real consumers of stored
+    # secrets but are not secret_injection rules, so they fell through
+    # to "orphan" — inviting an operator to `secret rm` the one
+    # credential the decider (domains.auto) or the traffic watcher
+    # needs. Classify each under its owner. Same guard rationale for
+    # both keys: `cfg` is a MagicMock in much of the CLI test suite,
+    # where every attribute access yields another mock that would
+    # partition into garbage.
     decider_names: set[str] = set()
-    _api_key = getattr(
+    watcher_names: set[str] = set()
+
+    def _collect_agent_key(source_cfg, bucket: set) -> None:
+        _key = getattr(getattr(source_cfg, "agent", None), "api_key", "")
+        if isinstance(_key, str) and _key:
+            _, _, _arg = _key.partition(":")
+            if _arg:
+                bucket.add(_arg)
+                if _arg not in expected:
+                    expected.append(_arg)
+
+    _collect_agent_key(
         getattr(getattr(getattr(cfg, "domains", None), "auto", None),
                 "decider", None),
-        "agent", None,
-    )
-    _api_key = getattr(_api_key, "api_key", "")
-    # isinstance guard: `cfg` is a MagicMock in much of the CLI test suite,
-    # where every attribute access yields another mock that would partition
-    # into garbage.
-    if isinstance(_api_key, str) and _api_key:
-        _, _, _arg = _api_key.partition(":")
-        if _arg:
-            decider_names.add(_arg)
-            if _arg not in expected:
-                expected = list(expected) + [_arg]
+        decider_names)
+    _collect_agent_key(getattr(cfg, "watcher", None), watcher_names)
     # Placeholders are decoy tokens (never sensitive) — show them so a
     # generated value is discoverable without opening the stored cage.yaml.
     placeholders = {r.env: r.placeholder for r in cfg.secret_injection}
@@ -3666,6 +3671,8 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
             stype = "injection"
         elif key in decider_names:
             stype = "decider"
+        elif key in watcher_names:
+            stype = "watcher"
         else:
             stype = "direct"
         if key in present_keys:
@@ -5471,9 +5478,7 @@ def watcher():
               help="Output raw finding entries as JSON lines.")
 def watcher_findings(name, severities, hosts, max_entries, as_json):
     """Show the traffic watcher's recorded findings."""
-    try:
-        state.load_raw_config(name)
-    except FileNotFoundError:
+    if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
     cfg = state.load_deployment_config(name)
@@ -5508,7 +5513,10 @@ def watcher_findings(name, severities, hosts, max_entries, as_json):
         for e in entries:
             click.echo(json.dumps(e))
         return
-    click.echo(f"{'TIMESTAMP':<26} {'SEVERITY':<9} {'DOMAIN':<30} TITLE")
+    # HOST, matching the audit table's column and this command's own
+    # --host filter (the field IS entry["host"] — a finding's domain
+    # rides it too).
+    click.echo(f"{'TIMESTAMP':<26} {'SEVERITY':<9} {'HOST':<30} TITLE")
     for e in entries:
         ts = str(e.get("ts", ""))[:25]
         sev = str(e.get("severity", ""))[:8]
@@ -5525,9 +5533,7 @@ def watcher_findings(name, severities, hosts, max_entries, as_json):
 @click.argument("name")
 def watcher_status(name):
     """Show the traffic watcher's configuration and last scan."""
-    try:
-        state.load_raw_config(name)
-    except FileNotFoundError:
+    if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
     cfg = state.load_deployment_config(name)
@@ -5539,8 +5545,10 @@ def watcher_status(name):
             f"docs/explain/traffic-watcher.md).")
         return
     click.echo(f"Traffic watcher for cage '{name}': enabled")
-    click.echo(f"  scan interval:   {w.interval_seconds}s")
-    click.echo(f"  lookback window: {w.window_seconds}s")
+    # :g — the config coerces to float, so a plain `interval_seconds:
+    # 300` must print 300s, not 300.0s.
+    click.echo(f"  scan interval:   {w.interval_seconds:g}s")
+    click.echo(f"  lookback window: {w.window_seconds:g}s")
     click.echo(f"  auto-revoke:    {'yes' if w.auto_revoke else 'no (findings only)'}")
     click.echo(f"  agent:          {w.agent.provider} / {w.agent.model}")
 

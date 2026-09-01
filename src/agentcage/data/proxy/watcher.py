@@ -3,10 +3,11 @@
 Opt-in (``watcher.enable`` in cage.yaml, plumbed to the egress via
 proxy-config.yaml). Every ``interval_seconds`` the watcher re-reads the
 cage's recent traffic — the audit stream (an in-memory ring the addon
-funnels every audit entry into) plus the HAR capture file (tailed
-incrementally by byte offset) — and asks an LLM agent, prompted as a
-senior cybersecurity expert, whether anything suspicious is going on in
-the aggregate shape of that traffic. See docs/explain/traffic-watcher.md.
+funnels EVERY audit entry into, ordinary HTTP decisions included) plus
+the HAR capture file (tailed incrementally by byte offset) — and asks an
+LLM agent, prompted as a senior cybersecurity expert, whether anything
+suspicious is going on in the aggregate shape of that traffic. See
+docs/explain/traffic-watcher.md.
 
 What it shares with the domains decider (data/proxy/policy_api.py):
 
@@ -18,7 +19,25 @@ What it shares with the domains decider (data/proxy/policy_api.py):
   the same ``_read_secret``;
 * the forced-tool-call output contract and the fail-closed posture —
   a watcher that cannot reach its model, or returns garbage, revokes
-  nothing and records a ``watcher_scan_failed`` finding.
+  nothing and records a ``watcher_scan_failed`` finding (throttled so a
+  dead provider cannot flood the findings file).
+
+Loop hygiene: ONLY the LLM network call leaves mitmproxy's event loop
+(``asyncio.to_thread``, mirroring ``PolicyApi._decide_llm``) — collect,
+digest and revocation application stay on the loop, so a slow provider
+can never stall the cage's own traffic.
+
+Scan semantics (no evidence is ever lost to a failed scan):
+
+* the ring is DRAINED in ingestion order (not timestamp-coursored): a
+  future-dated entry cannot skip real traffic, and an unparseable-ts
+  entry is consumed exactly once. On a failed scan the drained batch is
+  pushed back to the FRONT of the ring (bounded retry), and the capture
+  byte offset is not committed, so the next tick re-analyzes the same
+  window plus anything newer;
+* the watcher's OWN audit records (``watcher_finding`` /
+  ``watcher_revoke``) are discarded on drain — feeding them back would
+  let a failed scan's own noise become the next scan's evidence.
 
 Trust model: the watcher can only ever NARROW. It may revoke RUNTIME
 GRANTS (the egress's own additive overlay — the same machinery the
@@ -27,7 +46,10 @@ them; it can never grant, never edit the operator's static baseline
 ("baseline immutability from the egress"), never touch never_grant
 policy. Baseline edits are emitted as *recommendations* the operator
 applies with ``agentcage domain rm``. Revocations are additionally
-gated on ``watcher.auto_revoke``.
+gated on ``watcher.auto_revoke``, and each one is validated the way the
+request endpoint validates grants (syntax, the never-revoke floor, and
+it must be a LIVE grant — a hallucinated or baseline domain is
+structurally unreachable).
 
 Prompt-injection hardening, inherited from the decider: the traffic
 digest is UNTRUSTED DATA, never instructions. Bodies, hosts, paths and
@@ -61,28 +83,40 @@ from policy_api import (
 
 # Audit-ring bound, shared with the addon (which owns the deque — see
 # addon._init_watcher): the ring is the fresh-traffic source and only
-# needs to bridge one scan interval plus the analysis window's tail —
+# needs to bridge scan intervals plus any failed-scan retry backlog —
 # capture.jsonl carries the durable history. Recent-N kept, oldest
 # silently evicted; the digest caps at max_flows anyway.
 RING_MAX = 5000
+
+# Per-tick drain bound: how many ring entries one scan may consume. The
+# digest aggregates everything drained (compact), so a large backlog is
+# cheap for the prompt; the bound just caps per-tick work.
+_MAX_DRAIN = 2000
+
+# Per-tick capture read bound (bytes). A first scan on a huge capture
+# file is chunked across ticks instead of reading it whole; the offset
+# only advances past COMPLETE lines, so chunk boundaries never lose data.
+_CAP_READ_CHUNK = 8 * 1024 * 1024
 
 # Hard caps on what one digest may carry to the model. Bodies are
 # excerpted (never sent whole) and headers are filtered by name.
 _BODY_EXCERPT_CHARS = 512
 _MAX_CAPTURE_SAMPLES = 50
 _MAX_HOSTS_IN_DIGEST = 25
+_MAX_POLICY_EVENTS = 200
 
 # Header names whose VALUES never ride the digest, whatever the
 # perspective. Name-matched, case-insensitive, no substring surprises.
 _SENSITIVE_HEADERS = {
     "authorization", "proxy-authorization", "cookie", "set-cookie",
     "x-api-key", "x-auth-token", "x-auth", "x-amz-security-token",
-    "x-session-token", "api-key", "private-token", "proxy-authorization",
+    "x-session-token", "api-key", "private-token",
 }
 
-# Severity ladder for findings (mirrors the inspector severity orders
-# used by the audit tooling — debug < info < warning < error < critical —
-# but with the reviewer's low/medium vocabulary for the model's sake).
+# Severity ladder for findings. This is the MODEL-facing vocabulary
+# (info/low/medium/high/critical); the audit tooling's filter ladder
+# (audit.py _meets_severity) ranks these values alongside the inspector
+# vocabulary so `cage audit --severity warning` sees a "high" finding.
 _SEVERITIES = ("info", "low", "medium", "high", "critical")
 
 # Built-in never-revoke floor: the same suffix set the decider treats as
@@ -169,6 +203,26 @@ def _parse_ts(ts: str) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _num(cfg: dict, key: str, default: float, log=None) -> float:
+    """Defensive numeric parse for the in-egress config mirror.
+
+    The host's ``validate_config`` is the real gate; this runs on
+    re-rendered proxy-config.yaml that a hand edit could have deformed,
+    so a non-numeric value falls back to the default WITH a warning
+    rather than crashing the watcher task.
+    """
+    raw = cfg.get(key, default)
+    if raw in (None, ""):
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        if log is not None:
+            log.warn(f"agentcage: watcher.{key} is not a number "
+                     f"({raw!r}) — using {default}")
+        return default
 
 
 def _redact_headers(headers: list) -> list[list[str]]:
@@ -260,7 +314,9 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
     audit dicts from the ring, ``capture_samples`` already-reduced
     samples (see _sample_capture), ``policy_events`` the
     ``policy_request``/``policy_removal`` entries from the window (the
-    decider's own record — the watcher audits the decider too).
+    decider's own record — the watcher audits the decider too). When
+    caps bite, the NEWEST evidence is kept (the recent window is what
+    the scan is about); aggregates still cover everything drained.
     """
     decisions: Counter = Counter()
     hosts: Counter = Counter()
@@ -306,11 +362,13 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
                 "reason": str(p.get("reason", ""))[:300],
                 "decided_by": str(p.get("decided_by", "")),
             }
-            for p in policy_events
+            for p in policy_events[-_MAX_POLICY_EVENTS:]
         ],
         "current_granted": sorted(granted),
         "current_baseline": sorted(baseline),
-        "capture_samples": capture_samples[:max_flows],
+        # Newest-keep: if the cap bites, the OLDEST samples are dropped —
+        # the scan is about the recent window.
+        "capture_samples": capture_samples[-max_flows:],
     }
     return digest
 
@@ -325,7 +383,8 @@ class Watcher:
     never started, zero surface). Owns:
 
     * the scan loop (``watcher_loop``, started in ``addon.running()``,
-      cancelled in ``addon.done()`` and on every config hot-reload),
+      cancelled in ``addon.done()``; a hot-reload keeps the watcher —
+      and its scan state — when the block is unchanged),
     * the audit ring drain + capture.jsonl incremental tail (the two
       "after the fact" sources),
     * the digest → LLM ``review`` call → findings/revocations pipeline.
@@ -343,11 +402,28 @@ class Watcher:
 
         # Config, parsed defensively (proxy-config.yaml is re-rendered
         # from cage.yaml, but the addon never trusts upstream validation
-        # — the same posture PolicyApi takes with its block).
-        self._interval = max(60.0, float(self.cfg.get("interval_seconds", 300.0) or 300.0))
-        self._window = min(86400.0, max(1.0, float(self.cfg.get("window_seconds", 3600.0) or 3600.0)))
-        self._max_flows = max(10, int(self.cfg.get("max_flows", 200) or 200))
-        self._auto_revoke = bool(self.cfg.get("auto_revoke", True))
+        # — the same posture PolicyApi takes with its block). Malformed
+        # shapes fall back to safe defaults WITH a warning; the watcher
+        # then runs fail-closed (an unusable agent config records scan
+        # failures, it never widens anything).
+        self._interval = max(60.0, _num(self.cfg, "interval_seconds",
+                                        300.0, log))
+        self._window = min(86400.0, max(1.0, _num(
+            self.cfg, "window_seconds", 3600.0, log)))
+        self._max_flows = max(10, int(_num(self.cfg, "max_flows",
+                                          200.0, log)))
+        # Only a REAL boolean enables autonomous revocation. YAML from
+        # a hand-edited file could say `auto_revoke: "false"` — bool()
+        # coercion would turn that string into True (enabling the very
+        # thing the operator wrote "false" next to), so anything that is
+        # not a bool falls back to the fail-safe default with a warning.
+        _ar = self.cfg.get("auto_revoke", True)
+        if not isinstance(_ar, bool):
+            self._log.warn(
+                f"agentcage: watcher.auto_revoke is not a boolean "
+                f"({ _ar!r }) — using the default (true)")
+            _ar = True
+        self._auto_revoke = _ar
         _ctx = self.cfg.get("context", "")
         if not isinstance(_ctx, str):
             self._log.warn(
@@ -356,19 +432,33 @@ class Watcher:
             _ctx = ""
         self._context = _ctx.strip()[:4096]
 
-        agent = self.cfg.get("agent") or {}
-        self._provider = str(agent.get("provider", "") or "").lower()
+        agent = self.cfg.get("agent")
+        if not isinstance(agent, dict):
+            if agent is not None:
+                self._log.warn(
+                    "agentcage: watcher.agent is not a mapping in the "
+                    f"proxy config (got {type(agent).__name__}) — the "
+                    f"watcher agent is unconfigured")
+            agent = {}
+        # Provider is NOT lowercased: the host validation rejects any
+        # casing but the exact provider key, so a mixed-case value here
+        # means a deformed proxy config — leave it as-is and let the
+        # provider lookup fail (recorded scan failures), rather than
+        # silently accepting what the operator's validation rejects.
+        self._provider = str(agent.get("provider", "") or "")
         self._model = str(agent.get("model", "") or "")
         self._secret = self._read_key(str(agent.get("api_key", "") or ""))
-        self._timeout = float(agent.get("timeout_seconds", 30.0) or 30.0)
+        self._timeout = _num(agent, "timeout_seconds", 30.0, log)
         self._llm_base_url = str(agent.get("base_url", "") or "").rstrip("/")
 
-        # Scan cursors. The audit cursor is in-memory only (the ring is
-        # since-start by construction); the capture offset survives
-        # within one egress run. None = uninitialized → first tick seeds
-        # from the window lookback.
-        self._audit_cursor: Optional[datetime] = None
+        # Scan cursors. The RING has none — it is drained in ingestion
+        # order (see _collect). The capture tail tracks (byte offset,
+        # file identity); the offset is only COMMITTED by the tick after
+        # the scan that consumed those bytes succeeded, so a failed scan
+        # re-reads them instead of silently dropping evidence.
         self._cap_offset: Optional[int] = None
+        self._cap_file_id: Optional[tuple] = None
+        self._consec_failures = 0
 
         # Findings + scan state live on the grants volume — the one
         # host-visible writable volume the egress already owns (the same
@@ -406,7 +496,7 @@ class Watcher:
             while True:
                 await asyncio.sleep(self._interval)
                 try:
-                    self._tick()
+                    await self._tick()
                 except Exception as e:  # pragma: no cover — defensive
                     self._log.warn(f"agentcage: watcher tick failed: {e!r}")
         except asyncio.CancelledError:
@@ -414,32 +504,69 @@ class Watcher:
 
     # ── One scan ────────────────────────────────────────────
 
-    def _tick(self) -> None:
-        """One scan: collect → digest → LLM review → findings + revocations."""
+    def _collect(self, now: datetime) -> dict:
+        """Drain the audit ring + read new capture bytes (staged).
+
+        Ring drain is INGESTION-ORDER (popleft), not timestamp-coursored:
+        a future-dated entry can never skip real traffic, and an
+        unparseable-ts entry is consumed exactly once instead of being
+        replayed every tick. The drained batch is returned separately so
+        a failed scan can push it back to the FRONT of the ring (bounded
+        retry) — no evidence is lost to an LLM hiccup. The watcher's OWN
+        audit records (``watcher_*``) are discarded on drain: feeding
+        them back would let a failed scan's own noise become the next
+        scan's evidence.
+        """
+        batch: list[dict] = []
+        while self._ring and len(batch) < _MAX_DRAIN:
+            e = self._ring.popleft()
+            if str(e.get("kind", "")).startswith("watcher_"):
+                continue
+            batch.append(e)
+        samples, new_offset, file_id = self._read_capture(now)
+        return {
+            "audit": batch,
+            "capture_samples": samples,
+            "cap_offset": new_offset,
+            "cap_file_id": file_id,
+        }
+
+    def _push_back(self, entries: list[dict]) -> None:
+        """Return a failed scan's drained batch to the FRONT of the ring.
+
+        ``extendleft(reversed(...))`` restores the original order. If
+        the ring fills past its bound, the OLDEST entries evict — the
+        retry keeps the most recent evidence, which is the window the
+        scan is about.
+        """
+        try:
+            self._ring.extendleft(reversed(entries))
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+    def _commit_capture(self, batch: dict) -> None:
+        """Advance the capture cursor to the staged end-of-scan position."""
+        self._cap_offset = batch["cap_offset"]
+        self._cap_file_id = batch["cap_file_id"]
+
+    async def _tick(self) -> None:
+        """One scan: collect → digest → (threaded) LLM review → apply.
+
+        Only the LLM network call leaves the event loop
+        (``asyncio.to_thread``, mirroring ``PolicyApi._decide_llm``): a
+        slow provider must never stall mitmproxy's loop — the cage's own
+        traffic, the relays, the sweeper and config reload all ride it.
+        """
         now = _now()
-        if self._audit_cursor is None:
-            self._audit_cursor = now - timedelta(seconds=self._window)
+        batch = self._collect(now)
+        entries: list[dict] = batch["audit"]
+        samples: list[dict] = batch["capture_samples"]
 
-        # 1. Drain the audit ring for the window.
-        entries: list[dict] = []
-        for e in list(self._ring):
-            dt = _parse_ts(e.get("ts", ""))
-            if dt is None or dt > self._audit_cursor:
-                entries.append(e)
-        if entries:
-            newest = max(
-                (_parse_ts(e.get("ts", "")) for e in entries
-                 if _parse_ts(e.get("ts", "")) is not None),
-                default=None,
-            )
-            if newest is not None:
-                self._audit_cursor = newest
-
-        # 2. Tail capture.jsonl (durable history, when capture is on).
-        samples = self._tail_capture(now)
-
-        # 3. Quiet window → no LLM call (a quiet cage costs nothing).
+        # Quiet window → no LLM call (a quiet cage costs nothing). The
+        # staged capture offset still commits: nothing was consumed that
+        # a retry would need.
         if not entries and not samples:
+            self._commit_capture(batch)
             self._scans += 1
             self._write_state(now, flows=0)
             return
@@ -449,8 +576,8 @@ class Watcher:
             if str(e.get("kind", "")).startswith("policy_")
         ]
 
-        # 4. Digest + review. Fail-closed on every LLM outcome: an
-        # error, timeout, missing tool call or malformed verdict is a
+        # Digest + review. Fail-closed on every LLM outcome: an error,
+        # timeout, missing tool call, or malformed verdict is a
         # RECORDED scan failure — never a silent "all clear", and never
         # a revocation spree (no verdict → no removals applied).
         digest = build_digest(
@@ -465,21 +592,34 @@ class Watcher:
                       if self.dom is not None else []),
             max_flows=self._max_flows,
         )
-        verdict = self._review(digest)
+        verdict = await asyncio.to_thread(self._review_sync, digest)
         if verdict is None:
-            self._record_finding({
-                "severity": "medium",
-                "title": "watcher scan failed",
-                "detail": "the watcher agent's LLM call failed (error, "
-                          "timeout, or unusable response); this window "
-                          "was NOT analyzed. Nothing was revoked.",
-                "recommendation": "check the egress logs and the "
-                                  "watcher.agent config; the next tick "
-                                  "retries automatically",
-            })
+            # Bounded retry: push the drained batch back and leave the
+            # capture offset uncommitted — the next tick re-analyzes the
+            # same window plus anything newer. The finding is throttled
+            # (first failure, then every 10th consecutive one) so a dead
+            # provider cannot flood the findings file.
+            self._consec_failures += 1
+            self._push_back(entries)
+            if self._consec_failures == 1 or self._consec_failures % 10 == 0:
+                self._record_finding({
+                    "severity": "medium",
+                    "title": "watcher scan failed",
+                    "detail": "the watcher agent's LLM call failed (error, "
+                              "timeout, or unusable response); this window "
+                              "was NOT analyzed and is queued for retry "
+                              f"({self._consec_failures} consecutive "
+                              f"failures). Nothing was revoked.",
+                    "recommendation": "check the egress logs and the "
+                                      "watcher.agent config; the next tick "
+                                      "retries automatically",
+                })
             self._scans += 1
             self._write_state(now, flows=len(entries), failed=True)
             return
+
+        self._consec_failures = 0
+        self._commit_capture(batch)
 
         findings = verdict.get("findings") or []
         removals = verdict.get("allowlist_removals") or []
@@ -507,8 +647,14 @@ class Watcher:
 
     # ── LLM review ───────────────────────────────────────────
 
-    def _review(self, digest: dict) -> Optional[dict]:
-        """Call the watcher agent; None on ANY failure (fail-closed)."""
+    def _review_sync(self, digest: dict) -> Optional[dict]:
+        """Blocking LLM call (run via ``asyncio.to_thread``).
+
+        Returns a normalized verdict dict, or None on ANY failure
+        (fail-closed): unconfigured agent, provider/network error,
+        missing tool call, wrong tool name, or a verdict whose shape
+        violates the contract. None must never trigger a side effect.
+        """
         if not self._provider or not self._model or not self._secret:
             self._log.warn(
                 "agentcage: watcher agent not configured (provider/model/"
@@ -516,6 +662,9 @@ class Watcher:
             return None
         base = self._llm_base_url or llm_tool_base(self._provider)
         if not base:
+            self._log.warn(
+                f"agentcage: unknown watcher agent provider "
+                f"{self._provider!r} — scans are skipped")
             return None
         try:
             raw = llm_tool_call(
@@ -534,7 +683,35 @@ class Watcher:
             self._log.warn(
                 "agentcage: watcher llm returned no usable review tool call")
             return None
-        return args
+        # Structure validation BEFORE any side effect: the contract
+        # requires a findings LIST; a verdict whose fields are present
+        # but malformed is a scan failure, not "no findings".
+        findings = args.get("findings")
+        removals = args.get("allowlist_removals")
+        baseline_recs = args.get("baseline_recommendations")
+        if not isinstance(findings, list):
+            self._log.warn(
+                "agentcage: watcher verdict malformed (findings is not a "
+                "list) — recorded as a failed scan")
+            return None
+        if removals is not None and not isinstance(removals, list):
+            self._log.warn(
+                "agentcage: watcher verdict malformed (allowlist_removals "
+                "is not a list) — recorded as a failed scan")
+            return None
+        if baseline_recs is not None and not isinstance(baseline_recs, list):
+            self._log.warn(
+                "agentcage: watcher verdict malformed "
+                "(baseline_recommendations is not a list) — recorded as "
+                "a failed scan")
+            return None
+        return {
+            "findings": [f for f in findings if isinstance(f, dict)],
+            "allowlist_removals": [r for r in (removals or [])
+                                   if isinstance(r, dict)],
+            "baseline_recommendations": [r for r in (baseline_recs or [])
+                                         if isinstance(r, dict)],
+        }
 
     @staticmethod
     def _system_prompt() -> str:
@@ -667,10 +844,12 @@ class Watcher:
     def _record_finding(self, finding: dict) -> None:
         """Persist a finding and re-emit it into the audit stream.
 
-        The audit entry carries an inspector-shaped entry (name=watcher)
+        The audit entry carries an inspector-shaped record (name=watcher)
         so `cage audit --inspector watcher` and --severity filtering work
         on it like any inspector finding, and decision=flagged so it is
-        visible with `cage audit --decision flagged`.
+        visible with `cage audit --decision flagged`. The severity rides
+        the watcher vocabulary, which the audit ladder ranks alongside
+        the inspector one (audit.py _meets_severity).
         """
         entry = {
             "kind": "watcher_finding",
@@ -759,7 +938,20 @@ class Watcher:
                 })
                 continue
             self.dom.revoke(domain)
+            # Persist IMMEDIATELY, per revocation — the removal
+            # endpoint's posture. A single batched persist at the end of
+            # the loop would widen the documented revoke↔persist TOCTOU
+            # across the whole batch (a host-side revoke landing mid-loop
+            # could be resurrected by the final write).
+            self._pa._persist_grants()
             revoked.append(domain)
+            # Baseline overlap (the removal endpoint's
+            # still_allowed_by_baseline case): a grant can shadow an
+            # ACTIVE baseline suffix, in which case the domain stays
+            # reachable after the revoke. Claiming plain "blocked" would
+            # lie in the forensic record — flag it, and emit the
+            # baseline recommendation the operator can act on.
+            still_allowed = self._baseline_covers(domain)
             try:
                 self._audit({
                     "kind": "watcher_revoke",
@@ -769,15 +961,50 @@ class Watcher:
                     "host": domain, "url": "", "path": "", "port": 0,
                     "domain": domain,
                     "reason": reason,
+                    "still_allowed_by_baseline": still_allowed,
                     "decided_by": f"watcher:agent:{self._provider}",
                 })
             except Exception:  # pragma: no cover — defensive
                 pass
-        if revoked:
-            # Persist the shrunk overlay + republish DNS zones — the
-            # exact chain POST /v1/allowlist/removals uses.
-            self._pa._persist_grants()
+            if still_allowed:
+                self._record_finding({
+                    "severity": "medium",
+                    "title": f"revoked {domain}, but the operator's "
+                             f"baseline still allows it",
+                    "detail": "the runtime grant was revoked; an active "
+                              "static baseline entry also matches this "
+                              "domain, so the traffic remains reachable",
+                    "recommendation": "apply the baseline removal with "
+                                      "`agentcage domain rm` if the domain "
+                                      "should really go",
+                    "domain": domain,
+                })
         return revoked
+
+    def _baseline_covers(self, domain: str) -> bool:
+        """True when an ACTIVE (non-expired) baseline suffix still allows *domain*.
+
+        Mirrors the removal endpoint's expiry-aware flag: ``matches_baseline``
+        alone would also light on an EXPIRED baseline entry that L7 blocks
+        anyway, overstating what survived the revoke. Fail-open on an
+        unparseable expiry (the same posture as ``_matched_expired``).
+        """
+        if self.dom is None or not self.dom.matches_baseline(domain):
+            return False
+        parts = domain.split(".")
+        for i in range(len(parts)):
+            sfx = ".".join(parts[i:])
+            if sfx not in self.dom._baseline:
+                continue
+            exp = self.dom._expires.get(sfx, "")
+            if not exp:
+                return True
+            try:
+                if datetime.fromisoformat(exp) > _now():
+                    return True
+            except (ValueError, TypeError):
+                return True  # fail-open on the timestamp
+        return False
 
     def _is_never_revoke(self, domain: str) -> bool:
         """Suffix floor mirror of the decider's never_grant check."""
@@ -791,46 +1018,80 @@ class Watcher:
 
     # ── Capture tail ─────────────────────────────────────────
 
-    def _tail_capture(self, now: datetime) -> list[dict]:
-        """Incrementally tail capture.jsonl for the analysis window.
+    def _read_capture(self, now: datetime) -> tuple[list[dict], int, tuple]:
+        """Read new capture.jsonl bytes → (samples, staged_offset, file_id).
 
-        First call (offset None): scan the file once, keeping entries
-        with ts inside the window; the offset then sits at EOF. Later
-        calls: read from the byte offset. A file smaller than the offset
-        (rotation/truncation) resets to 0 and rescans the window.
+        Torn-tail safe and rotation safe:
+
+        * reads in BINARY and advances only past lines that end with a
+          newline — an in-flight write's partial final line stays
+          unconsumed and is re-read WHOLE next tick (with the text-mode
+          readline the offset used to jump past the torn line, so a
+          completed write could never be parsed again);
+        * tracks ``(st_dev, st_ino)`` alongside size: rotation to a
+          same-sized replacement file is detected by identity change,
+          truncation by shrinkage below the offset — either resets to
+          offset 0, a full-file scan filtered to ``window_seconds`` (the
+          after-the-fact lookback);
+        * reads at most ``_CAP_READ_CHUNK`` bytes per tick, so a huge
+          capture file is chunked rather than slurped.
+
+        The staged offset is COMMITTED by the caller only after the scan
+        that consumed the samples succeeded — a failed scan re-reads
+        from the old offset and no evidence is lost to an LLM hiccup.
         """
-        if not self._capture_path or not os.path.isfile(self._capture_path):
-            return []
-        cutoff = now - timedelta(seconds=self._window)
         samples: list[dict] = []
+        if not self._capture_path or not os.path.isfile(self._capture_path):
+            return [], self._cap_offset or 0, self._cap_file_id or (0, 0)
         try:
-            size = os.path.getsize(self._capture_path)
-            if self._cap_offset is None or self._cap_offset > size:
-                self._cap_offset = 0
-            with open(self._capture_path, "r", errors="replace") as f:
-                if self._cap_offset:
-                    f.seek(self._cap_offset)
-                for line in f:
-                    try:
-                        entry = json.loads(line)
-                    except (ValueError, TypeError):
-                        continue  # a torn tail line from an in-flight write
-                    if not isinstance(entry, dict):
-                        continue
+            st = os.stat(self._capture_path)
+            size = st.st_size
+            file_id = (st.st_dev, st.st_ino)
+            offset = self._cap_offset
+            # First read / rotation / truncation → full-file window scan.
+            if offset is None or file_id != self._cap_file_id \
+                    or offset > size:
+                offset = 0
+            chunk = max(0, min(size - offset, _CAP_READ_CHUNK))
+            if chunk == 0:
+                return samples, offset, file_id
+            with open(self._capture_path, "rb") as f:
+                f.seek(offset)
+                data = f.read(chunk)
+            if not data:
+                return samples, offset, file_id
+            lines = data.split(b"\n")
+            partial = b""
+            if not data.endswith(b"\n"):
+                # Torn tail (an in-flight write): leave those bytes
+                # unconsumed; the next tick re-reads the line complete.
+                partial = lines.pop()
+            new_offset = offset + chunk - len(partial)
+            cutoff = now - timedelta(seconds=self._window)
+            for raw_line in lines:
+                if not raw_line.strip():
+                    continue
+                try:
+                    entry = json.loads(raw_line.decode("utf-8", "replace"))
+                except (ValueError, TypeError):
+                    continue  # corrupt line — skip it, still consume it
+                if not isinstance(entry, dict):
+                    continue
+                if offset == 0:
+                    # Full-file scan (first read or reset): keep only the
+                    # window. Incremental reads are all-new bytes by
+                    # construction, so no filter applies there.
                     dt = _parse_ts(entry.get("ts", ""))
-                    if self._cap_offset == 0 and (dt is None or dt < cutoff):
-                        # Only on the initial scan / reset do we window-
-                        # filter; incremental reads are all-new bytes.
+                    if dt is None or dt < cutoff:
                         continue
-                    samples.append(_sample_capture(entry))
-                self._cap_offset = f.tell()
+                samples.append(_sample_capture(entry))
+            # Newest-last → keep the most recent max samples.
+            if len(samples) > _MAX_CAPTURE_SAMPLES:
+                samples = samples[-_MAX_CAPTURE_SAMPLES:]
+            return samples, new_offset, file_id
         except OSError as e:
             self._log.warn(f"agentcage: watcher cannot read capture: {e}")
-            return []
-        # Newest-last → keep the most recent max samples.
-        if len(samples) > _MAX_CAPTURE_SAMPLES:
-            samples = samples[-_MAX_CAPTURE_SAMPLES:]
-        return samples
+            return [], self._cap_offset or 0, self._cap_file_id or (0, 0)
 
     # ── Scan state (host-visible) ────────────────────────────
 
@@ -847,6 +1108,7 @@ class Watcher:
                 "revoked_last_scan": revoked,
                 "findings_total": self._findings_total,
                 "last_scan_failed": failed,
+                "consecutive_failed_scans": self._consec_failures,
                 "interval_seconds": self._interval,
             }
             tmp = f"{self._state_path}.{os.getpid()}.tmp"

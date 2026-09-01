@@ -226,9 +226,16 @@ def parse_tool_args(raw: dict, provider: str, tool_name: str) -> dict:
     """Extract the forced tool call's arguments from a provider response.
 
     Fail-closed: returns ``{}`` on ANY parse failure (no tool call,
-    unparseable arguments, wrong tool name, malformed response). Callers
-    treat an empty dict per their own fail-closed rule — the decider turns
-    it into a deny, the watcher into a recorded scan failure.
+    unparseable arguments, wrong tool NAME, malformed response). The
+    name check is not cosmetic: a provider (or a body echoed back from
+    inside the cage) that emits a call named something OTHER than the
+    forced tool must not have that call's arguments honored — the
+    openai-compat branch historically took the FIRST tool call blindly,
+    so a stray ``other`` call carrying a grant-shaped ``decision`` or a
+    revocation-shaped ``allowlist_removals`` would have been applied.
+    Callers treat an empty dict per their own fail-closed rule — the
+    decider turns it into a deny, the watcher into a recorded scan
+    failure.
     """
     args: dict = {}
     try:
@@ -243,9 +250,11 @@ def parse_tool_args(raw: dict, provider: str, tool_name: str) -> dict:
             choice = (raw.get("choices") or [{}])[0]
             msg = choice.get("message") or {}
             tcs = msg.get("tool_calls") or []
-            if tcs:
-                args = json.loads(
-                    tcs[0].get("function", {}).get("arguments", "{}"))
+            for tc in tcs:
+                fn = (tc or {}).get("function") or {}
+                if fn.get("name") == tool_name:
+                    args = json.loads(fn.get("arguments", "{}"))
+                    break
     except (ValueError, TypeError, KeyError, IndexError):
         args = {}
     return args if isinstance(args, dict) else {}

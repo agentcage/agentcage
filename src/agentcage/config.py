@@ -1205,10 +1205,30 @@ def load_config(path: str) -> Config:
     # files by the quadlet renderer): the watcher runs in the egress, so
     # its LLM key follows the exact decider credential chain and never
     # reaches the cage, even as a placeholder.
+    #
+    # Parse strictness mirrors the decider block's: a malformed block
+    # REJECTS the config (it would ride proxy-config.yaml verbatim and
+    # crash/degrade the in-egress consumer), explicit values are
+    # preserved as-is so validate_config's bounds can reject them (a
+    # bare ``or`` fallback would silently coerce an explicit 0 into the
+    # default — the exact trap the decider's rate-limit parse calls
+    # out), and booleans must be REAL booleans (``bool("false")`` is
+    # True — silently enabling autonomous revocation against the
+    # operator's written intent).
     _pending_watcher: WatcherConfig | None = None
-    w_raw = raw.get("watcher") or {}
+    w_raw = raw.get("watcher")
+    if w_raw is not None and not isinstance(w_raw, dict):
+        raise ValueError(
+            f"watcher must be a mapping (got {type(w_raw).__name__})"
+        )
     if isinstance(w_raw, dict) and w_raw.get("enable"):
-        _w_agent_raw = w_raw.get("agent") or {}
+        _w_agent_raw = w_raw.get("agent")
+        if _w_agent_raw is not None and not isinstance(_w_agent_raw, dict):
+            raise ValueError(
+                f"watcher.agent must be a mapping (got "
+                f"{type(_w_agent_raw).__name__})"
+            )
+        _w_agent_raw = _w_agent_raw or {}
         _w_ctx_raw = w_raw.get("context")
         if _w_ctx_raw is None:
             _w_context = ""
@@ -1222,17 +1242,42 @@ def load_config(path: str) -> Config:
                 f"watcher.context must be a string (got "
                 f"{type(_w_ctx_raw).__name__})"
             )
+        _w_ar_raw = w_raw.get("auto_revoke", True)
+        if not isinstance(_w_ar_raw, bool):
+            raise ValueError(
+                "watcher.auto_revoke must be a boolean (true/false) — "
+                f"got {type(_w_ar_raw).__name__}"
+            )
+
+        def _w_num(key: str, default: float, as_int: bool = False):
+            # Preserve an explicit 0/None-missing distinction: only an
+            # ABSENT or empty value falls back to the default; an explicit
+            # value (including 0) reaches validate_config's bounds
+            # untouched.
+            _raw_v = w_raw.get(key)
+            if _raw_v in (None, ""):
+                _raw_v = default
+            try:
+                return int(float(_raw_v)) if as_int else float(_raw_v)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"watcher.{key} must be a number (got {_raw_v!r})"
+                )
+
         _pending_watcher = WatcherConfig(
             enable=True,
-            interval_seconds=float(
-                w_raw.get("interval_seconds", 300.0) or 300.0),
-            window_seconds=float(
-                w_raw.get("window_seconds", 3600.0) or 3600.0),
-            max_flows=int(w_raw.get("max_flows", 200) or 200),
-            auto_revoke=bool(w_raw.get("auto_revoke", True)),
+            interval_seconds=_w_num("interval_seconds", 300.0),
+            window_seconds=_w_num("window_seconds", 3600.0),
+            max_flows=_w_num("max_flows", 200, as_int=True),
+            auto_revoke=_w_ar_raw,
             context=_w_context,
             agent=AgentDeciderConfig(
-                provider=str(_w_agent_raw.get("provider", "") or "").lower(),
+                # NOT lowercased: the decider's validation rejects any
+                # casing but the exact provider key, and the watcher is
+                # documented to follow the decider's rules verbatim —
+                # accepting silently here what the twin rejects would be
+                # the mirror drifting.
+                provider=str(_w_agent_raw.get("provider", "") or ""),
                 model=str(_w_agent_raw.get("model", "") or ""),
                 api_key=str(_w_agent_raw.get("api_key", "") or ""),
                 timeout_seconds=float(

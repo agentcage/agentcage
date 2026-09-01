@@ -113,6 +113,21 @@ class TestDomainAliases:
         assert "ls" in result.output
 
 
+class TestWatcherAliases:
+    """watcher ls → findings (the new read-only traffic-watcher group)."""
+
+    def test_ls_resolves_to_findings(self):
+        result = _runner().invoke(main, ["watcher", "ls", "--help"])
+        assert result.exit_code == 0
+        assert "findings" in result.output
+
+    def test_help_shows_aliases(self):
+        result = _runner().invoke(main, ["watcher", "--help"])
+        assert result.exit_code == 0
+        assert "Aliases:" in result.output
+        assert "ls" in result.output
+
+
 class TestTopLevelAliases:
     """Top-level aliases that drop the `cage` group prefix (PR #240):
     `agentcage ls`/`logs`/`update`/... resolve to their `cage <cmd>`

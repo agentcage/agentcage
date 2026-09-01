@@ -148,6 +148,18 @@ def _passthrough_regex(domains: list[str]) -> str:
     return "|".join(parts)
 
 
+# DNS host per LLM provider for the egress's own agent calls (the
+# decider and the traffic watcher). Kept in sync with the base URLs in
+# data/proxy/policy_api.py _LLM_BASE_URLS — this is the hostnames-only
+# half, because DNS resolution needs a host while the urllib call needs
+# the full base URL.
+_LLM_PROVIDER_DNS_HOSTS = {
+    "anthropic": "api.anthropic.com",
+    "openai": "api.openai.com",
+    "openrouter": "openrouter.ai",
+}
+
+
 def _effective_dns_allowlist(config: Config) -> list[str]:
     """Merge passthrough + egress-internal hosts into the DNS allowlist.
 
@@ -182,43 +194,30 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
         host = getattr(relay.upstream, "host", "") or ""
         if host and host not in merged:
             merged.append(host)
-    # domains.auto decider agent's LLM provider host. Resolve the provider
-    # name to a base host (api.openrouter.ai, api.anthropic.com,
-    # api.openai.com) so the egress's urllib call can reach it. If the operator
-    # set a custom base_url, parse ITS host instead (a self-hosted/proxy
-    # decider endpoint won't be in the provider map).
-    auto = getattr(getattr(config, "domains", None), "auto", None)
-    if auto is not None and getattr(auto, "enable", False):
-        base_url = (auto.decider.agent.base_url or "").rstrip("/")
+    # domains.auto decider agent's LLM provider host — and the traffic
+    # watcher agent's. Both LLMs call their model via urllib from the
+    # addon process, outside mitmproxy, so without DNS resolution here
+    # every decider adjudication / watcher scan fails. One shared map for
+    # both agents (kept in sync with policy_api._LLM_BASE_URLS — the
+    # DNS-relevant HOST half of it; the full base URLs live there): a
+    # provider addition means one edit here, not N inline copies. If the
+    # operator set a custom base_url, parse ITS host instead (a
+    # self-hosted/proxy endpoint won't be in the provider map).
+    for agent_cfg in (
+        getattr(getattr(config, "domains", None), "auto", None),
+        getattr(config, "watcher", None),
+    ):
+        if agent_cfg is None or not getattr(agent_cfg, "enable", False):
+            continue
+        agent = getattr(agent_cfg, "agent", None) or getattr(
+            getattr(agent_cfg, "decider", None), "agent", None)
+        base_url = (getattr(agent, "base_url", "") or "").rstrip("/")
         if base_url:
             from urllib.parse import urlsplit
             host = urlsplit(base_url).hostname or ""
         else:
-            provider = (auto.decider.agent.provider or "").lower()
-            host = {
-                "anthropic": "api.anthropic.com",
-                "openai": "api.openai.com",
-                "openrouter": "openrouter.ai",
-            }.get(provider, "")
-        if host and host not in merged:
-            merged.append(host)
-    # The traffic watcher agent's LLM provider host — same reasoning as
-    # the decider's: the watcher calls its model via urllib from the
-    # addon process, outside mitmproxy, so without DNS resolution here
-    # every scan fails (recorded as watcher_scan_failed findings). Same
-    # provider-name → host map, same custom-base_url handling.
-    watcher = getattr(config, "watcher", None)
-    if watcher is not None and getattr(watcher, "enable", False):
-        w_base = (watcher.agent.base_url or "").rstrip("/")
-        if w_base:
-            from urllib.parse import urlsplit
-            host = urlsplit(w_base).hostname or ""
-        else:
-            host = {
-                "anthropic": "api.anthropic.com",
-                "openai": "api.openai.com",
-                "openrouter": "openrouter.ai",
-            }.get((watcher.agent.provider or "").lower(), "")
+            host = _LLM_PROVIDER_DNS_HOSTS.get(
+                (getattr(agent, "provider", "") or "").lower(), "")
         if host and host not in merged:
             merged.append(host)
     return merged

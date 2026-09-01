@@ -109,7 +109,17 @@ class AuditFilter:
         return entry_dt >= since
 
     def _meets_severity(self, entry: AuditEntry) -> bool:
-        order = {"debug": 0, "info": 1, "warning": 2, "error": 3, "critical": 4}
+        # The ladder mixes two vocabularies: the inspector severities
+        # (debug..critical, the classic order) and the traffic watcher's
+        # model-facing enum (info/low/medium/high/critical — see
+        # data/proxy/watcher.py _record_finding, which ranks its findings
+        # here). Without the low/medium/high entries, order.get(sev, 0)
+        # would rank a watcher finding the model called "high" BELOW
+        # "info" — invisible to every `cage audit --severity warning`
+        # query. Ranked on the same scale: low ≙ info, medium ≙ warning,
+        # high ≙ error; critical is shared.
+        order = {"debug": 0, "info": 1, "warning": 2, "error": 3, "critical": 4,
+                "low": 1, "medium": 2, "high": 3}
         min_ord = order.get(self.min_severity, 0)
         if min_ord == 0:
             return True

@@ -256,46 +256,72 @@ class Agentcage:
     def _init_watcher(self) -> None:
         """Build (or rebuild) the traffic watcher from the live config.
 
-        Mirrors ``_init_domain_requests`` exactly (it is the pattern the
-        egress-local DNS-apply rework established for in-egress loops):
-        cancel any old task first — it polls the OLD watcher object —
-        then construct from the current config, and (re)start the task
-        when the proxy is already running so a hot-enabled watcher
-        actually starts scanning and a hot-disabled one stops.
+        Mirrors ``_init_domain_requests`` (it is the pattern the
+        egress-local DNS-apply rework established for in-egress loops),
+        with two watcher-specific refinements the reviewers of the
+        feature demanded:
+
+        * NO-OP WHEN UNCHANGED: every proxy-config reload lands here
+          (an unrelated ``logging.level`` edit included), and a rebuild
+          would discard the watcher's scan state (capture offset, scan
+          counters) and re-analyze the same window — duplicating LLM
+          cost and findings. When the ``watcher`` block is identical to
+          the one the live watcher was built from, keep it — the ring
+          survives a rebuild by design, but the cursors don't.
+        * CONSTRUCT BEFORE CANCEL: the replacement is built (and its
+          config parsed) BEFORE the old task is cancelled, so a
+          malformed hot-reload keeps the last working watcher running
+          instead of stopping monitoring on a bad edit.
         """
-        if self._watcher_task is not None:
-            self._watcher_task.cancel()
-            self._watcher_task = None
-        w_cfg = self.cfg.get("watcher") or {}
-        if not w_cfg or not w_cfg.get("enable"):
+        w_cfg = self.cfg.get("watcher")
+        if not isinstance(w_cfg, dict):
+            if w_cfg:
+                ctx.log.warn(
+                    "agentcage: watcher config is not a mapping "
+                    f"(got {type(w_cfg).__name__}) — watcher disabled")
+            w_cfg = {}
+        if self.traffic_watcher is not None \
+                and self.traffic_watcher.cfg == w_cfg:
+            return  # unchanged: keep the loop + scan state
+        if not w_cfg.get("enable"):
+            self._cancel_watcher_task()
             self.traffic_watcher = None
             self._watcher_ring = None
             return
         try:
-            from watcher import Watcher
+            from watcher import RING_MAX, Watcher
             # The audit ring: bounded, created here so it survives watcher
             # rebuilds (a hot-reload of interval/model must not drop the
             # fresh-traffic history the old watcher was holding).
             if self._watcher_ring is None:
                 from collections import deque
-                from watcher import RING_MAX
                 self._watcher_ring = deque(maxlen=RING_MAX)
-            self.traffic_watcher = Watcher(
+            new_watcher = Watcher(
                 self.cfg, self._watcher_domain_inspector(),
                 self.domain_requests, self._audit_write, ctx.log,
                 self._watcher_ring, CAPTURE_PATH,
             )
-            ctx.log.info(
-                f"agentcage: traffic watcher enabled "
-                f"(interval={self.traffic_watcher._interval}s, "
-                f"provider={self.traffic_watcher._provider})"
-            )
         except Exception as e:
+            # The old watcher (if any) stays live and keeps scanning with
+            # its previous config: a malformed hot-reload must not stop
+            # monitoring.
             ctx.log.warn(f"agentcage: watcher init failed: {e}")
-            self.traffic_watcher = None
             return
+        self._cancel_watcher_task()
+        self.traffic_watcher = new_watcher
+        ctx.log.info(
+            f"agentcage: traffic watcher enabled "
+            f"(interval={new_watcher._interval}s, "
+            f"provider={new_watcher._provider})"
+        )
         if self._running:
             self._start_watcher_task()
+
+    def _cancel_watcher_task(self) -> None:
+        """Cancel the watcher scan task (used by disable/rebuild/done)."""
+        if self._watcher_task is not None:
+            self._watcher_task.cancel()
+            self._watcher_task = None
 
     def _watcher_domain_inspector(self):
         """The DomainInspector instance, or None when not loaded.
@@ -350,6 +376,7 @@ class Agentcage:
                 await self._watcher_task
             except asyncio.CancelledError:
                 pass
+            self._watcher_task = None
 
     def _audit_write(self, entry: dict) -> None:
         """Write a structured JSON line to the audit pipeline.
@@ -368,24 +395,20 @@ class Agentcage:
         """
         if "ts" not in entry:
             entry["ts"] = datetime.now(timezone.utc).isoformat()
-        # Traffic watcher ring: a copy of every audit entry, bounded,
-        # newest at the right. Created with the watcher (see
-        # _init_watcher) and only populated while it is enabled — the
-        # deque append is O(1) and the bound keeps memory flat, so the
-        # funnel never becomes a second cap to reason about.
-        if self._watcher_ring is not None:
-            try:
-                self._watcher_ring.append(dict(entry))
-            except Exception:  # pragma: no cover — defensive
-                pass
+        self._ring_ingest(entry)
         line = json.dumps(entry)
         print(line, file=sys.stderr, flush=True)
-        if self._audit_file:
+        # getattr throughout: test contexts construct the addon via
+        # __new__ without load()'s attributes, and _log now funnels here
+        # (it used to duplicate these sinks); a partially-constructed
+        # instance must degrade to stderr-only, not raise.
+        audit_file = getattr(self, "_audit_file", None)
+        if audit_file:
             try:
-                if not self._audit_capped:
+                if not getattr(self, "_audit_capped", False):
                     import os as _os
                     try:
-                        if self._audit_file.tell() > _AUDIT_CAP_BYTES:
+                        if audit_file.tell() > _AUDIT_CAP_BYTES:
                             self._audit_capped = True
                             ctx.log.warn(
                                 "agentcage: audit log at cap "
@@ -395,9 +418,9 @@ class Agentcage:
                             )
                     except OSError:
                         pass
-                if not self._audit_capped:
-                    self._audit_file.write(line + "\n")
-                    self._audit_file.flush()
+                if not getattr(self, "_audit_capped", False):
+                    audit_file.write(line + "\n")
+                    audit_file.flush()
             except OSError:
                 pass
 
@@ -1247,14 +1270,8 @@ class Agentcage:
             "peer_ip": ip,
             "phase": phase,
         }
-        line = json.dumps(entry)
-        print(line, file=sys.stderr, flush=True)
-        if self._audit_file:
-            try:
-                self._audit_file.write(line + "\n")
-                self._audit_file.flush()
-            except Exception:
-                pass
+        # Same funnel as _log: stderr + audit.jsonl + watcher ring.
+        self._audit_write(entry)
 
     def _resolve_all(self, host: str) -> list:
         """Every address *host* resolves to, cached briefly.
@@ -1550,6 +1567,21 @@ class Agentcage:
 
     # ── Logging ──────────────────────────────────────────
 
+    def _ring_ingest(self, entry: dict) -> None:
+        """Copy one audit entry into the traffic watcher's ring (if on).
+
+        The single funnel point: every audit producer (HTTP/WS decisions
+        via _log, peer guard, relays, DNS, the Policy API, the watcher
+        itself) lands here. Bounded, O(1), and populated only while the
+        watcher is enabled — see _init_watcher.
+        """
+        if getattr(self, "_watcher_ring", None) is None:
+            return
+        try:
+            self._watcher_ring.append(dict(entry))
+        except Exception:  # pragma: no cover — defensive
+            pass
+
     def _log(
         self,
         flow: http.HTTPFlow,
@@ -1562,8 +1594,6 @@ class Agentcage:
         secrets_injected: list[str] | None = None,
         secrets_redacted: list[str] | None = None,
     ) -> None:
-        if decision == "allowed" and not self.log_allowed:
-            return
         entry: dict = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "direction": direction,
@@ -1591,16 +1621,20 @@ class Agentcage:
                 }
                 for r in results
             ]
-        line = json.dumps(entry)
-        # Write directly to stderr so output appears regardless of
-        # mitmproxy's termlog_verbosity / -v / --quiet settings.
-        print(line, file=sys.stderr, flush=True)
-        if self._audit_file:
-            try:
-                self._audit_file.write(line + "\n")
-                self._audit_file.flush()
-            except OSError:
-                pass
+        if decision == "allowed" and not self.log_allowed:
+            # The durable/log output is suppressed (journald noise and
+            # disk — the operator's choice via logging.allowed_requests),
+            # but the watcher's ring MUST still see ALLOWED traffic:
+            # exfiltration and beacons live in traffic that was allowed,
+            # so suppressing the watcher's evidence along with the log
+            # would blind the auditor to exactly its subject. Ingest the
+            # ring copy and stop before _audit_write's durable sinks.
+            self._ring_ingest(entry)
+            return
+        # Everything else rides the ONE audit funnel: stderr print +
+        # audit.jsonl (capped) + the watcher ring — no direct writes, so
+        # no producer can bypass the watcher.
+        self._audit_write(entry)
 
 
 addons = [Agentcage()]

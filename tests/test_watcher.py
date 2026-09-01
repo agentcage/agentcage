@@ -4,24 +4,32 @@ Two halves, matching the feature's split:
 
 * host side — config parsing/validation (the ``watcher:`` cage.yaml
   block), the egress-only credential stripping, the DNS allowlist entry
-  for the watcher's LLM provider host, and the read-only CLI;
+  for the watcher's LLM provider host, the severity-ladder mapping, the
+  secret-list classification, and the read-only CLI;
 * egress side — ``data/proxy/watcher.py``: the digest builder's secret
-  hygiene, the capture tail, the fail-closed review, and the
-  narrowing-only revocation path.
+  hygiene, the capture tail (torn-line / rotation safe, staged-commit),
+  the fail-closed review, the drain-and-retry scan semantics, and the
+  narrowing-only revocation path; plus the addon's audit-ring funnel.
 
 The egress half imports the proxy modules the same way the other addon
 tests do (proxy dir on sys.path, mitmproxy stubbed — see
 test_addon_inspector_chain.py / test_policy_api_ssrf_guard.py).
+
+Many tests here pin defects found by the three-lens review of the PR
+(the correctness, security and conventions reviewers): each such test
+carries a docstring explaining the defect it guards against.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import textwrap
 import types
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,8 +39,25 @@ import pytest
 _PROXY_DIR = Path(__file__).resolve().parent.parent / "src" / "agentcage" / "data" / "proxy"
 if str(_PROXY_DIR) not in sys.path:
     sys.path.insert(0, str(_PROXY_DIR))
-sys.modules.setdefault("mitmproxy", types.ModuleType("mitmproxy"))
-sys.modules.setdefault("mitmproxy.http", types.ModuleType("mitmproxy.http"))
+# Stub mitmproxy before importing the addon (mirrors
+# test_addon_inspector_chain.py): the watcher module imports policy_api
+# (mitmproxy.http), and the funnel/lifecycle tests import addon.py
+# (mitmproxy.ctx, mitmproxy.http, mitmproxy.proxy.mode_specs).
+_mitmproxy = types.ModuleType("mitmproxy")
+_mitmproxy.__path__ = []
+_mitmproxy.ctx = types.SimpleNamespace(
+    log=types.SimpleNamespace(info=lambda *a, **k: None,
+                              warn=lambda *a, **k: None))
+_mitmproxy.http = types.ModuleType("mitmproxy.http")
+_proxy = types.ModuleType("mitmproxy.proxy")
+_mode_specs = types.ModuleType("mitmproxy.proxy.mode_specs")
+_mode_specs.ReverseMode = object
+_proxy.mode_specs = _mode_specs
+_mitmproxy.proxy = _proxy
+sys.modules.setdefault("mitmproxy", _mitmproxy)
+sys.modules.setdefault("mitmproxy.http", _mitmproxy.http)
+sys.modules.setdefault("mitmproxy.proxy", _proxy)
+sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
 from agentcage.data.proxy import watcher as wmod  # noqa: E402
 from agentcage.data.proxy.watcher import (  # noqa: E402
@@ -66,7 +91,8 @@ def _cfg_with(tmp_path, extra: str = "", *, base: str | None = None) -> str:
     """Write a minimal cage.yaml plus an appended (dedented) block.
 
     ``base`` replaces the default document head entirely (for tests that
-    need their own container: block without duplicating the key)."""
+    need their own container: block without duplicating the key).
+    """
     p = tmp_path / "config.yaml"
     doc = base if base is not None else (
         "name: test\ncontainer:\n  image: localhost/test:latest\n")
@@ -110,6 +136,38 @@ class TestWatcherConfigParsing:
         """)
         with pytest.raises(ValueError, match="watcher.context must be a string"):
             load_config(bad)
+
+    # Review fix (correctness #7 / conventions #5): a malformed block
+    # must not silently ride proxy-config.yaml and crash/degrade the
+    # in-egress consumer — reject it at parse time.
+    def test_non_mapping_block_rejected(self, tmp_path):
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match="watcher must be a mapping"):
+            load_config(_cfg_with(tmp_path, "watcher: true\n"))
+
+    def test_non_mapping_agent_rejected(self, tmp_path):
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match="watcher.agent must be a mapping"):
+            load_config(_cfg_with(tmp_path, """
+                watcher:
+                  enable: true
+                  agent: true
+            """))
+
+    # Review fix: bool("false") is True — a YAML string must not silently
+    # ENABLE autonomous revocation against the operator's written intent.
+    def test_string_auto_revoke_rejected(self, tmp_path):
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match="watcher.auto_revoke must be a boolean"):
+            load_config(_cfg_with(tmp_path, """
+                watcher:
+                  enable: true
+                  auto_revoke: "false"
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
+            """))
 
     def test_key_is_stripped_from_the_cage_env(self, tmp_path):
         # The watcher key is an EGRESS-only credential. If the operator
@@ -172,6 +230,60 @@ class TestWatcherConfigValidation:
                     provider: openai
                     model: m
                     api_key: cmd:cat /tmp/key
+            """)
+
+    # Review fix (conventions #4): the watcher agent block is documented
+    # to follow the decider's rules VERBATIM — the decider rejects
+    # `provider: Anthropic` with a message, so the watcher must too
+    # (silently lowercasing is the mirror drifting).
+    def test_mixed_case_provider_rejected_like_the_decider(self, tmp_path):
+        with pytest.raises(ValueError, match="got 'Anthropic'"):
+            self._validate(tmp_path, """
+                watcher:
+                  enable: true
+                  agent:
+                    provider: Anthropic
+                    model: m
+                    api_key: env:K
+            """)
+
+    # Review fix (correctness #7 / conventions #5): an explicit 0 must
+    # reach validation and be rejected by the bounds, not silently
+    # coerced to the default by a bare `or` at parse time.
+    def test_explicit_zero_interval_rejected_by_bounds(self, tmp_path):
+        with pytest.raises(ValueError, match="interval_seconds must be >= 60"):
+            self._validate(tmp_path, """
+                watcher:
+                  enable: true
+                  interval_seconds: 0
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
+            """)
+
+    def test_explicit_zero_window_rejected_by_bounds(self, tmp_path):
+        with pytest.raises(ValueError, match="window_seconds"):
+            self._validate(tmp_path, """
+                watcher:
+                  enable: true
+                  window_seconds: 0
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
+            """)
+
+    def test_non_numeric_interval_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="watcher.interval_seconds must be a number"):
+            self._validate(tmp_path, """
+                watcher:
+                  enable: true
+                  interval_seconds: soon
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
             """)
 
     def test_bad_provider_rejected(self, tmp_path):
@@ -303,6 +415,79 @@ class TestWatcherPlumbing:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Host side: the audit ladder ranks the watcher vocabulary
+# ═══════════════════════════════════════════════════════════════════
+
+class TestWatcherSeverityLadder:
+    """Review fix (conventions #1): a "high" watcher finding was invisible.
+
+    The audit filter's ladder was a closed vocabulary
+    (debug/info/warning/error/critical); order.get("high", 0) ranked a
+    model-rated "high" finding BELOW "info", so `cage audit --severity
+    warning` dropped it — contradicting the feature's own docs. The
+    ladder now ranks low/medium/high on the same scale.
+    """
+
+    def _entry(self, severity: str):
+        from agentcage.audit import AuditEntry
+        return AuditEntry.from_dict({
+            "ts": "2026-01-01T00:00:00+00:00", "decision": "flagged",
+            "method": "", "host": "h",
+            "inspectors": [{"name": "watcher", "severity": severity}],
+        })
+
+    @pytest.mark.parametrize("sev,min_sev", [
+        ("high", "warning"),
+        ("high", "error"),
+        ("high", "high"),
+        ("medium", "warning"),
+        ("low", "info"),
+        ("critical", "critical"),
+    ])
+    def test_watcher_severity_meets_the_filter(self, sev, min_sev):
+        from agentcage.audit import AuditFilter
+        assert AuditFilter(min_severity=min_sev).matches(self._entry(sev))
+
+    @pytest.mark.parametrize("sev,min_sev", [
+        ("low", "warning"),
+        ("medium", "error"),
+        ("info", "warning"),
+    ])
+    def test_watcher_severity_below_the_filter_drops(self, sev, min_sev):
+        from agentcage.audit import AuditFilter
+        assert not AuditFilter(min_severity=min_sev).matches(self._entry(sev))
+
+
+class TestWatcherSecretClassification:
+    """Review fix (conventions #2): the watcher key was classed `orphan`.
+
+    `secret list` invites the operator to `secret rm` anything filed as
+    an orphan; the repo already fixed exactly this for the decider's key
+    (pinned in test_policy_api_fixes.py). The watcher key — an egress-only
+    credential with no injection rule — gets the same treatment.
+    """
+
+    def test_reported_as_watcher_not_orphan(self, capsys):
+        from agentcage.cli import _render_secret_list
+
+        cfg = SimpleNamespace(
+            secret_injection=[],
+            container=SimpleNamespace(podman_secrets=[]),
+            protocol_relays=[],
+            domains=SimpleNamespace(auto=None),
+            watcher=SimpleNamespace(
+                enable=True,
+                agent=SimpleNamespace(api_key="env:WATCHER_LLM_KEY"),
+            ),
+        )
+        _render_secret_list(cfg, {"WATCHER_LLM_KEY"})
+        out = capsys.readouterr().out
+        assert "WATCHER_LLM_KEY" in out
+        assert "watcher" in out
+        assert "orphan" not in out
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Egress side: the digest's secret hygiene
 # ═══════════════════════════════════════════════════════════════════
 
@@ -338,6 +523,20 @@ class TestBuildDigest:
         assert d["current_granted"] == ["g.example"]
         assert d["current_baseline"] == ["b.example"]
 
+    # Review fix (correctness #11): the cap kept the OLDEST samples —
+    # dropping the activity that triggered the scan. Newest-keep now.
+    def test_capture_samples_keep_the_newest_when_capped(self):
+        samples = [{"host": f"h{i}"} for i in range(10)]
+        d = build_digest([], samples, [], granted=[], baseline=[],
+                         max_flows=3)
+        assert [s["host"] for s in d["capture_samples"]] == ["h7", "h8", "h9"]
+
+    def test_policy_events_are_capped_newest_keep(self):
+        events = [{"kind": "policy_request", "domain": f"d{i}"} for i in range(300)]
+        d = build_digest([], [], events, granted=[], baseline=[], max_flows=10)
+        assert len(d["policy_events"]) == wmod._MAX_POLICY_EVENTS
+        assert d["policy_events"][-1]["domain"] == "d299"
+
 
 class TestSampleCapture:
     def _entry(self, **over):
@@ -372,10 +571,6 @@ class TestSampleCapture:
         assert s["outbound_request_body_size"] == 26
 
     def test_sensitive_headers_redacted_by_name(self):
-        s = wmod._sample_capture(self._entry())
-        hdrs = {h[0]: h[1] for h in s.get("response_headers_sample", [])}
-        # request headers ride via the excerpt only; response headers are
-        # redacted by name — assert the redaction helper itself:
         red = wmod._redact_headers([["Authorization", "Bearer x"],
                                     ["content-type", "application/json"],
                                     ["Cookie", "a=b"]])
@@ -406,21 +601,27 @@ class TestSampleCapture:
 # ═══════════════════════════════════════════════════════════════════
 
 class _FakeDom:
-    def __init__(self, granted=(), baseline=()):
+    def __init__(self, granted=(), baseline=(), expires=None):
         self._granted = {d: {} for d in granted}
-        self._baseline = list(baseline)
+        self._baseline = set(baseline)
+        self._expires = dict(expires or {})
 
     def granted_entries(self):
         return [{"domain": d, **e} for d, e in self._granted.items()]
 
     def baseline_list(self):
-        return list(self._baseline)
+        return sorted(self._baseline)
 
     def is_granted(self, d):
         return d in self._granted
 
     def revoke(self, d):
         self._granted.pop(d, None)
+
+    def matches_baseline(self, domain):
+        parts = domain.split(".")
+        return any(".".join(parts[i:]) in self._baseline
+                   for i in range(len(parts)))
 
 
 class _FakePa:
@@ -447,7 +648,7 @@ def _llm_ok_response(review: dict) -> dict:
 
 
 def _mk_watcher(tmp_path, monkeypatch, *, dom=None, pa=None, ring=None,
-                capture=None, cfg=None, auto_revoke=None):
+                capture=None, cfg=None, auto_revoke=None, audit=None):
     if monkeypatch is not None:
         monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
         monkeypatch.setenv("TESTKEY", "sk-test")
@@ -465,10 +666,10 @@ def _mk_watcher(tmp_path, monkeypatch, *, dom=None, pa=None, ring=None,
         cap_path = tmp_path / "capture.jsonl"
         cap_path.write_text("".join(json.dumps(e) + "\n" for e in capture))
     log = SimpleNamespace(warn=lambda *a, **k: None)
-    audit: list[dict] = []
-    w = Watcher({"watcher": w_cfg}, dom, pa, audit.append, log,
+    audit_sink: list[dict] = audit if audit is not None else []
+    w = Watcher({"watcher": w_cfg}, dom, pa, audit_sink.append, log,
                 deque(ring or []), str(cap_path))
-    return w, audit
+    return w, audit_sink
 
 
 def _flow_entry(host="api.example.com", decision="allowed", ts=None):
@@ -484,19 +685,55 @@ class TestReviewFailClosed:
         def boom(**kw):
             raise RuntimeError("provider down")
         monkeypatch.setattr(wmod, "llm_tool_call", boom)
-        assert w._review({"note": ""}) is None
+        assert w._review_sync({"note": ""}) is None
 
     def test_no_tool_call_is_none(self, tmp_path, monkeypatch):
         w, _ = _mk_watcher(tmp_path, monkeypatch)
         monkeypatch.setattr(wmod, "llm_tool_call",
                             lambda **kw: {"choices": [{"message": {}}]})
-        assert w._review({"note": ""}) is None
+        assert w._review_sync({"note": ""}) is None
+
+    # Review fix (correctness #6): the openai-compat parser took the
+    # FIRST tool call's arguments without checking its NAME — a stray
+    # call named `other` carrying revocation-shaped args was honored.
+    def test_wrong_name_tool_call_is_none(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        raw = {"choices": [{"message": {"tool_calls": [{
+            "function": {"name": "other",
+                         "arguments": json.dumps({
+                             "findings": [],
+                             "allowlist_removals": [{"domain": "g.example",
+                                                     "reason": "x"}]})}}]}}]}
+        monkeypatch.setattr(wmod, "llm_tool_call", lambda **kw: raw)
+        assert w._review_sync({"note": ""}) is None
+
+    # Review fix: a verdict whose shape violates the contract (findings
+    # present but not a list) is a scan failure, not "no findings".
+    def test_malformed_verdict_structure_is_none(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+
+        def _resp(bad):
+            return lambda **kw: _llm_ok_response(bad)
+
+        for bad in ({"findings": "no"},
+                    {"findings": [], "allowlist_removals": "g.example"},
+                    {"findings": [], "baseline_recommendations": 42}):
+            monkeypatch.setattr(wmod, "llm_tool_call", _resp(bad))
+            assert w._review_sync({"note": ""}) is None
 
     def test_unconfigured_agent_is_none(self, tmp_path, monkeypatch):
         w, _ = _mk_watcher(tmp_path, monkeypatch,
                            cfg={"agent": {"provider": "", "model": "",
                                           "api_key": ""}})
-        assert w._review({"note": ""}) is None
+        assert w._review_sync({"note": ""}) is None
+
+    def test_shareable_parser_rejects_wrong_name_for_decider_too(self):
+        # The shared helper now pins the name on BOTH wire formats —
+        # the decider (which shares it) inherits the fix.
+        raw = {"choices": [{"message": {"tool_calls": [{
+            "function": {"name": "decide_plus",
+                         "arguments": json.dumps({"decision": "grant"})}}]}}]}
+        assert parse_tool_args(raw, "openai", "decide") == {}
 
 
 class TestTick:
@@ -509,7 +746,7 @@ class TestTick:
         def boom(**kw):
             raise RuntimeError("timeout")
         monkeypatch.setattr(wmod, "llm_tool_call", boom)
-        w._tick()
+        asyncio.run(w._tick())
         f = tmp_path / "watcher" / "findings.jsonl"
         assert f.is_file()
         lines = [json.loads(l) for l in f.read_text().splitlines()]
@@ -517,6 +754,105 @@ class TestTick:
         assert dom.is_granted("granted.example")  # nothing revoked
         assert pa.persisted == 0
         assert any(e["kind"] == "watcher_finding" for e in audit)
+
+    # Review fix (correctness #2): the LLM call runs off the event loop
+    # (asyncio.to_thread, mirroring the decider). A slow provider must
+    # never stall mitmproxy's loop — pin that the network call happens
+    # in a worker thread by racing a concurrent loop task against it.
+    def test_llm_call_does_not_block_the_event_loop(self, tmp_path, monkeypatch):
+        import threading
+        w, _ = _mk_watcher(tmp_path, monkeypatch, ring=[_flow_entry()])
+
+        def slow(**kw):
+            # From inside a worker thread, the loop must stay responsive.
+            assert threading.current_thread() is not threading.main_thread()
+            import time as _t
+            _t.sleep(0.15)
+            return _llm_ok_response({"findings": []})
+
+        monkeypatch.setattr(wmod, "llm_tool_call", slow)
+        ticks: list[float] = []
+
+        async def heartbeat():
+            loop = asyncio.get_event_loop()
+            for _ in range(5):
+                await asyncio.sleep(0.02)
+                ticks.append(loop.time())
+
+        async def race():
+            await asyncio.gather(w._tick(), heartbeat())
+
+        asyncio.run(race())
+        # The heartbeat kept firing while the (slow) review ran, and the
+        # verdict was still applied.
+        assert len(ticks) >= 4
+        st = json.loads((tmp_path / "watcher" / "state.json").read_text())
+        assert st["scans"] == 1
+
+    # Review fix (correctness #3): a failed scan must NOT consume the
+    # evidence it failed to analyze — the drained batch is pushed back
+    # to the front of the ring and re-analyzed on the next tick.
+    def test_failed_scan_pushes_back_and_retries(self, tmp_path, monkeypatch):
+        dom = _FakeDom(granted=["g.example"])
+        pa = _FakePa(dom)
+        w, _ = _mk_watcher(tmp_path, monkeypatch, dom=dom, pa=pa,
+                            ring=[_flow_entry("suspicious.example")])
+        calls = {"n": 0}
+
+        def flaky(**kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("timeout")
+            return _llm_ok_response({"findings": [
+                {"severity": "high", "title": "saw the retry",
+                 "detail": "evidence", "recommendation": "none"}]})
+
+        monkeypatch.setattr(wmod, "llm_tool_call", flaky)
+        asyncio.run(w._tick())   # fails → evidence queued for retry
+        assert len(w._ring) == 1
+        assert w._ring[0]["host"] == "suspicious.example"
+        asyncio.run(w._tick())   # succeeds → the retry was analyzed
+        assert len(w._ring) == 0
+        assert calls["n"] == 2
+        f = tmp_path / "watcher" / "findings.jsonl"
+        lines = [json.loads(l) for l in f.read_text().splitlines()]
+        assert any(l["title"] == "saw the retry" for l in lines)
+
+    # Review fix: the failed-scan finding is throttled so a dead
+    # provider cannot flood findings.jsonl (first failure, then every
+    # 10th consecutive one).
+    def test_scan_failure_finding_is_throttled(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch, ring=[_flow_entry()])
+        def boom(**kw):
+            raise RuntimeError("down")
+        monkeypatch.setattr(wmod, "llm_tool_call", boom)
+        asyncio.run(w._tick())
+        asyncio.run(w._tick())
+        f = tmp_path / "watcher" / "findings.jsonl"
+        lines = [json.loads(l) for l in f.read_text().splitlines()]
+        scan_failures = [l for l in lines if "scan failed" in l["title"]]
+        assert len(scan_failures) == 1  # second consecutive failure: silent
+
+    # Review fix (correctness #3): the watcher's OWN audit records must
+    # never be fed back into the model's evidence (a failed scan's
+    # noise would otherwise become the next scan's subject).
+    def test_self_emitted_records_are_not_reingested(self, tmp_path, monkeypatch):
+        digests = []
+        def spy(**kw):
+            digests.append(json.loads(kw["user_content"]))
+            return _llm_ok_response({"findings": []})
+        monkeypatch.setattr(wmod, "llm_tool_call", spy)
+        w, _ = _mk_watcher(
+            tmp_path, monkeypatch, ring=[
+                _flow_entry("real.example"),
+                {"kind": "watcher_finding", "ts": "2026-01-01T00:00:00+00:00",
+                 "decision": "flagged", "method": "", "host": "self",
+                 "title": "old noise"},
+            ])
+        asyncio.run(w._tick())
+        assert len(digests) == 1
+        assert digests[0]["totals"]["flows"] == 1  # the real entry only
+        assert "old noise" not in json.dumps(digests[0])
 
     def test_findings_revoke_recommended(self, tmp_path, monkeypatch):
         dom = _FakeDom(granted=["granted.example"], baseline=["base.example"])
@@ -534,7 +870,7 @@ class TestTick:
         }
         monkeypatch.setattr(wmod, "llm_tool_call",
                             lambda **kw: _llm_ok_response(review))
-        w._tick()
+        asyncio.run(w._tick())
 
         # The grant is revoked, persisted (overlay + DNS republish), audited.
         assert not dom.is_granted("granted.example")
@@ -550,6 +886,48 @@ class TestTick:
         assert any(l["severity"] == "high" and l["title"] == "C2 beacon"
                    for l in lines)
 
+    # Review fix (correctness #9): persist per-revocation (the removal
+    # endpoint's posture) — a batched persist at the end widens the
+    # documented revoke↔persist TOCTOU across the whole batch.
+    def test_persist_happens_per_revocation(self, tmp_path, monkeypatch):
+        dom = _FakeDom(granted=["g1.example", "g2.example"])
+        pa = _FakePa(dom)
+        w, _ = _mk_watcher(tmp_path, monkeypatch, dom=dom, pa=pa,
+                            ring=[_flow_entry()])
+        review = {"findings": [],
+                 "allowlist_removals": [
+                     {"domain": "g1.example", "reason": "beacon"},
+                     {"domain": "g2.example", "reason": "beacon"},
+                 ]}
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response(review))
+        asyncio.run(w._tick())
+        assert not dom.is_granted("g1.example")
+        assert not dom.is_granted("g2.example")
+        assert pa.persisted == 2
+
+    # Review fix (correctness #10): a grant that an ACTIVE baseline
+    # suffix also covers stays reachable after the revoke — the audit
+    # must say so (still_allowed_by_baseline) and a baseline-removal
+    # recommendation must be recorded, instead of claiming "blocked".
+    def test_baseline_overlap_is_flagged(self, tmp_path, monkeypatch):
+        dom = _FakeDom(granted=["api.example.com"], baseline=["example.com"])
+        pa = _FakePa(dom)
+        w, audit = _mk_watcher(tmp_path, monkeypatch, dom=dom, pa=pa,
+                                ring=[_flow_entry("api.example.com")])
+        review = {"findings": [],
+                 "allowlist_removals": [{"domain": "api.example.com",
+                                         "reason": "beacon"}]}
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response(review))
+        asyncio.run(w._tick())
+        assert not dom.is_granted("api.example.com")
+        revoke = [e for e in audit if e["kind"] == "watcher_revoke"][0]
+        assert revoke["still_allowed_by_baseline"] is True
+        f = tmp_path / "watcher" / "findings.jsonl"
+        lines = [json.loads(l) for l in f.read_text().splitlines()]
+        assert any("baseline still allows" in l["title"] for l in lines)
+
     def test_removal_of_a_baseline_domain_is_structurally_refused(
             self, tmp_path, monkeypatch):
         # A hallucinated or baseline domain in allowlist_removals must
@@ -564,7 +942,7 @@ class TestTick:
                                           "reason": "hallucinated"}]}
         monkeypatch.setattr(wmod, "llm_tool_call",
                             lambda **kw: _llm_ok_response(review))
-        w._tick()
+        asyncio.run(w._tick())
         assert dom.is_granted("g.example")      # untouched
         assert "base.example" in dom.baseline_list()  # untouched
         f = tmp_path / "watcher" / "findings.jsonl"
@@ -585,7 +963,7 @@ class TestTick:
                   ]}
         monkeypatch.setattr(wmod, "llm_tool_call",
                             lambda **kw: _llm_ok_response(review))
-        w._tick()  # no crash, nothing revoked, nothing persisted
+        asyncio.run(w._tick())  # no crash, nothing revoked, nothing persisted
         assert dom.is_granted("g.example")
         assert pa.persisted == 0
 
@@ -599,7 +977,7 @@ class TestTick:
                                           "reason": "beacon"}]}
         monkeypatch.setattr(wmod, "llm_tool_call",
                             lambda **kw: _llm_ok_response(review))
-        w._tick()
+        asyncio.run(w._tick())
         assert dom.is_granted("g.example")
         assert pa.persisted == 0
 
@@ -608,7 +986,7 @@ class TestTick:
         def boom(**kw):
             raise AssertionError("quiet cage must not call the model")
         monkeypatch.setattr(wmod, "llm_tool_call", boom)
-        w._tick()  # no exception
+        asyncio.run(w._tick())  # no exception
         st = json.loads((tmp_path / "watcher" / "state.json").read_text())
         assert st["flows_last_window"] == 0
 
@@ -623,7 +1001,7 @@ class TestTick:
                                           "reason": "beacon"}]}
         monkeypatch.setattr(wmod, "llm_tool_call",
                             lambda **kw: _llm_ok_response(review))
-        w._tick()
+        asyncio.run(w._tick())
         f = tmp_path / "watcher" / "findings.jsonl"
         lines = [json.loads(l) for l in f.read_text().splitlines()]
         assert any("cannot revoke" in l["title"] for l in lines)
@@ -640,6 +1018,11 @@ class TestCaptureTail:
                             "response": {"status": 200, "bodySize": 2}},
                 "outbound": {"request": {}, "response": {}}}
 
+    def _commit(self, w, now):
+        samples, off, fid = w._read_capture(now)
+        w._cap_offset, w._cap_file_id = off, fid
+        return samples, off
+
     def test_first_scan_windows_then_increments(self, tmp_path, monkeypatch):
         cap = tmp_path / "capture.jsonl"
         cap.write_text(json.dumps(self._cap("old.example", 300)) + "\n" +
@@ -647,12 +1030,13 @@ class TestCaptureTail:
         w, _ = _mk_watcher(tmp_path, monkeypatch)
         w._capture_path = str(cap)
         w._window = 3600
-        first = w._tail_capture(datetime.now(timezone.utc))
+        now = datetime.now(timezone.utc)
+        first, _ = self._commit(w, now)
         assert [s["host"] for s in first] == ["new.example"]
         # New bytes appear → only they are returned.
         with open(cap, "a") as f:
             f.write(json.dumps(self._cap("newer.example", 0)) + "\n")
-        second = w._tail_capture(datetime.now(timezone.utc))
+        second, _ = self._commit(w, now)
         assert [s["host"] for s in second] == ["newer.example"]
 
     def test_truncated_file_resets(self, tmp_path, monkeypatch):
@@ -661,11 +1045,54 @@ class TestCaptureTail:
         w, _ = _mk_watcher(tmp_path, monkeypatch)
         w._capture_path = str(cap)
         w._window = 3600
-        w._tail_capture(datetime.now(timezone.utc))
+        now = datetime.now(timezone.utc)
+        self._commit(w, now)
         # Rotation/truncation: file shrinks below the offset.
         cap.write_text(json.dumps(self._cap("b.example", 0)) + "\n")
         w._cap_offset = w._cap_offset + 4096
-        got = w._tail_capture(datetime.now(timezone.utc))
+        got, _ = self._commit(w, now)
+        assert [s["host"] for s in got] == ["b.example"]
+
+    # Review fix (correctness #5): a torn tail line (an in-flight write)
+    # must stay UNCONSUMED — the offset advances only past complete
+    # lines, so the completed line is parsed whole on the next scan.
+    def test_torn_tail_line_is_not_consumed(self, tmp_path, monkeypatch):
+        cap = tmp_path / "capture.jsonl"
+        full = json.dumps(self._cap("torn.example", 0)) + "\n"
+        cap.write_text(full[:len(full) // 2])  # torn: no trailing newline
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._capture_path = str(cap)
+        w._window = 3600
+        now = datetime.now(timezone.utc)
+        samples, off = self._commit(w, now)
+        assert samples == []
+        assert off == 0  # nothing consumed
+        # The writer completes the line; the next scan reads it WHOLE.
+        cap.write_text(full)
+        samples, _ = self._commit(w, now)
+        assert [s["host"] for s in samples] == ["torn.example"]
+
+    # Review fix (correctness #5): same-size rotation is invisible to a
+    # size check — the tail tracks (st_dev, st_ino) and resets on
+    # identity change.
+    def test_rotation_by_inode_resets_the_tail(self, tmp_path, monkeypatch):
+        cap = tmp_path / "capture.jsonl"
+        entry_a = json.dumps(self._cap("a.example", 1)) + "\n"
+        cap.write_text(entry_a)
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._capture_path = str(cap)
+        w._window = 3600
+        now = datetime.now(timezone.utc)
+        first, off = self._commit(w, now)
+        assert [s["host"] for s in first] == ["a.example"]
+        old_size = cap.stat().st_size
+        # Rotate: a NEW file (same size) replaces the old one.
+        replacement = tmp_path / "replacement.jsonl"
+        replacement.write_text(json.dumps(self._cap("b.example", 0)) + "\n")
+        assert replacement.stat().st_size == old_size  # size check blind
+        os_replace = __import__("os").replace
+        os_replace(replacement, cap)
+        got, _ = self._commit(w, now)
         assert [s["host"] for s in got] == ["b.example"]
 
 
@@ -690,6 +1117,171 @@ class TestWatcherPrompt:
     def test_no_context_is_unchanged_core(self):
         w, _ = _mk_watcher(None, None)
         assert w._watcher_system_prompt() == Watcher._system_prompt()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Egress side: the addon funnel + watcher lifecycle
+# ═══════════════════════════════════════════════════════════════════
+
+class TestAddonAuditFunnel:
+    """Review fix (correctness #1 — BLOCKING): the ring was never fed.
+
+    Ordinary HTTP decisions went through ``_log``, which wrote its own
+    stderr/file sinks and never touched the ring — so with capture off
+    (the default useful mode) the watcher saw NO traffic and every scan
+    was a no-op. ``_log`` (and ``_log_peer_block``) now ride the ONE
+    funnel (``_audit_write`` → ``_ring_ingest``), and ALLOWED traffic is
+    ingested even when ``logging.allowed_requests`` suppresses the
+    durable output — exfil patterns live in allowed traffic.
+    """
+
+    def _addon(self, *, ring=None, log_allowed=False):
+        from agentcage.data.proxy.addon import Agentcage
+        a = Agentcage()
+        a._watcher_ring = ring if ring is not None else deque()
+        a.log_allowed = log_allowed
+        a._audit_file = None
+        a._audit_capped = False
+        return a
+
+    def _flow(self, host="x.example"):
+        req = SimpleNamespace(method="GET", host=host, port=443,
+                              path="/p", url=f"https://{host}/p")
+        return SimpleNamespace(request=req)
+
+    def test_suppressed_allowed_traffic_still_feeds_the_ring(self):
+        a = self._addon(log_allowed=False)
+        a._log(self._flow(), "allowed", None, [])
+        assert len(a._watcher_ring) == 1
+        assert a._watcher_ring[0]["host"] == "x.example"
+        assert a._watcher_ring[0]["decision"] == "allowed"
+
+    def test_suppressed_allowed_writes_no_durable_output(self):
+        a = self._addon(log_allowed=False)
+        a._audit_file = StringIO()
+        a._log(self._flow(), "allowed", None, [])
+        assert len(a._watcher_ring) == 1
+        assert a._audit_file.getvalue() == ""  # durable sinks suppressed
+
+    def test_flagged_goes_through_the_full_funnel(self):
+        a = self._addon(log_allowed=False)
+        a._audit_file = StringIO()
+        a._log(self._flow(), "flagged", "entropy", [])
+        assert len(a._watcher_ring) == 1
+        assert a._audit_file.getvalue() != ""  # durable sinks on
+
+    def test_unsuppressed_allowed_feeds_the_ring_once(self):
+        # log_allowed=True: the entry rides _audit_write (one funnel,
+        # one ring append — no double ingestion).
+        a = self._addon(log_allowed=True)
+        a._log(self._flow(), "allowed", None, [])
+        assert len(a._watcher_ring) == 1
+
+    def test_peer_block_feeds_the_ring(self):
+        a = self._addon()
+        a._log_peer_block("h.internal", "169.254.169.254",
+                          "connect", "peer is private")
+        assert len(a._watcher_ring) == 1
+        assert a._watcher_ring[0]["kind"] == "private_peer_blocked"
+
+    def test_no_watcher_no_ring_no_crash(self):
+        # Watcher disabled: _log must behave exactly as before (no ring,
+        # durable sinks as configured) — zero-surface invariant.
+        a = self._addon(ring=None, log_allowed=True)
+        a._audit_file = StringIO()
+        a._log(self._flow(), "allowed", None, [])
+        assert a._audit_file.getvalue() != ""
+
+
+class TestWatcherHotReload:
+    """Review fix (correctness #8): every config reload rebuilt the
+    watcher — discarding scan state (capture offset, counters) and
+    re-analyzing the same window on an UNRELATED config edit (e.g.
+    logging.level). _init_watcher now no-ops when the watcher block is
+    unchanged, and constructs the replacement BEFORE cancelling the old
+    task so a malformed hot-reload keeps the last working watcher.
+    """
+
+    W_CFG = {"enable": True, "interval_seconds": 60, "window_seconds": 3600,
+             "max_flows": 100, "auto_revoke": True,
+             "agent": {"provider": "openai", "model": "m",
+                       "api_key": "env:TESTKEY"}}
+
+    def _bare_addon(self, monkeypatch, tmp_path, cfg):
+        monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
+        monkeypatch.setenv("TESTKEY", "sk-test")
+        from agentcage.data.proxy.addon import Agentcage
+        a = Agentcage()
+        a.cfg = cfg
+        a.inspectors = []
+        a.domain_requests = None
+        a.traffic_watcher = None
+        a._watcher_task = None
+        a._watcher_ring = None
+        a._running = False
+        return a
+
+    def test_unchanged_block_keeps_the_watcher_and_state(
+            self, tmp_path, monkeypatch):
+        a = self._bare_addon(monkeypatch, tmp_path,
+                             {"watcher": dict(self.W_CFG)})
+        a._init_watcher()
+        first = a.traffic_watcher
+        assert first is not None
+        first._scans = 7  # simulated scan history
+        # A hot-reload with the SAME watcher block (any unrelated config
+        # change lands in _maybe_reload → _init_watcher):
+        a._init_watcher()
+        assert a.traffic_watcher is first
+        assert a.traffic_watcher._scans == 7
+
+    def test_changed_block_rebuilds(self, tmp_path, monkeypatch):
+        a = self._bare_addon(monkeypatch, tmp_path,
+                             {"watcher": dict(self.W_CFG)})
+        a._init_watcher()
+        first = a.traffic_watcher
+        a.cfg = {"watcher": {**self.W_CFG, "interval_seconds": 120}}
+        a._init_watcher()
+        assert a.traffic_watcher is not first
+
+    def test_disabled_block_stops_the_watcher(self, tmp_path, monkeypatch):
+        a = self._bare_addon(monkeypatch, tmp_path, {"watcher": {}})
+        a._init_watcher()
+        assert a.traffic_watcher is None
+        assert a._watcher_ring is None
+
+    # Review fix (correctness #7): `watcher: true` rode proxy-config and
+    # crashed _init_watcher OUTSIDE its guard (an AttributeError on
+    # bool.get) — failing the addon load and taking the egress down.
+    # A non-mapping block now disables the watcher with a warning.
+    def test_non_mapping_block_disables_gracefully(self, tmp_path, monkeypatch):
+        a = self._bare_addon(monkeypatch, tmp_path, {"watcher": True})
+        a._init_watcher()  # must not raise
+        assert a.traffic_watcher is None
+
+    def test_malformed_rebuild_keeps_the_old_watcher(
+            self, tmp_path, monkeypatch):
+        a = self._bare_addon(monkeypatch, tmp_path,
+                             {"watcher": dict(self.W_CFG)})
+        a._init_watcher()
+        first = a.traffic_watcher
+
+        # Simulate a rebuild whose construction fails (the in-egress ctor
+        # is defensive by design, so break it from outside — what the
+        # keep-old path guards is any ctor failure, e.g. a future parse
+        # that starts rejecting instead of warning).
+        class _Broken(Watcher):
+            def __init__(self, *a, **kw):
+                raise RuntimeError("deformed block")
+
+        # The addon imports its sibling by BARE module name (`from
+        # watcher import Watcher` — the egress sys.path convention), which
+        # is a separate module object from agentcage.data.proxy.watcher;
+        # patch the bare one, that's the one _init_watcher imports from.
+        monkeypatch.setattr(sys.modules["watcher"], "Watcher", _Broken)
+        a.cfg = {"watcher": {**self.W_CFG, "interval_seconds": 120}}
+        a._init_watcher()  # construction fails → old watcher kept
+        assert a.traffic_watcher is first
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -726,6 +1318,10 @@ class TestWatcherCli:
         assert out.exit_code == 0
         assert "C2 beacon" in out.output
         assert "evil.example" in out.output
+        # Review fix (conventions #8): the column matches its own --host
+        # filter and the audit table's vocabulary.
+        assert "HOST" in out.output
+        assert "DOMAIN" not in out.output
 
     def test_findings_severity_filter(self, tmp_path, monkeypatch,
                                        patch_state_dirs):
@@ -740,6 +1336,15 @@ class TestWatcherCli:
             main, ["watcher", "findings", "mycage", "-s", "info"])
         assert out.exit_code == 0
         assert "(no watcher findings recorded)" in out.output
+
+    def test_findings_on_missing_cage(self, tmp_path, monkeypatch,
+                                      patch_state_dirs):
+        _mk_cage(patch_state_dirs, tmp_path)
+        from agentcage.cli import main
+        from click.testing import CliRunner
+        out = CliRunner().invoke(main, ["watcher", "findings", "nope"])
+        assert out.exit_code == 1
+        assert "does not exist" in out.output
 
     def test_status_reports_config_and_state(self, tmp_path, monkeypatch,
                                              patch_state_dirs):
@@ -756,6 +1361,10 @@ class TestWatcherCli:
         assert "enabled" in out.output
         assert "gpt-5-mini" in out.output
         assert "42" in out.output
+        # Review fix (conventions #9): a plain `interval_seconds: 120`
+        # prints 120s, not 120.0s.
+        assert "120s" in out.output
+        assert "120.0s" not in out.output
 
     def test_status_reports_disabled(self, tmp_path, monkeypatch,
                                      patch_state_dirs):
