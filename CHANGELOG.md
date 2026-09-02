@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Hot reload no longer resets `inspectors:`-section configs to defaults.** `_maybe_reload` reconfigured built-in inspectors from the legacy top-level key map only, so a builtin configured exclusively via the explicit `inspectors:` section — the documented style — was silently reset to defaults on every proxy-config mtime bump. For a cage whose content-type `host_exempt_content_types` live in that section, the first `domain add`/`domain rm` or domains.auto grant after egress start wiped the exemptions in place, and legitimate multipart uploads started 403ing on body entropy; hit in production on 2026-09-01 as "ElevenLabs audio transcription failed (HTTP 403): content-type mismatch: multipart/form-data declared but body entropy is 7.80" — a voice-note STT upload whose exemption had been erased by the previous day's domain churn, reproduced live as pass→reload→block. The reload now re-applies the `inspectors:` section after the legacy map, mirroring the initial-load precedence (legacy first, explicit section wins), and `_load_custom_inspectors` is reload-safe: builtin and path-based entries alike are reconfigured in place, never appended twice (a duplicate would have run the inspector twice per request). Two documented limits: a path-based inspector's *file* is not re-imported on reload (a changed implementation needs an egress restart), and an entry removed from the section keeps its last config until restart — consistent with the other sections, where removal is not a live-reload operation.
+
 ## [0.35.0] - 2026-08-30
 
 ### Added
