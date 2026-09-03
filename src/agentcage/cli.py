@@ -2026,6 +2026,27 @@ def cage_edit(name: str):
     if "domains" in live or "watcher" in live:
         _update_dns_quadlet(cfg)
 
+    if "watcher" in live:
+        # The scan loop and the provider DNS entry apply live, but two
+        # things the watcher needs are decided at UNIT-GENERATION time:
+        # the grants volume its findings/state are written to (gated on
+        # watcher.enable in the quadlet template and the apple metadata)
+        # and the ``Secret=`` directive for its api_key. Without a
+        # refresh, a freshly enabled watcher on a cage with domains.auto
+        # off has no host-visible volume — findings land in the
+        # container's ephemeral layer and `watcher findings` reports the
+        # silent all-clear this feature exists to avoid. Same rationale
+        # as the secret_injection refresh; no restart either way.
+        try:
+            _refresh_units(name, cfg)
+        except Exception as e:
+            click.echo(f"warning: quadlet refresh failed: {e}", err=True)
+        click.echo(
+            "  watcher: scanning applies on the next request. Restart the "
+            "cage if its findings volume or api_key secret was just added "
+            "(`agentcage cage restart` adopts the refreshed units)."
+        )
+
     if "secret_injection" in live:
         # Rules hot-reload at the proxy (save_proxy_config above bumped the
         # mtime) and new exec sessions read placeholders from the stored

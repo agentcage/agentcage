@@ -9,7 +9,9 @@ The watcher is off by default: a cage with no `watcher:` block imports nothing, 
 
 ## Decide how much authority to give it
 
-Start with `auto_revoke: false` on a cage you haven't watched before, then turn it on once the findings earn your trust. With `false` the watcher records findings and revokes nothing; with `true` it also revokes the runtime grants its analysis damns.
+Start with `auto_revoke: false` on a cage you haven't watched before, then turn it on once the findings earn your trust. With `false` the watcher revokes nothing but still records every revocation it would have made as a finding, so you see the analysis and apply it yourself. With `true` it applies those revocations to runtime grants directly.
+
+The watcher requires allowlist mode. In blocklist mode the static baseline is the *block* list, so the analysis would invert and a recommended removal would widen egress instead of narrowing it; `cage create` and `cage update` reject that combination.
 
 Autonomous revocation only bites when [`domains.auto`](../reference/policy-api.md) is enabled, because runtime grants are the only thing the watcher may narrow. On a cage without auto-managed domains, every revocation the model asks for is recorded as a finding instead, and your static allowlist is untouched either way.
 
@@ -48,8 +50,6 @@ Or store it once in the cage's secret store, which survives restarts and applies
 ```bash
 agentcage secret set mycage WATCHER_LLM_KEY
 ```
-
-`secret set` prints a note calling the key an orphan. The value is stored and staged correctly — `agentcage secret list mycage` shows it with type `watcher`.
 
 Reusing the decider's key is fine. Point both `watcher.agent.api_key` and `domains.auto.decider.agent.api_key` at the same variable name.
 
@@ -111,7 +111,7 @@ Findings carry the model's severity vocabulary of `info`, `low`, `medium`, `high
 
 ## Act on a finding
 
-Revocations are already applied when `auto_revoke` is on, so what needs you is everything the egress is barred from doing. The watcher never edits your static allowlist: a baseline removal arrives as a finding with a recommendation, and you apply it.
+Revocations are already applied when `auto_revoke` is on. With it off they arrive as findings titled "revocation recommended", which you apply with `agentcage cage grants revoke`. Either way, what needs you is everything the egress is barred from doing. The watcher never edits your static allowlist: a baseline removal arrives as a finding with a recommendation, and you apply it.
 
 ```bash
 agentcage domain rm mycage api.example.com

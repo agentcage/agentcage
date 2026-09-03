@@ -186,6 +186,33 @@ class TestWatcherConfigParsing:
                     api_key: env:K
             """))
 
+    # PR #340 follow-up review: in blocklist mode the static baseline IS
+    # the block list, so the digest hands the model blocked domains under
+    # the key ``current_baseline`` and a baseline recommendation becomes
+    # "run `domain rm`" — removing a BLOCK, which WIDENS egress. A
+    # narrowing-only auditor must never be able to recommend widening.
+    def test_blocklist_mode_rejected(self, tmp_path):
+        from agentcage.config import load_config, validate_config
+        cfg = load_config(_cfg_with(tmp_path, """
+            domains:
+              block:
+                - evil.example
+            watcher:
+              enable: true
+              agent:
+                provider: openai
+                model: m
+                api_key: env:K
+        """))
+        with pytest.raises(ValueError, match="blocklist mode"):
+            validate_config(cfg)
+
+    def test_cage_without_a_domains_section_is_allowed(self, tmp_path):
+        # mode "" has an EMPTY baseline: nothing inverts, nothing is
+        # recommended, so the guard must not reject it.
+        from agentcage.config import load_config, validate_config
+        validate_config(load_config(_cfg_with(tmp_path, _WATCHER_YAML)))
+
     def test_key_is_stripped_from_the_cage_env(self, tmp_path):
         # The watcher key is an EGRESS-only credential. If the operator
         # also declared the same env var for the cage, parse-time
@@ -435,6 +462,57 @@ class TestWatcherPlumbing:
 # Host side: the audit ladder ranks the watcher vocabulary
 # ═══════════════════════════════════════════════════════════════════
 
+class TestWatcherKeyIsAnExpectedSecret:
+    """PR #340 follow-up review: `secret set` called the key an orphan.
+
+    ``services.expected_secrets`` was never extended with the egress LLM
+    agents' api_keys, though ``cli._render_secret_list`` was. So
+    ``agentcage secret set mycage WATCHER_LLM_KEY`` — the command the
+    how-to prescribes — printed "has no secret_injection rule … (orphan)",
+    and ``check_secrets`` gave no preflight warning when a watcher-enabled
+    cage was deployed without its key (the egress then boots and skips
+    every scan).
+    """
+
+    def _cfg(self, tmp_path, extra):
+        from agentcage.config import load_config
+        return load_config(_cfg_with(tmp_path, extra))
+
+    def test_watcher_key_is_expected(self, tmp_path):
+        from agentcage.services import expected_secrets
+        cfg = self._cfg(tmp_path, """
+            watcher:
+              enable: true
+              agent:
+                provider: openai
+                model: m
+                api_key: env:WATCHER_LLM_KEY
+        """)
+        assert "WATCHER_LLM_KEY" in expected_secrets(cfg)
+
+    def test_disabled_watcher_key_is_not_expected(self, tmp_path):
+        from agentcage.services import expected_secrets
+        cfg = self._cfg(tmp_path, "")
+        assert "WATCHER_LLM_KEY" not in expected_secrets(cfg)
+
+    def test_decider_key_is_expected_too(self, tmp_path):
+        # Same gap, same fix — the decider's key was equally an "orphan".
+        from agentcage.services import expected_secrets
+        cfg = self._cfg(tmp_path, """
+            domains:
+              allow:
+                - api.example.com
+              auto:
+                enable: true
+                decider:
+                  kind: agent
+                  provider: openai
+                  model: m
+                  api_key: env:DECIDER_LLM_KEY
+        """)
+        assert "DECIDER_LLM_KEY" in expected_secrets(cfg)
+
+
 class TestWatcherSeverityLadder:
     """Review fix (conventions #1): a "high" watcher finding was invisible.
 
@@ -555,6 +633,59 @@ class TestBuildDigest:
         assert d["policy_events"][-1]["domain"] == "d299"
 
 
+class TestSampleCapturePathSecrets:
+    """PR #340 follow-up review (HIGH): the digest leaked real secrets.
+
+    The capture entry's TOP-LEVEL ``path`` is snapshotted in
+    ``addon.request()`` AFTER ``injector.inject_request`` runs, and an
+    ``inject_body: true`` rule rewrites the placeholder inside
+    ``flow.request.url`` — the documented ``?key=`` query-string case. So
+    that field can hold the REAL secret, and ``_sample_capture`` was
+    excerpting it straight into the prompt sent to a third-party model,
+    breaking the module's stated invariant (secret NAMES may appear,
+    values never).
+    """
+
+    def _entry(self, top_path, inbound_url):
+        return {
+            "ts": "2026-01-01T00:00:00+00:00", "direction": "outbound",
+            "decision": "allowed", "host": "api.example.com",
+            "method": "GET", "path": top_path, "inspectors": [],
+            "inbound": {
+                "request": {"method": "GET", "url": inbound_url,
+                            "headers": [], "body": "", "bodySize": 0},
+                "response": {"status": 200, "headers": [], "body": "",
+                             "bodySize": 3},
+            },
+            "outbound": {"request": {"bodySize": 0}, "response": {}},
+        }
+
+    def test_injected_query_secret_never_reaches_the_sample(self):
+        # Post-injection top-level path (what capture.jsonl records) vs
+        # the pre-injection inbound url (placeholder intact).
+        sample = wmod._sample_capture(self._entry(
+            "/search?key=sk-real-live-secret-value",
+            "https://api.example.com/search?key=agentcage:secret:GOOGLE_KEY:ab",
+        ))
+        blob = json.dumps(sample)
+        assert "sk-real-live-secret-value" not in blob
+        assert "agentcage:secret:GOOGLE_KEY:ab" in sample["path"]
+
+    def test_path_still_carries_the_route_for_analysis(self):
+        # Hygiene must not cost the signal: path + query still ride.
+        sample = wmod._sample_capture(self._entry(
+            "/v1/upload?id=7", "https://api.example.com/v1/upload?id=7"))
+        assert sample["path"] == "/v1/upload?id=7"
+
+    def test_falls_back_to_query_stripped_path_without_inbound_url(self):
+        # No inbound url recorded (older capture file): strip the query,
+        # since the query is where an injected secret rides.
+        sample = wmod._sample_capture(self._entry(
+            "/search?key=sk-real-live-secret-value", ""))
+        assert sample["path"] == "/search"
+        assert "sk-real" not in json.dumps(sample)
+
+
 class TestSampleCapture:
     def _entry(self, **over):
         e = {
@@ -618,10 +749,14 @@ class TestSampleCapture:
 # ═══════════════════════════════════════════════════════════════════
 
 class _FakeDom:
-    def __init__(self, granted=(), baseline=(), expires=None):
+    def __init__(self, granted=(), baseline=(), expires=None,
+                 mode="allowlist"):
         self._granted = {d: {} for d in granted}
         self._baseline = set(baseline)
         self._expires = dict(expires or {})
+        # The real DomainInspector always carries a mode; the watcher's
+        # blocklist guard reads it.
+        self.mode = mode
 
     def granted_entries(self):
         return [{"domain": d, **e} for d, e in self._granted.items()]
@@ -998,6 +1133,55 @@ class TestTick:
         assert dom.is_granted("g.example")
         assert pa.persisted == 0
 
+    # PR #340 follow-up review: auto_revoke off DISCARDED the removals
+    # with no record at all, though config.py's own field comment says
+    # they "degrade to findings the operator applies" — and the how-to
+    # tells operators to start in exactly this posture, so the
+    # recommended starting mode threw away each scan's most actionable
+    # output.
+    def test_auto_revoke_off_still_records_the_recommendation(
+            self, tmp_path, monkeypatch):
+        dom = _FakeDom(granted=["g.example"])
+        pa = _FakePa(dom)
+        w, audit = _mk_watcher(tmp_path, monkeypatch, dom=dom, pa=pa,
+                               ring=[_flow_entry()], auto_revoke=False)
+        review = {"findings": [],
+                  "allowlist_removals": [{"domain": "g.example",
+                                          "reason": "beacon"}]}
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response(review))
+        asyncio.run(w._tick())
+        # Still narrowing nothing...
+        assert dom.is_granted("g.example")
+        assert pa.persisted == 0
+        # ...but the operator can see what the analysis wanted done.
+        titles = [e.get("title", "") for e in audit
+                  if e.get("kind") == "watcher_finding"]
+        assert any("g.example" in t and "revocation recommended" in t
+                   for t in titles), titles
+
+    # PR #340 follow-up review: in blocklist mode DomainInspector._baseline
+    # IS the block list, so the digest and any baseline recommendation
+    # invert — "remove this domain" would WIDEN egress. Rejected at config
+    # time; re-checked here because a hot-reload can flip the mode.
+    def test_blocklist_mode_skips_revocation_with_a_finding(
+            self, tmp_path, monkeypatch):
+        dom = _FakeDom(granted=["g.example"], mode="blocklist")
+        pa = _FakePa(dom)
+        w, audit = _mk_watcher(tmp_path, monkeypatch, dom=dom, pa=pa,
+                               ring=[_flow_entry()])
+        review = {"findings": [],
+                  "allowlist_removals": [{"domain": "g.example",
+                                          "reason": "beacon"}]}
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response(review))
+        asyncio.run(w._tick())
+        assert dom.is_granted("g.example")
+        assert pa.persisted == 0
+        titles = [e.get("title", "") for e in audit
+                  if e.get("kind") == "watcher_finding"]
+        assert any("allowlist mode" in t for t in titles), titles
+
     def test_no_traffic_skips_the_llm_call(self, tmp_path, monkeypatch):
         w, _ = _mk_watcher(tmp_path, monkeypatch, ring=[], capture=[])
         def boom(**kw):
@@ -1183,6 +1367,58 @@ class TestCaptureTail:
         assert len(samples) == 12
         assert [s["host"] for s in samples] == \
             [f"h{i}.example" for i in range(3, 15)]
+
+
+    # PR #340 follow-up review: the oversized-line guard tested the whole
+    # accumulated read instead of the un-terminated LINE. Any backlog
+    # bigger than _MAX_LINE_BYTES ends its read mid-line, so every chunk
+    # boundary looked "oversized" and one COMPLETE entry per tick was
+    # silently dropped with a false warning — evidence loss in a security
+    # auditor.
+    def test_large_backlog_loses_no_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wmod, "_CAP_READ_CHUNK", 300)
+        monkeypatch.setattr(wmod, "_MAX_LINE_BYTES", 1200)
+        warns: list[str] = []
+        cap = tmp_path / "capture.jsonl"
+        n = 60
+        cap.write_text("".join(
+            json.dumps(self._cap(f"h{i:03d}.example", 1)) + "\n"
+            for i in range(n)))
+        w, _ = _mk_watcher(tmp_path, monkeypatch, cfg={"max_flows": 2000})
+        w._capture_path = str(cap)
+        w._window = 3600
+        w._log = SimpleNamespace(warn=warns.append)
+        now = datetime.now(timezone.utc)
+        seen: list[str] = []
+        for _ in range(300):
+            samples, off = self._commit(w, now)
+            seen.extend(x["host"] for x in samples)
+            if off >= cap.stat().st_size:
+                break
+        assert seen == [f"h{i:03d}.example" for i in range(n)]
+        assert warns == []  # no false "oversized" warnings
+
+    # PR #340 follow-up review: the reset target was cleared inside
+    # _read_capture, which only STAGES the offset. When the final
+    # catch-up tick's scan then failed, the retry re-read the same bytes
+    # with the window filter already dropped and fed out-of-window
+    # traffic to the model.
+    def test_reset_filter_survives_a_failed_scan(self, tmp_path, monkeypatch):
+        cap = tmp_path / "capture.jsonl"
+        # Everything is far outside the window.
+        cap.write_text("".join(
+            json.dumps(self._cap(f"old{i}.example", 7200)) + "\n"
+            for i in range(4)))
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._capture_path = str(cap)
+        w._window = 3600
+        now = datetime.now(timezone.utc)
+        # A read whose scan FAILS: staged, never committed.
+        first, _off, _fid = w._read_capture(now)
+        assert first == []
+        # The retry must still filter — the bytes were never analyzed.
+        again, _off2, _fid2 = w._read_capture(now)
+        assert again == []
 
 
 class TestPushBack:

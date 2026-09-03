@@ -200,6 +200,11 @@ def llm_tool_call(*, provider: str, model: str, api_key: str, base_url: str,
             headers["X-Title"] = "agentcage-policy-api"
         body = {
             "model": model,
+            # Same bound as the anthropic branch. Omitting it here made
+            # the shared ``max_tokens`` argument a no-op on two of three
+            # providers — a cost and truncation guard that existed on one
+            # wire format only.
+            "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_content},

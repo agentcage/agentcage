@@ -193,6 +193,38 @@ class TestDeciderPromptHardening:
         assert 'tool=_DECIDE_TOOL' in src
         assert _json.dumps(pa._DECIDE_TOOL)  # importable, well-formed dict
 
+    def test_max_tokens_rides_both_wire_formats(self):
+        """PR #340 follow-up review: ``max_tokens`` was anthropic-only.
+
+        The shared ``llm_tool_call`` accepts ``max_tokens`` but only the
+        anthropic body carried it, so the watcher's 2048 bound (and the
+        decider's 256) was silently ignored on openai and openrouter — a
+        cost and truncation guard that existed on one of three providers.
+        Captured per provider off the real body builder.
+        """
+        import json as _json
+        from unittest.mock import patch as _patch
+        _, pa = _addon()
+        bodies = {}
+
+        def _capture(req, timeout=None):
+            bodies[req.full_url] = _json.loads(req.data)
+            raise RuntimeError("stop before the network")
+
+        for provider in ("anthropic", "openai", "openrouter"):
+            with _patch("urllib.request.urlopen", _capture):
+                try:
+                    pa.llm_tool_call(
+                        provider=provider, base_url="https://x.example",
+                        api_key="k", model="m", system="s", user_content="u",
+                        tool=pa._DECIDE_TOOL, timeout=1, max_tokens=1234,
+                    )
+                except RuntimeError:
+                    pass
+        assert len(bodies) == 3, sorted(bodies)
+        for url, body in bodies.items():
+            assert body.get("max_tokens") == 1234, (url, sorted(body))
+
     def test_addon_and_config_never_grant_sets_agree(self):
         """The two copies are duplicated by necessity; they must not drift."""
         from agentcage.config import _AUTO_NEVER_GRANT

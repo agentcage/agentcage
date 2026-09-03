@@ -24,11 +24,11 @@ The `watcher:` block enables the traffic watcher — see [the traffic-watcher ex
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `enable` | `bool` | `false` | Master switch. Absent block = zero surface. |
+| `enable` | `bool` | `false` | Master switch. Absent block = zero surface. Requires allowlist mode — rejected in blocklist mode, where the static baseline is the block list and the analysis would invert. |
 | `interval_seconds` | `int` | `300` | Scan cadence (minimum 60). One LLM call per interval at most, and only when the window had traffic. |
 | `window_seconds` | `int` | `3600` | After-the-fact lookback on the first scan after an egress (re)start (max 86400). |
 | `max_flows` | `int` | `200` | Flows per analysis window (digest prompt cap, range 10–2000). |
-| `auto_revoke` | `bool` | `true` | Apply runtime-grant revocations autonomously. `false` records findings only. Must be a real boolean — a quoted `"false"` is rejected at validation (it would silently enable revocations). |
+| `auto_revoke` | `bool` | `true` | Apply runtime-grant revocations autonomously. `false` applies nothing but still records each revocation as a "revocation recommended" finding. Must be a real boolean — a quoted `"false"` is rejected at validation (it would silently enable revocations). |
 | `context` | `string` | `""` | Trusted operator free-text describing the cage's purpose (max 4096 chars) — the same channel as `domains.auto.context`. |
 | `agent.provider` | `string` | *(required)* | `anthropic` \| `openai` \| `openrouter`. |
 | `agent.model` | `string` | *(required)* | Model id. |
