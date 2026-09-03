@@ -359,12 +359,19 @@ class DomainConfig:
 
 
 MAX_CAPTURE_BODY_BYTES = 10_485_760  # 10 MB
+# Per-file cap before capture.jsonl rolls over to capture.jsonl.1, so
+# the on-disk ceiling is twice this. Unbounded growth was the actual
+# failure mode: a body-heavy cage wrote 222 MB in 20 minutes, which
+# fills the volume and leaves the watcher's byte-offset tail unable to
+# ever catch up. 0 disables rotation.
+MAX_CAPTURE_FILE_BYTES = 134_217_728  # 128 MB
 
 
 @dataclass
 class CaptureConfig:
     enable_har: bool = False
     max_body_size: int = MAX_CAPTURE_BODY_BYTES
+    max_file_size: int = MAX_CAPTURE_FILE_BYTES
     min_action: str = "all"  # "all" | "flag" | "block"
     domains: list[str] = field(default_factory=list)
     exclude_domains: list[str] = field(default_factory=list)
@@ -1379,6 +1386,7 @@ def load_config(path: str) -> Config:
     cap = CaptureConfig()
     cap.enable_har = bool(cap_raw.get("enable_har", False))
     cap.max_body_size = int(cap_raw.get("max_body_size", MAX_CAPTURE_BODY_BYTES))
+    cap.max_file_size = int(cap_raw.get("max_file_size", MAX_CAPTURE_FILE_BYTES))
     cap.min_action = str(cap_raw.get("min_action", "all") or "all")
     cap.domains = list(cap_raw.get("domains") or [])
     cap.exclude_domains = list(cap_raw.get("exclude_domains") or [])

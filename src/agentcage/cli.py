@@ -3051,19 +3051,24 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         since=since_dt,
     )
 
-    # Read and filter capture entries
+    # Read and filter capture entries. The writer rolls the file over at
+    # ``capture.max_file_size``, keeping one previous generation, so the
+    # rotated file is read FIRST — it holds the older half, and skipping
+    # it would silently shorten every export taken after a rollover.
     entries = []
-    with open(capture_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if filt.matches(entry):
-                entries.append(entry)
+    rotated = Path(f"{capture_path}.1")
+    for _src in ([rotated] if rotated.is_file() else []) + [Path(capture_path)]:
+        with open(_src) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if filt.matches(entry):
+                    entries.append(entry)
 
     # Apply max-entries limit (keep last N)
     if max_entries > 0:
@@ -5597,3 +5602,12 @@ def watcher_status(name):
     click.echo(f"  scans run:      {st.get('scans', 0)}")
     click.echo(f"  flows in last window: {st.get('flows_last_window', 0)}")
     click.echo(f"  findings total: {st.get('findings_total', 0)}")
+    # Capture backlog. A tail that cannot keep up analyses ever-staler
+    # traffic while every other counter still looks healthy, so surface it
+    # rather than making the operator infer it from file sizes.
+    _lag = st.get("capture_lag_bytes")
+    if _lag is not None:
+        _size = st.get("capture_size_bytes", 0) or 0
+        _mb = lambda b: f"{b / (1024 * 1024):.1f} MB"
+        _flag = "  [behind]" if _lag > 8 * 1024 * 1024 else ""
+        click.echo(f"  capture backlog: {_mb(_lag)} of {_mb(_size)}{_flag}")
