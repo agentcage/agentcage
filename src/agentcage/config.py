@@ -661,6 +661,46 @@ class DomainsAutoConfig:
         return out
 
 
+@dataclass
+class WatcherConfig:
+    # ``watcher:`` — the traffic watcher, an opt-in in-egress LLM agent that
+    # re-analyzes the cage's recent traffic (audit stream + HAR capture)
+    # after the fact and flags suspicious patterns; where its analysis
+    # damns a runtime grant it revokes it (narrowing only — the egress
+    # never edits the operator's baseline). Sibling of ``domains.auto``
+    # under the same trust model: the decider guards the front door
+    # (before a grant), the watcher guards the house (after the traffic).
+    # See docs/explain/traffic-watcher.md.
+    #
+    # The agent sub-block is literally AgentDeciderConfig (the decider's
+    # own LLM client config) so the provider rules, the env:/systemd-creds:
+    # egress-only secret scheme, and the https-only base_url rule are the
+    # decider's rules — one credential shape, one staging chain.
+    enable: bool = False  # master switch; absent block = zero surface
+    # Scan cadence. One LLM call per interval at most (and only when the
+    # window had traffic — a quiet cage costs nothing). 60s floor so a
+    # mis-typed value cannot turn the watcher into a hot loop.
+    interval_seconds: float = 300.0
+    # After-the-fact lookback on the FIRST scan after an egress (re)start:
+    # how far back into capture.jsonl the initial window reaches. The
+    # in-memory audit ring only covers since-start, so this bounds the
+    # durable capture history re-read. 24h cap.
+    window_seconds: float = 3600.0
+    # Flows per analysis window (prompt-size cap). The digest is built
+    # from aggregates plus at most this many capture samples.
+    max_flows: int = 200
+    # Apply runtime-grant revocations autonomously. False = the watcher
+    # only records findings + recommendations; revocations then degrade
+    # to findings the operator applies with `agentcage cage grants
+    # <name> revoke` / `domain rm`.
+    auto_revoke: bool = True
+    # Operator free-text describing the cage's purpose — the same trusted
+    # context channel as domains.auto.context, framed identically in the
+    # watcher's system prompt. 4096-char cap (validate_config).
+    context: str = ""
+    agent: AgentDeciderConfig = field(default_factory=AgentDeciderConfig)
+
+
 _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
 
 
@@ -687,6 +727,11 @@ class Config:
     # the mitmproxy addon on a reserved control hostname.
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
+    # Traffic watcher (opt-in): in-egress LLM traffic auditor. Parsed here,
+    # plumbed into the egress's proxy-config.yaml via state._PROXY_KEYS
+    # ("watcher"), driven by data/proxy/watcher.py inside the egress.
+    # Absent block → default WatcherConfig(enable=False) → zero surface.
+    watcher: WatcherConfig = field(default_factory=WatcherConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     ports: PortsConfig = field(default_factory=PortsConfig)
@@ -1153,6 +1198,109 @@ def load_config(path: str) -> Config:
     else:
         _pending_auto = None
 
+    # Traffic watcher — parse the ``watcher:`` block (top-level in
+    # cage.yaml). Its agent api_key is collected into the SAME
+    # egress-only secret set as the decider's (stripped from the cage
+    # env / podman_secrets below, staged into the proxy's tmpfs secret
+    # files by the quadlet renderer): the watcher runs in the egress, so
+    # its LLM key follows the exact decider credential chain and never
+    # reaches the cage, even as a placeholder.
+    #
+    # Parse strictness mirrors the decider block's: a malformed block
+    # REJECTS the config (it would ride proxy-config.yaml verbatim and
+    # crash/degrade the in-egress consumer), explicit values are
+    # preserved as-is so validate_config's bounds can reject them (a
+    # bare ``or`` fallback would silently coerce an explicit 0 into the
+    # default — the exact trap the decider's rate-limit parse calls
+    # out), and booleans must be REAL booleans (``bool("false")`` is
+    # True — silently enabling autonomous revocation against the
+    # operator's written intent).
+    _pending_watcher: WatcherConfig | None = None
+    w_raw = raw.get("watcher")
+    if w_raw is not None and not isinstance(w_raw, dict):
+        raise ValueError(
+            f"watcher must be a mapping (got {type(w_raw).__name__})"
+        )
+    if isinstance(w_raw, dict) and "enable" in w_raw \
+            and not isinstance(w_raw["enable"], bool):
+        # Same trap the block above calls out: bool("false") is True, so
+        # a hand-edited ``enable: "false"`` would silently turn the
+        # watcher (and its autonomous revocation) ON against the
+        # operator's written intent.
+        raise ValueError(
+            "watcher.enable must be a boolean (true/false) — got "
+            f"{type(w_raw['enable']).__name__}"
+        )
+    if isinstance(w_raw, dict) and w_raw.get("enable"):
+        _w_agent_raw = w_raw.get("agent")
+        if _w_agent_raw is not None and not isinstance(_w_agent_raw, dict):
+            raise ValueError(
+                f"watcher.agent must be a mapping (got "
+                f"{type(_w_agent_raw).__name__})"
+            )
+        _w_agent_raw = _w_agent_raw or {}
+        _w_ctx_raw = w_raw.get("context")
+        if _w_ctx_raw is None:
+            _w_context = ""
+        elif isinstance(_w_ctx_raw, str):
+            _w_context = _w_ctx_raw
+        else:
+            # Same rejection rationale as domains.auto.context: never
+            # str()-coerce a non-string into a repr that would ride the
+            # watcher's system prompt.
+            raise ValueError(
+                f"watcher.context must be a string (got "
+                f"{type(_w_ctx_raw).__name__})"
+            )
+        _w_ar_raw = w_raw.get("auto_revoke", True)
+        if not isinstance(_w_ar_raw, bool):
+            raise ValueError(
+                "watcher.auto_revoke must be a boolean (true/false) — "
+                f"got {type(_w_ar_raw).__name__}"
+            )
+
+        def _w_num(key: str, default: float, as_int: bool = False):
+            # Preserve an explicit 0/None-missing distinction: only an
+            # ABSENT or empty value falls back to the default; an explicit
+            # value (including 0) reaches validate_config's bounds
+            # untouched.
+            _raw_v = w_raw.get(key)
+            if _raw_v in (None, ""):
+                _raw_v = default
+            try:
+                return int(float(_raw_v)) if as_int else float(_raw_v)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"watcher.{key} must be a number (got {_raw_v!r})"
+                )
+
+        _pending_watcher = WatcherConfig(
+            enable=True,
+            interval_seconds=_w_num("interval_seconds", 300.0),
+            window_seconds=_w_num("window_seconds", 3600.0),
+            max_flows=_w_num("max_flows", 200, as_int=True),
+            auto_revoke=_w_ar_raw,
+            context=_w_context,
+            agent=AgentDeciderConfig(
+                # NOT lowercased: the decider's validation rejects any
+                # casing but the exact provider key, and the watcher is
+                # documented to follow the decider's rules verbatim —
+                # accepting silently here what the twin rejects would be
+                # the mirror drifting.
+                provider=str(_w_agent_raw.get("provider", "") or ""),
+                model=str(_w_agent_raw.get("model", "") or ""),
+                api_key=str(_w_agent_raw.get("api_key", "") or ""),
+                timeout_seconds=float(
+                    _w_agent_raw.get("timeout_seconds", 30.0) or 30.0),
+                base_url=str(_w_agent_raw.get("base_url", "") or ""),
+            ),
+        )
+        _w_key = _pending_watcher.agent.api_key
+        _w_scheme, _, _w_arg = (_w_key or "").partition(":")
+        if _w_scheme and _w_arg:
+            validate_source(_w_key)
+            policy_secret_names.add(_w_arg)
+
     if policy_secret_names:
         cc.podman_secrets = [
             s for s in cc.podman_secrets if s not in policy_secret_names
@@ -1208,6 +1356,8 @@ def load_config(path: str) -> Config:
     if _pending_auto is not None:
         dc.auto = _pending_auto
     cfg.domains = dc
+    if _pending_watcher is not None:
+        cfg.watcher = _pending_watcher
 
     # Logging
     log_raw = raw.get("logging") or {}
@@ -2054,6 +2204,81 @@ def validate_config(config: Config) -> list[str]:
             raise ValueError(
                 "domains.auto.host must always be in never_grant "
                 "(internal invariant violated)"
+            )
+
+    # ── watcher ──────────────────────────────────────────────
+    # Mirrors the domains.auto.decider.agent checks field-for-field (the
+    # watcher's agent sub-block IS AgentDeciderConfig), plus its own loop
+    # hygiene bounds (interval / window / flow cap). Validated only when
+    # enabled — the absent block is zero surface by construction.
+    w = getattr(config, "watcher", None)
+    if w is not None and w.enable:
+        wag = w.agent
+        if wag.provider not in ("anthropic", "openai", "openrouter"):
+            raise ValueError(
+                f"watcher.agent.provider must be 'anthropic', 'openai', or "
+                f"'openrouter' (got {wag.provider!r})"
+            )
+        if not wag.model:
+            raise ValueError("watcher.agent.model is required")
+        # Same egress-only credential rules as the decider key: required,
+        # source: scheme, and no cmd: (the egress container has no shell,
+        # so a cmd: source would silently materialize as an empty key —
+        # fail-closed but confusing; reject it with an actionable message).
+        if not wag.api_key:
+            raise ValueError(
+                "watcher.agent.api_key is required — the watcher agent needs "
+                "its own API key, an egress-only secret using the source: "
+                "scheme (e.g. 'systemd-creds:WATCHER_LLM_KEY' or "
+                "'env:WATCHER_LLM_KEY'). Reusing the decider's key is fine: "
+                "name the same env var."
+            )
+        _w_scheme = (wag.api_key or "").partition(":")[0]
+        if _w_scheme == "cmd":
+            raise ValueError(
+                "watcher.agent.api_key does not support cmd: sources (the "
+                "egress container has no shell); use env:NAME or "
+                "systemd-creds:NAME"
+            )
+        # https-only — the watcher key travels as a bearer header on every
+        # call, exactly like the decider key.
+        if wag.base_url:
+            from urllib.parse import urlsplit
+            parts = urlsplit(wag.base_url)
+            if parts.scheme != "https" or not parts.hostname:
+                raise ValueError(
+                    "watcher.agent.base_url must be an https:// URL (the "
+                    "watcher API key is sent on every call; http:// would "
+                    f"leak it in cleartext — got {wag.base_url!r})"
+                )
+        # Loop hygiene: a 60s floor on the scan cadence so a mis-typed
+        # interval cannot turn the watcher into a hot loop (one LLM call
+        # per tick); a 24h cap on the post-restart lookback window (it is
+        # re-read from capture.jsonl every egress start); a sane flow cap
+        # (the digest prompt is bounded by max_flows, floor 10 so a typo'd 0
+        # doesn't produce an empty digest every tick forever).
+        if w.interval_seconds < 60:
+            raise ValueError(
+                f"watcher.interval_seconds must be >= 60 (got "
+                f"{w.interval_seconds}) — one LLM scan per interval, and a "
+                "faster cadence would be a hot loop"
+            )
+        if not (0 < w.window_seconds <= 86400):
+            raise ValueError(
+                f"watcher.window_seconds must be in (0, 86400] (got "
+                f"{w.window_seconds})"
+            )
+        if not (10 <= w.max_flows <= 2000):
+            raise ValueError(
+                f"watcher.max_flows must be in [10, 2000] (got {w.max_flows})"
+            )
+        # Same trusted-context cap as domains.auto.context — it rides the
+        # watcher's system prompt through proxy-config.yaml.
+        _wctx_len = len(w.context.strip())
+        if _wctx_len > 4096:
+            raise ValueError(
+                f"watcher.context is too long ({_wctx_len} chars, max 4096) "
+                f"— trim it or move details into a shorter summary"
             )
 
     return warnings

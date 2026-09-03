@@ -70,6 +70,7 @@ COPY proxy/addon.py /opt/agentcage/addon.py
 COPY proxy/capture.py /opt/agentcage/capture.py
 COPY proxy/secret_injector.py /opt/agentcage/secret_injector.py
 COPY proxy/policy_api.py /opt/agentcage/policy_api.py
+COPY proxy/watcher.py /opt/agentcage/watcher.py
 COPY proxy/inspectors/ /opt/agentcage/inspectors/
 COPY proxy/transforms/ /opt/agentcage/transforms/
 COPY proxy/relays/ /opt/agentcage/relays/

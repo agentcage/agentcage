@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-05-28 -->
+<!-- owner: @luca  last-reviewed: 2026-09-03 -->
 # Documentation
 
 The operator's map of agentcage. Find your task; follow the link.
@@ -24,9 +24,11 @@ The operator's map of agentcage. Find your task; follow the link.
 - [Inspectors](reference/inspectors.md) — built-in checks and the custom inspector API.
 - [Configuration](reference/configuration.md) — every other `cage.yaml` setting.
 - [Capture](reference/capture.md) — HAR recording, inbound vs outbound perspectives.
+- [The traffic watcher](explain/traffic-watcher.md) — opt-in in-egress LLM agent that re-analyzes recent traffic after the fact and flags suspicious patterns; can revoke runtime grants (narrowing only). To set one up, see [Run the traffic watcher](how-to/run-the-traffic-watcher.md).
 
 ## Operate a cage
 
+- [Run the traffic watcher](how-to/run-the-traffic-watcher.md) — enable it, read findings, act on them, and what a caged agent sees when a grant is revoked.
 - [Troubleshoot](how-to/troubleshoot.md) — stuck cages, blocked requests, missing secrets.
 - [Upgrade agentcage](how-to/upgrade-agentcage.md) — bump the binary, update running cages.
 - [Back up and restore](how-to/back-up-and-restore.md) — snapshotting, restore drills.
@@ -41,6 +43,7 @@ The operator's map of agentcage. Find your task; follow the link.
 - [Architecture](explain/architecture.md) — topology, egress flow, inspector chain.
 - [Isolation modes](explain/isolation-modes.md) — container vs vm vs apple-container, when to use which.
 - [Security model](explain/security-model.md) — threat model, defense layers, known limitations.
+- [The traffic watcher](explain/traffic-watcher.md) — after-the-fact LLM traffic auditing inside the egress.
 
 ## Past audits
 

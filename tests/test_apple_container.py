@@ -4285,6 +4285,31 @@ def test_generate_units_records_expiring_domains_flag():
     assert meta["domains_auto"] is False
     assert meta["has_expiring_domains"] is True
 
+def test_generate_units_records_watcher_enabled_flag():
+    """PR #340 review fix (BLOCKING): the grants overlay bind mount was
+    gated on domains_auto / has_expiring_domains only. A watcher-only
+    cage (domains.auto disabled) got no grants dir at all, so the
+    in-egress watcher's findings/state writes hit a swallowed OSError —
+    a silent all-clear. generate_units must record a watcher_enabled
+    flag start() can gate the mount on, same as the other two."""
+    from agentcage.config import WatcherConfig, AgentDeciderConfig
+    cfg = Config(name="t", isolation="apple-container")
+    cfg.container.image = "x"
+    cfg.domains.mode = "allowlist"
+    cfg.domains.allow = ["anthropic.com"]
+    assert not cfg.domains.auto.enable  # domains.auto stays OFF
+    cfg.watcher = WatcherConfig(
+        enable=True,
+        agent=AgentDeciderConfig(provider="openrouter", model="m",
+                                 api_key="env:K"),
+    )
+    units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
+    meta = json.loads(units["deploy.json"])
+    assert meta["domains_auto"] is False
+    assert meta["has_expiring_domains"] is False
+    assert meta["watcher_enabled"] is True
+
+
 def test_render_egress_config_includes_decider_provider_host(tmp_path, monkeypatch):
     """_render_egress_config renders dnsmasq.conf with a server= line for the
     decider's LLM provider host (e.g. openrouter.ai) so the egress-internal

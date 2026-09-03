@@ -246,6 +246,86 @@ class TestResolveAndPopulate:
             assert pm.secrets == {}
 
 
+class _FakeAgent:
+    def __init__(self, api_key=""):
+        self.api_key = api_key
+
+
+class _FakeAgentBlock:
+    """Stands in for either domains.auto or watcher — both have a nested
+    ``.agent.api_key`` (watcher) or ``.decider.agent.api_key`` (domains.auto)."""
+
+    def __init__(self, enable, api_key=""):
+        self.enable = enable
+        self.agent = _FakeAgent(api_key)
+        self.decider = self  # domains.auto.decider.agent === self.agent
+
+
+class TestResolveAndPopulateAgentKeys:
+    """PR #340 review fix (BLOCKING): quadlets emits a ``Secret=``
+    directive for both the domains.auto decider's and the traffic
+    watcher's ``agent.api_key``, and ``quadlets._boot_resolvable``
+    green-lights ``env:``/``cmd:`` schemes precisely because this
+    function is expected to materialize them as podman secrets. Without
+    resolving the WATCHER's key here, a watcher-only cage (or one with a
+    watcher key distinct from the decider's) references a podman secret
+    nobody ever creates, and the egress dies at start with `no such
+    secret` — taking the whole cage down.
+    """
+
+    def test_watcher_key_materialized_as_podman_secret(self, tmp_path):
+        with mock.patch.dict(os.environ, {"WKEY": "sk-watcher"}):
+            cfg = _FakeCfg([])
+            cfg.domains = None
+            cfg.watcher = _FakeAgentBlock(True, "env:WKEY")
+            pm = _FakePodman()
+            resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
+            assert resolved == {"WKEY"}
+            assert pm.secrets == {"cage.WKEY": "sk-watcher"}
+
+    def test_disabled_watcher_resolves_nothing(self, tmp_path):
+        with mock.patch.dict(os.environ, {"WKEY": "sk-watcher"}):
+            cfg = _FakeCfg([])
+            cfg.domains = None
+            cfg.watcher = _FakeAgentBlock(False, "env:WKEY")
+            pm = _FakePodman()
+            resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
+            assert resolved == set()
+            assert pm.secrets == {}
+
+    def test_decider_and_watcher_keys_both_materialized(self, tmp_path):
+        with mock.patch.dict(
+            os.environ, {"DKEY": "sk-decider", "WKEY": "sk-watcher"},
+        ):
+            cfg = _FakeCfg([])
+            _domains = mock.Mock()
+            _domains.auto = _FakeAgentBlock(True, "env:DKEY")
+            cfg.domains = _domains
+            cfg.watcher = _FakeAgentBlock(True, "env:WKEY")
+            pm = _FakePodman()
+            resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
+            assert resolved == {"DKEY", "WKEY"}
+            assert pm.secrets == {
+                "cage.DKEY": "sk-decider", "cage.WKEY": "sk-watcher",
+            }
+
+    def test_watcher_reusing_deciders_key_name_not_double_resolved(
+            self, tmp_path):
+        # Reusing the decider's env var name is an explicitly documented
+        # option (watcher.agent.api_key can point at the same source);
+        # it must resolve once, not raise or double-create the secret.
+        with mock.patch.dict(os.environ, {"SHARED": "sk-shared"}):
+            cfg = _FakeCfg([])
+            _domains = mock.Mock()
+            _domains.auto = _FakeAgentBlock(True, "env:SHARED")
+            cfg.domains = _domains
+            cfg.watcher = _FakeAgentBlock(True, "env:SHARED")
+            pm = _FakePodman()
+            resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
+            assert resolved == {"SHARED"}
+            assert pm.secrets == {"cage.SHARED": "sk-shared"}
+
+
 class TestEncryptSecret:
     def test_encrypt_calls_systemd_creds(self, tmp_path):
         with mock.patch("agentcage.secret_resolver.subprocess.run") as mock_run:

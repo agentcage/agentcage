@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-05-28 -->
+<!-- owner: @luca  last-reviewed: 2026-09-03 -->
 # Configuration
 
 The top-level settings, container block, hardening, and restart policy for `cage.yaml`. Pair with the per-feature pages under `docs/reference/` for everything else.
@@ -16,6 +16,37 @@ Example configs: [`basic/cage.yaml`](../../examples/basic/) and [`openclaw/cage.
 | `log_allowed` | `bool` | `false` | Log allowed requests to the proxy journal. |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit. |
 | `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container. |
+| `watcher` | `block` | *(off)* | Opt-in traffic watcher: an in-egress LLM agent that re-analyzes the cage's recent traffic (audit + HAR capture) after the fact and flags suspicious patterns, revoking runtime grants its analysis damns. See [the traffic watcher](../explain/traffic-watcher.md). |
+
+### watcher settings
+
+The `watcher:` block enables the traffic watcher — see [the traffic-watcher explain page](../explain/traffic-watcher.md) for the trust model (it can only narrow: revoke runtime grants, never grant, never edit the static baseline). For the setup workflow, see [Run the traffic watcher](../how-to/run-the-traffic-watcher.md).
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `enable` | `bool` | `false` | Master switch. Absent block = zero surface. |
+| `interval_seconds` | `int` | `300` | Scan cadence (minimum 60). One LLM call per interval at most, and only when the window had traffic. |
+| `window_seconds` | `int` | `3600` | After-the-fact lookback on the first scan after an egress (re)start (max 86400). |
+| `max_flows` | `int` | `200` | Flows per analysis window (digest prompt cap, range 10–2000). |
+| `auto_revoke` | `bool` | `true` | Apply runtime-grant revocations autonomously. `false` records findings only. Must be a real boolean — a quoted `"false"` is rejected at validation (it would silently enable revocations). |
+| `context` | `string` | `""` | Trusted operator free-text describing the cage's purpose (max 4096 chars) — the same channel as `domains.auto.context`. |
+| `agent.provider` | `string` | *(required)* | `anthropic` \| `openai` \| `openrouter`. |
+| `agent.model` | `string` | *(required)* | Model id. |
+| `agent.api_key` | `string` | *(required)* | The watcher's own API key — an egress-only `source:` credential (`env:NAME` \| `systemd-creds:NAME`; `cmd:` is rejected — the egress has no shell). Reusing the decider's env var name is fine. |
+| `agent.timeout_seconds` | `int` | `30` | LLM call timeout. |
+| `agent.base_url` | `string` | *(provider default)* | `https://`-only override. |
+
+```yaml
+watcher:
+  enable: true
+  context: "runs the payments-reconciliation suite against staging"
+  agent:
+    provider: openrouter
+    model: anthropic/claude-sonnet-4-5
+    api_key: env:WATCHER_LLM_KEY
+```
+
+Findings surface in `cage audit --inspector watcher` and via `agentcage watcher findings <name>`.
 
 ### VM settings
 

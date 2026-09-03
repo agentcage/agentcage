@@ -168,15 +168,30 @@ class TestDeciderPromptHardening:
         assert "predictable rather than improvised" in p
 
     def test_tool_schema_constrains_ttl(self):
-        """Both provider schemas (anthropic + openai-shape) must constrain it.
+        """The decider's tool schema must constrain the TTL to the enum.
 
         The prompt asking for one of three values is guidance; the enum is
-        what a model actually cannot violate.
+        what a model actually cannot violate. Since the shared-LLM-client
+        refactor (the traffic watcher reuses the wire code), there is ONE
+        tool definition — ``_DECIDE_TOOL`` — consumed by BOTH provider
+        branches of ``llm_tool_call``, so the constraint existing once in
+        that dict covers both wire formats. Assert the shared definition
+        AND that the call site passes it through (not a re-declared copy
+        that could drift).
         """
         from pathlib import Path
+        import json as _json
         _, pa = _addon()
         src = Path(pa.__file__).read_text()
-        assert src.count('"ttl_seconds": {"type": "integer", "enum": [0, 600, 3600]}') == 2
+        assert src.count(
+            '"ttl_seconds": {"type": "integer", "enum": [0, 600, 3600]}') == 1
+        # The single definition is the decider's normalized tool, and the
+        # LLM client builds both wire shapes from the one dict it is given
+        # (no inline re-declaration anywhere in the module).
+        assert "_DECIDE_TOOL = {" in src
+        assert src.count('"name": "decide"') == 1
+        assert 'tool=_DECIDE_TOOL' in src
+        assert _json.dumps(pa._DECIDE_TOOL)  # importable, well-formed dict
 
     def test_addon_and_config_never_grant_sets_agree(self):
         """The two copies are duplicated by necessity; they must not drift."""
