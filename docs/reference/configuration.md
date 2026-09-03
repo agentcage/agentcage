@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-05-28 -->
+<!-- owner: @luca  last-reviewed: 2026-09-03 -->
 # Configuration
 
 The top-level settings, container block, hardening, and restart policy for `cage.yaml`. Pair with the per-feature pages under `docs/reference/` for everything else.
@@ -20,7 +20,7 @@ Example configs: [`basic/cage.yaml`](../../examples/basic/) and [`openclaw/cage.
 
 ### watcher settings
 
-The `watcher:` block enables the traffic watcher — see [the traffic-watcher explain page](../explain/traffic-watcher.md) for the trust model (it can only narrow: revoke runtime grants, never grant, never edit the static baseline).
+The `watcher:` block enables the traffic watcher — see [the traffic-watcher explain page](../explain/traffic-watcher.md) for the trust model (it can only narrow: revoke runtime grants, never grant, never edit the static baseline). For the setup workflow, see [Run the traffic watcher](../how-to/run-the-traffic-watcher.md).
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|

@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-08-31 -->
+<!-- owner: @luca  last-reviewed: 2026-09-03 -->
 # The traffic watcher — an in-egress, after-the-fact LLM traffic auditor
 
 The domains decider (`docs/explain/policy-api.md` §3.3) guards the *front
@@ -12,6 +12,10 @@ inbound, or an allowlist being probed for soft spots. Where the decider
 *widens carefully*, the watcher *narrows on evidence*: it can revoke the
 runtime grants its own analysis damns, and it can only *recommend* baseline
 edits, which stay operator-owned.
+
+This page is the design rationale. For the operator workflow — enabling it,
+reading findings, acting on them — see
+[Run the traffic watcher](../how-to/run-the-traffic-watcher.md).
 
 Like the decider, the watcher is **opt-in** (`watcher.enable`), runs
 **inside the egress container**, and is **fail-closed**: a watcher that
@@ -167,7 +171,7 @@ added to the cage's HTTP allowlist).
   (never values), the `policy_request` decisions from the window (the
   decider's own grant/deny record — the watcher audits the decider too),
   and capped capture samples. Everything sourced from cage traffic is
-  framed as untrusted data (below).
+  framed as untrusted data (see [The watcher agent](#the-watcher-agent)).
 
 ## The watcher agent
 

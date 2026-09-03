@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-05-28 -->
+<!-- owner: @luca  last-reviewed: 2026-09-03 -->
 # CLI
 
 Reference for every `agentcage` command, subcommand, and flag. Pair with [Configuration](configuration.md) for `cage.yaml` settings and the how-to pages for worked examples.
@@ -312,6 +312,8 @@ Read the traffic watcher's findings and scan status. The watcher itself runs **i
 Aliases: `ls` → `findings`.
 
 Findings also appear in the audit stream: `cage audit --inspector watcher` (each finding is a `watcher_finding` entry with `decision: flagged`). Revocations appear as `watcher_revoke` entries.
+
+For the full workflow — configuring the watcher, provisioning its key, and acting on a finding — see [Run the traffic watcher](../how-to/run-the-traffic-watcher.md).
 
 ## scaffold
 
