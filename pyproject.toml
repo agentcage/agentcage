@@ -1,6 +1,6 @@
 [project]
 name = "agentcage"
-version = "0.35.0"
+version = "0.35.1"
 requires-python = ">=3.12"
 description = "Defense-in-depth proxy sandbox for AI agents"
 authors = [{name = "Luca Martinetti"}]
