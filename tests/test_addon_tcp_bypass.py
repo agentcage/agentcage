@@ -227,3 +227,21 @@ class TestTcpBypassGuard:
             (tmp_path / "audit.jsonl").read_text().splitlines()[0]
         )
         assert entry["host"] == "smtp.example.com"
+
+    def test_feeds_the_watcher_ring(self, tmp_path):
+        """PR #340 review fix: ``tcp_start`` wrote directly to stderr
+        and ``_audit_file``, bypassing ``_audit_write`` — the single
+        funnel point every other audit producer uses to feed the
+        traffic watcher's ring (``addon._ring_ingest``). An egress
+        bypass is exactly the kind of event the watcher exists to
+        catch, so it must land in the ring like any other decision."""
+        from collections import deque
+        addon = _make_addon(tmp_path)
+        addon._watcher_ring = deque()
+        flow = _make_tcp_flow(server_address=("1.1.1.1", 443))
+
+        addon.tcp_start(flow)
+
+        assert len(addon._watcher_ring) == 1
+        assert addon._watcher_ring[0]["kind"] == "tcp_bypass_blocked"
+        assert addon._watcher_ring[0]["decision"] == "blocked"

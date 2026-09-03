@@ -1854,7 +1854,13 @@ def _classify_changes(before: dict, after: dict) -> tuple[set[str], set[str], se
     restart: set[str] = set()
     rebuild: set[str] = set()
     for k in changed:
-        if k == "domains":
+        if k in ("domains", "watcher"):
+            # Same live-apply shape as domains: save_proxy_config (called
+            # unconditionally below) bumps proxy-config.yaml's mtime, the
+            # addon's mtime poll hot-reloads the watcher block in place
+            # (addon._init_watcher), and a watcher edit can change the
+            # LLM provider host that needs to resolve — exactly the
+            # domains.auto case _update_dns_quadlet already handles.
             live.add(k)
         elif k in _PROXY_HOT_RELOAD_KEYS:
             live.add(k)
@@ -2017,7 +2023,7 @@ def cage_edit(name: str):
 
     live, restart_keys, rebuild_keys = _classify_changes(original_raw, edited_raw)
 
-    if "domains" in live:
+    if "domains" in live or "watcher" in live:
         _update_dns_quadlet(cfg)
 
     if "secret_injection" in live:

@@ -98,10 +98,16 @@ _MAX_DRAIN = 2000
 # only advances past COMPLETE lines, so chunk boundaries never lose data.
 _CAP_READ_CHUNK = 8 * 1024 * 1024
 
+# Hard cap on a single capture.jsonl line. A line found with no newline
+# even after reading this much is treated as oversized (not a torn
+# in-flight write) and dropped, rather than retried forever every tick.
+_MAX_LINE_BYTES = 4 * _CAP_READ_CHUNK
+
 # Hard caps on what one digest may carry to the model. Bodies are
-# excerpted (never sent whole) and headers are filtered by name.
+# excerpted (never sent whole) and headers are filtered by name. The
+# capture-sample count itself is bounded by the configured
+# ``watcher.max_flows`` (Watcher._max_flows), not a fixed constant here.
 _BODY_EXCERPT_CHARS = 512
-_MAX_CAPTURE_SAMPLES = 50
 _MAX_HOSTS_IN_DIGEST = 25
 _MAX_POLICY_EVENTS = 200
 
@@ -458,6 +464,12 @@ class Watcher:
         # re-reads them instead of silently dropping evidence.
         self._cap_offset: Optional[int] = None
         self._cap_file_id: Optional[tuple] = None
+        # The byte offset a reset (first read/rotation/truncation) needs to
+        # catch up to before the window filter can stop applying — a large
+        # backlog is read across several ticks (_CAP_READ_CHUNK-bounded),
+        # and every one of those ticks is still "the reset scan", not a
+        # fresh incremental read. None when no reset is in flight.
+        self._cap_reset_target: Optional[int] = None
         self._consec_failures = 0
 
         # Findings + scan state live on the grants volume — the one
@@ -480,6 +492,23 @@ class Watcher:
         """Resolve the watcher key via the decider's own staging channel."""
         from policy_api import PolicyApi
         return PolicyApi._read_secret(auth_source)
+
+    def refresh_runtime_refs(self, dom, policy_api_obj) -> None:
+        """Re-point the domain/PolicyApi refs and re-read the API key.
+
+        Called on every hot-reload — including when this watcher's own
+        config block is unchanged and it is being kept rather than
+        rebuilt (see ``addon._init_watcher``): ``domains.auto`` gets a
+        brand new ``PolicyApi`` on every reload regardless, so an
+        unrefreshed ``_pa`` would keep granting/revoking through a
+        discarded, sweeper-cancelled instance. ``secret set`` re-stages
+        the key file without changing the config value that names it,
+        so the key needs a re-read too.
+        """
+        self.dom = dom
+        self._pa = policy_api_obj
+        agent = self.cfg.get("agent") or {}
+        self._secret = self._read_key(str(agent.get("api_key", "") or ""))
 
     # ── Scan loop ───────────────────────────────────────────
 
@@ -534,12 +563,21 @@ class Watcher:
     def _push_back(self, entries: list[dict]) -> None:
         """Return a failed scan's drained batch to the FRONT of the ring.
 
-        ``extendleft(reversed(...))`` restores the original order. If
-        the ring fills past its bound, the OLDEST entries evict — the
-        retry keeps the most recent evidence, which is the window the
-        scan is about.
+        ``extendleft(reversed(...))`` restores the original order, but
+        on a bounded deque it evicts from the OPPOSITE (right/newest)
+        end when full — the reverse of what a retry wants, since
+        ``entries`` is the OLDER, already-drained batch and anything
+        still in the ring arrived more recently. So the batch itself is
+        trimmed to the available room FIRST, keeping its own most
+        recent tail: live traffic that arrived during the failed scan
+        is never displaced by the stale retry batch.
         """
         try:
+            room = (self._ring.maxlen or len(entries)) - len(self._ring)
+            if room <= 0:
+                return
+            if len(entries) > room:
+                entries = entries[-room:]
             self._ring.extendleft(reversed(entries))
         except Exception:  # pragma: no cover — defensive
             pass
@@ -552,13 +590,15 @@ class Watcher:
     async def _tick(self) -> None:
         """One scan: collect → digest → (threaded) LLM review → apply.
 
-        Only the LLM network call leaves the event loop
+        Collection AND the LLM call both leave the event loop
         (``asyncio.to_thread``, mirroring ``PolicyApi._decide_llm``): a
-        slow provider must never stall mitmproxy's loop — the cage's own
-        traffic, the relays, the sweeper and config reload all ride it.
+        slow provider, or a capture-tail read chasing a large backlog
+        or an oversized line, must never stall mitmproxy's loop — the
+        cage's own traffic, the relays, the sweeper and config reload
+        all ride it.
         """
         now = _now()
-        batch = self._collect(now)
+        batch = await asyncio.to_thread(self._collect, now)
         entries: list[dict] = batch["audit"]
         samples: list[dict] = batch["capture_samples"]
 
@@ -1027,14 +1067,23 @@ class Watcher:
           newline — an in-flight write's partial final line stays
           unconsumed and is re-read WHOLE next tick (with the text-mode
           readline the offset used to jump past the torn line, so a
-          completed write could never be parsed again);
+          completed write could never be parsed again). A line that
+          still has no newline after growing past ``_MAX_LINE_BYTES``
+          is instead treated as oversized (not in-flight) and dropped,
+          so a single huge entry cannot stall the tail forever;
         * tracks ``(st_dev, st_ino)`` alongside size: rotation to a
           same-sized replacement file is detected by identity change,
           truncation by shrinkage below the offset — either resets to
           offset 0, a full-file scan filtered to ``window_seconds`` (the
-          after-the-fact lookback);
-        * reads at most ``_CAP_READ_CHUNK`` bytes per tick, so a huge
-          capture file is chunked rather than slurped.
+          after-the-fact lookback). The filter stays active across every
+          tick needed to catch up to the size seen AT the reset (tracked
+          in ``_cap_reset_target``), not just the first chunk of it —
+          a reset backlog bigger than ``_CAP_READ_CHUNK`` is read over
+          several ticks, and each of those is still "the reset scan";
+        * reads at most ``_CAP_READ_CHUNK`` bytes per tick (more only to
+          chase a single line past that boundary, capped at
+          ``_MAX_LINE_BYTES``), so a huge capture file is chunked rather
+          than slurped.
 
         The staged offset is COMMITTED by the caller only after the scan
         that consumed the samples succeeded — a failed scan re-reads
@@ -1052,21 +1101,48 @@ class Watcher:
             if offset is None or file_id != self._cap_file_id \
                     or offset > size:
                 offset = 0
+                self._cap_reset_target = size
+            apply_filter = self._cap_reset_target is not None \
+                and offset < self._cap_reset_target
             chunk = max(0, min(size - offset, _CAP_READ_CHUNK))
             if chunk == 0:
                 return samples, offset, file_id
             with open(self._capture_path, "rb") as f:
                 f.seek(offset)
                 data = f.read(chunk)
+                # Keep reading past the normal chunk bound, but only to
+                # chase a single line that hasn't hit a newline yet —
+                # bounded by _MAX_LINE_BYTES so a truly oversized line
+                # doesn't turn this into an unbounded read.
+                while data and not data.endswith(b"\n") \
+                        and offset + len(data) < size \
+                        and len(data) < _MAX_LINE_BYTES:
+                    more = f.read(min(_CAP_READ_CHUNK,
+                                      size - offset - len(data)))
+                    if not more:
+                        break
+                    data += more
             if not data:
                 return samples, offset, file_id
             lines = data.split(b"\n")
             partial = b""
             if not data.endswith(b"\n"):
-                # Torn tail (an in-flight write): leave those bytes
-                # unconsumed; the next tick re-reads the line complete.
+                # Torn tail (an in-flight write) OR an oversized line
+                # that grew past _MAX_LINE_BYTES without a newline —
+                # either way, the last split segment is the incomplete
+                # part.
                 partial = lines.pop()
-            new_offset = offset + chunk - len(partial)
+                if len(data) >= _MAX_LINE_BYTES:
+                    # Oversized, not in-flight: retrying this forever
+                    # would stall the tail on one bad entry. Drop it —
+                    # one lost sample — and advance past it.
+                    self._log.warn(
+                        "agentcage: watcher dropping oversized capture "
+                        f"line (>{_MAX_LINE_BYTES} bytes, no newline "
+                        "found)"
+                    )
+                    partial = b""
+            new_offset = offset + len(data) - len(partial)
             cutoff = now - timedelta(seconds=self._window)
             for raw_line in lines:
                 if not raw_line.strip():
@@ -1077,17 +1153,21 @@ class Watcher:
                     continue  # corrupt line — skip it, still consume it
                 if not isinstance(entry, dict):
                     continue
-                if offset == 0:
-                    # Full-file scan (first read or reset): keep only the
-                    # window. Incremental reads are all-new bytes by
+                if apply_filter:
+                    # Reset scan (first read/rotation/truncation, possibly
+                    # spanning several ticks): keep only the window.
+                    # Ordinary incremental reads are all-new bytes by
                     # construction, so no filter applies there.
                     dt = _parse_ts(entry.get("ts", ""))
                     if dt is None or dt < cutoff:
                         continue
                 samples.append(_sample_capture(entry))
-            # Newest-last → keep the most recent max samples.
-            if len(samples) > _MAX_CAPTURE_SAMPLES:
-                samples = samples[-_MAX_CAPTURE_SAMPLES:]
+            if self._cap_reset_target is not None \
+                    and new_offset >= self._cap_reset_target:
+                self._cap_reset_target = None
+            # Newest-last → keep the most recent configured max samples.
+            if len(samples) > self._max_flows:
+                samples = samples[-self._max_flows:]
             return samples, new_offset, file_id
         except OSError as e:
             self._log.warn(f"agentcage: watcher cannot read capture: {e}")

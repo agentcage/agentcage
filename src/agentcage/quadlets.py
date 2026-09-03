@@ -1063,7 +1063,8 @@ def generate_quadlets(
         capture_enabled=capture_enabled,
         capture_host_dir=capture_host_dir,
         domains_auto_enabled=bool(getattr(config.domains.auto, "enable", False))
-            or bool(getattr(config.domains, "expires", None)),
+            or bool(getattr(config.domains, "expires", None))
+            or bool(getattr(getattr(config, "watcher", None), "enable", False)),
         grants_host_dir=grants_dir_str,
         passthrough_regex=pt_regex,
         rootless=rootless,

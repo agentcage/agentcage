@@ -1058,6 +1058,44 @@ class TestCageEdit:
         backup = (cage_dir / "cage.yaml.bak").read_text()
         assert "httpbin.org" not in backup
 
+    # PR #340 review fix: `watcher` was classified as a "needs restart"
+    # key, so adding/editing a watcher block did NOT call
+    # _update_dns_quadlet — but save_proxy_config (always called) bumps
+    # proxy-config.yaml's mtime, and the addon's mtime poll hot-starts
+    # the watcher immediately (addon._init_watcher). Every scan then
+    # failed on DNS resolution for the LLM provider host until the
+    # operator followed the (wrongly given) restart hint. `watcher`
+    # must live-apply through the same DNS path `domains` does.
+    @patch("agentcage.cli._update_dns_quadlet")
+    @patch("click.edit")
+    @patch("agentcage.cli.state")
+    def test_edit_watcher_change_live_reloads_dnsmasq(self, mock_state,
+                                                      mock_click_edit,
+                                                      mock_update_dns, tmp_path):
+        cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
+        mock_state.deployment_exists.return_value = True
+        mock_state.deployment_dir.return_value = cage_dir
+        import yaml as _yaml
+        mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
+
+        edited = self._GOOD_YAML + (
+            "watcher:\n"
+            "  enable: true\n"
+            "  agent:\n"
+            "    provider: openai\n"
+            "    model: m\n"
+            "    api_key: env:K\n"
+        )
+        mock_click_edit.return_value = edited
+
+        result = _runner().invoke(main, ["cage", "edit", "test"])
+        assert result.exit_code == 0, result.output
+        assert "Live-applied" in result.output
+        assert "watcher" in result.output
+        assert "cage restart" not in result.output
+        mock_update_dns.assert_called_once()
+        mock_state.save_proxy_config.assert_called_once_with("test")
+
     @patch("agentcage.cli._update_dns_quadlet")
     @patch("click.edit")
     @patch("agentcage.cli.state")

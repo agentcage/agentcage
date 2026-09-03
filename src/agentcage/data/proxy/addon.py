@@ -282,7 +282,16 @@ class Agentcage:
             w_cfg = {}
         if self.traffic_watcher is not None \
                 and self.traffic_watcher.cfg == w_cfg:
-            return  # unchanged: keep the loop + scan state
+            # Unchanged watcher block: keep the loop + scan state, but
+            # still re-point the mutable refs. ``domains.auto`` gets a
+            # FRESH PolicyApi on every reload (_init_domain_requests
+            # above), so an unrefreshed ``_pa`` would keep revoking
+            # through a discarded, sweeper-cancelled instance; ``secret
+            # set`` re-stages the key file without changing the config
+            # value that names it, so the key needs a re-read too.
+            self.traffic_watcher.refresh_runtime_refs(
+                self._watcher_domain_inspector(), self.domain_requests)
+            return
         if not w_cfg.get("enable"):
             self._cancel_watcher_task()
             self.traffic_watcher = None
@@ -1417,15 +1426,11 @@ class Agentcage:
             "reason": reason,
             "host": target,
         }
-        # Match the regular _log() audit sink: stderr + audit.jsonl.
-        line = json.dumps(entry)
-        print(line, file=sys.stderr, flush=True)
-        if self._audit_file:
-            try:
-                self._audit_file.write(line + "\n")
-                self._audit_file.flush()
-            except OSError:
-                pass
+        # Through the shared sink (stderr + audit.jsonl + ring), not a
+        # standalone write: an egress-bypass block is exactly the kind
+        # of event the traffic watcher exists to see, and _ring_ingest
+        # is the single funnel point every other producer already uses.
+        self._audit_write(entry)
 
     async def websocket_message(self, flow: http.HTTPFlow) -> None:
         """Inspect, inject, and redact WebSocket frame payloads."""

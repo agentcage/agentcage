@@ -169,6 +169,23 @@ class TestWatcherConfigParsing:
                     api_key: env:K
             """))
 
+    # Review fix (PR #340 follow-up): the block's own stated invariant
+    # ("booleans must be REAL booleans") was implemented for auto_revoke
+    # but not for enable itself — a quoted `enable: "false"` was truthy
+    # and would silently turn the watcher (and auto_revoke, defaulting
+    # true) ON against the operator's written intent.
+    def test_string_enable_rejected(self, tmp_path):
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match="watcher.enable must be a boolean"):
+            load_config(_cfg_with(tmp_path, """
+                watcher:
+                  enable: "false"
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
+            """))
+
     def test_key_is_stripped_from_the_cage_env(self, tmp_path):
         # The watcher key is an EGRESS-only credential. If the operator
         # also declared the same env var for the cage, parse-time
@@ -1095,6 +1112,108 @@ class TestCaptureTail:
         got, _ = self._commit(w, now)
         assert [s["host"] for s in got] == ["b.example"]
 
+    # Review fix (PR #340 follow-up): the window filter only applied to
+    # the chunk read at offset==0. A reset backlog bigger than
+    # _CAP_READ_CHUNK is read across several ticks, and every chunk
+    # after the first had offset != 0 — so stale entries beyond the
+    # first chunk bypassed the window filter entirely.
+    def test_window_filter_applies_across_multiple_reset_chunks(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wmod, "_CAP_READ_CHUNK", 300)
+        cap = tmp_path / "capture.jsonl"
+        old_lines = [json.dumps(self._cap(f"old{i}.example", 300))
+                    for i in range(20)]  # well outside the window
+        cap.write_text("\n".join(old_lines) +
+                       "\n" + json.dumps(self._cap("new.example", 1)) + "\n")
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._capture_path = str(cap)
+        w._window = 3600
+        now = datetime.now(timezone.utc)
+        all_hosts: list[str] = []
+        for _ in range(50):  # catch up across as many ticks as it takes
+            samples, off = self._commit(w, now)
+            all_hosts.extend(s["host"] for s in samples)
+            if off >= cap.stat().st_size:
+                break
+        # Every "old*" entry must be filtered out, in every chunk — not
+        # just the first one.
+        assert all_hosts == ["new.example"]
+
+    # Review fix (PR #340 follow-up): a line with no newline was always
+    # treated as an in-flight torn tail and left unconsumed forever —
+    # correct for a write in progress, but an infinite stall if the
+    # line is simply oversized (no terminator ever coming within a
+    # sane budget). Past _MAX_LINE_BYTES it is now dropped instead.
+    def test_oversized_line_advances_offset_instead_of_stalling(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wmod, "_MAX_LINE_BYTES", 500)
+        cap = tmp_path / "capture.jsonl"
+        huge = self._cap("huge.example", 0)
+        huge["inbound"]["request"]["body"] = "x" * 5000
+        cap.write_text(json.dumps(huge))  # no trailing newline anywhere
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._capture_path = str(cap)
+        w._window = 3600
+        now = datetime.now(timezone.utc)
+        samples, off = self._commit(w, now)
+        assert samples == []
+        assert off > 0  # pre-fix: off == 0 forever — a permanent stall
+
+        # Recovery: a complete entry appended after the garbage is read
+        # normally on the very next tick.
+        with open(cap, "a") as f:
+            f.write("\n" + json.dumps(self._cap("fresh.example", 0)) + "\n")
+        samples2, _ = self._commit(w, now)
+        assert [s["host"] for s in samples2] == ["fresh.example"]
+
+    # Review fix (PR #340 follow-up): the sample cap was a fixed
+    # _MAX_CAPTURE_SAMPLES=50 constant, making watcher.max_flows above
+    # 50 — including the validated/documented 10-2000 range — a silent
+    # no-op. The cap now follows the configured max_flows.
+    def test_capture_samples_capped_at_configured_max_flows(
+            self, tmp_path, monkeypatch):
+        cap_entries = [self._cap(f"h{i}.example", 1) for i in range(15)]
+        cap = tmp_path / "capture.jsonl"
+        cap.write_text("".join(json.dumps(e) + "\n" for e in cap_entries))
+        w, _ = _mk_watcher(tmp_path, monkeypatch, cfg={"max_flows": 12})
+        w._capture_path = str(cap)
+        w._window = 3600
+        now = datetime.now(timezone.utc)
+        samples, _ = self._commit(w, now)
+        assert len(samples) == 12
+        assert [s["host"] for s in samples] == \
+            [f"h{i}.example" for i in range(3, 15)]
+
+
+class TestPushBack:
+    """Review fix (PR #340 follow-up): ``extendleft(reversed(...))`` on
+    a bounded deque evicts from the OPPOSITE (right/newest) end when
+    full — the reverse of the documented intent. ``entries`` is the
+    OLDER, already-drained batch; anything still in the ring arrived
+    more recently and must not be displaced by it.
+    """
+
+    def test_keeps_newest_live_entries_over_the_stale_batch(
+            self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._ring = deque(maxlen=5)
+        w._ring.extend([{"n": "live-1"}, {"n": "live-2"}, {"n": "live-3"}])
+        failed_batch = [{"n": "old-1"}, {"n": "old-2"},
+                        {"n": "old-3"}, {"n": "old-4"}]
+        w._push_back(failed_batch)
+        names = [e["n"] for e in w._ring]
+        # Only 2 slots free (5 - 3 live): keep the batch's own most
+        # recent tail (old-3, old-4), never evict the live entries.
+        assert names == ["old-3", "old-4", "live-1", "live-2", "live-3"]
+
+    def test_noop_when_ring_already_full_of_live_entries(
+            self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._ring = deque(maxlen=3)
+        w._ring.extend([{"n": "live-1"}, {"n": "live-2"}, {"n": "live-3"}])
+        w._push_back([{"n": "old-1"}])
+        assert [e["n"] for e in w._ring] == ["live-1", "live-2", "live-3"]
+
 
 class TestWatcherPrompt:
     def test_untrusted_data_framing(self):
@@ -1234,6 +1353,31 @@ class TestWatcherHotReload:
         a._init_watcher()
         assert a.traffic_watcher is first
         assert a.traffic_watcher._scans == 7
+
+    # Review fix (PR #340 follow-up): the unchanged-block path kept the
+    # live watcher WITHOUT re-pointing its refs. ``domains.auto`` gets a
+    # brand new ``PolicyApi`` on every reload (_init_domain_requests
+    # runs unconditionally above _init_watcher), so an unrefreshed
+    # ``_pa`` would keep revoking through a discarded, sweeper-cancelled
+    # instance; and ``secret set`` re-stages the key file without
+    # changing the config value that names it, so the key must be
+    # re-read too.
+    def test_unchanged_block_still_refreshes_pa_and_key(
+            self, tmp_path, monkeypatch):
+        a = self._bare_addon(monkeypatch, tmp_path,
+                             {"watcher": dict(self.W_CFG)})
+        a._init_watcher()
+        watcher = a.traffic_watcher
+        assert watcher is not None
+
+        new_pa = object()
+        a.domain_requests = new_pa
+        monkeypatch.setenv("TESTKEY", "sk-rotated")
+        a._init_watcher()  # watcher block unchanged → same instance kept
+
+        assert a.traffic_watcher is watcher
+        assert a.traffic_watcher._pa is new_pa
+        assert a.traffic_watcher._secret == "sk-rotated"
 
     def test_changed_block_rebuilds(self, tmp_path, monkeypatch):
         a = self._bare_addon(monkeypatch, tmp_path,

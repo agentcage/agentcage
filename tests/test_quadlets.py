@@ -403,6 +403,29 @@ class TestEgressQuadlet:
         assert 'Environment="AGENTCAGE_GRANTS_DIR=/var/lib/agentcage"' in content
         assert ":/var/lib/agentcage:Z" in content
 
+    # PR #340 review fix (BLOCKING): the grants overlay volume + env were
+    # gated on domains.auto.enable / an expiring domain only. A
+    # watcher-only cage (domains.auto disabled) got neither: the watcher
+    # falls back to a path Containerfile.egress never creates, and every
+    # finding/state write hits a swallowed OSError — a silent all-clear.
+    def test_egress_grants_dir_mounted_for_watcher_only_cage(self):
+        from agentcage.config import Config, WatcherConfig, AgentDeciderConfig
+        cfg = Config(name="test")
+        cfg.container.image = "test:latest"
+        cfg.domains.mode = "allowlist"
+        cfg.domains.allow = ["anthropic.com"]
+        assert not cfg.domains.auto.enable  # domains.auto stays OFF
+        cfg.watcher = WatcherConfig(
+            enable=True,
+            agent=AgentDeciderConfig(
+                provider="openrouter", model="m", api_key="env:K",
+            ),
+        )
+        files = generate_quadlets(cfg, "/c.yaml", "/patches")
+        content = files["test-egress.container"]
+        assert 'Environment="AGENTCAGE_GRANTS_DIR=/var/lib/agentcage"' in content
+        assert ":/var/lib/agentcage:Z" in content
+
     def test_egress_secrets_unprefixed(self, tmp_path):
         """secret_injection entries without a deploy_name land on the
         egress container's Secret= directives so the proxy can resolve
@@ -1505,6 +1528,27 @@ class TestEffectiveDnsAllowlist:
         cfg = load_config(str(p))
         merged = _effective_dns_allowlist(cfg)
         assert merged.count("whatsapp.com") == 1
+
+    def test_includes_watcher_provider_host_even_without_domains_auto(
+            self, tmp_path):
+        p = tmp_path / "config.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: test
+            container:
+              image: test:latest
+            domains:
+              allow:
+                - anthropic.com
+            watcher:
+              enable: true
+              agent:
+                provider: openai
+                model: m
+                api_key: env:K
+        """))
+        cfg = load_config(str(p))
+        merged = _effective_dns_allowlist(cfg)
+        assert "api.openai.com" in merged
 
     def test_empty_for_non_allowlist(self, tmp_path):
         p = tmp_path / "config.yaml"

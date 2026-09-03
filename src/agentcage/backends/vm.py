@@ -987,6 +987,12 @@ class VmBackend:
             scheme, _, var = src.partition(":")
             if scheme and var:
                 sources.append((var, src))
+        watcher = getattr(config, "watcher", None)
+        if watcher is not None and getattr(watcher, "enable", False):
+            src = watcher.agent.api_key or ""
+            scheme, _, var = src.partition(":")
+            if scheme and var:
+                sources.append((var, src))
 
         seen: set[str] = set()
         state_dir = _state.deployment_dir(name)
@@ -1031,6 +1037,10 @@ class VmBackend:
         wanted = list(expected_secrets(config))
         if auto is not None and getattr(auto, "enable", False):
             _, _, var = (auto.decider.agent.api_key or "").partition(":")
+            if var and var not in wanted:
+                wanted.append(var)
+        if watcher is not None and getattr(watcher, "enable", False):
+            _, _, var = (watcher.agent.api_key or "").partition(":")
             if var and var not in wanted:
                 wanted.append(var)
         for env_name in wanted:

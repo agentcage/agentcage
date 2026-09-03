@@ -1221,6 +1221,16 @@ def load_config(path: str) -> Config:
         raise ValueError(
             f"watcher must be a mapping (got {type(w_raw).__name__})"
         )
+    if isinstance(w_raw, dict) and "enable" in w_raw \
+            and not isinstance(w_raw["enable"], bool):
+        # Same trap the block above calls out: bool("false") is True, so
+        # a hand-edited ``enable: "false"`` would silently turn the
+        # watcher (and its autonomous revocation) ON against the
+        # operator's written intent.
+        raise ValueError(
+            "watcher.enable must be a boolean (true/false) — got "
+            f"{type(w_raw['enable']).__name__}"
+        )
     if isinstance(w_raw, dict) and w_raw.get("enable"):
         _w_agent_raw = w_raw.get("agent")
         if _w_agent_raw is not None and not isinstance(_w_agent_raw, dict):
