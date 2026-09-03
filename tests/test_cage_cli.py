@@ -1066,12 +1066,14 @@ class TestCageEdit:
     # failed on DNS resolution for the LLM provider host until the
     # operator followed the (wrongly given) restart hint. `watcher`
     # must live-apply through the same DNS path `domains` does.
+    @patch("agentcage.cli._refresh_units")
     @patch("agentcage.cli._update_dns_quadlet")
     @patch("click.edit")
     @patch("agentcage.cli.state")
     def test_edit_watcher_change_live_reloads_dnsmasq(self, mock_state,
                                                       mock_click_edit,
-                                                      mock_update_dns, tmp_path):
+                                                      mock_update_dns,
+                                                      mock_refresh, tmp_path):
         cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
         mock_state.deployment_exists.return_value = True
         mock_state.deployment_dir.return_value = cage_dir
@@ -1092,8 +1094,16 @@ class TestCageEdit:
         assert result.exit_code == 0, result.output
         assert "Live-applied" in result.output
         assert "watcher" in result.output
-        assert "cage restart" not in result.output
+        # The watcher is NOT in the needs-restart bucket (it hot-starts
+        # off the proxy-config mtime poll)...
+        assert "Needs restart" not in result.output
         mock_update_dns.assert_called_once()
+        # ...but the grants volume its findings land on and the api_key
+        # Secret= directive are decided at unit-generation time, so the
+        # units must be refreshed too. Without this a watcher-only cage
+        # writes findings into the container's ephemeral layer and
+        # `watcher findings` reports a silent all-clear.
+        mock_refresh.assert_called_once()
         mock_state.save_proxy_config.assert_called_once_with("test")
 
     @patch("agentcage.cli._update_dns_quadlet")

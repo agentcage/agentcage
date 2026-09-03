@@ -261,13 +261,41 @@ def _excerpt_body(body, encoding) -> str:
     return text
 
 
+def _safe_path(entry: dict, in_req: dict) -> str:
+    """The request path+query as the CAGE wrote it (placeholders intact).
+
+    The capture entry's TOP-LEVEL ``path`` is snapshotted in
+    ``addon.request()`` AFTER ``injector.inject_request`` has run, and an
+    ``inject_body: true`` rule rewrites the placeholder inside
+    ``flow.request.url`` — the documented ``?key=`` query-string case. So
+    that field can hold a REAL secret and must never reach the model
+    (invariant: secret NAMES may appear, values never). The INBOUND
+    snapshot is taken before injection, so its ``url`` is
+    placeholder-safe, and it is the source used here.
+
+    Fallback when no inbound url was recorded: the top-level path with the
+    query STRIPPED, since the query is where an injected secret rides.
+    """
+    url = str(in_req.get("url") or "")
+    if url:
+        try:
+            from urllib.parse import urlsplit
+            parts = urlsplit(url)
+            q = f"?{parts.query}" if parts.query else ""
+            return f"{parts.path}{q}"[:256]
+        except (ValueError, TypeError):  # pragma: no cover — defensive
+            pass
+    return str(entry.get("path") or "").split("?", 1)[0][:256]
+
+
 def _sample_capture(entry: dict, host_hint: str = "") -> dict:
     """Reduce one capture.jsonl entry to a digest-safe sample.
 
-    INBOUND view only for bodies (placeholders — safe to show); the
-    OUTBOUND view contributes status/size metadata alone (it holds the
-    REAL secrets secret-injection put on the wire, and those must never
-    ride to a third-party model). Sensitive header values are redacted.
+    INBOUND view only for bodies AND for the path (placeholders — safe to
+    show); the OUTBOUND view contributes status/size metadata alone (it
+    holds the REAL secrets secret-injection put on the wire, and those
+    must never ride to a third-party model). Sensitive header values are
+    redacted. ``_safe_path`` explains why the top-level ``path`` is unsafe.
     """
     inbound = entry.get("inbound") or {}
     in_req = inbound.get("request") or {}
@@ -280,7 +308,7 @@ def _sample_capture(entry: dict, host_hint: str = "") -> dict:
         "direction": entry.get("direction", ""),
         "method": method,
         "host": host,
-        "path": str(entry.get("path") or "")[:256],
+        "path": _safe_path(entry, in_req),
         "decision": entry.get("decision", ""),
         "inspectors": [
             {"name": i.get("name", ""), "severity": i.get("severity", ""),
@@ -583,9 +611,17 @@ class Watcher:
             pass
 
     def _commit_capture(self, batch: dict) -> None:
-        """Advance the capture cursor to the staged end-of-scan position."""
+        """Advance the capture cursor to the staged end-of-scan position.
+
+        Also retires the reset target once the committed offset has caught
+        up to it — the window filter must stay armed for every tick whose
+        bytes have not yet been successfully analyzed, not merely read.
+        """
         self._cap_offset = batch["cap_offset"]
         self._cap_file_id = batch["cap_file_id"]
+        if self._cap_reset_target is not None \
+                and (self._cap_offset or 0) >= self._cap_reset_target:
+            self._cap_reset_target = None
 
     async def _tick(self) -> None:
         """One scan: collect → digest → (threaded) LLM review → apply.
@@ -933,7 +969,46 @@ class Watcher:
         structurally unreachable — the egress can only revoke what the
         egress granted) → dom.revoke + overlay persist + DNS republish.
         """
-        if not removals or not self._auto_revoke:
+        if not removals:
+            return []
+        if not self._auto_revoke:
+            # auto_revoke off is a "report, don't act" posture, NOT a
+            # "discard the analysis" one — config.py's own field comment
+            # says revocations "degrade to findings the operator applies".
+            # Dropping them silently threw away the most actionable output
+            # of every scan in exactly the posture operators are told to
+            # start with.
+            for r in removals:
+                if isinstance(r, dict) and r.get("domain"):
+                    self._record_finding({
+                        "severity": "medium",
+                        "title": f"revocation recommended for "
+                                 f"{r.get('domain')} (auto_revoke is off)",
+                        "detail": str(r.get("reason", ""))[:1000],
+                        "recommendation": "revoke the runtime grant with "
+                                          "`agentcage cage grants revoke`, "
+                                          "or set watcher.auto_revoke: true "
+                                          "to have the watcher apply this "
+                                          "itself",
+                        "domain": str(r.get("domain")),
+                    })
+            return []
+        if self.dom is not None and getattr(self.dom, "mode", "") == "blocklist":
+            # Blocklist mode is rejected at config time, but a hot-reload
+            # could have flipped it — re-check, mirroring the removal
+            # endpoint's own guard. There the baseline is the BLOCK list,
+            # so every narrowing judgement inverts; refuse to act and say
+            # so rather than revoke against inverted evidence.
+            self._record_finding({
+                "severity": "medium",
+                "title": "watcher revocations skipped: cage is not in "
+                         "allowlist mode",
+                "detail": "the domain policy is in blocklist mode, where "
+                          "the static baseline is the block list, so the "
+                          "analysis's narrowing judgements do not apply",
+                "recommendation": "run the cage in allowlist mode to use "
+                                  "the watcher, or disable watcher.enable",
+            })
             return []
         if self._pa is None or self.dom is None:
             # No domains.auto ⇒ no runtime grants exist to revoke;
@@ -1114,7 +1189,13 @@ class Watcher:
                 # chase a single line that hasn't hit a newline yet —
                 # bounded by _MAX_LINE_BYTES so a truly oversized line
                 # doesn't turn this into an unbounded read.
-                while data and not data.endswith(b"\n") \
+                # Chase further reads ONLY when this read produced no
+                # complete line at all — a single line longer than the
+                # chunk. When the chunk already contains a newline there
+                # IS a complete line to consume and the offset advances,
+                # so chasing "until data ends on a newline" would just
+                # slurp the whole file and defeat the chunk bound.
+                while data and b"\n" not in data \
                         and offset + len(data) < size \
                         and len(data) < _MAX_LINE_BYTES:
                     more = f.read(min(_CAP_READ_CHUNK,
@@ -1132,10 +1213,18 @@ class Watcher:
                 # either way, the last split segment is the incomplete
                 # part.
                 partial = lines.pop()
-                if len(data) >= _MAX_LINE_BYTES:
+                if len(partial) >= _MAX_LINE_BYTES:
                     # Oversized, not in-flight: retrying this forever
                     # would stall the tail on one bad entry. Drop it —
                     # one lost sample — and advance past it.
+                    #
+                    # Measured on the LINE (``partial``), never on the
+                    # whole accumulated read: any backlog larger than the
+                    # cap ends its read mid-line, so testing ``data``
+                    # declared every chunk boundary "oversized" and
+                    # silently dropped one COMPLETE entry per tick (25% of
+                    # a 60-entry file in the regression test) while
+                    # logging a false warning each time.
                     self._log.warn(
                         "agentcage: watcher dropping oversized capture "
                         f"line (>{_MAX_LINE_BYTES} bytes, no newline "
@@ -1162,9 +1251,13 @@ class Watcher:
                     if dt is None or dt < cutoff:
                         continue
                 samples.append(_sample_capture(entry))
-            if self._cap_reset_target is not None \
-                    and new_offset >= self._cap_reset_target:
-                self._cap_reset_target = None
+            # The reset target is NOT cleared here: this method only
+            # STAGES an offset, and _tick deliberately leaves the offset
+            # uncommitted when the scan fails. Clearing on read meant the
+            # last catch-up tick of a multi-tick reset dropped the filter
+            # even if its scan then failed, so the retry re-read the same
+            # bytes with no window filter and fed out-of-window traffic to
+            # the model. _commit_capture clears it alongside the offset.
             # Newest-last → keep the most recent configured max samples.
             if len(samples) > self._max_flows:
                 samples = samples[-self._max_flows:]

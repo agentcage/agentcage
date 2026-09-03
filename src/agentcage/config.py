@@ -2213,6 +2213,25 @@ def validate_config(config: Config) -> list[str]:
     # enabled — the absent block is zero surface by construction.
     w = getattr(config, "watcher", None)
     if w is not None and w.enable:
+        # Allowlist mode, for the reason domains.auto requires it and one
+        # more. ``DomainInspector._baseline`` IS the BLOCK list in
+        # blocklist mode, so the digest would hand the model a set of
+        # BLOCKED domains under the key ``current_baseline`` while the
+        # system prompt describes a default-deny allowlist — and a
+        # resulting baseline recommendation would tell the operator to run
+        # `agentcage domain rm <domain>`, removing a BLOCK and WIDENING
+        # egress. A narrowing-only auditor must never be able to produce a
+        # widening recommendation.
+        # Refuse BLOCKLIST mode specifically, not "anything that isn't
+        # allowlist": a cage with no domains section has mode "" and an
+        # EMPTY baseline, so nothing inverts and nothing is recommended.
+        if config.domains.mode == "blocklist":
+            raise ValueError(
+                "watcher does not support domains blocklist mode (there the "
+                "static baseline IS the block list, so the watcher's digest "
+                "and its baseline recommendations invert — a recommended "
+                "removal would widen egress, not narrow it)."
+            )
         wag = w.agent
         if wag.provider not in ("anthropic", "openai", "openrouter"):
             raise ValueError(
