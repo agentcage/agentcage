@@ -53,10 +53,10 @@ Approve the device from the command line:
 
 ```bash
 # List pending device pairing requests
-agentcage cage exec myapp -- openclaw devices list
+agentcage cage exec --as-root myapp -- openclaw devices list
 
 # Approve a device
-agentcage cage exec myapp -- openclaw devices approve <request-id>
+agentcage cage exec --as-root myapp -- openclaw devices approve <request-id>
 ```
 
 After approval, click **Connect** again in the browser. The dashboard should show **Health: OK** and **STATUS: Connected**.
@@ -70,7 +70,7 @@ Subsequent connections from the same browser are automatic.
 agentcage cage list
 
 # Check health from inside the cage
-agentcage cage exec myapp -- openclaw health
+agentcage cage exec --as-root myapp -- openclaw health
 
 # View logs
 agentcage cage logs myapp           # cage container
@@ -91,8 +91,8 @@ agentcage runs a reverse proxy (mitmproxy) in front of the cage container. When 
 **Device pairing** — The first browser connection from a new device triggers a one-time pairing approval. Use `cage exec` to list pending requests and approve them:
 
 ```bash
-agentcage cage exec myapp -- openclaw devices list
-agentcage cage exec myapp -- openclaw devices approve <request-id>
+agentcage cage exec --as-root myapp -- openclaw devices list
+agentcage cage exec --as-root myapp -- openclaw devices approve <request-id>
 ```
 
 The `openclaw` alias is expanded to `node openclaw.mjs` automatically via `exec_aliases` in the scaffold config.

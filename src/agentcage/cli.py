@@ -2527,7 +2527,7 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
 
     \b
     Example:
-      agentcage cage exec myapp -- openclaw devices list
+      agentcage cage exec --as-root myapp -- openclaw devices list
     """
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
