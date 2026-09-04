@@ -93,14 +93,19 @@ insert_at = m.end()
 extra = "    - httpbin.org\n    - postman-echo.com\n"
 text = text[:insert_at] + extra + text[insert_at:]
 
-# CI has no usable systemd-creds → opt secrets into the plaintext store so
-# `cage create -s` doesn't fail-closed in the sandbox. On a real host with
-# systemd-creds this is unnecessary and secrets are encrypted at rest.
+# Force the plaintext podman secret store. CI has no usable systemd-creds,
+# and on a dev host WHERE systemd-creds IS available `auto` would pick it —
+# but only secret_injection entries get a decrypt ExecStartPre (on the
+# egress unit); the cage's podman_secrets (OPENCLAW_GATEWAY_PASSWORD) have
+# no materialization step, so the cage unit's Secret= reference fails with
+# "no such secret" and create aborts. Explicit `backend: plaintext` makes
+# `-s` writes land directly in the podman store on both host classes;
+# either way this is test-only plumbing, not the encryption-at-rest path.
 sm = re.search(r"^secrets:[ \t]*\n", text, re.M)
 if sm:
-    text = text[:sm.end()] + "  allow_plaintext: true\n" + text[sm.end():]
+    text = text[:sm.end()] + "  backend: plaintext\n  allow_plaintext: true\n" + text[sm.end():]
 else:
-    text += "\nsecrets:\n  allow_plaintext: true\n"
+    text += "\nsecrets:\n  backend: plaintext\n  allow_plaintext: true\n"
 path.write_text(text)
 PYEOF
 
@@ -164,8 +169,12 @@ fi
 # is a soft witness for tini working.
 # openclaw health's output is "Agents: main (default)\nHeartbeat..."
 # rather than "ok"; grep for "Agents:" as the reliable indicator.
+# --as-root: since openclaw 2.0 (v2026.8+) the CLI reads openclaw.json
+# and the SQLite session store directly instead of asking the gateway
+# over the socket; those files are owned by the gateway's user (root in
+# this cage), so the default uid-1000 exec session gets EACCES.
 assert_output_contains "8.2" "openclaw health via exec alias" "Agents:" \
-  agentcage cage exec "$CAGE" -- openclaw health
+  agentcage cage exec --as-root "$CAGE" -- openclaw health
 
 # 8.3: tini is PID 1
 e2e_timer_start
@@ -238,6 +247,22 @@ if echo "$allowed" | grep -q "http://127.0.0.1:$PORT" \
 else
   e2e_fail "8.6" "controlUi.allowedOrigins includes gateway URL" \
     "missing one of http://127.0.0.1:$PORT or http://localhost:$PORT (got: $allowed)"
+fi
+
+# 8.6b: gateway.trustedProxies is ABSENT. openclaw 2.0 (v2026.8+) rejects
+# inbound flows from a declared trusted proxy unless the forwarded chain
+# resolves to a real non-loopback client — which the egress reverse relay
+# can never produce (pasta rewrites the source). If someone reintroduces
+# trustedProxies in the entrypoint, every host->UI request 403s with
+# proxy_attribution_required; 8.1 would catch the symptom, this catches
+# the cause.
+e2e_timer_start
+if podman exec "${CAGE}-cage" cat /home/node/.openclaw/openclaw.json 2>/dev/null \
+   | jq -e '.gateway | has("trustedProxies") | not' >/dev/null 2>&1; then
+  e2e_pass "8.6b" "gateway.trustedProxies absent (2.0 proxy attribution)"
+else
+  e2e_fail "8.6b" "gateway.trustedProxies absent (2.0 proxy attribution)" \
+    "openclaw.json declares gateway.trustedProxies; inbound UI traffic will fail proxy_attribution_required on openclaw >= 2026.8"
 fi
 
 # 8.7: matrix extension workspace workaround present (guards fda1ca6)

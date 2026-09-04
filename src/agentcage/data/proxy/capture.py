@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
@@ -31,8 +32,49 @@ class CaptureWriter:
         self._exclude_domains: list[str] = cfg.get("exclude_domains") or []
         self._ws_buffers: dict[str, list[dict]] = {}
 
+        # Size cap + single-generation rotation. Without this the capture
+        # file grows without bound: a body-heavy cage writes far faster
+        # than anything downstream reads (a measured 222 MB in 20 minutes
+        # of apt traffic), filling the volume and leaving the watcher's
+        # tail permanently behind. ``audit.jsonl`` has had a cap since its
+        # own disk-fill review; this is the same posture for the much
+        # larger stream. 0 disables the cap.
+        self._max_file = max(0, int(cfg.get("max_file_size", 134217728)))
+        self._path = path
+        self._rotated = f"{path}.1"
+
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self._file = open(path, "a")
+        try:
+            self._size = self._file.tell()
+        except OSError:  # pragma: no cover — defensive
+            self._size = 0
+
+    def _maybe_rotate(self) -> None:
+        """Roll the capture file over once it passes ``max_file_size``.
+
+        One generation is kept (``capture.jsonl.1``), so the on-disk
+        ceiling is twice the cap. Rotation is rename + reopen: the
+        watcher's tail tracks ``(st_dev, st_ino)`` and treats the new
+        inode as a reset, and ``cage har`` reads the rotated generation
+        before the live one — so neither silently loses the older half.
+        """
+        if not self._max_file or self._size < self._max_file:
+            return
+        try:
+            self._file.flush()
+            self._file.close()
+        except OSError:  # pragma: no cover — defensive
+            pass
+        try:
+            os.replace(self._path, self._rotated)
+        except OSError as e:  # pragma: no cover — defensive
+            # Rotation failed; reopen and keep appending rather than
+            # dropping capture entirely.
+            print(f"agentcage: capture rotation failed: {e}",
+                  file=sys.stderr, flush=True)
+        self._file = open(self._path, "a")
+        self._size = 0
 
     # ── Snapshot helpers ─────────────────────────────────
 
@@ -173,6 +215,10 @@ class CaptureWriter:
         line = json.dumps(entry, separators=(",", ":"))
         self._file.write(line + "\n")
         self._file.flush()
+        # Track the size we wrote rather than stat()ing per entry, then
+        # roll over past the cap.
+        self._size += len(line.encode("utf-8", "replace")) + 1
+        self._maybe_rotate()
 
     # ── WebSocket buffering ──────────────────────────────
 

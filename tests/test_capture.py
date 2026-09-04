@@ -177,6 +177,90 @@ class TestCaptureWriterEntry:
         assert entry["ws_messages"][0]["data"] == "hello"
 
 
+class TestCaptureWriterRotation:
+    """The capture file used to grow without bound.
+
+    A body-heavy cage writes far faster than anything downstream reads it
+    (measured: 222 MB in 20 minutes of apt traffic), which fills the
+    volume and leaves the watcher's byte-offset tail permanently behind.
+    ``max_file_size`` rolls the file over, keeping one generation.
+    """
+
+    def _write(self, w, host="api.example.com", body="x" * 2048):
+        w.write_entry(
+            flow_id="f", direction="outbound", decision="allowed",
+            host=host, method="POST", path="/p", inspectors=[],
+            inbound_req={"method": "POST", "url": f"https://{host}/p",
+                         "headers": [], "body": body, "bodyEncoding": None,
+                         "bodySize": len(body)},
+            inbound_resp={"status": 200, "headers": [], "body": "",
+                          "bodyEncoding": None, "bodySize": 0},
+            outbound_req={"method": "POST", "url": f"https://{host}/p",
+                          "headers": [], "body": body, "bodyEncoding": None,
+                          "bodySize": len(body)},
+            outbound_resp={"status": 200, "headers": [], "body": "",
+                           "bodyEncoding": None, "bodySize": 0},
+        )
+
+    def _cfg(self, **over):
+        cfg = {"enable_har": True, "max_body_size": 10485760,
+               "min_action": "all", "domains": [], "exclude_domains": []}
+        cfg.update(over)
+        return cfg
+
+    def test_first_rollover_loses_nothing(self, tmp_path):
+        # Across a single rollover the two generations together still hold
+        # every entry — the rotation itself does not drop data.
+        path = tmp_path / "capture.jsonl"
+        w = CaptureWriter(self._cfg(max_file_size=20000), str(path))
+        n = 8
+        for _ in range(n):
+            self._write(w)
+        rotated = tmp_path / "capture.jsonl.1"
+        assert rotated.is_file(), "expected a rotated generation"
+        assert path.stat().st_size < 20000
+        total = sum(1 for f in (rotated, path)
+                    for line in f.read_text().splitlines() if line.strip())
+        assert total == n
+
+    def test_retention_is_bounded_to_two_generations(self, tmp_path):
+        # Deliberate: past the second rollover the oldest generation is
+        # discarded. That is the trade — bounded disk, bounded history.
+        path = tmp_path / "capture.jsonl"
+        w = CaptureWriter(self._cfg(max_file_size=20000), str(path))
+        for i in range(40):
+            self._write(w, host=f"h{i:03d}.example")
+        kept = [json.loads(line)["host"]
+                for f in (tmp_path / "capture.jsonl.1", path)
+                for line in f.read_text().splitlines() if line.strip()]
+        assert kept, "expected retained entries"
+        # What survives is the RECENT tail, not the beginning.
+        assert kept[-1] == "h039.example"
+        assert "h000.example" not in kept
+
+    def test_ceiling_is_two_generations(self, tmp_path):
+        path = tmp_path / "capture.jsonl"
+        w = CaptureWriter(self._cfg(max_file_size=20000), str(path))
+        for _ in range(200):
+            self._write(w)
+        on_disk = sum(p.stat().st_size for p in tmp_path.iterdir())
+        assert on_disk < 3 * 20000, f"unbounded growth: {on_disk} bytes"
+
+    def test_zero_disables_rotation(self, tmp_path):
+        path = tmp_path / "capture.jsonl"
+        w = CaptureWriter(self._cfg(max_file_size=0), str(path))
+        for _ in range(20):
+            self._write(w)
+        assert not (tmp_path / "capture.jsonl.1").exists()
+        assert path.stat().st_size > 20000
+
+    def test_default_cap_is_applied(self, tmp_path):
+        # An operator who never sets max_file_size still gets a bound.
+        from agentcage.config import MAX_CAPTURE_FILE_BYTES
+        w = CaptureWriter(self._cfg(), str(tmp_path / "capture.jsonl"))
+        assert w._max_file == MAX_CAPTURE_FILE_BYTES
+
+
 class TestCaptureWriterWsBuffer:
     def test_buffer_and_pop(self, tmp_path):
         cfg = {"enabled": True, "max_body_size": 10485760,
@@ -417,3 +501,51 @@ class TestParseSince:
     def test_invalid(self):
         dt = parse_since("not-a-date")
         assert dt is None
+
+
+class TestHarExportReadsRotatedGeneration:
+    """`cage har` must read `capture.jsonl.1` too.
+
+    The writer rotates at `capture.max_file_size`, keeping one previous
+    generation. An exporter that only opened the live file would silently
+    shorten every export taken after a rollover — the older half would
+    vanish with no error, which is the worst failure mode for a forensic
+    tool.
+    """
+
+    def _entry(self, host, ts="2026-01-01T00:00:00+00:00"):
+        return json.dumps({
+            "ts": ts, "flow_id": host, "direction": "outbound",
+            "decision": "allowed", "host": host, "method": "GET",
+            "path": "/", "inspectors": [],
+            "inbound": {"request": {"method": "GET", "url": f"https://{host}/",
+                                    "headers": [], "body": "",
+                                    "bodyEncoding": None, "bodySize": 0},
+                        "response": {"status": 200, "headers": [], "body": "",
+                                     "bodyEncoding": None, "bodySize": 0,
+                                     "mimeType": "application/json"}},
+            "outbound": {"request": {}, "response": {}},
+        })
+
+    def test_rotated_entries_are_exported(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+        from agentcage.cli import main
+        from unittest.mock import patch
+
+        cap = tmp_path / "capture.jsonl"
+        (tmp_path / "capture.jsonl.1").write_text(
+            self._entry("old.example") + "\n")
+        cap.write_text(self._entry("new.example") + "\n")
+
+        with patch("agentcage.cli.state") as st, \
+                patch("agentcage.cli._is_apple_container", return_value=False):
+            st.deployment_exists.return_value = True
+            st.load_deployment_config.return_value = MagicMock()
+            st.capture_file.return_value = cap
+            res = CliRunner().invoke(main, ["cage", "har", "test"])
+
+        assert res.exit_code == 0, res.output
+        # Both generations present, oldest first.
+        assert "old.example" in res.output, "rotated generation was dropped"
+        assert "new.example" in res.output
+        assert res.output.index("old.example") < res.output.index("new.example")

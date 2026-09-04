@@ -100,10 +100,21 @@ _MAX_DRAIN = 2000
 # only advances past COMPLETE lines, so chunk boundaries never lose data.
 _CAP_READ_CHUNK = 8 * 1024 * 1024
 
-# Hard cap on a single capture.jsonl line. A line found with no newline
-# even after reading this much is treated as oversized (not a torn
-# in-flight write) and dropped, rather than retried forever every tick.
-_MAX_LINE_BYTES = 4 * _CAP_READ_CHUNK
+# Floor for the single-line cap. The EFFECTIVE cap is derived per cage
+# from ``capture.max_body_size`` (see Watcher._line_cap): an entry holds
+# four body slots and base64 inflates binary by ~4/3, so a hard-coded
+# 32 MiB sat BELOW the worst case the default 10 MiB body cap permits —
+# a large transfer's entry was legitimately oversized and dropped.
+_MIN_LINE_CAP = 4 * _CAP_READ_CHUNK
+
+# How far the tail may fall behind before it gives up on catching up and
+# skips to the live end. A body-heavy cage writes faster than the
+# per-tick chunk can be read (measured: ~11 MiB/min written vs 1.6
+# MiB/min read at the default 300s interval), so without this the cursor
+# falls permanently behind and the watcher analyses ever-staler traffic
+# while reporting nothing unusual. Skipping is recorded as a finding —
+# never silent.
+_MAX_CATCHUP_BYTES = 16 * _CAP_READ_CHUNK
 
 # Hard caps on what one digest may carry to the model. Bodies are
 # excerpted (never sent whole) and headers are filtered by name. The
@@ -812,6 +823,22 @@ class Watcher:
         # fresh incremental read. None when no reset is in flight.
         self._cap_reset_target: Optional[int] = None
         self._consec_failures = 0
+        # Bytes skipped by the most recent catch-up jump, staged like the
+        # offset so a failed scan does not report a skip it never made.
+        self._cap_skipped = 0
+
+        # Single-line cap, derived from what the CAPTURE writer may
+        # actually emit rather than hard-coded: four body slots, each
+        # bounded by capture.max_body_size, and base64 inflates binary by
+        # 4/3. A fixed 32 MiB sat below the worst case the default 10 MiB
+        # body cap allows, so a big transfer's entry was declared
+        # oversized and dropped even though capture wrote it legitimately.
+        cap_cfg = (proxy_cfg or {}).get("capture") or {}
+        try:
+            _body = int(cap_cfg.get("max_body_size", 10485760))
+        except (TypeError, ValueError):
+            _body = 10485760
+        self._line_cap = max(_MIN_LINE_CAP, int(_body * 4 * 4 / 3) + (1 << 20))
 
         # Findings + scan state live on the grants volume — the one
         # host-visible writable volume the egress already owns (the same
@@ -923,6 +950,7 @@ class Watcher:
             "capture_samples": samples,
             "cap_offset": new_offset,
             "cap_file_id": file_id,
+            "cap_skipped": self._cap_skipped,
         }
 
     def _push_back(self, entries: list[dict]) -> None:
@@ -1082,7 +1110,25 @@ class Watcher:
             return
 
         self._consec_failures = 0
+        skipped = int(batch.get("cap_skipped") or 0)
         self._commit_capture(batch)
+        if skipped > 0:
+            # Evidence the watcher chose not to read. Recorded, never
+            # silent — the whole point of the feature is that gaps are
+            # visible.
+            self._record_finding({
+                "severity": "medium",
+                "title": f"capture backlog too large: skipped "
+                         f"{skipped} bytes of traffic",
+                "detail": "the capture file was growing faster than the "
+                          "watcher could read it, so the tail jumped to "
+                          "the live end; the skipped span was NOT "
+                          "analysed",
+                "recommendation": "reduce capture volume "
+                                  "(capture.min_action, capture.domains, "
+                                  "a smaller capture.max_body_size) or "
+                                  "shorten watcher.interval_seconds",
+            })
 
         findings = verdict.get("findings") or []
         removals = verdict.get("allowlist_removals") or []
@@ -1568,7 +1614,7 @@ class Watcher:
           unconsumed and is re-read WHOLE next tick (with the text-mode
           readline the offset used to jump past the torn line, so a
           completed write could never be parsed again). A line that
-          still has no newline after growing past ``_MAX_LINE_BYTES``
+          still has no newline after growing past the derived line cap
           is instead treated as oversized (not in-flight) and dropped,
           so a single huge entry cannot stall the tail forever;
         * tracks ``(st_dev, st_ino)`` alongside size: rotation to a
@@ -1582,7 +1628,7 @@ class Watcher:
           several ticks, and each of those is still "the reset scan";
         * reads at most ``_CAP_READ_CHUNK`` bytes per tick (more only to
           chase a single line past that boundary, capped at
-          ``_MAX_LINE_BYTES``), so a huge capture file is chunked rather
+          the derived line cap), so a huge capture file is chunked rather
           than slurped.
 
         The staged offset is COMMITTED by the caller only after the scan
@@ -1602,6 +1648,22 @@ class Watcher:
                     or offset > size:
                 offset = 0
                 self._cap_reset_target = size
+            # Bounded catch-up. The writer can outpace the reader (one
+            # chunk per interval), and a byte offset that never catches up
+            # means the watcher keeps analysing older and older traffic
+            # while its status looks healthy. Past _MAX_CATCHUP_BYTES,
+            # jump to within one chunk of the live end and RECORD how much
+            # was skipped — analysing recent traffic late is worse than
+            # skipping a gap and saying so.
+            self._cap_skipped = 0
+            lag = size - offset
+            if lag > _MAX_CATCHUP_BYTES:
+                target = max(0, size - _CAP_READ_CHUNK)
+                self._cap_skipped = target - offset
+                offset = target
+                # The skipped span is unanalysed, so the window filter no
+                # longer means anything for it; land in incremental mode.
+                self._cap_reset_target = None
             apply_filter = self._cap_reset_target is not None \
                 and offset < self._cap_reset_target
             chunk = max(0, min(size - offset, _CAP_READ_CHUNK))
@@ -1612,7 +1674,7 @@ class Watcher:
                 data = f.read(chunk)
                 # Keep reading past the normal chunk bound, but only to
                 # chase a single line that hasn't hit a newline yet —
-                # bounded by _MAX_LINE_BYTES so a truly oversized line
+                # bounded by the derived line cap so a truly oversized line
                 # doesn't turn this into an unbounded read.
                 # Chase further reads ONLY when this read produced no
                 # complete line at all — a single line longer than the
@@ -1622,7 +1684,7 @@ class Watcher:
                 # slurp the whole file and defeat the chunk bound.
                 while data and b"\n" not in data \
                         and offset + len(data) < size \
-                        and len(data) < _MAX_LINE_BYTES:
+                        and len(data) < self._line_cap:
                     more = f.read(min(_CAP_READ_CHUNK,
                                       size - offset - len(data)))
                     if not more:
@@ -1634,11 +1696,11 @@ class Watcher:
             partial = b""
             if not data.endswith(b"\n"):
                 # Torn tail (an in-flight write) OR an oversized line
-                # that grew past _MAX_LINE_BYTES without a newline —
+                # that grew past the derived line cap without a newline —
                 # either way, the last split segment is the incomplete
                 # part.
                 partial = lines.pop()
-                if len(partial) >= _MAX_LINE_BYTES:
+                if len(partial) >= self._line_cap:
                     # Oversized, not in-flight: retrying this forever
                     # would stall the tail on one bad entry. Drop it —
                     # one lost sample — and advance past it.
@@ -1652,7 +1714,7 @@ class Watcher:
                     # logging a false warning each time.
                     self._log.warn(
                         "agentcage: watcher dropping oversized capture "
-                        f"line (>{_MAX_LINE_BYTES} bytes, no newline "
+                        f"line (>{self._line_cap} bytes, no newline "
                         "found)"
                     )
                     partial = b""
@@ -1698,8 +1760,18 @@ class Watcher:
         """Scan counters next to the findings, for `watcher status`."""
         try:
             os.makedirs(self._dir, exist_ok=True)
+            try:
+                _cap_size = os.path.getsize(self._capture_path) \
+                    if self._capture_path else 0
+            except OSError:
+                _cap_size = 0
             state = {
                 "last_scan": now.isoformat(),
+                # How far the tail is behind the live end. An operator
+                # cannot otherwise tell that scans are analysing stale
+                # traffic — the counters look healthy either way.
+                "capture_lag_bytes": max(0, _cap_size - (self._cap_offset or 0)),
+                "capture_size_bytes": _cap_size,
                 "scans": self._scans,
                 "flows_last_window": flows,
                 "findings_last_scan": findings,

@@ -2527,7 +2527,7 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
 
     \b
     Example:
-      agentcage cage exec myapp -- openclaw devices list
+      agentcage cage exec --as-root myapp -- openclaw devices list
     """
     if not state.deployment_exists(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
@@ -3051,19 +3051,24 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         since=since_dt,
     )
 
-    # Read and filter capture entries
+    # Read and filter capture entries. The writer rolls the file over at
+    # ``capture.max_file_size``, keeping one previous generation, so the
+    # rotated file is read FIRST — it holds the older half, and skipping
+    # it would silently shorten every export taken after a rollover.
     entries = []
-    with open(capture_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if filt.matches(entry):
-                entries.append(entry)
+    rotated = Path(f"{capture_path}.1")
+    for _src in ([rotated] if rotated.is_file() else []) + [Path(capture_path)]:
+        with open(_src) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if filt.matches(entry):
+                    entries.append(entry)
 
     # Apply max-entries limit (keep last N)
     if max_entries > 0:
@@ -5605,3 +5610,12 @@ def watcher_status(name):
         _cap = st.get("max_digest_tokens", 0) or 0
         _of = f" of {_cap:,} budget" if _cap else " (no budget — unbounded)"
         click.echo(f"  digest size:    ~{_dt:,} tokens{_of}")
+    # Capture backlog. A tail that cannot keep up analyses ever-staler
+    # traffic while every other counter still looks healthy, so surface it
+    # rather than making the operator infer it from file sizes.
+    _lag = st.get("capture_lag_bytes")
+    if _lag is not None:
+        _size = st.get("capture_size_bytes", 0) or 0
+        _mb = lambda b: f"{b / (1024 * 1024):.1f} MB"
+        _flag = "  [behind]" if _lag > 8 * 1024 * 1024 else ""
+        click.echo(f"  capture backlog: {_mb(_lag)} of {_mb(_size)}{_flag}")

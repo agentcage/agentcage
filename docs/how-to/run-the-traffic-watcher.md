@@ -87,6 +87,7 @@ Traffic watcher for cage 'mycage': enabled
   scans run:      7
   flows in last window: 41
   findings total: 2
+  capture backlog: 0.4 MB of 12.8 MB
 ```
 
 Nothing appears until the first interval elapses, and a scan is skipped entirely when the window had no traffic — a quiet cage costs nothing. If `scans run` stays at zero well past `interval_seconds`, check the credential first.
@@ -101,6 +102,7 @@ The digest is bounded independently of how much traffic the cage makes, so cost 
 The defaults hold a cage to about 885,000 input tokens a day, roughly $47 a month on a frontier-priced model and $2.50 on a fast one. `max_digest_tokens` is the hard ceiling and the only setting that bounds spend whatever the traffic does; `max_flows` bounds how many samples are sent, not how large they are. Check `digest size` in `agentcage watcher status` for what you are actually sending.
 
 Repeated flow shapes are collapsed before the digest is sent, so a poller hitting one endpoint forty times costs one sample carrying `repeated: 40` rather than forty. Distinct request bodies survive the collapse, because that is where exfiltration evidence lives. Turn it off with `dedup_samples: false` if you want every sample verbatim.
+Watch `capture backlog`. The watcher reads at most 8 MB per scan, so a body-heavy cage can write faster than it reads, and a growing backlog means findings describe progressively older traffic. Past a threshold the watcher skips to the live end and records a finding naming the skipped bytes. The [capture reference](../reference/capture.md) covers how to bring the two back into balance.
 
 ## Read the findings
 
