@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A standard `agentcage` skill for caged agents.** agentcage now ships one canonical skill (`scaffolds/skills/agentcage/SKILL.md`, Agent Skills standard) that teaches the agent the Policy API on `agentcage.local`: check `/v1/health`, reflect on the effective allowlist with `GET /v1/allowlist` (and read the operator's `context`), request a new egress domain with a justification the decider will accept via `POST /v1/allowlist/requests`, and give a grant back via `POST /v1/allowlist/removals` — plus rules of engagement (one request per domain, a denial is an answer, never route around a block, never put a placeholder in a reason). The `pi`, `claude-code` and `codex` scaffolds install it into the agent's skills directory (`~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`); downstream templates that set `scaffold:` get it by adding `COPY skills/agentcage <skills-dir>/agentcage` to their Containerfile. Staged into the build context by `scaffold_brief.stage_scaffold_assets` alongside the `AGENTS.md` brief, which now points at the skill.
+
+### Fixed
+- **Stale brief after upgrade.** The staged `AGENTS.md` brief in a cage's build context was never refreshed once written, so a cage created on an old release kept the old brief (e.g. one that never mentioned the Policy API) through every `cage update`. Staging now refreshes agentcage's own copy when the canonical file changes; a context that ships its own `AGENTS.md` (or `skills/agentcage/`) next to its Containerfile still always wins.
+
 ## [0.37.0] - 2026-09-04
 
 ### Added

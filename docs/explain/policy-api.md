@@ -510,9 +510,12 @@ parity.
   `agentcage domain rm <domain>`, time-limiting is
   `agentcage domain add <domain> --expires-in`.
 - `cage show` / `domain list` show granted domains alongside baseline.
-- AGENTS.md brief: templated addition telling the agent the control
-  endpoints exist (only rendered when `domains.auto.enable`), so it knows to
-  query/request instead of guessing.
+- AGENTS.md brief and `agentcage` skill: a static notice in the brief that
+  the control endpoints may exist, pointing at the skill
+  (`scaffolds/skills/agentcage/SKILL.md`) that teaches them in full. Both
+  are staged into scaffold build contexts and refreshed when the canonical
+  file changes, independent of `domains.auto.enable`; the skill checks
+  `/v1/health` at runtime instead.
 - Tests: grant → baseline updated + still live; `domain rm` removal;
   `--expires-in` expiry; show output.
 
@@ -534,7 +537,7 @@ parity.
 | Rendering | `src/agentcage/quadlets.py`, `src/agentcage/services.py`, `templates/egress.container.j2`, `data/containers/supervisor-egress.sh` (control-host DNS, decider `api_key` staging, env) |
 | Apple-container | `src/agentcage/data/apple-container/*`, `backends/apple_container.py` (`reload_domains`-style parity for grants + control host) |
 | CLI | `src/agentcage/cli.py` (`cage grants` group: `list`/`watch`; removal via `domain rm`) |
-| Brief | `src/agentcage/scaffolds/AGENTS.md` (templated control-endpoint notice) |
+| Brief + skill | `src/agentcage/scaffolds/AGENTS.md` (static control-endpoint notice pointing at the skill), `src/agentcage/scaffolds/skills/agentcage/SKILL.md`, `src/agentcage/scaffold_brief.py` (staging and refresh) |
 | Docs | `docs/explain/policy-api.md`, `docs/reference/policy-api.md`, `docs/reference/domains.md` |
 | Tests | `tests/` (config, addon control endpoints, decider, grants promotion, removal, e2e) |
 
