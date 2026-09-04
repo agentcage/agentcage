@@ -476,10 +476,31 @@ def _fit_to_budget(samples: list[dict], budget: int, overhead: int) -> list[dict
 
     notable = [s for s in samples if s.get("decision") != "allowed"]
     allowed = [s for s in samples if s.get("decision") == "allowed"]
-    # Newest-keep among allowed: drop from the front.
-    while allowed and _est_tokens(notable + allowed) > room:
-        allowed.pop(0)
-    kept = notable + allowed
+
+    # Allowed flows are SUBSAMPLED ACROSS THE WINDOW, not truncated to the
+    # newest run. Newest-keep looks natural and is a deterministic blind
+    # spot: the caged agent controls its own traffic, so it could exfil
+    # and then flood the window with distinct shapes to push the evidence
+    # out of the digest every time. Verified — with an evidence sample
+    # oldest behind 104 distinct benign shapes, newest-keep dropped it and
+    # an even spread keeps it. A spread cannot be gamed by position; the
+    # attacker would have to win a share-of-window fight instead.
+    def _spread(items: list[dict], n: int) -> list[dict]:
+        if n >= len(items):
+            return items
+        if n <= 0:
+            return []
+        step = len(items) / float(n)
+        return [items[min(len(items) - 1, int(i * step))] for i in range(n)]
+
+    keep_n = len(allowed)
+    while keep_n > 0 and _est_tokens(notable + _spread(allowed, keep_n)) > room:
+        keep_n -= max(1, keep_n // 8)      # geometric backoff, then exact
+    keep_n = max(0, keep_n)
+    while keep_n < len(allowed) and \
+            _est_tokens(notable + _spread(allowed, keep_n + 1)) <= room:
+        keep_n += 1
+    kept = notable + _spread(allowed, keep_n)
     # Still over budget on notable flows alone — drop those oldest-first
     # too rather than blow the ceiling.
     while len(kept) > 1 and _est_tokens(kept) > room:
@@ -567,14 +588,21 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
     # Hard spend ceiling, applied last so it bounds the WHOLE digest.
     if max_digest_tokens > 0:
         samples = digest["capture_samples"]
+        notice = {
+            "kept": len(samples), "of": len(samples),
+            "reason": "watcher.max_digest_tokens budget",
+            "method": "blocked/flagged flows kept in full; allowed "
+                      "flows sampled evenly across the window",
+        }
+        # The truncation notice is itself part of the prompt, so it is
+        # counted as overhead BEFORE fitting — otherwise the digest
+        # lands just over the ceiling it advertises.
         overhead = _est_tokens({k: v for k, v in digest.items()
-                                if k != "capture_samples"})
+                                if k != "capture_samples"}) + _est_tokens(notice)
         fitted = _fit_to_budget(samples, max_digest_tokens, overhead)
         if len(fitted) != len(samples):
-            digest["capture_samples_truncated"] = {
-                "kept": len(fitted), "of": len(samples),
-                "reason": "watcher.max_digest_tokens budget",
-            }
+            notice["kept"] = len(fitted)
+            digest["capture_samples_truncated"] = notice
         digest["capture_samples"] = fitted
     return digest
 
