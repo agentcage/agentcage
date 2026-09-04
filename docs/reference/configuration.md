@@ -36,6 +36,7 @@ The `watcher:` block enables the traffic watcher — see [the traffic-watcher ex
 | `agent.model` | `string` | *(required)* | Model id. |
 | `agent.api_key` | `string` | *(required)* | The watcher's own API key — an egress-only `source:` credential (`env:NAME` \| `systemd-creds:NAME`; `cmd:` is rejected — the egress has no shell). Reusing the decider's env var name is fine. |
 | `agent.timeout_seconds` | `int` | `30` | LLM call timeout. |
+| `agent.max_tokens` | `int` | `8192` | Completion budget for the forced `review` tool call. A reasoning model spends thinking tokens inside this budget *before* the tool call, so too small a value returns `finish_reason: length` with no tool call at all — a recorded scan failure every interval. A ceiling, not a reservation: you are billed for tokens actually generated. Minimum `1024`. *Since 0.38.0* |
 | `agent.base_url` | `string` | *(provider default)* | `https://`-only override. |
 
 ```yaml

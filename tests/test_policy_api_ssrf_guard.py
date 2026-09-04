@@ -225,6 +225,46 @@ class TestDeciderPromptHardening:
         for url, body in bodies.items():
             assert body.get("max_tokens") == 1234, (url, sorted(body))
 
+    def test_decider_sends_its_configured_max_tokens(self):
+        """The decider's budget must reach the wire, not the 256 default.
+
+        Regression: the decider called ``llm_tool_call`` without
+        ``max_tokens``, taking the 256 default. Against the real decider
+        payload that starves a reasoning model's thinking tokens, so the
+        provider returns ``finish_reason: length`` with no tool call and
+        ``_parse_llm_verdict`` fails closed — every request denied with
+        "llm returned no usable decision" (hit in production 2026-09-04
+        on glm-5.2; reproduced on gemini-3.8-flash and glm-5.3-flash too).
+        """
+        import json as _json
+        from unittest.mock import patch as _patch
+        _, pa = _addon()
+        api = pa.PolicyApi.__new__(pa.PolicyApi)
+        api._llm_provider = "openrouter"
+        api._llm_model = "z-ai/glm-5.3-flash"
+        api._llm_secret = "k"
+        api._llm_base_url = ""
+        api._llm_max_tokens = 8192
+        api._decider_system_prompt = lambda: "sys"
+        api._user_message = lambda d, r, dom: {"requested_domain": d}
+        api.dom = None
+        bodies = []
+
+        def _capture(req, timeout=None):
+            bodies.append(_json.loads(req.data))
+            raise RuntimeError("stop before the network")
+
+        with _patch("urllib.request.urlopen", _capture):
+            try:
+                api._llm_openai_compat(
+                    "https://openrouter.ai/api/v1", "openrouter",
+                    "ui.com", "user asked for a datasheet", 5,
+                )
+            except RuntimeError:
+                pass
+        assert bodies, "decider never built a request body"
+        assert bodies[0].get("max_tokens") == 8192, sorted(bodies[0])
+
     def test_addon_and_config_never_grant_sets_agree(self):
         """The two copies are duplicated by necessity; they must not drift."""
         from agentcage.config import _AUTO_NEVER_GRANT
