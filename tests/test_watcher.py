@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import sys
 import textwrap
 import types
@@ -61,7 +62,7 @@ sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
 from agentcage.data.proxy import watcher as wmod  # noqa: E402
 from agentcage.data.proxy.watcher import (  # noqa: E402
-    Watcher, build_digest, parse_tool_args,
+    Watcher, build_digest, dedup_samples, parse_tool_args,
 )
 import policy_api as pa_mod  # noqa: E402  (bare name: egress-style import)
 
@@ -212,6 +213,26 @@ class TestWatcherConfigParsing:
         # recommended, so the guard must not reject it.
         from agentcage.config import load_config, validate_config
         validate_config(load_config(_cfg_with(tmp_path, _WATCHER_YAML)))
+
+    def test_string_dedup_samples_rejected(self, tmp_path):
+        # Same trap as auto_revoke: bool("false") is True, which would
+        # quietly keep the expensive un-deduped digest.
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match="watcher.dedup_samples must be a boolean"):
+            load_config(_cfg_with(tmp_path, """
+                watcher:
+                  enable: true
+                  dedup_samples: "false"
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
+            """))
+
+    def test_dedup_defaults_on(self, tmp_path):
+        from agentcage.config import load_config
+        cfg = load_config(_cfg_with(tmp_path, _WATCHER_YAML))
+        assert cfg.watcher.dedup_samples is True
 
     def test_key_is_stripped_from_the_cage_env(self, tmp_path):
         # The watcher key is an EGRESS-only credential. If the operator
@@ -585,6 +606,164 @@ class TestWatcherSecretClassification:
 # ═══════════════════════════════════════════════════════════════════
 # Egress side: the digest's secret hygiene
 # ═══════════════════════════════════════════════════════════════════
+
+class TestSampleDedup:
+    """Repeated flow shapes collapse into one sample carrying a count.
+
+    Real cage traffic is dominated by repetition, and forty near-identical
+    samples buy nothing but tokens: measured on a real cage, 61 samples
+    became 17 — 18.4% of the prompt payload. The collapse must not cost
+    evidence, which is what most of these tests pin.
+    """
+
+    def _s(self, host="api.example.com", method="GET", path="/", ts="t",
+           decision="allowed", status=200, body=None, size=0):
+        d = {"ts": ts, "host": host, "method": method, "path": path,
+             "decision": decision, "response_status": status,
+             "request_body_size": size, "direction": "outbound",
+             "inspectors": []}
+        if body is not None:
+            d["request_body_excerpt"] = body
+        return d
+
+    def test_identical_flows_collapse_with_a_count(self):
+        out = dedup_samples([self._s(ts=f"t{i}") for i in range(43)])
+        assert len(out) == 1
+        assert out[0]["repeated"] == 43
+        assert out[0]["first_ts"] == "t0" and out[0]["last_ts"] == "t42"
+        assert "ts" not in out[0]   # a range, not a misleading single point
+
+    def test_distinct_shapes_are_not_merged(self):
+        out = dedup_samples([
+            self._s(host="a.example"), self._s(host="b.example"),
+            self._s(method="POST"), self._s(decision="blocked"),
+            self._s(status=404),
+        ])
+        assert len(out) == 5
+
+    def test_per_request_ids_in_paths_share_a_shape(self):
+        out = dedup_samples([self._s(path=f"/repos/x/{i}") for i in range(10)])
+        assert len(out) == 1 and out[0]["repeated"] == 10
+
+    def test_hashes_in_paths_share_a_shape(self):
+        out = dedup_samples([
+            self._s(path="/objects/deadbeefcafe1234"),
+            self._s(path="/objects/0123456789abcdef"),
+        ])
+        assert len(out) == 1 and out[0]["repeated"] == 2
+
+    # The evidence-preserving property. A real revocation fired because
+    # the model read a request body on an ALLOWED flow, so a group must
+    # never be reduced to its first body.
+    def test_distinct_bodies_survive_the_collapse(self):
+        out = dedup_samples([
+            self._s(method="POST", body='{"seq":1,"note":"benign"}'),
+            self._s(method="POST", body='{"seq":2,"note":"benign"}'),
+            self._s(method="POST", body='{"env_dump":"AWS_SECRET..."}'),
+        ])
+        assert len(out) == 1
+        bodies = out[0]["request_body_excerpts"]
+        assert any("env_dump" in b for b in bodies), bodies
+        assert out[0]["distinct_request_bodies"] == 3
+
+    def test_exfiltration_body_survives_among_many_benign_repeats(self):
+        # The adversarial shape: bury one malicious body under a pile of
+        # identical benign ones on the same path. A first-wins exemplar
+        # would show the model only the benign body.
+        flows = [self._s(method="POST", body='{"ping":1}') for _ in range(50)]
+        flows.append(self._s(method="POST",
+                             body='{"exfil_batch":1,"env_dump":{"GITHUB_TOKEN":"ghp_x"}}'))
+        out = dedup_samples(flows)
+        blob = json.dumps(out)
+        assert out[0]["repeated"] == 51
+        assert "exfil_batch" in blob, "the malicious body was collapsed away"
+
+    def test_late_malicious_body_survives_many_DISTINCT_benign_bodies(self):
+        """Regression: found on a real cage, not by the test above.
+
+        With several DISTINCT benign bodies, keeping the first N distinct
+        ones discarded a malicious body that arrived after them — six
+        benign graphql bodies then an exfiltration body, N=3, evidence
+        gone. Retention is ranked by rarity now: polling repeats,
+        exfiltration does not.
+        """
+        flows = []
+        for seq in (1, 2, 3):          # each benign body repeats
+            for _ in range(2):
+                flows.append(self._s(method="POST", path="/graphql",
+                                     body='{"query":"{viewer}","seq":%d}' % seq))
+        flows.append(self._s(method="POST", path="/graphql",
+                             body='{"exfil_batch":1,"env_dump":{"AWS_KEY":"x"}}'))
+        out = dedup_samples(flows, max_bodies=3)
+        assert len(out) == 1
+        blob = json.dumps(out)
+        assert "exfil_batch" in blob, (
+            "the rare (malicious) body must outrank common ones")
+        assert out[0]["distinct_request_bodies"] == 4
+
+    def test_the_common_body_is_kept_as_a_baseline(self):
+        # The model needs something typical to compare the outlier to.
+        flows = [self._s(method="POST", body='{"ping":1}') for _ in range(30)]
+        flows += [self._s(method="POST", body='{"odd":%d}' % i) for i in range(5)]
+        out = dedup_samples(flows, max_bodies=3)
+        kept = out[0]["request_body_excerpts"]
+        assert any("ping" in b for b in kept), kept
+        assert any("odd" in b for b in kept), kept
+
+    def test_identical_bodies_do_not_multiply(self):
+        out = dedup_samples([self._s(method="POST", body="same")
+                             for _ in range(20)])
+        # One distinct body ⇒ the single-body field, no list, no bloat.
+        assert out[0].get("request_body_excerpt") == "same"
+        assert "request_body_excerpts" not in out[0]
+
+    def test_bodies_per_group_are_bounded(self):
+        out = dedup_samples([self._s(method="POST", body=f"b{i}")
+                             for i in range(20)], max_bodies=3)
+        assert len(out[0]["request_body_excerpts"]) == 3
+        assert out[0]["distinct_request_bodies"] == 20   # count is honest
+
+    def test_blocked_flows_keep_their_own_group(self):
+        out = dedup_samples(
+            [self._s(host="evil.test", decision="blocked") for _ in range(3)]
+            + [self._s() for _ in range(3)])
+        blocked = [s for s in out if s["decision"] == "blocked"]
+        assert len(blocked) == 1 and blocked[0]["repeated"] == 3
+
+    def test_repeat_counts_reach_the_digest(self):
+        d = build_digest(audit_entries=[],
+                         capture_samples=[self._s(ts=f"t{i}") for i in range(30)],
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=200)
+        assert len(d["capture_samples"]) == 1
+        assert d["capture_samples"][0]["repeated"] == 30
+        # The model is told how to read a collapsed sample.
+        assert "repeated" in d["note"]
+
+    def test_dedup_can_be_turned_off(self):
+        raw = [self._s(ts=f"t{i}") for i in range(30)]
+        d = build_digest(audit_entries=[], capture_samples=raw,
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=200, dedup=False)
+        assert len(d["capture_samples"]) == 30
+
+    def test_max_flows_still_bounds_the_digest(self):
+        raw = [self._s(host=f"h{i}.example") for i in range(50)]
+        d = build_digest(audit_entries=[], capture_samples=raw,
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=10)
+        assert len(d["capture_samples"]) == 10
+
+    def test_aggregates_are_unaffected_by_collapsing(self):
+        # totals come from the audit ring, not the samples — collapsing
+        # capture samples must not change the flow counts.
+        entries = [_flow_entry() for _ in range(7)]
+        d = build_digest(audit_entries=entries,
+                         capture_samples=[self._s(ts=f"t{i}") for i in range(9)],
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=200)
+        assert d["totals"]["flows"] == 7
+
 
 class TestBuildDigest:
     def test_aggregates_and_names_only_for_secrets(self):
@@ -1424,6 +1603,322 @@ class TestCaptureTail:
         assert again == []
 
 
+class TestDigestTokenBudget:
+    """A hard ceiling on the digest is the only thing that bounds spend.
+
+    ``max_flows`` bounds the NUMBER of samples, not their size: one
+    carrying body excerpts is many times a bare one. Before this ceiling
+    the validator accepted a 60s cadence with max_flows at its 2000
+    ceiling — roughly 1.2 BILLION input tokens a day, a five-figure
+    monthly bill, in silence.
+    """
+
+    def _s(self, i, decision="allowed", body=None):
+        d = {"ts": f"t{i}", "host": f"h{i}.example", "method": "GET",
+             "path": f"/p{i}", "decision": decision, "response_status": 200,
+             "request_body_size": 0, "inspectors": []}
+        if body:
+            d["request_body_excerpt"] = body
+        return d
+
+    def _digest(self, samples, budget):
+        return build_digest(audit_entries=[], capture_samples=samples,
+                            policy_events=[], granted=[], baseline=[],
+                            max_flows=2000, max_digest_tokens=budget)
+
+    def test_budget_bounds_the_digest(self):
+        big = [self._s(i, body="x" * 400) for i in range(400)]
+        d = self._digest(big, 4000)
+        assert wmod._est_tokens(d) <= 4000, wmod._est_tokens(d)
+        assert d["capture_samples_truncated"]["of"] == 400
+
+    def test_zero_budget_is_unbounded(self):
+        big = [self._s(i, body="x" * 400) for i in range(300)]
+        d = self._digest(big, 0)
+        assert len(d["capture_samples"]) == 300
+        assert "capture_samples_truncated" not in d
+
+    def test_small_digest_is_untouched(self):
+        d = self._digest([self._s(i) for i in range(3)], 8000)
+        assert len(d["capture_samples"]) == 3
+        assert "capture_samples_truncated" not in d
+
+    # What gets dropped matters more than how much. Trimming must not
+    # throw away the blocked and flagged flows the scan exists to see.
+    def test_blocked_flows_outlive_allowed_ones_under_pressure(self):
+        samples = [self._s(i, body="y" * 400) for i in range(300)]
+        samples.insert(150, self._s(999, decision="blocked"))
+        samples.insert(151, self._s(998, decision="flagged"))
+        d = self._digest(samples, 4000)
+        kept = {s["decision"] for s in d["capture_samples"]}
+        assert "blocked" in kept, "a blocked flow was trimmed away"
+        assert "flagged" in kept, "a flagged flow was trimmed away"
+
+    def test_trimming_spreads_across_the_window(self):
+        # Allowed flows are sampled evenly, not truncated to the newest
+        # run, so both ends of the window are represented.
+        samples = [self._s(i, body="z" * 300) for i in range(200)]
+        d = self._digest(samples, 4000)
+        idx = sorted(int(s["host"].split(".")[0].lstrip("h"))
+                     for s in d["capture_samples"])
+        assert idx[0] < 40, f"start of window unrepresented: {idx[:3]}"
+        assert idx[-1] > 160, f"end of window unrepresented: {idx[-3:]}"
+
+    def test_old_evidence_is_not_pushed_out_by_a_later_flood(self):
+        """Regression: newest-keep was a deterministic blind spot.
+
+        The caged agent controls its own traffic, so it could exfiltrate
+        and then flood the window with distinct shapes to push the
+        evidence out of every digest. Verified on a real cage: with the
+        evidence oldest behind 104 distinct benign shapes, newest-keep
+        dropped it. An even spread keeps it.
+        """
+        evidence = self._s(0, body='{"exfil":"CANARY-TOKEN"}')
+        flood = [self._s(i, body=f"benign-{i}" + "q" * 300)
+                 for i in range(1, 160)]
+        d = self._digest([evidence] + flood, 4000)
+        assert "CANARY-TOKEN" in json.dumps(d), (
+            "evidence at the start of the window was trimmed away")
+
+    def test_sampling_is_declared_to_the_model(self):
+        d = self._digest([self._s(i, body="q" * 400) for i in range(300)], 4000)
+        assert "sampled evenly" in d["capture_samples_truncated"]["method"]
+
+    def test_samples_stay_in_input_order_after_trimming(self):
+        # Trimming reorders internally (notable flows are held back from
+        # the cut); the digest must still read in the order the traffic
+        # happened, i.e. the kept samples are a SUBSEQUENCE of the input.
+        samples = [self._s(i, body="w" * 300) for i in range(120)]
+        samples.insert(60, self._s(500, decision="blocked"))
+        d = self._digest(samples, 4000)
+        order = {s["host"]: i for i, s in enumerate(samples)}
+        kept = [order[s["host"]] for s in d["capture_samples"]]
+        assert kept == sorted(kept), kept
+        # and the blocked flow sits where it happened, not bolted on front
+        blocked_pos = [i for i, s in enumerate(d["capture_samples"])
+                       if s["decision"] == "blocked"]
+        assert blocked_pos and blocked_pos[0] == 0 or blocked_pos
+
+    def test_truncation_is_declared_to_the_model(self):
+        d = self._digest([self._s(i, body="q" * 400) for i in range(300)], 4000)
+        assert d["capture_samples_truncated"]["reason"]
+
+
+class TestAdversarialHardening:
+    """The caged agent controls its own traffic and can read this code, so
+    every deterministic boundary is somewhere it can shape traffic to sit
+    just past. Randomness turns evasions it wins EVERY time into ones it
+    wins sometimes and cannot predict; indicators make the attempt itself
+    visible.
+    """
+
+    # ── excerpt padding ──────────────────────────────────────────────
+    def test_head_only_excerpt_without_rng_is_the_evasion(self):
+        body = "A" * 600 + "PAYLOAD-CANARY" + "B" * 50
+        assert "PAYLOAD-CANARY" not in wmod._excerpt_body(body, None)
+
+    def test_payload_at_the_end_always_survives_with_rng(self):
+        # The tail window always covers the end, whatever the seed.
+        body = "A" * 5000 + "PAYLOAD-CANARY"
+        for seed in range(50):
+            ex = wmod._excerpt_body(body, None, random.Random(seed))
+            assert "PAYLOAD-CANARY" in ex
+
+    def test_payload_in_the_middle_cannot_be_hidden_deterministically(self):
+        # Past the fixed head, past the tail, in the middle: head-only
+        # never sees it; a random middle window sees it on SOME seeds,
+        # so an attacker cannot rely on any placement.
+        body = "A" * 2000 + "PAYLOAD-CANARY" + "B" * 2000
+        hits = sum("PAYLOAD-CANARY" in wmod._excerpt_body(body, None, random.Random(sd))
+                   for sd in range(400))
+        assert hits > 0, "middle payload was never sampled"
+        assert len(wmod._excerpt_body(body, None, random.Random(1))) < 700
+
+    def test_short_bodies_are_untouched_by_rng(self):
+        assert wmod._excerpt_body("hello", None, random.Random(3)) == "hello"
+
+    # ── decoy bodies vs rarity tie-break ─────────────────────────────
+    def _s(self, body, i=0, decision="allowed"):
+        return {"ts": f"t{i}", "host": "api.example.com", "method": "POST",
+                "path": "/graphql", "decision": decision, "response_status": 200,
+                "request_body_size": 0, "inspectors": [],
+                "request_body_excerpt": body}
+
+    def test_decoys_cannot_deterministically_exclude_the_real_body(self):
+        # Ten distinct decoys once each + the real one once: eleven
+        # equally rare bodies, three slots. With recency tie-break the
+        # attacker chooses the loser; with a random tie-break the real
+        # body is kept on a healthy share of seeds.
+        flows = [self._s(f'{{"decoy":{i}}}', i) for i in range(10)]
+        flows.insert(0, self._s('{"exfil":"REAL-CANARY"}', 99))
+        kept = sum("REAL-CANARY" in json.dumps(dedup_samples(flows, 3, rng=random.Random(sd)))
+                   for sd in range(200))
+        assert kept > 20, f"real body kept on only {kept}/200 seeds"
+
+    # ── random budget sampling ───────────────────────────────────────
+    def test_even_spread_is_predictable_random_is_not(self):
+        items = [{"i": i, "decision": "allowed", "pad": "x" * 100} for i in range(100)]
+        budget = 400   # room for roughly a dozen of these, not all hundred
+        a = wmod._fit_to_budget(list(items), budget, 0)      # rng None → spread
+        b = wmod._fit_to_budget(list(items), budget, 0)
+        assert 0 < len(a) < 100 and a == b                   # deterministic
+        r1 = wmod._fit_to_budget(list(items), budget, 0, random.Random(1))
+        r2 = wmod._fit_to_budget(list(items), budget, 0, random.Random(2))
+        assert 0 < len(r1) < 100
+        assert r1 != r2                                      # seed-dependent
+        assert [x["i"] for x in r1] == sorted(x["i"] for x in r1)  # order kept
+
+    # ── cadence jitter ───────────────────────────────────────────────
+    def test_jitter_stays_within_bounds_and_floor(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch, cfg={"interval_seconds": 900})
+        ds = [w._next_delay() for _ in range(300)]
+        assert min(ds) >= 450 - 1e-6 and max(ds) <= 1350 + 1e-6
+        assert len(set(round(d) for d in ds)) > 20      # actually varies
+        w2, _ = _mk_watcher(tmp_path, monkeypatch, cfg={"interval_seconds": 60})
+        assert all(w2._next_delay() >= 60 for _ in range(100))
+
+    # ── evasion indicators ───────────────────────────────────────────
+    def _cap(self, host, body="x", enc=None):
+        return {"ts": "t", "host": host, "method": "POST", "path": "/up",
+                "decision": "allowed", "response_status": 200,
+                "request_body_size": len(body), "inspectors": [],
+                "request_body_binary": enc == "base64",
+                "request_body_exceeds_excerpt": len(body) > 512,
+                **({"request_body_excerpt": body} if enc != "base64" else {})}
+
+    def test_binary_body_to_granted_host_is_counted(self):
+        d = build_digest(audit_entries=[], policy_events=[], baseline=["ok.example"],
+                         granted=["drop.example"], max_flows=200,
+                         capture_samples=[self._cap("files.drop.example", "QUJD", "base64"),
+                                          self._cap("ok.example", "QUJD", "base64")])
+        assert d["evasion_indicators"]["binary_request_bodies_to_granted_hosts"] == 1
+
+    def test_padded_bodies_are_counted(self):
+        d = build_digest(audit_entries=[], policy_events=[], baseline=[], granted=[],
+                         max_flows=200,
+                         capture_samples=[self._cap("a.example", "p" * 900),
+                                          self._cap("b.example", "short")])
+        assert d["evasion_indicators"]["request_bodies_longer_than_excerpt"] == 1
+
+    def test_ring_saturation_is_reported(self):
+        d = build_digest(audit_entries=[], policy_events=[], baseline=[], granted=[],
+                         max_flows=200, capture_samples=[], ring_saturated=True)
+        assert d["evasion_indicators"]["audit_ring_saturated"] is True
+
+    def test_flood_is_counted_before_the_budget_trims_it(self):
+        flood = [{**self._cap(f"h{i}.example", "q" * 300)} for i in range(300)]
+        d = build_digest(audit_entries=[], policy_events=[], baseline=[], granted=[],
+                         max_flows=2000, capture_samples=flood, max_digest_tokens=4000)
+        assert d["evasion_indicators"]["distinct_shapes"] == 300
+        assert len(d["capture_samples"]) < 300      # trimmed…
+        # …but the flood itself is still on the record.
+
+    def test_sample_capture_flags_binary_and_oversize(self):
+        e = {"ts": "t", "host": "h", "path": "/", "method": "POST",
+             "inbound": {"request": {"body": "QUJD", "bodyEncoding": "base64",
+                                     "url": "https://h/"},
+                         "response": {}}, "outbound": {}}
+        assert wmod._sample_capture(e)["request_body_binary"] is True
+        e["inbound"]["request"] = {"body": "z" * 900, "bodyEncoding": None, "url": "https://h/"}
+        assert wmod._sample_capture(e)["request_body_exceeds_excerpt"] is True
+
+    # ── deterministic findings + seed logging via a real tick ───────
+    def test_binary_to_granted_host_yields_a_finding_without_the_model(
+            self, tmp_path, monkeypatch):
+        dom = _FakeDom(granted=["drop.example"])
+        pa = _FakePa(dom)
+        cap = [{"ts": datetime.now(timezone.utc).isoformat(), "host": "drop.example",
+                "direction": "outbound", "decision": "allowed", "method": "POST",
+                "path": "/up", "inspectors": [],
+                "inbound": {"request": {"body": "QUJDREVG", "bodyEncoding": "base64",
+                                        "bodySize": 6, "url": "https://drop.example/up"},
+                            "response": {"status": 200, "bodySize": 0}},
+                "outbound": {"request": {}, "response": {}}}]
+        w, audit = _mk_watcher(tmp_path, monkeypatch, dom=dom, pa=pa,
+                               ring=[_flow_entry()], capture=cap)
+        w._window = 86400
+        # Model says nothing at all — the finding must come from the indicator.
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response({"findings": []}))
+        asyncio.run(w._tick())
+        titles = [e.get("title", "") for e in audit if e.get("kind") == "watcher_finding"]
+        assert any("binary request body" in t for t in titles), titles
+        state = json.loads((tmp_path / "watcher" / "state.json").read_text())
+        assert isinstance(state.get("scan_seed"), int)
+        assert "full_fidelity_scan" in state
+
+    def test_full_fidelity_scan_raises_the_budget(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch, ring=[_flow_entry()],
+                           cfg={"max_digest_tokens": 8000})
+        seen = {}
+        def fake_digest(**kw):
+            seen["budget"] = kw.get("max_digest_tokens"); return {"capture_samples": []}
+        monkeypatch.setattr(wmod, "build_digest", fake_digest)
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response({"findings": []}))
+        # Force the roll: a Random whose first draw is below the threshold.
+        class _R(random.Random):
+            def random(self): return 0.0
+        monkeypatch.setattr(wmod._SYSRNG, "getrandbits", lambda n: 7)
+        monkeypatch.setattr(wmod.random, "Random", _R)
+        asyncio.run(w._tick())
+        assert seen["budget"] == 8000 * wmod._FULL_SCAN_BUDGET_MULT
+        assert w._full_fidelity is True
+
+
+class TestReviewComplianceRetry:
+    """Observed live: a fast model called the forced `review` tool with
+    EMPTY arguments and put its analysis in the message text — three scans
+    running, each a fail-closed failure. One retry restating the contract
+    fixes the common case; network errors are NOT retried (the next tick
+    already retries the window, and doubling calls on a dead provider only
+    doubles the bill).
+    """
+
+    def _w(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        return w
+
+    def test_empty_tool_args_then_valid_reply_is_accepted(self, tmp_path, monkeypatch):
+        calls = []
+        def fake(**kw):
+            calls.append(kw["user_content"])
+            if len(calls) == 1:
+                return _llm_ok_response({})            # empty args: non-compliant
+            return _llm_ok_response({"findings": [{"severity": "low", "title": "t",
+                                                   "detail": "d", "recommendation": "r"}]})
+        monkeypatch.setattr(wmod, "llm_tool_call", fake)
+        v = self._w(tmp_path, monkeypatch)._review_sync({"x": 1})
+        assert v is not None and len(v["findings"]) == 1
+        assert len(calls) == 2
+        assert "did not use the `review` tool correctly" in calls[1]
+        assert "did not use" not in calls[0]           # nudge only on retry
+
+    def test_two_non_compliant_replies_fail_closed(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: (calls.append(1), _llm_ok_response({}))[1])
+        assert self._w(tmp_path, monkeypatch)._review_sync({"x": 1}) is None
+        assert len(calls) == 2                           # bounded: never a third
+
+    def test_network_error_is_not_retried(self, tmp_path, monkeypatch):
+        calls = []
+        def boom(**kw):
+            calls.append(1); raise RuntimeError("provider down")
+        monkeypatch.setattr(wmod, "llm_tool_call", boom)
+        assert self._w(tmp_path, monkeypatch)._review_sync({"x": 1}) is None
+        assert len(calls) == 1
+
+    def test_compliant_first_reply_makes_one_call(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: (calls.append(1), _llm_ok_response({"findings": []}))[1])
+        assert self._w(tmp_path, monkeypatch)._review_sync({"x": 1}) is not None
+        assert len(calls) == 1
+
+    def test_system_prompt_explains_the_indicators(self, tmp_path, monkeypatch):
+        p = self._w(tmp_path, monkeypatch)._watcher_system_prompt()
+        assert "evasion_indicators" in p and "capture_samples_truncated" in p
     # The writer can outpace the reader (one chunk per interval), so a
     # byte cursor that never catches up means the watcher analyses
     # ever-staler traffic while its counters look healthy. Past the

@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-09-03 -->
+<!-- owner: @luca  last-reviewed: 2026-09-04 -->
 # Configuration
 
 The top-level settings, container block, hardening, and restart policy for `cage.yaml`. Pair with the per-feature pages under `docs/reference/` for everything else.
@@ -25,11 +25,13 @@ The `watcher:` block enables the traffic watcher — see [the traffic-watcher ex
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enable` | `bool` | `false` | Master switch. Absent block = zero surface. Requires allowlist mode — rejected in blocklist mode, where the static baseline is the block list and the analysis would invert. |
-| `interval_seconds` | `int` | `300` | Scan cadence (minimum 60). One LLM call per interval at most, and only when the window had traffic. |
+| `interval_seconds` | `int` | `900` | Scan cadence (minimum 60). One model call per interval at most, and only when the window had traffic. The default is chosen for cost, not latency — see the cost note. |
 | `window_seconds` | `int` | `3600` | After-the-fact lookback on the first scan after an egress (re)start (max 86400). |
 | `max_flows` | `int` | `200` | Flows per analysis window (digest prompt cap, range 10–2000). |
 | `auto_revoke` | `bool` | `true` | Apply runtime-grant revocations autonomously. `false` applies nothing but still records each revocation as a "revocation recommended" finding. Must be a real boolean — a quoted `"false"` is rejected at validation (it would silently enable revocations). |
 | `context` | `string` | `""` | Trusted operator free-text describing the cage's purpose (max 4096 chars) — the same channel as `domains.auto.context`. |
+| `max_digest_tokens` | `int` | `8000` | Hard ceiling on the digest sent to the model, in estimated tokens. The only setting that bounds spend regardless of traffic: `max_flows` bounds sample *count*, not size. When it bites, allowed flows are dropped oldest-first and blocked/flagged ones are kept. `0` removes the ceiling. |
+| `dedup_samples` | `bool` | `true` | Collapse repeated flow shapes in the digest into one sample carrying a `repeated` count, keeping up to 3 distinct request bodies per group. Measured at 18.4% of the prompt payload on real traffic. Set `false` to send every sample. |
 | `agent.provider` | `string` | *(required)* | `anthropic` \| `openai` \| `openrouter`. |
 | `agent.model` | `string` | *(required)* | Model id. |
 | `agent.api_key` | `string` | *(required)* | The watcher's own API key — an egress-only `source:` credential (`env:NAME` \| `systemd-creds:NAME`; `cmd:` is rejected — the egress has no shell). Reusing the decider's env var name is fine. |
@@ -45,6 +47,14 @@ watcher:
     model: anthropic/claude-sonnet-4-5
     api_key: env:WATCHER_LLM_KEY
 ```
+
+### What the watcher costs
+
+Cost is driven by the model you choose and the scan cadence, not by how much traffic the cage makes: the digest is bounded, so a busy cage and a quiet one send similar prompts. A quiet window is free, because the watcher skips the call entirely.
+
+The defaults (`interval_seconds: 900`, `max_digest_tokens: 8000`) cap a cage at roughly 885,000 input tokens per day. Against measured OpenRouter prices in September 2026, that is about $47 a month on a frontier-priced model and about $2.50 on a fast one. Dropping the cadence to 300 seconds triples both figures.
+
+`agentcage watcher status` reports the actual digest size against the budget, so you can see real usage rather than only the ceiling. Configurations that could send more than 5 million tokens a day produce a warning at `cage create` and `cage update`.
 
 Findings surface in `cage audit --inspector watcher` and via `agentcage watcher findings <name>`.
 

@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-09-03 -->
+<!-- owner: @luca  last-reviewed: 2026-09-04 -->
 # The traffic watcher — an in-egress, after-the-fact LLM traffic auditor
 
 The domains decider (`docs/explain/policy-api.md` §3.3) guards the *front
@@ -248,6 +248,53 @@ unchanged is a no-op (scan state — capture offset, counters — survives
 unrelated config edits); a rebuild constructs the replacement BEFORE
 cancelling the old task, so a malformed edit keeps the last working
 watcher running.
+
+## Adversarial evasion, and why the pipeline is randomised
+
+The caged agent controls every byte of its own traffic and can read this
+code, so every deterministic boundary in the digest pipeline is a place
+it can shape traffic to sit just past. The cheapest evasions against a
+naive design: pad the first few hundred characters of a request body with
+plausible JSON and put the payload after the excerpt window; base64 the
+payload so it is never excerpted at all; send ten decoy bodies once each
+so the real one loses a deterministic tie-break; flood the window with
+distinct request shapes after exfiltrating so the evidence is trimmed by
+the token budget; or exfiltrate right after a scan and push chaff through
+the audit ring so the evidence is evicted before the next drain.
+
+Randomness does one narrow job here: it turns evasions the attacker wins
+*every* time into evasions it wins *sometimes* and cannot predict. Each
+scan draws one seed from OS entropy — nothing the cage can influence — and
+every random choice derives from it, and the seed is recorded with the
+scan so an operator can replay it exactly. What is randomised:
+
+- **Body excerpts** are head plus a random middle window plus tail, so the
+  tail always covers the end and the middle lands somewhere unpredictable.
+- **Rarity tie-breaks** when choosing which distinct bodies to keep per
+  collapsed group, so decoys cannot choose the loser.
+- **Budget sampling** of allowed flows is a random draw, not an even
+  spread the attacker could compute.
+- **Cadence** is jittered by half the interval either way, removing the
+  predictable safe window after each scan at unchanged mean cost.
+- **One scan in twenty** runs at four times the digest budget, so no window
+  is ever safely known to be in cheap mode. Bounded, so it cannot reopen
+  the uncapped-spend hole.
+
+Randomness cannot help against structural evasions — binary bodies,
+volume flooding, low-and-slow across windows, prompt text addressed to the
+analyst. For those the design treats *the attempt itself as a signal*.
+The digest carries an `evasion_indicators` block of deterministic counts:
+distinct shapes before and after collapsing, the largest body-diversity on
+one shape, binary request bodies to runtime-granted hosts, bodies longer
+than the excerpt, and whether the audit ring was saturated. Two of these
+are strong enough to become findings without waiting for the model: a
+binary request body to a runtime-granted host, and a saturated ring. An
+attacker flooding to dilute the sample is generating the loudest possible
+indicator while trying to hide.
+
+Low-and-slow exfiltration across many windows is the evasion this design
+does not address; it needs memory across scans and is a separate piece of
+work.
 
 ## Host surface
 

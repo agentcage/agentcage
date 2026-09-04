@@ -687,7 +687,14 @@ class WatcherConfig:
     # Scan cadence. One LLM call per interval at most (and only when the
     # window had traffic — a quiet cage costs nothing). 60s floor so a
     # mis-typed value cannot turn the watcher into a hot loop.
-    interval_seconds: float = 300.0
+    #
+    # 15 minutes is chosen for the BILL, not for detection latency: with
+    # the digest budget below it keeps a frontier-priced model under
+    # ~$50/month and a fast one near $2, where a 5-minute cadence put the
+    # same frontier model near $200. This is an after-the-fact auditor by
+    # design, so trading latency for a predictable bill is the right
+    # default; lower it deliberately if you want faster detection.
+    interval_seconds: float = 900.0
     # After-the-fact lookback on the FIRST scan after an egress (re)start:
     # how far back into capture.jsonl the initial window reaches. The
     # in-memory audit ring only covers since-start, so this bounds the
@@ -701,6 +708,20 @@ class WatcherConfig:
     # to findings the operator applies with `agentcage cage grants
     # <name> revoke` / `domain rm`.
     auto_revoke: bool = True
+    # Collapse repeated flow shapes in the digest into one sample with a
+    # count. On by default: measured at 18.4% of the prompt payload on
+    # real traffic, and repetition becomes an explicit count rather than
+    # something the model must infer. The escape hatch exists because
+    # this changes what a security feature sees.
+    dedup_samples: bool = True
+    # Hard ceiling on the digest handed to the model, in estimated tokens.
+    # 8000 with the 15-minute cadence is ~885k tokens/day.
+    # This is the only knob that bounds spend independently of how much
+    # traffic the cage makes: max_flows bounds SAMPLES, and a sample's
+    # size varies with body excerpts, so flows alone cannot bound cost.
+    # Without it the validator accepted configurations costing tens of
+    # thousands of dollars a month. 0 disables the ceiling.
+    max_digest_tokens: int = 8000
     # Operator free-text describing the cage's purpose — the same trusted
     # context channel as domains.auto.context, framed identically in the
     # watcher's system prompt. 4096-char cap (validate_config).
@@ -1265,6 +1286,12 @@ def load_config(path: str) -> Config:
                 "watcher.auto_revoke must be a boolean (true/false) — "
                 f"got {type(_w_ar_raw).__name__}"
             )
+        _w_dd_raw = w_raw.get("dedup_samples", True)
+        if not isinstance(_w_dd_raw, bool):
+            raise ValueError(
+                "watcher.dedup_samples must be a boolean (true/false) — "
+                f"got {type(_w_dd_raw).__name__}"
+            )
 
         def _w_num(key: str, default: float, as_int: bool = False):
             # Preserve an explicit 0/None-missing distinction: only an
@@ -1283,10 +1310,12 @@ def load_config(path: str) -> Config:
 
         _pending_watcher = WatcherConfig(
             enable=True,
-            interval_seconds=_w_num("interval_seconds", 300.0),
+            interval_seconds=_w_num("interval_seconds", 900.0),
             window_seconds=_w_num("window_seconds", 3600.0),
             max_flows=_w_num("max_flows", 200, as_int=True),
+            max_digest_tokens=_w_num("max_digest_tokens", 8000, as_int=True),
             auto_revoke=_w_ar_raw,
+            dedup_samples=_w_dd_raw,
             context=_w_context,
             agent=AgentDeciderConfig(
                 # NOT lowercased: the decider's validation rejects any
@@ -2299,6 +2328,37 @@ def validate_config(config: Config) -> list[str]:
             raise ValueError(
                 f"watcher.max_flows must be in [10, 2000] (got {w.max_flows})"
             )
+        if w.max_digest_tokens != 0 and not (2000 <= w.max_digest_tokens <= 500000):
+            raise ValueError(
+                f"watcher.max_digest_tokens must be 0 (unbounded) or in "
+                f"[2000, 500000] (got {w.max_digest_tokens})"
+            )
+        # Spend guardrail. Nothing here knows provider prices, so the
+        # warning is denominated in TOKENS PER DAY, which the operator can
+        # multiply by their own rate. The combination that motivated this
+        # (a 60s cadence with max_flows at its 2000 ceiling and no digest
+        # bound) reaches ~1.2 BILLION input tokens a day — a five-figure
+        # monthly bill from a config the validator used to accept in
+        # silence.
+        _scans_per_day = 86400.0 / max(1.0, w.interval_seconds)
+        if w.max_digest_tokens == 0:
+            warnings.append(
+                "watcher.max_digest_tokens is 0, so the digest is unbounded: "
+                f"at {_scans_per_day:.0f} scans/day this cage's model spend "
+                "has no ceiling. Set a token budget unless you are "
+                "deliberately uncapping it."
+            )
+        else:
+            # x1.15: 5% of scans run at 4x the budget (random
+            # full-fidelity audits — see watcher._FULL_SCAN_PROB).
+            _per_day = w.max_digest_tokens * _scans_per_day * 1.15
+            if _per_day > 5_000_000:
+                warnings.append(
+                    f"watcher may send up to {_per_day/1e6:.0f}M input "
+                    f"tokens/day ({w.max_digest_tokens:,} tokens x "
+                    f"{_scans_per_day:.0f} scans). Raise interval_seconds or "
+                    "lower max_digest_tokens if that is more than intended."
+                )
         # Same trusted-context cap as domains.auto.context — it rides the
         # watcher's system prompt through proxy-config.yaml.
         _wctx_len = len(w.context.strip())
