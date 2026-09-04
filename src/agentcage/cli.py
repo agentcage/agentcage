@@ -5597,3 +5597,11 @@ def watcher_status(name):
     click.echo(f"  scans run:      {st.get('scans', 0)}")
     click.echo(f"  flows in last window: {st.get('flows_last_window', 0)}")
     click.echo(f"  findings total: {st.get('findings_total', 0)}")
+    # Actual prompt size against the configured ceiling. The cap alone
+    # tells an operator what they are protected from, not what they are
+    # spending.
+    _dt = st.get("digest_tokens_last_scan")
+    if _dt is not None:
+        _cap = st.get("max_digest_tokens", 0) or 0
+        _of = f" of {_cap:,} budget" if _cap else " (no budget — unbounded)"
+        click.echo(f"  digest size:    ~{_dt:,} tokens{_of}")

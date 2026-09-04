@@ -95,8 +95,10 @@ Nothing appears until the first interval elapses, and a scan is skipped entirely
 
 The digest is bounded independently of how much traffic the cage makes, so cost tracks the number of scans and the model you pick, not capture volume. Two things dominate:
 
-- **The model.** At current OpenRouter prices a full frontier model runs roughly twenty times a fast one for the same digest. Start on a fast model and escalate only if its findings are too shallow.
+- **The model.** At measured OpenRouter prices a frontier model runs roughly twenty times a fast one for the same digest. Start on a fast model and escalate only if its findings are too shallow.
 - **`interval_seconds`.** Cost is linear in scan count. A quiet window is free: the watcher skips the call entirely when no traffic arrived.
+
+The defaults hold a cage to about 885,000 input tokens a day, roughly $47 a month on a frontier-priced model and $2.50 on a fast one. `max_digest_tokens` is the hard ceiling and the only setting that bounds spend whatever the traffic does; `max_flows` bounds how many samples are sent, not how large they are. Check `digest size` in `agentcage watcher status` for what you are actually sending.
 
 Repeated flow shapes are collapsed before the digest is sent, so a poller hitting one endpoint forty times costs one sample carrying `repeated: 40` rather than forty. Distinct request bodies survive the collapse, because that is where exfiltration evidence lives. Turn it off with `dedup_samples: false` if you want every sample verbatim.
 

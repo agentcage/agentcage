@@ -439,10 +439,61 @@ def dedup_samples(samples: list[dict],
     return out
 
 
+def _est_tokens(obj) -> int:
+    """Rough token estimate: ~4 characters per token.
+
+    Deliberately an estimate and not a tokenizer call — the egress has no
+    tokenizer for three providers, and this only has to bound spend, not
+    bill for it. It errs by being computed on compact JSON, which is
+    denser than prose, so the real count is usually a little lower.
+    """
+    try:
+        return len(json.dumps(obj, separators=(",", ":"))) // 4
+    except (TypeError, ValueError):  # pragma: no cover — defensive
+        return 0
+
+
+def _fit_to_budget(samples: list[dict], budget: int, overhead: int) -> list[dict]:
+    """Trim capture samples until the digest fits ``budget`` tokens.
+
+    ``max_flows`` bounds the NUMBER of samples, which does not bound cost:
+    a sample carrying body excerpts is many times the size of a bare one.
+    This is the ceiling that actually bounds spend.
+
+    What gets dropped matters. Trimming newest-first would throw away the
+    recent window the scan is about; trimming blindly would throw away the
+    blocked and flagged flows that are the whole point. So anything the
+    proxy did NOT simply allow is kept to the end, and the allowed flows
+    are dropped oldest-first to make room.
+    """
+    if budget <= 0 or not samples:
+        return samples
+    room = budget - overhead
+    if room <= 0:
+        room = budget // 2          # pathological overhead; keep something
+    if _est_tokens(samples) <= room:
+        return samples
+
+    notable = [s for s in samples if s.get("decision") != "allowed"]
+    allowed = [s for s in samples if s.get("decision") == "allowed"]
+    # Newest-keep among allowed: drop from the front.
+    while allowed and _est_tokens(notable + allowed) > room:
+        allowed.pop(0)
+    kept = notable + allowed
+    # Still over budget on notable flows alone — drop those oldest-first
+    # too rather than blow the ceiling.
+    while len(kept) > 1 and _est_tokens(kept) > room:
+        kept.pop(0)
+    # Restore chronological order for the model.
+    order = {id(s): i for i, s in enumerate(samples)}
+    kept.sort(key=lambda s: order.get(id(s), 0))
+    return kept
+
+
 def build_digest(audit_entries: list[dict], capture_samples: list[dict],
                  policy_events: list[dict], granted: list[str],
                  baseline: list[str], max_flows: int,
-                 dedup: bool = True) -> dict:
+                 dedup: bool = True, max_digest_tokens: int = 0) -> dict:
     """Build the untrusted traffic digest handed to the watcher agent.
 
     Pure function (independently testable). ``audit_entries`` are raw
@@ -513,6 +564,18 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
             dedup_samples(capture_samples) if dedup else list(capture_samples)
         )[-max_flows:],
     }
+    # Hard spend ceiling, applied last so it bounds the WHOLE digest.
+    if max_digest_tokens > 0:
+        samples = digest["capture_samples"]
+        overhead = _est_tokens({k: v for k, v in digest.items()
+                                if k != "capture_samples"})
+        fitted = _fit_to_budget(samples, max_digest_tokens, overhead)
+        if len(fitted) != len(samples):
+            digest["capture_samples_truncated"] = {
+                "kept": len(fitted), "of": len(samples),
+                "reason": "watcher.max_digest_tokens budget",
+            }
+        digest["capture_samples"] = fitted
     return digest
 
 
@@ -577,6 +640,10 @@ class Watcher:
                 f"({_dd!r}) — using the default (true)")
             _dd = True
         self._dedup = _dd
+        # Spend ceiling for one digest. Parsed defensively like the rest;
+        # 0 means unbounded, which the host validator warns about.
+        self._max_digest_tokens = max(0, int(_num(
+            self.cfg, "max_digest_tokens", 8000.0, log)))
         _ctx = self.cfg.get("context", "")
         if not isinstance(_ctx, str):
             self._log.warn(
@@ -631,6 +698,9 @@ class Watcher:
         self._state_path = os.path.join(self._dir, "state.json")
         self._scans = 0
         self._findings_total = 0
+        # Estimated tokens in the most recent digest, so the
+        # operator sees ACTUAL spend shape, not just the cap.
+        self._last_digest_tokens = 0
 
     # ── Secret reading ─────────────────────────────────────
 
@@ -787,7 +857,9 @@ class Watcher:
                       if self.dom is not None else []),
             max_flows=self._max_flows,
             dedup=self._dedup,
+            max_digest_tokens=self._max_digest_tokens,
         )
+        self._last_digest_tokens = _est_tokens(digest)
         verdict = await asyncio.to_thread(self._review_sync, digest)
         if verdict is None:
             # Bounded retry: push the drained batch back and leave the
@@ -1403,6 +1475,8 @@ class Watcher:
                 "last_scan_failed": failed,
                 "consecutive_failed_scans": self._consec_failures,
                 "interval_seconds": self._interval,
+                "digest_tokens_last_scan": self._last_digest_tokens,
+                "max_digest_tokens": self._max_digest_tokens,
             }
             tmp = f"{self._state_path}.{os.getpid()}.tmp"
             with open(tmp, "w") as f:

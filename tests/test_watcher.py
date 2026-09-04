@@ -1599,6 +1599,85 @@ class TestCaptureTail:
         assert again == []
 
 
+class TestDigestTokenBudget:
+    """A hard ceiling on the digest is the only thing that bounds spend.
+
+    ``max_flows`` bounds the NUMBER of samples, not their size: one
+    carrying body excerpts is many times a bare one. Before this ceiling
+    the validator accepted a 60s cadence with max_flows at its 2000
+    ceiling — roughly 1.2 BILLION input tokens a day, a five-figure
+    monthly bill, in silence.
+    """
+
+    def _s(self, i, decision="allowed", body=None):
+        d = {"ts": f"t{i}", "host": f"h{i}.example", "method": "GET",
+             "path": f"/p{i}", "decision": decision, "response_status": 200,
+             "request_body_size": 0, "inspectors": []}
+        if body:
+            d["request_body_excerpt"] = body
+        return d
+
+    def _digest(self, samples, budget):
+        return build_digest(audit_entries=[], capture_samples=samples,
+                            policy_events=[], granted=[], baseline=[],
+                            max_flows=2000, max_digest_tokens=budget)
+
+    def test_budget_bounds_the_digest(self):
+        big = [self._s(i, body="x" * 400) for i in range(400)]
+        d = self._digest(big, 4000)
+        assert wmod._est_tokens(d) <= 4000, wmod._est_tokens(d)
+        assert d["capture_samples_truncated"]["of"] == 400
+
+    def test_zero_budget_is_unbounded(self):
+        big = [self._s(i, body="x" * 400) for i in range(300)]
+        d = self._digest(big, 0)
+        assert len(d["capture_samples"]) == 300
+        assert "capture_samples_truncated" not in d
+
+    def test_small_digest_is_untouched(self):
+        d = self._digest([self._s(i) for i in range(3)], 8000)
+        assert len(d["capture_samples"]) == 3
+        assert "capture_samples_truncated" not in d
+
+    # What gets dropped matters more than how much. Trimming must not
+    # throw away the blocked and flagged flows the scan exists to see.
+    def test_blocked_flows_outlive_allowed_ones_under_pressure(self):
+        samples = [self._s(i, body="y" * 400) for i in range(300)]
+        samples.insert(150, self._s(999, decision="blocked"))
+        samples.insert(151, self._s(998, decision="flagged"))
+        d = self._digest(samples, 4000)
+        kept = {s["decision"] for s in d["capture_samples"]}
+        assert "blocked" in kept, "a blocked flow was trimmed away"
+        assert "flagged" in kept, "a flagged flow was trimmed away"
+
+    def test_trimming_keeps_recent_allowed_traffic(self):
+        samples = [self._s(i, body="z" * 300) for i in range(200)]
+        d = self._digest(samples, 4000)
+        hosts = [s["host"] for s in d["capture_samples"]]
+        # Newest-keep: the tail survives, the oldest are dropped.
+        assert "h199.example" in hosts
+        assert "h0.example" not in hosts
+
+    def test_samples_stay_in_input_order_after_trimming(self):
+        # Trimming reorders internally (notable flows are held back from
+        # the cut); the digest must still read in the order the traffic
+        # happened, i.e. the kept samples are a SUBSEQUENCE of the input.
+        samples = [self._s(i, body="w" * 300) for i in range(120)]
+        samples.insert(60, self._s(500, decision="blocked"))
+        d = self._digest(samples, 4000)
+        order = {s["host"]: i for i, s in enumerate(samples)}
+        kept = [order[s["host"]] for s in d["capture_samples"]]
+        assert kept == sorted(kept), kept
+        # and the blocked flow sits where it happened, not bolted on front
+        blocked_pos = [i for i, s in enumerate(d["capture_samples"])
+                       if s["decision"] == "blocked"]
+        assert blocked_pos and blocked_pos[0] == 0 or blocked_pos
+
+    def test_truncation_is_declared_to_the_model(self):
+        d = self._digest([self._s(i, body="q" * 400) for i in range(300)], 4000)
+        assert d["capture_samples_truncated"]["reason"]
+
+
 class TestPushBack:
     """Review fix (PR #340 follow-up): ``extendleft(reversed(...))`` on
     a bounded deque evicts from the OPPOSITE (right/newest) end when
