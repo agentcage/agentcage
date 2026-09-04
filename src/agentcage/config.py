@@ -2341,7 +2341,9 @@ def validate_config(config: Config) -> list[str]:
                 "deliberately uncapping it."
             )
         else:
-            _per_day = w.max_digest_tokens * _scans_per_day
+            # x1.15: 5% of scans run at 4x the budget (random
+            # full-fidelity audits — see watcher._FULL_SCAN_PROB).
+            _per_day = w.max_digest_tokens * _scans_per_day * 1.15
             if _per_day > 5_000_000:
                 warnings.append(
                     f"watcher may send up to {_per_day/1e6:.0f}M input "

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import sys
 import textwrap
 import types
@@ -1698,6 +1699,168 @@ class TestDigestTokenBudget:
     def test_truncation_is_declared_to_the_model(self):
         d = self._digest([self._s(i, body="q" * 400) for i in range(300)], 4000)
         assert d["capture_samples_truncated"]["reason"]
+
+
+class TestAdversarialHardening:
+    """The caged agent controls its own traffic and can read this code, so
+    every deterministic boundary is somewhere it can shape traffic to sit
+    just past. Randomness turns evasions it wins EVERY time into ones it
+    wins sometimes and cannot predict; indicators make the attempt itself
+    visible.
+    """
+
+    # ── excerpt padding ──────────────────────────────────────────────
+    def test_head_only_excerpt_without_rng_is_the_evasion(self):
+        body = "A" * 600 + "PAYLOAD-CANARY" + "B" * 50
+        assert "PAYLOAD-CANARY" not in wmod._excerpt_body(body, None)
+
+    def test_payload_at_the_end_always_survives_with_rng(self):
+        # The tail window always covers the end, whatever the seed.
+        body = "A" * 5000 + "PAYLOAD-CANARY"
+        for seed in range(50):
+            ex = wmod._excerpt_body(body, None, random.Random(seed))
+            assert "PAYLOAD-CANARY" in ex
+
+    def test_payload_in_the_middle_cannot_be_hidden_deterministically(self):
+        # Past the fixed head, past the tail, in the middle: head-only
+        # never sees it; a random middle window sees it on SOME seeds,
+        # so an attacker cannot rely on any placement.
+        body = "A" * 2000 + "PAYLOAD-CANARY" + "B" * 2000
+        hits = sum("PAYLOAD-CANARY" in wmod._excerpt_body(body, None, random.Random(sd))
+                   for sd in range(400))
+        assert hits > 0, "middle payload was never sampled"
+        assert len(wmod._excerpt_body(body, None, random.Random(1))) < 700
+
+    def test_short_bodies_are_untouched_by_rng(self):
+        assert wmod._excerpt_body("hello", None, random.Random(3)) == "hello"
+
+    # ── decoy bodies vs rarity tie-break ─────────────────────────────
+    def _s(self, body, i=0, decision="allowed"):
+        return {"ts": f"t{i}", "host": "api.example.com", "method": "POST",
+                "path": "/graphql", "decision": decision, "response_status": 200,
+                "request_body_size": 0, "inspectors": [],
+                "request_body_excerpt": body}
+
+    def test_decoys_cannot_deterministically_exclude_the_real_body(self):
+        # Ten distinct decoys once each + the real one once: eleven
+        # equally rare bodies, three slots. With recency tie-break the
+        # attacker chooses the loser; with a random tie-break the real
+        # body is kept on a healthy share of seeds.
+        flows = [self._s(f'{{"decoy":{i}}}', i) for i in range(10)]
+        flows.insert(0, self._s('{"exfil":"REAL-CANARY"}', 99))
+        kept = sum("REAL-CANARY" in json.dumps(dedup_samples(flows, 3, rng=random.Random(sd)))
+                   for sd in range(200))
+        assert kept > 20, f"real body kept on only {kept}/200 seeds"
+
+    # ── random budget sampling ───────────────────────────────────────
+    def test_even_spread_is_predictable_random_is_not(self):
+        items = [{"i": i, "decision": "allowed", "pad": "x" * 100} for i in range(100)]
+        budget = 400   # room for roughly a dozen of these, not all hundred
+        a = wmod._fit_to_budget(list(items), budget, 0)      # rng None → spread
+        b = wmod._fit_to_budget(list(items), budget, 0)
+        assert 0 < len(a) < 100 and a == b                   # deterministic
+        r1 = wmod._fit_to_budget(list(items), budget, 0, random.Random(1))
+        r2 = wmod._fit_to_budget(list(items), budget, 0, random.Random(2))
+        assert 0 < len(r1) < 100
+        assert r1 != r2                                      # seed-dependent
+        assert [x["i"] for x in r1] == sorted(x["i"] for x in r1)  # order kept
+
+    # ── cadence jitter ───────────────────────────────────────────────
+    def test_jitter_stays_within_bounds_and_floor(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch, cfg={"interval_seconds": 900})
+        ds = [w._next_delay() for _ in range(300)]
+        assert min(ds) >= 450 - 1e-6 and max(ds) <= 1350 + 1e-6
+        assert len(set(round(d) for d in ds)) > 20      # actually varies
+        w2, _ = _mk_watcher(tmp_path, monkeypatch, cfg={"interval_seconds": 60})
+        assert all(w2._next_delay() >= 60 for _ in range(100))
+
+    # ── evasion indicators ───────────────────────────────────────────
+    def _cap(self, host, body="x", enc=None):
+        return {"ts": "t", "host": host, "method": "POST", "path": "/up",
+                "decision": "allowed", "response_status": 200,
+                "request_body_size": len(body), "inspectors": [],
+                "request_body_binary": enc == "base64",
+                "request_body_exceeds_excerpt": len(body) > 512,
+                **({"request_body_excerpt": body} if enc != "base64" else {})}
+
+    def test_binary_body_to_granted_host_is_counted(self):
+        d = build_digest(audit_entries=[], policy_events=[], baseline=["ok.example"],
+                         granted=["drop.example"], max_flows=200,
+                         capture_samples=[self._cap("files.drop.example", "QUJD", "base64"),
+                                          self._cap("ok.example", "QUJD", "base64")])
+        assert d["evasion_indicators"]["binary_request_bodies_to_granted_hosts"] == 1
+
+    def test_padded_bodies_are_counted(self):
+        d = build_digest(audit_entries=[], policy_events=[], baseline=[], granted=[],
+                         max_flows=200,
+                         capture_samples=[self._cap("a.example", "p" * 900),
+                                          self._cap("b.example", "short")])
+        assert d["evasion_indicators"]["request_bodies_longer_than_excerpt"] == 1
+
+    def test_ring_saturation_is_reported(self):
+        d = build_digest(audit_entries=[], policy_events=[], baseline=[], granted=[],
+                         max_flows=200, capture_samples=[], ring_saturated=True)
+        assert d["evasion_indicators"]["audit_ring_saturated"] is True
+
+    def test_flood_is_counted_before_the_budget_trims_it(self):
+        flood = [{**self._cap(f"h{i}.example", "q" * 300)} for i in range(300)]
+        d = build_digest(audit_entries=[], policy_events=[], baseline=[], granted=[],
+                         max_flows=2000, capture_samples=flood, max_digest_tokens=4000)
+        assert d["evasion_indicators"]["distinct_shapes"] == 300
+        assert len(d["capture_samples"]) < 300      # trimmed…
+        # …but the flood itself is still on the record.
+
+    def test_sample_capture_flags_binary_and_oversize(self):
+        e = {"ts": "t", "host": "h", "path": "/", "method": "POST",
+             "inbound": {"request": {"body": "QUJD", "bodyEncoding": "base64",
+                                     "url": "https://h/"},
+                         "response": {}}, "outbound": {}}
+        assert wmod._sample_capture(e)["request_body_binary"] is True
+        e["inbound"]["request"] = {"body": "z" * 900, "bodyEncoding": None, "url": "https://h/"}
+        assert wmod._sample_capture(e)["request_body_exceeds_excerpt"] is True
+
+    # ── deterministic findings + seed logging via a real tick ───────
+    def test_binary_to_granted_host_yields_a_finding_without_the_model(
+            self, tmp_path, monkeypatch):
+        dom = _FakeDom(granted=["drop.example"])
+        pa = _FakePa(dom)
+        cap = [{"ts": datetime.now(timezone.utc).isoformat(), "host": "drop.example",
+                "direction": "outbound", "decision": "allowed", "method": "POST",
+                "path": "/up", "inspectors": [],
+                "inbound": {"request": {"body": "QUJDREVG", "bodyEncoding": "base64",
+                                        "bodySize": 6, "url": "https://drop.example/up"},
+                            "response": {"status": 200, "bodySize": 0}},
+                "outbound": {"request": {}, "response": {}}}]
+        w, audit = _mk_watcher(tmp_path, monkeypatch, dom=dom, pa=pa,
+                               ring=[_flow_entry()], capture=cap)
+        w._window = 86400
+        # Model says nothing at all — the finding must come from the indicator.
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response({"findings": []}))
+        asyncio.run(w._tick())
+        titles = [e.get("title", "") for e in audit if e.get("kind") == "watcher_finding"]
+        assert any("binary request body" in t for t in titles), titles
+        state = json.loads((tmp_path / "watcher" / "state.json").read_text())
+        assert isinstance(state.get("scan_seed"), int)
+        assert "full_fidelity_scan" in state
+
+    def test_full_fidelity_scan_raises_the_budget(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch, ring=[_flow_entry()],
+                           cfg={"max_digest_tokens": 8000})
+        seen = {}
+        def fake_digest(**kw):
+            seen["budget"] = kw.get("max_digest_tokens"); return {"capture_samples": []}
+        monkeypatch.setattr(wmod, "build_digest", fake_digest)
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response({"findings": []}))
+        # Force the roll: a Random whose first draw is below the threshold.
+        class _R(random.Random):
+            def random(self): return 0.0
+        monkeypatch.setattr(wmod._SYSRNG, "getrandbits", lambda n: 7)
+        monkeypatch.setattr(wmod.random, "Random", _R)
+        asyncio.run(w._tick())
+        assert seen["budget"] == 8000 * wmod._FULL_SCAN_BUDGET_MULT
+        assert w._full_fidelity is True
 
 
 class TestPushBack:

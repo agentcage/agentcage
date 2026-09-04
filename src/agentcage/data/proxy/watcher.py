@@ -69,6 +69,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 from collections import Counter, OrderedDict
 from datetime import datetime, timedelta, timezone
@@ -109,6 +110,29 @@ _MAX_LINE_BYTES = 4 * _CAP_READ_CHUNK
 # capture-sample count itself is bounded by the configured
 # ``watcher.max_flows`` (Watcher._max_flows), not a fixed constant here.
 _BODY_EXCERPT_CHARS = 512
+
+# ── Adversarial hardening ────────────────────────────────────────────
+# The caged agent controls every byte of its own traffic and can read
+# this code, so every DETERMINISTIC boundary in the pipeline is a place
+# it can shape traffic to sit just past. Randomness does one narrow job
+# here: it turns evasions the attacker wins every time into evasions it
+# wins sometimes and cannot predict. Each scan draws one seed from OS
+# entropy (nothing the cage influences) and drives every random choice
+# from it, and the seed is logged with the scan so a finding stays
+# reproducible.
+_SYSRNG = random.SystemRandom()
+
+# Cadence jitter as a fraction of interval_seconds, uniform in [1-j, 1+j].
+# Mean cadence (and so mean cost) is unchanged; the predictable "safe
+# window" right after a scan is gone.
+_CADENCE_JITTER = 0.5
+
+# Random full-fidelity scans: with this probability a scan runs at a
+# multiple of the digest budget, so no window is ever safely known to be
+# in cheap mode. Bounded, not unbounded — this must not reopen the
+# uncapped-spend hole. Mean cost impact is (mult-1)*prob, ~15%.
+_FULL_SCAN_PROB = 0.05
+_FULL_SCAN_BUDGET_MULT = 4
 _MAX_HOSTS_IN_DIGEST = 25
 _MAX_POLICY_EVENTS = 200
 
@@ -246,20 +270,40 @@ def _redact_headers(headers: list) -> list[list[str]]:
     return out
 
 
-def _excerpt_body(body, encoding) -> str:
+def _excerpt_body(body, encoding, rng: "random.Random | None" = None) -> str:
     """A short, textual excerpt of a body; binary/base64 → a size note.
 
     Base64-encoded bodies are opaque blobs (and possibly the wire view of
     real secrets) — never excerpted, only summarized as size.
+
+    Long bodies are NOT excerpted head-only. A fixed "first 512 chars"
+    window is the cheapest evasion there is: pad the front with
+    plausible JSON and put the payload after it, and the model never
+    sees it. With an ``rng`` the excerpt is head + a random middle slice
+    + tail, so the tail always covers the end and the middle window
+    lands somewhere the attacker cannot predict. Without an ``rng``
+    (tests, offline analysis) the legacy head-only excerpt is kept.
     """
     if not body:
         return ""
     if encoding == "base64":
         return f"[binary body, {len(str(body))} b64 chars, not excerpted]"
     text = str(body)
-    if len(text) > _BODY_EXCERPT_CHARS:
+    n = len(text)
+    if n <= _BODY_EXCERPT_CHARS:
+        return text
+    if rng is None:
         return text[:_BODY_EXCERPT_CHARS] + "…[truncated]"
-    return text
+    head_n = _BODY_EXCERPT_CHARS // 2          # 256
+    tail_n = _BODY_EXCERPT_CHARS // 4          # 128
+    mid_n = _BODY_EXCERPT_CHARS - head_n - tail_n  # 128
+    lo, hi = head_n, max(head_n, n - tail_n - mid_n)
+    start = rng.randint(lo, hi) if hi > lo else lo
+    head = text[:head_n]
+    mid = text[start:start + mid_n]
+    tail = text[n - tail_n:]
+    return (f"{head}…[{start - head_n} chars skipped]…{mid}"
+            f"…[{max(0, n - tail_n - (start + mid_n))} chars skipped]…{tail}")
 
 
 def _safe_path(entry: dict, in_req: dict) -> str:
@@ -289,7 +333,8 @@ def _safe_path(entry: dict, in_req: dict) -> str:
     return str(entry.get("path") or "").split("?", 1)[0][:256]
 
 
-def _sample_capture(entry: dict, host_hint: str = "") -> dict:
+def _sample_capture(entry: dict, host_hint: str = "",
+                    rng: "random.Random | None" = None) -> dict:
     """Reduce one capture.jsonl entry to a digest-safe sample.
 
     INBOUND view only for bodies AND for the path (placeholders — safe to
@@ -325,11 +370,21 @@ def _sample_capture(entry: dict, host_hint: str = "") -> dict:
     # The inbound request body (cage-visible, placeholders) is the one
     # body safe to excerpt — it is what the agent SENT, which is where
     # exfiltration and injection attempts are visible.
-    text = _excerpt_body(in_req.get("body", ""), in_req.get("bodyEncoding"))
+    text = _excerpt_body(in_req.get("body", ""), in_req.get("bodyEncoding"), rng)
     if text:
         sample["request_body_excerpt"] = text
+    # Evasion fingerprints, computed here where the raw body is visible.
+    # A base64 request body is invisible to the model by design (secret
+    # hygiene), which is exactly why an attacker would use one; a body
+    # longer than the excerpt has content the model cannot see. Neither
+    # is a verdict — they are counted in the digest's evasion indicators
+    # so the model, and the operator, know what they are NOT seeing.
+    if in_req.get("bodyEncoding") == "base64" and in_req.get("body"):
+        sample["request_body_binary"] = True
+    if len(str(in_req.get("body") or "")) > _BODY_EXCERPT_CHARS:
+        sample["request_body_exceeds_excerpt"] = True
     resp_text = _excerpt_body(in_resp.get("body", ""),
-                              in_resp.get("bodyEncoding"))
+                              in_resp.get("bodyEncoding"), rng)
     if resp_text:
         sample["response_body_excerpt"] = resp_text
     # Response headers can leak what came back (server banners ok,
@@ -359,7 +414,8 @@ def _template_path(path: str) -> str:
 
 
 def dedup_samples(samples: list[dict],
-                  max_bodies: int = _DEDUP_BODIES_PER_GROUP) -> list[dict]:
+                  max_bodies: int = _DEDUP_BODIES_PER_GROUP,
+                  rng: "random.Random | None" = None) -> list[dict]:
     """Collapse repeated flow SHAPES into one sample carrying a count.
 
     Real cage traffic is dominated by repetition — a poller hitting one
@@ -425,9 +481,15 @@ def dedup_samples(samples: list[dict],
                 freq[b] = freq.get(b, 0) + 1
                 last_seen[b] = i
             if len(freq) > 1:
-                modal = max(freq, key=lambda b: (freq[b], -last_seen[b]))
+                # Ties in rarity are broken RANDOMLY when an rng is given.
+                # A deterministic tie-break (recency) is gameable: send
+                # ten distinct decoy bodies once each alongside the real
+                # one, and the attacker chooses which lose the tie.
+                tb = ((lambda b: rng.random()) if rng is not None
+                      else (lambda b: -last_seen[b]))
+                modal = max(freq, key=lambda b: (freq[b], tb(b)))
                 rest = sorted((b for b in freq if b != modal),
-                              key=lambda b: (freq[b], -last_seen[b]))
+                              key=lambda b: (freq[b], tb(b)))
                 kept = ([modal] + rest)[:max_bodies]
                 # Present them in first-seen order so the sample still
                 # reads chronologically.
@@ -453,7 +515,8 @@ def _est_tokens(obj) -> int:
         return 0
 
 
-def _fit_to_budget(samples: list[dict], budget: int, overhead: int) -> list[dict]:
+def _fit_to_budget(samples: list[dict], budget: int, overhead: int,
+                   rng: "random.Random | None" = None) -> list[dict]:
     """Trim capture samples until the digest fits ``budget`` tokens.
 
     ``max_flows`` bounds the NUMBER of samples, which does not bound cost:
@@ -490,6 +553,13 @@ def _fit_to_budget(samples: list[dict], budget: int, overhead: int) -> list[dict
             return items
         if n <= 0:
             return []
+        if rng is not None:
+            # Random subset, order preserved. An even spread is
+            # PREDICTABLE — the attacker can compute which indices
+            # survive and place traffic around them; a random draw from
+            # a seed it cannot see is not.
+            idx = sorted(rng.sample(range(len(items)), n))
+            return [items[i] for i in idx]
         step = len(items) / float(n)
         return [items[min(len(items) - 1, int(i * step))] for i in range(n)]
 
@@ -514,7 +584,9 @@ def _fit_to_budget(samples: list[dict], budget: int, overhead: int) -> list[dict
 def build_digest(audit_entries: list[dict], capture_samples: list[dict],
                  policy_events: list[dict], granted: list[str],
                  baseline: list[str], max_flows: int,
-                 dedup: bool = True, max_digest_tokens: int = 0) -> dict:
+                 dedup: bool = True, max_digest_tokens: int = 0,
+                 rng: "random.Random | None" = None,
+                 ring_saturated: bool = False) -> dict:
     """Build the untrusted traffic digest handed to the watcher agent.
 
     Pure function (independently testable). ``audit_entries`` are raw
@@ -582,8 +654,35 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
         # of one poll. Newest-keep: if the cap still bites, the OLDEST
         # samples are dropped — the scan is about the recent window.
         "capture_samples": (
-            dedup_samples(capture_samples) if dedup else list(capture_samples)
+            dedup_samples(capture_samples, rng=rng) if dedup else list(capture_samples)
         )[-max_flows:],
+    }
+    # Evasion indicators — deterministic counts of the fingerprints an
+    # attacker leaves while trying to hide. None is a verdict; each says
+    # what the model is NOT seeing. Computed on the deduped samples
+    # BEFORE the budget trims them, so a flood that dilutes the sample
+    # is counted even though most of it is then cut.
+    deduped = digest["capture_samples"]
+    granted_set = {g.lower().rstrip(".") for g in granted}
+    def _is_granted(host: str) -> bool:
+        h = (host or "").lower().rstrip(".")
+        parts = h.split(".")
+        return any(".".join(parts[i:]) in granted_set for i in range(len(parts)))
+    digest["evasion_indicators"] = {
+        "distinct_shapes": len(deduped),
+        "raw_flows_before_dedup": len(capture_samples),
+        "max_distinct_bodies_on_one_shape": max(
+            [int(x.get("distinct_request_bodies") or 1) for x in deduped] or [0]),
+        "binary_request_bodies_to_granted_hosts": sum(
+            1 for x in deduped
+            if x.get("request_body_binary") and _is_granted(str(x.get("host", "")))),
+        "request_bodies_longer_than_excerpt": sum(
+            1 for x in deduped if x.get("request_body_exceeds_excerpt")),
+        "audit_ring_saturated": bool(ring_saturated),
+        "note": "these are fingerprints of traffic shaped to evade review "
+                "(flooding with distinct shapes, decoy bodies, binary or "
+                "padded bodies, overflowing the audit ring); high values "
+                "are themselves suspicious",
     }
     # Hard spend ceiling, applied last so it bounds the WHOLE digest.
     if max_digest_tokens > 0:
@@ -597,9 +696,12 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
         # The truncation notice is itself part of the prompt, so it is
         # counted as overhead BEFORE fitting — otherwise the digest
         # lands just over the ceiling it advertises.
-        overhead = _est_tokens({k: v for k, v in digest.items()
-                                if k != "capture_samples"}) + _est_tokens(notice)
-        fitted = _fit_to_budget(samples, max_digest_tokens, overhead)
+        # Overhead is the digest WITH an empty sample list, so the key and
+        # the wrapping punctuation are counted too — estimating the
+        # sections separately left the glue between them uncounted and
+        # the digest a dozen tokens over the ceiling it advertised.
+        overhead = _est_tokens({**digest, "capture_samples": []}) + _est_tokens(notice)
+        fitted = _fit_to_budget(samples, max_digest_tokens, overhead, rng)
         if len(fitted) != len(samples):
             notice["kept"] = len(fitted)
             digest["capture_samples_truncated"] = notice
@@ -729,6 +831,9 @@ class Watcher:
         # Estimated tokens in the most recent digest, so the
         # operator sees ACTUAL spend shape, not just the cap.
         self._last_digest_tokens = 0
+        self._rng: "random.Random | None" = None
+        self._scan_seed: "int | None" = None
+        self._full_fidelity = False
 
     # ── Secret reading ─────────────────────────────────────
 
@@ -768,13 +873,23 @@ class Watcher:
         """
         try:
             while True:
-                await asyncio.sleep(self._interval)
+                await asyncio.sleep(self._next_delay())
                 try:
                     await self._tick()
                 except Exception as e:  # pragma: no cover — defensive
                     self._log.warn(f"agentcage: watcher tick failed: {e!r}")
         except asyncio.CancelledError:
             return
+
+    def _next_delay(self) -> float:
+        """Jittered cadence: uniform in [1-j, 1+j] x interval, floored at 60s.
+
+        A fixed cadence is inferable from the cage (revocation timing) and
+        gives a predictable safe window right after each scan. Jitter
+        removes it; the mean, and so the mean cost, is unchanged.
+        """
+        j = _CADENCE_JITTER
+        return max(60.0, self._interval * _SYSRNG.uniform(1.0 - j, 1.0 + j))
 
     # ── One scan ────────────────────────────────────────────
 
@@ -791,6 +906,13 @@ class Watcher:
         them back would let a failed scan's own noise become the next
         scan's evidence.
         """
+        # A ring sitting at its bound when we arrive means entries were
+        # very likely evicted before this scan could see them — either a
+        # genuinely busy cage or an attacker pushing chaff through the
+        # ring to age evidence out before the drain. Recorded as an
+        # evasion indicator either way.
+        ring_saturated = bool(self._ring) and self._ring.maxlen is not None \
+            and len(self._ring) >= self._ring.maxlen
         batch: list[dict] = []
         while self._ring and len(batch) < _MAX_DRAIN:
             e = self._ring.popleft()
@@ -800,6 +922,7 @@ class Watcher:
         samples, new_offset, file_id = self._read_capture(now)
         return {
             "audit": batch,
+            "ring_saturated": ring_saturated,
             "capture_samples": samples,
             "cap_offset": new_offset,
             "cap_file_id": file_id,
@@ -851,6 +974,18 @@ class Watcher:
         all ride it.
         """
         now = _now()
+        # One seed per scan from OS entropy, logged with the scan. Every
+        # random choice below (excerpt windows, rarity tie-breaks, budget
+        # sampling) derives from it, so an operator can replay a scan
+        # exactly while the cage can predict none of it.
+        self._scan_seed = _SYSRNG.getrandbits(64)
+        self._rng = random.Random(self._scan_seed)
+        # Random full-fidelity scan: a bounded multiple of the budget, so
+        # no window is ever safely known to be in cheap mode.
+        self._full_fidelity = self._rng.random() < _FULL_SCAN_PROB
+        budget = self._max_digest_tokens
+        if self._full_fidelity and budget > 0:
+            budget = budget * _FULL_SCAN_BUDGET_MULT
         batch = await asyncio.to_thread(self._collect, now)
         entries: list[dict] = batch["audit"]
         samples: list[dict] = batch["capture_samples"]
@@ -885,9 +1020,44 @@ class Watcher:
                       if self.dom is not None else []),
             max_flows=self._max_flows,
             dedup=self._dedup,
-            max_digest_tokens=self._max_digest_tokens,
+            max_digest_tokens=budget,
+            rng=self._rng,
+            ring_saturated=bool(batch.get("ring_saturated")),
         )
         self._last_digest_tokens = _est_tokens(digest)
+        # Evasion fingerprints strong enough to stand on their own, recorded
+        # as findings WITHOUT waiting for the model. A binary request body
+        # to a runtime-granted host is exactly how one hides an
+        # exfiltration from an excerpt-based auditor; a saturated ring
+        # means evidence may have been evicted before review. The model
+        # still sees the full indicator block and may say more.
+        ind = digest.get("evasion_indicators") or {}
+        if ind.get("binary_request_bodies_to_granted_hosts", 0) > 0:
+            self._record_finding({
+                "severity": "medium",
+                "title": f"{ind['binary_request_bodies_to_granted_hosts']} binary "
+                         f"request body(ies) sent to a runtime-granted host",
+                "detail": "base64/binary request bodies are never excerpted "
+                          "to the model (secret hygiene), so their content is "
+                          "unreviewable; sending them to a domain the cage "
+                          "was granted at runtime is a common way to move data "
+                          "past an excerpt-based review",
+                "recommendation": "inspect the flows with `agentcage cage har "
+                                  "--view inbound` and consider revoking the "
+                                  "grant if the transfer is not expected",
+            })
+        if ind.get("audit_ring_saturated"):
+            self._record_finding({
+                "severity": "low",
+                "title": "audit ring was saturated before this scan",
+                "detail": "the in-memory audit ring was at capacity when the "
+                          "scan drained it, so earlier entries in the window "
+                          "were likely evicted unreviewed — a busy cage, or "
+                          "chaff pushed through the ring to age evidence out",
+                "recommendation": "shorten watcher.interval_seconds, or treat "
+                                  "the volume itself as suspicious if the cage "
+                                  "has no reason to be this busy",
+            })
         verdict = await asyncio.to_thread(self._review_sync, digest)
         if verdict is None:
             # Bounded retry: push the drained batch back and leave the
@@ -1470,7 +1640,7 @@ class Watcher:
                     dt = _parse_ts(entry.get("ts", ""))
                     if dt is None or dt < cutoff:
                         continue
-                samples.append(_sample_capture(entry))
+                samples.append(_sample_capture(entry, rng=self._rng))
             # The reset target is NOT cleared here: this method only
             # STAGES an offset, and _tick deliberately leaves the offset
             # uncommitted when the scan fails. Clearing on read meant the
@@ -1505,6 +1675,9 @@ class Watcher:
                 "interval_seconds": self._interval,
                 "digest_tokens_last_scan": self._last_digest_tokens,
                 "max_digest_tokens": self._max_digest_tokens,
+                # Reproducibility: replay this scan's random choices.
+                "scan_seed": getattr(self, "_scan_seed", None),
+                "full_fidelity_scan": bool(getattr(self, "_full_fidelity", False)),
             }
             tmp = f"{self._state_path}.{os.getpid()}.tmp"
             with open(tmp, "w") as f:
