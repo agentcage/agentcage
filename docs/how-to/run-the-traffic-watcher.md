@@ -87,9 +87,12 @@ Traffic watcher for cage 'mycage': enabled
   scans run:      7
   flows in last window: 41
   findings total: 2
+  capture backlog: 0.4 MB of 12.8 MB
 ```
 
 Nothing appears until the first interval elapses, and a scan is skipped entirely when the window had no traffic — a quiet cage costs nothing. If `scans run` stays at zero well past `interval_seconds`, check the credential first.
+
+Watch `capture backlog`. The watcher reads at most 8 MB per scan, so a body-heavy cage can write faster than it reads, and a growing backlog means findings describe progressively older traffic. Past a threshold the watcher skips to the live end and records a finding naming the skipped bytes. The [capture reference](../reference/capture.md) covers how to bring the two back into balance.
 
 ## Read the findings
 
