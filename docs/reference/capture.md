@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-09-03 -->
+<!-- owner: @luca  last-reviewed: 2026-09-04 -->
 # Capture
 
 Opt-in HAR recording of full request/response bodies (decrypted) for forensic analysis. Disabled by default. Read this when investigating a flagged flow or building a regression fixture.
@@ -16,7 +16,7 @@ Settings under `capture:`.
 |---------|------|---------|-------------|
 | `enable_har` | `bool` | `false` | Enable HAR traffic capture. Creates a volume mount for the capture file. |
 | `max_body_size` | `int` | `10485760` (10 MB) | Truncate bodies larger than this. Truncated entries are marked with `bodyTruncated: true`. Applies to each of the four body slots per entry, so one entry can hold four times this before base64 inflation. |
-| `max_file_size` | `int` | `134217728` (128 MB) | Roll the capture file over past this size, keeping one previous generation (`capture.jsonl.1`). The on-disk ceiling is twice this. `0` disables rotation. |
+| `max_file_size` | `int` | `134217728` (128 MB) | Roll the capture file over past this size, keeping one previous generation (`capture.jsonl.1`). The on-disk ceiling is twice this. `0` disables rotation. *Since 0.37.0* |
 | `min_action` | `string` | `"all"` | Minimum inspector action to trigger capture: `"all"` (capture everything), `"flag"` (flagged + blocked only), `"block"` (blocked only). |
 | `domains` | `list[string]` | `[]` | Domain allowlist — only capture flows to matching domains. Empty = capture all. Subdomains are matched automatically. |
 | `exclude_domains` | `list[string]` | `[]` | Domain blocklist — skip flows to matching domains. |
