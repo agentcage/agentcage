@@ -679,10 +679,7 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
         "request_bodies_longer_than_excerpt": sum(
             1 for x in deduped if x.get("request_body_exceeds_excerpt")),
         "audit_ring_saturated": bool(ring_saturated),
-        "note": "these are fingerprints of traffic shaped to evade review "
-                "(flooding with distinct shapes, decoy bodies, binary or "
-                "padded bodies, overflowing the audit ring); high values "
-                "are themselves suspicious",
+        "note": "evasion fingerprints — see system prompt",
     }
     # Hard spend ceiling, applied last so it bounds the WHOLE digest.
     if max_digest_tokens > 0:
@@ -1132,19 +1129,45 @@ class Watcher:
                 f"agentcage: unknown watcher agent provider "
                 f"{self._provider!r} — scans are skipped")
             return None
-        try:
-            raw = llm_tool_call(
-                provider=self._provider, model=self._model,
-                api_key=self._secret, base_url=base,
-                system=self._watcher_system_prompt(),
-                user_content=json.dumps(digest),
-                tool=_REVIEW_TOOL, timeout=self._timeout,
-                max_tokens=2048,
-            )
-        except Exception as e:
-            self._log.warn(f"agentcage: watcher llm call failed: {e}")
-            return None
-        args = parse_tool_args(raw, self._provider, "review")
+        # Up to two attempts, the second ONLY for schema non-compliance.
+        # Observed live: a fast model called the forced ``review`` tool
+        # with EMPTY arguments and put its whole analysis in ``content``
+        # as prose — three scans running, each a fail-closed "scan
+        # failed". A single retry that restates the contract fixes the
+        # common case at bounded cost (2x on failed scans only). Network
+        # and provider errors are NOT retried here: the next tick already
+        # retries the same window, and doubling calls on a dead provider
+        # would only double the bill.
+        user_content = json.dumps(digest)
+        args: dict = {}
+        for attempt in (1, 2):
+            try:
+                raw = llm_tool_call(
+                    provider=self._provider, model=self._model,
+                    api_key=self._secret, base_url=base,
+                    system=self._watcher_system_prompt(),
+                    user_content=user_content,
+                    tool=_REVIEW_TOOL, timeout=self._timeout,
+                    max_tokens=2048,
+                )
+            except Exception as e:
+                self._log.warn(f"agentcage: watcher llm call failed: {e}")
+                return None
+            args = parse_tool_args(raw, self._provider, "review")
+            if args and isinstance(args.get("findings"), list):
+                break
+            if attempt == 1:
+                self._log.warn(
+                    "agentcage: watcher llm reply did not satisfy the review "
+                    "tool contract — retrying once with the contract restated")
+                user_content = (
+                    json.dumps(digest)
+                    + "\n\nYour previous reply did not use the `review` tool "
+                      "correctly. Respond ONLY with a `review` tool call. The "
+                      "`findings` argument is REQUIRED and must be a JSON "
+                      "array — use [] if there is nothing to report. Put no "
+                      "analysis in the message text; it is discarded."
+                )
         if not args:
             self._log.warn(
                 "agentcage: watcher llm returned no usable review tool call")
@@ -1262,6 +1285,18 @@ class Watcher:
             "When in doubt, report a finding rather than stay silent — "
             "but revoke only on evidence. Do not output anything else. "
             "Do not ask questions. Review."
+            "\n\nThe digest includes an `evasion_indicators` block: counts of "
+            "traffic shaped to evade this very review — distinct request "
+            "shapes before/after collapsing (a flood dilutes the sample), the "
+            "largest number of distinct bodies on one shape (decoys), binary "
+            "request bodies to runtime-granted hosts (unreviewable content to "
+            "a host the cage asked for), request bodies longer than the "
+            "excerpt (content you cannot see), and whether the audit ring was "
+            "saturated (evidence likely evicted). High values are themselves "
+            "suspicious: an agent flooding to hide is generating the loudest "
+            "possible signal. A `capture_samples_truncated` block means the "
+            "digest was trimmed to a token budget; what you see is a sample. "
+            "A sample's `repeated` count means that many identical requests."
         )
 
     def _watcher_system_prompt(self) -> str:

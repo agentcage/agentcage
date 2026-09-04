@@ -1863,6 +1863,61 @@ class TestAdversarialHardening:
         assert w._full_fidelity is True
 
 
+class TestReviewComplianceRetry:
+    """Observed live: a fast model called the forced `review` tool with
+    EMPTY arguments and put its analysis in the message text — three scans
+    running, each a fail-closed failure. One retry restating the contract
+    fixes the common case; network errors are NOT retried (the next tick
+    already retries the window, and doubling calls on a dead provider only
+    doubles the bill).
+    """
+
+    def _w(self, tmp_path, monkeypatch):
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        return w
+
+    def test_empty_tool_args_then_valid_reply_is_accepted(self, tmp_path, monkeypatch):
+        calls = []
+        def fake(**kw):
+            calls.append(kw["user_content"])
+            if len(calls) == 1:
+                return _llm_ok_response({})            # empty args: non-compliant
+            return _llm_ok_response({"findings": [{"severity": "low", "title": "t",
+                                                   "detail": "d", "recommendation": "r"}]})
+        monkeypatch.setattr(wmod, "llm_tool_call", fake)
+        v = self._w(tmp_path, monkeypatch)._review_sync({"x": 1})
+        assert v is not None and len(v["findings"]) == 1
+        assert len(calls) == 2
+        assert "did not use the `review` tool correctly" in calls[1]
+        assert "did not use" not in calls[0]           # nudge only on retry
+
+    def test_two_non_compliant_replies_fail_closed(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: (calls.append(1), _llm_ok_response({}))[1])
+        assert self._w(tmp_path, monkeypatch)._review_sync({"x": 1}) is None
+        assert len(calls) == 2                           # bounded: never a third
+
+    def test_network_error_is_not_retried(self, tmp_path, monkeypatch):
+        calls = []
+        def boom(**kw):
+            calls.append(1); raise RuntimeError("provider down")
+        monkeypatch.setattr(wmod, "llm_tool_call", boom)
+        assert self._w(tmp_path, monkeypatch)._review_sync({"x": 1}) is None
+        assert len(calls) == 1
+
+    def test_compliant_first_reply_makes_one_call(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: (calls.append(1), _llm_ok_response({"findings": []}))[1])
+        assert self._w(tmp_path, monkeypatch)._review_sync({"x": 1}) is not None
+        assert len(calls) == 1
+
+    def test_system_prompt_explains_the_indicators(self, tmp_path, monkeypatch):
+        p = self._w(tmp_path, monkeypatch)._watcher_system_prompt()
+        assert "evasion_indicators" in p and "capture_samples_truncated" in p
+
+
 class TestPushBack:
     """Review fix (PR #340 follow-up): ``extendleft(reversed(...))`` on
     a bounded deque evicts from the OPPOSITE (right/newest) end when
