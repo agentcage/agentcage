@@ -405,14 +405,35 @@ def dedup_samples(samples: list[dict],
             sample["total_request_bytes"] = sum(
                 int(x.get("request_body_size") or 0) for x in grp)
             # Distinct bodies only — identical repeats add no evidence.
-            seen: list[str] = []
-            for x in grp:
+            # Which distinct bodies to KEEP is the security-critical part.
+            # Taking the first N is the worst possible choice: an attacker
+            # buries one malicious body in a run of benign ones, and a
+            # late arrival is then dropped. (Caught on a real cage: six
+            # benign graphql bodies followed by an exfiltration body, with
+            # N=3, silently discarded the evidence.)
+            #
+            # Rank by RARITY instead, which is the threat's own shape —
+            # polling repeats, exfiltration does not. Keep the modal body
+            # so the model has a baseline to compare against, then the
+            # rarest ones, most recent first among equals.
+            freq: "OrderedDict[str, int]" = OrderedDict()
+            last_seen: dict[str, int] = {}
+            for i, x in enumerate(grp):
                 b = x.get("request_body_excerpt")
-                if b and b not in seen:
-                    seen.append(b)
-            if len(seen) > 1:
-                sample["request_body_excerpts"] = seen[:max_bodies]
-                sample["distinct_request_bodies"] = len(seen)
+                if not b:
+                    continue
+                freq[b] = freq.get(b, 0) + 1
+                last_seen[b] = i
+            if len(freq) > 1:
+                modal = max(freq, key=lambda b: (freq[b], -last_seen[b]))
+                rest = sorted((b for b in freq if b != modal),
+                              key=lambda b: (freq[b], -last_seen[b]))
+                kept = ([modal] + rest)[:max_bodies]
+                # Present them in first-seen order so the sample still
+                # reads chronologically.
+                kept.sort(key=lambda b: last_seen[b])
+                sample["request_body_excerpts"] = kept
+                sample["distinct_request_bodies"] = len(freq)
                 sample.pop("request_body_excerpt", None)
         out.append(sample)
     return out

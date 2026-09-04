@@ -677,6 +677,38 @@ class TestSampleDedup:
         assert out[0]["repeated"] == 51
         assert "exfil_batch" in blob, "the malicious body was collapsed away"
 
+    def test_late_malicious_body_survives_many_DISTINCT_benign_bodies(self):
+        """Regression: found on a real cage, not by the test above.
+
+        With several DISTINCT benign bodies, keeping the first N distinct
+        ones discarded a malicious body that arrived after them — six
+        benign graphql bodies then an exfiltration body, N=3, evidence
+        gone. Retention is ranked by rarity now: polling repeats,
+        exfiltration does not.
+        """
+        flows = []
+        for seq in (1, 2, 3):          # each benign body repeats
+            for _ in range(2):
+                flows.append(self._s(method="POST", path="/graphql",
+                                     body='{"query":"{viewer}","seq":%d}' % seq))
+        flows.append(self._s(method="POST", path="/graphql",
+                             body='{"exfil_batch":1,"env_dump":{"AWS_KEY":"x"}}'))
+        out = dedup_samples(flows, max_bodies=3)
+        assert len(out) == 1
+        blob = json.dumps(out)
+        assert "exfil_batch" in blob, (
+            "the rare (malicious) body must outrank common ones")
+        assert out[0]["distinct_request_bodies"] == 4
+
+    def test_the_common_body_is_kept_as_a_baseline(self):
+        # The model needs something typical to compare the outlier to.
+        flows = [self._s(method="POST", body='{"ping":1}') for _ in range(30)]
+        flows += [self._s(method="POST", body='{"odd":%d}' % i) for i in range(5)]
+        out = dedup_samples(flows, max_bodies=3)
+        kept = out[0]["request_body_excerpts"]
+        assert any("ping" in b for b in kept), kept
+        assert any("odd" in b for b in kept), kept
+
     def test_identical_bodies_do_not_multiply(self):
         out = dedup_samples([self._s(method="POST", body="same")
                              for _ in range(20)])
