@@ -1602,6 +1602,67 @@ class TestCaptureTail:
         again, _off2, _fid2 = w._read_capture(now)
         assert again == []
 
+    # The writer can outpace the reader (one chunk per interval), so a
+    # byte cursor that never catches up means the watcher analyses
+    # ever-staler traffic while its counters look healthy. Past the
+    # catch-up bound the tail jumps to the live end and RECORDS the gap.
+    def test_large_backlog_skips_to_the_live_end(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wmod, "_CAP_READ_CHUNK", 2000)
+        monkeypatch.setattr(wmod, "_MAX_CATCHUP_BYTES", 8000)
+        cap = tmp_path / "capture.jsonl"
+        cap.write_text("".join(
+            json.dumps(self._cap(f"h{i:03d}.example", 1)) + "\n"
+            for i in range(200)))          # far beyond the catch-up bound
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._capture_path = str(cap)
+        w._window = 3600
+        now = datetime.now(timezone.utc)
+        samples, off, fid = w._read_capture(now)
+        assert w._cap_skipped > 0, "expected the tail to skip ahead"
+        # It landed near the live end rather than grinding from zero.
+        assert off >= cap.stat().st_size - 2 * 2000
+        # And the samples it did surface are the RECENT ones.
+        assert samples and samples[-1]["host"] == "h199.example"
+
+    def test_skipped_backlog_is_recorded_as_a_finding(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wmod, "_CAP_READ_CHUNK", 2000)
+        monkeypatch.setattr(wmod, "_MAX_CATCHUP_BYTES", 8000)
+        cap = tmp_path / "capture.jsonl"
+        cap.write_text("".join(
+            json.dumps(self._cap(f"h{i:03d}.example", 1)) + "\n"
+            for i in range(200)))
+        w, audit = _mk_watcher(tmp_path, monkeypatch, ring=[_flow_entry()])
+        w._capture_path = str(cap)
+        w._window = 3600
+        monkeypatch.setattr(wmod, "llm_tool_call",
+                            lambda **kw: _llm_ok_response({"findings": []}))
+        asyncio.run(w._tick())
+        titles = [e.get("title", "") for e in audit
+                  if e.get("kind") == "watcher_finding"]
+        assert any("capture backlog too large" in t for t in titles), titles
+
+    def test_no_skip_when_the_tail_is_keeping_up(self, tmp_path, monkeypatch):
+        cap = tmp_path / "capture.jsonl"
+        cap.write_text(json.dumps(self._cap("a.example", 1)) + "\n")
+        w, _ = _mk_watcher(tmp_path, monkeypatch)
+        w._capture_path = str(cap)
+        w._window = 3600
+        w._read_capture(datetime.now(timezone.utc))
+        assert w._cap_skipped == 0
+
+    # The line cap is derived from what capture may actually emit: four
+    # body slots, each bounded by capture.max_body_size, base64-inflated.
+    # A hard-coded 32 MiB sat BELOW the worst case the default 10 MiB body
+    # cap allows, so a big transfer's entry was dropped as "oversized".
+    def test_line_cap_follows_capture_max_body_size(self, tmp_path, monkeypatch):
+        big, _ = _mk_watcher(tmp_path, monkeypatch,
+                             proxy_extra={"capture": {"max_body_size": 50 * 1024 * 1024}})
+        assert big._line_cap > 4 * 50 * 1024 * 1024
+        small, _ = _mk_watcher(tmp_path, monkeypatch,
+                               proxy_extra={"capture": {"max_body_size": 1024}})
+        assert small._line_cap == wmod._MIN_LINE_CAP   # never below the floor
+
 
 class TestDigestTokenBudget:
     """A hard ceiling on the digest is the only thing that bounds spend.
@@ -1919,67 +1980,6 @@ class TestReviewComplianceRetry:
     def test_system_prompt_explains_the_indicators(self, tmp_path, monkeypatch):
         p = self._w(tmp_path, monkeypatch)._watcher_system_prompt()
         assert "evasion_indicators" in p and "capture_samples_truncated" in p
-    # The writer can outpace the reader (one chunk per interval), so a
-    # byte cursor that never catches up means the watcher analyses
-    # ever-staler traffic while its counters look healthy. Past the
-    # catch-up bound the tail jumps to the live end and RECORDS the gap.
-    def test_large_backlog_skips_to_the_live_end(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(wmod, "_CAP_READ_CHUNK", 2000)
-        monkeypatch.setattr(wmod, "_MAX_CATCHUP_BYTES", 8000)
-        cap = tmp_path / "capture.jsonl"
-        cap.write_text("".join(
-            json.dumps(self._cap(f"h{i:03d}.example", 1)) + "\n"
-            for i in range(200)))          # far beyond the catch-up bound
-        w, _ = _mk_watcher(tmp_path, monkeypatch)
-        w._capture_path = str(cap)
-        w._window = 3600
-        now = datetime.now(timezone.utc)
-        samples, off, fid = w._read_capture(now)
-        assert w._cap_skipped > 0, "expected the tail to skip ahead"
-        # It landed near the live end rather than grinding from zero.
-        assert off >= cap.stat().st_size - 2 * 2000
-        # And the samples it did surface are the RECENT ones.
-        assert samples and samples[-1]["host"] == "h199.example"
-
-    def test_skipped_backlog_is_recorded_as_a_finding(
-            self, tmp_path, monkeypatch):
-        monkeypatch.setattr(wmod, "_CAP_READ_CHUNK", 2000)
-        monkeypatch.setattr(wmod, "_MAX_CATCHUP_BYTES", 8000)
-        cap = tmp_path / "capture.jsonl"
-        cap.write_text("".join(
-            json.dumps(self._cap(f"h{i:03d}.example", 1)) + "\n"
-            for i in range(200)))
-        w, audit = _mk_watcher(tmp_path, monkeypatch, ring=[_flow_entry()])
-        w._capture_path = str(cap)
-        w._window = 3600
-        monkeypatch.setattr(wmod, "llm_tool_call",
-                            lambda **kw: _llm_ok_response({"findings": []}))
-        asyncio.run(w._tick())
-        titles = [e.get("title", "") for e in audit
-                  if e.get("kind") == "watcher_finding"]
-        assert any("capture backlog too large" in t for t in titles), titles
-
-    def test_no_skip_when_the_tail_is_keeping_up(self, tmp_path, monkeypatch):
-        cap = tmp_path / "capture.jsonl"
-        cap.write_text(json.dumps(self._cap("a.example", 1)) + "\n")
-        w, _ = _mk_watcher(tmp_path, monkeypatch)
-        w._capture_path = str(cap)
-        w._window = 3600
-        w._read_capture(datetime.now(timezone.utc))
-        assert w._cap_skipped == 0
-
-    # The line cap is derived from what capture may actually emit: four
-    # body slots, each bounded by capture.max_body_size, base64-inflated.
-    # A hard-coded 32 MiB sat BELOW the worst case the default 10 MiB body
-    # cap allows, so a big transfer's entry was dropped as "oversized".
-    def test_line_cap_follows_capture_max_body_size(self, tmp_path, monkeypatch):
-        big, _ = _mk_watcher(tmp_path, monkeypatch,
-                             proxy_extra={"capture": {"max_body_size": 50 * 1024 * 1024}})
-        assert big._line_cap > 4 * 50 * 1024 * 1024
-        small, _ = _mk_watcher(tmp_path, monkeypatch,
-                               proxy_extra={"capture": {"max_body_size": 1024}})
-        assert small._line_cap == wmod._MIN_LINE_CAP   # never below the floor
-
 
 class TestPushBack:
     """Review fix (PR #340 follow-up): ``extendleft(reversed(...))`` on
