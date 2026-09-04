@@ -30,6 +30,12 @@ RUN npm install -g --ignore-scripts @openai/codex
 # ownership of ~/.codex.
 RUN mkdir -p /home/node/.codex
 COPY AGENTS.md /home/node/.codex/AGENTS.md
+
+# agentcage skill: the Policy API how-to (reflect on the allowlist, request a
+# domain, give a grant back) as an Agent Skills package under Codex's user
+# skills dir. Staged into the build context by agentcage like the brief above
+# (scaffolds/skills/agentcage) — not committed per-scaffold.
+COPY skills/agentcage /home/node/.codex/skills/agentcage
 RUN chown -R node:node /home/node/.codex
 
 # node:22-slim already has user node (1000:1000)
