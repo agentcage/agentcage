@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-09-03 -->
+<!-- owner: @luca  last-reviewed: 2026-09-04 -->
 # Run the traffic watcher
 
 How to enable the traffic watcher on a cage, read what it finds, and act on it. Read this when per-request checks aren't enough and you want the shape of a cage's traffic over time reviewed for exfiltration, beaconing, credential relays, and inbound prompt injection.
@@ -90,6 +90,15 @@ Traffic watcher for cage 'mycage': enabled
 ```
 
 Nothing appears until the first interval elapses, and a scan is skipped entirely when the window had no traffic — a quiet cage costs nothing. If `scans run` stays at zero well past `interval_seconds`, check the credential first.
+
+## Keep the model bill down
+
+The digest is bounded independently of how much traffic the cage makes, so cost tracks the number of scans and the model you pick, not capture volume. Two things dominate:
+
+- **The model.** At current OpenRouter prices a full frontier model runs roughly twenty times a fast one for the same digest. Start on a fast model and escalate only if its findings are too shallow.
+- **`interval_seconds`.** Cost is linear in scan count. A quiet window is free: the watcher skips the call entirely when no traffic arrived.
+
+Repeated flow shapes are collapsed before the digest is sent, so a poller hitting one endpoint forty times costs one sample carrying `repeated: 40` rather than forty. Distinct request bodies survive the collapse, because that is where exfiltration evidence lives. Turn it off with `dedup_samples: false` if you want every sample verbatim.
 
 ## Read the findings
 

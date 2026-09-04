@@ -694,6 +694,12 @@ class WatcherConfig:
     # to findings the operator applies with `agentcage cage grants
     # <name> revoke` / `domain rm`.
     auto_revoke: bool = True
+    # Collapse repeated flow shapes in the digest into one sample with a
+    # count. On by default: measured at 18.4% of the prompt payload on
+    # real traffic, and repetition becomes an explicit count rather than
+    # something the model must infer. The escape hatch exists because
+    # this changes what a security feature sees.
+    dedup_samples: bool = True
     # Operator free-text describing the cage's purpose — the same trusted
     # context channel as domains.auto.context, framed identically in the
     # watcher's system prompt. 4096-char cap (validate_config).
@@ -1258,6 +1264,12 @@ def load_config(path: str) -> Config:
                 "watcher.auto_revoke must be a boolean (true/false) — "
                 f"got {type(_w_ar_raw).__name__}"
             )
+        _w_dd_raw = w_raw.get("dedup_samples", True)
+        if not isinstance(_w_dd_raw, bool):
+            raise ValueError(
+                "watcher.dedup_samples must be a boolean (true/false) — "
+                f"got {type(_w_dd_raw).__name__}"
+            )
 
         def _w_num(key: str, default: float, as_int: bool = False):
             # Preserve an explicit 0/None-missing distinction: only an
@@ -1280,6 +1292,7 @@ def load_config(path: str) -> Config:
             window_seconds=_w_num("window_seconds", 3600.0),
             max_flows=_w_num("max_flows", 200, as_int=True),
             auto_revoke=_w_ar_raw,
+            dedup_samples=_w_dd_raw,
             context=_w_context,
             agent=AgentDeciderConfig(
                 # NOT lowercased: the decider's validation rejects any

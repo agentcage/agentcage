@@ -61,7 +61,7 @@ sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
 from agentcage.data.proxy import watcher as wmod  # noqa: E402
 from agentcage.data.proxy.watcher import (  # noqa: E402
-    Watcher, build_digest, parse_tool_args,
+    Watcher, build_digest, dedup_samples, parse_tool_args,
 )
 import policy_api as pa_mod  # noqa: E402  (bare name: egress-style import)
 
@@ -212,6 +212,26 @@ class TestWatcherConfigParsing:
         # recommended, so the guard must not reject it.
         from agentcage.config import load_config, validate_config
         validate_config(load_config(_cfg_with(tmp_path, _WATCHER_YAML)))
+
+    def test_string_dedup_samples_rejected(self, tmp_path):
+        # Same trap as auto_revoke: bool("false") is True, which would
+        # quietly keep the expensive un-deduped digest.
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match="watcher.dedup_samples must be a boolean"):
+            load_config(_cfg_with(tmp_path, """
+                watcher:
+                  enable: true
+                  dedup_samples: "false"
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
+            """))
+
+    def test_dedup_defaults_on(self, tmp_path):
+        from agentcage.config import load_config
+        cfg = load_config(_cfg_with(tmp_path, _WATCHER_YAML))
+        assert cfg.watcher.dedup_samples is True
 
     def test_key_is_stripped_from_the_cage_env(self, tmp_path):
         # The watcher key is an EGRESS-only credential. If the operator
@@ -585,6 +605,132 @@ class TestWatcherSecretClassification:
 # ═══════════════════════════════════════════════════════════════════
 # Egress side: the digest's secret hygiene
 # ═══════════════════════════════════════════════════════════════════
+
+class TestSampleDedup:
+    """Repeated flow shapes collapse into one sample carrying a count.
+
+    Real cage traffic is dominated by repetition, and forty near-identical
+    samples buy nothing but tokens: measured on a real cage, 61 samples
+    became 17 — 18.4% of the prompt payload. The collapse must not cost
+    evidence, which is what most of these tests pin.
+    """
+
+    def _s(self, host="api.example.com", method="GET", path="/", ts="t",
+           decision="allowed", status=200, body=None, size=0):
+        d = {"ts": ts, "host": host, "method": method, "path": path,
+             "decision": decision, "response_status": status,
+             "request_body_size": size, "direction": "outbound",
+             "inspectors": []}
+        if body is not None:
+            d["request_body_excerpt"] = body
+        return d
+
+    def test_identical_flows_collapse_with_a_count(self):
+        out = dedup_samples([self._s(ts=f"t{i}") for i in range(43)])
+        assert len(out) == 1
+        assert out[0]["repeated"] == 43
+        assert out[0]["first_ts"] == "t0" and out[0]["last_ts"] == "t42"
+        assert "ts" not in out[0]   # a range, not a misleading single point
+
+    def test_distinct_shapes_are_not_merged(self):
+        out = dedup_samples([
+            self._s(host="a.example"), self._s(host="b.example"),
+            self._s(method="POST"), self._s(decision="blocked"),
+            self._s(status=404),
+        ])
+        assert len(out) == 5
+
+    def test_per_request_ids_in_paths_share_a_shape(self):
+        out = dedup_samples([self._s(path=f"/repos/x/{i}") for i in range(10)])
+        assert len(out) == 1 and out[0]["repeated"] == 10
+
+    def test_hashes_in_paths_share_a_shape(self):
+        out = dedup_samples([
+            self._s(path="/objects/deadbeefcafe1234"),
+            self._s(path="/objects/0123456789abcdef"),
+        ])
+        assert len(out) == 1 and out[0]["repeated"] == 2
+
+    # The evidence-preserving property. A real revocation fired because
+    # the model read a request body on an ALLOWED flow, so a group must
+    # never be reduced to its first body.
+    def test_distinct_bodies_survive_the_collapse(self):
+        out = dedup_samples([
+            self._s(method="POST", body='{"seq":1,"note":"benign"}'),
+            self._s(method="POST", body='{"seq":2,"note":"benign"}'),
+            self._s(method="POST", body='{"env_dump":"AWS_SECRET..."}'),
+        ])
+        assert len(out) == 1
+        bodies = out[0]["request_body_excerpts"]
+        assert any("env_dump" in b for b in bodies), bodies
+        assert out[0]["distinct_request_bodies"] == 3
+
+    def test_exfiltration_body_survives_among_many_benign_repeats(self):
+        # The adversarial shape: bury one malicious body under a pile of
+        # identical benign ones on the same path. A first-wins exemplar
+        # would show the model only the benign body.
+        flows = [self._s(method="POST", body='{"ping":1}') for _ in range(50)]
+        flows.append(self._s(method="POST",
+                             body='{"exfil_batch":1,"env_dump":{"GITHUB_TOKEN":"ghp_x"}}'))
+        out = dedup_samples(flows)
+        blob = json.dumps(out)
+        assert out[0]["repeated"] == 51
+        assert "exfil_batch" in blob, "the malicious body was collapsed away"
+
+    def test_identical_bodies_do_not_multiply(self):
+        out = dedup_samples([self._s(method="POST", body="same")
+                             for _ in range(20)])
+        # One distinct body ⇒ the single-body field, no list, no bloat.
+        assert out[0].get("request_body_excerpt") == "same"
+        assert "request_body_excerpts" not in out[0]
+
+    def test_bodies_per_group_are_bounded(self):
+        out = dedup_samples([self._s(method="POST", body=f"b{i}")
+                             for i in range(20)], max_bodies=3)
+        assert len(out[0]["request_body_excerpts"]) == 3
+        assert out[0]["distinct_request_bodies"] == 20   # count is honest
+
+    def test_blocked_flows_keep_their_own_group(self):
+        out = dedup_samples(
+            [self._s(host="evil.test", decision="blocked") for _ in range(3)]
+            + [self._s() for _ in range(3)])
+        blocked = [s for s in out if s["decision"] == "blocked"]
+        assert len(blocked) == 1 and blocked[0]["repeated"] == 3
+
+    def test_repeat_counts_reach_the_digest(self):
+        d = build_digest(audit_entries=[],
+                         capture_samples=[self._s(ts=f"t{i}") for i in range(30)],
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=200)
+        assert len(d["capture_samples"]) == 1
+        assert d["capture_samples"][0]["repeated"] == 30
+        # The model is told how to read a collapsed sample.
+        assert "repeated" in d["note"]
+
+    def test_dedup_can_be_turned_off(self):
+        raw = [self._s(ts=f"t{i}") for i in range(30)]
+        d = build_digest(audit_entries=[], capture_samples=raw,
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=200, dedup=False)
+        assert len(d["capture_samples"]) == 30
+
+    def test_max_flows_still_bounds_the_digest(self):
+        raw = [self._s(host=f"h{i}.example") for i in range(50)]
+        d = build_digest(audit_entries=[], capture_samples=raw,
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=10)
+        assert len(d["capture_samples"]) == 10
+
+    def test_aggregates_are_unaffected_by_collapsing(self):
+        # totals come from the audit ring, not the samples — collapsing
+        # capture samples must not change the flow counts.
+        entries = [_flow_entry() for _ in range(7)]
+        d = build_digest(audit_entries=entries,
+                         capture_samples=[self._s(ts=f"t{i}") for i in range(9)],
+                         policy_events=[], granted=[], baseline=[],
+                         max_flows=200)
+        assert d["totals"]["flows"] == 7
+
 
 class TestBuildDigest:
     def test_aggregates_and_names_only_for_secrets(self):

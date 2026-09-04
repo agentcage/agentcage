@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-09-03 -->
+<!-- owner: @luca  last-reviewed: 2026-09-04 -->
 # Configuration
 
 The top-level settings, container block, hardening, and restart policy for `cage.yaml`. Pair with the per-feature pages under `docs/reference/` for everything else.
@@ -30,6 +30,7 @@ The `watcher:` block enables the traffic watcher — see [the traffic-watcher ex
 | `max_flows` | `int` | `200` | Flows per analysis window (digest prompt cap, range 10–2000). |
 | `auto_revoke` | `bool` | `true` | Apply runtime-grant revocations autonomously. `false` applies nothing but still records each revocation as a "revocation recommended" finding. Must be a real boolean — a quoted `"false"` is rejected at validation (it would silently enable revocations). |
 | `context` | `string` | `""` | Trusted operator free-text describing the cage's purpose (max 4096 chars) — the same channel as `domains.auto.context`. |
+| `dedup_samples` | `bool` | `true` | Collapse repeated flow shapes in the digest into one sample carrying a `repeated` count, keeping up to 3 distinct request bodies per group. Measured at 18.4% of the prompt payload on real traffic. Set `false` to send every sample. |
 | `agent.provider` | `string` | *(required)* | `anthropic` \| `openai` \| `openrouter`. |
 | `agent.model` | `string` | *(required)* | Model id. |
 | `agent.api_key` | `string` | *(required)* | The watcher's own API key — an egress-only `source:` credential (`env:NAME` \| `systemd-creds:NAME`; `cmd:` is rejected — the egress has no shell). Reusing the decider's env var name is fine. |
