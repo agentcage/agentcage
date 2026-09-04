@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The decider's completion budget starved reasoning models, denying every domain request.** `PolicyApi` called the shared `llm_tool_call` without `max_tokens`, so every decision ran on the helper's 256-token default. A reasoning model spends its thinking tokens *inside* that budget before emitting the forced `decide` tool call, so the provider returned `finish_reason: length` with no tool call at all, `_parse_llm_verdict` fail-closed on it, and the cage saw `policy_request … decision: denied, reason: "llm returned no usable decision"` for **every** request — the Policy API silently reduced to a deny-everything gate while looking healthy in `watcher status` and `cage audit`. Hit in production on 2026-09-04 (a caged agent asking for `ui.com` to fetch a product datasheet, denied twice). Measured against the real decider payload — full adversarial system prompt plus the cage's baseline allowlist — `z-ai/glm-5.2`, `z-ai/glm-5.3-flash` and `google/gemini-3.8-flash` **all** fail at 256 and **all** succeed at 1024 (600–1000 completion tokens typical), so this was never a single bad model: 256 was simply below the floor for the current generation. The decider now sends a configurable budget defaulting to **8192**, and the watcher's identical call — which hard-coded 2048 and showed the same symptom as intermittent "watcher scan failed" findings — takes the same setting. `max_tokens` is a ceiling, not a reservation (providers bill tokens actually generated, so the headroom is nearly free), and `validate_config` now rejects anything below the measured 1024 floor on both `domains.auto.decider.agent.max_tokens` and `watcher.agent.max_tokens` rather than letting a hand-tuned config reintroduce the starvation silently.
+
 ## [0.37.0] - 2026-09-04
 
 ### Added

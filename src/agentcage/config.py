@@ -625,6 +625,21 @@ class AgentDeciderConfig:
     model: str = ""
     api_key: str = ""    # source: scheme; required when auto.enable
     timeout_seconds: float = 15.0
+    # Completion budget for the forced tool call. Reasoning models emit
+    # their thinking INTO this budget before the tool call, so a budget
+    # sized for the answer alone starves them: the response comes back
+    # ``finish_reason: length`` with no tool call at all, which both
+    # agents (correctly) fail closed on — the decider denies every
+    # request, the watcher records a failed scan. Measured against the
+    # real decider payload, glm-5.2, glm-5.3-flash and gemini-3.8-flash
+    # ALL fail at 256 and all succeed at 1024+ (600-1000 completion
+    # tokens typical), so the default is generous: 8192. This is a
+    # CEILING, not a reservation — providers bill the tokens actually
+    # generated, and a concise verdict still costs ~700 tokens — so
+    # headroom is nearly free and starvation is not. It also replaces
+    # the watcher's hard-coded 2048, whose occasional overruns showed
+    # the same symptom. Lowering it below ~1024 re-opens the failure.
+    max_tokens: int = 8192
     # Optional API base URL override. Defaults per provider:
     #   anthropic  -> https://api.anthropic.com
     #   openai     -> https://api.openai.com
@@ -1204,6 +1219,7 @@ def load_config(path: str) -> Config:
                         model=str(agent_raw.get("model", "") or ""),
                         api_key=str(agent_raw.get("api_key", "") or ""),
                         timeout_seconds=float(agent_raw.get("timeout_seconds", 15.0) or 15.0),
+                        max_tokens=int(agent_raw.get("max_tokens", 8192) or 8192),
                         base_url=str(agent_raw.get("base_url", "") or ""),
                     ),
                 ),
@@ -1328,6 +1344,7 @@ def load_config(path: str) -> Config:
                 api_key=str(_w_agent_raw.get("api_key", "") or ""),
                 timeout_seconds=float(
                     _w_agent_raw.get("timeout_seconds", 30.0) or 30.0),
+                max_tokens=int(_w_agent_raw.get("max_tokens", 8192) or 8192),
                 base_url=str(_w_agent_raw.get("base_url", "") or ""),
             ),
         )
@@ -1506,6 +1523,33 @@ def load_config(path: str) -> Config:
     }
 
     return cfg
+
+
+# Below this, a reasoning model's thinking tokens can consume the whole
+# completion budget before it emits the forced tool call — the response
+# comes back ``finish_reason: length`` with no tool call, and both egress
+# agents fail closed on it (every decision a deny, every scan a failure).
+# Measured floor across glm-5.2 / glm-5.3-flash / gemini-3.8-flash on the
+# real decider payload: all fail at 256, all succeed at 1024.
+_AGENT_MAX_TOKENS_FLOOR = 1024
+
+
+def _validate_agent_max_tokens(value: object, path: str) -> None:
+    """Reject a completion budget that would starve the forced tool call."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{path} must be an integer (got {type(value).__name__})"
+        )
+    if value < _AGENT_MAX_TOKENS_FLOOR:
+        raise ValueError(
+            f"{path} must be at least {_AGENT_MAX_TOKENS_FLOOR} (got "
+            f"{value}) — a reasoning model spends thinking tokens inside "
+            f"this budget before emitting the forced tool call, so a "
+            f"smaller ceiling returns finish_reason=length with no tool "
+            f"call at all, which fails closed on every request. It is a "
+            f"ceiling, not a reservation: providers bill only the tokens "
+            f"actually generated."
+        )
 
 
 def validate_config(config: Config) -> list[str]:
@@ -2187,6 +2231,8 @@ def validate_config(config: Config) -> list[str]:
             )
         if not ag.model:
             raise ValueError("domains.auto.decider.agent.model is required")
+        _validate_agent_max_tokens(
+            ag.max_tokens, "domains.auto.decider.agent.max_tokens")
         # The decider agent's API key is a REQUIRED, egress-only credential
         # using the same source: scheme as secret_injection.source.
         if not ag.api_key:
@@ -2277,6 +2323,7 @@ def validate_config(config: Config) -> list[str]:
             )
         if not wag.model:
             raise ValueError("watcher.agent.model is required")
+        _validate_agent_max_tokens(wag.max_tokens, "watcher.agent.max_tokens")
         # Same egress-only credential rules as the decider key: required,
         # source: scheme, and no cmd: (the egress container has no shell,
         # so a cmd: source would silently materialize as an empty key —

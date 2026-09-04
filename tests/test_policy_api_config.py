@@ -59,7 +59,8 @@ def _domains(allow=("github.com",), auto_body=""):
 
 
 def _agent_decider(provider="openrouter", model="anthropic/claude-sonnet-4-5",
-                   api_key="env:POLICY_LLM_KEY", timeout=None, base_url=None):
+                   api_key="env:POLICY_LLM_KEY", timeout=None, base_url=None,
+                   max_tokens=None):
     """The decider block (kind: agent) lines, flat under decider:."""
     out = [
         "decider:",
@@ -72,6 +73,8 @@ def _agent_decider(provider="openrouter", model="anthropic/claude-sonnet-4-5",
         out.append("  api_key: " + api_key)
     if timeout is not None:
         out.append("  timeout_seconds: " + str(timeout))
+    if max_tokens is not None:
+        out.append("  max_tokens: " + str(max_tokens))
     if base_url is not None:
         out.append("  base_url: " + base_url)
     return "\n".join(out)
@@ -131,6 +134,40 @@ class TestAgentParse:
 
     def test_valid_agent_validates_clean(self, tmp_path):
         body = _enabled(_agent_decider())
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        validate_config(cfg)  # must not raise
+
+
+class TestDeciderMaxTokens:
+    """The forced tool call's completion budget.
+
+    A reasoning model spends its thinking tokens inside this budget before
+    emitting the tool call, so a budget sized for the verdict alone comes
+    back ``finish_reason: length`` with NO tool call — which the decider
+    fails closed on, denying every request (observed in production: every
+    `policy_request` denied with "llm returned no usable decision").
+    """
+
+    def test_defaults_to_headroom(self, tmp_path):
+        body = _enabled(_agent_decider())
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.decider.agent.max_tokens == 8192
+
+    def test_explicit_value_preserved(self, tmp_path):
+        body = _enabled(_agent_decider(max_tokens=16384))
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        assert cfg.domains.auto.decider.agent.max_tokens == 16384
+
+    def test_starving_budget_rejected(self, tmp_path):
+        # 256 was the old hard-coded default and starves every reasoning
+        # model measured (glm-5.2, glm-5.3-flash, gemini-3.8-flash).
+        body = _enabled(_agent_decider(max_tokens=256))
+        cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
+        with pytest.raises(ValueError, match="at least 1024"):
+            validate_config(cfg)
+
+    def test_floor_accepted(self, tmp_path):
+        body = _enabled(_agent_decider(max_tokens=1024))
         cfg = load_config(_write(tmp_path, body, env={"POLICY_LLM_KEY": "k"}))
         validate_config(cfg)  # must not raise
 

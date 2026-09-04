@@ -807,6 +807,12 @@ class Watcher:
         self._model = str(agent.get("model", "") or "")
         self._secret = self._read_key(str(agent.get("api_key", "") or ""))
         self._timeout = _num(agent, "timeout_seconds", 30.0, log)
+        # Completion budget for the forced `review` tool call — the
+        # decider's setting, same reasoning-model starvation risk (an
+        # exhausted budget returns finish_reason: length with no tool
+        # call, which is a recorded scan failure). Was hard-coded 2048;
+        # operator-tunable now, defaulting to the dataclass's 8192.
+        self._llm_max_tokens = int(_num(agent, "max_tokens", 8192, log))
         self._llm_base_url = str(agent.get("base_url", "") or "").rstrip("/")
 
         # Scan cursors. The RING has none — it is drained in ingestion
@@ -1194,7 +1200,7 @@ class Watcher:
                     system=self._watcher_system_prompt(),
                     user_content=user_content,
                     tool=_REVIEW_TOOL, timeout=self._timeout,
-                    max_tokens=2048,
+                    max_tokens=self._llm_max_tokens,
                 )
             except Exception as e:
                 self._log.warn(f"agentcage: watcher llm call failed: {e}")

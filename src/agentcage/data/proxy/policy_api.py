@@ -152,7 +152,7 @@ _DECIDE_TOOL = {
 
 def llm_tool_call(*, provider: str, model: str, api_key: str, base_url: str,
                   system: str, user_content: str, tool: dict, timeout: float,
-                  max_tokens: int = 256) -> dict:
+                  max_tokens: int = 8192) -> dict:
     """One LLM call with a FORCED tool call; returns the raw response dict.
 
     Anthropic uses /v1/messages (x-api-key header, tool_choice {type: tool});
@@ -323,6 +323,13 @@ class PolicyApi:
         self._provider = str(decider.get("kind", "agent") or "agent")
         # Agent fields sit flat under decider: (only one decider kind in v1).
         self._llm_timeout = float(decider.get("timeout_seconds", 15.0) or 15.0)
+        # Completion budget for the forced `decide` tool call. Must clear a
+        # reasoning model's thinking tokens or the response comes back
+        # `finish_reason: length` with no tool call and _parse_llm_verdict
+        # fails closed on every request ("llm returned no usable decision").
+        # Host-side validation enforces a 1024 floor; this mirrors the
+        # dataclass default for a hand-written proxy-config.
+        self._llm_max_tokens = int(decider.get("max_tokens", 8192) or 8192)
         self._llm_provider = str(decider.get("provider", "") or "").lower()
         self._llm_model = str(decider.get("model", "") or "")
         self._llm_base_url = str(decider.get("base_url", "") or "").rstrip("/")
@@ -1173,6 +1180,7 @@ class PolicyApi:
             user_content=json.dumps(
                 self._user_message(domain, reason, self.dom)),
             tool=_DECIDE_TOOL, timeout=timeout,
+            max_tokens=self._llm_max_tokens,
         )
 
     def _llm_anthropic(self, base: str, domain: str, reason: str,
@@ -1185,6 +1193,7 @@ class PolicyApi:
             user_content=json.dumps(
                 self._user_message(domain, reason, self.dom)),
             tool=_DECIDE_TOOL, timeout=timeout,
+            max_tokens=self._llm_max_tokens,
         )
 
     @staticmethod

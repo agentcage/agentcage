@@ -116,6 +116,7 @@ class TestWatcherConfigParsing:
         assert w.agent.model == "gpt-5-mini"
         assert w.agent.api_key == "env:WATCHER_LLM_KEY"
         assert w.agent.timeout_seconds == 45
+        assert w.agent.max_tokens == 8192  # default; no longer hard-coded 2048
         assert w.agent.base_url == "https://api.example.com/v1"
 
     def test_absent_block_is_zero_surface(self, tmp_path):
@@ -295,6 +296,22 @@ class TestWatcherConfigValidation:
                     provider: openai
                     model: m
                     api_key: cmd:cat /tmp/key
+            """)
+
+    def test_starving_max_tokens_rejected(self, tmp_path):
+        # Mirrors the decider's floor: a budget a reasoning model spends
+        # on thinking leaves no tool call, which is a recorded scan
+        # failure rather than a silent all-clear — but still a watcher
+        # that never reviews anything.
+        with pytest.raises(ValueError, match="at least 1024"):
+            self._validate(tmp_path, """
+                watcher:
+                  enable: true
+                  agent:
+                    provider: openai
+                    model: m
+                    api_key: env:K
+                    max_tokens: 512
             """)
 
     # Review fix (conventions #4): the watcher agent block is documented
