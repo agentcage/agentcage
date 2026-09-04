@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The watcher's digest counted control-plane records as traffic, manufacturing a finding every interval.** `build_digest` aggregated over every drained audit entry, including the `policy_*` records that already ride in the digest's own `policy_events` list. Those carry no `decision`, `method` or `host`, so each one landed in `totals.decisions` and `totals.methods` as an **empty-string bucket** and inflated `totals.flows`. The model did exactly what a good auditor should with that: on jacque it spent a finding per interval reporting a "malformed empty policy_introspect record … it degrades the audit trail" and recommending we "check the watcher's event recorder for a null-field serialization bug" — a real defect, but one the digest builder invented, costing a finding slot and prompt budget on every scan. Flow aggregates now skip control-plane records, and empty `decision`/`method` values are never bucketed. The discriminator is deliberately the `policy_`/`watcher_` prefix rather than "has a `kind`": relay records (`imap_command` / `smtp_command`) carry a `kind` too and *are* traffic the watcher is meant to audit — they keep reaching the digest, and a relay record's absent `method` no longer invents an empty bucket either.
+
 ## [0.38.0] - 2026-09-04
 
 ### Fixed

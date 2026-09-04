@@ -147,6 +147,22 @@ _FULL_SCAN_BUDGET_MULT = 4
 _MAX_HOSTS_IN_DIGEST = 25
 _MAX_POLICY_EVENTS = 200
 
+# Audit records whose ``kind`` marks them as CONTROL-PLANE, not traffic:
+# the decider's own request/grant/removal record and the Policy API's
+# introspection reads. They reach the digest through ``policy_events``
+# (where the watcher audits the decider deliberately) and must not also
+# be counted as flows — they have no decision, method or host, so they
+# landed in the totals as empty-string buckets and inflated the flow
+# count. NB the discriminator cannot be "has a kind": relay records
+# (``imap_command`` / ``smtp_command``) carry one too and ARE traffic
+# the watcher is meant to audit.
+_CONTROL_RECORD_KINDS = ("policy_", "watcher_")
+
+
+def _is_control_record(entry: dict) -> bool:
+    """True for a control-plane audit record (not a traffic flow)."""
+    return str(entry.get("kind", "") or "").startswith(_CONTROL_RECORD_KINDS)
+
 # Header names whose VALUES never ride the digest, whatever the
 # perspective. Name-matched, case-insensitive, no substring surprises.
 _SENSITIVE_HEADERS = {
@@ -615,11 +631,24 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
     methods: Counter = Counter()
     secrets_injected: Counter = Counter()
     secrets_redacted: Counter = Counter()
-    for e in audit_entries:
-        decisions[str(e.get("decision", ""))] += 1
+    # Control-plane records ride in ``policy_events``; counting them here
+    # too both inflated ``flows`` and created empty-string decision/method
+    # buckets that the model spent findings explaining as "malformed audit
+    # records". Relay records stay in — they are traffic.
+    flow_entries = [e for e in audit_entries if not _is_control_record(e)]
+    for e in flow_entries:
+        # Guard the empties independently of the filter above: a relay
+        # record has a decision but no method, and a truncated write can
+        # leave either missing. A bucket keyed on "" is noise in the
+        # digest, not a finding.
+        _dec = str(e.get("decision", "") or "")
+        if _dec:
+            decisions[_dec] += 1
         if e.get("host"):
             hosts[str(e["host"])] += 1
-        methods[str(e.get("method", ""))] += 1
+        _meth = str(e.get("method", "") or "")
+        if _meth:
+            methods[_meth] += 1
         if e.get("decision") == "blocked":
             blocked_hosts[str(e.get("host", ""))] += 1
         for i in e.get("inspectors") or []:
@@ -638,7 +667,7 @@ def build_digest(audit_entries: list[dict], capture_samples: list[dict],
                 "'last_ts'; 'request_body_excerpts' lists the DISTINCT "
                 "bodies seen in that group.",
         "totals": {
-            "flows": len(audit_entries),
+            "flows": len(flow_entries),
             "decisions": dict(decisions),
             "methods": dict(methods),
         },
