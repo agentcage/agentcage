@@ -21,8 +21,8 @@ else
 fi
 
 # ── OpenClaw config ──
-# Write default config if none exists.  CAGE_PROXY_IP and CAGE_GATEWAY_PORT
-# are set by the cage.yaml template.
+# Write default config if none exists.  CAGE_GATEWAY_PORT is set by the
+# cage.yaml template.
 chmod 700 /home/node/.openclaw
 if [ ! -f /home/node/.openclaw/openclaw.json ]; then
   # browser.ssrfPolicy.dangerouslyAllowPrivateNetwork: openclaw's browser
@@ -32,8 +32,18 @@ if [ ! -f /home/node/.openclaw/openclaw.json ]; then
   # by the mitm proxy + domain allowlist + inspectors, so this redundant
   # guard just blocks the browser tool. Opt out — cage egress controls
   # remain authoritative.
-  printf '{"browser": {"defaultProfile": "openclaw", "ssrfPolicy": {"dangerouslyAllowPrivateNetwork": true}}, "gateway": {"trustedProxies": ["%s"], "controlUi": {"allowedOrigins": ["http://localhost:%s", "http://127.0.0.1:%s"]} } }' \
-    "${CAGE_PROXY_IP}" "${CAGE_GATEWAY_PORT}" "${CAGE_GATEWAY_PORT}" \
+  #
+  # gateway.trustedProxies is deliberately ABSENT. Inbound traffic reaches
+  # the gateway through the egress's mitmproxy reverse listener, which
+  # cannot attribute the real client (rootless pasta rewrites the source),
+  # so it strips forwarded headers instead of rebuilding them. openclaw
+  # 2.0 (v2026.8+) then attributes the connection as a direct remote
+  # client. Declaring the egress in trustedProxies would instead make
+  # every inbound request fail `proxy_attribution_required` — a trusted
+  # proxy MUST present a forwarded chain that resolves to a non-loopback
+  # client, which this relay can never produce.
+  printf '{"browser": {"defaultProfile": "openclaw", "ssrfPolicy": {"dangerouslyAllowPrivateNetwork": true}}, "gateway": {"controlUi": {"allowedOrigins": ["http://localhost:%s", "http://127.0.0.1:%s"]} } }' \
+    "${CAGE_GATEWAY_PORT}" "${CAGE_GATEWAY_PORT}" \
     > /home/node/.openclaw/openclaw.json
 fi
 chmod 600 /home/node/.openclaw/openclaw.json

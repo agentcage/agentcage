@@ -40,6 +40,11 @@ container:
   tmpfs:
     - "/tmp:rw,noexec,nosuid,size=4G"
     - "/home/node/.npm:rw,size=512M"
+    # openclaw 2.0 (v2026.8+) stores sessions in SQLite and its read-only
+    # worker needs a writable fallback temp dir under ~/.cache — without
+    # this the gateway exits at boot with "Unable to create fallback
+    # OpenClaw temp dir: /home/node/.cache/openclaw-0"
+    - "/home/node/.cache:rw,size=1G"
     - "/home/node/.pki:rw,size=16M"
     - "/scratch:rw,exec,nosuid,size=8G"
 
@@ -58,7 +63,6 @@ container:
   env:
     OPENCLAW_DISABLE_BONJOUR: "1"
     HOME: "/home/node"
-    CAGE_PROXY_IP: "{{ ip_egress }}"
     CAGE_GATEWAY_PORT: "{{ gateway_port }}"
 
   # Cage-internal secrets (not API keys — use secret_injection for those).
@@ -217,15 +221,18 @@ exec_aliases:
 
 # ── Help ──
 # Shown after 'cage create' and 'cage update'
+# --as-root: the openclaw 2.0 CLI reads openclaw.json + the SQLite state
+# directly (owned by the gateway's root user), so plain uid-1000 exec
+# sessions get EACCES.
 help: |
   Open http://localhost:{{ gateway_port }} in your browser.
 
   On first connection, approve the device pairing:
-    agentcage cage exec {{ name }} -- openclaw devices list
-    agentcage cage exec {{ name }} -- openclaw devices approve <request-id>
+    agentcage cage exec --as-root {{ name }} -- openclaw devices list
+    agentcage cage exec --as-root {{ name }} -- openclaw devices approve <request-id>
 
   Common commands:
-    agentcage cage exec {{ name }} -- openclaw health
-    agentcage cage exec {{ name }} -- openclaw status
+    agentcage cage exec --as-root {{ name }} -- openclaw health
+    agentcage cage exec --as-root {{ name }} -- openclaw status
     agentcage cage logs {{ name }}
     agentcage cage logs {{ name }} -s proxy

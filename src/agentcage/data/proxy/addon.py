@@ -938,16 +938,26 @@ class Agentcage:
 
         client_ip = ""
         if is_reverse:
-            # Standard forwarding headers so the upstream app can identify
-            # the real client (e.g. OpenClaw gateway.trustedProxies).
+            # Strip client-attribution headers instead of synthesizing them.
+            # Rootless port publishing (pasta) rewrites the source address,
+            # so the only value we could put in X-Forwarded-For is the
+            # egress's own network address — an attribution chain that never
+            # resolves to a real client. openclaw 2.0 (v2026.8+) rejects
+            # exactly that shape on Gateway-authenticated routes with
+            # `proxy_attribution_required` (and older versions merely logged
+            # the useless value). With no forwarded headers at all, the
+            # upstream app attributes the connection as a direct remote
+            # client, which is what this relay effectively is. Deleting the
+            # headers (rather than leaving them untouched) also keeps a
+            # client-forged X-Forwarded-For from ever reaching the app.
             try:
                 client_ip = flow.client_conn.address[0]
             except (AttributeError, IndexError, TypeError):
                 pass
-            if client_ip:
-                flow.request.headers["x-forwarded-for"] = client_ip
+            for hdr in ("x-forwarded-for", "x-forwarded-proto",
+                        "x-forwarded-host", "x-real-ip", "forwarded"):
+                flow.request.headers.pop(hdr, None)
             proto = "https" if flow.client_conn.tls_established else "http"
-            flow.request.headers["x-forwarded-proto"] = proto
 
             # Rewrite Origin to match the (now-preserved) Host header so
             # origin-checking middleware doesn't see a mismatch.
@@ -965,7 +975,8 @@ class Agentcage:
             ),
         ))
 
-        # Source IP for inbound requests (extracted above for X-Forwarded-For)
+        # Source IP for inbound requests (as observed by the reverse
+        # listener; audit-log only, never forwarded upstream)
         source = client_ip
 
         blocked = [r for r in results if r.action == "block"]
