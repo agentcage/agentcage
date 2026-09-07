@@ -1518,7 +1518,7 @@ class TestEffectiveDnsAllowlist:
         merged = _effective_dns_allowlist(cfg)
         assert merged.count("whatsapp.com") == 1
 
-    def test_includes_watcher_provider_host_even_without_domains_auto(
+    def test_includes_watcher_provider_host_even_without_decider(
             self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -1528,9 +1528,9 @@ class TestEffectiveDnsAllowlist:
             domains:
               allow:
                 - anthropic.com
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:K
@@ -1625,7 +1625,8 @@ class TestVmLocalGrantsOverlayPath:
             domains:
               allow:
                 - example.com
-              auto:
+            agents:
+              decider:
                 enable: true
         """) + domains_extra)
         cfg = load_config(str(p))
@@ -1653,7 +1654,8 @@ class TestVmLocalGrantsOverlayPath:
             domains:
               allow:
                 - example.com
-              auto:
+            agents:
+              decider:
                 enable: true
         """))
         cfg = load_config(str(p))

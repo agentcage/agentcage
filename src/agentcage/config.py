@@ -8,7 +8,7 @@ import os
 import platform
 import re
 import subprocess
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 
 import yaml
 
@@ -599,8 +599,8 @@ class ProtocolRelay:
 # History: through 0.39 the decider lived under ``domains.auto`` and the
 # watcher at top level as ``watcher:`` — both moved under ``agents:`` in
 # 0.40 so "what is agentic (and what it costs)" is answerable at a
-# glance. The legacy forms still parse (normalized with a deprecation
-# warning); see ``normalize_legacy_agents``. Grant behavior (TTL,
+# glance. This is a breaking schema change: old forms are rejected,
+# never automatically migrated. Grant behavior (TTL,
 # max_grants, never_grant, require_allowlist_mode) uses fixed safe
 # defaults — see the _AUTO_* constants below — so the operator config is
 # just ``enable`` + the LLM client fields.
@@ -756,16 +756,8 @@ class Config:
     # (after-the-fact auditor). Parsed here, plumbed into the egress's
     # proxy-config.yaml via state._PROXY_KEYS ("agents"), enforced by the
     # mitmproxy addon + watcher.py inside the egress. Absent blocks →
-    # default (disabled) configs → zero surface. Legacy ``domains.auto``
-    # and top-level ``watcher:`` are normalized into this block at parse
-    # time; see normalize_legacy_agents.
+    # default (disabled) configs → zero surface.
     agents: AgentsConfig = field(default_factory=AgentsConfig)
-    # Deprecation notices raised while parsing THIS config's legacy agent
-    # blocks (``domains.auto`` / top-level ``watcher:``). Empty for a
-    # new-form file. validate_config prepends them to its warnings so
-    # `cage create`/`update`/`edit` surface the migration prompt; the
-    # legacy keys then evaporate from the file on the next save.
-    legacy_form_notices: list[str] = field(default_factory=list, compare=False, repr=False)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     ports: PortsConfig = field(default_factory=PortsConfig)
@@ -912,49 +904,7 @@ def _host_dns_servers() -> list[str]:
     )
 
 
-# ── legacy agent-block normalization ─────────────────────
-#
-# Through 0.39 the decider was configured as ``domains.auto`` (LLM fields
-# flat under a ``decider:`` sub-block carrying a ``kind:`` discriminator)
-# and the watcher as a top-level ``watcher:`` block (LLM fields under an
-# ``agent:`` sub-block). 0.40 moves both under ``agents.decider`` /
-# ``agents.watcher`` with the LLM fields flat in the block itself — one
-# grammar for the whole roster.
-#
-# :func:`normalize_legacy_agents` is the SINGLE choke point for that
-# mapping. Both ``config.load_config`` and ``state.load_raw_config`` run
-# it, so every downstream consumer — ``save_raw_config`` (the ``domain
-# add``/``rm`` rewrite chain), ``save_proxy_config`` (the egress wire
-# render), ``cage edit`` — sees one shape and old keys evaporate from
-# real cages on the next config-touching command.
-
-
-def _reject_legacy_kind(block: dict, where: str) -> None:
-    """Reject a ``kind:`` discriminator before it can be dropped.
-
-    v1 only implements the built-in LLM agent; ``kind:`` existed solely to
-    carry that single value, so 0.40 removes it from the operator surface.
-    A ``kind: agent`` (or absent) is dropped silently; anything else is
-    rejected with the same message the old validation raised — it must fire
-    HERE, pre-normalization, because after the flatten there is no ``kind``
-    key left to reject.
-    """
-    if "kind" not in block:
-        return
-    kind = str(block.get("kind", "agent") or "agent")
-    if kind == "agent":
-        return
-    if kind == "webhook":
-        raise ValueError(
-            f"{where}.kind=webhook is not implemented yet; "
-            "use the built-in LLM agent (kind: agent, or just omit kind)."
-        )
-    raise ValueError(
-        f"{where}.kind must be 'agent' (got {kind!r})"
-    )
-
-
-LLM_CLIENT_FIELDS = tuple(f.name for f in fields(LlmAgentConfig))
+# ── agents schema validation ─────────────────────────────
 
 
 def _agent_mapping(value, path: str) -> dict:
@@ -966,66 +916,34 @@ def _agent_mapping(value, path: str) -> dict:
     return dict(value)
 
 
-def normalize_legacy_agents(raw: dict) -> tuple[dict, list[str]]:
-    """Return a canonical raw config and migration notices, without mutation.
+def validate_agents_raw(raw: dict) -> None:
+    """Check the sole supported agent schema without rewriting the input.
 
-    Conflicts are checked by key PRESENCE, even for disabled/empty blocks.
-    Migrate each role independently, allowing e.g. a new decider and an old
-    watcher. Only LLM fields are lifted from the legacy sub-block: previously
-    ignored nested keys must never override enable, context, or grant policy.
+    Reject removed keys by presence, even when empty or disabled. Silently
+    ignoring old settings could turn off monitoring or change egress policy.
     """
-    result = dict(raw)
-    agents = _agent_mapping(raw.get("agents"), "agents")
+    if not isinstance(raw, dict):
+        raise ValueError("config must be a mapping")
     domains = _agent_mapping(raw.get("domains"), "domains")
-    notices = []
-    for role, owner, key, wrapper, old_path in (
-        ("decider", domains, "auto", "decider", "domains.auto"),
-        ("watcher", result, "watcher", "agent", "watcher"),
-    ):
-        path = f"agents.{role}"
-        if key in owner:
-            if role in agents:
-                raise ValueError(
-                    f"ambiguous config: both '{path}' and legacy '{old_path}' "
-                    "are set — keep one"
-                )
-            block = _agent_mapping(owner[key], old_path)
-            client = _agent_mapping(block.pop(wrapper, None), f"{old_path}.{wrapper}")
-            if role == "decider":
-                _reject_legacy_kind(client, f"{old_path}.{wrapper}")
-            # The old reader took LLM fields ONLY from the sub-block.
-            for field_name in LLM_CLIENT_FIELDS:
-                block.pop(field_name, None)
-                if field_name in client:
-                    block[field_name] = client[field_name]
-            agents[role] = block
-            owner.pop(key)
-            if role == "decider":
-                result["domains"] = domains
-            notices.append(
-                f"{old_path} is now {path} (renamed in 0.40); legacy syntax "
-                "still parses and is migrated on save. Run `agentcage cage "
-                "update <name>` after upgrading to refresh deployment assets."
-            )
-        if role in agents:
-            block = _agent_mapping(agents[role], path)
-            if role == "decider":
-                _reject_legacy_kind(block, path)
-                block.pop("kind", None)
-            if wrapper in block:
-                raise ValueError(f"{path}: LLM fields must be flat, not under '{wrapper}'")
-            # A raw-config writer must not emit a string-valued enable to
-            # an older egress, whose truthiness check would enable it.
-            for flag in ("enable", "auto_revoke", "dedup_samples"):
-                if flag in block and not isinstance(block[flag], bool):
-                    raise ValueError(f"{path}.{flag} must be a boolean (true/false)")
-            agents[role] = block
+    if "auto" in domains:
+        raise ValueError("domains.auto is no longer supported; use agents.decider with flat LLM fields")
+    if "watcher" in raw:
+        raise ValueError("top-level watcher is no longer supported; use agents.watcher with flat LLM fields")
+    agents = _agent_mapping(raw.get("agents"), "agents")
     unknown = set(agents) - {"decider", "watcher"}
     if unknown:
         raise ValueError(f"unknown agents: {', '.join(sorted(map(str, unknown)))}")
-    if agents or "agents" in raw:
-        result["agents"] = agents
-    return result, notices
+    for role in ("decider", "watcher"):
+        path = f"agents.{role}"
+        block = _agent_mapping(agents.get(role), path)
+        if "kind" in block:
+            raise ValueError(f"{path}.kind is no longer supported; omit kind")
+        for wrapper in ("agent", "decider"):
+            if wrapper in block:
+                raise ValueError(f"{path}: LLM fields must be flat, not under '{wrapper}'")
+        for flag in ("enable", "auto_revoke", "dedup_samples"):
+            if flag in block and not isinstance(block[flag], bool):
+                raise ValueError(f"{path}.{flag} must be a boolean (true/false)")
 
 
 def load_config(path: str) -> Config:
@@ -1056,14 +974,9 @@ def load_config(path: str) -> Config:
     if not raw or not isinstance(raw, dict):
         return Config()
 
-    # Legacy agent blocks (``domains.auto`` / top-level ``watcher:``) are
-    # normalized into the ``agents:`` form BEFORE anything reads them, so
-    # the parser below handles exactly one shape. Notices ride on the
-    # Config; validate_config surfaces them as warnings.
-    raw, _legacy_notices = normalize_legacy_agents(raw)
+    validate_agents_raw(raw)
 
     cfg = Config()
-    cfg.legacy_form_notices = _legacy_notices
     cfg.name = raw.get("name", "")
     cfg.isolation = raw.get("isolation") or default_isolation()
     cfg.lifecycle = raw.get("lifecycle", "service")
@@ -1287,8 +1200,7 @@ def load_config(path: str) -> Config:
     # a placeholder) and staged into the proxy's tmpfs secret files by the
     # quadlet renderer — exactly like a relay credential.
     # In-egress LLM agents — parse ``agents.decider`` / ``agents.watcher``
-    # (legacy ``domains.auto`` / top-level ``watcher:`` were normalized
-    # into this shape at the top of load_config). Both api_keys are
+    # (the only supported schema). Both api_keys are
     # collected into the SAME egress-only secret set (stripped from the
     # cage env/podman_secrets below, staged into the proxy's tmpfs secret
     # files by the quadlet renderer): these agents run in the egress, so
@@ -2292,13 +2204,6 @@ def validate_config(config: Config) -> list[str]:
             start = end + 1
 
     # ── Policy API validation ───────────────────────────────
-    # ── legacy agent-block migration notices ─────────────────
-    # A config parsed from a 0.39-and-earlier file carries deprecation
-    # notices (config.load_config stashed them on Config); surface them
-    # as warnings so `cage create`/`update`/`edit` prompt the migration.
-    # The legacy keys evaporate from the file on the next save
-    # (load_raw_config normalizes), after which these go quiet.
-    warnings.extend(getattr(config, "legacy_form_notices", None) or [])
     for role in ("decider", "watcher"):
         agent = getattr(config.agents, role)
         if agent.enable and (not math.isfinite(agent.timeout_seconds)

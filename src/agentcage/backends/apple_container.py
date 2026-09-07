@@ -1714,10 +1714,8 @@ class AppleContainerBackend:
         # write. Only mount when the feature is on OR any allow entry has
         # an expiry (the addon sweeps those and re-publishes the DNS zone
         # list).
-        # Existing deployments can retain pre-0.40 metadata until update.
-        # A new explicit false wins; fall back only when the new key is absent.
-        if meta.get("decider_enabled", meta.get("domains_auto", False)) \
-                or meta.get("has_expiring_domains") or meta.get("watcher_enabled"):
+        if meta.get("decider_enabled") or meta.get("has_expiring_domains") \
+                or meta.get("watcher_enabled"):
             from agentcage import state as _state_mod
             grants_dir = _state_mod.grants_dir(name)
             grants_dir.mkdir(parents=True, exist_ok=True)

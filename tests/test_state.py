@@ -205,9 +205,9 @@ class TestSaveProxyConfig:
         decider = proxy_cfg["agents"]["decider"]
         assert "context" in decider
         assert "payments-reconciliation" in decider["context"]
-        # Legacy wire shadow for pre-0.40 egress images rides along.
-        assert proxy_cfg["domains"]["auto"]["context"] \
-            == decider["context"]
+        # Canonical wire format only: no compatibility blocks.
+        assert "auto" not in proxy_cfg["domains"]
+        assert "watcher" not in proxy_cfg
         # The non-proxy key (container) was stripped — sanity-check the filter.
         assert "container" not in proxy_cfg
 

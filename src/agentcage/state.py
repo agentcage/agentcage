@@ -18,7 +18,7 @@ import yaml
 # being rendered into dnsmasq directives unvalidated: a value containing '\n'
 # or '/' would emit extra ``server=`` lines in dns-allowlist.conf.
 from agentcage.config import (
-    Config, DOMAIN_RE, LLM_CLIENT_FIELDS, load_config, normalize_legacy_agents, valid_domain,
+    Config, DOMAIN_RE, load_config, validate_agents_raw, valid_domain,
 )  # noqa: F401
 
 __all__ = ["DOMAIN_RE", "valid_domain"]
@@ -45,15 +45,10 @@ def deployment_exists(name: str) -> bool:
 def save_deployment(name: str, config_path: str) -> None:
     """Copy a config file into the state directory for a deployment."""
     with open(config_path) as f:
-        raw, notices = normalize_legacy_agents(yaml.safe_load(f) or {})
+        validate_agents_raw(yaml.safe_load(f) or {})
     d = _deploy_dir(name)
     d.mkdir(parents=True, exist_ok=True)
-    if notices:
-        # copy2 used to preserve a private source file's permissions. A schema
-        # migration must do the same, rather than create world-readable YAML.
-        save_raw_config(name, raw, mode=os.stat(config_path).st_mode & 0o777)
-    else:
-        shutil.copy2(config_path, d / "cage.yaml")
+    shutil.copy2(config_path, d / "cage.yaml")
 
 
 def remove_deployment(name: str) -> None:
@@ -87,27 +82,24 @@ def list_deployments() -> list[str]:
     )
 
 
-def load_raw_config(name: str) -> dict:
-    """Load stored config as raw dict (preserves all fields).
+def load_raw_config(name: str, *, check_agent_schema: bool = True) -> dict:
+    """Read stored YAML unchanged, rejecting unsupported agent configuration.
 
-    Legacy agent blocks (``domains.auto`` / top-level ``watcher:``) are
-    normalized into the ``agents:`` form here — the single choke point so
-    every downstream consumer (``save_raw_config``'s ``domain add``/``rm``
-    rewrite chain, ``save_proxy_config``'s wire render, ``cage edit``) sees
-    one shape and the legacy keys evaporate from the on-disk file on the
-    next config-touching command. See
-    :func:`agentcage.config.normalize_legacy_agents`.
+    Explicit replacement via update -c may read the previous file solely to
+    retain generated secret placeholders. That read opts out of this check;
+    its old operational settings are never applied or migrated.
     """
     p = _deploy_dir(name) / "cage.yaml"
     if not p.is_file():
         raise FileNotFoundError(f"No stored config for cage '{name}'")
     with open(p) as f:
         raw = yaml.safe_load(f) or {}
-    raw, _ = normalize_legacy_agents(raw)
+    if check_agent_schema:
+        validate_agents_raw(raw)
     return raw
 
 
-def _atomic_write_text(p: Path, text: str, *, mode: int | None = None) -> None:
+def _atomic_write_text(p: Path, text: str) -> None:
     """Atomically write *text* to *p* via a PID-suffixed temp + rename.
 
     The temp lives in the same directory (so ``os.replace`` is atomic on a
@@ -139,11 +131,10 @@ def _atomic_write_text(p: Path, text: str, *, mode: int | None = None) -> None:
     the reconcile.
     """
     p.parent.mkdir(parents=True, exist_ok=True)
-    if mode is None:
-        try:
-            mode = p.stat().st_mode & 0o777
-        except FileNotFoundError:
-            pass
+    try:
+        mode = p.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = None
     base = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     # Base PID-suffixed name, then a single counter-suffixed retry. We never
     # unlink a colliding temp: a cross-PID-namespace numeric-PID collision
@@ -181,17 +172,17 @@ def _atomic_write_text(p: Path, text: str, *, mode: int | None = None) -> None:
     tmp.replace(p)
 
 
-def save_raw_config(name: str, raw: dict, *, mode: int | None = None) -> None:
+def save_raw_config(name: str, raw: dict) -> None:
     """Write raw config dict back to state dir (atomically).
 
     See :func:`_atomic_write_text` for why this is temp+rename rather than a
     bare ``open(p, "w")``: the grants reconcile and ``cage update`` can read
     ``cage.yaml`` mid-write and die on a truncated YAML.
     """
-    raw, _ = normalize_legacy_agents(raw)
+    validate_agents_raw(raw)
     p = _deploy_dir(name) / "cage.yaml"
     _atomic_write_text(
-        p, yaml.safe_dump(raw, default_flow_style=False, sort_keys=False), mode=mode)
+        p, yaml.safe_dump(raw, default_flow_style=False, sort_keys=False))
 
 
 def fill_placeholders(name: str, prev_raw: dict | None = None) -> bool:
@@ -218,15 +209,6 @@ _PROXY_KEYS = frozenset({
     "inspectors", "rate_limit", "logging", "secret_injection", "capture",
     "protocol_relays", "agents",
 })
-
-# Egress wire-format compat shadow (see save_proxy_config). 0.40 renamed the
-# operator-facing agent blocks to ``agents.*`` and renders the NEW keys as
-# primary; the legacy ``watcher`` / ``domains.auto`` keys are re-synthesized
-# into proxy-config.yaml ONLY so an egress image built before 0.40 (which
-# still reads the old keys) keeps its decider/watcher working until the
-# operator runs `cage update`. Not a permanent hybrid: drop this together
-# with the 0.40 egress image support in 0.41.
-_LEGACY_AGENT_WIRE_SUNSET = "0.41"
 
 
 _DATA_DIR = Path(
@@ -412,41 +394,6 @@ def load_fingerprint(name: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def _add_legacy_agent_wire_shadow(proxy_cfg: dict) -> None:
-    """Re-synthesize the pre-0.40 agent wire keys for old egress images.
-
-    0.40 renamed the agent blocks to ``agents.decider`` / ``agents.watcher``
-    and the egress readers of the SAME release consume those keys. An egress
-    image built before 0.40 still reads ``domains.auto`` / ``watcher`` off
-    proxy-config.yaml — without this shadow its decider and watcher would
-    silently read as disabled (fail-closed, but the watcher going quiet is
-    exactly the false-all-clear 0.36.0 fixed). Rendering the legacy keys is
-    bounded: scheduled for removal in 0.41 together
-    with pre-0.40 egress image support.
-
-    Only enabled blocks are shadowed. The output is rebuilt from scratch,
-    so disabling/removing an agent cannot leave a stale enabled shadow.
-    Operational fields (enable, host, context, limits) stay at the legacy
-    outer level; ONLY LLM client fields go into its decider/agent sub-block.
-    """
-    agents = proxy_cfg.get("agents") or {}
-    for role, wrapper in (("decider", "decider"), ("watcher", "agent")):
-        block = agents.get(role) or {}
-        if not block.get("enable"):
-            continue
-        legacy = {k: copy.deepcopy(v) for k, v in block.items()
-                  if k not in LLM_CLIENT_FIELDS and k != "kind"}
-        legacy[wrapper] = {k: copy.deepcopy(block[k]) for k in LLM_CLIENT_FIELDS
-                           if k in block}
-        if role == "decider":
-            legacy[wrapper]["kind"] = "agent"
-            dom = dict(proxy_cfg.get("domains") or {})
-            dom["auto"] = legacy
-            proxy_cfg["domains"] = dom
-        else:
-            proxy_cfg["watcher"] = legacy
-
-
 def save_proxy_config(name: str) -> str:
     """Write a proxy-specific config subset and return its path.
 
@@ -460,7 +407,6 @@ def save_proxy_config(name: str) -> str:
     """
     raw = load_raw_config(name)
     proxy_cfg = {k: v for k, v in raw.items() if k in _PROXY_KEYS}
-    _add_legacy_agent_wire_shadow(proxy_cfg)
     # deepcopy: the ca_file -> ca_pem rewrite must not leak back into the
     # in-memory raw config (and from there into a cage.yaml rewrite),
     # which would replace the operator's path with a wall of PEM.

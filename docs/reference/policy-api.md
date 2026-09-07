@@ -234,10 +234,21 @@ skill tells the agent to check `/v1/health` and ask the operator.
 
 ## Config schema
 
-The decider is configured under `agents.decider` (renamed in 0.40 —
-formerly `domains.auto`; the LLM fields sit flat on the block, the old
-`decider:` sub-block and `kind:` discriminator are gone, and the legacy
-form still parses with a deprecation warning). Full form:
+The decider is configured under `agents.decider`, with flat LLM fields.
+
+> **Breaking change in 0.40:** `domains.auto` and top-level `watcher` are
+> rejected even when empty, null, or disabled. Manually move them to
+> `agents.decider` / `agents.watcher`, flatten the LLM fields, and delete the old
+> blocks, `kind` field, and nested `decider:` / `agent:` wrappers. There is no
+> automatic conversion. Edit the stored `cage.yaml` directly or replace it via
+> `agentcage cage update <name> -c <converted.yaml>`, and rebuild/update the egress
+> along with it. Generated `proxy-config.yaml` has canonical agent keys only;
+> old egress images cannot read them, and pushing config live first can stop
+> watcher monitoring. See the [manual mapping](agents.md#migration-from-the-old-format)
+> and [upgrade procedure](../how-to/upgrade-agentcage.md#upgrading-to-040-the-agents-namespace).
+> CLI nouns and Policy API endpoints are unchanged.
+
+Full form:
 
 ```yaml
 domains:
@@ -285,7 +296,7 @@ agents:
 | `agents.decider.timeout_seconds` | `int` | `15` | Per-decision timeout. |
 | `agents.decider.max_tokens` | `int` | `8192` | Completion budget for the forced `decide` tool call. A reasoning model spends its thinking tokens inside this budget *before* emitting the tool call, so too small a value returns `finish_reason: length` with no tool call — which fails closed, denying **every** request with `llm returned no usable decision`. A ceiling, not a reservation: providers bill the tokens actually generated, and a typical verdict costs ~700. Minimum `1024`. *Since 0.38.0* |
 | `agents.decider.base_url` | `string` | provider default | Optional API base override (proxy/gateway/local server). |
-| `agents.decider.context` | `string` | `""` (off) | Optional free-text describing this cage's purpose and scope. Appended to the decider's system prompt as **trusted operator context** (advisory only — it never overrides `never_grant`, domain syntax, or rate limits) so decisions can account for what the cage is for. Capped at **4096 chars** (measured after strip) because it rides in every decider call's system prompt and through `proxy-config.yaml` — a huge blob is a prompt-bloat/abuse surface; an over-long value is rejected at `cage create`/`update` with the length in the message. Empty/whitespace-only = feature off. The caged agent can read it via `GET /v1/allowlist` (the `context` field) to write justifications that match the cage's stated scope. Hot-reloads via `cage update` with no restart (the egress addon rebuilds the decider on `proxy-config.yaml` mtime change). |
+| `agents.decider.context` | `string` | `""` (off) | Optional free-text describing this cage's purpose and scope. Appended to the decider's system prompt as **trusted operator context** (advisory only — it never overrides `never_grant`, domain syntax, or rate limits) so decisions can account for what the cage is for. Capped at **4096 chars** (measured after strip) because it rides in every decider call's system prompt and through `proxy-config.yaml` — a huge blob is a prompt-bloat/abuse surface; an over-long value is rejected at `cage create`/`update` with the length in the message. Empty/whitespace-only = feature off. The caged agent can read it via `GET /v1/allowlist` (the `context` field) to write justifications that match the cage's stated scope. Once the egress supports the canonical schema, context-only edits can hot-reload on `proxy-config.yaml` mtime change. This does not upgrade an old egress; the 0.40 schema change requires a rebuild/update. |
 | `agents.decider.rate_limit` | `{requests_per_second, burst}` | `{1, 5}` | Per-cage request rate limit, independent of the per-host HTTP rate limit. |
 
 When `agents.decider.enable` is true, both the introspection and request endpoints are
@@ -297,8 +308,8 @@ on; there are no separate `introspection:` or `request:` enable flags, and no
 The decider is the agent that adjudicates each domain request. v1 ships
 the built-in LLM decider only — a senior cybersecurity
 expert that adjudicates each request (Claude Code "auto" mode for egress).
-The old `kind:` discriminator was removed in 0.40 along with the `decider:`
-sub-block; a `webhook` decider remains **reserved / not yet implemented**.
+The `kind:` field and nested `decider:` / `agent:` wrappers are unsupported;
+a webhook decider is **not implemented**.
 
 For the built-in LLM decider, the egress calls the LLM provider directly over raw HTTPS
 — **no SDK**, to keep the egress image lean:

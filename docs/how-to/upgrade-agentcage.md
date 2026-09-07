@@ -19,6 +19,8 @@ agentcage cage backup myapp --output ./pre-upgrade/myapp-$(date +%F).tar.gz
 
 Read the `CHANGELOG.md` entries between your current version and the target. Look for `### Security` lines (tightened defaults), `cage.yaml` field changes or new validation, and podman/Lima/Apple `container` minimum-version bumps.
 
+**Upgrading to 0.40?** Follow the [manual agents-schema procedure](#upgrading-to-040-the-agents-namespace) before applying the general update commands below. Old agent blocks are rejected, and the config and egress must be upgraded together; stop affected cages with the old version before upgrading the host.
+
 ## Upgrade agentcage itself
 
 Use the same installer you used the first time:
@@ -46,7 +48,7 @@ agentcage doctor
 Cages keep their old generated quadlets and wrapper images until you explicitly update them. Pick the right command for what changed:
 
 - New agentcage version with runtime changes (quadlets, egress, supervisor, apple-container wrapper) → `cage update` (rebuilds the cage's own staged Containerfile, pulls fresh base images, and regenerates the runtime). It does **not** pull in new scaffold templates — the cage's `cage.yaml`/`Containerfile` are frozen at create.
-- `cage.yaml` field that live-reloads (`domains`, `inspectors`, `secret_injection`, `capture`, `protocol_relays`) → `cage edit` or `domain add` / `domain rm`; the proxy picks up the change in place.
+- `cage.yaml` field that live-reloads (`domains`, `inspectors`, `secret_injection`, `capture`, `protocol_relays`) → `cage edit` or `domain add` / `domain rm`; the proxy picks up the change in place. This assumes the running egress supports the config schema; it is not a schema-upgrade mechanism.
 - `cage.yaml` field that needs a service restart (`ports`, `container.command`, `container.env`) → `cage restart` after editing.
 - `cage.yaml` field that needs a rebuild (`isolation`, `vm`, `container.image`) → `cage update`.
 
@@ -57,7 +59,7 @@ agentcage cage restart myapp    # bounce containers, reuse existing image
 
 See [Architecture — hot-reload semantics](../explain/architecture.md#hot-reload-semantics) for the full reload model.
 
-To roll a binary upgrade out across every cage on a host:
+Once every stored config uses the target version's schema, roll a binary upgrade out across every cage on a host:
 
 ```bash
 for cage in $(agentcage cage list | awk 'NR>1 {print $1}'); do
@@ -71,6 +73,7 @@ done
 
 Recent releases that changed observable behavior:
 
+- **0.40 — breaking `agents:` schema change.** Manually replace `domains.auto` and top-level `watcher` with `agents.decider` and `agents.watcher`, flatten the LLM fields, and rebuild/update the egress. Old forms are rejected even when disabled or empty; there is no automatic conversion or old-egress compatibility. See the [procedure below](#upgrading-to-040-the-agents-namespace).
 - **0.22.0 — three-service shape collapsed to two.** The legacy `<cage>-proxy` and `<cage>-dns` containers were unified into a single `<cage>-egress` container. Cages created on 0.21.x are rejected by every command except `cage list` and `cage destroy`. Recovery is `cage destroy && cage create` — there is no in-place migration. `cage logs -s proxy/-s dns` are gone; use `-s egress`.
 - **0.21.19 — `container` and `vm` exec sessions drop to uid 1000 by default.** Previously inherited the image's USER (root on most bases). Pass `--as-root` to keep root for operator debug.
 - **0.15.0 — default-deny `filter:FORWARD` policy.** Pre-0.15, only ports 80 and 443 were inspected; every other port silently L3-forwarded. Post-0.15, every other port is dropped unless listed in `ports.tcp.allow`, `ports.tcp.passthrough`, or `ports.udp.allow`. Cages that depend on outbound NTP (`123/udp`), Postgres (`5432/tcp`), IMAP (`993/tcp`), Matrix federation (`8448/tcp`), or QUIC (`443/udp`) need those ports added.
@@ -92,11 +95,49 @@ Pinning blocks accidental re-upgrade. Unpin with another `uv tool install agentc
 
 ## Upgrading to 0.40: the `agents:` namespace
 
-0.40 renamed the agent config blocks. The decider — formerly `domains.auto` — is now `agents.decider`, and the traffic watcher — formerly top-level `watcher:` — is now `agents.watcher`. The LLM client fields (`provider`, `model`, `api_key`, `timeout_seconds`, `max_tokens`, `base_url`) sit flat on each block (the old `decider:` / `agent:` sub-blocks and the `kind:` discriminator are gone).
+**Breaking change — manual conversion and an egress rebuild are required.**
+`domains.auto` and top-level `watcher:` are rejected even when empty, null, or
+disabled. Adding canonical blocks alongside them does not make the file valid.
+There is no automatic conversion, deprecation window, or dual-render compatibility.
 
-Your existing `cage.yaml` keeps working: the legacy forms still parse and agentcage warns with the exact rename. The file is rewritten in the new form the next time a config-touching command saves it (`domain add`/`domain rm`, `cage edit`, `cage update`). Setting both the new and the legacy form of the same agent is rejected as ambiguous — keep one.
+1. **Before upgrading the host**, back up and stop affected cages using the
+   currently installed version (`agentcage cage stop <name>`). Keep workloads
+   stopped until the config and egress have both been updated.
+2. **Manually convert each complete config**, including any source copy used for
+   later updates:
+   - Before: `domains.auto` with LLM fields under `decider:`. After:
+     `agents.decider`, with all LLM fields flat on that block.
+   - Before: top-level `watcher:` with LLM fields under `agent:`. After:
+     `agents.watcher`, with all LLM fields flat on that block.
+   - Move `provider`, `model`, `api_key`, `timeout_seconds`, `max_tokens`, and
+     `base_url`; preserve role-specific settings such as `enable` and `context`.
+     Delete the old blocks, nested wrappers, and `kind` field. Neither `kind`
+     (including `kind: agent`) nor nested `agent:` / `decider:` wrappers are
+     supported. Leave static `domains` policy unchanged. See the
+     [mapping and canonical example](../reference/agents.md#migration-from-the-old-format).
+3. **Upgrade agentcage, then rebuild/update the cage.** Either edit the stored
+   `cage.yaml` directly and run `agentcage cage update <name>`, or replace the
+   stored config with a complete, manually converted file:
 
-**Run `agentcage cage update <name>` after upgrading.** During the 0.40 transition, generated `proxy-config.yaml` also includes the legacy keys so older egress images keep **both** the decider and watcher working. These compatibility keys are generated from the canonical settings, never saved back to `cage.yaml`, and scheduled for removal in 0.41. Refresh the egress before that removal; do not treat a host-side "enabled" setting alone as proof that monitoring is running. Cancelling `cage edit` or returning unchanged text leaves the original file untouched.
+   ```bash
+   agentcage cage update myapp -c ./converted.yaml
+   ```
+
+   `update -c` can replace an old stored config without parsing that old schema;
+   it does not transform it. Other config-reading commands, including `cage edit`,
+   are not a conversion path for rejected files.
+4. Start the cage when ready (`agentcage cage start <name>`) and run
+   `agentcage cage verify <name>`. For watcher-enabled cages, check
+   `agentcage watcher status <name>` and confirm fresh scans in the egress logs
+   after traffic and a scan interval; a host-side "enabled" setting alone is not
+   proof that monitoring is running.
+
+**Do not push canonical config live to an old egress.** Generated
+`proxy-config.yaml` contains only `agents.decider` / `agents.watcher` agent keys,
+with no legacy shadows. Old egress images cannot read them, so applying the config
+before rebuilding can stop watcher monitoring. `cage restart` alone reuses the
+old image; this schema change requires `cage update`, not just a live config edit.
+CLI nouns and Policy API endpoints are unchanged.
 
 ## Apple-container specific notes
 

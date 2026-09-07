@@ -2,7 +2,7 @@
 
 Two halves, matching the feature's split:
 
-* host side — config parsing/validation (the ``watcher:`` cage.yaml
+* host side — config parsing/validation (the ``agents.watcher`` cage.yaml
   block), the egress-only credential stripping, the DNS allowlist entry
   for the watcher's LLM provider host, the severity-ladder mapping, the
   secret-list classification, and the read-only CLI;
@@ -128,15 +128,15 @@ class TestWatcherConfigParsing:
     def test_context_non_string_rejected(self, tmp_path):
         from agentcage.config import load_config
         bad = _cfg_with(tmp_path, """
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:K
-              context: {nope: 1}
+                context: {nope: 1}
         """)
-        with pytest.raises(ValueError, match="watcher.context must be a string"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.context must be a string"):
             load_config(bad)
 
     # Review fix (correctness #7 / conventions #5): a malformed block
@@ -144,28 +144,43 @@ class TestWatcherConfigParsing:
     # in-egress consumer — reject it at parse time.
     def test_non_mapping_block_rejected(self, tmp_path):
         from agentcage.config import load_config
-        with pytest.raises(ValueError, match="watcher must be a mapping"):
-            load_config(_cfg_with(tmp_path, "watcher: true\n"))
+        with pytest.raises(ValueError, match=r"agents\.watcher must be a mapping"):
+            load_config(_cfg_with(tmp_path, "agents:\n  watcher: true\n"))
 
-    def test_non_mapping_agent_rejected(self, tmp_path):
+    @pytest.mark.parametrize("block", ["{enable: true}", "{enable: false}", "{}", "null"])
+    def test_legacy_top_level_watcher_rejected(self, tmp_path, block):
         from agentcage.config import load_config
-        with pytest.raises(ValueError, match="watcher.agent must be a mapping"):
-            load_config(_cfg_with(tmp_path, """
-                watcher:
-                  enable: true
-                  agent: true
+        with pytest.raises(ValueError, match="watcher.*no longer supported"):
+            load_config(_cfg_with(tmp_path, f"watcher: {block}\n"))
+
+    @pytest.mark.parametrize("block", ["{enable: true}", "{enable: false}", "{}", "null"])
+    def test_legacy_domains_auto_rejected(self, tmp_path, block):
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match=r"domains\.auto.*no longer supported"):
+            load_config(_cfg_with(tmp_path, f"domains:\n  auto: {block}\n"))
+
+    @pytest.mark.parametrize("enable", ["true", "false"])
+    @pytest.mark.parametrize("agent", ["true", "{}", "null", "{provider: openai, model: m, api_key: 'env:K'}"])
+    def test_nested_agent_wrapper_rejected(self, tmp_path, enable, agent):
+        from agentcage.config import load_config
+        with pytest.raises(ValueError, match=r"agents\.watcher: LLM fields must be flat"):
+            load_config(_cfg_with(tmp_path, f"""
+                agents:
+                  watcher:
+                    enable: {enable}
+                    agent: {agent}
             """))
 
     # Review fix: bool("false") is True — a YAML string must not silently
     # ENABLE autonomous revocation against the operator's written intent.
     def test_string_auto_revoke_rejected(self, tmp_path):
         from agentcage.config import load_config
-        with pytest.raises(ValueError, match="watcher.auto_revoke must be a boolean"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.auto_revoke must be a boolean"):
             load_config(_cfg_with(tmp_path, """
-                watcher:
-                  enable: true
-                  auto_revoke: "false"
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    auto_revoke: "false"
                     provider: openai
                     model: m
                     api_key: env:K
@@ -178,11 +193,11 @@ class TestWatcherConfigParsing:
     # true) ON against the operator's written intent.
     def test_string_enable_rejected(self, tmp_path):
         from agentcage.config import load_config
-        with pytest.raises(ValueError, match="watcher.enable must be a boolean"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.enable must be a boolean"):
             load_config(_cfg_with(tmp_path, """
-                watcher:
-                  enable: "false"
-                  agent:
+                agents:
+                  watcher:
+                    enable: "false"
                     provider: openai
                     model: m
                     api_key: env:K
@@ -199,9 +214,9 @@ class TestWatcherConfigParsing:
             domains:
               block:
                 - evil.example
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:K
@@ -219,12 +234,12 @@ class TestWatcherConfigParsing:
         # Same trap as auto_revoke: bool("false") is True, which would
         # quietly keep the expensive un-deduped digest.
         from agentcage.config import load_config
-        with pytest.raises(ValueError, match="watcher.dedup_samples must be a boolean"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.dedup_samples must be a boolean"):
             load_config(_cfg_with(tmp_path, """
-                watcher:
-                  enable: true
-                  dedup_samples: "false"
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    dedup_samples: "false"
                     provider: openai
                     model: m
                     api_key: env:K
@@ -243,9 +258,9 @@ class TestWatcherConfigParsing:
         # the same mechanism as the decider's key.
         from agentcage.config import load_config
         cfg = load_config(_cfg_with(tmp_path, """
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:WATCHER_LLM_KEY
@@ -268,21 +283,21 @@ class TestWatcherConfigValidation:
         self._validate(tmp_path, _WATCHER_YAML)  # no exception
 
     def test_missing_model_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="agents.watcher.model is required"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.model is required"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
                     provider: openai
                     api_key: env:K
             """)
 
     def test_missing_key_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="agents.watcher.api_key is required"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.api_key is required"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
                     provider: openai
                     model: m
             """)
@@ -290,9 +305,9 @@ class TestWatcherConfigValidation:
     def test_cmd_source_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="does not support cmd:"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
                     provider: openai
                     model: m
                     api_key: cmd:cat /tmp/key
@@ -305,9 +320,9 @@ class TestWatcherConfigValidation:
         # that never reviews anything.
         with pytest.raises(ValueError, match="at least 1024"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
                     provider: openai
                     model: m
                     api_key: env:K
@@ -321,9 +336,9 @@ class TestWatcherConfigValidation:
     def test_mixed_case_provider_rejected_like_the_decider(self, tmp_path):
         with pytest.raises(ValueError, match="got 'Anthropic'"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
                     provider: Anthropic
                     model: m
                     api_key: env:K
@@ -335,10 +350,10 @@ class TestWatcherConfigValidation:
     def test_explicit_zero_interval_rejected_by_bounds(self, tmp_path):
         with pytest.raises(ValueError, match="interval_seconds must be >= 60"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  interval_seconds: 0
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    interval_seconds: 0
                     provider: openai
                     model: m
                     api_key: env:K
@@ -347,33 +362,33 @@ class TestWatcherConfigValidation:
     def test_explicit_zero_window_rejected_by_bounds(self, tmp_path):
         with pytest.raises(ValueError, match="window_seconds"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  window_seconds: 0
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    window_seconds: 0
                     provider: openai
                     model: m
                     api_key: env:K
             """)
 
     def test_non_numeric_interval_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="watcher.interval_seconds must be a number"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.interval_seconds must be a number"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  interval_seconds: soon
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    interval_seconds: soon
                     provider: openai
                     model: m
                     api_key: env:K
             """)
 
     def test_bad_provider_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="agents.watcher.provider"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.provider"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
                     provider: ollama
                     model: m
                     api_key: env:K
@@ -382,9 +397,9 @@ class TestWatcherConfigValidation:
     def test_http_base_url_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="https://"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
                     provider: openai
                     model: m
                     api_key: env:K
@@ -394,10 +409,10 @@ class TestWatcherConfigValidation:
     def test_hot_loop_interval_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="interval_seconds"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  interval_seconds: 5
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    interval_seconds: 5
                     provider: openai
                     model: m
                     api_key: env:K
@@ -406,10 +421,10 @@ class TestWatcherConfigValidation:
     def test_window_bounds_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="window_seconds"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  window_seconds: 999999
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    window_seconds: 999999
                     provider: openai
                     model: m
                     api_key: env:K
@@ -418,22 +433,22 @@ class TestWatcherConfigValidation:
     def test_max_flows_bounds_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="max_flows"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  max_flows: 2
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    max_flows: 2
                     provider: openai
                     model: m
                     api_key: env:K
             """)
 
     def test_oversized_context_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="watcher.context is too long"):
+        with pytest.raises(ValueError, match=r"agents\.watcher\.context is too long"):
             self._validate(tmp_path, """
-                watcher:
-                  enable: true
-                  context: "%s"
-                  agent:
+                agents:
+                  watcher:
+                    enable: true
+                    context: "%s"
                     provider: openai
                     model: m
                     api_key: env:K
@@ -444,9 +459,9 @@ class TestWatcherConfigValidation:
         # operator commenting the block out for a debug run must not be
         # blocked by validation for a feature that is off.
         self._validate(tmp_path, """
-            watcher:
-              enable: false
-              agent:
+            agents:
+              watcher:
+                enable: false
                 provider: ""
         """)
 
@@ -469,9 +484,9 @@ class TestWatcherPlumbing:
         cfg = load_config(_cfg_with(tmp_path, """
             domains:
               allow: [registry.npmjs.org]
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:K
@@ -486,9 +501,9 @@ class TestWatcherPlumbing:
         cfg = load_config(_cfg_with(tmp_path, """
             domains:
               allow: [registry.npmjs.org]
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:K
@@ -521,9 +536,9 @@ class TestWatcherKeyIsAnExpectedSecret:
     def test_watcher_key_is_expected(self, tmp_path):
         from agentcage.services import expected_secrets
         cfg = self._cfg(tmp_path, """
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:WATCHER_LLM_KEY
@@ -542,13 +557,12 @@ class TestWatcherKeyIsAnExpectedSecret:
             domains:
               allow:
                 - api.example.com
-              auto:
+            agents:
+              decider:
                 enable: true
-                decider:
-                  kind: agent
-                  provider: openai
-                  model: m
-                  api_key: env:DECIDER_LLM_KEY
+                provider: openai
+                model: m
+                api_key: env:DECIDER_LLM_KEY
         """)
         assert "DECIDER_LLM_KEY" in expected_secrets(cfg)
 

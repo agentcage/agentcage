@@ -33,7 +33,8 @@ agents:
 ```
 
 Provider/model/key/timeout/completion-budget/base-URL settings are **flat** on
-both blocks. There is no nested `agent:` block or `kind:` discriminator.
+both blocks. Nested `agent:` / `decider:` wrappers and the `kind:` discriminator
+are unsupported.
 Omitting a block or setting `enable: false` disables that agent; presence alone
 does not enable it. Enable switches must be actual YAML booleans.
 
@@ -57,21 +58,38 @@ for credential provisioning and cost controls.
 
 ## Migration from the old format
 
-Since 0.40:
+**Breaking change in 0.40:** `domains.auto` and top-level `watcher` are rejected,
+even when empty, null, or disabled, and even if canonical blocks are also
+present. There is no automatic migration or deprecation window. The `kind`
+field (including `kind: agent`) and nested `agent:` / `decider:` wrappers are
+unsupported under either agent.
 
-- `domains.auto` becomes `agents.decider`; LLM fields move out of its nested
-  `decider:` block, and `kind: agent` is removed.
-- Top-level `watcher` becomes `agents.watcher`; LLM fields move out of `agent:`.
+Convert every existing config **manually**, preserving the values:
 
-Legacy input remains supported with warnings. Only one spelling per role is
-allowed, even when a block is empty, null, or disabled. Different roles may be
-migrated independently. An unimplemented legacy `kind: webhook` is still
-rejected, never silently converted to an LLM agent.
+| Before (rejected) | After |
+|-------------------|-------|
+| `domains.auto` settings such as `enable`, `host`, `context`, `rate_limit` | The same settings under `agents.decider` |
+| LLM fields under `domains.auto.decider` | Flat fields under `agents.decider` |
+| Top-level `watcher` settings such as `enable`, `interval_seconds`, `auto_revoke` | The same settings under `agents.watcher` |
+| LLM fields under `watcher.agent` | Flat fields under `agents.watcher` |
+| `kind: agent` | Remove the field; no discriminator replaces it |
 
-Reads normalize in memory; saves write canonical YAML. `cage edit` shows the
-migrated form but does not write it if you cancel or return unchanged text.
-During the 0.40 transition, generated proxy configuration also includes the old
-wire keys for older egress images. They are derived from the canonical settings
-on every render (including disable/removal) and never persisted to `cage.yaml`.
-Update the cage before their scheduled removal in 0.41; see
-[upgrading agentcage](../how-to/upgrade-agentcage.md#upgrading-to-040-the-agents-namespace).
+Move `provider`, `model`, `api_key`, `timeout_seconds`, `max_tokens`, and `base_url`
+out of the old wrappers, then delete those wrappers and the old blocks. Leave
+static `domains` policy untouched. To keep an agent disabled, omit its canonical
+block or set its `enable: false`; do not leave an old disabled block behind.
+The [example above](#example) shows the resulting YAML.
+
+Edit the stored `cage.yaml` directly and run `agentcage cage update <name>`, or
+prepare a complete converted config and replace the stored file with
+`agentcage cage update <name> -c <converted.yaml>`. The latter accepts a converted
+replacement even when the stored config still uses the rejected schema; it does
+not transform that old config. Update any source copies used for future updates
+too. Do not rely on `cage edit` or another config-saving command to convert it.
+
+**Rebuild/update the egress along with the config.** Generated `proxy-config.yaml`
+contains only canonical agent keys, with no legacy shadows. Old egress images
+cannot read them; pushing the new config live before rebuilding can stop watcher
+monitoring. This is not a live schema upgrade: stop affected cages before the
+upgrade, then convert and rebuild before resuming workloads. See the
+[upgrade procedure](../how-to/upgrade-agentcage.md#upgrading-to-040-the-agents-namespace).

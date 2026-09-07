@@ -20,7 +20,17 @@ Example configs: [`basic/cage.yaml`](../../examples/basic/) and [`openclaw/cage.
 
 ### agents settings
 
-For a minimal example and migration rules, see [Egress agents](agents.md).
+For a minimal example and manual before/after instructions, see [Egress agents](agents.md).
+
+> **Breaking change in 0.40:** only `agents.decider` and `agents.watcher` are
+> supported, with flat LLM fields. `domains.auto` and top-level `watcher` are
+> rejected even when empty, null, or disabled; `kind` and nested `agent:` /
+> `decider:` wrappers are unsupported. No automatic conversion is performed.
+> Manually edit the stored `cage.yaml`, or replace it with
+> `agentcage cage update <name> -c <converted.yaml>`. Rebuild/update the egress
+> along with the config: generated `proxy-config.yaml` has only canonical agent
+> keys, which old egress images cannot read. Pushing config live first can stop
+> watcher monitoring. Follow the [upgrade procedure](../how-to/upgrade-agentcage.md#upgrading-to-040-the-agents-namespace).
 
 The `agents:` block is the roster of LLM agents agentcage runs inside the egress on the operator's behalf. Each is opt-in — an absent block adds zero surface — costs money per call, and holds an egress-only API key (never cage-visible, even as a placeholder). Both agents share one flat LLM field set and one credential-staging chain.
 

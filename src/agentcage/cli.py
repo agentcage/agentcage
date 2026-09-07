@@ -29,7 +29,7 @@ from agentcage.audit import (
     format_table_header,
     format_table_row,
 )
-from agentcage.config import load_config, normalize_legacy_agents, validate_config, _LEVEL_ORDER
+from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd
@@ -357,11 +357,7 @@ def _resolved_update_config(cfg) -> tuple[dict, dict[str, str]]:
     Image-valued build args are resolved to content identities separately.
     """
     resolved_args = dict(cfg.container.build.args)
-    resolved = asdict(cfg)
-    # Diagnostics describe the input spelling, not deployed behavior. Including
-    # them makes the first canonical reload spuriously rebuild an unchanged cage.
-    resolved.pop("legacy_form_notices", None)
-    return resolved, resolved_args
+    return asdict(cfg), resolved_args
 
 
 def _update_image_digests(cfg, name: str, podman: Podman,
@@ -1141,7 +1137,10 @@ def cage_update(name: str | None, config_path: str | None,
         _ensure_v022_cage(name)
         # Capture the previous stored config before it's overwritten so
         # already-generated placeholders carry over (stable across updates).
-        prev_raw = state.load_raw_config(name)
+        # Only reuse placeholder identities, not old operational settings.
+        # Explicit -c replacement must work even when the stored schema is
+        # unsupported; the replacement itself was fully validated above.
+        prev_raw = state.load_raw_config(name, check_agent_schema=False)
         state.save_deployment(name, config_path)
         if state.fill_placeholders(name, prev_raw=prev_raw):
             cfg = state.load_deployment_config(name)
@@ -1168,21 +1167,15 @@ def cage_update(name: str | None, config_path: str | None,
         # base images (--pull), and restarts. To change config, edit it
         # explicitly via `cage edit` or supply a new config with
         # `cage update -c <file>`.
-        state.fill_placeholders(name)
-        cfg = state.load_deployment_config(name)
         try:
+            state.fill_placeholders(name)
+            cfg = state.load_deployment_config(name)
             warnings = validate_config(cfg)
         except ValueError as e:
             click.echo(f"error: {e}", err=True)
             sys.exit(1)
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
-
-    # Schema-only migration is intentional even when updating without -c:
-    # all operational values remain unchanged. Do it after validation and
-    # warnings, before publishing derived configs to any running egress.
-    if cfg.legacy_form_notices:
-        state.save_raw_config(name, state.load_raw_config(name))
 
     # Pre-egress-rework cages carry a legacy host-side grants watcher whose
     # command (``agentcage cage grants <name> watch``) no longer exists; on an
@@ -1817,8 +1810,6 @@ def cage_restart(name: str):
     _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
-    for notice in cfg.legacy_form_notices:
-        click.echo(f"warning: {notice}", err=True)
 
     # Re-copy patch files from package data to overwrite any tampering.
     # The apple-container backend doesn't use host-side nested-container
@@ -1912,15 +1903,12 @@ def cage_edit(name: str):
     rejected_path = state_dir / "cage.yaml.rejected"
     backup_path = state_dir / "cage.yaml.bak"
 
-    original_raw = state.load_raw_config(name)
+    try:
+        original_raw = state.load_raw_config(name)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
     original_text = config_path.read_text()
-    _, migration_notices = normalize_legacy_agents(yaml.safe_load(original_text) or {})
-    for notice in migration_notices:
-        click.echo(f"warning: {notice}", err=True)
-    # Show migrated keys when needed, but preserve comments/formatting for
-    # ordinary edits. Cancelling or making no changes never rewrites the file.
-    if migration_notices:
-        original_text = _yaml_dump(original_raw)
 
     # click.edit returns the edited text when given `text=`, or None if the
     # user exited without saving / made no changes. We pass the text so we
@@ -1953,18 +1941,6 @@ def cage_edit(name: str):
         click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
         click.echo(f"  Original config at {config_path} is unchanged.", err=True)
         sys.exit(1)
-
-    # An operator can paste legacy syntax into the editor. Normalize before
-    # both validation and persistence so the diff never compares two schemas.
-    try:
-        edited_raw, notices = normalize_legacy_agents(edited_raw)
-    except ValueError as e:
-        rejected_path.write_text(edited_text)
-        click.echo(f"error: {e}", err=True)
-        click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
-        sys.exit(1)
-    for notice in notices:
-        click.echo(f"warning: {notice}", err=True)
 
     # Don't allow renaming a cage via `cage edit` — that requires state
     # directory moves, podman secret renames, quadlet rewrites, and is

@@ -122,30 +122,16 @@ class TestAgentParse:
         assert auto.model == "anthropic/claude-sonnet-4-5"
         assert auto.api_key == "env:POLICY_LLM_KEY"
         assert cfg.domains.allow == ["github.com"]
-        assert cfg.legacy_form_notices == []
+        assert validate_config(cfg) == []
 
-    def test_legacy_decider_parity_and_deprecation(self, tmp_path):
-        fields = _agent_decider(
-            timeout=30, max_tokens=16384, base_url="https://llm.example",
-        )
-        current = load_config(_write(
-            tmp_path, _enabled(fields), env={"POLICY_LLM_KEY": "k"},
-        ))
-        legacy_body = (
+    def test_legacy_decider_rejected(self, tmp_path):
+        body = (
             "domains:\n  allow: [github.com]\n  auto:\n    enable: true\n"
-            "    decider:\n      kind: agent\n"
-            + "\n".join("      " + line for line in fields.splitlines()) + "\n"
+            "    decider:\n      kind: agent\n      provider: openrouter\n"
+            "      model: m\n      api_key: env:POLICY_LLM_KEY\n"
         )
-        legacy = load_config(_write(
-            tmp_path, legacy_body, env={"POLICY_LLM_KEY": "k"},
-        ))
-        assert legacy.agents.decider == current.agents.decider
-        assert legacy.domains == current.domains
-        assert "POLICY_LLM_KEY" not in legacy.container.env
-        assert any(
-            "domains.auto is now agents.decider" in warning
-            for warning in validate_config(legacy)
-        )
+        with pytest.raises(ValueError, match="domains.auto is no longer supported"):
+            load_config(_write(tmp_path, body))
 
     def test_effective_never_grant_includes_builtins(self, tmp_path):
         body = _enabled(_agent_decider())
@@ -363,12 +349,11 @@ class TestOperatorContext:
         # (the whole auto block is a no-op when enable is false). Guards
         # against an over-eager check that runs regardless of enable.
         body = (
-            "domains:\n  allow: [github.com]\n  auto:\n    enable: false\n"
+            "domains:\n  allow: [github.com]\nagents:\n  decider:\n    enable: false\n"
             "    context: " + ("x" * 5000) + "\n"
         )
         cfg = load_config(_write(tmp_path, body))
-        # Legacy domains.auto normalizes to agents.decider. enable=False
-        # skips context parsing and validation in either form.
+        # Disabled agents do not parse or validate unused prompt context.
         assert cfg.agents.decider.enable is False
         validate_config(cfg)  # must not raise
 
@@ -408,12 +393,12 @@ class TestApiKey:
 class TestDeciderKind:
     def test_unknown_kind_raises(self, tmp_path):
         body = _enabled("kind: carrier-pigeon\n")
-        with pytest.raises(ValueError, match=r"agents\.decider\.kind must be 'agent'"):
+        with pytest.raises(ValueError, match=r"agents\.decider\.kind is no longer supported"):
             load_config(_write(tmp_path, body))
 
     def test_webhook_not_implemented(self, tmp_path):
         body = _enabled("kind: webhook\n")
-        with pytest.raises(ValueError, match=r"agents\.decider\.kind=webhook is not implemented"):
+        with pytest.raises(ValueError, match=r"agents\.decider\.kind is no longer supported"):
             load_config(_write(tmp_path, body))
 
 
