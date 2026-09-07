@@ -3,10 +3,11 @@
 The brief is a *scaffold* feature, not an agentcage-core one: where it lives
 and what format it takes is agent-specific. There is a SINGLE canonical brief
 (``scaffolds/AGENTS.md``); scaffolds ``COPY AGENTS.md`` into the agent's memory
-file but don't each ship a copy — :func:`agentcage.scaffold_brief.stage_scaffold_brief`
-stages the canonical brief into the build context at build time.
+file but don't each ship a copy — :func:`agentcage.scaffold_brief.stage_scaffold_assets`
+stages the canonical brief and skill into the build context at build time.
 """
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,52 @@ def test_stage_refreshes_stale_staged_brief(tmp_path):
     assert stage_scaffold_brief(cf, dest, scaffold="claude-code") is False
 
 
+def test_stage_brief_replaces_a_directory_squatting_on_the_name(tmp_path):
+    # A directory at dest/AGENTS.md must not crash the staging (and must not
+    # be deferred to: the staged copy is agentcage's own, and the context
+    # does not ship one).
+    cf = _fake_scaffold_ctx(tmp_path)
+    dest = tmp_path / "ctx"
+    dest.mkdir()
+    (dest / "AGENTS.md").mkdir()
+    (dest / "AGENTS.md" / "junk").write_text("x")
+    assert stage_scaffold_brief(cf, dest, scaffold="claude-code") is True
+    assert (dest / "AGENTS.md").is_file()
+    assert (dest / "AGENTS.md").read_text() == CANONICAL_BRIEF.read_text()
+
+
+# ── COPY-instruction matching ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("copy_line,brief,skill", [
+    ("COPY AGENTS.md /x", True, False),
+    ("COPY skills/agentcage /x", False, True),
+    ("COPY AGENTS.md /x\nCOPY skills/agentcage /y", True, True),
+    # flags, path prefixes, trailing slash, lowercase instruction: real COPYs
+    ("COPY --chown=node:node AGENTS.md /x", True, False),
+    ("COPY ./skills/agentcage/ /x", False, True),
+    ("copy AGENTS.md /x", True, False),
+    # the scaffold Containerfiles *comment* about staging ("(scaffolds/
+    # skills/agentcage) — not committed per-scaffold") — a comment is not
+    # an instruction; a longer name is not our path; a mention in the
+    # destination is not a source
+    ("# COPY AGENTS.md and skills/agentcage into the image", False, False),
+    ("# agentcage stages skills/agentcage (see scaffold_brief)", False, False),
+    ("COPY AGENTS.md.bak /x", False, False),
+    ("COPY skills/agentcage-x /x", False, False),
+    ("COPY README.md /opt/AGENTS.md", False, False),
+])
+def test_staging_requires_an_actual_copy_instruction(
+    tmp_path, copy_line, brief, skill,
+):
+    cf = tmp_path / "Containerfile"
+    cf.write_text(f"FROM x\n{copy_line}\nUSER node\n")
+    dest = tmp_path / "ctx"
+    dest.mkdir()
+    assert stage_scaffold_assets(cf, dest, scaffold="pi") is (brief or skill)
+    assert (dest / "AGENTS.md").is_file() is brief
+    assert (dest / "skills" / "agentcage" / "SKILL.md").is_file() is skill
+
+
 # ── canonical skill ──────────────────────────────────────────────────────────
 
 def test_single_canonical_skill_exists():
@@ -237,6 +284,49 @@ def test_stage_skill_defers_to_context_and_refreshes_stale(tmp_path):
     assert (dest / "skills" / "agentcage" / "SKILL.md").read_text() == "mine"
 
 
+def test_stage_skill_refresh_descends_into_subdirectories(tmp_path, monkeypatch):
+    # filecmp.dircmp does not recurse: a stale file in a nested directory
+    # under a current top-level SKILL.md read as "no diff" and survived the
+    # refresh. The comparison must be recursive and byte-deep.
+    import agentcage.scaffold_brief as sb
+
+    canon = tmp_path / "canon"
+    shutil.copytree(CANONICAL_SKILL_DIR, canon)
+    (canon / "refs").mkdir()
+    (canon / "refs" / "api.md").write_text("canonical")
+    monkeypatch.setattr(sb, "CANONICAL_SKILL_DIR", canon)
+
+    cf = _fake_skill_ctx(tmp_path)
+    dest = tmp_path / "ctx"
+    dest.mkdir()
+    staged = dest / "skills" / "agentcage"
+    staged.mkdir(parents=True)
+    shutil.copy2(canon / "SKILL.md", staged / "SKILL.md")  # already current
+    (staged / "refs").mkdir()
+    (staged / "refs" / "api.md").write_text("STALE")
+
+    assert stage_scaffold_skill(cf, dest, scaffold="pi") is True
+    assert (staged / "refs" / "api.md").read_text() == "canonical"
+
+
+def test_stage_skill_replaces_squatting_entries_on_the_skill_path(tmp_path):
+    # `skills/` or `skills/agentcage` existing as a FILE used to crash
+    # copytree/mkdir. The staged skill tree is agentcage's own and must win.
+    cf = _fake_skill_ctx(tmp_path)
+    dest = tmp_path / "ctx"
+    dest.mkdir()
+    (dest / "skills").write_text("not a directory")
+    assert stage_scaffold_skill(cf, dest, scaffold="pi") is True
+    assert (dest / "skills" / "agentcage" / "SKILL.md").is_file()
+
+    shutil.rmtree(dest / "skills")
+    (dest / "skills").mkdir()
+    (dest / "skills" / "agentcage").write_text("not a directory")
+    assert stage_scaffold_skill(cf, dest, scaffold="pi") is True
+    assert (dest / "skills" / "agentcage").is_dir()
+    assert (dest / "skills" / "agentcage" / "SKILL.md").is_file()
+
+
 def test_stage_assets_stages_both(tmp_path):
     cf = tmp_path / "Containerfile"
     cf.write_text(
@@ -287,3 +377,46 @@ def test_run_scaffold_setup_stages_brief_into_build_context(scaffold, monkeypatc
     assert captured.get("has_skill") is True
     assert captured.get("brief_text") == CANONICAL_BRIEF.read_text()
     assert captured.get("cf_in_context") is True
+
+
+# ── `agentcage run` stages for later rebuilds ─────────────────────────────────
+#
+# Regression: run.py's state-dir staging was left on the brief-only helper
+# when the skill shipped. A run-created cage's staged Containerfile COPYs
+# skills/agentcage that was never staged, so its next `cage update` rebuild
+# (which rebuilds from the state dir) failed at the COPY line.
+
+def test_run_stages_brief_and_skill_into_state_dir(tmp_path, monkeypatch):
+    from agentcage import run as run_mod
+    from agentcage import state as state_mod
+
+    monkeypatch.setattr(
+        state_mod, "stored_config_path",
+        lambda name: str(tmp_path / "state" / name / "cage.yaml"),
+    )
+    run_mod._stage_scaffold_build_context("pi", "Containerfile", "demo")
+
+    dest = tmp_path / "state" / "demo"
+    # the Containerfile and its sibling build inputs, without config templates
+    assert (dest / "Containerfile").is_file()
+    assert not (dest / "scaffold.yaml").exists()
+    assert not (dest / "cage.yaml.j2").exists()
+    # ...and every canonical asset its COPY lines need
+    assert (dest / "AGENTS.md").read_text() == CANONICAL_BRIEF.read_text()
+    assert (dest / "skills" / "agentcage" / "SKILL.md").is_file()
+
+
+def test_every_staging_call_site_stages_all_assets():
+    # Structural guard for the regression above: every call site outside
+    # scaffold_brief.py itself must stage ALL canonical assets. When the
+    # skill was added, cli.py and init.py were migrated but run.py was
+    # missed (see the regression note above) — a per-function test could
+    # not have caught a call site it did not know about.
+    src = Path(agentcage.__file__).parent
+    offenders = [
+        str(p.relative_to(src))
+        for p in src.rglob("*.py")
+        if p.name != "scaffold_brief.py"
+        and "stage_scaffold_brief" in p.read_text()
+    ]
+    assert offenders == []
