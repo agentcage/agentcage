@@ -33,7 +33,7 @@ from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd
-from agentcage.scaffold_brief import stage_scaffold_brief
+from agentcage.scaffold_brief import stage_scaffold_assets
 from agentcage.lima.instance import LimaInstance
 from agentcage.services import (
     expected_secrets as _expected_secrets,
@@ -723,7 +723,7 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
                         _stage_build_context(
                             src_cf.parent, dest.parent, clobber=False,
                         )
-                        stage_scaffold_brief(src_cf, dest.parent, scaffold)
+                        stage_scaffold_assets(src_cf, dest.parent, scaffold)
     scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
@@ -961,7 +961,7 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
         src_cf = Path(config_path).parent / cfg.container.build.containerfile
         if src_cf.is_file():
             _stage_build_context(src_cf.parent, state.deployment_dir(name))
-            stage_scaffold_brief(
+            stage_scaffold_assets(
                 src_cf, state.deployment_dir(name), cfg.scaffold,
             )
 
@@ -1148,7 +1148,7 @@ def cage_update(name: str | None, config_path: str | None,
             src_cf = Path(config_path).parent / cfg.container.build.containerfile
             if src_cf.is_file():
                 _stage_build_context(src_cf.parent, state.deployment_dir(name))
-                stage_scaffold_brief(
+                stage_scaffold_assets(
                     src_cf, state.deployment_dir(name), cfg.scaffold,
                 )
     else:

@@ -292,7 +292,7 @@ def run_scaffold_setup(
     if isolation in (None, "container"):
         from agentcage.podman import Podman
         from agentcage.registry import resolve_build_args
-        from agentcage.scaffold_brief import stage_scaffold_brief
+        from agentcage.scaffold_brief import stage_scaffold_assets
 
         podman = Podman()
         for entry in meta.get("build", []):
@@ -320,7 +320,7 @@ def run_scaffold_setup(
                 with tempfile.TemporaryDirectory() as ctx:
                     shutil.copytree(scaffold_dir, ctx, dirs_exist_ok=True)
                     ctx_cf = str(Path(ctx) / entry["containerfile"])
-                    stage_scaffold_brief(Path(ctx_cf), Path(ctx), scaffold)
+                    stage_scaffold_assets(Path(ctx_cf), Path(ctx), scaffold)
                     podman.build_image(
                         image, ctx_cf, ctx,
                         cap_add=entry.get("cap_add"), build_args=build_args,

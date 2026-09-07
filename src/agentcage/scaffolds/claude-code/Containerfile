@@ -40,6 +40,12 @@ RUN npm install -g --ignore-scripts @anthropic-ai/claude-code \
 # destination to that agent's memory file.
 RUN mkdir -p /home/node/.claude
 COPY AGENTS.md /home/node/.claude/CLAUDE.md
+
+# agentcage skill: the Policy API how-to (reflect on the allowlist, request a
+# domain, give a grant back) as an Agent Skills package under Claude Code's
+# user skills dir. Staged into the build context by agentcage like the brief
+# above (scaffolds/skills/agentcage) — not committed per-scaffold.
+COPY skills/agentcage /home/node/.claude/skills/agentcage
 RUN chown -R node:node /home/node/.claude
 
 # node:22-slim already has user node (1000:1000)

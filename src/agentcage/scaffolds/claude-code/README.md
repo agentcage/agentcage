@@ -149,6 +149,20 @@ plain, writable file Claude owns — not a read-only mount — so `claude login`
 settings, and Claude's own appended memories still work. The agentcage version
 is also available in the cage at `$AGENTCAGE_VERSION`.
 
+### Policy API skill
+
+The image also installs agentcage's standard `agentcage` skill into `~/.claude/skills/agentcage/`.
+It is an [Agent Skills](https://agentskills.io) package the agent loads on
+demand when a request fails with a `403`: how to check `/v1/health`, reflect on
+the effective allowlist with `GET https://agentcage.local/v1/allowlist`, request
+a new egress domain with a justification the decider will accept
+(`POST /v1/allowlist/requests`), and give a grant back
+(`POST /v1/allowlist/removals`). The endpoints only answer when the cage enables
+`domains.auto` (see `docs/reference/policy-api.md`); without it the skill tells
+the agent to ask the operator. Like the brief, agentcage stages the one canonical
+copy (`src/agentcage/scaffolds/skills/agentcage/`) into the build context for the
+`COPY skills/agentcage` line; drop that line to leave it out.
+
 ### Secret injection
 
 The scaffold pre-configures secret injection for the Anthropic API key. Two more

@@ -1,4 +1,4 @@
-<!-- owner: @luca  last-reviewed: 2026-08-29 -->
+<!-- owner: @luca  last-reviewed: 2026-09-04 -->
 # Policy API
 
 An **opt-in** control plane that lets a caged agent introspect its effective
@@ -76,7 +76,6 @@ On vm cages the grants overlay still lives VM-LOCAL
 other hot-reloaded config files) so the in-guest addon writes it with no
 Lima-mount staleness; the host reads it over `limactl shell` when it
 reconciles the durable baseline.
-| `GET`  | `/v1/health` | Liveness + feature flags (which endpoints are enabled). |
 
 ### `GET /v1/allowlist`
 
@@ -182,6 +181,56 @@ agent can re-request the domain later and the decider adjudicates fresh.
 Audited as `policy_removal` lines in `audit.jsonl`. Enabled together with
 the request endpoint by `auto.enable` (the `/v1/health` features object
 reports `removal`).
+
+## How the agent learns about the API
+
+Scaffold cages teach the agent the API through the `agentcage` skill, and the
+`AGENTS.md` brief points at it. *Since 0.38.* The skill is an
+[Agent Skills](https://agentskills.io) package the agent loads on demand when a
+request fails with `403`; the canonical copy is
+[`skills/agentcage/SKILL.md`](../../src/agentcage/scaffolds/skills/agentcage/SKILL.md)
+and the brief is [`AGENTS.md`](../../src/agentcage/scaffolds/AGENTS.md).
+
+The skill covers:
+
+- checking `GET /v1/health` first, and handing the domain to the operator
+  (with the exact `agentcage domain add` command) when the API is off
+- reflecting on the effective allowlist with `GET /v1/allowlist`, including
+  the operator's `context`, before requesting anything
+- requesting a domain with `POST /v1/allowlist/requests`, and what a `reason`
+  the decider accepts looks like
+- what each response code means and what to do next
+- giving a grant back with `POST /v1/allowlist/removals`
+- rules of engagement: one request per domain, a denial is an answer, never
+  route around a block, never put a secret placeholder in a `reason`
+
+Where each built-in scaffold installs it:
+
+| Scaffold | Skill | Brief |
+|----------|-------|-------|
+| `claude-code` | `/home/node/.claude/skills/agentcage/` | `/home/node/.claude/CLAUDE.md` |
+| `codex` | `/home/node/.codex/skills/agentcage/` | `/home/node/.codex/AGENTS.md` |
+| `pi` | `/home/node/.agents/skills/agentcage/` | `/home/node/.pi/agent/AGENTS.md` |
+| `openclaw` | not installed | not installed |
+
+A custom template opts in by setting `scaffold:` in `cage.yaml` and copying
+both assets from the build context in its Containerfile, using the skills
+directory its agent reads:
+
+```dockerfile
+COPY AGENTS.md /home/node/.claude/CLAUDE.md
+COPY skills/agentcage /home/node/.claude/skills/agentcage
+```
+
+agentcage stages the canonical files into the cage's build context at
+`cage create -c` and `cage update -c`, only for cages with `scaffold:` set and
+only for the assets the Containerfile references. A copy you ship next to
+your Containerfile always wins; otherwise agentcage's staged copy is refreshed
+whenever the canonical file changes, so an upgrade reaches an existing cage on
+its next `cage update -c`.
+
+The endpoints answer only when `domains.auto.enable` is true. With it off, the
+skill tells the agent to check `/v1/health` and ask the operator.
 
 ## Config schema
 

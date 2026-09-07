@@ -135,6 +135,20 @@ scaffold at once. It's a plain, writable file Pi owns — not a read-only mount 
 so Pi's own state/session writes still work. The agentcage version is also
 available at `$AGENTCAGE_VERSION`.
 
+### Policy API skill
+
+The image also installs agentcage's standard `agentcage` skill into `~/.agents/skills/agentcage/` (a cross-agent skills location Pi discovers, and one a `~/.pi` bind mount cannot shadow).
+It is an [Agent Skills](https://agentskills.io) package the agent loads on
+demand when a request fails with a `403`: how to check `/v1/health`, reflect on
+the effective allowlist with `GET https://agentcage.local/v1/allowlist`, request
+a new egress domain with a justification the decider will accept
+(`POST /v1/allowlist/requests`), and give a grant back
+(`POST /v1/allowlist/removals`). The endpoints only answer when the cage enables
+`domains.auto` (see `docs/reference/policy-api.md`); without it the skill tells
+the agent to ask the operator. Like the brief, agentcage stages the one canonical
+copy (`src/agentcage/scaffolds/skills/agentcage/`) into the build context for the
+`COPY skills/agentcage` line; drop that line to leave it out.
+
 ### Secret injection
 
 The scaffold pre-configures secret injection for the Anthropic API key. Two more rules ship commented out in `cage.yaml`:

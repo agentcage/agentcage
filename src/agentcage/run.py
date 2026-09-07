@@ -303,6 +303,36 @@ def _resolve_exec_cmd(cfg, extra_args: tuple[str, ...]) -> list[str]:
     return ["/bin/bash"]
 
 
+def _stage_scaffold_build_context(
+    scaffold: str, containerfile: str, cage_name: str,
+) -> None:
+    """Stage a scaffold's Containerfile and siblings into the cage's state dir.
+
+    So a later ``cage update`` can rebuild from the state dir (the staged
+    Containerfile may COPY files and directories from the build context).
+    Sibling *files* are copied (config templates excluded), and the
+    canonical scaffold assets — the ``AGENTS.md`` brief and the
+    ``agentcage`` skill — are staged for the Containerfile's ``COPY`` lines:
+    the Containerfile references assets the scaffold dir deliberately does
+    not ship per-scaffold (see agentcage.scaffold_brief), and a rebuild
+    without them fails at the ``COPY``.
+    """
+    from agentcage.scaffold_brief import stage_scaffold_assets
+
+    scaffold_dir = resolve_scaffold(scaffold)
+    containerfile_src = (
+        scaffold_dir / containerfile if scaffold_dir else None
+    )
+    if containerfile_src is None or not containerfile_src.exists():
+        return
+    dest_dir = Path(state.stored_config_path(cage_name)).parent
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for f in containerfile_src.parent.iterdir():
+        if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
+            shutil.copy2(str(f), str(dest_dir / f.name))
+    stage_scaffold_assets(containerfile_src, dest_dir, scaffold)
+
+
 def execute(
     scaffold: str,
     *,
@@ -461,17 +491,9 @@ def execute(
     # Copy scaffold Containerfile and sibling files to state dir so cage
     # update can rebuild (Containerfiles may COPY from build context)
     if cfg.container.build.containerfile:
-        scaffold_dir = resolve_scaffold(scaffold)
-        containerfile_src = scaffold_dir / cfg.container.build.containerfile if scaffold_dir else None
-        if containerfile_src is not None and containerfile_src.exists():
-            dest_dir = Path(state.stored_config_path(cage_name)).parent
-            for f in containerfile_src.parent.iterdir():
-                if f.is_file() and f.suffix not in (".yaml", ".yml", ".j2"):
-                    shutil.copy2(str(f), str(dest_dir / f.name))
-            # Provide the canonical sandbox brief (scaffolds COPY AGENTS.md
-            # but don't each ship a copy — see agentcage.scaffold_brief).
-            from agentcage.scaffold_brief import stage_scaffold_brief
-            stage_scaffold_brief(containerfile_src, dest_dir, scaffold)
+        _stage_scaffold_build_context(
+            scaffold, cfg.container.build.containerfile, cage_name,
+        )
 
     # Run scaffold setup (build images) and deploy
     try:

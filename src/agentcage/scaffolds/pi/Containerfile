@@ -32,6 +32,14 @@ RUN mkdir -p /home/node/.pi/agent
 COPY AGENTS.md /home/node/.pi/agent/AGENTS.md
 RUN chown -R node:node /home/node/.pi
 
+# agentcage skill: the Policy API how-to (reflect on the allowlist, request a
+# domain, give a grant back) as an Agent Skills package. Pi discovers skills in
+# ~/.agents/skills (cross-agent, and not shadowed if an operator bind-mounts
+# ~/.pi over the image). Staged into the build context by agentcage like the
+# brief above (scaffolds/skills/agentcage) — not committed per-scaffold.
+COPY skills/agentcage /home/node/.agents/skills/agentcage
+RUN chown -R node:node /home/node/.agents
+
 # node:22-slim already has user node (1000:1000)
 USER node
 WORKDIR /workspace

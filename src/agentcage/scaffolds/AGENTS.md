@@ -34,6 +34,8 @@ surprises here are by design. (The running version is in the
   decider agent (a cybersecurity expert that scrutinizes your justification);
   a granted domain is promoted into the baseline and becomes reachable within
   about a second.
+  If an `agentcage` skill is installed, load it: it covers the endpoints,
+  what a good justification looks like, and how to give a grant back.
 - The root filesystem may be read-only and Linux capabilities dropped. Write
   to your workspace, `/tmp`, or `/run`.
 
