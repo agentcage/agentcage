@@ -132,7 +132,7 @@ agentcage domain rm mycage api.example.com
 
 Check the `still_allowed_by_baseline` flag on a `watcher_revoke` audit entry before assuming traffic stopped. When it's `true` the runtime grant is gone but a static entry still matches the domain, so the cage keeps reaching it until you remove that entry too.
 
-a revocation is not a ban. The caged agent can request the same domain again and the decider adjudicates fresh, so a domain you want gone for good belongs out of the baseline — and, if the decider keeps granting it back, named in `agents.decider.context` as something this cage has no business reaching.
+A revocation is not a ban. The caged agent can request the same domain again and the decider adjudicates fresh, so a domain you want gone for good belongs out of the baseline — and, if the decider keeps granting it back, named in `agents.decider.context` as something this cage has no business reaching.
 
 ## What the caged agent sees
 

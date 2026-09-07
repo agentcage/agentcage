@@ -278,7 +278,7 @@ def _num(cfg: dict, key: str, default: float, log=None) -> float:
         return float(raw)
     except (ValueError, TypeError):
         if log is not None:
-            log.warn(f"agentcage: watcher.{key} is not a number "
+            log.warn(f"agentcage: agents.watcher.{key} is not a number "
                      f"({raw!r}) — using {default}")
         return default
 
@@ -793,7 +793,7 @@ class Watcher:
         _ar = self.cfg.get("auto_revoke", True)
         if not isinstance(_ar, bool):
             self._log.warn(
-                f"agentcage: watcher.auto_revoke is not a boolean "
+                f"agentcage: agents.watcher.auto_revoke is not a boolean "
                 f"({ _ar!r }) — using the default (true)")
             _ar = True
         self._auto_revoke = _ar
@@ -803,7 +803,7 @@ class Watcher:
         _dd = self.cfg.get("dedup_samples", True)
         if not isinstance(_dd, bool):
             self._log.warn(
-                f"agentcage: watcher.dedup_samples is not a boolean "
+                f"agentcage: agents.watcher.dedup_samples is not a boolean "
                 f"({_dd!r}) — using the default (true)")
             _dd = True
         self._dedup = _dd
@@ -814,7 +814,7 @@ class Watcher:
         _ctx = self.cfg.get("context", "")
         if not isinstance(_ctx, str):
             self._log.warn(
-                "agentcage: watcher.context is not a string in the proxy "
+                "agentcage: agents.watcher.context is not a string in the proxy "
                 f"config (got {type(_ctx).__name__}) — ignoring it")
             _ctx = ""
         self._context = _ctx.strip()[:4096]
@@ -1107,7 +1107,7 @@ class Watcher:
                           "scan drained it, so earlier entries in the window "
                           "were likely evicted unreviewed — a busy cage, or "
                           "chaff pushed through the ring to age evidence out",
-                "recommendation": "shorten watcher.interval_seconds, or treat "
+                "recommendation": "shorten agents.watcher.interval_seconds, or treat "
                                   "the volume itself as suspicious if the cage "
                                   "has no reason to be this busy",
             })
@@ -1155,7 +1155,7 @@ class Watcher:
                 "recommendation": "reduce capture volume "
                                   "(capture.min_action, capture.domains, "
                                   "a smaller capture.max_body_size) or "
-                                  "shorten watcher.interval_seconds",
+                                  "shorten agents.watcher.interval_seconds",
             })
 
         findings = verdict.get("findings") or []
@@ -1486,7 +1486,7 @@ class Watcher:
                         "detail": str(r.get("reason", ""))[:1000],
                         "recommendation": "revoke the runtime grant with "
                                           "`agentcage cage grants revoke`, "
-                                          "or set watcher.auto_revoke: true "
+                                          "or set agents.watcher.auto_revoke: true "
                                           "to have the watcher apply this "
                                           "itself",
                         "domain": str(r.get("domain")),
@@ -1506,7 +1506,7 @@ class Watcher:
                           "the static baseline is the block list, so the "
                           "analysis's narrowing judgements do not apply",
                 "recommendation": "run the cage in allowlist mode to use "
-                                  "the watcher, or disable watcher.enable",
+                                  "the watcher, or disable agents.watcher.enable",
             })
             return []
         if self._pa is None or self.dom is None:

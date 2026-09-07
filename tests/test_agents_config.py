@@ -120,6 +120,24 @@ def test_invalid_explicit_numbers_are_not_defaulted(tmp_path, role, field, value
         validate_config(cfg)
 
 
+@pytest.mark.parametrize("role", ["decider", "watcher"])
+@pytest.mark.parametrize("bad_key", [
+    "BARE_ENV_VAR",
+    "env:",
+    ":KEY_NAME",
+    "cmd:echo secret",
+    "unsupported:KEY",
+])
+def test_api_key_must_use_supported_source_scheme(tmp_path, role, bad_key):
+    raw = deepcopy(CONFIG)
+    raw["agents"][role]["api_key"] = bad_key
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match=r"(source:NAME|unknown secret source scheme|does not support cmd|unknown source scheme)"):
+        cfg = load_config(str(path))
+        validate_config(cfg)
+
+
 @pytest.fixture
 def stored(tmp_path, monkeypatch):
     import agentcage.state as state

@@ -1299,10 +1299,16 @@ def load_config(path: str) -> Config:
             **llm,
         )
         _key = _pending_decider.api_key
-        _scheme, _, _arg = (_key or "").partition(":")
-        if _scheme and _arg:
+        if _key:
+            _scheme, _sep, _arg = _key.partition(":")
+            if not _sep or not _scheme or not _arg:
+                raise ValueError(
+                    f"agents.decider.api_key must use the 'source:NAME' scheme "
+                    f"(e.g. 'env:NAME' or 'systemd-creds:NAME') — got {_key!r}"
+                )
             validate_source(_key)
-            policy_secret_names.add(_arg)
+            if _scheme == "env":
+                policy_secret_names.add(_arg)
 
     _pending_watcher: WatcherAgentConfig | None = None
     w_raw = agents_raw.get("watcher") or {}
@@ -1375,10 +1381,16 @@ def load_config(path: str) -> Config:
             **llm,
         )
         _w_key = _pending_watcher.api_key
-        _w_scheme, _, _w_arg = (_w_key or "").partition(":")
-        if _w_scheme and _w_arg:
+        if _w_key:
+            _w_scheme, _w_sep, _w_arg = _w_key.partition(":")
+            if not _w_sep or not _w_scheme or not _w_arg:
+                raise ValueError(
+                    f"agents.watcher.api_key must use the 'source:NAME' scheme "
+                    f"(e.g. 'env:NAME' or 'systemd-creds:NAME') — got {_w_key!r}"
+                )
             validate_source(_w_key)
-            policy_secret_names.add(_w_arg)
+            if _w_scheme == "env":
+                policy_secret_names.add(_w_arg)
 
     agents_cfg = AgentsConfig()
     if _pending_decider is not None:
@@ -2270,12 +2282,22 @@ def validate_config(config: Config) -> list[str]:
         # source silently materializes as an empty key at runtime (fail-
         # closed but confusing). Reject it at validate time with an
         # actionable message instead.
-        _ag_scheme = (pa.api_key or "").partition(":")[0]
+        _ag_scheme, _ag_sep, _ag_arg = (pa.api_key or "").partition(":")
+        if not _ag_sep or not _ag_scheme or not _ag_arg:
+            raise ValueError(
+                f"agents.decider.api_key must use the 'source:NAME' scheme "
+                f"(e.g. 'env:NAME' or 'systemd-creds:NAME') — got {pa.api_key!r}"
+            )
         if _ag_scheme == "cmd":
             raise ValueError(
                 "agents.decider.api_key does not support cmd: "
                 "sources (the egress container has no shell); use env:NAME or "
                 "systemd-creds:NAME"
+            )
+        if _ag_scheme not in ("env", "systemd-creds"):
+            raise ValueError(
+                f"agents.decider.api_key unknown source scheme: '{_ag_scheme}'. "
+                "Valid schemes: env, systemd-creds"
             )
         # https-only: the decider API key travels as a bearer header on
         # every call — an http:// base_url would leak it in cleartext.
@@ -2358,12 +2380,22 @@ def validate_config(config: Config) -> list[str]:
                 "'env:WATCHER_LLM_KEY'). Reusing the decider's key is fine: "
                 "name the same env var."
             )
-        _w_scheme = (w.api_key or "").partition(":")[0]
+        _w_scheme, _w_sep, _w_arg = (w.api_key or "").partition(":")
+        if not _w_sep or not _w_scheme or not _w_arg:
+            raise ValueError(
+                f"agents.watcher.api_key must use the 'source:NAME' scheme "
+                f"(e.g. 'env:NAME' or 'systemd-creds:NAME') — got {w.api_key!r}"
+            )
         if _w_scheme == "cmd":
             raise ValueError(
                 "agents.watcher.api_key does not support cmd: sources (the "
                 "egress container has no shell); use env:NAME or "
                 "systemd-creds:NAME"
+            )
+        if _w_scheme not in ("env", "systemd-creds"):
+            raise ValueError(
+                f"agents.watcher.api_key unknown source scheme: '{_w_scheme}'. "
+                "Valid schemes: env, systemd-creds"
             )
         # https-only — the watcher key travels as a bearer header on every
         # call, exactly like the decider key.

@@ -199,7 +199,7 @@ class Agentcage:
             self._policy_sweeper.cancel()
             self._policy_sweeper = None
         pa_cfg = (self.cfg.get("agents") or {}).get("decider") or {}
-        if not pa_cfg or not pa_cfg.get("enable"):
+        if not isinstance(pa_cfg, dict) or not pa_cfg.get("enable"):
             self.domain_requests = None
             return
         dom = next((i for i in self.inspectors

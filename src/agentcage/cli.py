@@ -2050,9 +2050,9 @@ def cage_edit(name: str):
         except Exception as e:
             click.echo(f"warning: quadlet refresh failed: {e}", err=True)
         click.echo(
-            "  watcher: scanning applies on the next request. Restart the "
-            "cage if its findings volume or api_key secret was just added "
-            "(`agentcage cage restart` adopts the refreshed units)."
+            "  agents: updated. Scanning and domain evaluation apply live. "
+            "Restart the cage if a findings volume or api_key secret was "
+            "just added (`agentcage cage restart` adopts the refreshed units)."
         )
 
     if "secret_injection" in live:
@@ -5498,7 +5498,7 @@ def watcher():
     cage's recent traffic (audit + capture) after the fact and flags
     suspicious patterns; it can revoke the runtime grants its analysis
     damns (narrowing only) and recommends — never applies — baseline
-    edits. Enable it with the ``watcher:`` block in cage.yaml. See
+    edits. Enable it with the ``agents.watcher:`` block in cage.yaml. See
     docs/explain/traffic-watcher.md.
     """
 
