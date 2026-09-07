@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`cage exec` / `cage shell` now restore the host terminal after the session ends — however it ends.** A full-screen program inside the cage (pi, claude, vim, less) switches the operator's terminal into modes it undoes on exit: raw input, bracketed paste, the Kitty keyboard protocol, xterm `modifyOtherKeys`, hidden cursor. It can't undo any of that when the cage is stopped, destroyed, or rebuilt underneath it — the microVM/container is gone before the program can write its restore sequence, and the exec client just closes. The visible result, reported with pi on apple-container: after `cage stop`/`cage update` with a pi session open, every keystroke in iTerm2 echoes an escape sequence (pi pushes Kitty flags that include key-*release* reporting, and `reset` doesn't clear them). The CLI is the only party still alive to clean up, so interactive sessions now run as a child of `agentcage` instead of replacing it via `os.execvp`; when the child exits the CLI restores the saved termios state and writes a fixed restore sequence (Kitty pop + flags-to-zero, `modifyOtherKeys` off, bracketed paste/focus/mouse reporting off, cursor visible, SGR reset — each a no-op on a clean terminal). Ctrl-C is diverted in the parent for the duration so it still reaches the program in the cage. Non-interactive invocations (no tty on stdin) keep the previous exec/subprocess semantics; signal deaths now surface as shell-style `128+N` exit codes on every backend. Recovery on an already-mangled terminal, without upgrading: `printf '\e[<u\e[=0;1u\e[?2004l\e[>4;0m'`.
+
 ## [0.40.0] - 2026-09-07
 
 ### Changed

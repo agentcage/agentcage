@@ -32,7 +32,7 @@ from agentcage.audit import (
 from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
-from agentcage import state, systemd
+from agentcage import state, systemd, terminal
 from agentcage.scaffold_brief import stage_scaffold_assets
 from agentcage.lima.instance import LimaInstance
 from agentcage.services import (
@@ -2594,16 +2594,18 @@ def cage_exec(name: str, service: str, command: tuple[str, ...], as_root: bool):
         click.echo(f"error: {e}", err=True)
         sys.exit(1)
 
-    # vm and apple-container backends want exec semantics (replace the
-    # current process); container backend's `podman exec` we run as a
-    # subprocess and propagate the exit code. Distinguishing here keeps
-    # the existing UX for both shapes — limactl shell + container exec
-    # benefit from os.execvp's tty handling, while podman exec on Linux
-    # has historically been run via subprocess.run.
+    # Interactive sessions run as a child of the CLI (not an exec hand-off) so
+    # the CLI is still around to restore the host terminal afterwards —
+    # a full-screen program (pi, claude, vim) that dies with the cage
+    # never gets to undo raw mode / Kitty keyboard / bracketed paste
+    # itself. See agentcage.terminal. Non-interactive invocations keep
+    # exec semantics on vm / apple-container and subprocess semantics
+    # on the container backend, exactly as before.
     if cfg.isolation in ("vm", "apple-container"):
-        os.execvp(argv[0], argv)
-    result = subprocess.run(argv)
-    sys.exit(result.returncode)
+        terminal.run_interactive(argv)
+    with terminal.restored_terminal():
+        result = subprocess.run(argv)
+    sys.exit(terminal.exit_status(result.returncode))
 
 
 @cage.command("shell")
@@ -2644,13 +2646,13 @@ def cage_shell(name: str, service: str, as_root: bool):
             )
             if result.returncode == 0:
                 exec_flags = ["-it"] if sys.stdin.isatty() else []
-                os.execvp("limactl", ["limactl", "shell", "--workdir", "/",
-                          inst.name, "--",
-                          "podman", "exec", "-u", spec, *exec_flags, container, shell])
+                terminal.run_interactive(
+                    ["limactl", "shell", "--workdir", "/", inst.name, "--",
+                     "podman", "exec", "-u", spec, *exec_flags, container, shell])
         exec_flags = ["-it"] if sys.stdin.isatty() else []
-        os.execvp("limactl", ["limactl", "shell", "--workdir", "/",
-                  inst.name, "--",
-                  "podman", "exec", "-u", spec, *exec_flags, container, "/bin/sh"])
+        terminal.run_interactive(
+            ["limactl", "shell", "--workdir", "/", inst.name, "--",
+             "podman", "exec", "-u", spec, *exec_flags, container, "/bin/sh"])
 
     if _is_apple_container(cfg):
         _require_cage_service_on_apple_container(service, "shell")
@@ -2679,7 +2681,8 @@ def cage_shell(name: str, service: str, as_root: bool):
         if as_root:
             # Operator debug path — image's USER (root on wrapper),
             # full cap set, NoNewPrivs=0. For apt-get install etc.
-            os.execvp(binary, [binary, "exec", *exec_flags, name, chosen_shell])
+            terminal.run_interactive(
+                [binary, "exec", *exec_flags, name, chosen_shell])
         # Secure default — wrap in capsh exactly like the supervisor's
         # stage-90 privilege drop: NoNewPrivs=1 + drop=all (CapBnd=0)
         # + setuid to the uid-1000 user (resolved by name via getent;
@@ -2695,7 +2698,7 @@ def cage_shell(name: str, service: str, as_root: bool):
             "--user=\"$CAGE_USER\" --shell=/bin/sh "
             f"-- -c 'exec {chosen_shell}'"
         )
-        os.execvp(binary, [
+        terminal.run_interactive([
             binary, "exec", "-u", "0", *exec_flags, name,
             "/bin/sh", "-c", inner,
         ])
@@ -2715,10 +2718,12 @@ def cage_shell(name: str, service: str, as_root: bool):
         )
         if result.returncode == 0:
             exec_flags = ["-it"] if sys.stdin.isatty() else []
-            os.execvp("podman", ["podman", "exec", "-u", spec, *exec_flags, container, shell])
+            terminal.run_interactive(
+                ["podman", "exec", "-u", spec, *exec_flags, container, shell])
     # Fallback
     exec_flags = ["-it"] if sys.stdin.isatty() else []
-    os.execvp("podman", ["podman", "exec", "-u", spec, *exec_flags, container, "/bin/sh"])
+    terminal.run_interactive(
+        ["podman", "exec", "-u", spec, *exec_flags, container, "/bin/sh"])
 
 
 # ── cage audit ─────────────────────────────────────────────

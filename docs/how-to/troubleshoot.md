@@ -94,6 +94,20 @@ agentcage cage audit myapp --decision blocked --inspector secrets --since 7d
 
 Full filter set in [CLI — cage audit](../reference/cli.md#cage-audit).
 
+## The terminal is garbled after a cage session
+
+Symptom: after `cage exec` or `cage shell` ends, the shell prompt is back but every keystroke echoes stray characters (typically `[97;1:3u`-style sequences), pasted text arrives wrapped in `[200~ ... [201~`, or the cursor is gone.
+
+Cause: a full-screen program inside the cage (pi, claude, vim, less) had switched your terminal into modes it undoes on exit — raw input, bracketed paste, the Kitty keyboard protocol with key-release reporting — and the cage was stopped, destroyed, or rebuilt underneath it, so it never got the chance. `reset` does not clear the Kitty keyboard modes.
+
+Since the release after 0.40.0, `cage exec` and `cage shell` restore the terminal themselves once the session ends, whatever ended it. On an older version, or for a terminal that is already garbled, run:
+
+```bash
+printf '\e[<u\e[=0;1u\e[?2004l\e[>4;0m\e[?25h'
+```
+
+or use your terminal's reset action (iTerm2: **Session → Reset**).
+
 ## Backend-specific quirks
 
 Full list in [Isolation modes](../explain/isolation-modes.md#known-limitations).
