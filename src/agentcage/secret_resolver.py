@@ -201,7 +201,7 @@ def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
         elif result.action == ResolveAction.QUADLET_HANDLED:
             resolved.add(rule.env)
 
-    # LLM agent api_keys — domains.auto's decider AND the traffic watcher.
+    # LLM agent api_keys — agents.decider AND agents.watcher.
     # Neither is a secret_injection rule (both are egress-only and never
     # injected into cage traffic), but quadlets emits a ``Secret=``
     # directive for each and quadlets._boot_resolvable green-lights
@@ -210,16 +210,14 @@ def resolve_and_populate(podman, cfg, deploy_name: str, state_dir: Path,
     # unit references a podman secret nobody ever creates and the
     # container dies at start with `no such secret` — taking the whole
     # cage down, not just the one agent.
-    auto = getattr(getattr(cfg, "domains", None), "auto", None)
-    if auto is not None and getattr(auto, "enable", False):
+    for agent, label in (
+        (cfg.agents.decider, "agents.decider"),
+        (cfg.agents.watcher, "agents.watcher"),
+    ):
+        if not getattr(agent, "enable", False):
+            continue
         _resolve_agent_api_key(
-            podman, auto.decider.agent.api_key or "", "domains.auto decider",
-            deploy_name, state_dir, skip, resolved, strict,
-        )
-    watcher = getattr(cfg, "watcher", None)
-    if watcher is not None and getattr(watcher, "enable", False):
-        _resolve_agent_api_key(
-            podman, watcher.agent.api_key or "", "watcher agent",
+            podman, getattr(agent, "api_key", "") or "", label,
             deploy_name, state_dir, skip, resolved, strict,
         )
     return resolved

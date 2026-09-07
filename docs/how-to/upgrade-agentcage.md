@@ -90,6 +90,14 @@ agentcage cage verify myapp
 
 Pinning blocks accidental re-upgrade. Unpin with another `uv tool install agentcage==<newer>` once you understand the breakage. Yanked releases appear in the changelog as `(yanked, see X.Y.Z)` — install the successor.
 
+## Upgrading to 0.40: the `agents:` namespace
+
+0.40 renamed the agent config blocks. The decider — formerly `domains.auto` — is now `agents.decider`, and the traffic watcher — formerly top-level `watcher:` — is now `agents.watcher`. The LLM client fields (`provider`, `model`, `api_key`, `timeout_seconds`, `max_tokens`, `base_url`) sit flat on each block (the old `decider:` / `agent:` sub-blocks and the `kind:` discriminator are gone).
+
+Your existing `cage.yaml` keeps working: the legacy forms still parse and agentcage warns with the exact rename. The file is rewritten in the new form the next time a config-touching command saves it (`domain add`/`domain rm`, `cage edit`, `cage update`). Setting both the new and the legacy form of the same agent is rejected as ambiguous — keep one.
+
+**Run `agentcage cage update <name>` after upgrading.** During the 0.40 transition, generated `proxy-config.yaml` also includes the legacy keys so older egress images keep **both** the decider and watcher working. These compatibility keys are generated from the canonical settings, never saved back to `cage.yaml`, and scheduled for removal in 0.41. Refresh the egress before that removal; do not treat a host-side "enabled" setting alone as proof that monitoring is running. Cancelling `cage edit` or returning unchanged text leaves the original file untouched.
+
 ## Apple-container specific notes
 
 On `apple-container`, the cage's allowlist, command, env, secret-injection rules, capture config, and autostart are baked into the wrapper image at build time. After an agentcage upgrade that touches the supervisor or the wrapper Containerfile, `cage update` is mandatory — `cage restart` reuses the existing image.

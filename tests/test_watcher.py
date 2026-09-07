@@ -72,14 +72,14 @@ import policy_api as pa_mod  # noqa: E402  (bare name: egress-style import)
 # ═══════════════════════════════════════════════════════════════════
 
 _WATCHER_YAML = """
-    watcher:
-      enable: true
-      interval_seconds: 120
-      window_seconds: 7200
-      max_flows: 150
-      auto_revoke: false
-      context: "recon test suite against staging"
-      agent:
+    agents:
+      watcher:
+        enable: true
+        interval_seconds: 120
+        window_seconds: 7200
+        max_flows: 150
+        auto_revoke: false
+        context: "recon test suite against staging"
         provider: openai
         model: gpt-5-mini
         api_key: env:WATCHER_LLM_KEY
@@ -105,25 +105,25 @@ class TestWatcherConfigParsing:
     def test_block_parses(self, tmp_path):
         from agentcage.config import load_config
         cfg = load_config(_cfg_with(tmp_path, _WATCHER_YAML))
-        w = cfg.watcher
+        w = cfg.agents.watcher
         assert w.enable is True
         assert w.interval_seconds == 120
         assert w.window_seconds == 7200
         assert w.max_flows == 150
         assert w.auto_revoke is False
         assert w.context == "recon test suite against staging"
-        assert w.agent.provider == "openai"
-        assert w.agent.model == "gpt-5-mini"
-        assert w.agent.api_key == "env:WATCHER_LLM_KEY"
-        assert w.agent.timeout_seconds == 45
-        assert w.agent.max_tokens == 8192  # default; no longer hard-coded 2048
-        assert w.agent.base_url == "https://api.example.com/v1"
+        assert w.provider == "openai"
+        assert w.model == "gpt-5-mini"
+        assert w.api_key == "env:WATCHER_LLM_KEY"
+        assert w.timeout_seconds == 45
+        assert w.max_tokens == 8192  # default; no longer hard-coded 2048
+        assert w.base_url == "https://api.example.com/v1"
 
     def test_absent_block_is_zero_surface(self, tmp_path):
         from agentcage.config import load_config
         cfg = load_config(_cfg_with(tmp_path, ""))
-        assert cfg.watcher.enable is False
-        assert cfg.watcher.agent.model == ""
+        assert cfg.agents.watcher.enable is False
+        assert cfg.agents.watcher.model == ""
 
     def test_context_non_string_rejected(self, tmp_path):
         from agentcage.config import load_config
@@ -233,7 +233,7 @@ class TestWatcherConfigParsing:
     def test_dedup_defaults_on(self, tmp_path):
         from agentcage.config import load_config
         cfg = load_config(_cfg_with(tmp_path, _WATCHER_YAML))
-        assert cfg.watcher.dedup_samples is True
+        assert cfg.agents.watcher.dedup_samples is True
 
     def test_key_is_stripped_from_the_cage_env(self, tmp_path):
         # The watcher key is an EGRESS-only credential. If the operator
@@ -268,7 +268,7 @@ class TestWatcherConfigValidation:
         self._validate(tmp_path, _WATCHER_YAML)  # no exception
 
     def test_missing_model_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="watcher.agent.model is required"):
+        with pytest.raises(ValueError, match="agents.watcher.model is required"):
             self._validate(tmp_path, """
                 watcher:
                   enable: true
@@ -278,7 +278,7 @@ class TestWatcherConfigValidation:
             """)
 
     def test_missing_key_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="watcher.agent.api_key is required"):
+        with pytest.raises(ValueError, match="agents.watcher.api_key is required"):
             self._validate(tmp_path, """
                 watcher:
                   enable: true
@@ -369,7 +369,7 @@ class TestWatcherConfigValidation:
             """)
 
     def test_bad_provider_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="watcher.agent.provider"):
+        with pytest.raises(ValueError, match="agents.watcher.provider"):
             self._validate(tmp_path, """
                 watcher:
                   enable: true
@@ -454,9 +454,11 @@ class TestWatcherConfigValidation:
 class TestWatcherPlumbing:
     def test_proxy_keys_forward_the_block(self):
         # The watcher is driven in-egress; its config rides proxy-config.yaml
-        # through the same key filter every other egress setting uses.
+        # under the `agents` namespace (0.40 restructure) through the same
+        # key filter every other egress setting uses.
         from agentcage.state import _PROXY_KEYS
-        assert "watcher" in _PROXY_KEYS
+        assert "agents" in _PROXY_KEYS
+        assert "watcher" not in _PROXY_KEYS
 
     def test_dns_allowlist_resolves_watcher_provider_host(self, tmp_path):
         # The watcher calls its model from the addon process over urllib,
@@ -607,10 +609,13 @@ class TestWatcherSecretClassification:
             secret_injection=[],
             container=SimpleNamespace(podman_secrets=[]),
             protocol_relays=[],
-            domains=SimpleNamespace(auto=None),
-            watcher=SimpleNamespace(
-                enable=True,
-                agent=SimpleNamespace(api_key="env:WATCHER_LLM_KEY"),
+            domains=SimpleNamespace(mode="allowlist"),
+            agents=SimpleNamespace(
+                decider=SimpleNamespace(enable=False, api_key=""),
+                watcher=SimpleNamespace(
+                    enable=True,
+                    api_key="env:WATCHER_LLM_KEY",
+                ),
             ),
         )
         _render_secret_list(cfg, {"WATCHER_LLM_KEY"})
@@ -1049,8 +1054,8 @@ def _mk_watcher(tmp_path, monkeypatch, *, dom=None, pa=None, ring=None,
     w_cfg = {
         "enable": True, "interval_seconds": 60, "window_seconds": 3600,
         "max_flows": 100, "auto_revoke": True,
-        "agent": {"provider": "openai", "model": "gpt-test",
-                  "api_key": "env:TESTKEY"},
+        "provider": "openai", "model": "gpt-test",
+        "api_key": "env:TESTKEY",
     }
     if auto_revoke is not None:
         w_cfg["auto_revoke"] = auto_revoke
@@ -1061,7 +1066,7 @@ def _mk_watcher(tmp_path, monkeypatch, *, dom=None, pa=None, ring=None,
         cap_path.write_text("".join(json.dumps(e) + "\n" for e in capture))
     log = SimpleNamespace(warn=lambda *a, **k: None)
     audit_sink: list[dict] = audit if audit is not None else []
-    proxy_cfg = {"watcher": w_cfg}
+    proxy_cfg = {"agents": {"watcher": w_cfg}}
     proxy_cfg.update(proxy_extra or {})
     w = Watcher(proxy_cfg, dom, pa, audit_sink.append, log,
                 deque(ring or []), str(cap_path))
@@ -2181,8 +2186,8 @@ class TestWatcherHotReload:
 
     W_CFG = {"enable": True, "interval_seconds": 60, "window_seconds": 3600,
              "max_flows": 100, "auto_revoke": True,
-             "agent": {"provider": "openai", "model": "m",
-                       "api_key": "env:TESTKEY"}}
+             "provider": "openai", "model": "m",
+             "api_key": "env:TESTKEY"}
 
     def _bare_addon(self, monkeypatch, tmp_path, cfg):
         monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
@@ -2201,7 +2206,7 @@ class TestWatcherHotReload:
     def test_unchanged_block_keeps_the_watcher_and_state(
             self, tmp_path, monkeypatch):
         a = self._bare_addon(monkeypatch, tmp_path,
-                             {"watcher": dict(self.W_CFG)})
+                             {"agents": {"watcher": dict(self.W_CFG)}})
         a._init_watcher()
         first = a.traffic_watcher
         assert first is not None
@@ -2223,7 +2228,7 @@ class TestWatcherHotReload:
     def test_unchanged_block_still_refreshes_pa_and_key(
             self, tmp_path, monkeypatch):
         a = self._bare_addon(monkeypatch, tmp_path,
-                             {"watcher": dict(self.W_CFG)})
+                             {"agents": {"watcher": dict(self.W_CFG)}})
         a._init_watcher()
         watcher = a.traffic_watcher
         assert watcher is not None
@@ -2239,15 +2244,15 @@ class TestWatcherHotReload:
 
     def test_changed_block_rebuilds(self, tmp_path, monkeypatch):
         a = self._bare_addon(monkeypatch, tmp_path,
-                             {"watcher": dict(self.W_CFG)})
+                             {"agents": {"watcher": dict(self.W_CFG)}})
         a._init_watcher()
         first = a.traffic_watcher
-        a.cfg = {"watcher": {**self.W_CFG, "interval_seconds": 120}}
+        a.cfg = {"agents": {"watcher": {**self.W_CFG, "interval_seconds": 120}}}
         a._init_watcher()
         assert a.traffic_watcher is not first
 
     def test_disabled_block_stops_the_watcher(self, tmp_path, monkeypatch):
-        a = self._bare_addon(monkeypatch, tmp_path, {"watcher": {}})
+        a = self._bare_addon(monkeypatch, tmp_path, {"agents": {"watcher": {}}})
         a._init_watcher()
         assert a.traffic_watcher is None
         assert a._watcher_ring is None
@@ -2264,7 +2269,7 @@ class TestWatcherHotReload:
     def test_malformed_rebuild_keeps_the_old_watcher(
             self, tmp_path, monkeypatch):
         a = self._bare_addon(monkeypatch, tmp_path,
-                             {"watcher": dict(self.W_CFG)})
+                             {"agents": {"watcher": dict(self.W_CFG)}})
         a._init_watcher()
         first = a.traffic_watcher
 
@@ -2281,7 +2286,7 @@ class TestWatcherHotReload:
         # is a separate module object from agentcage.data.proxy.watcher;
         # patch the bare one, that's the one _init_watcher imports from.
         monkeypatch.setattr(sys.modules["watcher"], "Watcher", _Broken)
-        a.cfg = {"watcher": {**self.W_CFG, "interval_seconds": 120}}
+        a.cfg = {"agents": {"watcher": {**self.W_CFG, "interval_seconds": 120}}}
         a._init_watcher()  # construction fails → old watcher kept
         assert a.traffic_watcher is first
 

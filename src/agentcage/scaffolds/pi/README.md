@@ -144,7 +144,7 @@ the effective allowlist with `GET https://agentcage.local/v1/allowlist`, request
 a new egress domain with a justification the decider will accept
 (`POST /v1/allowlist/requests`), and give a grant back
 (`POST /v1/allowlist/removals`). The endpoints only answer when the cage enables
-`domains.auto` (see `docs/reference/policy-api.md`); without it the skill tells
+`agents.decider` (see `docs/reference/policy-api.md`); without it the skill tells
 the agent to ask the operator. Like the brief, agentcage stages the one canonical
 copy (`src/agentcage/scaffolds/skills/agentcage/`) into the build context for the
 `COPY skills/agentcage` line; drop that line to leave it out.

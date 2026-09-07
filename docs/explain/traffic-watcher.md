@@ -17,7 +17,7 @@ This page is the design rationale. For the operator workflow — enabling it,
 reading findings, acting on them — see
 [Run the traffic watcher](../how-to/run-the-traffic-watcher.md).
 
-Like the decider, the watcher is **opt-in** (`watcher.enable`), runs
+Like the decider, the watcher is **opt-in** (`agents.watcher.enable`), runs
 **inside the egress container**, and is **fail-closed**: a watcher that
 cannot reach its model, or returns garbage, revokes nothing and records a
 `watcher_scan_failed` finding — it never widens anything, ever.
@@ -77,7 +77,7 @@ for four reasons grounded in agentcage's own history:
   bind mount). `agentcage watcher findings <name>` renders them. A push
   notification webhook is a natural follow-up.
 - **The most security-critical container grows.** Mitigated the same way
-  `domains.auto` mitigates it: absent `watcher:` block ⇒ zero new surface
+  `agents.decider` mitigates it: absent `agents.watcher:` block ⇒ zero new surface
   (the module is not even imported), the agent reuses the existing
   egress→LLM-provider egress path, and the packaging test
   (`test_egress_image_contents.py`) forces the `COPY` of the new module
@@ -85,29 +85,32 @@ for four reasons grounded in agentcage's own history:
 
 ## Configuration
 
-A new top-level `cage.yaml` block, forwarded to the egress via
-`state._PROXY_KEYS` (`watcher`), parsed and validated by `config.py`, and
+The `agents.watcher:` block in `cage.yaml`, forwarded to the egress via
+`state._PROXY_KEYS` (`agents`), parsed and validated by `config.py`, and
 re-parsed defensively in-egress from `proxy-config.yaml` (the established
 mirror convention — the addon cannot import agentcage):
 
 ```yaml
-watcher:
-  enable: true
-  interval_seconds: 300     # scan cadence (min 60)
-  window_seconds: 3600     # first-scan / post-restart lookback (max 86400)
-  max_flows: 200            # flows per analysis window (prompt cap)
-  auto_revoke: true         # apply runtime-grant revocations autonomously
-  context: ""               # trusted operator context (<= 4096 chars)
-  agent:                    # same shape as domains.auto.decider.agent
-    provider: anthropic     # anthropic | openai | openrouter
+agents:
+  watcher:
+    enable: true
+    interval_seconds: 300     # scan cadence (min 60)
+    window_seconds: 3600      # first-scan / post-restart lookback (max 86400)
+    max_flows: 200            # flows per analysis window (prompt cap)
+    auto_revoke: true         # apply runtime-grant revocations autonomously
+    dedup_samples: true       # collapse repeated flow shapes in the digest
+    max_digest_tokens: 8000   # digest ceiling in estimated tokens (0 = uncapped)
+    context: ""               # trusted operator context (<= 4096 chars)
+    provider: anthropic       # anthropic | openai | openrouter
     model: claude-sonnet-4-5
     api_key: env:WATCHER_LLM_KEY     # egress-only credential
     timeout_seconds: 30
-    base_url: ""            # optional https:// override
+    base_url: ""              # optional https:// override
 ```
 
-The `agent` sub-block is literally `AgentDeciderConfig` (config.py reuses
-the dataclass), so the provider rules, the `env:` / `systemd-creds:`-only
+The LLM fields sit flat on the block — the same field set as
+`agents.decider` (config.py reuses one shared agent field set), so the
+provider rules, the `env:` / `systemd-creds:`-only
 secret scheme (the egress has no shell — `cmd:` is rejected), and the
 https-only `base_url` rule (the key rides every call) are the decider's
 rules, enforced by the same validation style. The key is staged through
@@ -232,7 +235,7 @@ baseline_recommendations: [{domain, reason}]   # operator applies, egress never 
   the egress granted. Each revocation goes through the same
   `dom.revoke` → `_persist_grants` → DNS-republish chain as
   `POST /v1/allowlist/removals`, and is audited as `kind: watcher_revoke`
-  with the watcher's reason. If `domains.auto` is disabled there are no
+  with the watcher's reason. If `agents.decider` is disabled there are no
   runtime grants to revoke; removals degrade to findings.
 - *Baseline recommendations* are recorded as findings only. The egress
   never writes `domains.allow`; the operator reads the recommendation
@@ -243,7 +246,7 @@ when the window contained traffic (a quiet cage costs nothing). The loop
 mirrors `sweeper_loop`: per-tick exception isolation (a malformed capture
 line or an LLM hiccup kills one tick, never the task), `CancelledError`
 propagates for orderly shutdown, and the tick body is factored out
-(`_tick`) for unit tests. A hot-reload that leaves the `watcher:` block
+(`_tick`) for unit tests. A hot-reload that leaves the `agents.watcher:` block
 unchanged is a no-op (scan state — capture offset, counters — survives
 unrelated config edits); a rebuild constructs the replacement BEFORE
 cancelling the old task, so a malformed edit keeps the last working
@@ -324,7 +327,7 @@ work.
    dropped by name, secret *names* only.
 5. The scan never blocks mitmproxy's event loop — only the LLM network
    call leaves it, via `asyncio.to_thread`.
-6. An absent `watcher:` block is zero surface — module not imported, no
+6. An absent `agents.watcher:` block is zero surface — module not imported, no
    task, no DNS entry, no credential.
 7. Same config → same behavior on all three backends; nothing in the
    watcher is backend-aware (the grants volume and audit funnel already

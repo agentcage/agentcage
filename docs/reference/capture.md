@@ -59,7 +59,7 @@ To keep the two in balance, in order of effect:
 
 - Lower `max_body_size`. Binary bodies are never excerpted toward the model, only counted, so a large cap buys the watcher nothing.
 - Narrow `domains`, or set `exclude_domains` for known-bulky hosts such as package mirrors.
-- Shorten `watcher.interval_seconds` to raise the read rate.
+- Shorten `agents.watcher.interval_seconds` to raise the read rate.
 
 Avoid `min_action: flag` when the watcher is enabled. It stops recording allowed traffic, and exfiltration hides in traffic that was allowed.
 

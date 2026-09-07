@@ -1,4 +1,5 @@
-"""Regression tests for the domains.auto runtime-wiring fixes.
+"""Regression tests for the in-egress LLM agents' (agents.decider /
+agents.watcher, formerly domains.auto / watcher) runtime-wiring fixes.
 
 Each test here corresponds to a defect found by running the feature against
 a live cage on both the apple-container and vm backends. They are grouped by
@@ -13,21 +14,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentcage.config import AgentDeciderConfig, DeciderConfig, DomainsAutoConfig
+from agentcage.config import DeciderAgentConfig
 
 
-def _auto(api_key: str = "env:OPENROUTER_API_KEY", enable: bool = True):
-    return DomainsAutoConfig(
+def _decider(api_key: str = "env:OPENROUTER_API_KEY", enable: bool = True):
+    return DeciderAgentConfig(
         enable=enable,
-        decider=DeciderConfig(
-            kind="agent",
-            agent=AgentDeciderConfig(
-                provider="openrouter",
-                model="anthropic/claude-sonnet-4-5",
-                api_key=api_key,
-            ),
-        ),
+        provider="openrouter",
+        model="anthropic/claude-sonnet-4-5",
+        api_key=api_key,
     )
+
+
+def _agents(decider):
+    """Stands in for the Config.agents namespace on a SimpleNamespace cfg."""
+    from types import SimpleNamespace as _NS
+    return _NS(decider=decider, watcher=_NS(enable=False, api_key=""))
 
 
 class TestDeciderSecretIsMaterialized:
@@ -47,7 +49,7 @@ class TestDeciderSecretIsMaterialized:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-value")
         cfg = SimpleNamespace(
             secret_injection=[],
-            domains=SimpleNamespace(auto=_auto()),
+            agents=_agents(_decider()),
         )
         podman = MagicMock()
         podman.secret_exists.return_value = False
@@ -65,7 +67,7 @@ class TestDeciderSecretIsMaterialized:
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-value")
         cfg = SimpleNamespace(
             secret_injection=[],
-            domains=SimpleNamespace(auto=_auto(enable=False)),
+            agents=_agents(_decider(enable=False)),
         )
         podman = MagicMock()
 
@@ -94,7 +96,7 @@ class TestVmSecretsReachTheGuest:
         config = SimpleNamespace(
             secret_injection=[],
             protocol_relays=[],
-            domains=SimpleNamespace(auto=_auto()),
+            agents=_agents(_decider()),
         )
         inst = MagicMock()
         backend = VmBackend.__new__(VmBackend)
@@ -125,8 +127,8 @@ class TestSecretStoreOnMacOsVmHost:
     ``apple-container``; a vm cage on a Mac fell through to systemd-creds,
     which lives in the guest and is unavailable on the host. ``auto`` then
     found no encrypting backend and refused every ``secret set`` — making
-    ``domains.auto``, whose api_key is mandatory, unusable without opting
-    into plaintext storage.
+    the decider (agents.decider), whose api_key is mandatory, unusable
+    without opting into plaintext storage.
     """
 
     def test_vm_on_darwin_picks_the_keychain(self, monkeypatch):
@@ -173,7 +175,7 @@ class TestSecretListClassifiesTheDeciderKey:
             secret_injection=[],
             container=SimpleNamespace(podman_secrets=[]),
             protocol_relays=[],
-            domains=SimpleNamespace(auto=_auto()),
+            agents=_agents(_decider()),
         )
         _render_secret_list(cfg, {"OPENROUTER_API_KEY"})
         out = capsys.readouterr().out

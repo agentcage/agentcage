@@ -29,7 +29,7 @@ curl -s https://agentcage.local/v1/health | jq .
 
 `features.introspection`, `features.request` and `features.removal` say what
 you may do. If the call fails, or `features.request` is `false`, the operator
-has not enabled `domains.auto`. Stop and ask them to add the domain, giving
+has not enabled `agents.decider`. Stop and ask them to add the domain, giving
 them the exact command from section 4.
 
 ## 1. Reflect: what can I reach right now?

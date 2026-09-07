@@ -4,7 +4,7 @@ Opt-in allowlist introspection + on-demand domain requests, served by the
 egress on a reserved control hostname so they work under full default-deny.
 See ``docs/explain/policy-api.md``.
 
-This module is loaded by ``addon.py`` only when ``domains.auto.enable`` is set
+This module is loaded by ``addon.py`` only when ``agents.decider.enable`` is set
 in the proxy config. It owns:
 
 * the control-host request router (``is_control_host`` / ``handle``),
@@ -270,10 +270,9 @@ class PolicyApi:
 
     def __init__(self, proxy_cfg: dict, domain_inspector, audit_write, log) -> None:
         self.proxy_cfg = proxy_cfg or {}
-        # domains.auto nests under ``domains:`` in cage.yaml; the proxy
-        # sees the whole ``domains`` dict (it's in _PROXY_KEYS), so read
-        # auto off it.
-        self.cfg = (self.proxy_cfg.get("domains") or {}).get("auto") or {}
+        # agents.decider is the agent block in proxy-config.yaml (rendered
+        # from cage.yaml's ``agents:`` namespace via state._PROXY_KEYS).
+        self.cfg = (self.proxy_cfg.get("agents") or {}).get("decider") or {}
         self.dom = domain_inspector
         self._audit = audit_write  # callable(entry: dict) -> None
         self._log = log  # mitmproxy ctx.log
@@ -303,14 +302,14 @@ class PolicyApi:
             # would ride the system prompt. Ignore + warn instead.
             if _ctx_raw is not None:
                 self._log.warn(
-                    "agentcage: domains.auto.context is not a string in "
+                    "agentcage: agents.decider.context is not a string in "
                     f"the proxy config (got {type(_ctx_raw).__name__}) — "
                     "ignoring it")
             _ctx_raw = ""
         self._context = _ctx_raw.strip()
         if len(self._context) > 4096:
             self._log.warn(
-                f"agentcage: domains.auto.context truncated to 4096 chars "
+                f"agentcage: agents.decider.context truncated to 4096 chars "
                 f"(was {len(self._context)}) — validate_config normally "
                 "rejects this; the proxy config was written by an "
                 "unvalidated path")
@@ -319,24 +318,24 @@ class PolicyApi:
         self._introspection_enabled = bool(self.cfg.get("enable", False))
         self._request_enabled = bool(self.cfg.get("enable", False))
 
-        decider = self.cfg.get("decider") or {}
-        self._provider = str(decider.get("kind", "agent") or "agent")
-        # Agent fields sit flat under decider: (only one decider kind in v1).
-        self._llm_timeout = float(decider.get("timeout_seconds", 15.0) or 15.0)
+        # The LLM client fields sit flat on the block (one grammar across
+        # the roster); the ``kind:`` discriminator was removed in 0.40 —
+        # the built-in LLM agent is the only implementation.
+        self._llm_timeout = float(self.cfg.get("timeout_seconds", 15.0) or 15.0)
         # Completion budget for the forced `decide` tool call. Must clear a
         # reasoning model's thinking tokens or the response comes back
         # `finish_reason: length` with no tool call and _parse_llm_verdict
         # fails closed on every request ("llm returned no usable decision").
         # Host-side validation enforces a 1024 floor; this mirrors the
         # dataclass default for a hand-written proxy-config.
-        self._llm_max_tokens = int(decider.get("max_tokens", 8192) or 8192)
-        self._llm_provider = str(decider.get("provider", "") or "").lower()
-        self._llm_model = str(decider.get("model", "") or "")
-        self._llm_base_url = str(decider.get("base_url", "") or "").rstrip("/")
+        self._llm_max_tokens = int(self.cfg.get("max_tokens", 8192) or 8192)
+        self._llm_provider = str(self.cfg.get("provider", "") or "").lower()
+        self._llm_model = str(self.cfg.get("model", "") or "")
+        self._llm_base_url = str(self.cfg.get("base_url", "") or "").rstrip("/")
         # The decider agent's API key uses the same source: scheme as
         # secret_injection.source (env:/systemd-creds:/cmd:). Egress-only.
         self._llm_secret = self._read_secret(
-            str(decider.get("api_key", "") or "")
+            str(self.cfg.get("api_key", "") or "")
         )
 
         # Grant behavior uses fixed safe defaults (no operator knob in v1).
@@ -683,12 +682,11 @@ class PolicyApi:
             })
             return
 
-        # Dispatch to the decider. v1 ships the agent (LLM) decider only.
-        if self._provider == "agent":
-            await self._decide_llm(flow, domain, reason)
-            return
-
-        self._respond(flow, 503, {"error": "decider not configured"})
+        # Dispatch to the decider. v1 ships the agent (LLM) decider only;
+        # the ``kind:`` discriminator was removed in 0.40 (D3 of the
+        # agents-namespace restructure) — the block IS the agent now.
+        await self._decide_llm(flow, domain, reason)
+        return
 
     # ── POST /v1/allowlist/removals ────────────────────────
     #

@@ -52,11 +52,9 @@ def _make_pa(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
     dom = DomainInspector()
     dom.configure({"allow": ["a.com"]})
-    cfg = {"domains": {"allow": ["a.com"], "auto": {
-        "enable": True,
-        "decider": {"kind": "agent", "provider": "openrouter",
-                    "model": "m", "api_key": "env:K"},
-    }}}
+    cfg = {"domains": {"allow": ["a.com"]},
+           "agents": {"decider": {"enable": True, "provider": "openrouter",
+                                  "model": "m", "api_key": "env:K"}}}
     pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
     return pa, dom, tmp_path / "grants.yaml"
 
@@ -415,11 +413,10 @@ class TestReconcileRepublishesDns:
 
         dom = DomainInspector()
         dom.configure({"allow": ["a.com"]})
-        cfg = {"domains": {"allow": ["a.com"], "auto": {
-            "enable": True,
-            "decider": {"kind": "agent", "provider": "openrouter",
-                        "model": "m", "api_key": "env:K"},
-        }}}
+        cfg = {"domains": {"allow": ["a.com"]},
+               "agents": {"decider": {"enable": True,
+                                      "provider": "openrouter",
+                                      "model": "m", "api_key": "env:K"}}}
         PolicyApi(cfg, dom, lambda e: None, MagicMock())
 
         assert publish.exists(), \
@@ -446,11 +443,10 @@ class TestReconcileRepublishesDns:
 
         dom = DomainInspector()
         dom.configure({"allow": ["a.com"]})
-        cfg = {"domains": {"allow": ["a.com"], "auto": {
-            "enable": True,
-            "decider": {"kind": "agent", "provider": "openrouter",
-                        "model": "m", "api_key": "env:K"},
-        }}}
+        cfg = {"domains": {"allow": ["a.com"]},
+               "agents": {"decider": {"enable": True,
+                                      "provider": "openrouter",
+                                      "model": "m", "api_key": "env:K"}}}
         PolicyApi(cfg, dom, lambda e: None, MagicMock())
 
         published = self._published_domains(publish)
@@ -475,11 +471,10 @@ class TestReconcileRepublishesDns:
 
         dom = DomainInspector()
         dom.configure({"allow": ["a.com"]})
-        cfg = {"domains": {"allow": ["a.com"], "auto": {
-            "enable": True,
-            "decider": {"kind": "agent", "provider": "openrouter",
-                        "model": "m", "api_key": "env:K"},
-        }}}
+        cfg = {"domains": {"allow": ["a.com"]},
+               "agents": {"decider": {"enable": True,
+                                      "provider": "openrouter",
+                                      "model": "m", "api_key": "env:K"}}}
         pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
 
         published = self._published_domains(publish)

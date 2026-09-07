@@ -29,7 +29,7 @@ from agentcage.audit import (
     format_table_header,
     format_table_row,
 )
-from agentcage.config import load_config, validate_config, _LEVEL_ORDER
+from agentcage.config import load_config, normalize_legacy_agents, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd
@@ -357,7 +357,11 @@ def _resolved_update_config(cfg) -> tuple[dict, dict[str, str]]:
     Image-valued build args are resolved to content identities separately.
     """
     resolved_args = dict(cfg.container.build.args)
-    return asdict(cfg), resolved_args
+    resolved = asdict(cfg)
+    # Diagnostics describe the input spelling, not deployed behavior. Including
+    # them makes the first canonical reload spuriously rebuild an unchanged cage.
+    resolved.pop("legacy_form_notices", None)
+    return resolved, resolved_args
 
 
 def _update_image_digests(cfg, name: str, podman: Podman,
@@ -1174,6 +1178,12 @@ def cage_update(name: str | None, config_path: str | None,
         for w in warnings:
             click.echo(f"warning: {w}", err=True)
 
+    # Schema-only migration is intentional even when updating without -c:
+    # all operational values remain unchanged. Do it after validation and
+    # warnings, before publishing derived configs to any running egress.
+    if cfg.legacy_form_notices:
+        state.save_raw_config(name, state.load_raw_config(name))
+
     # Pre-egress-rework cages carry a legacy host-side grants watcher whose
     # command (``agentcage cage grants <name> watch``) no longer exists; on an
     # upgraded host the unit/plist crash-loops on every boot (systemd start
@@ -1807,6 +1817,8 @@ def cage_restart(name: str):
     _ensure_v022_cage(name)
 
     cfg = state.load_deployment_config(name)
+    for notice in cfg.legacy_form_notices:
+        click.echo(f"warning: {notice}", err=True)
 
     # Re-copy patch files from package data to overwrite any tampering.
     # The apple-container backend doesn't use host-side nested-container
@@ -1854,13 +1866,13 @@ def _classify_changes(before: dict, after: dict) -> tuple[set[str], set[str], se
     restart: set[str] = set()
     rebuild: set[str] = set()
     for k in changed:
-        if k in ("domains", "watcher"):
+        if k in ("domains", "agents"):
             # Same live-apply shape as domains: save_proxy_config (called
             # unconditionally below) bumps proxy-config.yaml's mtime, the
-            # addon's mtime poll hot-reloads the watcher block in place
-            # (addon._init_watcher), and a watcher edit can change the
-            # LLM provider host that needs to resolve — exactly the
-            # domains.auto case _update_dns_quadlet already handles.
+            # addon's mtime poll hot-reloads the agents block in place
+            # (addon._init_domain_requests / addon._init_watcher), and an
+            # agents edit can change the LLM provider host that needs to
+            # resolve — exactly the case _update_dns_quadlet handles.
             live.add(k)
         elif k in _PROXY_HOT_RELOAD_KEYS:
             live.add(k)
@@ -1900,8 +1912,15 @@ def cage_edit(name: str):
     rejected_path = state_dir / "cage.yaml.rejected"
     backup_path = state_dir / "cage.yaml.bak"
 
-    original_text = config_path.read_text()
     original_raw = state.load_raw_config(name)
+    original_text = config_path.read_text()
+    _, migration_notices = normalize_legacy_agents(yaml.safe_load(original_text) or {})
+    for notice in migration_notices:
+        click.echo(f"warning: {notice}", err=True)
+    # Show migrated keys when needed, but preserve comments/formatting for
+    # ordinary edits. Cancelling or making no changes never rewrites the file.
+    if migration_notices:
+        original_text = _yaml_dump(original_raw)
 
     # click.edit returns the edited text when given `text=`, or None if the
     # user exited without saving / made no changes. We pass the text so we
@@ -1934,6 +1953,18 @@ def cage_edit(name: str):
         click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
         click.echo(f"  Original config at {config_path} is unchanged.", err=True)
         sys.exit(1)
+
+    # An operator can paste legacy syntax into the editor. Normalize before
+    # both validation and persistence so the diff never compares two schemas.
+    try:
+        edited_raw, notices = normalize_legacy_agents(edited_raw)
+    except ValueError as e:
+        rejected_path.write_text(edited_text)
+        click.echo(f"error: {e}", err=True)
+        click.echo(f"  Rejected edits saved to {rejected_path}", err=True)
+        sys.exit(1)
+    for notice in notices:
+        click.echo(f"warning: {notice}", err=True)
 
     # Don't allow renaming a cage via `cage edit` — that requires state
     # directory moves, podman secret renames, quadlet rewrites, and is
@@ -2023,20 +2054,21 @@ def cage_edit(name: str):
 
     live, restart_keys, rebuild_keys = _classify_changes(original_raw, edited_raw)
 
-    if "domains" in live or "watcher" in live:
+    if "domains" in live or "agents" in live:
         _update_dns_quadlet(cfg)
 
-    if "watcher" in live:
-        # The scan loop and the provider DNS entry apply live, but two
-        # things the watcher needs are decided at UNIT-GENERATION time:
-        # the grants volume its findings/state are written to (gated on
-        # watcher.enable in the quadlet template and the apple metadata)
-        # and the ``Secret=`` directive for its api_key. Without a
-        # refresh, a freshly enabled watcher on a cage with domains.auto
-        # off has no host-visible volume — findings land in the
-        # container's ephemeral layer and `watcher findings` reports the
-        # silent all-clear this feature exists to avoid. Same rationale
-        # as the secret_injection refresh; no restart either way.
+    if "agents" in live:
+        # The decider/watcher scan loops and the provider DNS entries
+        # apply live, but two things the agents need are decided at
+        # UNIT-GENERATION time: the grants volume their findings/state
+        # are written to (gated on agents.*.enable in the quadlet
+        # template and the apple metadata) and the ``Secret=`` directive
+        # for each api_key. Without a refresh, a freshly enabled watcher
+        # on a cage with the decider off has no host-visible volume —
+        # findings land in the container's ephemeral layer and `watcher
+        # findings` reports the silent all-clear this feature exists to
+        # avoid. Same rationale as the secret_injection refresh; no
+        # restart either way.
         try:
             _refresh_units(name, cfg)
         except Exception as e:
@@ -3675,7 +3707,8 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     watcher_names: set[str] = set()
 
     def _collect_agent_key(source_cfg, bucket: set) -> None:
-        _key = getattr(getattr(source_cfg, "agent", None), "api_key", "")
+        # The LLM client fields sit flat on the agent block (0.40 restructure).
+        _key = getattr(source_cfg, "api_key", "")
         if isinstance(_key, str) and _key:
             _, _, _arg = _key.partition(":")
             if _arg:
@@ -3683,11 +3716,8 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
                 if _arg not in expected:
                     expected.append(_arg)
 
-    _collect_agent_key(
-        getattr(getattr(getattr(cfg, "domains", None), "auto", None),
-                "decider", None),
-        decider_names)
-    _collect_agent_key(getattr(cfg, "watcher", None), watcher_names)
+    _collect_agent_key(cfg.agents.decider, decider_names)
+    _collect_agent_key(cfg.agents.watcher, watcher_names)
     # Placeholders are decoy tokens (never sensitive) — show them so a
     # generated value is discoverable without opening the stored cage.yaml.
     placeholders = {r.env: r.placeholder for r in cfg.secret_injection}
@@ -4634,18 +4664,18 @@ def _host_never_grant(raw: dict) -> set[str]:
     Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
     ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
     ``{internal, local, localhost}`` plus the control host from
-    ``domains.auto.host`` (default ``agentcage.local``). The reconcile runs
+    ``agents.decider.host`` (default ``agentcage.local``). The reconcile runs
     on the HOST (``grants sync`` / the implicit ``domain list`` reconcile)
     and cannot import the addon (which lives in the egress image), so this
     is a deliberate mirror kept in sync with
-    ``config._AUTO_NEVER_GRANT`` / ``DomainsAutoConfig.host``. Suffix-matched
+    ``config._AUTO_NEVER_GRANT`` / ``DeciderAgentConfig.host``. Suffix-matched
     so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
     and ``local`` covers the default control host's TLD family.
     """
     from agentcage.config import _AUTO_NEVER_GRANT
     out = {str(h).lower().rstrip(".") for h in _AUTO_NEVER_GRANT}
-    auto = (raw.get("domains") or {}).get("auto") or {}
-    host = str(auto.get("host", "agentcage.local") or "agentcage.local")
+    decider = (raw.get("agents") or {}).get("decider") or {}
+    host = str(decider.get("host", "agentcage.local") or "agentcage.local")
     out.add(host.lower().rstrip("."))
     return out
 
@@ -5569,11 +5599,11 @@ def watcher_status(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
     cfg = state.load_deployment_config(name)
-    w = getattr(cfg, "watcher", None)
-    if w is None or not w.enable:
+    w = cfg.agents.watcher
+    if not w.enable:
         click.echo(
-            f"The traffic watcher is not enabled for cage '{name}' — add a "
-            f"`watcher:` block to its cage.yaml (see "
+            f"The traffic watcher is not enabled for cage '{name}' — add an "
+            f"`agents.watcher:` block to its cage.yaml (see "
             f"docs/explain/traffic-watcher.md).")
         return
     click.echo(f"Traffic watcher for cage '{name}': enabled")
@@ -5582,7 +5612,7 @@ def watcher_status(name):
     click.echo(f"  scan interval:   {w.interval_seconds:g}s")
     click.echo(f"  lookback window: {w.window_seconds:g}s")
     click.echo(f"  auto-revoke:    {'yes' if w.auto_revoke else 'no (findings only)'}")
-    click.echo(f"  agent:          {w.agent.provider} / {w.agent.model}")
+    click.echo(f"  agent:          {w.provider} / {w.model}")
 
     text = _load_watcher_output(name, cfg, "state.json")
     if text is None:

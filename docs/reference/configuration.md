@@ -16,37 +16,75 @@ Example configs: [`basic/cage.yaml`](../../examples/basic/) and [`openclaw/cage.
 | `log_allowed` | `bool` | `false` | Log allowed requests to the proxy journal. |
 | `max_request_body` | `int` | `10485760` (10 MB) | Max request body size in bytes. Set to `0` to disable the body-size limit. |
 | `dns_servers` | `list[string]` | *(from host `/etc/resolv.conf`)* | Upstream DNS servers used by both the dnsmasq sidecar and the proxy container. |
-| `watcher` | `block` | *(off)* | Opt-in traffic watcher: an in-egress LLM agent that re-analyzes the cage's recent traffic (audit + HAR capture) after the fact and flags suspicious patterns, revoking runtime grants its analysis damns. See [the traffic watcher](../explain/traffic-watcher.md). |
+| `agents` | `block` | *(off)* | Roster of the opt-in LLM agents agentcage runs **inside the egress** on the operator's behalf — each costs money per call and holds an egress-only API key: `agents.decider` (adjudicates runtime domain requests — guards the front door) and `agents.watcher` (after-the-fact traffic auditor — guards the house, can only narrow). See [the Policy API](policy-api.md) and [the traffic watcher](../explain/traffic-watcher.md). |
 
-### watcher settings
+### agents settings
 
-The `watcher:` block enables the traffic watcher — see [the traffic-watcher explain page](../explain/traffic-watcher.md) for the trust model (it can only narrow: revoke runtime grants, never grant, never edit the static baseline). For the setup workflow, see [Run the traffic watcher](../how-to/run-the-traffic-watcher.md).
+For a minimal example and migration rules, see [Egress agents](agents.md).
+
+The `agents:` block is the roster of LLM agents agentcage runs inside the egress on the operator's behalf. Each is opt-in — an absent block adds zero surface — costs money per call, and holds an egress-only API key (never cage-visible, even as a placeholder). Both agents share one flat LLM field set and one credential-staging chain.
+
+- **`agents.decider`** guards the **front door**: before a grant. It adjudicates each runtime domain request the caged agent makes — see [the Policy API](policy-api.md).
+- **`agents.watcher`** guards the **house**: after the traffic. It re-analyzes the cage's recent traffic (audit + HAR capture) and flags suspicious patterns, revoking runtime grants its analysis damns — it can only narrow: revoke runtime grants, never grant, never edit the static baseline. See [the traffic-watcher explain page](../explain/traffic-watcher.md) for the trust model and [Run the traffic watcher](../how-to/run-the-traffic-watcher.md) for the setup workflow.
+
+#### `agents.decider` settings
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `enable` | `bool` | `false` | Master switch. Absent block = zero surface. Requires allowlist mode — rejected in blocklist mode, where the static baseline is the block list and the analysis would invert. |
+| `enable` | `bool` | `false` | Master switch. Off → no control host, zero new surface. |
+| `host` | `string` | `agentcage.local` | Reserved synthetic control hostname. |
+| `context` | `string` | `""` (off) | Trusted operator free-text describing the cage's purpose (max 4096 chars), appended to the decider's system prompt so decisions can account for what the cage is for. The same channel as `agents.watcher.context`. |
+| `rate_limit` | `{requests_per_second, burst}` | `{1, 5}` | Per-cage request rate limit, independent of the per-host HTTP rate limit. |
+| `provider` | `string` | *(required)* | `anthropic` \| `openai` \| `openrouter`. |
+| `model` | `string` | *(required)* | Model id. |
+| `api_key` | `string` | *(required)* | The decider's own API key — an egress-only `source:` credential (`env:NAME` \| `systemd-creds:NAME`; `cmd:` is rejected — the egress has no shell). Reusing the watcher's env var name is fine. |
+| `timeout_seconds` | `int` | `15` | Per-decision timeout. |
+| `max_tokens` | `int` | `8192` | Completion budget for the forced `decide` tool call. A ceiling, not a reservation: providers bill the tokens actually generated, and a typical verdict costs ~700. Minimum `1024`. |
+| `base_url` | `string` | *(provider default)* | HTTPS-only API base override (proxy/gateway/local server). |
+
+#### `agents.watcher` settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `enable` | `bool` | `false` | Master switch. Absent block = zero surface. Rejected in blocklist mode, where the static baseline is the block list and the analysis would invert. A cage without a domains block is permitted. |
 | `interval_seconds` | `int` | `900` | Scan cadence (minimum 60). One model call per interval at most, and only when the window had traffic. The default is chosen for cost, not latency — see the cost note. |
 | `window_seconds` | `int` | `3600` | After-the-fact lookback on the first scan after an egress (re)start (max 86400). |
 | `max_flows` | `int` | `200` | Flows per analysis window (digest prompt cap, range 10–2000). |
 | `auto_revoke` | `bool` | `true` | Apply runtime-grant revocations autonomously. `false` applies nothing but still records each revocation as a "revocation recommended" finding. Must be a real boolean — a quoted `"false"` is rejected at validation (it would silently enable revocations). |
-| `context` | `string` | `""` | Trusted operator free-text describing the cage's purpose (max 4096 chars) — the same channel as `domains.auto.context`. |
-| `max_digest_tokens` | `int` | `8000` | Hard ceiling on the digest sent to the model, in estimated tokens. The only setting that bounds spend regardless of traffic: `max_flows` bounds sample *count*, not size. When it bites, allowed flows are dropped oldest-first and blocked/flagged ones are kept. `0` removes the ceiling. *Since 0.37.0* |
 | `dedup_samples` | `bool` | `true` | Collapse repeated flow shapes in the digest into one sample carrying a `repeated` count, keeping up to 3 distinct request bodies per group. Measured at 18.4% of the prompt payload on real traffic. Set `false` to send every sample. *Since 0.37.0* |
-| `agent.provider` | `string` | *(required)* | `anthropic` \| `openai` \| `openrouter`. |
-| `agent.model` | `string` | *(required)* | Model id. |
-| `agent.api_key` | `string` | *(required)* | The watcher's own API key — an egress-only `source:` credential (`env:NAME` \| `systemd-creds:NAME`; `cmd:` is rejected — the egress has no shell). Reusing the decider's env var name is fine. |
-| `agent.timeout_seconds` | `int` | `30` | LLM call timeout. |
-| `agent.max_tokens` | `int` | `8192` | Completion budget for the forced `review` tool call. A reasoning model spends thinking tokens inside this budget *before* the tool call, so too small a value returns `finish_reason: length` with no tool call at all — a recorded scan failure every interval. A ceiling, not a reservation: you are billed for tokens actually generated. Minimum `1024`. *Since 0.38.0* |
-| `agent.base_url` | `string` | *(provider default)* | `https://`-only override. |
+| `max_digest_tokens` | `int` | `8000` | Hard ceiling on the digest sent to the model, in estimated tokens. The only setting that bounds spend regardless of traffic: `max_flows` bounds sample *count*, not size. When it bites, allowed flows are dropped oldest-first and blocked/flagged ones are kept. `0` removes the ceiling. *Since 0.37.0* |
+| `context` | `string` | `""` | Trusted operator free-text describing the cage's purpose (max 4096 chars) — the same channel as `agents.decider.context`. |
+| `provider` | `string` | *(required)* | `anthropic` \| `openai` \| `openrouter`. |
+| `model` | `string` | *(required)* | Model id. |
+| `api_key` | `string` | *(required)* | The watcher's own API key — an egress-only `source:` credential (`env:NAME` \| `systemd-creds:NAME`; `cmd:` is rejected — the egress has no shell). Reusing the decider's env var name is fine. |
+| `timeout_seconds` | `int` | `30` | LLM call timeout. |
+| `max_tokens` | `int` | `8192` | Completion budget for the forced `review` tool call. A reasoning model spends thinking tokens inside this budget *before* the tool call, so too small a value returns `finish_reason: length` with no tool call at all — a recorded scan failure every interval. A ceiling, not a reservation: you are billed for tokens actually generated. Minimum `1024`. *Since 0.38.0* |
+| `base_url` | `string` | *(provider default)* | `https://`-only override. |
 
 ```yaml
-watcher:
-  enable: true
-  context: "runs the payments-reconciliation suite against staging"
-  agent:
+agents:
+  decider:
+    enable: true
+    host: agentcage.local
+    context: "CI cage for the payments suite"
+    rate_limit: {requests_per_second: 1, burst: 5}
+    provider: openrouter
+    model: anthropic/claude-sonnet-4-5
+    api_key: env:OPENROUTER_API_KEY
+    timeout_seconds: 15
+  watcher:
+    enable: true
+    interval_seconds: 900
+    window_seconds: 3600
+    max_flows: 200
+    auto_revoke: true
+    dedup_samples: true
+    max_digest_tokens: 8000
+    context: "runs the payments-reconciliation suite against staging"
     provider: openrouter
     model: anthropic/claude-sonnet-4-5
     api_key: env:WATCHER_LLM_KEY
+    timeout_seconds: 30
 ```
 
 ### What the watcher costs

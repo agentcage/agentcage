@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import platform
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 import yaml
 
@@ -344,9 +345,6 @@ class DomainConfig:
     # are pruned lazily by the ``cage grants sync`` / ``domain list``
     # reconcile. See docs/explain/policy-api.md §expiry.
     expires: dict[str, str] = field(default_factory=dict)
-    # Auto-managed allowlist (opt-in): the caged agent can request new
-    # domains, adjudicated by a decider agent. See DomainsAutoConfig.
-    auto: "DomainsAutoConfig" = field(default_factory=lambda: DomainsAutoConfig())
 
     @property
     def list(self) -> list[str]:
@@ -576,25 +574,36 @@ class ProtocolRelay:
 # credential.
 
 
-# ── domains.auto — auto-managed allowlist (opt-in) ──────────
+# ── agents: in-egress LLM agents (opt-in) ──────────────────
 #
-# Nests under ``domains:`` so an operator reading cage.yaml sees one
-# namespace for everything about domain egress: the static ``allow``/
-# ``block``/``passthrough``/``expires`` policy PLUS its auto-management.
-# ``auto`` is the "auto mode" for that allowlist (Claude Code "auto" for
-# egress): the caged agent can request a new domain, and a decider agent
-# (a senior cybersecurity expert) adjudicates it. On grant, the domain
-# takes effect immediately in-egress (L7 inspector + dnsmasq zone), and
-# the reconcile (``cage grants sync`` / ``domain list``) later promotes
-# it into the static baseline via the literal ``domain add`` chain, so
-# it's permanent. Off by default; an absent ``auto:`` block adds zero
-# surface.
+# cage.yaml's top-level ``agents:`` block is the roster of LLM agents
+# agentcage runs INSIDE the egress on the operator's behalf. Every block
+# here is an LLM call the operator pays for, and each holds an
+# egress-only API key (never cage-visible, even as a placeholder).
+# An absent block adds zero surface.
 #
-# v1 ships the ``agent`` decider (a built-in LLM call) only. The webhook
-# decider is deferred. Grant behavior (TTL, max_grants, never_grant,
-# require_allowlist_mode) uses fixed safe defaults for now — see
-# _AUTO_DEFAULTS below — so the operator config is just ``enable`` + the
-# decider.
+# - ``agents.decider`` — the policy decider. The caged agent can request
+#   a new egress domain; the decider (a senior cybersecurity expert)
+#   adjudicates it. On grant, the domain takes effect immediately
+#   in-egress (L7 inspector + dnsmasq zone), and the reconcile
+#   (``cage grants sync`` / ``domain list``) later promotes it into the
+#   static baseline via the literal ``domain add`` chain, so it's
+#   permanent. It guards the FRONT DOOR: before a grant.
+# - ``agents.watcher`` — the traffic watcher. Re-analyzes the cage's
+#   recent traffic (audit stream + HAR capture) after the fact and flags
+#   suspicious patterns; where its analysis damns a runtime grant it
+#   revokes it (narrowing only — the egress never edits the operator's
+#   baseline). It guards the HOUSE: after the traffic.
+#   See docs/explain/traffic-watcher.md.
+#
+# History: through 0.39 the decider lived under ``domains.auto`` and the
+# watcher at top level as ``watcher:`` — both moved under ``agents:`` in
+# 0.40 so "what is agentic (and what it costs)" is answerable at a
+# glance. The legacy forms still parse (normalized with a deprecation
+# warning); see ``normalize_legacy_agents``. Grant behavior (TTL,
+# max_grants, never_grant, require_allowlist_mode) uses fixed safe
+# defaults — see the _AUTO_* constants below — so the operator config is
+# just ``enable`` + the LLM client fields.
 
 # Fixed defaults for grant behavior (no operator knob yet). Kept as a
 # module constant so the addon and validation share one source of truth.
@@ -609,60 +618,28 @@ _AUTO_REQUIRE_ALLOWLIST_MODE = True   # refuse in blocklist mode (a grant is mea
 
 
 @dataclass
-class AgentDeciderConfig:
-    # The built-in LLM decider. The egress calls the provider directly over
-    # HTTPS (no SDK — keeps the egress image lean) and interprets a forced
-    # ``decide`` tool-call response as the grant/deny decision. OpenAI and
-    # OpenRouter share the OpenAI chat-completions wire format
-    # (``/v1/chat/completions``); Anthropic uses ``/v1/messages``.
-    #
-    # The decider agent's API key is a SEPARATE, required credential — an
-    # egress-only secret (never cage-visible, even as a placeholder). It
-    # uses the same ``source:`` scheme as ``secret_injection.source``
-    # (``env:NAME`` | ``systemd-creds:NAME`` | ``cmd:...``), staged into the
-    # proxy's tmpfs secret files (relay-auth precedent).
-    provider: str = ""   # "anthropic" | "openai" | "openrouter"
+class LlmAgentConfig:
+    """Shared flat client fields for in-egress LLM agents.
+
+    Keys are egress-only source references (env:/systemd-creds:), never
+    injected into cage traffic. HTTPS-only overrides protect them on the wire.
+    The completion budget includes reasoning tokens: sizing it for the verdict
+    alone starves reasoning models before they can emit a forced tool call.
+    """
+    provider: str = ""  # anthropic | openai | openrouter
     model: str = ""
-    api_key: str = ""    # source: scheme; required when auto.enable
+    api_key: str = ""
     timeout_seconds: float = 15.0
-    # Completion budget for the forced tool call. Reasoning models emit
-    # their thinking INTO this budget before the tool call, so a budget
-    # sized for the answer alone starves them: the response comes back
-    # ``finish_reason: length`` with no tool call at all, which both
-    # agents (correctly) fail closed on — the decider denies every
-    # request, the watcher records a failed scan. Measured against the
-    # real decider payload, glm-5.2, glm-5.3-flash and gemini-3.8-flash
-    # ALL fail at 256 and all succeed at 1024+ (600-1000 completion
-    # tokens typical), so the default is generous: 8192. This is a
-    # CEILING, not a reservation — providers bill the tokens actually
-    # generated, and a concise verdict still costs ~700 tokens — so
-    # headroom is nearly free and starvation is not. It also replaces
-    # the watcher's hard-coded 2048, whose occasional overruns showed
-    # the same symptom. Lowering it below ~1024 re-opens the failure.
     max_tokens: int = 8192
-    # Optional API base URL override. Defaults per provider:
-    #   anthropic  -> https://api.anthropic.com
-    #   openai     -> https://api.openai.com
-    #   openrouter -> https://openrouter.ai/api/v1
     base_url: str = ""
 
 
 @dataclass
-class DeciderConfig:
-    # The decider — what adjudicates each domain request. ``kind`` picks the
-    # implementation; v1 supports ``agent`` (a built-in LLM cybersecurity
-    # expert). ``webhook`` is reserved for a follow-up (your own approver
-    # service) and rejected at validation until it ships.
-    kind: str = "agent"  # "agent" | "webhook" (webhook not yet implemented)
-    agent: AgentDeciderConfig = field(default_factory=AgentDeciderConfig)
-
-
-@dataclass
-class DomainsAutoConfig:
-    # ``domains.auto`` — auto-managed allowlist. See module comment above.
+class DeciderAgentConfig(LlmAgentConfig):
+    # ``agents.decider`` — the policy decider agent (see the module
+    # comment above). Was ``domains.auto`` through 0.39.
     enable: bool = False  # master switch
     host: str = "agentcage.local"   # reserved synthetic control host
-    decider: DeciderConfig = field(default_factory=DeciderConfig)
     # Operator-provided free-text describing this cage's purpose and scope.
     # Flows verbatim into the decider's system prompt (as trusted operator
     # context) so decisions can account for what the cage is FOR; advisory
@@ -684,20 +661,16 @@ class DomainsAutoConfig:
 
 
 @dataclass
-class WatcherConfig:
-    # ``watcher:`` — the traffic watcher, an opt-in in-egress LLM agent that
-    # re-analyzes the cage's recent traffic (audit stream + HAR capture)
-    # after the fact and flags suspicious patterns; where its analysis
-    # damns a runtime grant it revokes it (narrowing only — the egress
-    # never edits the operator's baseline). Sibling of ``domains.auto``
-    # under the same trust model: the decider guards the front door
-    # (before a grant), the watcher guards the house (after the traffic).
+class WatcherAgentConfig(LlmAgentConfig):
+    # ``agents.watcher`` — the traffic watcher, an opt-in in-egress LLM
+    # agent that re-analyzes the cage's recent traffic (audit stream +
+    # HAR capture) after the fact and flags suspicious patterns; where
+    # its analysis damns a runtime grant it revokes it (narrowing only —
+    # the egress never edits the operator's baseline). Sibling of
+    # ``agents.decider`` under the same trust model: the decider guards
+    # the front door (before a grant), the watcher guards the house
+    # (after the traffic). Was top-level ``watcher:`` through 0.39.
     # See docs/explain/traffic-watcher.md.
-    #
-    # The agent sub-block is literally AgentDeciderConfig (the decider's
-    # own LLM client config) so the provider rules, the env:/systemd-creds:
-    # egress-only secret scheme, and the https-only base_url rule are the
-    # decider's rules — one credential shape, one staging chain.
     enable: bool = False  # master switch; absent block = zero surface
     # Scan cadence. One LLM call per interval at most (and only when the
     # window had traffic — a quiet cage costs nothing). 60s floor so a
@@ -738,10 +711,18 @@ class WatcherConfig:
     # thousands of dollars a month. 0 disables the ceiling.
     max_digest_tokens: int = 8000
     # Operator free-text describing the cage's purpose — the same trusted
-    # context channel as domains.auto.context, framed identically in the
+    # context channel as agents.decider.context, framed identically in the
     # watcher's system prompt. 4096-char cap (validate_config).
     context: str = ""
-    agent: AgentDeciderConfig = field(default_factory=AgentDeciderConfig)
+    timeout_seconds: float = 30.0
+
+
+@dataclass
+class AgentsConfig:
+    # ``agents:`` — the roster of in-egress LLM agents (see the module
+    # comment above). Both blocks are opt-in; the defaults are fully off.
+    decider: DeciderAgentConfig = field(default_factory=DeciderAgentConfig)
+    watcher: WatcherAgentConfig = field(default_factory=WatcherAgentConfig)
 
 
 _VALID_LIFECYCLES = ("service", "interactive", "ephemeral")
@@ -770,11 +751,21 @@ class Config:
     # the mitmproxy addon on a reserved control hostname.
     dns_servers: list[str] = field(default_factory=list)
     domains: DomainConfig = field(default_factory=DomainConfig)
-    # Traffic watcher (opt-in): in-egress LLM traffic auditor. Parsed here,
-    # plumbed into the egress's proxy-config.yaml via state._PROXY_KEYS
-    # ("watcher"), driven by data/proxy/watcher.py inside the egress.
-    # Absent block → default WatcherConfig(enable=False) → zero surface.
-    watcher: WatcherConfig = field(default_factory=WatcherConfig)
+    # In-egress LLM agents (opt-in): the policy decider (adjudicates the
+    # caged agent's runtime domain requests) and the traffic watcher
+    # (after-the-fact auditor). Parsed here, plumbed into the egress's
+    # proxy-config.yaml via state._PROXY_KEYS ("agents"), enforced by the
+    # mitmproxy addon + watcher.py inside the egress. Absent blocks →
+    # default (disabled) configs → zero surface. Legacy ``domains.auto``
+    # and top-level ``watcher:`` are normalized into this block at parse
+    # time; see normalize_legacy_agents.
+    agents: AgentsConfig = field(default_factory=AgentsConfig)
+    # Deprecation notices raised while parsing THIS config's legacy agent
+    # blocks (``domains.auto`` / top-level ``watcher:``). Empty for a
+    # new-form file. validate_config prepends them to its warnings so
+    # `cage create`/`update`/`edit` surface the migration prompt; the
+    # legacy keys then evaporate from the file on the next save.
+    legacy_form_notices: list[str] = field(default_factory=list, compare=False, repr=False)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     ports: PortsConfig = field(default_factory=PortsConfig)
@@ -921,6 +912,122 @@ def _host_dns_servers() -> list[str]:
     )
 
 
+# ── legacy agent-block normalization ─────────────────────
+#
+# Through 0.39 the decider was configured as ``domains.auto`` (LLM fields
+# flat under a ``decider:`` sub-block carrying a ``kind:`` discriminator)
+# and the watcher as a top-level ``watcher:`` block (LLM fields under an
+# ``agent:`` sub-block). 0.40 moves both under ``agents.decider`` /
+# ``agents.watcher`` with the LLM fields flat in the block itself — one
+# grammar for the whole roster.
+#
+# :func:`normalize_legacy_agents` is the SINGLE choke point for that
+# mapping. Both ``config.load_config`` and ``state.load_raw_config`` run
+# it, so every downstream consumer — ``save_raw_config`` (the ``domain
+# add``/``rm`` rewrite chain), ``save_proxy_config`` (the egress wire
+# render), ``cage edit`` — sees one shape and old keys evaporate from
+# real cages on the next config-touching command.
+
+
+def _reject_legacy_kind(block: dict, where: str) -> None:
+    """Reject a ``kind:`` discriminator before it can be dropped.
+
+    v1 only implements the built-in LLM agent; ``kind:`` existed solely to
+    carry that single value, so 0.40 removes it from the operator surface.
+    A ``kind: agent`` (or absent) is dropped silently; anything else is
+    rejected with the same message the old validation raised — it must fire
+    HERE, pre-normalization, because after the flatten there is no ``kind``
+    key left to reject.
+    """
+    if "kind" not in block:
+        return
+    kind = str(block.get("kind", "agent") or "agent")
+    if kind == "agent":
+        return
+    if kind == "webhook":
+        raise ValueError(
+            f"{where}.kind=webhook is not implemented yet; "
+            "use the built-in LLM agent (kind: agent, or just omit kind)."
+        )
+    raise ValueError(
+        f"{where}.kind must be 'agent' (got {kind!r})"
+    )
+
+
+LLM_CLIENT_FIELDS = tuple(f.name for f in fields(LlmAgentConfig))
+
+
+def _agent_mapping(value, path: str) -> dict:
+    """Null is an empty block; other non-mappings are operator errors."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be a mapping (got {type(value).__name__})")
+    return dict(value)
+
+
+def normalize_legacy_agents(raw: dict) -> tuple[dict, list[str]]:
+    """Return a canonical raw config and migration notices, without mutation.
+
+    Conflicts are checked by key PRESENCE, even for disabled/empty blocks.
+    Migrate each role independently, allowing e.g. a new decider and an old
+    watcher. Only LLM fields are lifted from the legacy sub-block: previously
+    ignored nested keys must never override enable, context, or grant policy.
+    """
+    result = dict(raw)
+    agents = _agent_mapping(raw.get("agents"), "agents")
+    domains = _agent_mapping(raw.get("domains"), "domains")
+    notices = []
+    for role, owner, key, wrapper, old_path in (
+        ("decider", domains, "auto", "decider", "domains.auto"),
+        ("watcher", result, "watcher", "agent", "watcher"),
+    ):
+        path = f"agents.{role}"
+        if key in owner:
+            if role in agents:
+                raise ValueError(
+                    f"ambiguous config: both '{path}' and legacy '{old_path}' "
+                    "are set — keep one"
+                )
+            block = _agent_mapping(owner[key], old_path)
+            client = _agent_mapping(block.pop(wrapper, None), f"{old_path}.{wrapper}")
+            if role == "decider":
+                _reject_legacy_kind(client, f"{old_path}.{wrapper}")
+            # The old reader took LLM fields ONLY from the sub-block.
+            for field_name in LLM_CLIENT_FIELDS:
+                block.pop(field_name, None)
+                if field_name in client:
+                    block[field_name] = client[field_name]
+            agents[role] = block
+            owner.pop(key)
+            if role == "decider":
+                result["domains"] = domains
+            notices.append(
+                f"{old_path} is now {path} (renamed in 0.40); legacy syntax "
+                "still parses and is migrated on save. Run `agentcage cage "
+                "update <name>` after upgrading to refresh deployment assets."
+            )
+        if role in agents:
+            block = _agent_mapping(agents[role], path)
+            if role == "decider":
+                _reject_legacy_kind(block, path)
+                block.pop("kind", None)
+            if wrapper in block:
+                raise ValueError(f"{path}: LLM fields must be flat, not under '{wrapper}'")
+            # A raw-config writer must not emit a string-valued enable to
+            # an older egress, whose truthiness check would enable it.
+            for flag in ("enable", "auto_revoke", "dedup_samples"):
+                if flag in block and not isinstance(block[flag], bool):
+                    raise ValueError(f"{path}.{flag} must be a boolean (true/false)")
+            agents[role] = block
+    unknown = set(agents) - {"decider", "watcher"}
+    if unknown:
+        raise ValueError(f"unknown agents: {', '.join(sorted(map(str, unknown)))}")
+    if agents or "agents" in raw:
+        result["agents"] = agents
+    return result, notices
+
+
 def load_config(path: str) -> Config:
     """Load and parse a agentcage YAML config file.
 
@@ -949,7 +1056,14 @@ def load_config(path: str) -> Config:
     if not raw or not isinstance(raw, dict):
         return Config()
 
+    # Legacy agent blocks (``domains.auto`` / top-level ``watcher:``) are
+    # normalized into the ``agents:`` form BEFORE anything reads them, so
+    # the parser below handles exactly one shape. Notices ride on the
+    # Config; validate_config surfaces them as warnings.
+    raw, _legacy_notices = normalize_legacy_agents(raw)
+
     cfg = Config()
+    cfg.legacy_form_notices = _legacy_notices
     cfg.name = raw.get("name", "")
     cfg.isolation = raw.get("isolation") or default_isolation()
     cfg.lifecycle = raw.get("lifecycle", "service")
@@ -1172,141 +1286,153 @@ def load_config(path: str) -> Config:
     # the cage env / podman_secrets (it must never reach the cage, even as
     # a placeholder) and staged into the proxy's tmpfs secret files by the
     # quadlet renderer — exactly like a relay credential.
-    # domains.auto — parse the decider agent config. The auto block nests
-    # under ``domains:`` (parsed below); we collect its secret here so it's
-    # stripped from the cage env/podman_secrets like a relay credential
-    # (egress-only, never cage-visible, even as a placeholder).
-    policy_secret_names: set[str] = set()
-    _dom_raw = raw.get("domains") or {}
-    if isinstance(_dom_raw, dict):
-        auto_raw = _dom_raw.get("auto") or {}
-        if isinstance(auto_raw, dict) and auto_raw.get("enable"):
-            decider_raw = auto_raw.get("decider") or {}
-            # For kind=agent the provider/model/api_key sit flat under
-            # ``decider:`` (only one decider kind in v1, so no extra nesting).
-            agent_raw = decider_raw
-            rl_raw = auto_raw.get("rate_limit") or {}
-            # Preserve an explicit 0 (rate limiting disabled — the
-            # operator's deliberate choice; the proxy parses 0 the same
-            # way). Only absent/null/empty falls back to the default. A
-            # bare `or` would coerce an explicit 0 to the default and
-            # disagree with the proxy's parse.
-            _rps_raw = rl_raw.get("requests_per_second")
-            _burst_raw = rl_raw.get("burst")
-            # Operator context — optional free-text describing this cage's
-            # purpose. None → "" (feature off). Non-string (e.g. a mapping)
-            # is rejected here so it can't silently coerce to a misleading
-            # repr like "{'enable': True}" that would ride the system prompt.
-            # The 4096-char length cap is enforced in validate_config.
-            _ctx_raw = auto_raw.get("context")
-            if _ctx_raw is None:
-                _context = ""
-            elif isinstance(_ctx_raw, str):
-                _context = _ctx_raw
-            else:
-                raise ValueError(
-                    "domains.auto.context must be a string (got "
-                    f"{type(_ctx_raw).__name__})"
-                )
-            auto = DomainsAutoConfig(
-                enable=True,
-                host=str(auto_raw.get("host", "agentcage.local") or "agentcage.local"),
-                context=_context,
-                decider=DeciderConfig(
-                    kind=str(decider_raw.get("kind", "agent") or "agent"),
-                    agent=AgentDeciderConfig(
-                        provider=str(agent_raw.get("provider", "") or ""),
-                        model=str(agent_raw.get("model", "") or ""),
-                        api_key=str(agent_raw.get("api_key", "") or ""),
-                        timeout_seconds=float(agent_raw.get("timeout_seconds", 15.0) or 15.0),
-                        max_tokens=int(agent_raw.get("max_tokens", 8192) or 8192),
-                        base_url=str(agent_raw.get("base_url", "") or ""),
-                    ),
-                ),
-                    # Preserve an explicit 0 — see the comment above the
-                    # DomainsAutoConfig(...) call.
-                    rate_limit_rps=float(
-                        _rps_raw if _rps_raw not in (None, "") else 1.0),
-                    rate_limit_burst=int(
-                        _burst_raw if _burst_raw not in (None, "") else 5),
-            )
-            # Stash on a temp; the Domains block below will attach it to dc.
-            _pending_auto = auto
-            api_key = auto.decider.agent.api_key
-            scheme, _, arg = (api_key or "").partition(":")
-            if scheme and arg:
-                validate_source(api_key)
-                policy_secret_names.add(arg)
-        else:
-            _pending_auto = None
-    else:
-        _pending_auto = None
-
-    # Traffic watcher — parse the ``watcher:`` block (top-level in
-    # cage.yaml). Its agent api_key is collected into the SAME
-    # egress-only secret set as the decider's (stripped from the cage
-    # env / podman_secrets below, staged into the proxy's tmpfs secret
-    # files by the quadlet renderer): the watcher runs in the egress, so
-    # its LLM key follows the exact decider credential chain and never
-    # reaches the cage, even as a placeholder.
+    # In-egress LLM agents — parse ``agents.decider`` / ``agents.watcher``
+    # (legacy ``domains.auto`` / top-level ``watcher:`` were normalized
+    # into this shape at the top of load_config). Both api_keys are
+    # collected into the SAME egress-only secret set (stripped from the
+    # cage env/podman_secrets below, staged into the proxy's tmpfs secret
+    # files by the quadlet renderer): these agents run in the egress, so
+    # their LLM keys follow the exact relay credential chain and never
+    # reach the cage, even as a placeholder.
     #
-    # Parse strictness mirrors the decider block's: a malformed block
-    # REJECTS the config (it would ride proxy-config.yaml verbatim and
-    # crash/degrade the in-egress consumer), explicit values are
-    # preserved as-is so validate_config's bounds can reject them (a
-    # bare ``or`` fallback would silently coerce an explicit 0 into the
-    # default — the exact trap the decider's rate-limit parse calls
-    # out), and booleans must be REAL booleans (``bool("false")`` is
-    # True — silently enabling autonomous revocation against the
-    # operator's written intent).
-    _pending_watcher: WatcherConfig | None = None
-    w_raw = raw.get("watcher")
-    if w_raw is not None and not isinstance(w_raw, dict):
+    # Parse strictness (both blocks): a malformed block REJECTS the config
+    # (it would ride proxy-config.yaml verbatim and crash/degrade the
+    # in-egress consumer), explicit values are preserved as-is so
+    # validate_config's bounds can reject them (a bare ``or`` fallback
+    # would silently coerce an explicit 0 into the default), and booleans
+    # must be REAL booleans (``bool("false")`` is True — silently enabling
+    # an agent against the operator's written intent).
+    policy_secret_names: set[str] = set()
+    agents_raw = raw.get("agents") or {}
+    if not isinstance(agents_raw, dict):
         raise ValueError(
-            f"watcher must be a mapping (got {type(w_raw).__name__})"
+            f"agents must be a mapping (got {type(agents_raw).__name__})"
         )
-    if isinstance(w_raw, dict) and "enable" in w_raw \
-            and not isinstance(w_raw["enable"], bool):
-        # Same trap the block above calls out: bool("false") is True, so
-        # a hand-edited ``enable: "false"`` would silently turn the
-        # watcher (and its autonomous revocation) ON against the
+
+    def _llm_client(d: dict, default_timeout: float, label: str) -> dict:
+        # Flat LLM client fields — the same field set on every roster
+        # entry (one grammar, one credential shape). NOT lowercased:
+        # validation rejects any casing but the exact provider key.
+        try:
+            for key in ("timeout_seconds", "max_tokens"):
+                if isinstance(d.get(key), bool):
+                    raise ValueError(f"{key} must be a number, not a boolean")
+            return dict(
+                provider=str(d.get("provider", "") or ""),
+                model=str(d.get("model", "") or ""),
+                api_key=str(d.get("api_key", "") or ""),
+                timeout_seconds=float(
+                    d["timeout_seconds"] if d.get("timeout_seconds") not in (None, "")
+                    else default_timeout),
+                max_tokens=int(d["max_tokens"] if d.get("max_tokens") not in (None, "")
+                               else 8192),
+                base_url=str(d.get("base_url", "") or ""),
+            )
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"{label}: invalid LLM client value ({e})"
+            ) from e
+
+    _pending_decider: DeciderAgentConfig | None = None
+    dec_raw = agents_raw.get("decider") or {}
+    if not isinstance(dec_raw, dict):
+        raise ValueError(
+            f"agents.decider must be a mapping (got "
+            f"{type(dec_raw).__name__})"
+        )
+    if "enable" in dec_raw and not isinstance(dec_raw["enable"], bool):
+        # bool("false") is True, so a hand-edited ``enable: "false"``
+        # would silently turn the decider (and with it the agent's ability
+        # to grant egress) ON against the operator's written intent. The
+        # watcher has always had this guard; the decider inherits it with
+        # the new shape.
+        raise ValueError(
+            "agents.decider.enable must be a boolean (true/false) — got "
+            f"{type(dec_raw['enable']).__name__}"
+        )
+    if dec_raw.get("enable"):
+        rl_raw = _agent_mapping(dec_raw.get("rate_limit"), "agents.decider.rate_limit")
+        # Preserve an explicit 0 (rate limiting disabled — the operator's
+        # deliberate choice; the proxy parses 0 the same way). Only
+        # absent/null/empty falls back to the default. A bare ``or``
+        # would coerce an explicit 0 to the default and disagree with the
+        # proxy's parse.
+        _rps_raw = rl_raw.get("requests_per_second")
+        _burst_raw = rl_raw.get("burst")
+        # Operator context — optional free-text describing this cage's
+        # purpose. None → "" (feature off). Non-string (e.g. a mapping)
+        # is rejected here so it can't silently coerce to a misleading
+        # repr like "{'enable': True}" that would ride the system prompt.
+        # The 4096-char length cap is enforced in validate_config.
+        _ctx_raw = dec_raw.get("context")
+        if _ctx_raw is None:
+            _context = ""
+        elif isinstance(_ctx_raw, str):
+            _context = _ctx_raw
+        else:
+            raise ValueError(
+                "agents.decider.context must be a string (got "
+                f"{type(_ctx_raw).__name__})"
+            )
+        llm = _llm_client(dec_raw, 15.0, "agents.decider")
+        _pending_decider = DeciderAgentConfig(
+            enable=True,
+            host=str(dec_raw.get("host", "agentcage.local")
+                     or "agentcage.local"),
+            context=_context,
+            rate_limit_rps=float(
+                _rps_raw if _rps_raw not in (None, "") else 1.0),
+            rate_limit_burst=int(
+                _burst_raw if _burst_raw not in (None, "") else 5),
+            **llm,
+        )
+        _key = _pending_decider.api_key
+        _scheme, _, _arg = (_key or "").partition(":")
+        if _scheme and _arg:
+            validate_source(_key)
+            policy_secret_names.add(_arg)
+
+    _pending_watcher: WatcherAgentConfig | None = None
+    w_raw = agents_raw.get("watcher") or {}
+    if not isinstance(w_raw, dict):
+        raise ValueError(
+            f"agents.watcher must be a mapping (got "
+            f"{type(w_raw).__name__})"
+        )
+    if "enable" in w_raw and not isinstance(w_raw["enable"], bool):
+        # Same trap the decider block above calls out: bool("false") is
+        # True, so a hand-edited ``enable: "false"`` would silently turn
+        # the watcher (and its autonomous revocation) ON against the
         # operator's written intent.
         raise ValueError(
-            "watcher.enable must be a boolean (true/false) — got "
+            "agents.watcher.enable must be a boolean (true/false) — got "
             f"{type(w_raw['enable']).__name__}"
         )
-    if isinstance(w_raw, dict) and w_raw.get("enable"):
-        _w_agent_raw = w_raw.get("agent")
-        if _w_agent_raw is not None and not isinstance(_w_agent_raw, dict):
-            raise ValueError(
-                f"watcher.agent must be a mapping (got "
-                f"{type(_w_agent_raw).__name__})"
-            )
-        _w_agent_raw = _w_agent_raw or {}
-        _w_ctx_raw = w_raw.get("context")
-        if _w_ctx_raw is None:
+    if w_raw.get("enable"):
+        _ctx_raw = w_raw.get("context")
+        if _ctx_raw is None:
             _w_context = ""
-        elif isinstance(_w_ctx_raw, str):
-            _w_context = _w_ctx_raw
+        elif isinstance(_ctx_raw, str):
+            _w_context = _ctx_raw
         else:
-            # Same rejection rationale as domains.auto.context: never
+            # Same rejection rationale as agents.decider.context: never
             # str()-coerce a non-string into a repr that would ride the
             # watcher's system prompt.
             raise ValueError(
-                f"watcher.context must be a string (got "
-                f"{type(_w_ctx_raw).__name__})"
+                f"agents.watcher.context must be a string (got "
+                f"{type(_ctx_raw).__name__})"
             )
         _w_ar_raw = w_raw.get("auto_revoke", True)
         if not isinstance(_w_ar_raw, bool):
             raise ValueError(
-                "watcher.auto_revoke must be a boolean (true/false) — "
+                "agents.watcher.auto_revoke must be a boolean (true/false) — "
                 f"got {type(_w_ar_raw).__name__}"
             )
         _w_dd_raw = w_raw.get("dedup_samples", True)
         if not isinstance(_w_dd_raw, bool):
             raise ValueError(
-                "watcher.dedup_samples must be a boolean (true/false) — "
-                f"got {type(_w_dd_raw).__name__}"
+                "agents.watcher.dedup_samples must be a boolean "
+                f"(true/false) — got {type(_w_dd_raw).__name__}"
             )
 
         def _w_num(key: str, default: float, as_int: bool = False):
@@ -1321,10 +1447,11 @@ def load_config(path: str) -> Config:
                 return int(float(_raw_v)) if as_int else float(_raw_v)
             except (ValueError, TypeError):
                 raise ValueError(
-                    f"watcher.{key} must be a number (got {_raw_v!r})"
+                    f"agents.watcher.{key} must be a number (got {_raw_v!r})"
                 )
 
-        _pending_watcher = WatcherConfig(
+        llm = _llm_client(w_raw, 30.0, "agents.watcher")
+        _pending_watcher = WatcherAgentConfig(
             enable=True,
             interval_seconds=_w_num("interval_seconds", 900.0),
             window_seconds=_w_num("window_seconds", 3600.0),
@@ -1333,26 +1460,21 @@ def load_config(path: str) -> Config:
             auto_revoke=_w_ar_raw,
             dedup_samples=_w_dd_raw,
             context=_w_context,
-            agent=AgentDeciderConfig(
-                # NOT lowercased: the decider's validation rejects any
-                # casing but the exact provider key, and the watcher is
-                # documented to follow the decider's rules verbatim —
-                # accepting silently here what the twin rejects would be
-                # the mirror drifting.
-                provider=str(_w_agent_raw.get("provider", "") or ""),
-                model=str(_w_agent_raw.get("model", "") or ""),
-                api_key=str(_w_agent_raw.get("api_key", "") or ""),
-                timeout_seconds=float(
-                    _w_agent_raw.get("timeout_seconds", 30.0) or 30.0),
-                max_tokens=int(_w_agent_raw.get("max_tokens", 8192) or 8192),
-                base_url=str(_w_agent_raw.get("base_url", "") or ""),
-            ),
+            **llm,
         )
-        _w_key = _pending_watcher.agent.api_key
+        _w_key = _pending_watcher.api_key
         _w_scheme, _, _w_arg = (_w_key or "").partition(":")
         if _w_scheme and _w_arg:
             validate_source(_w_key)
             policy_secret_names.add(_w_arg)
+
+    agents_cfg = AgentsConfig()
+    if _pending_decider is not None:
+        agents_cfg.decider = _pending_decider
+    if _pending_watcher is not None:
+        agents_cfg.watcher = _pending_watcher
+    cfg.agents = agents_cfg
+
 
     if policy_secret_names:
         cc.podman_secrets = [
@@ -1406,11 +1528,7 @@ def load_config(path: str) -> Config:
             if isinstance(e, dict) and e.get("domain") and e.get("expires_at"):
                 expires[str(e["domain"]).lower().rstrip(".")] = str(e["expires_at"])
     dc.expires = expires
-    if _pending_auto is not None:
-        dc.auto = _pending_auto
     cfg.domains = dc
-    if _pending_watcher is not None:
-        cfg.watcher = _pending_watcher
 
     # Logging
     log_raw = raw.get("logging") or {}
@@ -2174,11 +2292,24 @@ def validate_config(config: Config) -> list[str]:
             start = end + 1
 
     # ── Policy API validation ───────────────────────────────
-    # ── domains.auto validation ──────────────────────────────
+    # ── legacy agent-block migration notices ─────────────────
+    # A config parsed from a 0.39-and-earlier file carries deprecation
+    # notices (config.load_config stashed them on Config); surface them
+    # as warnings so `cage create`/`update`/`edit` prompt the migration.
+    # The legacy keys evaporate from the file on the next save
+    # (load_raw_config normalizes), after which these go quiet.
+    warnings.extend(getattr(config, "legacy_form_notices", None) or [])
+    for role in ("decider", "watcher"):
+        agent = getattr(config.agents, role)
+        if agent.enable and (not math.isfinite(agent.timeout_seconds)
+                             or agent.timeout_seconds <= 0):
+            raise ValueError(f"agents.{role}.timeout_seconds must be finite and > 0")
+
+    # ── agents.decider validation ────────────────────────────
     # All rules are no-ops when the feature is disabled (the default): an
-    # omitted ``auto:`` block yields enable=False and adds zero new
+    # omitted ``decider:`` block yields enable=False and adds zero new
     # surface — the control host is not even resolved.
-    pa = config.domains.auto
+    pa = config.agents.decider
     if pa.enable:
         import re as _re
         # Control host: a dotted hostname, not an IP literal, not colliding
@@ -2187,7 +2318,7 @@ def validate_config(config: Config) -> list[str]:
         host = pa.host.lower().rstrip(".")
         if not _re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$", host) or "." not in host:
             raise ValueError(
-                f"domains.auto.host {pa.host!r} must be a dotted hostname "
+                f"agents.decider.host {pa.host!r} must be a dotted hostname "
                 f"(e.g. 'agentcage.local'), not an IP literal or single label"
             )
         all_named = set(map(str.lower, config.domains.allow)) | set(
@@ -2195,50 +2326,37 @@ def validate_config(config: Config) -> list[str]:
         ) | set(map(str.lower, config.domains.passthrough))
         if host in all_named:
             raise ValueError(
-                f"domains.auto.host {pa.host!r} must not appear in "
+                f"agents.decider.host {pa.host!r} must not appear in "
                 f"domains.allow/block/passthrough — the control host is a "
                 f"synthetic, non-forwardable endpoint"
             )
 
-        # auto requires allowlist mode (a grant is meaningless in blocklist
-        # mode — blocklist already allows everything not listed). Fixed
-        # default; the operator can't turn this off in v1.
+        # The decider requires allowlist mode (a grant is meaningless in
+        # blocklist mode — blocklist already allows everything not listed).
+        # Fixed default; the operator can't turn this off in v1.
         if config.domains.mode != "allowlist":
             raise ValueError(
-                "domains.auto requires domains allowlist mode (a grant only "
-                "widens an allowlist; in blocklist mode everything not blocked "
-                "is already reachable)."
+                "agents.decider requires domains allowlist mode (a grant "
+                "only widens an allowlist; in blocklist mode everything not "
+                "blocked is already reachable)."
             )
 
-        dec = pa.decider
-        if dec.kind not in ("agent", "webhook"):
+        # Flat LLM client checks (same rules as agents.watcher — one
+        # credential shape across the roster).
+        if pa.provider not in ("anthropic", "openai", "openrouter"):
             raise ValueError(
-                f"domains.auto.decider.kind must be 'agent' or 'webhook' "
-                f"(got {dec.kind!r})"
+                f"agents.decider.provider must be 'anthropic', "
+                f"'openai', or 'openrouter' (got {pa.provider!r})"
             )
-        if dec.kind == "webhook":
-            # v1 ships the agent decider only; webhook is a follow-up.
-            raise ValueError(
-                "domains.auto.decider.kind=webhook is not implemented yet; "
-                "use kind: agent (the built-in LLM decider)."
-            )
-        # kind == "agent"
-        ag = dec.agent
-        if ag.provider not in ("anthropic", "openai", "openrouter"):
-            raise ValueError(
-                f"domains.auto.decider.agent.provider must be 'anthropic', "
-                f"'openai', or 'openrouter' (got {ag.provider!r})"
-            )
-        if not ag.model:
-            raise ValueError("domains.auto.decider.agent.model is required")
-        _validate_agent_max_tokens(
-            ag.max_tokens, "domains.auto.decider.agent.max_tokens")
+        if not pa.model:
+            raise ValueError("agents.decider.model is required")
+        _validate_agent_max_tokens(pa.max_tokens, "agents.decider.max_tokens")
         # The decider agent's API key is a REQUIRED, egress-only credential
         # using the same source: scheme as secret_injection.source.
-        if not ag.api_key:
+        if not pa.api_key:
             raise ValueError(
-                "domains.auto.decider.agent.api_key is required — the decider "
-                "agent needs its own API key, an egress-only secret using the "
+                "agents.decider.api_key is required — the decider agent "
+                "needs its own API key, an egress-only secret using the "
                 "source: scheme (e.g. 'systemd-creds:POLICY_LLM_KEY' or "
                 "'env:OPENROUTER_API_KEY')."
             )
@@ -2247,28 +2365,28 @@ def validate_config(config: Config) -> list[str]:
         # source silently materializes as an empty key at runtime (fail-
         # closed but confusing). Reject it at validate time with an
         # actionable message instead.
-        _ag_scheme = (ag.api_key or "").partition(":")[0]
+        _ag_scheme = (pa.api_key or "").partition(":")[0]
         if _ag_scheme == "cmd":
             raise ValueError(
-                "domains.auto.decider.agent.api_key does not support cmd: "
+                "agents.decider.api_key does not support cmd: "
                 "sources (the egress container has no shell); use env:NAME or "
                 "systemd-creds:NAME"
             )
         # https-only: the decider API key travels as a bearer header on
         # every call — an http:// base_url would leak it in cleartext.
-        if ag.base_url:
+        if pa.base_url:
             from urllib.parse import urlsplit
-            parts = urlsplit(ag.base_url)
+            parts = urlsplit(pa.base_url)
             if parts.scheme != "https" or not parts.hostname:
                 raise ValueError(
-                    "domains.auto.decider.agent.base_url must be an "
+                    "agents.decider.base_url must be an "
                     "https:// URL (the decider API key is sent on every "
-                    f"call; http:// would leak it in cleartext — got {ag.base_url!r})"
+                    f"call; http:// would leak it in cleartext — got {pa.base_url!r})"
                 )
 
-        if pa.rate_limit_rps < 0 or pa.rate_limit_burst < 0:
+        if not math.isfinite(pa.rate_limit_rps) or pa.rate_limit_rps < 0 or pa.rate_limit_burst < 0:
             raise ValueError(
-                "domains.auto.rate_limit requests_per_second/burst must be >= 0"
+                "agents.decider.rate_limit requests_per_second/burst must be >= 0"
             )
         # Operator context length cap. The context rides in every decider
         # call's system prompt and through proxy-config.yaml, so a huge blob
@@ -2279,24 +2397,24 @@ def validate_config(config: Config) -> list[str]:
         _ctx_len = len(pa.context.strip())
         if _ctx_len > 4096:
             raise ValueError(
-                f"domains.auto.context is too long ({_ctx_len} chars, "
+                f"agents.decider.context is too long ({_ctx_len} chars, "
                 f"max 4096) — trim it or move details into a shorter summary"
             )
         # Control host is always in never_grant (operator can't remove it).
         if host not in pa.effective_never_grant():
             raise ValueError(
-                "domains.auto.host must always be in never_grant "
+                "agents.decider.host must always be in never_grant "
                 "(internal invariant violated)"
             )
 
-    # ── watcher ──────────────────────────────────────────────
-    # Mirrors the domains.auto.decider.agent checks field-for-field (the
-    # watcher's agent sub-block IS AgentDeciderConfig), plus its own loop
-    # hygiene bounds (interval / window / flow cap). Validated only when
-    # enabled — the absent block is zero surface by construction.
-    w = getattr(config, "watcher", None)
-    if w is not None and w.enable:
-        # Allowlist mode, for the reason domains.auto requires it and one
+    # ── agents.watcher validation ────────────────────────────
+    # Mirrors the agents.decider LLM client checks field-for-field (one
+    # credential shape across the roster), plus its own loop hygiene
+    # bounds (interval / window / flow cap). Validated only when enabled
+    # — the absent block is zero surface by construction.
+    w = config.agents.watcher
+    if w.enable:
+        # Allowlist mode, for the reason the decider requires it and one
         # more. ``DomainInspector._baseline`` IS the BLOCK list in
         # blocklist mode, so the digest would hand the model a set of
         # BLOCKED domains under the key ``current_baseline`` while the
@@ -2310,49 +2428,48 @@ def validate_config(config: Config) -> list[str]:
         # EMPTY baseline, so nothing inverts and nothing is recommended.
         if config.domains.mode == "blocklist":
             raise ValueError(
-                "watcher does not support domains blocklist mode (there the "
-                "static baseline IS the block list, so the watcher's digest "
-                "and its baseline recommendations invert — a recommended "
-                "removal would widen egress, not narrow it)."
+                "agents.watcher does not support domains blocklist mode "
+                "(there the static baseline IS the block list, so the "
+                "watcher's digest and its baseline recommendations invert — "
+                "a recommended removal would widen egress, not narrow it)."
             )
-        wag = w.agent
-        if wag.provider not in ("anthropic", "openai", "openrouter"):
+        if w.provider not in ("anthropic", "openai", "openrouter"):
             raise ValueError(
-                f"watcher.agent.provider must be 'anthropic', 'openai', or "
-                f"'openrouter' (got {wag.provider!r})"
+                f"agents.watcher.provider must be 'anthropic', 'openai', or "
+                f"'openrouter' (got {w.provider!r})"
             )
-        if not wag.model:
-            raise ValueError("watcher.agent.model is required")
-        _validate_agent_max_tokens(wag.max_tokens, "watcher.agent.max_tokens")
+        if not w.model:
+            raise ValueError("agents.watcher.model is required")
+        _validate_agent_max_tokens(w.max_tokens, "agents.watcher.max_tokens")
         # Same egress-only credential rules as the decider key: required,
         # source: scheme, and no cmd: (the egress container has no shell,
         # so a cmd: source would silently materialize as an empty key —
         # fail-closed but confusing; reject it with an actionable message).
-        if not wag.api_key:
+        if not w.api_key:
             raise ValueError(
-                "watcher.agent.api_key is required — the watcher agent needs "
+                "agents.watcher.api_key is required — the watcher agent needs "
                 "its own API key, an egress-only secret using the source: "
                 "scheme (e.g. 'systemd-creds:WATCHER_LLM_KEY' or "
                 "'env:WATCHER_LLM_KEY'). Reusing the decider's key is fine: "
                 "name the same env var."
             )
-        _w_scheme = (wag.api_key or "").partition(":")[0]
+        _w_scheme = (w.api_key or "").partition(":")[0]
         if _w_scheme == "cmd":
             raise ValueError(
-                "watcher.agent.api_key does not support cmd: sources (the "
+                "agents.watcher.api_key does not support cmd: sources (the "
                 "egress container has no shell); use env:NAME or "
                 "systemd-creds:NAME"
             )
         # https-only — the watcher key travels as a bearer header on every
         # call, exactly like the decider key.
-        if wag.base_url:
+        if w.base_url:
             from urllib.parse import urlsplit
-            parts = urlsplit(wag.base_url)
+            parts = urlsplit(w.base_url)
             if parts.scheme != "https" or not parts.hostname:
                 raise ValueError(
-                    "watcher.agent.base_url must be an https:// URL (the "
+                    "agents.watcher.base_url must be an https:// URL (the "
                     "watcher API key is sent on every call; http:// would "
-                    f"leak it in cleartext — got {wag.base_url!r})"
+                    f"leak it in cleartext — got {w.base_url!r})"
                 )
         # Loop hygiene: a 60s floor on the scan cadence so a mis-typed
         # interval cannot turn the watcher into a hot loop (one LLM call
@@ -2360,24 +2477,24 @@ def validate_config(config: Config) -> list[str]:
         # re-read from capture.jsonl every egress start); a sane flow cap
         # (the digest prompt is bounded by max_flows, floor 10 so a typo'd 0
         # doesn't produce an empty digest every tick forever).
-        if w.interval_seconds < 60:
+        if not math.isfinite(w.interval_seconds) or w.interval_seconds < 60:
             raise ValueError(
-                f"watcher.interval_seconds must be >= 60 (got "
+                f"agents.watcher.interval_seconds must be >= 60 (got "
                 f"{w.interval_seconds}) — one LLM scan per interval, and a "
                 "faster cadence would be a hot loop"
             )
         if not (0 < w.window_seconds <= 86400):
             raise ValueError(
-                f"watcher.window_seconds must be in (0, 86400] (got "
+                f"agents.watcher.window_seconds must be in (0, 86400] (got "
                 f"{w.window_seconds})"
             )
         if not (10 <= w.max_flows <= 2000):
             raise ValueError(
-                f"watcher.max_flows must be in [10, 2000] (got {w.max_flows})"
+                f"agents.watcher.max_flows must be in [10, 2000] (got {w.max_flows})"
             )
         if w.max_digest_tokens != 0 and not (2000 <= w.max_digest_tokens <= 500000):
             raise ValueError(
-                f"watcher.max_digest_tokens must be 0 (unbounded) or in "
+                f"agents.watcher.max_digest_tokens must be 0 (unbounded) or in "
                 f"[2000, 500000] (got {w.max_digest_tokens})"
             )
         # Spend guardrail. Nothing here knows provider prices, so the
@@ -2390,10 +2507,10 @@ def validate_config(config: Config) -> list[str]:
         _scans_per_day = 86400.0 / max(1.0, w.interval_seconds)
         if w.max_digest_tokens == 0:
             warnings.append(
-                "watcher.max_digest_tokens is 0, so the digest is unbounded: "
-                f"at {_scans_per_day:.0f} scans/day this cage's model spend "
-                "has no ceiling. Set a token budget unless you are "
-                "deliberately uncapping it."
+                "agents.watcher.max_digest_tokens is 0, so the digest is "
+                f"unbounded: at {_scans_per_day:.0f} scans/day this cage's "
+                "model spend has no ceiling. Set a token budget unless you "
+                "are deliberately uncapping it."
             )
         else:
             # x1.15: 5% of scans run at 4x the budget (random
@@ -2401,18 +2518,19 @@ def validate_config(config: Config) -> list[str]:
             _per_day = w.max_digest_tokens * _scans_per_day * 1.15
             if _per_day > 5_000_000:
                 warnings.append(
-                    f"watcher may send up to {_per_day/1e6:.0f}M input "
+                    f"agents.watcher may send up to {_per_day/1e6:.0f}M input "
                     f"tokens/day ({w.max_digest_tokens:,} tokens x "
                     f"{_scans_per_day:.0f} scans). Raise interval_seconds or "
                     "lower max_digest_tokens if that is more than intended."
                 )
-        # Same trusted-context cap as domains.auto.context — it rides the
+        # Same trusted-context cap as agents.decider.context — it rides the
         # watcher's system prompt through proxy-config.yaml.
         _wctx_len = len(w.context.strip())
         if _wctx_len > 4096:
             raise ValueError(
-                f"watcher.context is too long ({_wctx_len} chars, max 4096) "
-                f"— trim it or move details into a shorter summary"
+                f"agents.watcher.context is too long ({_wctx_len} chars, "
+                f"max 4096) — trim it or move details into a shorter summary"
             )
+
 
     return warnings

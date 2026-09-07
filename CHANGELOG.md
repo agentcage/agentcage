@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`agents:` — the in-egress LLM agents get their own top-level namespace.** The two LLM agents agentcage runs inside the egress on your behalf were configured in two different places at two different depths: the decider (which adjudicates the cage's runtime domain requests) hid four levels deep as `domains.auto.decider.provider` — inside the block `domain add`/`domain rm` edit — and the traffic watcher sat at top level as `watcher:` with its LLM fields nested one more level under `agent:`. Both now live under one roster, `agents.decider:` and `agents.watcher:`, with the LLM client fields (`provider`, `model`, `api_key`, `timeout_seconds`, `max_tokens`, `base_url`) **flat on each block** — one grammar, one credential shape across the roster. A config now answers "what is agentic (and what does it cost)" at a glance, and `domains:` is purely the static, operator-authored policy again. The `decider.kind` discriminator is gone (v1 only ever implemented `kind: agent`; the block *is* the agent now — the webhook decider returns as its own shape when it ships). Semantics are unchanged: enable switches, the `agentcage.local` control host, rate limits, per-agent `context` channels and caps, fixed grant defaults, and every CLI command (`watcher status/findings`, `domain add/rm`, `cage grants`) keep their names.
+
+  **Migration:** legacy `domains.auto:` and top-level `watcher:` blocks still parse with warnings. Configuration saves migrate them to the new form; cancelling or making no changes in `cage edit` leaves the file untouched. Declaring both spellings of the same agent is rejected even when a block is empty or disabled. For the 0.40 transition, `proxy-config.yaml` includes generated compatibility keys so older egress images continue running **both** agents. These keys never enter the stored `cage.yaml` and are scheduled for removal in 0.41 — run `agentcage cage update <name>` after upgrading. Existing Apple-container metadata remains readable until regenerated.
+
+### Fixed
+
+- Agent `enable` switches now reject non-booleans consistently, including legacy decider configurations where quoted `"false"` previously enabled the feature. Explicit invalid completion budgets and timeouts are no longer silently replaced with defaults.
+
 ## [0.39.0] - 2026-09-04
 
 ### Fixed

@@ -5,6 +5,13 @@ Status: **Proposal**. Owner: @luca. Related: [Domains](../reference/domains.md),
 [Inspectors](../reference/inspectors.md), [Security model](security-model.md),
 [Architecture](architecture.md).
 
+> **Since 0.40:** the config block was renamed — `domains.auto` is now
+> `agents.decider`, and the LLM fields (`provider`, `model`, `api_key`,
+> `timeout_seconds`, `max_tokens`, `base_url`) sit flat on the block (the old
+> `decider:` sub-block and `kind:` discriminator are gone). The legacy form
+> still parses and is normalized with a deprecation warning. The config
+> examples below show the current form.
+
 ## TL;DR
 
 Two new **opt-in** capabilities for a cage, both served by the egress proxy on a
@@ -21,10 +28,10 @@ reserved control hostname so they work even under full default-deny:
    permanent.
 
 The egress never self-authorizes without the decider, and the feature is
-disabled by default with zero behavior change when off. Auto-management nests
-under `domains.auto`, so all domain egress policy (static
-`allow`/`block`/`passthrough`, `expires`, and runtime auto-management) shares
-one namespace.
+disabled by default with zero behavior change when off. The decider is
+configured under `agents.decider` — 0.40 moved it out of `domains.auto`, so
+`domains:` is now purely static policy (static
+`allow`/`block`/`passthrough`/`expires`).
 
 ---
 
@@ -105,7 +112,7 @@ A reserved hostname, default `agentcage.local`, served entirely by the egress:
   `address=/#/<ip_egress>` catch-all already sends every unresolved name to
   the egress, so the control host needs no dedicated record. The cage
   resolves it to the egress and connects normally. Configurable via
-  `domains.auto.host`.
+  `agents.decider.host`.
 - **TLS**: the egress CA already mints a cert for any SNI, and the cage trusts
   that CA, so `https://agentcage.local` works with no extra cert plumbing.
 - **Interception**: the addon short-circuits in `request()` **before** the
@@ -187,19 +194,19 @@ Synchronous decision → `200`:
 
 Errors: `400` bad domain syntax / not allowlist mode / missing `reason`;
 `409` already granted; `429` request rate limit; `503` decider unavailable
-(configurable fail-open vs fail-closed; **default fail-closed** = deny).
+(**always fail-closed** = deny).
 
 ### 3.3 The decider (built-in LLM cybersecurity-expert agent)
 
 The decider is invoked **by the egress** (it has its own internet outbound on
 the podman network, and already handles real secret values as the secret
-injector). The decider is configured as a `decider:` block under
-`domains.auto`, with a `kind`. **v1 ships `kind: agent` only** — the built-in
-LLM decider, a senior cybersecurity expert that adjudicates each request
-(Claude Code "auto" mode for egress). `kind: webhook` is **reserved / not
-yet implemented** — the design below describes the `agent` decider.
+injector). It is configured as `agents.decider`, with flat LLM fields. Through
+0.39 these fields lived under `domains.auto.decider` with a `kind` discriminator.
+Only the built-in LLM decider is implemented: a cybersecurity expert that
+adjudicates each request. The unused discriminator is removed in 0.40;
+a webhook implementation is still deferred.
 
-#### `kind: agent` — the built-in LLM decider
+#### The built-in LLM decider
 
 The egress calls the LLM provider directly over raw HTTPS — **no SDK**, to
 keep the egress image lean. Three providers:
@@ -232,7 +239,7 @@ the risk-assessment rationale.
 By default the decider has no idea *why* the cage exists, so it can only
 judge a domain request against the domain's own reputation and the shape of
 the agent's (adversarial) justification. An operator who knows the cage's
-purpose can supply a free-text `context` under `domains.auto`; it is appended
+purpose can supply a free-text `context` under `agents.decider`; it is appended
 to the decider's system prompt as **trusted operator context** — authored by
 the cage's operator (not the caged agent), so it is the one free-text allowed
 in the constant system prompt the way the decision rules are. The decider is
@@ -249,8 +256,8 @@ The caged agent can read the context via `GET /v1/allowlist` (the `context`
 field) so it can write justifications that match the cage's stated scope.
 
 ```yaml
-domains:
-  auto:
+agents:
+  decider:
     enable: true
     context: |
       CI cage for the payments-reconciliation test suite. Talks to staging
@@ -285,7 +292,7 @@ On `grant`:
    very next request to that domain passes the domain inspector. No restart,
    no SIGHUP, no upstream reconnect.
 2. **Permanent promotion (baseline)**: the **auto-started grants watcher**
-   (started whenever `auto.enable` is true) runs the literal `domain add`
+   (started whenever `agents.decider.enable` is true) runs the literal `domain add`
    chain (`save_raw_config` → `save_proxy_config` → `save_dns_allowlist` →
    SIGHUP dnsmasq), baking the domain into the operator's `cage.yaml`
    baseline. The addon hot-reloads on `config.yaml`'s mtime. The grant is
@@ -337,22 +344,22 @@ rather than inventing a second write path.
 
 ### 3.6 Opt-in configuration
 
-Auto-management nests under `domains.auto`, disabled by default. Full form:
+The decider is configured under `agents.decider`, disabled by default. Full form:
 
 ```yaml
 domains:
   allow: [anthropic.com, github.com]
   expires: {npmjs.org: "2026-08-29T19:00:00+00:00"}   # from `domain add --expires-in`
-  auto:                       # auto-manage this allowlist (opt-in, default off)
+
+agents:
+  decider:                    # adjudicate runtime domain requests (opt-in, default off)
     enable: true              # master switch; off = no control host
     host: agentcage.local     # reserved synthetic control host (default)
-    decider:                  # the agent that decides each request
-      kind: agent             # "agent" = built-in LLM cybersecurity expert (v1 only)
-      provider: openrouter    # anthropic | openai | openrouter
-      model: anthropic/claude-sonnet-4-5
-      api_key: env:OPENROUTER_API_KEY   # secret_injection.source syntax; egress-only
-      timeout_seconds: 15
-      # base_url: https://openrouter.ai  # optional override
+    provider: openrouter      # anthropic | openai | openrouter
+    model: anthropic/claude-sonnet-4-5
+    api_key: env:OPENROUTER_API_KEY   # secret_injection.source syntax; egress-only
+    timeout_seconds: 15
+    # base_url: https://openrouter.ai/api/v1  # optional override
     rate_limit: {requests_per_second: 1, burst: 5}
 ```
 
@@ -361,23 +368,26 @@ Minimal form:
 ```yaml
 domains:
   allow: [anthropic.com]
-  auto:
+
+agents:
+  decider:
     enable: true
-    decider: {kind: agent, provider: openrouter, model: anthropic/claude-sonnet-4-5, api_key: env:OPENROUTER_API_KEY}
+    provider: openrouter
+    model: anthropic/claude-sonnet-4-5
+    api_key: env:OPENROUTER_API_KEY
 ```
 
 Validation (`config.validate_config`):
 
-- `domains.auto.enable` gates everything. When true, **both** endpoints are
+- `agents.decider.enable` gates everything. When true, **both** endpoints are
   on — there are no separate `introspection:`/`request:` enable flags.
 - Auto-management requires allowlist mode (`domains.allow` present); the
   request endpoint refuses to run in blocklist mode.
-- `decider.kind` must be `agent` in v1 (`webhook` is reserved / not yet
-  implemented).
-- `decider.api_key` is **required** for `kind: agent`, declared with the
-  `secret_injection.source` scheme (`env:` / `systemd-creds:` / `cmd:`). It
-  is egress-only: stripped from the cage env, staged to the proxy tmpfs.
-  Validated at create/update.
+- There is no `kind` discriminator in canonical configuration. Legacy
+  `kind: webhook` is still rejected before migration (not implemented).
+- `agents.decider.api_key` is **required**, declared as `env:NAME` or
+  `systemd-creds:NAME` (`cmd:` is rejected). It is egress-only: stripped
+  from the cage env and staged to the proxy tmpfs. Validated at create/update.
 - There is **no `grant:` block**. Grants use fixed safe defaults: permanent
   (`ttl_seconds: 0`), max 32 concurrent, a `never_grant` set of
   `internal`/`local`/`localhost` + the control host (always unioned, the
@@ -390,7 +400,7 @@ Validation (`config.validate_config`):
 This feature intentionally lets the cage expand its own egress, gated by the
 decider. The safeguards:
 
-1. **Opt-in, off by default.** No `domains.auto:` section (or `enable: false`)
+1. **Opt-in, off by default.** No `agents.decider:` section (or `enable: false`)
    → zero new surface; the control host isn't even resolved.
 2. **The decider is the gate.** The egress never grants without a positive
    grant from the decider. Decider failure defaults to **deny**.
@@ -439,13 +449,13 @@ are safe and reversible; M3 adds the policy mutation; M4–M6 are hardening +
 parity.
 
 ### M1 — Config schema + validation + docs (no runtime effect)
-- `config.py`: add `DomainAutoConfig`, `DeciderConfig` (`kind: agent` only in
-  v1; `webhook` reserved). Parse under `domains.auto:`. Wire into `Config`.
+- `config.py`: `AgentsConfig` contains `DeciderAgentConfig` and
+  `WatcherAgentConfig`, sharing flat `LlmAgentConfig` fields. Parse under
+  `agents.decider`; normalize legacy input at the boundary.
   No `IntrospectionConfig`/`RequestConfig`/`GrantConfig` — both endpoints are
   on when `enable` is true, and grant behavior is fixed safe defaults.
 - `validate_config`: implement all rules in §3.6 (allowlist-mode requirement,
-  `decider.kind == agent`, required `api_key` with a valid `*_source`
-  scheme, numeric bounds).
+  required `api_key` with a valid source scheme, numeric bounds).
 - `docs/explain/policy-api.md` (this doc) + a section in
   `docs/reference/domains.md` pointing here.
 - Tests: config parse/validate (positive + every rejection), backward-compat
@@ -453,7 +463,7 @@ parity.
 
 ### M2 — Control host + introspection endpoint (read-only, safe)
 - dnsmasq render (`services.py` / `quadlets.py`): emit
-  `address=/<host>/<ip_egress>` when `domains.auto.enable` (all backends).
+  `address=/<host>/<ip_egress>` when `agents.decider.enable` (all backends).
 - `addon.py`: in `request()`, short-circuit on the control host *before* the
   SNI check / rate limit / inspector chain when enabled. Implement
   `GET /v1/allowlist` (serialize `DomainInspector` state) and `GET /v1/health`.
@@ -478,7 +488,7 @@ parity.
     `deny`: audit, return.
 - `DomainInspector`: add `grant(domain)` / `revoke(domain)` /
   `effective_set()`; make `configure()` not clobber grants (replay after).
-- Grants watcher: auto-started when `domains.auto.enable`, runs the literal
+- Grants watcher: auto-started when `agents.decider.enable`, runs the literal
   `domain add` chain to bake grants into `cage.yaml` (permanent). No overlay
   file and no TTL sweeper — grants are permanent; time-limiting is
   `agentcage domain add --expires-in`.
@@ -514,7 +524,7 @@ parity.
   the control endpoints may exist, pointing at the skill
   (`scaffolds/skills/agentcage/SKILL.md`) that teaches them in full. Both
   are staged into scaffold build contexts and refreshed when the canonical
-  file changes, independent of `domains.auto.enable`; the skill checks
+  file changes, independent of `agents.decider.enable`; the skill checks
   `/v1/health` at runtime instead.
 - Tests: grant → baseline updated + still live; `domain rm` removal;
   `--expires-in` expiry; show output.
@@ -532,7 +542,7 @@ parity.
 
 | Area | Files |
 |------|-------|
-| Config | `src/agentcage/config.py` (new dataclasses + parse + validate under `domains.auto`) |
+| Config | `src/agentcage/config.py` (new dataclasses + parse + validate under `agents.decider`) |
 | Proxy addon | `src/agentcage/data/proxy/addon.py` (control host, endpoints, decider caller, grants watcher handoff), `inspectors/domain.py` (`grant`/`revoke`/`snapshot`, replay-safe `configure`) |
 | Rendering | `src/agentcage/quadlets.py`, `src/agentcage/services.py`, `templates/egress.container.j2`, `data/containers/supervisor-egress.sh` (control-host DNS, decider `api_key` staging, env) |
 | Apple-container | `src/agentcage/data/apple-container/*`, `backends/apple_container.py` (`reload_domains`-style parity for grants + control host) |

@@ -1008,11 +1008,12 @@ class TestCageEdit:
     @patch("click.edit")
     @patch("agentcage.cli.state")
     def test_edit_no_changes_identical_text(self, mock_state, mock_click_edit, tmp_path):
-        """click.edit returns same text — still a no-op, no backup written."""
+        """An unchanged non-legacy file preserves its formatting/comments."""
+        import yaml
         cage_dir = self._setup_cage(tmp_path, self._GOOD_YAML)
         mock_state.deployment_exists.return_value = True
         mock_state.deployment_dir.return_value = cage_dir
-        mock_state.load_raw_config.return_value = {"name": "test"}
+        mock_state.load_raw_config.return_value = yaml.safe_load(self._GOOD_YAML)
         mock_click_edit.return_value = self._GOOD_YAML
 
         result = _runner().invoke(main, ["cage", "edit", "test"])
@@ -1058,14 +1059,15 @@ class TestCageEdit:
         backup = (cage_dir / "cage.yaml.bak").read_text()
         assert "httpbin.org" not in backup
 
-    # PR #340 review fix: `watcher` was classified as a "needs restart"
-    # key, so adding/editing a watcher block did NOT call
-    # _update_dns_quadlet — but save_proxy_config (always called) bumps
-    # proxy-config.yaml's mtime, and the addon's mtime poll hot-starts
-    # the watcher immediately (addon._init_watcher). Every scan then
-    # failed on DNS resolution for the LLM provider host until the
-    # operator followed the (wrongly given) restart hint. `watcher`
-    # must live-apply through the same DNS path `domains` does.
+    # PR #340 review fix: `watcher` (now `agents`, the 0.40 roster
+    # namespace) was classified as a "needs restart" key, so adding/
+    # editing an agents block did NOT call _update_dns_quadlet — but
+    # save_proxy_config (always called) bumps proxy-config.yaml's mtime,
+    # and the addon's mtime poll hot-starts the watcher immediately
+    # (addon._init_watcher). Every scan then failed on DNS resolution
+    # for the LLM provider host until the operator followed the (wrongly
+    # given) restart hint. `agents` must live-apply through the same
+    # DNS path `domains` does.
     @patch("agentcage.cli._refresh_units")
     @patch("agentcage.cli._update_dns_quadlet")
     @patch("click.edit")
@@ -1081,9 +1083,9 @@ class TestCageEdit:
         mock_state.load_raw_config.return_value = _yaml.safe_load(self._GOOD_YAML)
 
         edited = self._GOOD_YAML + (
-            "watcher:\n"
-            "  enable: true\n"
-            "  agent:\n"
+            "agents:\n"
+            "  watcher:\n"
+            "    enable: true\n"
             "    provider: openai\n"
             "    model: m\n"
             "    api_key: env:K\n"

@@ -61,7 +61,9 @@ domains:
 
 ## Related
 
+- [Egress agents](agents.md) — configure the LLM decider and traffic watcher separately from static policy.
+
 - [Ports](ports.md) — TCP/UDP egress policy that pairs with domain filtering.
 - [Inspectors](inspectors.md) — the `domain` inspector that enforces this allowlist on HTTP.
 - [Protocol relays](protocol-relays.md) — drop relay upstream hosts from `allow` so only the relay can reach them.
-- [Policy API](policy-api.md) — optional opt-in feature (configured under `domains.auto`) letting a caged agent introspect its allowlist and request new egress domains at runtime, gated by a built-in LLM decider. See the [design doc](../explain/policy-api.md).
+- [Policy API](policy-api.md) — optional opt-in feature (the decider agent, configured under `agents.decider`) letting a caged agent introspect its allowlist and request new egress domains at runtime, gated by a built-in LLM decider. See the [design doc](../explain/policy-api.md).

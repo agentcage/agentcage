@@ -41,8 +41,8 @@ def expected_secrets(cfg) -> list[str]:
             _, _, arg = (src or "").partition(":")
             if arg and arg not in names:
                 names.append(arg)
-    # The egress LLM agents' api_keys (domains.auto's decider and the
-    # traffic watcher). Both are real consumers of stored secrets but
+    # The in-egress LLM agents' api_keys (agents.decider and
+    # agents.watcher). Both are real consumers of stored secrets but
     # neither is a secret_injection rule, so without them `secret set`
     # calls the key an "orphan" — the very command the docs prescribe —
     # and `check_secrets` gives no preflight warning when an
@@ -50,15 +50,10 @@ def expected_secrets(cfg) -> list[str]:
     # then boots and fails closed on every call). ``cli`` already
     # classifies both keys in `secret list`; this is the same fix for the
     # rest of the secret surface.
-    for block in (
-        getattr(getattr(cfg, "domains", None), "auto", None),
-        getattr(cfg, "watcher", None),
-    ):
-        if block is None or not getattr(block, "enable", False):
+    for block in (cfg.agents.decider, cfg.agents.watcher):
+        if not getattr(block, "enable", False):
             continue
-        agent = getattr(block, "agent", None) or getattr(
-            getattr(block, "decider", None), "agent", None)
-        key = getattr(agent, "api_key", "") or ""
+        key = getattr(block, "api_key", "") or ""
         if isinstance(key, str):
             _, _, arg = key.partition(":")
             if arg and arg not in names:

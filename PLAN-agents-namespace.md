@@ -1,6 +1,8 @@
 # Plan: restructure cage.yaml — `agents.decider` + `agents.watcher`
 
-Repo: `/workspace/agentcage` (Python, `src/agentcage/`). Target release: 0.40.0 (single release, no hybrid).
+Repo: agentcage (Python, `src/agentcage/`). Target release: 0.40.0, with a temporary legacy wire projection scheduled for removal in 0.41.
+
+**Implementation notes:** the initial two reviews both ran on GLM-5.2, not the requested Fable/Astra models; their original attribution was incorrect. Line references below describe the pre-implementation baseline. The implementation preserves the newer upstream `max_tokens` setting. Canonicalization is shared by typed parsing, raw reads, saves, and editor input; cancellation/no-op editing does not migrate the file. Old Apple metadata is accepted until regenerated.
 
 ## 1. Context & motivation
 
@@ -43,15 +45,14 @@ gymnastics (`services.py:44–60`, `quadlets.py:195–213`).
   warnings-returning validator, surfaced by `cage create`/`update`). Configs
   containing **both** the old and the new form of the same agent are rejected
   as ambiguous.
-- **D7.** Egress wire format (`proxy-config.yaml`) renamed **in the same
-  release** — no hybrid translation layer. `proxy-config.yaml` is regenerated
-  state derived from the raw config (`state.save_proxy_config`), not operator
-  state. Single choke-point normalization (S4) makes both cage.yaml rewrites and
-  proxy-config renders emit the new form.
-- **D8.** Single atomic PR/release: schema + parse + validate + normalization +
-  wire format + egress readers + secret/DNS plumbing + `cage edit` + docs +
-  tests together. Half-released hybrids (new cage.yaml key, old egress key) are
-  exactly the two-names-one-concept trap this restructure removes.
+- **D7.** Canonical wire keys become `agents.*` in the same release. For the
+  0.40 transition, `save_proxy_config` derives legacy keys for old egress
+  images. Only LLM fields nest in the legacy decider/agent wrapper; enable,
+  host, context, and role limits remain outside it. New egress readers use
+  canonical keys exclusively. Legacy shadows never enter stored cage.yaml.
+- **D8.** Ship schema, parsing, validation, migration, egress readers, backend
+  wiring, CLI, docs, and tests together. Remove the bounded wire compatibility
+  projection in 0.41 after operators have refreshed their egress images.
 
 ## 3. Target schema
 
@@ -138,7 +139,7 @@ domains:                           # purely static, operator-authored policy
 
 ### S4 — Raw-config normalization (`src/agentcage/state.py:81` `load_raw_config`)
 
-- After `yaml.safe_load`, if legacy keys are present and `agents` is absent:
+- After `yaml.safe_load`, migrate each legacy role whose canonical counterpart is absent:
   rewrite the raw dict in-memory to the new form (move block, flatten LLM
   fields, drop `kind`). This is the single choke point: every downstream
   consumer — `save_raw_config` (the `domain add`/`rm` rewrite chain) and
@@ -186,13 +187,11 @@ domains:                           # purely static, operator-authored policy
   `(proxy_cfg or {}).get("agents", {}).get("watcher") or {}`; flat LLM reads.
 - `data/proxy/addon.py:276`: `w_cfg = self.cfg.get("agents", {}).get("watcher")`
   (and the `_init_watcher` rebuild path).
-- **Version-skew note (see R1):** the egress readers ship inside the built
-  egress image (`data/containers/Containerfile.egress`). An old running egress +
-  new proxy-config.yaml reads neither `watcher` nor `domains.auto` → both
-  agents simply appear disabled. Fail direction is **closed** (decider denies,
-  watcher stops scanning) — an availability gap, not a security hole. Document
-  "run `cage update` (rebuilds egress) after upgrading" in the migration note
-  rather than rendering dual keys.
+- **Version skew (R1):** readers ship inside the egress image. Generate the
+  legacy projection as well as the canonical keys during 0.40 so both agents
+  keep working on older images. Re-render from scratch on every change so
+  removal/disable cannot leave a stale enabled legacy block. Warn on legacy
+  input and document `cage update` before the projection's 0.41 removal.
 
 ### S6 — Secret, DNS & volume plumbing (uniform agent loop)
 
@@ -303,11 +302,13 @@ sites marked ★ below; all six silently disable a load-bearing path.
   - `load_raw_config` normalizes old → new raw; `save_raw_config` round-trip
     migrates the on-disk file;
   - flat LLM field parse + rejection traps (quoted booleans, explicit 0);
-  - `save_proxy_config` emits the `agents` key and no `watcher`/`domains.auto`;
+  - `save_proxy_config` emits canonical `agents` plus exact legacy wire shadows;
+    stored cage.yaml never gets those shadows; disabled/removed agents leave
+    no stale enabled shadow;
   - egress-side readers (`policy_api`, `watcher`, `addon`) consume
     `agents.*`.
-- Separate follow-up PR: `/workspace/agentcage-skill` tests reference
-    `domains.auto` (cross-repo, avoids a mixed checkout PR).
+- Update the shipped scaffold skill and scaffold READMEs in this repository.
+  `/workspace/agentcage-skill` is another checkout, not a separate dependency.
 
 ### S10 — Verification
 
@@ -332,9 +333,8 @@ sites marked ★ below; all six silently disable a load-bearing path.
   silent-off produces a *detection* gap (a false-all-clear) that looks like
   monitoring (`watcher status` reads the host-side config and reports
   "enabled" while a stale egress isn't scanning — the exact 0.36.0 hazard).
-  Reviewers differed on mitigation: gpt-astra suggested a CLI warning on
-  legacy normalization; fable-5.1 pushed for a bounded dual-render.
-  **Resolution (strengthened):** take fable-5.1's bounded dual-render for
+  The initial reviews suggested warnings and a bounded dual-render.
+  **Resolution:** use a bounded dual-render for
   0.40.0 — `save_proxy_config` renders **both** `agents.*` and the legacy
   `watcher`/`domains.auto` keys into `proxy-config.yaml` for this single
   release, scheduled for deletion in 0.41.0. This prevents the "permanent
@@ -354,8 +354,8 @@ sites marked ★ below; all six silently disable a load-bearing path.
   `cage-init.sh` is a static COPY in `Containerfile.wrapper.j2:102` (not
   regenerated per create) and does **not** read metadata keys; the only
   consumer is host-side `apple_container.py:2070–2072` which regenerates on
-  every create/update within the same version → zero cross-version skew, so
-  renaming is fully safe. The load-bearing part is the three sibling flags at
+  create/update. Start can still read older stored metadata, so retain an
+  absent-only fallback from decider_enabled to the old domains_auto key. The load-bearing part is the three sibling flags at
   :1396–1398 (S6 ★).
 - **R5 — deprecation-warning channel:** warnings-returning validator exists
   (config.py:1512) but parse-time errors are raised; the deprecation is

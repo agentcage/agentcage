@@ -4252,23 +4252,20 @@ def test_start_injects_agentcage_version_env(tmp_path, monkeypatch):
     backend.start("demo", quiet=True)
     cage_argv = _cage_run_argv(captured)
     assert any(a.startswith("AGENTCAGE_VERSION=") for a in cage_argv)
-def test_generate_units_records_domains_auto_flag():
-    """generate_units bakes domains_auto + has_expiring_domains into the
-    unit metadata so start() knows whether to install the watcher plist."""
-    from agentcage.config import DomainsAutoConfig, DeciderConfig, AgentDeciderConfig
+def test_generate_units_records_decider_enabled_flag():
+    """generate_units bakes decider_enabled + has_expiring_domains into the
+    unit metadata so start() knows whether to bind-mount the grants dir."""
+    from agentcage.config import DeciderAgentConfig
     cfg = Config(name="t", isolation="apple-container")
     cfg.container.image = "x"
     cfg.domains.mode = "allowlist"
     cfg.domains.allow = ["anthropic.com"]
-    cfg.domains.auto = DomainsAutoConfig(
-        enable=True,
-        decider=DeciderConfig(kind="agent",
-                              agent=AgentDeciderConfig(provider="openrouter",
-                                                       model="m", api_key="env:K")),
+    cfg.agents.decider = DeciderAgentConfig(
+        enable=True, provider="openrouter", model="m", api_key="env:K",
     )
     units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
     meta = json.loads(units["deploy.json"])
-    assert meta["domains_auto"] is True
+    assert meta["decider_enabled"] is True
     assert meta["has_expiring_domains"] is False
 
 
@@ -4282,30 +4279,28 @@ def test_generate_units_records_expiring_domains_flag():
     cfg.domains.expires = {"anthropic.com": "2026-01-01T00:00:00+00:00"}
     units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
     meta = json.loads(units["deploy.json"])
-    assert meta["domains_auto"] is False
+    assert meta["decider_enabled"] is False
     assert meta["has_expiring_domains"] is True
 
 def test_generate_units_records_watcher_enabled_flag():
     """PR #340 review fix (BLOCKING): the grants overlay bind mount was
-    gated on domains_auto / has_expiring_domains only. A watcher-only
-    cage (domains.auto disabled) got no grants dir at all, so the
+    gated on decider_enabled / has_expiring_domains only. A watcher-only
+    cage (decider disabled) got no grants dir at all, so the
     in-egress watcher's findings/state writes hit a swallowed OSError —
     a silent all-clear. generate_units must record a watcher_enabled
     flag start() can gate the mount on, same as the other two."""
-    from agentcage.config import WatcherConfig, AgentDeciderConfig
+    from agentcage.config import WatcherAgentConfig
     cfg = Config(name="t", isolation="apple-container")
     cfg.container.image = "x"
     cfg.domains.mode = "allowlist"
     cfg.domains.allow = ["anthropic.com"]
-    assert not cfg.domains.auto.enable  # domains.auto stays OFF
-    cfg.watcher = WatcherConfig(
-        enable=True,
-        agent=AgentDeciderConfig(provider="openrouter", model="m",
-                                 api_key="env:K"),
+    assert not cfg.agents.decider.enable  # decider stays OFF
+    cfg.agents.watcher = WatcherAgentConfig(
+        enable=True, provider="openrouter", model="m", api_key="env:K",
     )
     units = AppleContainerBackend().generate_units(cfg, "/cfg", "/patches", "deploy")
     meta = json.loads(units["deploy.json"])
-    assert meta["domains_auto"] is False
+    assert meta["decider_enabled"] is False
     assert meta["has_expiring_domains"] is False
     assert meta["watcher_enabled"] is True
 
@@ -4314,7 +4309,7 @@ def test_render_egress_config_includes_decider_provider_host(tmp_path, monkeypat
     """_render_egress_config renders dnsmasq.conf with a server= line for the
     decider's LLM provider host (e.g. openrouter.ai) so the egress-internal
     urllib call can resolve it."""
-    from agentcage.config import DomainsAutoConfig, DeciderConfig, AgentDeciderConfig
+    from agentcage.config import DeciderAgentConfig
     backend = AppleContainerBackend()
     monkeypatch.setattr(backend, "egress_config_dir", lambda name: tmp_path)
     cfg = Config(name="t", isolation="apple-container")
@@ -4322,11 +4317,8 @@ def test_render_egress_config_includes_decider_provider_host(tmp_path, monkeypat
     cfg.dns_servers = ["1.1.1.1"]
     cfg.domains.mode = "allowlist"
     cfg.domains.allow = ["anthropic.com"]
-    cfg.domains.auto = DomainsAutoConfig(
-        enable=True,
-        decider=DeciderConfig(kind="agent",
-                              agent=AgentDeciderConfig(provider="openrouter",
-                                                       model="m", api_key="env:K")),
+    cfg.agents.decider = DeciderAgentConfig(
+        enable=True, provider="openrouter", model="m", api_key="env:K",
     )
     # Avoid the save_dns_allowlist disk path (cage.yaml not on disk in test).
     monkeypatch.setattr("agentcage.state.save_dns_allowlist",
@@ -4358,18 +4350,13 @@ def test_render_egress_config_includes_decider_provider_host(tmp_path, monkeypat
 
 def _decider_cfg(api_key):
     """A minimal apple-container Config with domains.auto enabled."""
-    from agentcage.config import (
-        DomainsAutoConfig, DeciderConfig, AgentDeciderConfig,
-    )
+    from agentcage.config import DeciderAgentConfig
     cfg = Config(name="demo", isolation="apple-container")
     cfg.container.image = "x"
     cfg.domains.mode = "allowlist"
     cfg.domains.allow = ["anthropic.com"]
-    cfg.domains.auto = DomainsAutoConfig(
-        enable=True,
-        decider=DeciderConfig(kind="agent",
-                              agent=AgentDeciderConfig(provider="openrouter",
-                                                       model="m", api_key=api_key)),
+    cfg.agents.decider = DeciderAgentConfig(
+        enable=True, provider="openrouter", model="m", api_key=api_key,
     )
     return cfg
 
@@ -4481,7 +4468,7 @@ class TestDeciderApiKeyStagingScheme:
         )
         assert not (secrets_dir / "POLICY_LLM_KEY").exists()
         err = capsys.readouterr().err
-        assert "decider.agent.api_key" in err
+        assert "agents.decider.api_key" in err
         assert "POLICY_LLM_KEY" in err
         assert "503" in err
         # Must NOT be mislabeled as a relay credential.

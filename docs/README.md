@@ -18,6 +18,7 @@ The operator's map of agentcage. Find your task; follow the link.
 ## Control what the agent can do
 
 - [Domains](reference/domains.md) — allowlist, blocklist, TLS passthrough.
+- [Egress agents](reference/agents.md) — LLM decider and traffic watcher configuration.
 - [Ports](reference/ports.md) — TCP/UDP policy and the default-deny FORWARD chain.
 - [Secret injection](reference/secret-injection.md) — keep real credentials out of the cage.
 - [Protocol relays](reference/protocol-relays.md) — IMAP/SMTP credential brokers.

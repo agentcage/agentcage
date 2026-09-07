@@ -14,7 +14,7 @@ What it shares with the domains decider (data/proxy/policy_api.py):
 * the LLM wire client — ``llm_tool_call`` / ``parse_tool_args`` are
   imported from policy_api, so a provider-auth or format fix lands once
   for both agents;
-* the credential chain — ``watcher.agent.api_key`` uses the same
+* the credential chain — ``agents.watcher.api_key`` uses the same
   ``source:`` scheme, staged into the same tmpfs secret files, read with
   the same ``_read_secret``;
 * the forced-tool-call output contract and the fail-closed posture —
@@ -765,7 +765,7 @@ class Watcher:
 
     def __init__(self, proxy_cfg: dict, dom, policy_api_obj, audit_write,
                  log, audit_ring, capture_path: str = "") -> None:
-        self.cfg = (proxy_cfg or {}).get("watcher") or {}
+        self.cfg = ((proxy_cfg or {}).get("agents") or {}).get("watcher") or {}
         self.dom = dom
         self._pa = policy_api_obj  # Optional[PolicyApi] — grants machinery
         self._audit = audit_write
@@ -819,30 +819,24 @@ class Watcher:
             _ctx = ""
         self._context = _ctx.strip()[:4096]
 
-        agent = self.cfg.get("agent")
-        if not isinstance(agent, dict):
-            if agent is not None:
-                self._log.warn(
-                    "agentcage: watcher.agent is not a mapping in the "
-                    f"proxy config (got {type(agent).__name__}) — the "
-                    f"watcher agent is unconfigured")
-            agent = {}
+        # The LLM client fields sit flat on the block (one grammar across
+        # the roster; the ``agent:`` sub-block was flattened in 0.40).
         # Provider is NOT lowercased: the host validation rejects any
         # casing but the exact provider key, so a mixed-case value here
         # means a deformed proxy config — leave it as-is and let the
         # provider lookup fail (recorded scan failures), rather than
         # silently accepting what the operator's validation rejects.
-        self._provider = str(agent.get("provider", "") or "")
-        self._model = str(agent.get("model", "") or "")
-        self._secret = self._read_key(str(agent.get("api_key", "") or ""))
-        self._timeout = _num(agent, "timeout_seconds", 30.0, log)
+        self._provider = str(self.cfg.get("provider", "") or "")
+        self._model = str(self.cfg.get("model", "") or "")
+        self._secret = self._read_key(str(self.cfg.get("api_key", "") or ""))
+        self._timeout = _num(self.cfg, "timeout_seconds", 30.0, log)
         # Completion budget for the forced `review` tool call — the
         # decider's setting, same reasoning-model starvation risk (an
         # exhausted budget returns finish_reason: length with no tool
         # call, which is a recorded scan failure). Was hard-coded 2048;
         # operator-tunable now, defaulting to the dataclass's 8192.
-        self._llm_max_tokens = int(_num(agent, "max_tokens", 8192, log))
-        self._llm_base_url = str(agent.get("base_url", "") or "").rstrip("/")
+        self._llm_max_tokens = int(_num(self.cfg, "max_tokens", 8192, log))
+        self._llm_base_url = str(self.cfg.get("base_url", "") or "").rstrip("/")
 
         # Scan cursors. The RING has none — it is drained in ingestion
         # order (see _collect). The capture tail tracks (byte offset,
@@ -907,7 +901,7 @@ class Watcher:
 
         Called on every hot-reload — including when this watcher's own
         config block is unchanged and it is being kept rather than
-        rebuilt (see ``addon._init_watcher``): ``domains.auto`` gets a
+        rebuilt (see ``addon._init_watcher``): ``agents.decider`` gets a
         brand new ``PolicyApi`` on every reload regardless, so an
         unrefreshed ``_pa`` would keep granting/revoking through a
         discarded, sweeper-cancelled instance. ``secret set`` re-stages
@@ -916,8 +910,7 @@ class Watcher:
         """
         self.dom = dom
         self._pa = policy_api_obj
-        agent = self.cfg.get("agent") or {}
-        self._secret = self._read_key(str(agent.get("api_key", "") or ""))
+        self._secret = self._read_key(str(self.cfg.get("api_key", "") or ""))
 
     # ── Scan loop ───────────────────────────────────────────
 
@@ -1137,7 +1130,7 @@ class Watcher:
                               f"({self._consec_failures} consecutive "
                               f"failures). Nothing was revoked.",
                     "recommendation": "check the egress logs and the "
-                                      "watcher.agent config; the next tick "
+                                      "agents.watcher config; the next tick "
                                       "retries automatically",
                 })
             self._scans += 1
@@ -1517,7 +1510,7 @@ class Watcher:
             })
             return []
         if self._pa is None or self.dom is None:
-            # No domains.auto ⇒ no runtime grants exist to revoke;
+            # No agents.decider ⇒ no runtime grants exist to revoke;
             # degrade each removal to a finding so the operator sees it.
             for r in removals:
                 if isinstance(r, dict) and r.get("domain"):
@@ -1526,7 +1519,7 @@ class Watcher:
                         "title": f"cannot revoke {r.get('domain')}: runtime "
                                  f"grants are disabled",
                         "detail": str(r.get("reason", ""))[:1000],
-                        "recommendation": "enable domains.auto for "
+                        "recommendation": "enable agents.decider for "
                                           "watcher-managed grants, or "
                                           "remove the domain with "
                                           "`agentcage domain rm`",
