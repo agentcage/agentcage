@@ -373,21 +373,13 @@ class TestEgressQuadlet:
         config directly" justification — false on multi-user hosts where
         ~/.config is operator-owned but the 0777 grants dir is world-writable.
         """
-        from agentcage.config import (
-            Config, DomainsAutoConfig, DeciderConfig, AgentDeciderConfig,
-        )
+        from agentcage.config import Config, DeciderAgentConfig
         cfg = Config(name="test")
         cfg.container.image = "test:latest"
         cfg.domains.mode = "allowlist"
         cfg.domains.allow = ["anthropic.com"]
-        cfg.domains.auto = DomainsAutoConfig(
-            enable=True,
-            decider=DeciderConfig(
-                kind="agent",
-                agent=AgentDeciderConfig(
-                    provider="openrouter", model="m", api_key="env:K",
-                ),
-            ),
+        cfg.agents.decider = DeciderAgentConfig(
+            enable=True, provider="openrouter", model="m", api_key="env:K",
         )
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-egress.container"]
@@ -404,22 +396,19 @@ class TestEgressQuadlet:
         assert ":/var/lib/agentcage:Z" in content
 
     # PR #340 review fix (BLOCKING): the grants overlay volume + env were
-    # gated on domains.auto.enable / an expiring domain only. A
-    # watcher-only cage (domains.auto disabled) got neither: the watcher
+    # gated on the decider's enable / an expiring domain only. A
+    # watcher-only cage (decider disabled) got neither: the watcher
     # falls back to a path Containerfile.egress never creates, and every
     # finding/state write hits a swallowed OSError — a silent all-clear.
     def test_egress_grants_dir_mounted_for_watcher_only_cage(self):
-        from agentcage.config import Config, WatcherConfig, AgentDeciderConfig
+        from agentcage.config import Config, WatcherAgentConfig
         cfg = Config(name="test")
         cfg.container.image = "test:latest"
         cfg.domains.mode = "allowlist"
         cfg.domains.allow = ["anthropic.com"]
-        assert not cfg.domains.auto.enable  # domains.auto stays OFF
-        cfg.watcher = WatcherConfig(
-            enable=True,
-            agent=AgentDeciderConfig(
-                provider="openrouter", model="m", api_key="env:K",
-            ),
+        assert not cfg.agents.decider.enable  # decider stays OFF
+        cfg.agents.watcher = WatcherAgentConfig(
+            enable=True, provider="openrouter", model="m", api_key="env:K",
         )
         files = generate_quadlets(cfg, "/c.yaml", "/patches")
         content = files["test-egress.container"]
@@ -1529,7 +1518,7 @@ class TestEffectiveDnsAllowlist:
         merged = _effective_dns_allowlist(cfg)
         assert merged.count("whatsapp.com") == 1
 
-    def test_includes_watcher_provider_host_even_without_domains_auto(
+    def test_includes_watcher_provider_host_even_without_decider(
             self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text(textwrap.dedent("""\
@@ -1539,9 +1528,9 @@ class TestEffectiveDnsAllowlist:
             domains:
               allow:
                 - anthropic.com
-            watcher:
-              enable: true
-              agent:
+            agents:
+              watcher:
+                enable: true
                 provider: openai
                 model: m
                 api_key: env:K
@@ -1636,7 +1625,8 @@ class TestVmLocalGrantsOverlayPath:
             domains:
               allow:
                 - example.com
-              auto:
+            agents:
+              decider:
                 enable: true
         """) + domains_extra)
         cfg = load_config(str(p))
@@ -1664,7 +1654,8 @@ class TestVmLocalGrantsOverlayPath:
             domains:
               allow:
                 - example.com
-              auto:
+            agents:
+              decider:
                 enable: true
         """))
         cfg = load_config(str(p))

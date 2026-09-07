@@ -122,7 +122,7 @@ class Agentcage:
         self._load_builtin_inspectors()
         self._load_custom_inspectors()
 
-        # domains.auto — opt-in auto-managed allowlist (introspection + on-demand requests).
+        # agents.decider — opt-in auto-managed allowlist (introspection + on-demand requests).
         # Constructed only when ``policy_api.enable`` is set in the proxy
         # config; absent → None → zero new surface (the control host is not
         # even resolved). See docs/explain/policy-api.md and
@@ -131,7 +131,7 @@ class Agentcage:
         self._policy_sweeper: Optional[asyncio.Task] = None
         # Traffic watcher — opt-in in-egress LLM traffic auditor
         # (data/proxy/watcher.py). Same construction pattern as
-        # domains.auto: absent ``watcher.enable`` → self.traffic_watcher
+        # absent ``agents.watcher.enable`` → self.traffic_watcher
         # stays None → module not even imported → zero new surface.
         # The ring is the watcher's fresh-audit source: every audit entry
         # funnels through _audit_write, so the watcher gets a copy
@@ -190,7 +190,7 @@ class Agentcage:
 
         Also owns the sweeper task lifecycle: a rebuild cancels the old
         task (it polls the OLD controller object) and starts a new one, so
-        ENABLING domains.auto on a live cage actually starts the TTL
+        ENABLING agents.decider on a live cage actually starts the TTL
         sweeper and DISABLING it stops the stale one — without this, a
         hot-enabled feature would leave grants permanently unswept and
         host overlay changes unreconciled.
@@ -198,15 +198,15 @@ class Agentcage:
         if self._policy_sweeper is not None:
             self._policy_sweeper.cancel()
             self._policy_sweeper = None
-        pa_cfg = (self.cfg.get("domains") or {}).get("auto") or {}
-        if not pa_cfg or not pa_cfg.get("enable"):
+        pa_cfg = (self.cfg.get("agents") or {}).get("decider") or {}
+        if not isinstance(pa_cfg, dict) or not pa_cfg.get("enable"):
             self.domain_requests = None
             return
         dom = next((i for i in self.inspectors
                     if isinstance(i, DomainInspector)), None)
         if dom is None:
             ctx.log.warn(
-                "agentcage: domains.auto enabled but no domain inspector "
+                "agentcage: agents.decider enabled but no domain inspector "
                 "loaded; control endpoints disabled"
             )
             self.domain_requests = None
@@ -217,12 +217,12 @@ class Agentcage:
                 self.cfg, dom, self._audit_write, ctx.log
             )
             ctx.log.info(
-                f"agentcage: domains.auto enabled (host={self.domain_requests.host}, "
+                f"agentcage: agents.decider enabled (host={self.domain_requests.host}, "
                 f"introspection={self.domain_requests.introspection_enabled}, "
                 f"request={self.domain_requests.request_enabled})"
             )
         except Exception as e:
-            ctx.log.warn(f"agentcage: domains.auto init failed: {e}")
+            ctx.log.warn(f"agentcage: agents.decider init failed: {e}")
             self.domain_requests = None
             return
         # Start the sweeper immediately when the proxy is already running
@@ -273,7 +273,7 @@ class Agentcage:
           malformed hot-reload keeps the last working watcher running
           instead of stopping monitoring on a bad edit.
         """
-        w_cfg = self.cfg.get("watcher")
+        w_cfg = ((self.cfg.get("agents") or {}).get("watcher")) or {}
         if not isinstance(w_cfg, dict):
             if w_cfg:
                 ctx.log.warn(
@@ -283,7 +283,7 @@ class Agentcage:
         if self.traffic_watcher is not None \
                 and self.traffic_watcher.cfg == w_cfg:
             # Unchanged watcher block: keep the loop + scan state, but
-            # still re-point the mutable refs. ``domains.auto`` gets a
+            # still re-point the mutable refs. ``agents.decider`` gets a
             # FRESH PolicyApi on every reload (_init_domain_requests
             # above), so an unrefreshed ``_pa`` would keep revoking
             # through a discarded, sweeper-cancelled instance; ``secret
@@ -709,7 +709,7 @@ class Agentcage:
         # RESET any builtin configured only via ``inspectors:`` back to
         # legacy/default config — for a cage whose content-type exemptions
         # live in that section, the first ``domain add``/``domain rm`` or
-        # domains.auto grant after egress start wiped
+        # agents.decider grant after egress start wiped
         # ``host_exempt_content_types`` in place and multipart uploads
         # started 403ing on body entropy (hit in production 2026-09-01:
         # ElevenLabs STT voice-note uploads). ``_load_custom_inspectors``
@@ -743,7 +743,7 @@ class Agentcage:
         # Update TLS passthrough (--ignore-hosts)
         self._apply_passthrough()
 
-        # Rebuild the Policy API (domains.auto) controller: enabling /
+        # Rebuild the Policy API (agents.decider) controller: enabling /
         # disabling auto, or changing the decider/host/rate-limit, must take
         # effect on live config edit, not only on egress restart. Idempotent
         # and safe to call every reload (its docstring says so) — it no-ops

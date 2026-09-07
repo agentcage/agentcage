@@ -166,17 +166,17 @@ class TestSaveProxyConfig:
         assert "protocol_relays" in proxy_cfg
         assert proxy_cfg["protocol_relays"][0]["name"] == "migadu-imap"
 
-    def test_domains_auto_context_passes_through_verbatim(
+    def test_agents_decider_context_passes_through_verbatim(
         self, tmp_path, _patch_state_dirs
     ):
-        """``domains.auto.context`` is an operator-provided free-text string that
-        rides the decider's system prompt. It nests under ``domains`` (already
-        in _PROXY_KEYS), and ``save_proxy_config`` copies the whole ``domains``
-        dict verbatim — no selective re-serialization of the auto block — so the
-        context flows to proxy-config.yaml with no renderer change. This is the
-        transport contract the decider prompt relies on: the egress addon reads
-        ``proxy_cfg["domains"]["auto"]["context"]`` and the value the operator
-        typed is the value the decider sees."""
+        """``agents.decider.context`` is an operator-provided free-text string
+        that rides the decider's system prompt. It lives under ``agents``
+        (in _PROXY_KEYS), and ``save_proxy_config`` copies the whole ``agents``
+        dict verbatim — no selective re-serialization — so the context flows
+        to proxy-config.yaml with no renderer change. This is the transport
+        contract the decider prompt relies on: the egress addon reads
+        ``proxy_cfg["agents"]["decider"]["context"]`` and the value the
+        operator typed is the value the decider sees."""
         state = _patch_state_dirs
         cfg = tmp_path / "config.yaml"
         cfg.write_text(textwrap.dedent("""\
@@ -186,26 +186,28 @@ class TestSaveProxyConfig:
             domains:
               allow:
                 - example.com
-              auto:
+            agents:
+              decider:
                 enable: true
                 context: |
                   CI cage for the payments-reconciliation test suite. Talks
                   to staging APIs and installs deps from npm/pypi.
-                decider:
-                  kind: agent
-                  provider: openrouter
-                  model: anthropic/claude-sonnet-4-5
-                  api_key: env:OPENROUTER_API_KEY
+                provider: openrouter
+                model: anthropic/claude-sonnet-4-5
+                api_key: env:OPENROUTER_API_KEY
         """))
         state.save_deployment("myapp", str(cfg))
         proxy_path = state.save_proxy_config("myapp")
         with open(proxy_path) as f:
             proxy_cfg = yaml.safe_load(f)
-        # The whole domains dict (including auto.context) survived the
+        # The whole agents dict (including decider.context) survived the
         # _PROXY_KEYS filter and the yaml round-trip verbatim.
-        auto = proxy_cfg["domains"]["auto"]
-        assert "context" in auto
-        assert "payments-reconciliation" in auto["context"]
+        decider = proxy_cfg["agents"]["decider"]
+        assert "context" in decider
+        assert "payments-reconciliation" in decider["context"]
+        # Canonical wire format only: no compatibility blocks.
+        assert "auto" not in proxy_cfg["domains"]
+        assert "watcher" not in proxy_cfg
         # The non-proxy key (container) was stripped — sanity-check the filter.
         assert "container" not in proxy_cfg
 

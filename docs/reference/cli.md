@@ -302,7 +302,7 @@ Mode is `allowlist` (only listed domains permitted, default) or `blocklist` (lis
 
 ## watcher
 
-Read the traffic watcher's findings and scan status. The watcher itself runs **inside the egress** — there is no host daemon and no `watcher start`; enable it with the `watcher:` block in `cage.yaml` (see [the traffic watcher](../explain/traffic-watcher.md)).
+Read the traffic watcher's findings and scan status. The watcher itself runs **inside the egress** — there is no host daemon and no `watcher start`; enable it with the `agents.watcher:` block in `cage.yaml` (see [the traffic watcher](../explain/traffic-watcher.md)).
 
 | Command | Description |
 |---------|-------------|

@@ -174,7 +174,7 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
       dnsmasq. The operator drops these from ``domains.allow`` so the *cage*
       can't reach them (only the relay can); but they must still resolve, so
       they're auto-added here.
-    * the ``domains.auto`` decider agent's LLM provider host — the decider
+    * the ``agents.decider`` agent's LLM provider host — the decider
       calls the model via ``urllib`` from the addon process, again outside
       mitmproxy. Without DNS resolution the decider 502s on every request.
 
@@ -194,8 +194,8 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
         host = getattr(relay.upstream, "host", "") or ""
         if host and host not in merged:
             merged.append(host)
-    # domains.auto decider agent's LLM provider host — and the traffic
-    # watcher agent's. Both LLMs call their model via urllib from the
+    # agents.decider's LLM provider host — and the traffic watcher
+    # agent's. Both LLMs call their model via urllib from the
     # addon process, outside mitmproxy, so without DNS resolution here
     # every decider adjudication / watcher scan fails. One shared map for
     # both agents (kept in sync with policy_api._LLM_BASE_URLS — the
@@ -203,21 +203,16 @@ def _effective_dns_allowlist(config: Config) -> list[str]:
     # provider addition means one edit here, not N inline copies. If the
     # operator set a custom base_url, parse ITS host instead (a
     # self-hosted/proxy endpoint won't be in the provider map).
-    for agent_cfg in (
-        getattr(getattr(config, "domains", None), "auto", None),
-        getattr(config, "watcher", None),
-    ):
-        if agent_cfg is None or not getattr(agent_cfg, "enable", False):
+    for agent_cfg in (config.agents.decider, config.agents.watcher):
+        if not getattr(agent_cfg, "enable", False):
             continue
-        agent = getattr(agent_cfg, "agent", None) or getattr(
-            getattr(agent_cfg, "decider", None), "agent", None)
-        base_url = (getattr(agent, "base_url", "") or "").rstrip("/")
+        base_url = (getattr(agent_cfg, "base_url", "") or "").rstrip("/")
         if base_url:
             from urllib.parse import urlsplit
             host = urlsplit(base_url).hostname or ""
         else:
             host = _LLM_PROVIDER_DNS_HOSTS.get(
-                (getattr(agent, "provider", "") or "").lower(), "")
+                (getattr(agent_cfg, "provider", "") or "").lower(), "")
         if host and host not in merged:
             merged.append(host)
     return merged
@@ -873,17 +868,16 @@ def generate_quadlets(
                 creds_secrets.append(arg)
             proxy_secrets.append(arg)
 
-    # Policy API decision-hook auth credential — same shape and same
+    # agents.decider's api_key — same shape and same
     # egress-only invariant as a relay credential: it uses a ``*_source``
-    # scheme (env:/cmd:/systemd-creds:) and must NEVER reach the cage (the
-    # domains.auto.decider.agent.api_key — the decider agent's own API key,
-    # an egress-only credential (the CLI parser already stripped it from
+    # scheme (env:/cmd:/systemd-creds:) and must NEVER reach the cage. An
+    # egress-only credential (the CLI parser already stripped it from
     # cage env/podman_secrets in config.load_config). Stage it into the
     # proxy's tmpfs secret files so the addon can read the real value when
     # calling the decider. Same relay-auth staging path.
-    auto = getattr(getattr(config, "domains", None), "auto", None)
-    if auto is not None and getattr(auto, "enable", False):
-        api_key = auto.decider.agent.api_key
+    decider = config.agents.decider
+    if getattr(decider, "enable", False):
+        api_key = decider.api_key
         scheme, _, arg = (api_key or "").partition(":")
         if arg and arg not in proxy_secrets:
             has_cred_file = (_state_creds_dir / f"{arg}.cred").exists()
@@ -892,16 +886,16 @@ def generate_quadlets(
                     creds_secrets.append(arg)
                 proxy_secrets.append(arg)
 
-    # The traffic watcher agent's own API key (watcher.agent.api_key) —
+    # The traffic watcher agent's own API key (agents.watcher.api_key) —
     # identical egress-only invariant and identical staging path as the
     # decider's key above: stripped from the cage env/podman_secrets at
     # parse time (config.load_config added it to the same set), staged
     # into the proxy's tmpfs secret files so the in-egress watcher can
     # read the real value when calling its model. Reusing the decider's
     # env var (same NAME) is fine — the dedup check below handles it.
-    watcher = getattr(config, "watcher", None)
-    if watcher is not None and getattr(watcher, "enable", False):
-        w_api_key = watcher.agent.api_key
+    watcher = config.agents.watcher
+    if getattr(watcher, "enable", False):
+        w_api_key = watcher.api_key
         _scheme, _, _arg = (w_api_key or "").partition(":")
         if _arg and _arg not in proxy_secrets:
             _has_cred = (_state_creds_dir / f"{_arg}.cred").exists()
@@ -1062,9 +1056,16 @@ def generate_quadlets(
         inbound_forwards=inbound_forwards,
         capture_enabled=capture_enabled,
         capture_host_dir=capture_host_dir,
-        domains_auto_enabled=bool(getattr(config.domains.auto, "enable", False))
+        # Grants-overlay volume gate (templates/egress.container.j2):
+        # mounted when an agent is on (the decider writes decided grants,
+        # the watcher writes findings/state and revokes through it) OR an
+        # allow entry has an expiry (the addon sweeps those and
+        # re-publishes the DNS zone list).
+        agents_volume_enabled=(
+            bool(getattr(config.agents.decider, "enable", False))
+            or bool(getattr(config.agents.watcher, "enable", False))
             or bool(getattr(config.domains, "expires", None))
-            or bool(getattr(getattr(config, "watcher", None), "enable", False)),
+        ),
         grants_host_dir=grants_dir_str,
         passthrough_regex=pt_regex,
         rootless=rootless,

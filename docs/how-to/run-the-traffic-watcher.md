@@ -5,7 +5,7 @@ How to enable the traffic watcher on a cage, read what it finds, and act on it. 
 
 *Since 0.36.0*
 
-The watcher is off by default: a cage with no `watcher:` block imports nothing, starts no task, and stages no credential. For why it runs inside the egress and what it may and may not touch, read [the traffic watcher](../explain/traffic-watcher.md).
+The watcher is off by default: a cage with no `agents.watcher:` block imports nothing, starts no task, and stages no credential. For why it runs inside the egress and what it may and may not touch, read [the traffic watcher](../explain/traffic-watcher.md).
 
 ## Decide how much authority to give it
 
@@ -13,18 +13,18 @@ Start with `auto_revoke: false` on a cage you haven't watched before, then turn 
 
 The watcher requires allowlist mode. In blocklist mode the static baseline is the *block* list, so the analysis would invert and a recommended removal would widen egress instead of narrowing it; `cage create` and `cage update` reject that combination.
 
-Autonomous revocation only bites when [`domains.auto`](../reference/policy-api.md) is enabled, because runtime grants are the only thing the watcher may narrow. On a cage without auto-managed domains, every revocation the model asks for is recorded as a finding instead, and your static allowlist is untouched either way.
+Autonomous revocation only bites when [`agents.decider`](../reference/policy-api.md) is enabled, because runtime grants are the only thing the watcher may narrow. On a cage without auto-managed domains, every revocation the model asks for is recorded as a finding instead, and your static allowlist is untouched either way.
 
 ## Configure the watcher
 
-Add a `watcher:` block with `agentcage cage edit mycage`:
+Add an `agents.watcher:` block with `agentcage cage edit mycage`:
 
 ```yaml
-watcher:
-  enable: true
-  auto_revoke: false
-  context: "runs the nightly dependency audit against api.example.com"
-  agent:
+agents:
+  watcher:
+    enable: true
+    auto_revoke: false
+    context: "runs the nightly dependency audit against api.example.com"
     provider: anthropic
     model: claude-sonnet-4-5
     api_key: env:WATCHER_LLM_KEY
@@ -32,7 +32,7 @@ watcher:
 
 Fill in `context`. It's the one trusted free-text the model receives, and it's what lets the model tell a cage doing its job from a cage being abused. Everything the watcher reads out of cage traffic is framed as untrusted evidence, so `context` is your only channel for stating intent.
 
-Every setting, type, and default is in the [configuration reference](../reference/configuration.md#watcher-settings).
+Every setting, type, and default is in the [configuration reference](../reference/configuration.md#agents-settings).
 
 ## Provide the API key
 
@@ -51,7 +51,7 @@ Or store it once in the cage's secret store, which survives restarts and applies
 agentcage secret set mycage WATCHER_LLM_KEY
 ```
 
-Reusing the decider's key is fine. Point both `watcher.agent.api_key` and `domains.auto.decider.agent.api_key` at the same variable name.
+Reusing the decider's key is fine. Point both `agents.watcher.api_key` and `agents.decider.api_key` at the same variable name.
 
 ## Record bodies for deeper analysis
 
@@ -132,7 +132,7 @@ agentcage domain rm mycage api.example.com
 
 Check the `still_allowed_by_baseline` flag on a `watcher_revoke` audit entry before assuming traffic stopped. When it's `true` the runtime grant is gone but a static entry still matches the domain, so the cage keeps reaching it until you remove that entry too.
 
-A revocation is not a ban. The caged agent can request the same domain again and the decider adjudicates fresh, so a domain you want gone for good belongs out of the baseline — and, if the decider keeps granting it back, named in `domains.auto.context` as something this cage has no business reaching.
+A revocation is not a ban. The caged agent can request the same domain again and the decider adjudicates fresh, so a domain you want gone for good belongs out of the baseline — and, if the decider keeps granting it back, named in `agents.decider.context` as something this cage has no business reaching.
 
 ## What the caged agent sees
 
@@ -160,6 +160,6 @@ Set `enable: false`, or delete the block, with `agentcage cage edit mycage`. The
 
 - [The traffic watcher](../explain/traffic-watcher.md) — why it runs in the egress, the trust model, the invariants.
 - [Policy API](../reference/policy-api.md) — runtime grants, the decider, and the endpoints a caged agent calls.
-- [Configuration](../reference/configuration.md#watcher-settings) — every `watcher:` setting.
+- [Configuration](../reference/configuration.md#agents-settings) — every `agents.watcher` setting.
 - [Capture](../reference/capture.md) — HAR recording and the inbound and outbound perspectives.
 - [Troubleshoot](troubleshoot.md) — blocked requests, missing secrets, stuck cages.

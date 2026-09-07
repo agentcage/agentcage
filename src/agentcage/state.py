@@ -17,7 +17,9 @@ import yaml
 # overlay strings (which cross the trust boundary via the grants dir) from
 # being rendered into dnsmasq directives unvalidated: a value containing '\n'
 # or '/' would emit extra ``server=`` lines in dns-allowlist.conf.
-from agentcage.config import Config, DOMAIN_RE, load_config, valid_domain  # noqa: F401
+from agentcage.config import (
+    Config, DOMAIN_RE, load_config, validate_agents_raw, valid_domain,
+)  # noqa: F401
 
 __all__ = ["DOMAIN_RE", "valid_domain"]
 
@@ -42,6 +44,8 @@ def deployment_exists(name: str) -> bool:
 
 def save_deployment(name: str, config_path: str) -> None:
     """Copy a config file into the state directory for a deployment."""
+    with open(config_path) as f:
+        validate_agents_raw(yaml.safe_load(f) or {})
     d = _deploy_dir(name)
     d.mkdir(parents=True, exist_ok=True)
     shutil.copy2(config_path, d / "cage.yaml")
@@ -78,13 +82,21 @@ def list_deployments() -> list[str]:
     )
 
 
-def load_raw_config(name: str) -> dict:
-    """Load stored config as raw dict (preserves all fields)."""
+def load_raw_config(name: str, *, check_agent_schema: bool = True) -> dict:
+    """Read stored YAML unchanged, rejecting unsupported agent configuration.
+
+    Explicit replacement via update -c may read the previous file solely to
+    retain generated secret placeholders. That read opts out of this check;
+    its old operational settings are never applied or migrated.
+    """
     p = _deploy_dir(name) / "cage.yaml"
     if not p.is_file():
         raise FileNotFoundError(f"No stored config for cage '{name}'")
     with open(p) as f:
-        return yaml.safe_load(f) or {}
+        raw = yaml.safe_load(f) or {}
+    if check_agent_schema:
+        validate_agents_raw(raw)
+    return raw
 
 
 def _atomic_write_text(p: Path, text: str) -> None:
@@ -119,6 +131,10 @@ def _atomic_write_text(p: Path, text: str) -> None:
     the reconcile.
     """
     p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = p.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = None
     base = p.with_name(f"{p.name}.{os.getpid()}.tmp")
     # Base PID-suffixed name, then a single counter-suffixed retry. We never
     # unlink a colliding temp: a cross-PID-namespace numeric-PID collision
@@ -128,7 +144,8 @@ def _atomic_write_text(p: Path, text: str) -> None:
     tmp = base
     for tmp in candidates:
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         mode if mode is not None else 0o644)
             break
         except FileExistsError:
             continue
@@ -141,6 +158,10 @@ def _atomic_write_text(p: Path, text: str) -> None:
         )
     try:
         with os.fdopen(fd, "w") as f:
+            # Preserve existing/source permissions even under a different
+            # current umask. Brand-new files without a source retain umask.
+            if mode is not None:
+                os.fchmod(f.fileno(), mode)
             f.write(text)
     except BaseException:
         try:
@@ -158,6 +179,7 @@ def save_raw_config(name: str, raw: dict) -> None:
     bare ``open(p, "w")``: the grants reconcile and ``cage update`` can read
     ``cage.yaml`` mid-write and die on a truncated YAML.
     """
+    validate_agents_raw(raw)
     p = _deploy_dir(name) / "cage.yaml"
     _atomic_write_text(
         p, yaml.safe_dump(raw, default_flow_style=False, sort_keys=False))
@@ -185,7 +207,7 @@ def fill_placeholders(name: str, prev_raw: dict | None = None) -> bool:
 _PROXY_KEYS = frozenset({
     "domains", "secrets", "max_request_body", "entropy", "content_type",
     "inspectors", "rate_limit", "logging", "secret_injection", "capture",
-    "protocol_relays", "watcher",
+    "protocol_relays", "agents",
 })
 
 

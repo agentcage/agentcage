@@ -191,9 +191,16 @@ class _FakeRule:
         self.source = source
 
 
+class _FakeAgents:
+    def __init__(self, decider=None, watcher=None):
+        self.decider = decider or _FakeAgentBlock(False, "")
+        self.watcher = watcher or _FakeAgentBlock(False, "")
+
+
 class _FakeCfg:
     def __init__(self, rules):
         self.secret_injection = rules
+        self.agents = _FakeAgents()
 
 
 class _FakePodman:
@@ -246,26 +253,20 @@ class TestResolveAndPopulate:
             assert pm.secrets == {}
 
 
-class _FakeAgent:
-    def __init__(self, api_key=""):
-        self.api_key = api_key
-
-
 class _FakeAgentBlock:
-    """Stands in for either domains.auto or watcher — both have a nested
-    ``.agent.api_key`` (watcher) or ``.decider.agent.api_key`` (domains.auto)."""
+    """Stands in for an ``agents.*`` entry — the LLM client fields sit flat
+    on the block (0.40 restructure)."""
 
     def __init__(self, enable, api_key=""):
         self.enable = enable
-        self.agent = _FakeAgent(api_key)
-        self.decider = self  # domains.auto.decider.agent === self.agent
+        self.api_key = api_key
 
 
 class TestResolveAndPopulateAgentKeys:
     """PR #340 review fix (BLOCKING): quadlets emits a ``Secret=``
-    directive for both the domains.auto decider's and the traffic
-    watcher's ``agent.api_key``, and ``quadlets._boot_resolvable``
-    green-lights ``env:``/``cmd:`` schemes precisely because this
+    directive for both the agents.decider's and the traffic watcher's
+    ``api_key``, and ``quadlets._boot_resolvable`` green-lights
+    ``env:``/``cmd:`` schemes precisely because this
     function is expected to materialize them as podman secrets. Without
     resolving the WATCHER's key here, a watcher-only cage (or one with a
     watcher key distinct from the decider's) references a podman secret
@@ -277,7 +278,7 @@ class TestResolveAndPopulateAgentKeys:
         with mock.patch.dict(os.environ, {"WKEY": "sk-watcher"}):
             cfg = _FakeCfg([])
             cfg.domains = None
-            cfg.watcher = _FakeAgentBlock(True, "env:WKEY")
+            cfg.agents = _FakeAgents(_FakeAgentBlock(False, ""), _FakeAgentBlock(True, "env:WKEY"))
             pm = _FakePodman()
             resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
             assert resolved == {"WKEY"}
@@ -287,7 +288,7 @@ class TestResolveAndPopulateAgentKeys:
         with mock.patch.dict(os.environ, {"WKEY": "sk-watcher"}):
             cfg = _FakeCfg([])
             cfg.domains = None
-            cfg.watcher = _FakeAgentBlock(False, "env:WKEY")
+            cfg.agents = _FakeAgents(_FakeAgentBlock(False, ""), _FakeAgentBlock(False, "env:WKEY"))
             pm = _FakePodman()
             resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
             assert resolved == set()
@@ -298,10 +299,10 @@ class TestResolveAndPopulateAgentKeys:
             os.environ, {"DKEY": "sk-decider", "WKEY": "sk-watcher"},
         ):
             cfg = _FakeCfg([])
-            _domains = mock.Mock()
-            _domains.auto = _FakeAgentBlock(True, "env:DKEY")
-            cfg.domains = _domains
-            cfg.watcher = _FakeAgentBlock(True, "env:WKEY")
+            cfg.agents = _FakeAgents(
+                _FakeAgentBlock(True, "env:DKEY"),
+                _FakeAgentBlock(True, "env:WKEY"),
+            )
             pm = _FakePodman()
             resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
             assert resolved == {"DKEY", "WKEY"}
@@ -312,14 +313,14 @@ class TestResolveAndPopulateAgentKeys:
     def test_watcher_reusing_deciders_key_name_not_double_resolved(
             self, tmp_path):
         # Reusing the decider's env var name is an explicitly documented
-        # option (watcher.agent.api_key can point at the same source);
+        # option (agents.watcher.api_key can point at the same source);
         # it must resolve once, not raise or double-create the secret.
         with mock.patch.dict(os.environ, {"SHARED": "sk-shared"}):
             cfg = _FakeCfg([])
-            _domains = mock.Mock()
-            _domains.auto = _FakeAgentBlock(True, "env:SHARED")
-            cfg.domains = _domains
-            cfg.watcher = _FakeAgentBlock(True, "env:SHARED")
+            cfg.agents = _FakeAgents(
+                _FakeAgentBlock(True, "env:SHARED"),
+                _FakeAgentBlock(True, "env:SHARED"),
+            )
             pm = _FakePodman()
             resolved = resolve_and_populate(pm, cfg, "cage", tmp_path)
             assert resolved == {"SHARED"}

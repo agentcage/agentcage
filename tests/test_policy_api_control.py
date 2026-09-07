@@ -90,16 +90,16 @@ def _make_pa(tmp_path, monkeypatch, *, rate_limit=None, context=None):
     monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
     dom = DomainInspector()
     dom.configure({"allow": ["a.com"]})
-    auto = {
+    decider = {
         "enable": True,
-        "decider": {"kind": "agent", "provider": "openrouter",
-                    "model": "m", "api_key": "env:K"},
+        "provider": "openrouter", "model": "m", "api_key": "env:K",
     }
     if rate_limit is not None:
-        auto["rate_limit"] = rate_limit
+        decider["rate_limit"] = rate_limit
     if context is not None:
-        auto["context"] = context
-    cfg = {"domains": {"allow": ["a.com"], "auto": auto}}
+        decider["context"] = context
+    cfg = {"domains": {"allow": ["a.com"]},
+           "agents": {"decider": decider}}
     pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
     pa._llm_secret = "sk-test"  # pretend the env resolved
     return pa, dom
@@ -266,7 +266,8 @@ class TestFeatureDisabled:
         monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
         dom = DomainInspector()
         dom.configure({"allow": ["a.com"]})
-        cfg = {"domains": {"allow": ["a.com"], "auto": {"enable": False}}}
+        cfg = {"domains": {"allow": ["a.com"]},
+               "agents": {"decider": {"enable": False}}}
         pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
         _handle(pa, _flow(domain="x.com"))
         assert resp_status[-1] == 404
@@ -288,13 +289,11 @@ class TestExpiredAlreadyAllowedFastPath:
             "allow": ["a.com"],
             "expires": {"a.com": "2000-01-01T00:00:00+00:00"},
         })
-        auto = {
-            "enable": True,
-            "decider": {"kind": "agent", "provider": "openrouter",
-                        "model": "m", "api_key": "env:K"},
-        }
-        pa = PolicyApi({"domains": {"allow": ["a.com"], "auto": auto}},
-                       dom, lambda e: None, MagicMock())
+        cfg = {"domains": {"allow": ["a.com"]},
+               "agents": {"decider": {
+                   "enable": True, "provider": "openrouter",
+                   "model": "m", "api_key": "env:K"}}}
+        pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
         pa._llm_secret = "sk-test"
 
         # The baseline entry is expired → _matched_expired returns the suffix.
@@ -345,13 +344,11 @@ class TestExpiredAlreadyAllowedFastPath:
             "allow": ["a.com"],
             "expires": {"a.com": "9999-01-01T00:00:00+00:00"},
         })
-        auto = {
-            "enable": True,
-            "decider": {"kind": "agent", "provider": "openrouter",
-                        "model": "m", "api_key": "env:K"},
-        }
-        pa = PolicyApi({"domains": {"allow": ["a.com"], "auto": auto}},
-                       dom, lambda e: None, MagicMock())
+        cfg = {"domains": {"allow": ["a.com"]},
+               "agents": {"decider": {
+                   "enable": True, "provider": "openrouter",
+                   "model": "m", "api_key": "env:K"}}}
+        pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
         pa._llm_secret = "sk-test"
         assert dom._matched_expired("a.com") is None
         called = []
@@ -662,7 +659,7 @@ class TestOExclTempCreation:
         assert set(os.listdir(tmp_path)) == {"grants.yaml"}
 
 
-# ── Operator context (domains.auto.context) ──────────────────
+# ── Operator context (agents.decider.context) ────────────────
 
 
 class _RecordedResponse:
@@ -799,7 +796,7 @@ class TestOperatorContextAllowlist:
 
 class TestContextHotReload:
     """Round-10 finding 2: the docs promise that editing
-    ``domains.auto.context`` + ``cage update`` takes effect on the next
+    ``agents.decider.context`` + ``cage update`` takes effect on the next
     domain request — via the addon's mtime-poll rebuild of the PolicyApi
     (``_maybe_reload`` → ``_init_domain_requests``). The other context
     tests instantiate PolicyApi directly and bypass that chain; this one
@@ -815,22 +812,20 @@ class TestContextHotReload:
         cfg_path = tmp_path / "config.yaml"
 
         def _write(context):
+            decider = {
+                "enable": True,
+                "host": "agentcage.local",
+                "provider": "openrouter",
+                "model": "test-model",
+                "api_key": "env:TEST_KEY",
+                "base_url": "https://example.com",
+            }
+            if context is not None:
+                decider["context"] = context
             cfg_path.write_text(yaml.safe_dump({
-                "domains": {
-                    "mode": "allowlist",
-                    "allow": ["example.com"],
-                    "auto": {
-                        "enable": True,
-                        "host": "agentcage.local",
-                        "context": context,
-                        "decider": {"kind": "agent", "agent": {
-                            "provider": "openrouter",
-                            "model": "test-model",
-                            "api_key": "env:TEST_KEY",
-                            "base_url": "https://example.com",
-                        }},
-                    },
-                },
+                "domains": {"mode": "allowlist",
+                            "allow": ["example.com"]},
+                "agents": {"decider": decider},
             }))
 
         _write("context-v1")
@@ -858,22 +853,18 @@ class TestContextHotReload:
         cfg_path = tmp_path / "config.yaml"
 
         def _write(context):
-            auto = {
+            decider = {
                 "enable": True, "host": "agentcage.local",
-                "decider": {"kind": "agent", "agent": {
-                    "provider": "openrouter", "model": "test-model",
-                    "api_key": "env:TEST_KEY",
-                    "base_url": "https://example.com",
-                }},
+                "provider": "openrouter", "model": "test-model",
+                "api_key": "env:TEST_KEY",
+                "base_url": "https://example.com",
             }
             if context is not None:
-                auto["context"] = context
+                decider["context"] = context
             cfg_path.write_text(yaml.safe_dump({
-                "domains": {
-                    "mode": "allowlist",
-                    "allow": ["example.com"],
-                    "auto": auto,
-                },
+                "domains": {"mode": "allowlist",
+                            "allow": ["example.com"]},
+                "agents": {"decider": decider},
             }))
 
         _write("context-v1")
@@ -1020,7 +1011,8 @@ class TestRemovalEndpoint:
         monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
         dom = DomainInspector()
         dom.configure({"allow": ["a.com"]})
-        cfg = {"domains": {"allow": ["a.com"], "auto": {"enable": False}}}
+        cfg = {"domains": {"allow": ["a.com"]},
+               "agents": {"decider": {"enable": False}}}
         pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
         _handle(pa, _removal_flow("x.com"))
         assert resp_status[-1] == 404
@@ -1124,9 +1116,10 @@ class TestRemovalEndpoint:
             "allow": ["x.com"],
             "expires": {"x.com": "2000-01-01T00:00:00+00:00"},
         })
-        auto = {"enable": True, "decider": {"kind": "agent",
-                "provider": "openrouter", "model": "m", "api_key": "env:K"}}
-        cfg = {"domains": {"allow": ["x.com"], "auto": auto}}
+        cfg = {"domains": {"allow": ["x.com"]},
+               "agents": {"decider": {"enable": True,
+                                      "provider": "openrouter",
+                                      "model": "m", "api_key": "env:K"}}}
         pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
         pa._llm_secret = "sk-test"
         pa._apply_grant("x.com", "re-grant over expired baseline",
@@ -1160,9 +1153,10 @@ class TestRemovalEndpoint:
         monkeypatch.setenv("AGENTCAGE_GRANTS_DIR", str(tmp_path))
         dom = DomainInspector()
         dom.configure({"block": ["evil.com"]})
-        auto = {"enable": True, "decider": {"kind": "agent",
-                "provider": "openrouter", "model": "m", "api_key": "env:K"}}
-        cfg = {"domains": {"block": ["evil.com"], "auto": auto}}
+        cfg = {"domains": {"block": ["evil.com"]},
+               "agents": {"decider": {"enable": True,
+                                      "provider": "openrouter",
+                                      "model": "m", "api_key": "env:K"}}}
         pa = PolicyApi(cfg, dom, lambda e: None, MagicMock())
         pa._llm_secret = "sk-test"
         _handle(pa, _removal_flow("evil.com"))

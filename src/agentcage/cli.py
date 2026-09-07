@@ -1137,7 +1137,10 @@ def cage_update(name: str | None, config_path: str | None,
         _ensure_v022_cage(name)
         # Capture the previous stored config before it's overwritten so
         # already-generated placeholders carry over (stable across updates).
-        prev_raw = state.load_raw_config(name)
+        # Only reuse placeholder identities, not old operational settings.
+        # Explicit -c replacement must work even when the stored schema is
+        # unsupported; the replacement itself was fully validated above.
+        prev_raw = state.load_raw_config(name, check_agent_schema=False)
         state.save_deployment(name, config_path)
         if state.fill_placeholders(name, prev_raw=prev_raw):
             cfg = state.load_deployment_config(name)
@@ -1164,9 +1167,9 @@ def cage_update(name: str | None, config_path: str | None,
         # base images (--pull), and restarts. To change config, edit it
         # explicitly via `cage edit` or supply a new config with
         # `cage update -c <file>`.
-        state.fill_placeholders(name)
-        cfg = state.load_deployment_config(name)
         try:
+            state.fill_placeholders(name)
+            cfg = state.load_deployment_config(name)
             warnings = validate_config(cfg)
         except ValueError as e:
             click.echo(f"error: {e}", err=True)
@@ -1854,13 +1857,13 @@ def _classify_changes(before: dict, after: dict) -> tuple[set[str], set[str], se
     restart: set[str] = set()
     rebuild: set[str] = set()
     for k in changed:
-        if k in ("domains", "watcher"):
+        if k in ("domains", "agents"):
             # Same live-apply shape as domains: save_proxy_config (called
             # unconditionally below) bumps proxy-config.yaml's mtime, the
-            # addon's mtime poll hot-reloads the watcher block in place
-            # (addon._init_watcher), and a watcher edit can change the
-            # LLM provider host that needs to resolve — exactly the
-            # domains.auto case _update_dns_quadlet already handles.
+            # addon's mtime poll hot-reloads the agents block in place
+            # (addon._init_domain_requests / addon._init_watcher), and an
+            # agents edit can change the LLM provider host that needs to
+            # resolve — exactly the case _update_dns_quadlet handles.
             live.add(k)
         elif k in _PROXY_HOT_RELOAD_KEYS:
             live.add(k)
@@ -1900,8 +1903,12 @@ def cage_edit(name: str):
     rejected_path = state_dir / "cage.yaml.rejected"
     backup_path = state_dir / "cage.yaml.bak"
 
+    try:
+        original_raw = state.load_raw_config(name)
+    except ValueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
     original_text = config_path.read_text()
-    original_raw = state.load_raw_config(name)
 
     # click.edit returns the edited text when given `text=`, or None if the
     # user exited without saving / made no changes. We pass the text so we
@@ -2023,28 +2030,29 @@ def cage_edit(name: str):
 
     live, restart_keys, rebuild_keys = _classify_changes(original_raw, edited_raw)
 
-    if "domains" in live or "watcher" in live:
+    if "domains" in live or "agents" in live:
         _update_dns_quadlet(cfg)
 
-    if "watcher" in live:
-        # The scan loop and the provider DNS entry apply live, but two
-        # things the watcher needs are decided at UNIT-GENERATION time:
-        # the grants volume its findings/state are written to (gated on
-        # watcher.enable in the quadlet template and the apple metadata)
-        # and the ``Secret=`` directive for its api_key. Without a
-        # refresh, a freshly enabled watcher on a cage with domains.auto
-        # off has no host-visible volume — findings land in the
-        # container's ephemeral layer and `watcher findings` reports the
-        # silent all-clear this feature exists to avoid. Same rationale
-        # as the secret_injection refresh; no restart either way.
+    if "agents" in live:
+        # The decider/watcher scan loops and the provider DNS entries
+        # apply live, but two things the agents need are decided at
+        # UNIT-GENERATION time: the grants volume their findings/state
+        # are written to (gated on agents.*.enable in the quadlet
+        # template and the apple metadata) and the ``Secret=`` directive
+        # for each api_key. Without a refresh, a freshly enabled watcher
+        # on a cage with the decider off has no host-visible volume —
+        # findings land in the container's ephemeral layer and `watcher
+        # findings` reports the silent all-clear this feature exists to
+        # avoid. Same rationale as the secret_injection refresh; no
+        # restart either way.
         try:
             _refresh_units(name, cfg)
         except Exception as e:
             click.echo(f"warning: quadlet refresh failed: {e}", err=True)
         click.echo(
-            "  watcher: scanning applies on the next request. Restart the "
-            "cage if its findings volume or api_key secret was just added "
-            "(`agentcage cage restart` adopts the refreshed units)."
+            "  agents: updated. Scanning and domain evaluation apply live. "
+            "Restart the cage if a findings volume or api_key secret was "
+            "just added (`agentcage cage restart` adopts the refreshed units)."
         )
 
     if "secret_injection" in live:
@@ -3675,7 +3683,8 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
     watcher_names: set[str] = set()
 
     def _collect_agent_key(source_cfg, bucket: set) -> None:
-        _key = getattr(getattr(source_cfg, "agent", None), "api_key", "")
+        # The LLM client fields sit flat on the agent block (0.40 restructure).
+        _key = getattr(source_cfg, "api_key", "")
         if isinstance(_key, str) and _key:
             _, _, _arg = _key.partition(":")
             if _arg:
@@ -3683,11 +3692,8 @@ def _render_secret_list(cfg, present_keys: set[str]) -> bool:
                 if _arg not in expected:
                     expected.append(_arg)
 
-    _collect_agent_key(
-        getattr(getattr(getattr(cfg, "domains", None), "auto", None),
-                "decider", None),
-        decider_names)
-    _collect_agent_key(getattr(cfg, "watcher", None), watcher_names)
+    _collect_agent_key(cfg.agents.decider, decider_names)
+    _collect_agent_key(cfg.agents.watcher, watcher_names)
     # Placeholders are decoy tokens (never sensitive) — show them so a
     # generated value is discoverable without opening the stored cage.yaml.
     placeholders = {r.env: r.placeholder for r in cfg.secret_injection}
@@ -4634,18 +4640,18 @@ def _host_never_grant(raw: dict) -> set[str]:
     Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
     ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
     ``{internal, local, localhost}`` plus the control host from
-    ``domains.auto.host`` (default ``agentcage.local``). The reconcile runs
+    ``agents.decider.host`` (default ``agentcage.local``). The reconcile runs
     on the HOST (``grants sync`` / the implicit ``domain list`` reconcile)
     and cannot import the addon (which lives in the egress image), so this
     is a deliberate mirror kept in sync with
-    ``config._AUTO_NEVER_GRANT`` / ``DomainsAutoConfig.host``. Suffix-matched
+    ``config._AUTO_NEVER_GRANT`` / ``DeciderAgentConfig.host``. Suffix-matched
     so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
     and ``local`` covers the default control host's TLD family.
     """
     from agentcage.config import _AUTO_NEVER_GRANT
     out = {str(h).lower().rstrip(".") for h in _AUTO_NEVER_GRANT}
-    auto = (raw.get("domains") or {}).get("auto") or {}
-    host = str(auto.get("host", "agentcage.local") or "agentcage.local")
+    decider = (raw.get("agents") or {}).get("decider") or {}
+    host = str(decider.get("host", "agentcage.local") or "agentcage.local")
     out.add(host.lower().rstrip("."))
     return out
 
@@ -5492,7 +5498,7 @@ def watcher():
     cage's recent traffic (audit + capture) after the fact and flags
     suspicious patterns; it can revoke the runtime grants its analysis
     damns (narrowing only) and recommends — never applies — baseline
-    edits. Enable it with the ``watcher:`` block in cage.yaml. See
+    edits. Enable it with the ``agents.watcher:`` block in cage.yaml. See
     docs/explain/traffic-watcher.md.
     """
 
@@ -5569,11 +5575,11 @@ def watcher_status(name):
         click.echo(f"error: cage '{name}' does not exist", err=True)
         sys.exit(1)
     cfg = state.load_deployment_config(name)
-    w = getattr(cfg, "watcher", None)
-    if w is None or not w.enable:
+    w = cfg.agents.watcher
+    if not w.enable:
         click.echo(
-            f"The traffic watcher is not enabled for cage '{name}' — add a "
-            f"`watcher:` block to its cage.yaml (see "
+            f"The traffic watcher is not enabled for cage '{name}' — add an "
+            f"`agents.watcher:` block to its cage.yaml (see "
             f"docs/explain/traffic-watcher.md).")
         return
     click.echo(f"Traffic watcher for cage '{name}': enabled")
@@ -5582,7 +5588,7 @@ def watcher_status(name):
     click.echo(f"  scan interval:   {w.interval_seconds:g}s")
     click.echo(f"  lookback window: {w.window_seconds:g}s")
     click.echo(f"  auto-revoke:    {'yes' if w.auto_revoke else 'no (findings only)'}")
-    click.echo(f"  agent:          {w.agent.provider} / {w.agent.model}")
+    click.echo(f"  agent:          {w.provider} / {w.model}")
 
     text = _load_watcher_output(name, cfg, "state.json")
     if text is None:

@@ -981,15 +981,13 @@ class VmBackend:
                 scheme, _, var = (src or "").partition(":")
                 if scheme and var:
                     sources.append((var, src))
-        auto = getattr(getattr(config, "domains", None), "auto", None)
-        if auto is not None and getattr(auto, "enable", False):
-            src = auto.decider.agent.api_key or ""
-            scheme, _, var = src.partition(":")
-            if scheme and var:
-                sources.append((var, src))
-        watcher = getattr(config, "watcher", None)
-        if watcher is not None and getattr(watcher, "enable", False):
-            src = watcher.agent.api_key or ""
+        # agents.decider / agents.watcher api_keys — same egress-only
+        # invariant as a relay credential: staged into the VM's podman
+        # secret store, never the cage env.
+        for agent in (config.agents.decider, config.agents.watcher):
+            if not getattr(agent, "enable", False):
+                continue
+            src = getattr(agent, "api_key", "") or ""
             scheme, _, var = src.partition(":")
             if scheme and var:
                 sources.append((var, src))
@@ -1035,12 +1033,10 @@ class VmBackend:
         except (SecretStoreError, Exception):
             return
         wanted = list(expected_secrets(config))
-        if auto is not None and getattr(auto, "enable", False):
-            _, _, var = (auto.decider.agent.api_key or "").partition(":")
-            if var and var not in wanted:
-                wanted.append(var)
-        if watcher is not None and getattr(watcher, "enable", False):
-            _, _, var = (watcher.agent.api_key or "").partition(":")
+        for agent in (config.agents.decider, config.agents.watcher):
+            if not getattr(agent, "enable", False):
+                continue
+            _, _, var = ((getattr(agent, "api_key", "") or "")).partition(":")
             if var and var not in wanted:
                 wanted.append(var)
         for env_name in wanted:

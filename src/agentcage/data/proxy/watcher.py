@@ -14,7 +14,7 @@ What it shares with the domains decider (data/proxy/policy_api.py):
 * the LLM wire client — ``llm_tool_call`` / ``parse_tool_args`` are
   imported from policy_api, so a provider-auth or format fix lands once
   for both agents;
-* the credential chain — ``watcher.agent.api_key`` uses the same
+* the credential chain — ``agents.watcher.api_key`` uses the same
   ``source:`` scheme, staged into the same tmpfs secret files, read with
   the same ``_read_secret``;
 * the forced-tool-call output contract and the fail-closed posture —
@@ -278,7 +278,7 @@ def _num(cfg: dict, key: str, default: float, log=None) -> float:
         return float(raw)
     except (ValueError, TypeError):
         if log is not None:
-            log.warn(f"agentcage: watcher.{key} is not a number "
+            log.warn(f"agentcage: agents.watcher.{key} is not a number "
                      f"({raw!r}) — using {default}")
         return default
 
@@ -765,7 +765,7 @@ class Watcher:
 
     def __init__(self, proxy_cfg: dict, dom, policy_api_obj, audit_write,
                  log, audit_ring, capture_path: str = "") -> None:
-        self.cfg = (proxy_cfg or {}).get("watcher") or {}
+        self.cfg = ((proxy_cfg or {}).get("agents") or {}).get("watcher") or {}
         self.dom = dom
         self._pa = policy_api_obj  # Optional[PolicyApi] — grants machinery
         self._audit = audit_write
@@ -793,7 +793,7 @@ class Watcher:
         _ar = self.cfg.get("auto_revoke", True)
         if not isinstance(_ar, bool):
             self._log.warn(
-                f"agentcage: watcher.auto_revoke is not a boolean "
+                f"agentcage: agents.watcher.auto_revoke is not a boolean "
                 f"({ _ar!r }) — using the default (true)")
             _ar = True
         self._auto_revoke = _ar
@@ -803,7 +803,7 @@ class Watcher:
         _dd = self.cfg.get("dedup_samples", True)
         if not isinstance(_dd, bool):
             self._log.warn(
-                f"agentcage: watcher.dedup_samples is not a boolean "
+                f"agentcage: agents.watcher.dedup_samples is not a boolean "
                 f"({_dd!r}) — using the default (true)")
             _dd = True
         self._dedup = _dd
@@ -814,35 +814,29 @@ class Watcher:
         _ctx = self.cfg.get("context", "")
         if not isinstance(_ctx, str):
             self._log.warn(
-                "agentcage: watcher.context is not a string in the proxy "
+                "agentcage: agents.watcher.context is not a string in the proxy "
                 f"config (got {type(_ctx).__name__}) — ignoring it")
             _ctx = ""
         self._context = _ctx.strip()[:4096]
 
-        agent = self.cfg.get("agent")
-        if not isinstance(agent, dict):
-            if agent is not None:
-                self._log.warn(
-                    "agentcage: watcher.agent is not a mapping in the "
-                    f"proxy config (got {type(agent).__name__}) — the "
-                    f"watcher agent is unconfigured")
-            agent = {}
+        # The LLM client fields sit flat on the block (one grammar across
+        # the roster; the ``agent:`` sub-block was flattened in 0.40).
         # Provider is NOT lowercased: the host validation rejects any
         # casing but the exact provider key, so a mixed-case value here
         # means a deformed proxy config — leave it as-is and let the
         # provider lookup fail (recorded scan failures), rather than
         # silently accepting what the operator's validation rejects.
-        self._provider = str(agent.get("provider", "") or "")
-        self._model = str(agent.get("model", "") or "")
-        self._secret = self._read_key(str(agent.get("api_key", "") or ""))
-        self._timeout = _num(agent, "timeout_seconds", 30.0, log)
+        self._provider = str(self.cfg.get("provider", "") or "")
+        self._model = str(self.cfg.get("model", "") or "")
+        self._secret = self._read_key(str(self.cfg.get("api_key", "") or ""))
+        self._timeout = _num(self.cfg, "timeout_seconds", 30.0, log)
         # Completion budget for the forced `review` tool call — the
         # decider's setting, same reasoning-model starvation risk (an
         # exhausted budget returns finish_reason: length with no tool
         # call, which is a recorded scan failure). Was hard-coded 2048;
         # operator-tunable now, defaulting to the dataclass's 8192.
-        self._llm_max_tokens = int(_num(agent, "max_tokens", 8192, log))
-        self._llm_base_url = str(agent.get("base_url", "") or "").rstrip("/")
+        self._llm_max_tokens = int(_num(self.cfg, "max_tokens", 8192, log))
+        self._llm_base_url = str(self.cfg.get("base_url", "") or "").rstrip("/")
 
         # Scan cursors. The RING has none — it is drained in ingestion
         # order (see _collect). The capture tail tracks (byte offset,
@@ -907,7 +901,7 @@ class Watcher:
 
         Called on every hot-reload — including when this watcher's own
         config block is unchanged and it is being kept rather than
-        rebuilt (see ``addon._init_watcher``): ``domains.auto`` gets a
+        rebuilt (see ``addon._init_watcher``): ``agents.decider`` gets a
         brand new ``PolicyApi`` on every reload regardless, so an
         unrefreshed ``_pa`` would keep granting/revoking through a
         discarded, sweeper-cancelled instance. ``secret set`` re-stages
@@ -916,8 +910,7 @@ class Watcher:
         """
         self.dom = dom
         self._pa = policy_api_obj
-        agent = self.cfg.get("agent") or {}
-        self._secret = self._read_key(str(agent.get("api_key", "") or ""))
+        self._secret = self._read_key(str(self.cfg.get("api_key", "") or ""))
 
     # ── Scan loop ───────────────────────────────────────────
 
@@ -1114,7 +1107,7 @@ class Watcher:
                           "scan drained it, so earlier entries in the window "
                           "were likely evicted unreviewed — a busy cage, or "
                           "chaff pushed through the ring to age evidence out",
-                "recommendation": "shorten watcher.interval_seconds, or treat "
+                "recommendation": "shorten agents.watcher.interval_seconds, or treat "
                                   "the volume itself as suspicious if the cage "
                                   "has no reason to be this busy",
             })
@@ -1137,7 +1130,7 @@ class Watcher:
                               f"({self._consec_failures} consecutive "
                               f"failures). Nothing was revoked.",
                     "recommendation": "check the egress logs and the "
-                                      "watcher.agent config; the next tick "
+                                      "agents.watcher config; the next tick "
                                       "retries automatically",
                 })
             self._scans += 1
@@ -1162,7 +1155,7 @@ class Watcher:
                 "recommendation": "reduce capture volume "
                                   "(capture.min_action, capture.domains, "
                                   "a smaller capture.max_body_size) or "
-                                  "shorten watcher.interval_seconds",
+                                  "shorten agents.watcher.interval_seconds",
             })
 
         findings = verdict.get("findings") or []
@@ -1493,7 +1486,7 @@ class Watcher:
                         "detail": str(r.get("reason", ""))[:1000],
                         "recommendation": "revoke the runtime grant with "
                                           "`agentcage cage grants revoke`, "
-                                          "or set watcher.auto_revoke: true "
+                                          "or set agents.watcher.auto_revoke: true "
                                           "to have the watcher apply this "
                                           "itself",
                         "domain": str(r.get("domain")),
@@ -1513,11 +1506,11 @@ class Watcher:
                           "the static baseline is the block list, so the "
                           "analysis's narrowing judgements do not apply",
                 "recommendation": "run the cage in allowlist mode to use "
-                                  "the watcher, or disable watcher.enable",
+                                  "the watcher, or disable agents.watcher.enable",
             })
             return []
         if self._pa is None or self.dom is None:
-            # No domains.auto ⇒ no runtime grants exist to revoke;
+            # No agents.decider ⇒ no runtime grants exist to revoke;
             # degrade each removal to a finding so the operator sees it.
             for r in removals:
                 if isinstance(r, dict) and r.get("domain"):
@@ -1526,7 +1519,7 @@ class Watcher:
                         "title": f"cannot revoke {r.get('domain')}: runtime "
                                  f"grants are disabled",
                         "detail": str(r.get("reason", ""))[:1000],
-                        "recommendation": "enable domains.auto for "
+                        "recommendation": "enable agents.decider for "
                                           "watcher-managed grants, or "
                                           "remove the domain with "
                                           "`agentcage domain rm`",

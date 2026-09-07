@@ -1329,23 +1329,29 @@ class AppleContainerBackend:
         # key to ``creds_secrets`` for an ExecStartPre decrypt; apple has no
         # systemd-creds runtime, so the apple equivalent is the keychain-held
         # cleartext staged into the bind-mount file — see ``_stage_secrets``.)
-        _auto = getattr(getattr(config, "domains", None), "auto", None)
+        # agents.decider api_key — same egress-only staging as a relay
+        # credential. ``cmd:`` is rejected at config time, so only
+        # ``env:`` / ``systemd-creds:`` reach here. (The container
+        # backend's quadlet path adds a ``systemd-creds:`` key to
+        # ``creds_secrets`` for an ExecStartPre decrypt; apple has no
+        # systemd-creds runtime, so the apple equivalent is the
+        # keychain-held cleartext staged into the bind-mount file — see
+        # ``_stage_secrets``.)
         decider_api_key_source = ""
-        if _auto is not None and getattr(_auto, "enable", False):
-            _api_key = _auto.decider.agent.api_key or ""
+        if getattr(config.agents.decider, "enable", False):
+            _api_key = getattr(config.agents.decider, "api_key", "") or ""
             _scheme, _, _var = _api_key.partition(":")
             if _scheme and _var:
                 decider_api_key_source = _api_key
                 if _var not in relay_secret_envs:
                     relay_secret_envs.append(_var)
-        # Traffic watcher agent api_key — same egress-only staging as the
+        # agents.watcher api_key — same egress-only staging as the
         # decider's above (it can reuse the decider's key, or name a
         # different one; either way it needs to reach the egress's secrets
         # bind mount, never the cage workload's `-e` env).
-        _watcher = getattr(config, "watcher", None)
         watcher_api_key_source = ""
-        if _watcher is not None and getattr(_watcher, "enable", False):
-            _w_api_key = _watcher.agent.api_key or ""
+        if getattr(config.agents.watcher, "enable", False):
+            _w_api_key = getattr(config.agents.watcher, "api_key", "") or ""
             _w_scheme, _, _w_var = _w_api_key.partition(":")
             if _w_scheme and _w_var:
                 watcher_api_key_source = _w_api_key
@@ -1371,13 +1377,13 @@ class AppleContainerBackend:
                 "secret_envs": secret_envs,
                 "secret_env_placeholders": secret_env_placeholders,
                 "relay_secret_envs": relay_secret_envs,
-                # domains.auto decider api_key source scheme (``env:NAME`` /
+                # agents.decider api_key source scheme (``env:NAME`` /
                 # ``systemd-creds:NAME``) — see the staging comment above.
                 # ``_stage_secrets`` reads this to stage the decider key
                 # scheme-appropriately and emit an accurate missing-value
-                # warning. Empty when domains.auto is disabled.
+                # warning. Empty when the decider is disabled.
                 "decider_api_key_source": decider_api_key_source,
-                # Traffic watcher agent api_key source — see the staging
+                # agents.watcher api_key source — see the staging
                 # comment above. Empty when the watcher is disabled.
                 "watcher_api_key_source": watcher_api_key_source,
                 # Upstream resolvers, so start() (meta-driven, no Config) can
@@ -1388,14 +1394,16 @@ class AppleContainerBackend:
                 "secrets_backend": config.secrets.backend,
                 "secrets_allow_plaintext": bool(config.secrets.allow_plaintext),
                 "autostart": bool(getattr(config, "apple_container_autostart", False)),
-                # Whether to bind-mount the grants overlay into the egress:
-                # the feature is on, OR an allow entry has an expiry (the
-                # addon sweeps those and re-publishes the DNS zone list), OR
-                # the traffic watcher is on (it writes findings/state into
-                # the same volume, and revokes grants through it).
-                "domains_auto": bool(getattr(config.domains.auto, "enable", False)),
+                # agents grants-overlay volume gate: mount when an agent
+                # is on (the decider writes decided grants, the watcher
+                # writes findings/state into the same volume and revokes
+                # grants through it) OR an allow entry has an expiry (the
+                # addon sweeps those and re-publishes the DNS zone list).
+                "decider_enabled": bool(
+                    getattr(config.agents.decider, "enable", False)),
                 "has_expiring_domains": bool(getattr(config.domains, "expires", None)),
-                "watcher_enabled": bool(getattr(_watcher, "enable", False)),
+                "watcher_enabled": bool(
+                    getattr(config.agents.watcher, "enable", False)),
                 # User-defined host bind mounts. Apple's `container run`
                 # accepts `--volume host:cage[:mode]` just like podman.
                 # Expand + validate the host path HERE (at generate_units
@@ -1706,7 +1714,7 @@ class AppleContainerBackend:
         # write. Only mount when the feature is on OR any allow entry has
         # an expiry (the addon sweeps those and re-publishes the DNS zone
         # list).
-        if meta.get("domains_auto") or meta.get("has_expiring_domains") \
+        if meta.get("decider_enabled") or meta.get("has_expiring_domains") \
                 or meta.get("watcher_enabled"):
             from agentcage import state as _state_mod
             grants_dir = _state_mod.grants_dir(name)
@@ -2149,7 +2157,7 @@ class AppleContainerBackend:
                     # 503 "llm provider not configured" — name it
                     # accurately rather than as a relay credential.
                     click.echo(
-                        f"warning: domains.auto.decider.agent.api_key env "
+                        f"warning: agents.decider.api_key env "
                         f"{_decider_name!r} not provided via "
                         f"--set-secret; the decider will fail closed (503 "
                         f"'llm provider not configured') on every domain "
@@ -2158,7 +2166,7 @@ class AppleContainerBackend:
                     )
                 elif env_name == _watcher_name and _watcher_name:
                     click.echo(
-                        f"warning: watcher.agent.api_key env "
+                        f"warning: agents.watcher.api_key env "
                         f"{_watcher_name!r} not provided via "
                         f"--set-secret; the traffic watcher will skip "
                         f"every scan until it is set",
