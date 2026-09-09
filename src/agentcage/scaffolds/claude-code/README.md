@@ -2,11 +2,11 @@
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's official CLI for Claude -- an interactive coding agent that lives in your terminal. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
-For the full list of configuration options, see the [Configuration Reference](../../docs/reference/configuration.md).
+For the full list of configuration options, see the [Configuration Reference](../../../../docs/reference/configuration.md).
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) -- see [installation instructions](../../README.md#install) for your platform
+- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) -- see [installation instructions](../../../../docs/get-started/install.md) for your platform
 - An Anthropic API key (`ANTHROPIC_API_KEY`) or a Claude subscription (Pro/Team/Enterprise)
 
 ## Quick start
@@ -114,7 +114,7 @@ With `lifecycle: service`, systemd auto-restarts the container on failure and st
 
 ## Managing your cage
 
-See [Troubleshoot](../../docs/how-to/troubleshoot.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../docs/reference/cli.md#cage) for the full `cage` subcommand set.
+See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../../../docs/reference/cli.md) for the full `cage` subcommand set.
 
 ## Configuration
 
@@ -132,7 +132,7 @@ The scaffold also tmpfs-masks two executable-config surfaces under the workspace
 
 `~/.claude.json` (Claude Code's global UX config — model choice, theme, etc.) is **not** mounted by default; uncomment the line in `cage.yaml` if you want host preferences to follow you into the cage. Git config and SSH known hosts mounts are commented out -- uncomment them if you need git push. Remove the `~/.claude` mount to fully isolate the cage from host state.
 
-> **Note:** all three backends apply these masks. On `apple-container` the mounts are created but their option list is not (Apple's `container run --tmpfs` takes a bare path), so `noexec`/`nosuid`/`nodev`/`size=` are dropped there — see [tmpfs mounts](../../docs/reference/configuration.md#tmpfs-mounts). Copy-up is the exception: agentcage emulates it by seeding the tmpfs from a read-only mount of the covered host directory at cage-init time, so `.claude/` is readable and `.git/hooks/` empty on every backend.
+> **Note:** all three backends apply these masks. On `apple-container` the mounts are created but their option list is not (Apple's `container run --tmpfs` takes a bare path), so `noexec`/`nosuid`/`nodev`/`size=` are dropped there — see [tmpfs mounts](../../../../docs/reference/configuration.md#1-container-configuration). Copy-up is the exception: agentcage emulates it by seeding the tmpfs from a read-only mount of the covered host directory at cage-init time, so `.claude/` is readable and `.git/hooks/` empty on every backend.
 >
 > The masks do not depend on the host project being a git repo. When `${PROJECT_DIR}` is a git project, the `/workspace/.git/hooks/` tmpfs overlays the existing host `.git/hooks/` (the host's hooks stay untouched on the host FS). On a host project **without** a `.git/`, podman must still create the mount point inside the bind-mounted tree, so an empty `.git/hooks/` appears on the host while the cage runs. The cage quadlet records which mount points were absent immediately before start and removes exactly those on stop, provided they are still empty — a directory that already existed, or that something has written into, is always left in place (#320).
 
@@ -158,7 +158,7 @@ the effective allowlist with `GET https://agentcage.local/v1/allowlist`, request
 a new egress domain with a justification the decider will accept
 (`POST /v1/allowlist/requests`), and give a grant back
 (`POST /v1/allowlist/removals`). The endpoints only answer when the cage enables
-`agents.decider` (see `docs/reference/policy-api.md`); without it the skill tells
+`agents.decider` (see [Policy API Reference](../../../../docs/reference/policy-api.md)); without it the skill tells
 the agent to ask the operator. Like the brief, agentcage stages the one canonical
 copy (`src/agentcage/scaffolds/skills/agentcage/`) into the build context for the
 `COPY skills/agentcage` line; drop that line to leave it out.

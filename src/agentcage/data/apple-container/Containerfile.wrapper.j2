@@ -31,7 +31,7 @@
    (no /home/acproxy/secrets bind-mount in this VM) and cannot disable the
    egress (no iptables binary). The route-bypass via `ip route replace`
    remains for --as-root operators (CAP_NET_ADMIN still in CapBnd) —
-   documented as a known residual in docs/apple-container.md; tracked for
+   documented as a known residual in docs/explain/isolation-backends.md; tracked for
    v0.23 via macOS pf rules.
 #}
 FROM {{ user_image }}

@@ -2,11 +2,11 @@
 
 [Pi](https://pi.dev/docs/latest) is a minimal terminal coding harness — an extensible CLI for AI-assisted coding that supports multiple model providers and is also embeddable as a Node.js SDK. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
-For the full list of configuration options, see the [Configuration Reference](../../docs/reference/configuration.md).
+For the full list of configuration options, see the [Configuration Reference](../../../../docs/reference/configuration.md).
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) -- see [installation instructions](../../README.md#install) for your platform
+- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) -- see [installation instructions](../../../../docs/get-started/install.md) for your platform
 - An Anthropic API key (`ANTHROPIC_API_KEY`), an OpenAI API key (`OPENAI_API_KEY`), or a subscription you can `/login` into from inside the cage
 
 ## Quick start
@@ -109,7 +109,7 @@ See [Pi SDK docs](https://pi.dev/docs/latest/sdk) for embedding the agent in a N
 
 ## Managing your cage
 
-See [Troubleshoot](../../docs/how-to/troubleshoot.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../docs/reference/cli.md#cage) for the full `cage` subcommand set.
+See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../../../docs/reference/cli.md) for the full `cage` subcommand set.
 
 ## Configuration
 
@@ -144,7 +144,7 @@ the effective allowlist with `GET https://agentcage.local/v1/allowlist`, request
 a new egress domain with a justification the decider will accept
 (`POST /v1/allowlist/requests`), and give a grant back
 (`POST /v1/allowlist/removals`). The endpoints only answer when the cage enables
-`agents.decider` (see `docs/reference/policy-api.md`); without it the skill tells
+`agents.decider` (see [Policy API Reference](../../../../docs/reference/policy-api.md)); without it the skill tells
 the agent to ask the operator. Like the brief, agentcage stages the one canonical
 copy (`src/agentcage/scaffolds/skills/agentcage/`) into the build context for the
 `COPY skills/agentcage` line; drop that line to leave it out.

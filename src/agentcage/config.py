@@ -769,7 +769,7 @@ class Config:
     # launchd plist into ~/Library/LaunchAgents so the cage re-starts
     # automatically at user login. Opt-in because most users prefer to
     # control which cages come back after a reboot. Other isolation
-    # backends ignore this. See docs/apple-container.md.
+    # backends ignore this. See docs/explain/isolation-backends.md.
     apple_container_autostart: bool = False
 
 
@@ -1965,7 +1965,7 @@ def validate_config(config: Config) -> list[str]:
             # in-cage mitmproxy addon stages inbound+outbound snapshots
             # under the shared CaptureWriter and writes them to
             # /var/log/agentcage/capture.jsonl (bind-mounted to the host).
-            # See docs/apple-container.md → "HAR body capture".
+            # See docs/explain/isolation-backends.md.
         ]
         for field_path, non_default, summary in _ac_silent_drops:
             if non_default:

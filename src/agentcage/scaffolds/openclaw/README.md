@@ -2,11 +2,11 @@
 
 [OpenClaw](https://github.com/openclaw/openclaw) is an AI coding agent. This guide shows how to run it inside an agentcage sandbox -- a rootless Podman container with no direct internet access where all HTTP traffic is inspected by mitmproxy for domain filtering, secret leak detection, and payload analysis.
 
-For the full list of configuration options, see the [Configuration Reference](../../docs/reference/configuration.md).
+For the full list of configuration options, see the [Configuration Reference](../../../../docs/reference/configuration.md).
 
 ## Prerequisites
 
-- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../../README.md#install) for your platform
+- [Podman](https://podman.io/) (rootless), Python 3.12+, and [uv](https://docs.astral.sh/uv/) — see [installation instructions](../../../../docs/get-started/install.md) for your platform
 - An OpenClaw container image (`ghcr.io/openclaw/openclaw:latest` or custom-built)
 - An Anthropic API key (`ANTHROPIC_API_KEY`)
 
@@ -43,7 +43,7 @@ agentcage secret set myapp OPENCLAW_GATEWAY_PASSWORD
 
 If you add `BRAVE_API_KEY`, uncomment the Brave entries in the `secret_injection` section and add `search.brave.com` to the domain allowlist in `cage.yaml`.
 
-> **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a generated placeholder token like `agentcage:secret:ANTHROPIC_API_KEY:9f3c1a7e8b204d56c1e0a4f7b2d8369a`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](../../docs/reference/secret-injection.md) for details.
+> **Secret injection:** The config uses `secret_injection` for API keys (Anthropic, Brave). The cage container never sees the real value -- it gets a generated placeholder token like `agentcage:secret:ANTHROPIC_API_KEY:9f3c1a7e8b204d56c1e0a4f7b2d8369a`, and the proxy swaps it for the real value when forwarding to the correct domain. The gateway password (`OPENCLAW_GATEWAY_PASSWORD`) stays in `podman_secrets` since it is used internally by the cage process, not in proxied HTTP requests. See [Secret injection](../../../../docs/reference/secrets.md) for details.
 
 ### 4. Connect and pair your browser
 
@@ -80,7 +80,7 @@ agentcage cage logs myapp -s dns    # DNS sidecar
 
 ## Managing your cage
 
-See [Troubleshoot](../../docs/how-to/troubleshoot.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../docs/reference/cli.md#cage) for the full `cage` subcommand set.
+See [Troubleshooting](../../../../docs/how-to/troubleshooting.md) for diagnosing blocked requests, secret problems, and proxy restarts. See the [CLI reference](../../../../docs/reference/cli.md) for the full `cage` subcommand set.
 
 ## Reverse proxy & device pairing
 
@@ -124,7 +124,7 @@ secrets:
   builtin_allow_to_domains: false
 ```
 
-See [Secret detection](../../docs/reference/inspectors.md#secrets-inspector) for the full reference.
+See [Secret detection](../../../../docs/how-to/custom-inspectors.md) for the full reference.
 
 ## Domain allowlist tiers
 
