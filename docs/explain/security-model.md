@@ -1,111 +1,148 @@
-<!-- owner: @luca  last-reviewed: 2026-05-28 -->
-# Security model
+# Security Model & Threat Analysis
 
-agentcage is a defense-in-depth proxy sandbox. It exists to reduce the risk of data exfiltration from an AI agent — both deliberate exfiltration by a compromised agent and accidental leakage through legitimate-looking requests. Read this when deciding whether agentcage's protections match your threat model.
+agentcage is a defense-in-depth security harness designed for running untrusted, autonomous AI coding agents.
 
-## Threat model
+This document describes the threat model, the eight protective security layers, trust boundaries, fail-closed design principles, and known residual risks.
 
-The primary threat is an AI agent exfiltrating secrets, source, or context via HTTP requests.
+---
 
-### In scope
+## 1. Threat Model
 
-- HTTP/HTTPS exfiltration — secrets or sensitive data in request bodies, headers, or URLs
-- Accidental secret leakage in outbound requests
-- Unauthorized API calls to non-allowlisted domains
-- Encoded payload smuggling — base64 or compressed blobs hidden in normal-looking requests
-- WebSocket exfiltration after handshake
+### A. What We Assume About the Agent
+We assume the agent process is **actively compromised or malicious**:
+- **Prompt Injection**: The agent will read untrusted text (from GitHub issues, pull request diffs, scraped websites, or npm dependencies) containing indirect prompt injections attempting to hijack its execution.
+- **Rogue Dependencies**: The agent will execute code that installs malicious packages containing obfuscated telemetry, credential stealers, or reverse shells.
+- **Hallucinatory Operations**: The agent may hallucinate destructive commands or query sensitive internal network resources.
 
-### Out of scope
+### B. What We Assume About the Host
+- The operator's host operating system and kernel are trustworthy prior to running the agent.
+- The host user running agentcage is unprivileged (rootless).
+- Host directories outside explicit volume mounts are inaccessible to the sandbox.
 
-- Non-HTTP protocols (blocked by network isolation, but not inspected)
-- DNS exfiltration through allowlisted apex domains (see [Known limitations](#known-limitations))
-- Container or kernel escapes in `container` mode (shared kernel; `vm` and `apple-container` defend against this)
-- Side-channel attacks and timing-based leaks
-- Multi-request evasion — splitting secrets across many small requests
-- Confused-deputy attacks through legitimate requests to allowed domains
+### C. Adversaries in Scope
+| Adversary Class | Motivation & Attack Vectors |
+| :--- | :--- |
+| **Credential Harvesters** | Exfiltrating environment variables (`ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`), git credentials, or SSH keys. |
+| **Data Exfiltrators** | Uploading proprietary source code or intellectual property to attacker-controlled C2 servers. |
+| **LAN / Cloud Pivoters** | Probing RFC 1918 internal subnets, local development services, or cloud instance metadata (`169.254.169.254`). |
+| **Persistent Host Compromisers**| Planting malicious git hooks (`.git/hooks/`) or agent configs (`.claude/`) that trigger host execution when the operator works outside the cage. |
 
-### Threats by isolation mode
+### D. Explicitly Out of Scope
+- Compromise of the host machine prior to launching agentcage.
+- Operator explicitly disabling security controls (e.g. running with `--as-root`, adding `*` wildcards to allowlists, or enabling broad passthrough).
+- Malicious source code intentionally committed to your repository that is later reviewed, approved, and executed directly on the host by the operator.
 
-| Threat | container | vm | apple-container |
-|---|---|---|---|
-| HTTP/HTTPS exfiltration | Defended | Defended | Defended |
-| Secret leakage | Defended | Defended | Defended |
-| Unauthorized API calls | Defended | Defended | Defended |
-| DNS exfiltration | Partial | Partial | Partial |
-| Container/runtime escape | **Out of scope** | Defended | Defended |
-| Kernel exploit | **Out of scope** | Defended | Defended |
-| Side-channel attacks | Out of scope | Out of scope | Out of scope |
+---
 
-For the backend trade-offs, see [Isolation modes](isolation-modes.md).
+## 2. The Eight Defense-in-Depth Layers
 
-## Defense layers
+agentcage enforces eight independent defensive rings between the agent workload and external resources:
 
-agentcage applies overlapping defenses. Each one stands alone; none is the only line.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. NETWORK LAYER       Internal=true private bridge; iptables FORWARD DROP  │
+│ 2. DNS LAYER           dnsmasq allowlist; TEST-NET sinkhole (198.51.100.1)   │
+│ 3. PROXY IDENTITY      Strict SNI ↔ Host equality; anti-DNS rebinding guard │
+│ 4. L7 INSPECTORS       Domain, secrets regex, Shannon entropy, content-type │
+│ 5. SECRETS LAYER       128-bit decoy placeholders; wire injection; redaction│
+│ 6. CONFINEMENT LAYER   UID 1000; drop ALL capabilities; no-new-privileges   │
+│ 7. FILESYSTEM LAYER    Read-only rootfs; tmpfs pivot masks on .git/hooks    │
+│ 8. AGENTIC LAYER       In-egress Decider Agent; background Traffic Watcher  │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-1. **Network isolation.** The cage has no internet gateway. The only path out is the egress sibling; inbound published ports also flow through the inspector chain.
-2. **Domain filtering.** Allowlist or blocklist controls which hosts the agent reaches; non-matching requests get a 403. See [Domains](../reference/domains.md).
-3. **DNS filtering.** In allowlist mode, queries for non-allowlisted apexes resolve to a placeholder IP and non-A query types are refused.
-4. **Secret injection.** The cage holds placeholders. The proxy substitutes real values on the wire and redacts them on inbound responses. A real secret value appearing in an outbound request is blocked. Transforms let credentials never enter the cage at all. See [Secret injection](../reference/secret-injection.md).
-5. **Payload inspection.** Inspectors scan every request (and WebSocket frame after handshake) for known secret patterns, high-entropy bodies, content-type mismatches, base64 blobs, and oversized payloads. Custom inspectors extend the chain. See [Inspectors](../reference/inspectors.md).
-6. **Rate limiting.** Per-host token bucket bounds request flooding and timing-based evasion.
-7. **Audit logging.** Blocked and flagged decisions are written as structured JSON lines. Allowed requests are opt-in.
+---
 
-## Fail-closed design
+### Layer 1: Network Confinement
+- **Internal Network**: Workload containers attach to an unrouted Podman network (`Internal=true`).
+- **Default-Drop Forwarding**: The egress container enforces `iptables -P FORWARD DROP` and `ip6tables -P FORWARD DROP`.
+- **Protocol Drops**: Raw UDP, ICMP, and unapproved TCP ports are dropped at the packet filter level. Only ports declared in `ports.tcp.allow` (default: 80, 443) are forwarded to the proxy.
 
-If the egress sibling goes down, the cage gets connection errors — not unfiltered internet access. The cage has no internet gateway, so a proxy failure means no connectivity at all. Generated units restart on failure to recover from transient crashes.
+### Layer 2: DNS Filtering & Sinkholing
+- **Strict Allowlist**: `dnsmasq` answers queries only for domains matching `domains.allow` or active runtime grants.
+- **RFC 5737 Sinkhole**: Unauthorized domains resolve to `198.51.100.1` (TEST-NET-2). This guarantees that HTTP clients connect to the local proxy and receive clear `403 Forbidden` policy responses rather than ambiguous connection timeouts.
+- **SSRF & Wildcard Prevention**: The resolver strips IP literals and blocks wildcard DNS domains encoding private IP addresses (e.g., `169-254-169-254.nip.io`).
 
-## Container hardening
+### Layer 3: Proxy Identity & Rebinding Guards
+- **Strict SNI ↔ Host Matching**: The proxy terminates TLS and verifies that the TLS SNI extension matches the HTTP `Host` header, defeating domain-fronting evasion.
+- **Anti-Rebinding Check**: Before connecting upstream, the proxy resolves the target hostname and asserts that the peer IP address is a public, globally routable address. Private RFC 1918 addresses, loopbacks, and link-local ranges are blocked immediately.
+- **Token-Bucket Rate Limiter**: Per-host rate limiting prevents denial-of-service or rapid brute-force attacks against upstream APIs.
 
-By default, the cage runs with a read-only root filesystem, all Linux capabilities dropped, and no-new-privileges. The egress runs as a non-root user. Nested containers (`nested_containers: true`, `container` mode only) relax several of these defaults to enable podman-in-podman; network-level protections still apply, and inner-container traffic is forced through the same egress filter.
+### Layer 4: L7 Content Inspectors
+Every HTTP request and response passes through a chain of pre-configured inspectors running off the main event loop in worker threads:
+- **`domain`**: Enforces static allowlists, blocklists, and dynamic runtime grant policies.
+- **`secrets`**: Scans outbound payloads using regex signatures to detect raw API keys or tokens leaving the cage.
+- **`entropy`**: Calculates Shannon entropy (0–8 bits/byte) on request bodies to detect encrypted or obfuscated binary exfiltration.
+- **`content-type`**: Detects MIME mismatches (e.g. executable binaries disguised as `application/json`).
+- **`body-size`**: Enforces strict request body caps (`capture.max_body_size`).
 
-## Supply chain
+### Layer 5: Zero-Leak Placeholder Secrets
+Real credentials never enter the workload sandbox:
+- **Decoy Tokens**: The sandbox environment variable contains an entropic decoy string:
+  ```text
+  agentcage:secret:ANTHROPIC_API_KEY:4f2a7b8c9d0e1f2a3b4c5d6e7f8a9b0c
+  ```
+- **Wire Injection**: The proxy replaces this placeholder with the real secret **only** on outbound requests targeting the authorized domain (`inject_to`) and inside credential-bearing headers (`Authorization`, `x-api-key`).
+- **Response Redaction**: The proxy scans inbound responses from the upstream server and redacts any echoed secret back to its placeholder before delivering it to the agent.
+- **Encrypted At-Rest Storage**: Real credentials on the host are encrypted using `systemd-creds` (Linux TPM2 / host key) or the macOS Keychain.
 
-Container base images are pinned by digest. Python runtime deps are minimal. Custom inspector paths and bind-mount paths are validated. Cage names are pattern-checked before they reach generated unit files. Templates render in a sandboxed environment.
+### Layer 6: Process Confinement
+- **Unprivileged User**: The agent workload executes as an unprivileged user (UID 1000).
+- **Dropped Capabilities**: All Linux kernel capabilities are dropped (`drop_capabilities: [ALL]`), including `CAP_NET_ADMIN`, `CAP_NET_RAW`, and `CAP_SYS_ADMIN`.
+- **No New Privileges**: `no_new_privileges: true` prevents privilege escalation via `setuid` binaries.
+- **User Namespaces**: On Linux, rootless Podman maps container UID 0 to an unprivileged host subuid, preventing host root compromise even in the event of a container breakout.
 
-## OWASP top 10 for agentic applications (2026)
+### Layer 7: Filesystem Isolation & Pivot Masks
+- **Read-Only Root Filesystem**: The container root filesystem is mounted read-only (`read_only: true`), preventing agents from installing persistent backdoors or modifying system binaries.
+- **Host Pivot Masks**: When binding a project directory to `/workspace`, agentcage automatically places tmpfs overlays over:
+  - `/workspace/.git/hooks/`: Prevents the agent from writing executable git hooks that execute on your host during your next `git commit`.
+  - `/workspace/.claude/`: Prevents the agent from tampering with host-level agent configuration files or memory dumps.
+- **Isolated State**: The agent cannot access `~/.ssh`, `~/.aws`, or host configuration directories.
 
-| Risk | Coverage |
-|---|---|
-| ASI01 Agent Goal Hijack | Out of scope — agentcage inspects traffic, not intent |
-| ASI02 Tool Misuse | Strong — domain allowlist + DNS + WebSocket inspection |
-| ASI03 Identity/Privilege Abuse | Strong — agent never holds real secrets |
-| ASI04 Supply Chain | Strong — pinned images, restricted inspector paths |
-| ASI05 Code Execution | Strong — read-only root, dropped caps, no-new-privileges |
-| ASI08 Cascading Failures | Strong — fail-closed, restart-on-failure, rate limiting |
-| ASI09 Human Trust | Strong — persistent structured audit log |
-| ASI10 Rogue Agents | Strong — isolation + multi-layer inspection |
+### Layer 8: Autonomous Policy & Auditing
+- **In-Egress Policy API**: The agent can introspect reachable domains at `https://agentcage.local/v1/allowlist` and request dynamic egress via `POST /v1/allowlist/requests`.
+- **Decider Agent**: A dedicated in-egress LLM adjudicates domain requests against technical justifications and security rules.
+- **Traffic Watcher**: An asynchronous background LLM agent scans recent audit and HAR capture logs. If it detects suspicious patterns or beaconing, it can autonomously revoke runtime grants.
 
-ASI06 (Memory Poisoning) and ASI07 (Inter-Agent Comms) don't apply to agentcage's single-agent network-inspection scope.
+---
 
-## Known limitations
+## 3. Trust Boundaries
 
-**Multi-request evasion.** Agents can split a secret across many requests to defeat regex matching. Entropy and content-type inspectors catch some encoded exfiltration but not all splitting strategies.
+| Component | Trust Level | Justification |
+| :--- | :--- | :--- |
+| **Agent Workload** | **Untrusted** | Assumed to be under active adversarial manipulation or prompt injection. |
+| **Egress Gateway** | **Trusted (Hardened)** | Runs minimal, unprivileged proxy and DNS daemons; owns the network boundary. |
+| **Host CLI & State**| **Trusted** | Operator-controlled; holds encrypted secrets and controls quadlet generation. |
+| **Policy Decider** | **Semi-Trusted** | Autonomous LLM gatekeeper; can only grant temporary access, subject to rate limits. |
+| **Traffic Watcher**| **Constrained** | Narrowing-only: can revoke dynamic grants, but cannot add new grants or alter baseline config. |
 
-**Exfiltration through allowed domains.** Data can be smuggled inside requests to allowed endpoints — issue titles, search queries, package metadata. Subdomain labels under an allowlisted apex (e.g. `<encoded>.cdn.jsdelivr.net`) are also recursively resolved upstream, giving low-bandwidth DNS covert channels. Audit logs and rate limiting bound these channels.
+---
 
-**Supply chain poisoning.** Agents can install packages from allowlisted registries. Container hardening limits blast radius but doesn't prevent access to the agent's own workspace. Consider pre-approved package lists for high-security deployments.
+## 4. Known Residual Risks & Limitations
 
-**Shared kernel (`container` mode only).** A kernel or runtime CVE bypasses all container-level protections. Use `vm` or `apple-container` to eliminate this. See [Isolation modes](isolation-modes.md).
+Transparency is a fundamental tenet of security engineering. agentcage documents the following known residual risks:
 
-## Traffic capture and HAR export
+1. **Abuse of Allowlisted Domains**: If an agent is granted access to a domain with arbitrary upload endpoints (e.g. `github.com` or `pastebin.com`), it could potentially exfiltrate non-credential data (such as source code) within legitimate HTTP calls. *Mitigation: Restrict allowlists to minimal API endpoints; enable the Traffic Watcher.*
+2. **Shared Linux Kernel (`container` backend)**: The Linux `container` backend relies on user namespaces. While robust, it shares the host kernel. *Mitigation: Use the `apple-container` (macOS) or `vm` (Lima) backends when strict hardware virtualization boundaries are required.*
+3. **TLS Passthrough Blindspots**: Declaring domains under `domains.passthrough` tunnels raw TCP without terminating TLS. Mitmproxy cannot inspect payloads or inject secrets into passthrough streams. *Mitigation: Use passthrough only for certificate-pinned endpoints that fail under custom CAs.*
+4. **Outbound HAR Captures**: Exporting HAR files with `--view outbound` contains real injected credentials on the wire. *Mitigation: Always use `--view inbound` (default) when sharing traffic captures.*
+5. **Elevated Debug Flags**: Running `agentcage run --as-root` or setting `nested_containers: true` relaxes user namespace protections. These flags should only be used in isolated CI environments.
 
-When capture is enabled, the proxy records decrypted request/response bodies; `cage har` exports them. See [Capture](../reference/capture.md).
+---
 
-- **Outbound captures contain real secrets** — after injection, the wire view holds real API keys, tokens, and cookies. The CLI defaults to the inbound (placeholder) view and warns when you opt into outbound; treat outbound HAR files with the same controls as the secrets themselves.
-- **Inbound captures may contain sensitive content** — PII, user queries, model responses. The Okta breach (2023) showed how HAR files uploaded to support portals led to session hijacking. Handle them under the same data governance as the agent's operational data.
+## 5. Security Hardening Checklist
 
-## Secret backend trust boundaries
+When configuring production cages:
 
-Secrets can come from environment variables, `systemd-creds` (encrypted at rest, bound to the machine), or a `cmd:` shell hook. The `cmd:` source executes with the privileges of the user invoking agentcage — review any `source: "cmd:..."` entries in a `cage.yaml` sourced from an untrusted location before running `cage create`.
+- [ ] Ensure `domains.allow` contains only specific, fully qualified hostnames (avoid wildcards like `*.com`).
+- [ ] Verify that `container.read_only: true` is enabled.
+- [ ] Do not mount sensitive host directories (never mount `~/.ssh`, `~/.aws`, or Docker sockets).
+- [ ] Store secrets with `agentcage secret set` rather than placing cleartext in `cage.yaml`.
+- [ ] Run `agentcage doctor` to verify that unprivileged user namespaces and lingering are active.
+- [ ] Enable the `agents.watcher` block in `cage.yaml` to monitor background traffic anomalies.
 
-`systemd-creds` blobs are bound to the host machine. A motherboard swap, TPM reset, or BIOS update may render them unrecoverable; use `cage backup --include-secrets` for portable backups.
+---
 
-## Reporting security issues
+## Reporting Vulnerabilities
 
-Report security vulnerabilities via email to **security@agentcage.ai**. Do not open a public GitHub issue. See [SECURITY.md](../../SECURITY.md).
-
-## Related
-
-- [Architecture](architecture.md) — topology and inspector chain
-- [Isolation modes](isolation-modes.md) — backend trade-offs
-- [Secret injection](../reference/secret-injection.md), [Inspectors](../reference/inspectors.md), [Ports](../reference/ports.md)
+If you identify a security vulnerability in agentcage, please report it privately according to the procedure in **[SECURITY.md](../../SECURITY.md)**.
