@@ -19,7 +19,7 @@ register_cage "$CAGE"
 
 # Build the agent image on the host
 echo "Building basic-agent image..."
-podman build -t basic-agent "$REPO_ROOT/examples/basic/agent" >/dev/null 2>&1
+podman build -t basic-agent "$REPO_ROOT/tests/e2e/fixtures/agent" >/dev/null 2>&1
 
 echo "Creating VM cage (this takes a few minutes)..."
 export E2E_PORT_VM="$PORT"

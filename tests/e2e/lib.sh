@@ -18,7 +18,7 @@ E2E_CAGES_TO_CLEANUP=()
 E2E_PORT_BASE="${E2E_PORT_BASE:-19080}"
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
-export AGENT_DIR="$REPO_ROOT/examples/basic/agent"
+export AGENT_DIR="$REPO_ROOT/tests/e2e/fixtures/agent"
 
 # ── output ───────────────────────────────────────────────────────────
 
