@@ -1633,7 +1633,7 @@ def test_generate_units_falls_back_to_vm_when_container_unset():
 def test_start_argv_includes_normalized_cpus_memory(tmp_path, monkeypatch):
     """The cage VM's `container run` argv carries normalized --cpus
     (integer; Apple rejects fractions) and --memory (uppercase suffix).
-    The egress sibling gets a fixed 512M and no --cpus (it's small)."""
+    The egress sibling gets a fixed 2G and no --cpus."""
     backend, captured = _setup_start_test(
         tmp_path, monkeypatch,
         unit_meta={
@@ -1646,6 +1646,11 @@ def test_start_argv_includes_normalized_cpus_memory(tmp_path, monkeypatch):
     cage_argv = _cage_run_argv(captured)
     assert cage_argv[cage_argv.index("--cpus") + 1] == "2"
     assert cage_argv[cage_argv.index("--memory") + 1] == "2G"
+    # The egress sibling's cap is fixed and independent of the cage's:
+    # mitmproxy buffers full response bodies, so 512M was OOM-prone.
+    egress_argv = _egress_run_argv(captured)
+    assert egress_argv[egress_argv.index("--memory") + 1] == "2G"
+    assert "--cpus" not in egress_argv
 
 
 def test_normalize_cpus_ceils_fractions():

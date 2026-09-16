@@ -1788,9 +1788,21 @@ class AppleContainerBackend:
         egress_argv += [
             "-e", f"ALLOW_ICMP={1 if allow_icmp else 0}",
         ]
-        # Egress is small — 512M is plenty. We don't normalize here
-        # because the value is internal, not operator-supplied.
-        egress_argv += ["--memory", "512M"]
+        # Egress runs mitmproxy, which buffers whole response bodies in
+        # memory before the allowlist filter sees them. 512M was not
+        # enough: a single large artifact (npm's @types/node packument is
+        # ~11MB of JSON, and Python inflates that many times over while
+        # decoding) could push the proxy over the cap. The kernel then
+        # OOM-killed the mitmproxy child, the supervisor followed it out
+        # ("child died, exiting"), and the cage was left with a stopped
+        # egress sibling — no DNS upstream and no default gateway, which
+        # presents as a total loss of connectivity inside the cage.
+        #
+        # 2G leaves comfortable headroom for large package metadata and
+        # registry tarballs while staying small next to the cage VM
+        # itself (8G is a typical cage). We don't normalize here because
+        # the value is internal, not operator-supplied.
+        egress_argv += ["--memory", "2G"]
         egress_argv.append(egress_image)
 
         result = ac_cli.run(egress_argv, check=False, capture_output=False)
