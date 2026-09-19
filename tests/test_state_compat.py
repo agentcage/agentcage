@@ -861,7 +861,16 @@ def test_generator_reproduces_the_committed_fixture_byte_for_byte():
 
     version = _package_version()
     if version not in GENERATIONS:
-        pytest.skip(f"no committed fixture for the installed version {version}")
+        # The stamp comes from importlib.metadata, which after PR A1 resolves
+        # from the root VERSION file. A version bump is therefore expected to
+        # land here exactly once, and the fix is to add a generation rather
+        # than to edit an existing one.
+        pytest.skip(
+            f"no committed fixture for the installed version {version}; "
+            f"committed generations are {GENERATIONS}. If the version was "
+            f"just bumped, add a generation:\n"
+            f"    uv run python scripts/gen-state-fixtures.py"
+        )
 
     repo = Path(__file__).parent.parent
     result = subprocess.run(
