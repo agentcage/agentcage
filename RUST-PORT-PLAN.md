@@ -520,16 +520,36 @@ variance, and neither blocks a Linux-only release.
 
 ## 8. PR breakdown
 
-Two rules hold for every PR below:
+**Delivery model (decided 2026-09-19): one linear stack, merged at the end.**
+Every PR branches off the one below it and targets it as its base, so each
+GitHub diff shows only its own work. Nothing merges to `master` until the port
+is complete. This replaces an earlier draft of this section which said `master`
+stays shippable at every merge.
 
-1. **`master` stays shippable at every merge.** The Python CLI is in production
-   use; nothing here breaks it until the final cutover.
+The reason is practical rather than stylistic: later PRs are *verified against*
+earlier ones. Track C is checked against the golden corpus (A3) and the contract
+fixtures (A4); if every branch sat independently off `master`, a Track C PR
+could not see the thing it has to match. The stack is what makes each PR's
+acceptance check runnable at the time it is opened.
+
+Two rules still hold for every PR below:
+
+1. **The stack stays green at every level.** The Python CLI is in production
+   use, and the merge at the end must be a non-event. A red PR blocks everything
+   above it, so a break gets fixed where it was introduced rather than papered
+   over higher up.
 2. **Every PR has a mechanical acceptance check** — a fixture diff, an argv
    assertion, or an e2e phase — not "looks right on review".
 
-Track A lands on `master` as Python work that is useful whether or not the port
-proceeds. Tracks B–D are Rust; the binary is built and tested in CI from A6
-onward but ships to nobody until E.
+Track A is Python work that is useful whether or not the port proceeds. Tracks
+B–D are Rust; the binary is built and tested in CI from B1 onward but ships to
+nobody until F.
+
+**Operational notes.** Rebase the chain upward when a lower branch changes, then
+`push --force-with-lease`. Never rebase a branch while an agent is still working
+in its worktree. Because the stack is long-lived, expect to re-run the full suite
+at the stack top whenever the order changes — that is the only place the
+combined state is actually exercised.
 
 ### Track A — Preparation (Python only, no Rust in the repo yet)
 
