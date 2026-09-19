@@ -74,5 +74,16 @@ print_stdout = "allow"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
 strip = "symbols"
+
+# Note the absence of `panic = "abort"`. It would shave a little size, but
+# this program stages secrets into tmpfs, records mask mountpoints it has
+# to unwind later, and writes temp files via O_EXCL before renaming them
+# into place. Those are exactly the jobs RAII guards exist for, and an
+# aborting panic runs no Drop impl -- a crash mid-deploy could leave real
+# credentials staged on disk, which is the one outcome this project is
+# built to prevent. Unwinding keeps that cleanup reachable.
+#
+# This is a decision worth revisiting once the Track C/D code exists, but
+# it has to be made now rather than inherited, because whether Drop can be
+# relied on changes how that code gets written.
