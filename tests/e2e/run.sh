@@ -13,6 +13,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
+# The CLI under test — see the matching definition in lib.sh. run.sh does
+# not source lib.sh, so it needs its own; exporting here also means the
+# phase scripts (which lib.sh re-derives it in, with `:-`) inherit the
+# runner's choice rather than silently falling back to PATH.
+export AGENTCAGE="${AGENTCAGE:-agentcage}"
+
 # ── parse args ───────────────────────────────────────────────────────
 PHASES=()
 if [ $# -eq 0 ]; then
@@ -49,6 +55,7 @@ else
         echo ""
         echo "Environment:"
         echo "  E2E_PORT_BASE    Port base for test cages (default: 19080)"
+        echo "  AGENTCAGE        CLI binary under test (default: agentcage)"
         exit 0
         ;;
       *)
@@ -106,11 +113,11 @@ echo "========================"
 echo ""
 
 # Check for stale e2e cages
-STALE=$(agentcage cage list 2>/dev/null | grep -E "^e2e-" | awk '{print $1}' || true)
+STALE=$("$AGENTCAGE" cage list 2>/dev/null | grep -E "^e2e-" | awk '{print $1}' || true)
 if [ -n "$STALE" ]; then
   echo "Cleaning up stale e2e cages..."
   for cage in $STALE; do
-    agentcage cage destroy "$cage" -y >/dev/null 2>&1 || true
+    "$AGENTCAGE" cage destroy "$cage" -y >/dev/null 2>&1 || true
   done
 fi
 
@@ -120,7 +127,7 @@ cleanup_all() {
   echo "Final cleanup..."
   for name in basic e2e-har e2e-secrets e2e-second e2e-clone e2e-hardened e2e-vm e2e-openclaw; do
     podman rm -f "${name}-mock" >/dev/null 2>&1 || true
-    agentcage cage destroy "$name" -y >/dev/null 2>&1 || true
+    "$AGENTCAGE" cage destroy "$name" -y >/dev/null 2>&1 || true
   done
   # Phase 8 uses user-named volumes that aren't cleaned by cage destroy
   podman volume rm -f e2e-openclaw-workspace e2e-openclaw-state >/dev/null 2>&1 || true
@@ -262,7 +269,7 @@ if HAS_PHASE 4 && [ "$SUITE_FAILED" = false ]; then
 fi
 
 # Destroy the shared basic cage after the sequential chain
-agentcage cage destroy basic -y >/dev/null 2>&1 || true
+"$AGENTCAGE" cage destroy basic -y >/dev/null 2>&1 || true
 
 if [ "$SUITE_FAILED" = true ]; then
   echo ""

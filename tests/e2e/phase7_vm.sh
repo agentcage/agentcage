@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 7: VM Mode — Lifecycle & Core Security
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl limactl
+preflight_check "$AGENTCAGE" podman curl limactl
 phase_header 7 "VM Mode — Lifecycle & Core Security"
 
 if [ ! -e /dev/kvm ] && [ "$(uname)" = "Linux" ]; then
@@ -43,7 +43,7 @@ limactl shell "$VM_NAME" -- systemctl --user start "${CAGE}-cage.service" 2>/dev
 echo "Waiting for VM cage readiness (up to 240s)..."
 if ! wait_ready "$BASE" 240; then
   e2e_fail "7.0" "VM cage readiness" "not ready within 240s"
-  agentcage cage logs "$CAGE" -s egress -n 20 2>/dev/null || true
+  "$AGENTCAGE" cage logs "$CAGE" -s egress -n 20 2>/dev/null || true
   print_results; exit 1
 fi
 
@@ -60,13 +60,13 @@ fi
 assert_http 200 "$BASE/" "7.2" "Health check" --max-time 10
 
 assert_output_contains "7.3" "Verify command" "passed" \
-  agentcage cage verify "$CAGE"
+  "$AGENTCAGE" cage verify "$CAGE"
 
 assert_output_contains "7.4" "Show command (isolation=vm)" "vm" \
-  agentcage cage show "$CAGE"
+  "$AGENTCAGE" cage show "$CAGE"
 
 assert_output_contains "7.5" "List command" "$CAGE" \
-  agentcage cage list
+  "$AGENTCAGE" cage list
 
 # ── VM Core Security ────────────────────────────────────────────────
 assert_http 200 "$BASE/fetch?url=https://httpbin.org/get" "7.6" "Allowed domain" --max-time 10
@@ -81,19 +81,19 @@ assert_http 200 "$BASE/check-secret" "7.9" "Clean POST allowed" \
   -d '{"data":"harmless"}'
 
 # ── VM Observability ────────────────────────────────────────────────
-assert_cmd_ok "7.10" "Logs: cage" agentcage cage logs "$CAGE" -s cage -n 5
-assert_cmd_ok "7.11" "Logs: egress" agentcage cage logs "$CAGE" -s egress -n 5
+assert_cmd_ok "7.10" "Logs: cage" "$AGENTCAGE" cage logs "$CAGE" -s cage -n 5
+assert_cmd_ok "7.11" "Logs: egress" "$AGENTCAGE" cage logs "$CAGE" -s egress -n 5
 
 assert_output_contains "7.13" "Audit entries" '"decision"' \
-  agentcage cage audit "$CAGE" --json-lines -n 5
+  "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 5
 
 assert_output_contains "7.14" "Audit filter (blocked)" '"blocked"' \
-  agentcage cage audit "$CAGE" -d blocked --json-lines
+  "$AGENTCAGE" cage audit "$CAGE" -d blocked --json-lines
 
 # HAR
 e2e_timer_start
 HAR_FILE=$(mktemp /tmp/e2e-vm-har-XXXXXX.har)
-if agentcage cage har "$CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
+if "$AGENTCAGE" cage har "$CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
   e2e_pass "7.15" "HAR export (VM)"
 else
   e2e_fail "7.15" "HAR export (VM)" "har command failed"
@@ -124,17 +124,17 @@ assert_cmd_ok "7.22" "State dir mounted (rw)" \
 
 # ── VM Domain Management ───────────────────────────────────────────
 assert_output_contains "7.27" "List domains" "httpbin.org" \
-  agentcage domain list "$CAGE"
+  "$AGENTCAGE" domain list "$CAGE"
 
 e2e_timer_start
-if agentcage domain add "$CAGE" example.com >/dev/null 2>&1; then
+if "$AGENTCAGE" domain add "$CAGE" example.com >/dev/null 2>&1; then
   e2e_pass "7.28" "Add domain"
 else
   e2e_fail "7.28" "Add domain" "command failed"
 fi
 
 e2e_timer_start
-if agentcage domain rm "$CAGE" example.com >/dev/null 2>&1; then
+if "$AGENTCAGE" domain rm "$CAGE" example.com >/dev/null 2>&1; then
   e2e_pass "7.30" "Remove domain"
 else
   e2e_fail "7.30" "Remove domain" "command failed"
@@ -143,7 +143,7 @@ fi
 # ── VM Lifecycle Management ─────────────────────────────────────────
 e2e_timer_start
 echo "Stopping VM cage..."
-if agentcage cage stop "$CAGE" >/dev/null 2>&1; then
+if "$AGENTCAGE" cage stop "$CAGE" >/dev/null 2>&1; then
   e2e_pass "7.32" "Stop VM cage"
 else
   e2e_fail "7.32" "Stop VM cage"
@@ -160,7 +160,7 @@ fi
 
 e2e_timer_start
 echo "Starting VM cage..."
-agentcage cage start "$CAGE" >/dev/null 2>&1
+"$AGENTCAGE" cage start "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 240; then
   e2e_pass "7.34" "Start VM cage"
 else
@@ -169,7 +169,7 @@ fi
 
 e2e_timer_start
 echo "Restarting VM cage..."
-agentcage cage restart "$CAGE" >/dev/null 2>&1
+"$AGENTCAGE" cage restart "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 240; then
   e2e_pass "7.36" "Restart VM cage"
 else
@@ -178,15 +178,15 @@ fi
 
 # ── VM Exec ─────────────────────────────────────────────────────────
 assert_output_contains "7.38" "Exec in VM cage" "hello" \
-  agentcage cage exec "$CAGE" -s cage -- echo hello
+  "$AGENTCAGE" cage exec "$CAGE" -s cage -- echo hello
 
 assert_output_contains "7.39" "Exec in VM egress" "hello" \
-  agentcage cage exec "$CAGE" -s egress -- echo hello
+  "$AGENTCAGE" cage exec "$CAGE" -s egress -- echo hello
 
 # ── VM Destroy ──────────────────────────────────────────────────────
 e2e_timer_start
 echo "Destroying VM cage..."
-if agentcage cage destroy "$CAGE" -y >/dev/null 2>&1; then
+if "$AGENTCAGE" cage destroy "$CAGE" -y >/dev/null 2>&1; then
   e2e_pass "7.40" "Destroy VM cage"
   E2E_CAGES_TO_CLEANUP=()  # already destroyed
 else
