@@ -2092,17 +2092,32 @@ def _write_shared(out_root: Path, scrubber: Scrubber) -> None:
     # in whatever branch it is run from. The VALUE must not move either way —
     # the image tag it feeds must not drift between the Python and Rust
     # builds (RUST-PORT-PLAN.md §2.1).
+    # NB the two modules spell these differently: `egress_hash` exports them
+    # public (A5's real home), while `backends.apple_container` keeps the
+    # underscore-prefixed aliases. Importing the *names* rather than the
+    # module is what makes both spellings work -- an earlier version bound
+    # the module and then called the private names on it, which found A5's
+    # module and then raised AttributeError.
     try:
-        try:
-            from agentcage import egress_hash as ac
-        except ImportError:
-            from agentcage.backends import apple_container as ac
-        inputs = ac._egress_build_inputs()
-        w.write("egress-content-hash.txt", ac._egress_content_hash() + "\n")
-        w.write("egress-build-inputs.txt", "".join(
-            f"{rel} {path.stat().st_size}\n" for rel, path in inputs))
-    except Exception as exc:  # pragma: no cover - defensive
-        w.write("egress-content-hash.txt", f"UNAVAILABLE: {exc}\n")
+        from agentcage.egress_hash import (
+            egress_build_inputs as _build_inputs,
+            egress_content_hash as _content_hash,
+        )
+    except ImportError:  # pre-A5 tree
+        from agentcage.backends.apple_container import (
+            _egress_build_inputs as _build_inputs,
+            _egress_content_hash as _content_hash,
+        )
+    # Deliberately unguarded. A previous revision wrapped this in a bare
+    # `except Exception` that wrote "UNAVAILABLE: <err>" into the corpus --
+    # which turns a programming error into a committed fixture that would
+    # pass CI forever once blessed. The hash feeds the egress image tag
+    # (RUST-PORT-PLAN.md §2.1); if it cannot be computed, the corpus is
+    # wrong and generation should stop.
+    inputs = _build_inputs()
+    w.write("egress-content-hash.txt", _content_hash() + "\n")
+    w.write("egress-build-inputs.txt", "".join(
+        f"{rel} {path.stat().st_size}\n" for rel, path in inputs))
 
 
 # ---------------------------------------------------------------------------
