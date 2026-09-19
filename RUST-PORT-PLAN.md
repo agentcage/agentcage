@@ -121,6 +121,16 @@ Plus format contracts: `state._PROXY_KEYS`, the `agentcage:secret:NAME:<hex>`
 placeholder grammar (`config.PLACEHOLDER_PREFIX` ↔ `secret_injector`), the
 grants-overlay JSON shape, and `audit.jsonl` / `capture.jsonl` schemas.
 
+Two more surfaced during the A6 import scan and were not in the list above:
+
+- `CaptureWriter`'s default `max_file_size` ↔ `config.MAX_CAPTURE_FILE_BYTES`
+- `init.render_config("openclaw")` output ↔ `addon._load_builtin_inspectors`,
+  a host→proxy handshake: the host renders a config the proxy must be able to load
+
+Expect the list to keep growing as the scan widens. That is an argument for
+generating the fixtures from the Python implementation (below) rather than
+curating them by hand.
+
 **Mitigation:** a language-neutral conformance fixture. A JSON file of
 `(input, expected)` cases per contract, checked by both a Rust test and a pytest
 test. `relays/_validate.py` is the sharpest case — 161 lines of validation with
@@ -175,15 +185,29 @@ agentcage` is the documented install path. After the port:
   `scripts/update-deps.py` and one test fixture. Delete it in F4 rather than
   allowlist it.
 
-Two test files straddle the language boundary and must be **split**, with the
-cross-language half moving to the §2.2 fixture:
+**Nine test files straddle the language boundary** and must be split, with the
+cross-language half moving to the §2.2 fixture. Measured by an AST import scan
+(PR A6, `scripts/classify-tests.py`), not by inspection — an earlier draft of
+this plan guessed two, and guessed one of them wrong:
 
-- `test_addon_reload_inspector_config.py` — imports `agentcage.data.proxy.addon` *and* host config
-- `test_policy_api_ssrf_guard.py` — imports `agentcage.cli._is_never_grant` *and* `policy_api`
+| Class | Files |
+| :-- | --: |
+| host | 63 |
+| proxy | 26 |
+| **both (split by A6)** | **9** |
+| neutral | 9 |
 
-Also check `test_policy_api_config.py` (reaches into `state._PROXY_KEYS`),
-`test_policy_api_ttl.py` and `test_dns_live_reload.py` (host-side, but named for
-proxy features).
+`test_policy_api_ssrf_guard.py` was a genuine straddler. **`test_addon_reload_inspector_config.py`
+is not** — it imports only proxy modules. `test_policy_api_config.py`,
+`test_policy_api_ttl.py` and `test_dns_live_reload.py` are cleanly host-side
+despite proxy-sounding names.
+
+Two files resist classification and are worth knowing about: `test_egress_image.py`
+and `test_egress_image_contents.py` assert *about* proxy source by reading it as
+text without importing it, so no import edge exists to catch them. They will have
+to become Rust-side or shell-side checks. And `tests/conftest.py` classifies as
+host but must survive the deletion of host tests, because it is what stubs
+mitmproxy for the proxy suite.
 
 ### 2.5 The image-size argument does not apply
 
