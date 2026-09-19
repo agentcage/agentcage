@@ -456,6 +456,37 @@ mod tests {
     use nix::sys::termios::{self, LocalFlags, SetArg};
     use std::os::fd::{AsFd, OwnedFd};
     use std::sync::atomic::Ordering;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serializes every test that constructs a [`RestoredTerminal`].
+    ///
+    /// `SESSIONS` and `OUTSIDE_SESSION` are process-global, and so is
+    /// the SIGINT disposition they drive -- one per process, by
+    /// definition. `cargo test` runs a module's tests on a thread pool
+    /// in the *same* process, so two guards alive at once in two
+    /// different tests make `SESSIONS` read 2 where a test expects 1,
+    /// and let one test's `drop` restore the default SIGINT action
+    /// while another is still relying on the diversion. Both failures
+    /// are real races in the test suite rather than in the code, and
+    /// both are intermittent, which is the worst way to find out.
+    ///
+    /// Every test below that touches a guard takes this first. Nothing
+    /// in the shipped code needs it: a CLI has one terminal and one
+    /// session stack.
+    static ONE_SESSION_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// Take [`ONE_SESSION_AT_A_TIME`], ignoring poisoning.
+    ///
+    /// Two of these tests panic on purpose (`termios_is_restored_after_a_panic`),
+    /// which poisons the mutex. Poisoning is a signal about shared
+    /// *data*, and the data here is a `()`; letting it turn every
+    /// later test in the file red would hide the failure that actually
+    /// matters.
+    fn exclusive() -> MutexGuard<'static, ()> {
+        ONE_SESSION_AT_A_TIME
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     /// A pty pair. The slave stands in for the operator's terminal.
     struct Pty {
@@ -591,6 +622,7 @@ mod tests {
 
     #[test]
     fn writes_the_restore_sequence_on_a_normal_exit() {
+        let _lock = exclusive();
         let pty = pty();
         drop(RestoredTerminal::new(&pty.slave));
         assert_eq!(drain(&pty.master, RESTORE_SEQUENCE.len()), RESTORE_SEQUENCE);
@@ -598,6 +630,7 @@ mod tests {
 
     #[test]
     fn restores_termios_after_the_session_left_raw_mode() {
+        let _lock = exclusive();
         let pty = pty();
         assert_eq!(echo_and_icanon(&pty.slave), (true, true));
         {
@@ -617,6 +650,7 @@ mod tests {
     /// is what would fail if someone put it back.
     #[test]
     fn termios_is_restored_after_a_panic() {
+        let _lock = exclusive();
         let pty = pty();
         let before = echo_and_icanon(&pty.slave);
 
@@ -649,6 +683,7 @@ mod tests {
 
     #[test]
     fn termios_is_restored_when_the_scope_exits_by_question_mark() {
+        let _lock = exclusive();
         let pty = pty();
         let before = echo_and_icanon(&pty.slave);
         assert!(failing_session(&pty.slave).is_err());
@@ -657,6 +692,7 @@ mod tests {
 
     #[test]
     fn a_terminal_it_cannot_read_still_gets_the_sequence() {
+        let _lock = exclusive();
         // A pipe is not a terminal: `tcgetattr` fails, so there is no
         // snapshot to put back, and the guard must still send the
         // escapes rather than give up on both halves.
@@ -671,6 +707,7 @@ mod tests {
 
     #[test]
     fn nested_guards_each_restore() {
+        let _lock = exclusive();
         let outer = pty();
         let inner = pty();
         {
@@ -705,6 +742,7 @@ mod tests {
     /// `emulate_default_handler`.
     #[test]
     fn sigint_is_swallowed_while_a_session_is_running() {
+        let _lock = exclusive();
         let pty = pty();
         let guard = RestoredTerminal::new(&pty.slave);
         assert!(

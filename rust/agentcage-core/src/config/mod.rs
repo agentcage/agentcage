@@ -91,7 +91,7 @@ pub use agents::{
 pub use domain::{LabelPolicy, encoded_private_ip, valid_domain};
 pub use inspectors::inspector_warnings;
 pub use json::to_json;
-pub use parse::load;
+pub use parse::{load, validate_agents_document, validate_agents_raw};
 pub use placeholder::{fill_raw_placeholders, is_canonical, placeholder_for};
 pub use secret::{KNOWN_BACKENDS, KNOWN_SOURCE_SCHEMES};
 pub use types::{
