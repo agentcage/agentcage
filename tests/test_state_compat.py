@@ -812,10 +812,13 @@ def test_every_fixture_file_is_tracked_by_git():
     import subprocess
 
     repo = Path(__file__).parent.parent
-    listed = subprocess.run(
-        ["git", "ls-files", "-z", "--", "tests/fixtures/state-compat"],
-        cwd=repo, capture_output=True, text=True,
-    )
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", "tests/fixtures/state-compat"],
+            cwd=repo, capture_output=True, text=True,
+        )
+    except OSError:  # pragma: no cover — git not installed
+        pytest.skip("git is not available")
     if listed.returncode != 0:  # pragma: no cover — not a git checkout
         pytest.skip("not a git checkout")
 
