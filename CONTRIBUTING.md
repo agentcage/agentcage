@@ -35,6 +35,29 @@ Categories: `python`, `containers`, `node`, `pip`.
 
 Requires `skopeo` for container image checks (`sudo pacman -S skopeo` on Arch).
 
+## Changing the Egress Image
+
+The shared `agentcage-egress` image is tagged by content
+(`localhost/agentcage-egress:<version>-<12 hex>`), so an in-release fix to
+`Containerfile.egress`, `supervisor-egress.sh`, or the `data/proxy/` tree
+actually reaches hosts that already hold the previous tag (#312). The
+digest is computed by `src/agentcage/egress_hash.py` and pinned, together
+with the full list of files that feed it, in
+`tests/fixtures/egress_hash.json`.
+
+If you deliberately change what goes into the egress image, `uv run pytest
+tests/test_egress_hash.py` will fail. Re-bless the fixture in the same
+commit:
+
+```bash
+./scripts/bless-egress-hash.py          # rewrite the fixture
+./scripts/bless-egress-hash.py --check  # exit 1 if it is stale
+```
+
+Re-bless deliberately: the digest is a cross-language contract that the
+Rust port must reproduce byte-exactly, and the fixture's input list is
+there so a review sees exactly which files entered or left the image.
+
 ## Code Style
 
 - Follow existing patterns in the codebase.
