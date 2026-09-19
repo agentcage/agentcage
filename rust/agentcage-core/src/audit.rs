@@ -930,19 +930,21 @@ pub fn format_table_row(entry: &AuditEntry, color: bool) -> String {
         );
     };
 
-    // Color just the decision column.
+    // Color just the decision column — and *only* that. Every other column
+    // is padded exactly as in the uncoloured branch above, so stripping the
+    // SGR escapes from a coloured table yields the plain table byte for
+    // byte. `colour_only_adds_escapes` pins that invariant.
     //
-    // Note the DIRECTION column is padded to 4 here and to 10 above. That
-    // is not a transcription slip: the Python rebuilds the whole row inside
-    // the colour branch and writes `{dir_label:<4}` in it, so every
-    // coloured row with a direction is six columns narrower than the header
-    // from that point on. It is reproduced because the golden corpus
-    // records it; see the port notes for the bug report.
+    // The Python used to pad DIRECTION to 4 here while the header and the
+    // plain branch used 10, which shifted every column from METHOD onward
+    // by a different amount depending on whether the direction read
+    // OUTBOUND, INBOUND or empty. Colour is the default, so that was what
+    // `cage audit` normally printed. Fixed in the same commit as this port.
     let colored_decision = format!("\u{1b}[{fg}m{}\u{1b}[0m", ljust(decision, 10));
     format!(
         "{} {} {} {} {} {} {colored_decision} {reason}",
         ljust(ts, 26),
-        ljust(dir_label, 4),
+        ljust(dir_label, 10),
         ljust(method, 8),
         ljust(host, 25),
         ljust(&port, 5),
@@ -1291,5 +1293,47 @@ mod tests {
         let e = entry(r#"{"decision":"errored","method":"GET","direction":"outbound"}"#);
         assert_eq!(format_table_row(&e, true), format_table_row(&e, false));
         assert!(format_table_row(&e, true).starts_with(&" ".repeat(26)));
+    }
+
+    /// Colour adds escapes and changes nothing else.
+    ///
+    /// This is the invariant the old `{dir_label:<4}` broke: the colour
+    /// branch rebuilds the whole row, so a width edited in one branch and
+    /// not the other silently misaligns the default output. Strip the SGR
+    /// escapes from a coloured row and you must get the plain row back.
+    #[test]
+    fn colour_only_adds_escapes() {
+        let strip = |s: &str| {
+            let mut out = String::new();
+            let mut chars = s.chars();
+            while let Some(c) = chars.next() {
+                if c == '\u{1b}' {
+                    for c in chars.by_ref() {
+                        if c == 'm' {
+                            break;
+                        }
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+
+        // One per decision colour, plus the two direction widths and the
+        // empty direction — the three cases the old bug shifted by
+        // different amounts.
+        for raw in [
+            r#"{"decision":"allowed","method":"GET","direction":"outbound","host":"a.example.com"}"#,
+            r#"{"decision":"blocked","method":"POST","direction":"inbound","host":"b.example.com"}"#,
+            r#"{"decision":"flagged","method":"HEAD","direction":"","host":"c.example.com"}"#,
+        ] {
+            let e = entry(raw);
+            assert_eq!(
+                strip(&format_table_row(&e, true)),
+                format_table_row(&e, false),
+                "colour changed the layout for {raw}"
+            );
+        }
     }
 }
