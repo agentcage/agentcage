@@ -54,6 +54,8 @@
 //! [`config.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/config.py
 //! [`services.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/services.py
 
+pub mod audit;
+
 /// The agentcage version, baked in at compile time.
 ///
 /// This is the number the Python CLI reads at runtime with
