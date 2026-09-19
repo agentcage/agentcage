@@ -57,6 +57,7 @@
 pub mod audit;
 pub mod har;
 pub mod volume_mounts;
+pub mod yaml;
 
 /// The agentcage version, baked in at compile time.
 ///

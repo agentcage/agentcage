@@ -20,6 +20,26 @@ authors.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The YAML stack (PR B2). Two crates, and the second one is not a
+# duplicate of the first.
+#
+# `serde_norway` is the maintained fork of the deprecated `serde_yaml`:
+# serde integration, `IndexMap`-backed mappings so key order survives,
+# and a maintainer who also adopted the C libyaml shim under it
+# (`unsafe-libyaml-norway`) rather than leaving it frozen. It owns the
+# value tree and the scalar emitting.
+#
+# `saphyr-parser` is a pure-Rust YAML *event* parser, used for exactly
+# one thing `serde_norway` cannot answer: whether a scalar was written
+# plain or quoted. PyYAML resolves a plain `no` to `False` and a quoted
+# `'no'` to the string, and agentcage has to tell those apart or a
+# relay's `tls: 'no'` changes meaning across the port. Every serde YAML
+# crate discards scalar style, so the style comes from a second parse
+# and is overlaid on the first parser's tree. See `src/yaml/style.rs`
+# for the alignment rules and how it fails closed.
+serde_norway = "0.9.42"
+saphyr-parser = "0.1.0"
+
 # Test-only, and deliberately not a runtime dependency.
 #
 # `volume_mounts` itself moves strings around and needs nothing. What
@@ -38,3 +58,4 @@ serde_json = "1"
 
 [lints]
 workspace = true
+
