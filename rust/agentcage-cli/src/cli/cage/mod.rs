@@ -10,6 +10,7 @@ pub(crate) mod audit;
 pub(crate) mod create;
 pub(crate) mod grants;
 pub(crate) mod lifecycle;
+pub(crate) mod logs;
 pub(crate) mod query;
 pub(crate) mod update;
 pub(crate) mod verify;

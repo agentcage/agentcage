@@ -386,6 +386,7 @@ fn an_unknown_cage_is_refused_rather_than_stubbed() {
         vec!["describe", "nope"],
         vec!["cage", "update", "nope"],
         vec!["cage", "audit", "nope"],
+        vec!["cage", "logs", "nope"],
     ] {
         let out = agentcage_sandboxed(dir.path(), &args);
         assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
@@ -436,4 +437,78 @@ fn update_without_a_target_says_why() {
         "{}",
         stderr(&out)
     );
+}
+
+/// Write just enough state under `home` for the two read-only commands
+/// to get past their existence and version gates: a `cage.yaml` the
+/// loader accepts and a `metadata.json` claiming v0.22.
+fn stage_cage(home: &std::path::Path, name: &str, isolation: &str) {
+    let paths = agentcage_state::Paths::under(home);
+    std::fs::create_dir_all(paths.deployment_dir(name)).expect("the deployment dir is writable");
+    std::fs::write(
+        paths.deployment_dir(name).join("cage.yaml"),
+        format!("name: {name}\nisolation: {isolation}\ncontainer:\n  image: \"alpine\"\n"),
+    )
+    .expect("the config is writable");
+    paths
+        .save_metadata(
+            name,
+            &agentcage_core::har::json::Json::Object(vec![(
+                "agentcage_version".to_owned(),
+                agentcage_core::har::json::Json::string("0.40.1"),
+            )]),
+        )
+        .expect("the metadata is writable");
+}
+
+/// `cage logs` and `cage audit` both read their source through a
+/// backend, and only the container one is ported. A `vm` cage answered
+/// out of the *host* journal would print nothing and exit 0 — a wrong
+/// answer that looks exactly like a quiet cage — so both refuse
+/// instead, the way `cage verify` reports its unported probes.
+///
+/// §2.7's first trap is why this cannot be papered over with a file
+/// reader: `audit.jsonl` exists host-side only for apple-container.
+#[test]
+fn the_unported_backends_are_refused_rather_than_read_wrongly() {
+    let dir = agentcage_state::TestDir::new("binary-tracke");
+    for isolation in ["vm", "apple-container"] {
+        let name = format!("cage-{isolation}");
+        stage_cage(dir.path(), &name, isolation);
+        for command in ["logs", "audit"] {
+            let out = agentcage_sandboxed(dir.path(), &["cage", command, &name]);
+            assert_eq!(code(&out), 1, "{command} {isolation}: {}", stderr(&out));
+            assert!(
+                stderr(&out).contains("not ported yet") && stderr(&out).contains(isolation),
+                "{command} {isolation}: {}",
+                stderr(&out)
+            );
+        }
+    }
+}
+
+/// A container cage reaches journalctl and `cage logs` forwards *its*
+/// status rather than inventing one. This is the shape `assert_cmd_ok`
+/// checks in e2e phase 2.
+///
+/// Gated on a journal this user can actually read, because that is the
+/// thing being forwarded: a build container with no journal files
+/// answers 1 to every query, and the test would then be asserting the
+/// host's systemd rather than this command. The probe is the same query
+/// the command will make, so whatever it answers is the expectation.
+#[test]
+fn logs_forwards_journalctls_own_status() {
+    let Ok(probe) = Command::new("journalctl")
+        .args(["--user", "-u", "agentcage-no-such-unit", "-n", "1"])
+        .output()
+    else {
+        return;
+    };
+    if !probe.status.success() {
+        return;
+    }
+    let dir = agentcage_state::TestDir::new("binary-logs-ok");
+    stage_cage(dir.path(), "quiet", "container");
+    let out = agentcage_sandboxed(dir.path(), &["cage", "logs", "quiet", "-n", "5"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
 }

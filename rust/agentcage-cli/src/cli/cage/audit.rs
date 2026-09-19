@@ -60,6 +60,32 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
+    // `cfg = state.load_deployment_config(name)`. `cli.py` loads it to
+    // pick a backend; here it decides only whether there *is* one, but
+    // the load has to happen either way — reading the wrong source is
+    // silent, and a `vm` cage answered out of the host journal would
+    // print nothing and exit 0.
+    let Ok(config) = ctx
+        .paths
+        .load_deployment_config(&name, &agentcage_cli::hostenv::RealHost)
+    else {
+        eprintln!("error: cage '{name}' does not exist or has invalid config");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    };
+    if config.isolation != "container" {
+        // Where `cli.py` would have gone to `limactl shell` or to
+        // apple-container's `audit.jsonl` — §2.7's first trap is that
+        // that file is the *only* backend with one, and nothing below
+        // knows how to read it.
+        eprintln!(
+            "error: `cage audit` on the '{}' backend is not ported yet \
+             (RUST-PORT-PLAN.md Track E); run the Python \
+             `agentcage cage audit {name}` for now",
+            config.isolation
+        );
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
     // Post-parse time filtering, applied on every backend rather than
     // only where the reader lacks a native time index: `podman logs` has
     // no journalctl-compatible `--since`, so the flag is not forwarded
@@ -262,11 +288,25 @@ fn to_core_json(value: &serde_json::Value) -> agentcage_core::har::json::Json {
 }
 
 /// An argv list, as a [`Command`].
+///
+/// `_AUDIT_POPEN_KWARGS` — and `merge_stderr` is the load-bearing half
+/// of it. The addon writes its audit JSON to **stderr**. `journalctl`
+/// has already merged both of the container's streams into its own
+/// stdout, so on that path this changes nothing; `podman logs`, which
+/// [`ContainerBackend::audit_argv`](agentcage_cli::backend::ContainerBackend::audit_argv)
+/// falls back to under a file log driver, keeps them apart and puts the
+/// container's stderr on its own. Reading only stdout there yields an
+/// empty audit trail from a reader that exited 0 — the exact failure
+/// that looks like "the proxy saw no traffic".
+///
+/// Non-JSON noise on the merged stream (a journalctl hint, a podman
+/// error) is dropped by `extract_audit_json`, so merging costs nothing.
 fn to_command(argv: &[String]) -> Command {
     let (program, rest) = argv.split_first().expect("audit_argv is never empty");
     Command::new(program.clone())
         .args(rest.iter().cloned())
         .captured()
+        .merge_stderr()
 }
 
 fn many(matches: &ArgMatches, id: &str) -> Vec<String> {

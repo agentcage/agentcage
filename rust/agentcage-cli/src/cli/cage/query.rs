@@ -110,6 +110,14 @@ pub(crate) fn audit() -> Command {
             )
             .short('n')
             .value_parser(clap::value_parser!(i64))
+            // The same divergence D13 fixed on `cage har`: click's
+            // `default=100` is an unbounded `int`, so `-n -3` parses
+            // there and simply does not limit anything (`cli.py` tests
+            // `max_entries > 0`), while clap reads a leading `-` as
+            // another flag and reports a usage error. Both `-n`s have
+            // to say this or the two commands disagree about a command
+            // line the Python accepts for either.
+            .allow_negative_numbers(true)
             .default_value("100"),
         )
         .arg(
@@ -305,6 +313,14 @@ pub(crate) fn logs() -> Command {
             .short('n')
             .alias("tail")
             .value_parser(clap::value_parser!(i64))
+            // Unbounded in click exactly as `audit`'s and `har`'s are.
+            // Nothing downstream rejects a negative here — the value is
+            // stringified straight into journalctl's own `-n` — so
+            // without this the Rust turns a command line the Python
+            // forwards into a usage error before journalctl ever sees
+            // it, and the operator gets clap's complaint instead of
+            // journalctl's.
+            .allow_negative_numbers(true)
             .default_value("50"),
         )
         .arg(flag("follow", "follow", "Stream logs in real time.").short('f'))
@@ -333,6 +349,17 @@ mod tests {
 
     use super::har_args;
     use crate::cli::command;
+
+    /// The leaf `ArgMatches` for any `cage <cmd>` command line, through
+    /// the real tree — the tree these ids have to agree with.
+    fn leaf_matches(argv: &[&str]) -> clap::ArgMatches {
+        let matches = command(false)
+            .try_get_matches_from(std::iter::once("agentcage").chain(argv.iter().copied()))
+            .expect("the tree accepts this command line");
+        let (_, cage) = matches.subcommand().expect("cage");
+        let (_, leaf) = cage.subcommand().expect("a cage subcommand");
+        leaf.clone()
+    }
 
     /// Parse a `cage har` command line through the real tree.
     fn parse(argv: &[&str]) -> super::HarArgs {
@@ -411,5 +438,65 @@ mod tests {
     #[test]
     fn a_negative_max_entries_parses_rather_than_erroring() {
         assert_eq!(parse(&["cage", "har", "myapp", "-n", "-3"]).max_entries, -3);
+    }
+
+    /// The same divergence, on the other two `-n`s. `cage audit` and
+    /// `cage logs` declare the option with the same unbounded click
+    /// `int` that `cage har` does, so the same command line has to
+    /// reach the same place — D13 fixed one of the three and left the
+    /// other two reporting a clap usage error against input the Python
+    /// accepts.
+    #[test]
+    fn the_other_two_n_options_take_a_negative_too() {
+        let audit = leaf_matches(&["cage", "audit", "myapp", "-n", "-3"]);
+        assert_eq!(audit.get_one::<i64>("max_entries").copied(), Some(-3));
+        let logs = leaf_matches(&["cage", "logs", "myapp", "-n", "-3"]);
+        assert_eq!(logs.get_one::<i64>("lines").copied(), Some(-3));
+    }
+
+    /// `cage logs`'s own options, read back through the real tree —
+    /// the ids are a contract with `cage/logs.rs` and a typo in one of
+    /// them is a silently ignored flag, not a compile error.
+    #[test]
+    fn every_logs_option_reaches_its_id() {
+        let m = leaf_matches(&[
+            "cage",
+            "logs",
+            "basic",
+            "-s",
+            "egress",
+            "--tail",
+            "7",
+            "-f",
+            "--since",
+            "10 min ago",
+            "-l",
+            "warning",
+        ]);
+        assert_eq!(m.get_one::<String>("name").unwrap(), "basic");
+        assert_eq!(
+            m.get_many::<String>("services")
+                .unwrap()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["egress"]
+        );
+        assert_eq!(m.get_one::<i64>("lines").copied(), Some(7));
+        assert!(m.get_flag("follow"));
+        assert_eq!(m.get_one::<String>("since").unwrap(), "10 min ago");
+        assert_eq!(m.get_one::<String>("min_level").unwrap(), "warning");
+        // The hidden no-op is declared, so the body can read and drop it.
+        assert!(!m.get_flag("no_follow"));
+    }
+
+    /// click's `Choice(["cage", "egress"])`: the v0.21 service names
+    /// are a parse error, not a cage that silently has no such unit.
+    #[test]
+    fn the_legacy_service_names_are_refused_at_parse_time() {
+        assert!(
+            command(false)
+                .try_get_matches_from(["agentcage", "cage", "logs", "basic", "-s", "proxy"])
+                .is_err()
+        );
     }
 }
