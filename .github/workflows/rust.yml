@@ -113,6 +113,18 @@ jobs:
       - name: Fingerprint to CPython crossing test
         run: |
           cargo test --locked -p agentcage-core --test fingerprint_python_crossing -- --ignored
+      # The scaffold config fixtures (PR C1) are generated from the
+      # scaffolds' own cage.yaml.j2 by rendering them with Jinja and
+      # parsing the result with config.py -- neither of which Rust can
+      # do. `cargo test` checks that every scaffold directory appears in
+      # the fixture, so a NEW scaffold fails without this step; what
+      # this adds is noticing when an EXISTING scaffold's template
+      # changes and the committed render goes stale.
+      - uses: astral-sh/setup-uv@v5
+      - name: Scaffold config fixtures are current
+        run: |
+          uv sync --dev
+          uv run python scripts/gen-scaffold-configs.py --check
 
       # --all-targets covers tests and examples, which is where the lints
       # that matter (unwrap in a helper, a stray dbg!) actually land.

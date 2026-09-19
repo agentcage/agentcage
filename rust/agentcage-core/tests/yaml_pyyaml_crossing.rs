@@ -132,7 +132,14 @@ elif job["kind"] == "documents":
 
     cases = {}
     for case in job["cases"]:
-        loaded = yaml.safe_load(case["yaml"])
+        # `<<` and `=` outside key position make safe_load raise, and a
+        # document PyYAML refuses is a document agentcage must refuse
+        # too -- so a raise is a recorded verdict, not a crash.
+        try:
+            loaded = yaml.safe_load(case["yaml"])
+        except Exception:
+            cases[case["id"]] = {"described": "RAISED", "bool_of_tls": None}
+            continue
         cases[case["id"]] = {
             "described": describe(loaded),
             # The coercion relays/_validate.py:76 applies to the value
@@ -516,17 +523,32 @@ fn the_read_side_agrees_with_pyyaml() {
 
     let mut wrong = Vec::new();
     for case in &fixture.read_side_cases {
+        let report = &reports[&case.id];
+        let theirs = report["described"].as_str().expect("described");
+        // `RAISED` is the verdict for a document PyYAML will not load at
+        // all -- a stray `<<` or `=`. agentcage has to agree in both
+        // directions: refuse what PyYAML refuses, accept what it accepts.
         let loaded = match yaml::load_named(&case.id, &case.yaml) {
-            Ok(value) => value,
+            Ok(value) => {
+                if theirs == "RAISED" {
+                    wrong.push(format!(
+                        "  {:<22} {:?} -- PyYAML refuses this document and agentcage \
+                         accepted it ({})",
+                        case.id, case.yaml, case.why
+                    ));
+                    continue;
+                }
+                value
+            }
             Err(error) => {
-                wrong.push(format!("  {:<22} agentcage refused it: {error}", case.id));
+                if theirs != "RAISED" {
+                    wrong.push(format!("  {:<22} agentcage refused it: {error}", case.id));
+                }
                 continue;
             }
         };
 
-        let report = &reports[&case.id];
         let ours = describe(&loaded);
-        let theirs = report["described"].as_str().expect("described");
         if ours != theirs {
             wrong.push(format!(
                 "  {:<22} {:?}\n      PyYAML:    {theirs}\n      agentcage: {ours}\n      ({})",

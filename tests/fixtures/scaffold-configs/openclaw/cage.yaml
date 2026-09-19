@@ -1,0 +1,229 @@
+# agentcage configuration for demo (OpenClaw scaffold)
+#
+# Quick start:
+#   1. Uncomment additional providers / domains you need
+#   2. Deploy:  agentcage cage create -c cage.yaml
+#   3. Set secrets:
+#        agentcage secret set demo ANTHROPIC_API_KEY
+#        agentcage secret set demo OPENCLAW_GATEWAY_PASSWORD
+#   4. Restart:  agentcage cage restart demo
+
+name: demo
+
+container:
+  image: "localhost/agentcage-scaffold-openclaw:latest"
+  build:
+    containerfile: "Containerfile"
+    args:
+      BASE_IMAGE: "ghcr.io/openclaw/openclaw"
+  nested_containers: true
+  command: ["/usr/local/bin/entrypoint.sh"]
+
+  add_capabilities:
+    - NET_BIND_SERVICE
+
+  # Podman named volumes for persistent state
+  named_volumes:
+    demo-workspace: "/workspace:rw"
+    demo-state: "/home/node/.openclaw:rw"
+
+  # Writable directories on the read-only root filesystem
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=4G"
+    - "/home/node/.npm:rw,size=512M"
+    # openclaw 2.0 (v2026.8+) stores sessions in SQLite and its read-only
+    # worker needs a writable fallback temp dir under ~/.cache — without
+    # this the gateway exits at boot with "Unable to create fallback
+    # OpenClaw temp dir: /home/node/.cache/openclaw-0"
+    - "/home/node/.cache:rw,size=1G"
+    - "/home/node/.pki:rw,size=16M"
+    - "/scratch:rw,exec,nosuid,size=8G"
+
+  # Gateway web UI — published on the host (BIND:HOST_PORT:CONTAINER_PORT)
+  # To allow access from other machines on the LAN:
+  #   1. Change 127.0.0.1 to 0.0.0.0 below
+  #   2. Delete the state volume so openclaw.json is regenerated:
+  #        podman volume rm demo-state
+  #   3. Replace the "controlUi" block in entrypoint.sh with:
+  #        \"controlUi\": {\"dangerouslyAllowHostHeaderOriginFallback\": true}
+  #   4. Recreate the cage:  agentcage cage create -c cage.yaml
+  ports:
+    - "127.0.0.1:18789:18789"
+
+  # Disable mDNS/Bonjour broadcasts (not useful inside a container)
+  env:
+    OPENCLAW_DISABLE_BONJOUR: "1"
+    HOME: "/home/node"
+    CAGE_GATEWAY_PORT: "18789"
+
+  # Cage-internal secrets (not API keys — use secret_injection for those).
+  # Create first:  agentcage secret set demo OPENCLAW_GATEWAY_PASSWORD
+  podman_secrets:
+    - OPENCLAW_GATEWAY_PASSWORD
+
+  # Resource limits
+  memory: "8g"
+  cpus: "4.0"
+
+  # OpenClaw startup is slow — give it time
+  timeout_start_sec: 120
+
+# ── Upstream DNS ──
+# Default: 1.1.1.1, 8.8.8.8 (Cloudflare + Google)
+# Uncomment for Tailscale MagicDNS (resolves *.ts.net hostnames):
+# dns_servers:
+#   - 100.100.100.100
+#   - 1.1.1.1
+#   - 8.8.8.8
+
+# ── Secret injection ──
+# API keys are swapped by the proxy — the cage only sees placeholders.
+# Placeholders are generated decoy tokens, unique per cage — entropy keeps
+# real outbound content from ever colliding with one.
+# Create each secret:  agentcage secret set demo ANTHROPIC_API_KEY
+secret_injection:
+  # Core AI provider
+  - env: ANTHROPIC_API_KEY
+    placeholder: "agentcage:secret:ANTHROPIC_API_KEY:00000000000000000000000000000001"
+    inject_to:
+      - anthropic.com
+
+  # Uncomment providers as needed:
+  #- env: OPENAI_API_KEY
+  #  placeholder: "agentcage:secret:OPENAI_API_KEY:00000000000000000000000000000002"
+  #  inject_to:
+  #    - openai.com
+  #- env: OPENROUTER_API_KEY
+  #  placeholder: "agentcage:secret:OPENROUTER_API_KEY:00000000000000000000000000000003"
+  #  inject_to:
+  #    - openrouter.ai
+
+  # Web search
+  #- env: BRAVE_API_KEY
+  #  placeholder: "agentcage:secret:BRAVE_API_KEY:00000000000000000000000000000004"
+  #  inject_to:
+  #    - search.brave.com
+
+  # Web scraping
+  #- env: FIRECRAWL_API_KEY
+  #  placeholder: "agentcage:secret:FIRECRAWL_API_KEY:00000000000000000000000000000005"
+  #  inject_to:
+  #    - firecrawl.dev
+
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com"). Sibling domains are NOT matched — "github.com" does
+# not allow "githubusercontent.com", so add it separately.
+domains:
+  allow:
+    # ── Core AI providers ──
+    - anthropic.com
+    #- openai.com
+    #- openrouter.ai
+
+    # ── Package registries ──
+    - npmjs.org
+    - npmjs.com
+    - pypi.org
+    - files.pythonhosted.org
+    - nodejs.org
+
+    # ── CDNs ──
+    - cdn.jsdelivr.net
+    - unpkg.com
+    - esm.sh
+
+    # ── Code hosting ──
+    - github.com
+    - githubusercontent.com
+    #- gitlab.com
+
+    # ── Container registries (needed for nested containers) ──
+    # docker.io and docker.com are allowed with all subdomains: that
+    # covers the registry (registry-1.docker.io), the token service
+    # (auth.docker.io), and the CDN edges Docker Hub redirects blob
+    # downloads to — it shifts between Cloudflare and AWS CloudFront
+    # (production.cloudflare.docker.com / production.cloudfront.docker.com).
+    - docker.io
+    - docker.com
+    - ghcr.io
+    - pkg-containers.githubusercontent.com
+    - r2.cloudflarestorage.com
+
+    # ── Browser automation (Playwright / Chrome) ──
+    - cdn.playwright.dev
+    - playwright.download.prss.microsoft.com
+    - storage.googleapis.com
+
+    # ── OS packages ──
+    - debian.org
+    - dl-cdn.alpinelinux.org
+
+    # ── Web search ──
+    #- search.brave.com        # requires BRAVE_API_KEY secret
+    #- perplexity.ai
+    #- firecrawl.dev           # requires FIRECRAWL_API_KEY secret
+
+    # ── AI/ML services ──
+    #- huggingface.co
+    #- hf.co
+    #- pytorch.org
+
+    # ── Messaging ──
+    #- api.telegram.org
+    #- discord.com
+    #- slack.com
+
+    # Add domains your agents need access to:
+    #- example.com
+
+# ── Traffic capture (HAR export) ──
+# Record decrypted request/response bodies for forensic analysis.
+# Export with: agentcage cage har demo
+# See: docs/reference/configuration.md#6-capture--logging
+#capture:
+#  enable_har: true
+#  min_action: all             # "all", "flag", or "block"
+#  max_body_size: 10485760     # 10MB per body
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: content-type
+  # Add `- name: entropy` to also flag encrypted/compressed payloads
+  # (off by default — it false-positives on legitimate high-entropy data).
+  # Allow Docker registry JWT auth tokens to reach container registries
+  - name: secrets
+    config:
+      allow_to_domains:
+        azure_jwt:
+          - docker.io
+          - registry-1.docker.io
+          - auth.docker.io
+
+# ── Exec aliases ──
+# Shorthand for 'agentcage cage exec' commands
+exec_aliases:
+  openclaw: ["node", "openclaw.mjs"]
+
+# ── Help ──
+# Shown after 'cage create' and 'cage update'
+# --as-root: the openclaw 2.0 CLI reads openclaw.json + the SQLite state
+# directly (owned by the gateway's root user), so plain uid-1000 exec
+# sessions get EACCES.
+help: |
+  Open http://localhost:18789 in your browser.
+
+  On first connection, approve the device pairing:
+    agentcage cage exec --as-root demo -- openclaw devices list
+    agentcage cage exec --as-root demo -- openclaw devices approve <request-id>
+
+  Common commands:
+    agentcage cage exec --as-root demo -- openclaw health
+    agentcage cage exec --as-root demo -- openclaw status
+    agentcage cage logs demo
+    agentcage cage logs demo -s proxy

@@ -640,7 +640,7 @@
     },
     {
       "id": "awkward-unicode",
-      "scalar": "emoji \ud83d\ude00",
+      "scalar": "emoji 😀",
       "why": "a non-ASCII scalar",
       "plain_tag": "str"
     },
@@ -804,6 +804,76 @@
       "id": "multiline-plain",
       "yaml": "tls: no\nother: yes\nthird: 'off'\n",
       "why": "several in one document"
+    },
+    {
+      "id": "merge-anchor",
+      "yaml": "base: &b\n  a: 1\n  b: 2\nchild:\n  <<: *b\n  b: 3\n  c: 4\n",
+      "why": "PyYAML flattens `<<` during construction; the merged key keeps its merged position"
+    },
+    {
+      "id": "merge-prepends",
+      "yaml": "base: &b\n  a: 1\nchild:\n  c: 9\n  <<: *b\n  b: 3\n",
+      "why": "merged pairs go in FRONT of the explicit ones (`merge + node.value`), and cage.yaml key order is user-visible"
+    },
+    {
+      "id": "merge-override-keeps-position",
+      "yaml": "base: &b\n  a: 1\n  b: 2\nchild:\n  b: 3\n  <<: *b\n",
+      "why": "an explicit override wins on value but the merged entry wins on position"
+    },
+    {
+      "id": "merge-list-precedence",
+      "yaml": "a: &a\n  x: 1\nb: &b\n  x: 2\n  y: 3\nc:\n  <<: [*a, *b]\n",
+      "why": "PyYAML reverses a merge list, so the EARLIER alias wins -- the opposite of a left-to-right merge"
+    },
+    {
+      "id": "merge-chains",
+      "yaml": "one: &one\n  a: 1\ntwo: &two\n  <<: *one\n  b: 2\nthree:\n  <<: *two\n  c: 3\n",
+      "why": "a merge source that itself merges is flattened before its pairs are spliced in"
+    },
+    {
+      "id": "merge-at-document-root",
+      "yaml": "base: &b\n  a: 1\n<<: *b\nz: 2\n",
+      "why": "the root mapping merges too, and the merged key lands in front of `base`"
+    },
+    {
+      "id": "merge-key-quoted",
+      "yaml": "child:\n  '<<': 1\n",
+      "why": "a QUOTED `<<` is an ordinary string key; only the plain spelling is the merge indicator"
+    },
+    {
+      "id": "merge-scalar-in-value-position",
+      "yaml": "k: <<\n",
+      "why": "plain `<<` outside key position resolves to the merge tag, which SafeConstructor refuses"
+    },
+    {
+      "id": "merge-scalar-in-sequence",
+      "yaml": "- <<\n",
+      "why": "same, as a sequence item"
+    },
+    {
+      "id": "merge-key-not-a-mapping",
+      "yaml": "x:\n  <<: 5\n",
+      "why": "a merge key takes a mapping or a list of mappings; anything else raises"
+    },
+    {
+      "id": "merge-list-item-not-a-mapping",
+      "yaml": "x:\n  <<: [1]\n",
+      "why": "every item of a merge list has to be a mapping"
+    },
+    {
+      "id": "value-indicator-as-key",
+      "yaml": "=: 1\n",
+      "why": "flatten_mapping retags a `value`-tagged KEY to str, so `=` is a legal key"
+    },
+    {
+      "id": "value-indicator-in-value-position",
+      "yaml": "k: =\n",
+      "why": "plain `=` outside key position resolves to the value tag, which SafeConstructor refuses"
+    },
+    {
+      "id": "value-indicator-quoted",
+      "yaml": "k: '='\n",
+      "why": "quoted, it is just the one-character string"
     }
   ]
 }

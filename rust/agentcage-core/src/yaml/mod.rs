@@ -69,7 +69,8 @@
 //! | `n: 1e3` | `"1e3"` | `Number(1000.0)` | the port is *more* permissive |
 //! | `n: 0o17` | `"0o17"` | `Number(15)` | same |
 //! | `k: !!bool no` | `False` | **error** | `serde_norway` refuses the tag; loud, not silent |
-//! | `<<: *anchor` | merged into the mapping | kept as a literal `<<` key | `serde_norway` has no implicit merge (`Value::apply_merge` is opt-in). Track C's business, flagged here because it is the one remaining reader divergence that is neither resolved nor loud |
+//! | `<<: *anchor` | merged into the mapping | merged into the mapping | **resolved** — [`merge`]. PR B2 left this open as the one reader divergence that was neither resolved nor loud; PR C1 closed it, because the quiet wrong answer is an emptied `domains.allow` |
+//! | `k: <<`, `k: =` | **raises** | **error** | **resolved** — [`merge`]; PyYAML has no constructor for either tag outside key position |
 //!
 //! The booleans are resolved because they are the only row that can flip
 //! a *value* without changing its type — and `relays/_validate.py:76` is
@@ -113,6 +114,7 @@
 //! [RUSTSEC-2025-0068]: https://rustsec.org/advisories/RUSTSEC-2025-0068
 
 mod emit;
+mod merge;
 pub mod pyyaml;
 mod style;
 
@@ -172,7 +174,15 @@ pub fn load_named(source: &str, text: &str) -> Result<Value, Error> {
     let mut value: Value = serde_norway::from_str(text)?;
 
     match style::shape_of(source, text)? {
-        Some(shape) => style::resolve_1_1_booleans(source, &mut value, &shape)?,
+        Some(shape) => {
+            style::resolve_1_1_booleans(source, &mut value, &shape)?;
+            // `<<` merge keys, after the boolean pass and before the
+            // caller sees the tree: PyYAML flattens them during
+            // construction, so a config that shares a block between
+            // two sections has to arrive merged or every merged
+            // setting reads as "never written". See `merge`.
+            merge::apply(source, &mut value, &shape)?;
+        }
         // No document in the stream: an empty file, or only comments.
         // `serde_norway` says `Null` for both, and if it ever says
         // something else the two parses disagree and that is an error.

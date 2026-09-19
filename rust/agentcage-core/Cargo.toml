@@ -37,6 +37,15 @@ serde_json = "1"
 # crate discards scalar style, so the style comes from a second parse
 # and is overlaid on the first parser's tree. See `src/yaml/style.rs`
 # for the alignment rules and how it fails closed.
+# Insertion-ordered maps for the config tree (PR C1). `cage.yaml`
+# key order is user-visible after `cage edit` (`save_raw_config`
+# passes `sort_keys=False`) and `quadlets.py` emits one
+# `Environment=` line per entry in Python `dict` order, so a
+# `BTreeMap` would silently re-sort both. `serde_norway` already
+# depends on this crate for the same reason, so it costs nothing new
+# in the tree.
+indexmap = "2"
+
 serde_norway = "0.9.42"
 saphyr-parser = "0.1.0"
 

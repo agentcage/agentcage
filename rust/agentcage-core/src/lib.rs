@@ -55,8 +55,10 @@
 //! [`services.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/services.py
 
 pub mod audit;
+pub mod config;
 pub mod fingerprint;
 pub mod har;
+pub mod python;
 pub mod volume_mounts;
 pub mod yaml;
 
