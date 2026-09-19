@@ -410,6 +410,7 @@ on the Python, the corpus and the port together — as the audit one did.
 | C7 | The corpus recorded only the keys of the mask-mountpoint map, leaving the paths the cleanup chain consumes unverified | **Fixed** in C7 |
 | C2 | `name` and `container.image` are matched with `$`, not `\Z` — the same anchor bug as the decider host. `name: "my-cage\n"` validates, and that name becomes a systemd unit name, a podman object name and a state directory. Verified end to end | Open; reproduced and pinned |
 | **D1** | **`secret_store.py:226` puts a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Open — see below** |
+| D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; a policy call, see below |
 
 **The Keychain finding is the most serious thing this port has turned up**, because
 it is a live exposure in shipped code rather than a porting concern. Every other
@@ -427,6 +428,20 @@ flagging it. D1 reproduces the argv as-is, marks the argument so it is redacted
 from every debug dump and fake-runner trace, and pins the behaviour in a test
 named after the bug. The `execve` exposure is unchanged and deliberate until it
 can be fixed against a real `security(1)`.
+
+**The `container.env` expansion is a different kind of finding** and deserves
+less alarm than the Keychain one. `expandvars` on `container.env` is a feature,
+and putting a credential there without a `secret_injection` rule is arguably
+asking for what you get. What makes it worth listing is that `config.py:1101`
+shows the authors already knew `expandvars` exposes real values — it strips
+exactly the keys that *are* declared, with a comment saying why. The undeclared
+case is the same hazard with no warning. Fixing it means choosing between a
+warning, a refusal, and routing through placeholders, which is a product
+decision. It also lands in C8's and Track E's code rather than here.
+
+Adjacent and already known to the operator: `cage create -s KEY=VALUE` and
+`run --set-secret KEY=VALUE` put cleartext in agentcage's own argv and in shell
+history. The bare-`KEY` form prompts hidden, and nothing steers anyone to it.
 
 **Three anchor sites, one bug.** `name`, `container.image` and
 `agents.decider.host` all use `$` where `valid_domain` uses `\Z`, and
