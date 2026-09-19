@@ -84,11 +84,11 @@ pub mod secret;
 pub mod types;
 pub mod validate;
 
-pub use domain::{LabelPolicy, encoded_private_ip, valid_domain};
 pub use agents::{
     AGENT_MAX_TOKENS_FLOOR, VALID_AGENT_KEY_SCHEMES, VALID_AGENT_PROVIDERS, require_api_key_shape,
     validate_agent_api_key, validate_agent_max_tokens, validate_agents,
 };
+pub use domain::{LabelPolicy, encoded_private_ip, valid_domain};
 pub use inspectors::inspector_warnings;
 pub use json::to_json;
 pub use parse::load;
