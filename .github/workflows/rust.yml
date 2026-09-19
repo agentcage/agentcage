@@ -126,6 +126,15 @@ jobs:
           uv sync --dev
           uv run python scripts/gen-scaffold-configs.py --check
 
+      # The doctor fixtures (PR D15) record what the real `run_doctor`
+      # prints across 39 faked host environments. `cargo test` asserts
+      # the port against them, so a Rust-side drift already fails; what
+      # this adds is noticing when `doctor.py` itself changes a message,
+      # a hint table or a branch and the committed recording goes stale.
+      - name: Doctor fixtures are current
+        run: |
+          uv run python scripts/gen-doctor-fixture.py --check
+
       # The CLI surface fixture (PR D5) is generated from the live click
       # tree in cli.py. `cargo test` asserts the clap tree against it, so
       # a Rust-side drift already fails -- what this adds is noticing
