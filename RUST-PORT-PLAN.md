@@ -300,3 +300,114 @@ apple-container work is the main unknown, and it is bounded.
    file, asserting key-order preservation.
 5. Stand up the Cargo workspace + asset embedding, and prove
    `_egress_content_hash` parity as the first Rust test that matters.
+
+---
+
+## 8. PR breakdown
+
+Two rules hold for every PR below:
+
+1. **`master` stays shippable at every merge.** The Python CLI is in production
+   use; nothing here breaks it until the final cutover.
+2. **Every PR has a mechanical acceptance check** — a fixture diff, an argv
+   assertion, or an e2e phase — not "looks right on review".
+
+Track A lands on `master` as Python work that is useful whether or not the port
+proceeds. Tracks B–D are Rust; the binary is built and tested in CI from A6
+onward but ships to nobody until E.
+
+### Track A — Preparation (Python only, no Rust in the repo yet)
+
+| # | PR | Acceptance check | Size |
+| :-- | :-- | :-- | :-- |
+| A1 | Root `VERSION` file; `pyproject.toml` reads it; CI fails on disagreement | Existing suite green; `agentcage --version` unchanged | XS |
+| A2 | Parameterize the e2e harness on `${AGENTCAGE:-agentcage}` (140 call sites across `phase*.sh` + `lib.sh`) | `bash tests/e2e/run.sh container` green with the default; green again with `AGENTCAGE=$(which agentcage)` | S |
+| A3 | Golden-corpus harness: walk `tests/configs/**` + a generated matrix, dump quadlets, `proxy-config.yaml`, `dns-allowlist.conf`, `placeholders.env`, fingerprints, HAR, and every validation error string | Harness is deterministic (run twice, empty diff); a deliberate one-char mutation in `config.py` fails the corpus check | M |
+| A4 | Cross-language contract fixtures for `relays/_validate.validate_relay_entry`, `valid_domain`, `encoded_private_ip`, `_is_never_grant` (§2.2) | pytest asserts Python matches each fixture; mutation of either implementation fails | M |
+| A5 | Extract `_egress_copy_sources` / `_egress_build_inputs` / `_egress_content_hash` into a standalone module + fixture | Hash for the current tree is pinned in a fixture; `test_apple_container.py` still green | S |
+| A6 | Split the two boundary-straddling test files (`test_addon_reload_inspector_config.py`, `test_policy_api_ssrf_guard.py`) into host-side and proxy-side halves | Same assertion count, both halves green | S |
+
+A3 and A4 are the load-bearing ones. Everything in Tracks C and D is verified
+against what they produce, so they must be right before Rust starts.
+
+### Track B — Rust foundations
+
+| # | PR | Acceptance check | Deps |
+| :-- | :-- | :-- | :-- |
+| B1 | Cargo workspace skeleton (`agentcage-core`, `agentcage-assets`, `agentcage-cli`) + CI job (build, clippy, fmt) | CI green; no behavior change anywhere | A1 |
+| B2 | YAML crate decision + round-trip test over every `tests/configs/**` file | Key order preserved on 100% of configs; written as an ADR in the PR body | B1 |
+| B3 | `agentcage-assets`: embed `data/`, `templates/`, `scaffolds/`; extract to a cache dir; reproduce `_egress_content_hash` | Matches the A5 fixture exactly; extracted tree byte- and mode-identical to the source | A5, B1 |
+
+B3 is deliberately early: it is the highest-risk piece of new (not ported) work,
+and it fails loudly and cheaply.
+
+### Track C — Core logic (one PR per module, each verified against the A3 corpus)
+
+| # | PR | Acceptance check |
+| :-- | :-- | :-- |
+| C1 | Config types + parse, no validation | Parses every `tests/configs/**` and every rendered scaffold `cage.yaml.j2` |
+| C2 | Validation: domains, ports, secrets, placeholders | Error strings byte-match the corpus subset |
+| C3 | Validation: relays (the §2.2 reimplementation), agents, capture, inspectors | Matches both the corpus **and** the A4 contract fixture |
+| C4 | `fingerprint` + `stable_json` | Byte-identical hashes across the corpus |
+| C5 | `audit` parse / filter / summary | Corpus diff |
+| C6 | `har` builder | Corpus diff on a fixed capture |
+| C7 | `volume_mounts` (incl. tmpfs mask + copyup) | Corpus diff |
+| C8 | `quadlets` + minijinja over the existing `.j2` templates | Rendered quadlets byte-identical for every corpus case |
+
+These are independent of each other and can land in any order, or in parallel.
+
+### Track D — CLI and I/O
+
+| # | PR | Acceptance check |
+| :-- | :-- | :-- |
+| D1 | `CommandRunner` trait + podman wrapper + recording fake | argv assertions against `test_podman.py`'s expectations |
+| D2 | `state` (atomic writes, deployment dirs) + `systemd` | Concurrency test on `_atomic_write_text`; argv assertions |
+| D3 | `secret_resolver` + `secret_store` (systemd-creds, plaintext) | argv assertions; round-trip against a real `systemd-creds` on the CI runner |
+| D4 | `output`, `terminal`, `_timing` | Golden help/banner text; termios restore test under a pty |
+| D5 | clap skeleton: `--version`, `--help`, banner, `AliasGroup` equivalents, hidden back-compat flags | Golden diff of `--help` for every subcommand vs the Python click output |
+| D6 | `cage create` / `cage update` + `services.build_and_deploy` + container backend | **e2e phase 1** green under `AGENTCAGE=<rust binary>` |
+| D7 | `cage list` / `show` / `status` / `start` / `stop` / `restart` / `destroy` / `prune` | e2e phase 1 (full) |
+| D8 | `cage logs` / `cage audit` | **e2e phase 2** |
+| D9 | `secret` group + live-apply path | **e2e phase 3** |
+| D10 | `domain` group + `grants` group + DNS quadlet reload | **e2e phase 4** |
+| D11 | `cage backup` / `cage restore` | **e2e phase 5** |
+| D12 | `cage exec` / `cage shell` / `cage verify` | **e2e phase 6** |
+| D13 | `cage har` | Corpus diff + manual DevTools load |
+| D14 | `init` + `scaffold` + `run` (ephemeral flow) | Scaffold render diff vs Python; `agentcage run busybox` smoke |
+| D15 | `doctor` | Golden output on the CI runner |
+| D16 | `legacy_watcher` cleanup path | Unit test against a synthesized legacy cage (`test_v021_legacy_cage.py` port) |
+
+D6–D12 map almost 1:1 onto the existing e2e phases, which is what makes them
+individually verifiable. Each one ends with a CI job that runs its phase against
+the Rust binary while the Python binary keeps running the full suite.
+
+Once D6–D12 are in, add a **dual-run CI job**: run each phase against both
+binaries and diff `audit.jsonl`, `capture.jsonl`, the generated quadlets, and
+`proxy-config.yaml`. That is the strongest single signal that the Rust host
+still drives the unmodified Python egress correctly.
+
+### Track E — Backends and cutover
+
+| # | PR | Acceptance check |
+| :-- | :-- | :-- |
+| E1 | `vm` backend (Lima) | **e2e phase 7** on a runner with Lima |
+| E2 | `apple-container` backend, part 1: image build, `_egress_content_hash` wiring, unit generation | `phase_apple.sh` partial, on a Mac |
+| E3 | `apple-container` backend, part 2: start/stop, secret staging, mask mountpoints, launchd | `phase_apple.sh` full |
+| E4 | Flip the default: Rust binary becomes `agentcage`; Python CLI entry point removed | Full e2e suite green on the Rust binary only |
+| E5 | `install.sh` rewrite; release binaries; Homebrew tap; AUR | Fresh-VM install test on Arch and Ubuntu |
+| E6 | Reduce `pyproject.toml` to the proxy-only package; final PyPI release with migration notice | Proxy pytest suite green from the reduced package |
+| E7 | Docs pass over `docs/**` + `README.md` + `CONTRIBUTING.md` for install paths and the bilingual layout | Link check; manual read |
+
+E1 and E2/E3 are independent of each other and of D13–D16.
+
+### Sequencing notes
+
+- **Critical path:** A1 → A3/A4 → B1/B3 → C2/C3/C8 → D5 → D6 → D7–D12 → E4.
+- **Parallelizable:** all of Track C after C1; D13–D16; E1 vs E2/E3.
+- **First externally visible change is E4.** Everything before it is additive.
+- **Natural stopping points:** after D12 (Linux container backend complete,
+  could ship as an opt-in `agentcage-rs`), and after E1 (all Linux backends).
+  If apple-container hardware access is thin, E2/E3 can lag indefinitely with
+  the Python CLI retained for that backend only.
+- **Roughly 30 PRs.** Track A ~1 week, B ~1 week, C ~3 weeks, D ~7 weeks,
+  E ~4 weeks.
