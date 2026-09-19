@@ -259,7 +259,7 @@ def format_table_row(entry: AuditEntry, *, color: bool = True) -> str:
         # Color just the decision column
         colored_decision = style(f"{decision:<10}", fg=_DECISION_COLORS[decision])
         row = (
-            f"{ts:<26} {dir_label:<4} {method:<8} "
+            f"{ts:<26} {dir_label:<10} {method:<8} "
             f"{host:<25} {port:<5} {path:<20} "
             f"{colored_decision} {reason}"
         )
