@@ -1,0 +1,17 @@
+Usage: agentcage init [OPTIONS] [NAME]
+
+  Scaffold a new agentcage config file.
+
+Options:
+  -o, --output TEXT               Output file path.  [default: cage.yaml]
+  --image TEXT                    Container image.  [default: node:22-slim]
+  --isolation [container|vm|apple-container]
+                                  Isolation backend (default: auto-detect from
+                                  platform — container on Linux, apple-container
+                                  on macOS 26+ ASi when Apple `container` is
+                                  installed, vm otherwise).
+  --force                         Overwrite existing file.
+  --scaffold TEXT                 Use a scaffold template (e.g. openclaw).
+  --list-scaffolds                List available scaffolds and exit.
+  --port INTEGER                  Host port to publish (scaffold-specific).
+  --help                          Show this message and exit.

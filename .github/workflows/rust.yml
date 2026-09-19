@@ -126,6 +126,16 @@ jobs:
           uv sync --dev
           uv run python scripts/gen-scaffold-configs.py --check
 
+      # The CLI surface fixture (PR D5) is generated from the live click
+      # tree in cli.py. `cargo test` asserts the clap tree against it, so
+      # a Rust-side drift already fails -- what this adds is noticing
+      # when `cli.py` itself gains a command, a flag or an alias and the
+      # committed surface goes stale. Without it, the Rust tree would
+      # keep matching a fixture that no longer matches the Python.
+      - name: CLI surface fixture is current
+        run: |
+          uv run python scripts/gen-cli-surface.py --check
+
       # --all-targets covers tests and examples, which is where the lints
       # that matter (unwrap in a helper, a stray dbg!) actually land.
       - name: cargo clippy

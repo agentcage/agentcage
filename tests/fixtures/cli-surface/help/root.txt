@@ -1,0 +1,41 @@
+╭────────────────────────────────────────────╮
+│ ✻ agentcage v{VERSION}                        │
+╰────────────────────────────────────────────╯
+
+Usage: agentcage [OPTIONS] COMMAND [ARGS]...
+
+  Defense-in-depth proxy sandbox for AI agents.
+
+Options:
+  --version  Show the version and exit.
+  --help     Show this message and exit.
+
+Commands:
+  cage      Manage cages.
+  doctor    Check system health and diagnose common issues.
+  domain    Manage cage domain filters.
+  init      Scaffold a new agentcage config file.
+  scaffold  Create and manage custom scaffolds.
+  secret    Manage cage-scoped secrets.
+  watcher   Read the traffic watcher's findings and scan status.
+
+Aliases:
+  config → cage edit
+  delete → cage destroy
+  describe → cage show
+  edit → cage edit
+  exec → cage exec
+  inspect → cage show
+  logs → cage logs
+  ls → cage list
+  ps → cage list
+  reload → cage restart
+  restart → cage restart
+  rm → cage destroy
+  run → cage run
+  shell → cage shell
+  show → cage show
+  start → cage start
+  status → cage status
+  stop → cage stop
+  update → cage update

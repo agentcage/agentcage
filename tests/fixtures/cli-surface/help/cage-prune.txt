@@ -1,0 +1,7 @@
+Usage: agentcage cage prune [OPTIONS]
+
+  Remove all exited interactive and ephemeral cages.
+
+Options:
+  -y, --yes  Skip confirmation prompt
+  --help     Show this message and exit.

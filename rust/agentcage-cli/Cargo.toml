@@ -88,6 +88,29 @@ signal-hook = { version = "0.3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The command tree (PR D5). `cli.py` is 5,632 lines of click and this is
+# what replaces it.
+#
+# `wrap_help` is the one non-default feature, and it is not cosmetic:
+# click wraps its help to the terminal width, and several of these help
+# strings are long enough to matter (`cage logs --since` is 150
+# characters, `secret set --declare` is 180). Without it clap wraps at a
+# fixed 100 columns and an 80-column terminal gets ragged output the
+# Python never produced. It costs one small dependency, `terminal_size`.
+#
+# Not enabled: `derive` (the tree is built with the builder API -- see
+# `src/cli/mod.rs` for why: 19 of the aliases are hidden clones of
+# commands that live under a *different* parent, which the derive macro
+# has no way to express), `env`, `unicode`, `suggestions`' extras.
+clap = { version = "4", features = ["wrap_help"] }
+
+# Shell completions. click provides these through the
+# `_AGENTCAGE_COMPLETE` environment protocol with no command at all;
+# clap has no stable equivalent, so the scripts are generated instead.
+# See `src/cli/completions.rs` for what that changes for a user who
+# already configured the click protocol.
+clap_complete = "4"
+
 [dev-dependencies]
 # The `poll` the terminal-restore test reads the pty master with.
 # `openpty` itself is already under `term`. Same crate as above; Cargo
@@ -100,5 +123,14 @@ nix = { version = "0.31", default-features = false, features = [
 ] }
 serde_json = "1"
 
+
 [lints]
 workspace = true
+
+# Test-only, and deliberately not runtime dependencies.
+#
+# `serde_json` reads the generated CLI-surface fixture, which is the
+# oracle the whole port is checked against (`src/cli/conformance.rs`).
+# `agentcage-core` is here as well as above because `tests/binary.rs` is
+# a separate crate: it runs the built binary as a subprocess and needs
+# `VERSION` to assert the `--version` line against.

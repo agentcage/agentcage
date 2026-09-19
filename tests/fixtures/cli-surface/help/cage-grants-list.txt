@@ -1,0 +1,6 @@
+Usage: agentcage cage grants list [OPTIONS]
+
+  List runtime grants (overlay) and the static baseline for a cage.
+
+Options:
+  --help  Show this message and exit.

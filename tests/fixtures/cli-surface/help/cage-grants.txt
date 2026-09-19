@@ -1,0 +1,15 @@
+Usage: agentcage cage grants [OPTIONS] NAME COMMAND [ARGS]...
+
+  Manage Policy API runtime domain grants (see docs/explain/policy-api.md).
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  list     List runtime grants (overlay) and the static baseline for a cage.
+  promote  Promote a runtime grant into the permanent baseline, then drop...
+  revoke   Remove a runtime grant from the overlay (does not touch the...
+  sync     Reconcile decided grants into the operator's cage.yaml baseline.
+
+Aliases:
+  ls → list
