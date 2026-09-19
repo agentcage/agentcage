@@ -419,6 +419,13 @@ pub struct DumpOptions {
     /// True is Python's default, and what `cage har` and the `comment`
     /// string both get.
     pub ensure_ascii: bool,
+    /// `separators`: `(item_separator, key_separator)`. `None` asks for
+    /// Python's own defaulting, which depends on `indent`: `(", ", ": ")`
+    /// on one line, `(",", ": ")` once an indent supplies the space
+    /// itself. `fingerprint.stable_json` is the caller that overrides it,
+    /// with `(",", ":")` — the compact form, and the one place in this
+    /// codebase where a byte of whitespace changes a sha256.
+    pub separators: Option<(&'static str, &'static str)>,
 }
 
 impl Default for DumpOptions {
@@ -427,6 +434,7 @@ impl Default for DumpOptions {
             indent: None,
             sort_keys: false,
             ensure_ascii: true,
+            separators: None,
         }
     }
 }
@@ -439,6 +447,17 @@ impl DumpOptions {
             indent: Some(2),
             ..Self::default()
         }
+    }
+
+    /// The separators actually used, applying `json.dumps`'s rule that
+    /// an unset `separators` means `(",", ": ")` when `indent` is set
+    /// and `(", ", ": ")` when it is not.
+    fn resolved_separators(self) -> (&'static str, &'static str) {
+        self.separators.unwrap_or(if self.indent.is_some() {
+            (",", ": ")
+        } else {
+            (", ", ": ")
+        })
     }
 }
 
@@ -471,15 +490,16 @@ fn write_array(out: &mut String, items: &[Json], options: DumpOptions, depth: us
         out.push_str("[]");
         return;
     }
+    let (item_separator, _) = options.resolved_separators();
     out.push('[');
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
-            out.push(',');
+            out.push_str(item_separator);
         }
-        write_separator(out, options, depth + 1, i > 0);
+        write_indent(out, options, depth + 1);
         write_value(out, item, options, depth + 1);
     }
-    write_separator(out, options, depth, false);
+    write_indent(out, options, depth);
     out.push(']');
 }
 
@@ -494,31 +514,30 @@ fn write_object(out: &mut String, pairs: &[(String, Json)], options: DumpOptions
         // UTF-8 bytes, and for valid UTF-8 those orders agree.
         order.sort_by(|a, b| a.0.cmp(&b.0));
     }
+    let (item_separator, key_separator) = options.resolved_separators();
     out.push('{');
     for (i, (key, item)) in order.iter().enumerate() {
         if i > 0 {
-            out.push(',');
+            out.push_str(item_separator);
         }
-        write_separator(out, options, depth + 1, i > 0);
+        write_indent(out, options, depth + 1);
         write_string(out, key, options.ensure_ascii);
-        out.push_str(": ");
+        out.push_str(key_separator);
         write_value(out, item, options, depth + 1);
     }
-    write_separator(out, options, depth, false);
+    write_indent(out, options, depth);
     out.push('}');
 }
 
-/// The whitespace between two items, or before a closing bracket.
-fn write_separator(out: &mut String, options: DumpOptions, depth: usize, after_comma: bool) {
-    match options.indent {
-        Some(width) => {
-            out.push('\n');
-            for _ in 0..width * depth {
-                out.push(' ');
-            }
+/// The line break and leading spaces `indent` puts before an item, or
+/// before a closing bracket. Nothing at all on one line: there the gap
+/// between two items is the item separator's own trailing space.
+fn write_indent(out: &mut String, options: DumpOptions, depth: usize) {
+    if let Some(width) = options.indent {
+        out.push('\n');
+        for _ in 0..width * depth {
+            out.push(' ');
         }
-        None if after_comma => out.push(' '),
-        None => {}
     }
 }
 
@@ -716,6 +735,34 @@ mod tests {
         assert_eq!(
             dumps(&value, DumpOptions::indented()),
             "{\n  \"a\": {},\n  \"b\": [],\n  \"c\": [\n    1\n  ]\n}"
+        );
+    }
+
+    /// `json.dumps(v, separators=(",", ":"))` — the compact form
+    /// `fingerprint.stable_json` asks for, and the reason the separators
+    /// are a knob at all.
+    #[test]
+    fn explicit_separators_replace_the_defaults() {
+        let value = parse(r#"{"b": [1, 2], "a": {"c": null}}"#).unwrap();
+        let compact = DumpOptions {
+            separators: Some((",", ":")),
+            ..DumpOptions::default()
+        };
+        assert_eq!(dumps(&value, compact), r#"{"b":[1,2],"a":{"c":null}}"#);
+        // The defaults are unchanged by the knob existing.
+        assert_eq!(
+            dumps(&value, DumpOptions::default()),
+            r#"{"b": [1, 2], "a": {"c": null}}"#
+        );
+        // An explicit separator survives `indent`, where Python would
+        // otherwise have defaulted the item separator to a bare comma.
+        let indented = DumpOptions {
+            separators: Some((",", ": ")),
+            ..DumpOptions::indented()
+        };
+        assert_eq!(
+            dumps(&value, indented),
+            "{\n  \"b\": [\n    1,\n    2\n  ],\n  \"a\": {\n    \"c\": null\n  }\n}"
         );
     }
 

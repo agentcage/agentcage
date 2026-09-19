@@ -40,6 +40,14 @@ serde_json = "1"
 serde_norway = "0.9.42"
 saphyr-parser = "0.1.0"
 
+# The fingerprint (PR C4). `cage update` decides whether a cage needs
+# redeploying by comparing a sha256-of-sha256s against the
+# `fingerprint.json` the last deploy wrote -- including, at cutover, one
+# the Python wrote. `sha2` is the RustCrypto implementation: no C, no
+# system OpenSSL to find, and a fixed output for a fixed input on every
+# target, which is the only property that matters here.
+sha2 = "0.10"
+
 # Test-only, and deliberately not a runtime dependency.
 #
 # `volume_mounts` itself moves strings around and needs nothing. What

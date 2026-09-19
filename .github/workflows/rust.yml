@@ -100,6 +100,20 @@ jobs:
           python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
           cargo test --locked -p agentcage-core --test yaml_pyyaml_crossing -- --ignored
 
+      # The fingerprint crossing test (PR C4), #[ignore]d for the same
+      # reason and run here for a different one. `cage update` decides
+      # whether a cage needs redeploying by comparing a sha256 against
+      # the fingerprint.json the last deploy wrote -- and at cutover
+      # that file was written by the Python. The golden corpus proves
+      # the port reproduces the 126 fingerprints that already exist;
+      # this proves it reproduces the next one, over the inputs no
+      # corpus case has: floats (Python's `repr` is not Rust's
+      # `Display`), unbounded integers, and non-ASCII keys and values,
+      # which `ensure_ascii=False` puts into the hash as raw UTF-8.
+      - name: Fingerprint to CPython crossing test
+        run: |
+          cargo test --locked -p agentcage-core --test fingerprint_python_crossing -- --ignored
+
       # --all-targets covers tests and examples, which is where the lints
       # that matter (unwrap in a helper, a stray dbg!) actually land.
       - name: cargo clippy

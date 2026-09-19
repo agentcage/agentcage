@@ -35,6 +35,7 @@ fn corpus_text(value: &Json) -> String {
         indent: Some(2),
         sort_keys: true,
         ensure_ascii: false,
+        ..DumpOptions::default()
     };
     json::dumps(value, options) + "\n"
 }
