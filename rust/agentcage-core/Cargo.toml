@@ -8,8 +8,17 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# No dependencies yet, and that is deliberate -- see the crate docs.
+# `serde`/`serde_json` arrive with PR C5 (audit.py). `audit.jsonl` is a
+# JSON-per-line format whose records carry fields this version does not
+# know about, so the port needs a real parser that round-trips unknown
+# keys -- and `serde_json`'s `Map` is a `BTreeMap`, which reproduces
+# Python's `json.dumps(sort_keys=True)` key order for free. Nothing else
+# was added: the terminal table and colour output the golden corpus
+# checks are plain format strings, because matching Python byte for byte
+# is easier than talking a table crate out of its own opinions.
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [lints]
 workspace = true
