@@ -516,7 +516,8 @@ fn join_host_path(base: &str, parts: &[&str]) -> String {
 /// exactly two slashes keeps them (POSIX reserves `//` for the
 /// implementation), and `..` at the root of an absolute path is discarded
 /// rather than climbing above `/`.
-fn normpath(path: &str) -> String {
+#[must_use]
+pub fn normpath(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
     }

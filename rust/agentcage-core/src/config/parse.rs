@@ -15,13 +15,22 @@
 //!
 //! | `config.py` | Message | Owner |
 //! | :-- | :-- | :-- |
-//! | `secrets.scope` not in `_VALID_SECRET_SCOPES` | `invalid secrets.scope: …` | C2 |
-//! | `secrets.backend` not in `KNOWN_BACKENDS` | `invalid secrets.backend: …` | C2 |
-//! | `secret_resolver.validate_env_name` | `invalid env name: …` | C2 |
-//! | `secret_resolver.validate_source` ×5 | `unknown secret source scheme: …` | C2 |
-//! | `config.validate_transform` | `unknown secret_injection transform: …` | C2 |
+//! | `secrets.scope` not in `_VALID_SECRET_SCOPES` | `invalid secrets.scope: …` | C2 — **done**, below |
+//! | `secrets.backend` not in `KNOWN_BACKENDS` | `invalid secrets.backend: …` | C2 — **done**, below |
+//! | `secret_resolver.validate_env_name` | `invalid env name: …` | C2 — **done**, below |
+//! | `config.validate_transform` | `unknown secret_injection transform: …` | C2 — **done**, below |
 //! | `relays/_validate.validate_relay_entry`, past its required-key check | 15 messages | C3 — **landed**, [`crate::relays`] |
 //! | `agents.{decider,watcher}.api_key` scheme shape | `must use the 'source:NAME' scheme …` | C3 — **landed**, [`api_key_shape`] |
+//! The checks themselves live in [`super::secret`]; this module calls
+//! them where `load_config` calls them, because the call site is what
+//! fixes their precedence against everything else here.
+//!
+//! Two of those have a structural *part* that this module does make,
+//! because parsing cannot continue without it:
+//! `validate_relay_entry`'s "requires name/type/listen" (`load_config`
+//! then indexes `entry["name"]`, which would be a `KeyError`), and the
+//! `api_key` split into scheme and name (which decides whether the
+//! name is stripped from the cage's environment).
 //!
 //! PR C3 closed the last two rows by calling the real thing from this
 //! module rather than by re-deriving it: the relay loop runs
@@ -109,12 +118,15 @@ use std::collections::BTreeSet;
 use crate::python::{repr, str_of, type_name};
 use crate::yaml::{self, Mapping, Value};
 
+use super::secret::{
+    KNOWN_BACKENDS, validate_enum, validate_env_name, validate_source, validate_transform,
+};
 use super::types::{
     AgentsConfig, BuildConfig, CaptureConfig, Config, ContainerConfig, DeciderAgentConfig,
     DomainConfig, IcmpPortsConfig, LlmAgentConfig, LoggingConfig, MAX_CAPTURE_BODY_BYTES,
     MAX_CAPTURE_FILE_BYTES, OrderedMap, PortsConfig, ProtocolRelay, RelayAuth, RelayPolicy,
     RelayRecipientAllowlist, RelayUpstream, SecretInjectionRule, SecretsConfig, UdpPortsConfig,
-    VmConfig, WatcherAgentConfig,
+    VALID_SECRET_SCOPES, VmConfig, WatcherAgentConfig,
 };
 use super::{ConfigError, HostProbe};
 
@@ -291,9 +303,13 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     // C2's message reads `invalid secrets.scope: 'None'` — matching
     // `config.py`.
     let secrets_raw = section(raw.get("secrets"), "secrets")?;
+    let scope = str_field(secrets_raw.get("scope"), "auto");
+    validate_enum("secrets.scope", &scope, &VALID_SECRET_SCOPES)?;
+    let backend = str_field(secrets_raw.get("backend"), "auto");
+    validate_enum("secrets.backend", &backend, &KNOWN_BACKENDS)?;
     config.secrets = SecretsConfig {
-        backend: str_field(secrets_raw.get("backend"), "auto"),
-        scope: str_field(secrets_raw.get("scope"), "auto"),
+        backend,
+        scope,
         allow_plaintext: bool_field(secrets_raw.get("allow_plaintext"), false),
     };
 
@@ -330,10 +346,16 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
             continue;
         }
         let env = scalar_string(env_value, "secret_injection[].env")?;
-        // validate_env_name / validate_source / validate_transform are
-        // C2's; see the module docs.
+        // The name is interpolated into a generated quadlet
+        // `ExecStartPre` shell command later, so the POSIX-identifier
+        // charset is the injection boundary -- see `secret`'s docs. The
+        // empty-name arm of `validate_env_name` is unreachable from
+        // here: the `python_bool` guard above already skipped the rule.
+        validate_env_name(&env)?;
         let source = raw_string(entry.get("source"), "", "secret_injection[].source")?;
+        validate_source(&source)?;
         let transform = or_string(entry.get("transform"), "", "secret_injection[].transform")?;
+        validate_transform(&transform)?;
         let transform_config = section(
             entry.get("transform_config"),
             "secret_injection[].transform_config",

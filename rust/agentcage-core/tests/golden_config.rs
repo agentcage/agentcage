@@ -419,13 +419,20 @@ fn the_structural_invalid_cases_match_verbatim() {
     );
 }
 
-/// The `invalid/` cases C1 reproduces verbatim, in manifest order.
+/// The `invalid/` cases [`load`] alone reproduces verbatim, in manifest
+/// order.
 ///
-/// Every one of them is a *structural* complaint `load_config` makes
-/// before any validator runs: a section that is not a mapping, a
-/// removed schema key, a list where an integer belongs. The rest of
-/// `invalid/` is value checks and belongs to C2 and C3 — see
-/// `config::parse`'s module docs for the inventory.
+/// Most are *structural* complaints `load_config` makes before any
+/// validator runs: a section that is not a mapping, a removed schema
+/// key, a list where an integer belongs. The five `err-secret*` entries
+/// are the exception, and not one: `load_config` makes those value
+/// checks inline, so they belong to PR C2 by ownership and to this list
+/// by call site. `config::parse`'s module docs carry the inventory of
+/// which value checks live there and who owns each.
+///
+/// The rest of `invalid/` needs [`validate`](agentcage_core::config::validate)
+/// too, and `tests/golden_validate.rs` is where the whole pipeline is
+/// checked against the corpus.
 const C1_OWNED: &[&str] = &[
     "err-agents-auto-revoke-not-bool",
     "err-agents-decider-context-not-string",
@@ -461,6 +468,11 @@ const C1_OWNED: &[&str] = &[
     "err-relay-missing-fields",
     "err-relay-servername-not-string",
     "err-relay-upstream-not-mapping",
+    "err-secret-env-name-invalid",
+    "err-secret-source-scheme-unknown",
+    "err-secret-transform-unknown",
+    "err-secrets-backend-invalid",
+    "err-secrets-scope-invalid",
 ];
 
 /// The `invalid/` cases PR C3 added to the *parse* path.
