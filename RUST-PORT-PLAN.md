@@ -305,22 +305,44 @@ YAML crate implements 1.2, where those are the strings `"yes"`, `"0755"`, and
   `no` unquoted — as a domain, a header value, anything — PyYAML inside the
   egress reads it as `False`. The emitter must quote every 1.1-ambiguous scalar.
 
-**Measured, not assumed** (2026-09-19, `serde_norway` 0.9 and `serde_yaml_ng`
-0.10 against PyYAML 6.0): emit each hazardous scalar from Rust *as a string*,
-read it back with `yaml.safe_load`. **14 of 34 come back as the wrong type.**
+**Measured, not assumed** (2026-09-19): emit each hazardous scalar from Rust
+*as a string*, read it back with `yaml.safe_load`. A first pass over a
+hand-written token list found 14 leaks. PR B2 then re-derived the set from
+**PyYAML's own implicit-resolver table** rather than from a word list and found
+**31 of 56**. The table below is the corrected one; the lesson is that this
+hazard is a set of *patterns*, so enumerating spellings undercounts it.
 
-| Corrupted | Rust emits | PyYAML reads |
-| :-- | :-- | :-- |
-| `yes` `Yes` `YES` `on` `On` `ON` | bare | `True` |
-| `no` `No` `NO` `off` `Off` `OFF` | bare | `False` |
-| `1:30` | bare | `90` (sexagesimal) |
-| `1_000` | bare | `1000` |
+| Corrupted | PyYAML reads |
+| :-- | :-- |
+| `yes` `Yes` `YES` `on` `On` `ON` | `True` |
+| `no` `No` `NO` `off` `Off` `OFF` | `False` |
+| `12:00:00` `1:30:15` `-1:30` `1:30.5` | sexagesimal int/float |
+| `1_000` `1_000.5` `0x_1f` | underscored numerics |
+| `2024-01-02` | `datetime.date` |
+| `2024-01-02T03:04:05`, and the space-separated form | `datetime.datetime` |
+
+The **timestamps are the ones a token list misses**, and they are not exotic: a
+relay field, header value or domain shaped like a date silently stops being a
+string inside the security boundary.
+
+Two scalars do not corrupt — they **raise**. `<<` and `=` resolve to tags
+SafeLoader has no constructor for, so an unquoted one stops the proxy loading
+its config at all. Loud, but still a host-side emitter bug.
 
 The crates already quote the YAML-1.2 specials — `true`, `null`, `~`, `0755`,
 `0x1F`, `.inf`, `.nan` — so those are safe. It is precisely the **1.1-only**
-spellings that leak, which is why this cannot be left to the crate's default
+patterns that leak, which is why this cannot be left to the crate's default
 quoting. Both crates behave identically here, so the choice between them does
 not affect it.
+
+**The read side has a sharper edge than the write side.** PyYAML reads bare
+`no` as `False` but quoted `'no'` as the *string* `"no"`, and
+`relays/_validate.py:76` does `tls = bool(upstream.get("tls", True))` — so
+`upstream.tls: 'no'` runs today **with TLS on**. Every serde YAML crate
+discards scalar style, so a naive port reads both spellings the same and turns
+that relay's TLS **off**. Python's behaviour is itself a bug, but it fails
+safe and the naive port fails unsafe, which is why B2 recovers scalar style
+from a second, style-only parse rather than accepting the divergence.
 
 Note the asymmetry: PyYAML *does* quote `'no'` on output, so Python→Rust and
 Python→Python are both safe. **Only Rust→Python corrupts.** A round-trip test
