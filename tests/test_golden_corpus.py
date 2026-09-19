@@ -230,6 +230,39 @@ def test_every_reachable_config_raise_is_still_covered(regenerated):
     )
 
 
+def test_harness_emits_nothing_interpreter_dependent():
+    """Guard the class of bug, not just the one instance of it.
+
+    The corpus is a fixture set whose whole purpose is to be a stable
+    cross-language contract, so no committed byte may come from a code path
+    whose *text* moves with the CPython version. ``ast.unparse`` is exactly
+    that: PEP 701 changed its quote selection for f-strings containing nested
+    quotes, so 3.12/3.13 emit ``f"...{d['k']}..."`` where 3.14 emits
+    ``f'...{d['k']}...'``. A corpus generated on one and checked on the other
+    then fails on pure quote style — which is what happened, and which two
+    runs on one interpreter cannot catch.
+
+    ``ast.dump`` is listed for the same reason: its output has gained fields
+    across releases. If you need to describe a syntax tree in a committed
+    artifact, read node types and constant values (see ``_message_template``
+    in the harness), do not round-trip source text.
+
+    The full cross-interpreter check is in the corpus README and belongs in
+    CI's matrix; this test is the cheap tripwire that runs everywhere.
+    """
+    source = HARNESS.read_text(encoding="utf-8")
+    banned = [
+        name for name in ("ast.unparse", "ast.dump")
+        # The prose above names both; only a real call site should match.
+        if f"{name}(" in source
+    ]
+    assert not banned, (
+        f"{HARNESS.name} calls {', '.join(banned)}, whose output is not "
+        "stable across CPython versions. Render the AST from node types and "
+        "constant values instead — see this test's docstring."
+    )
+
+
 def test_corpus_size_is_sane():
     """A corpus nobody can review is a corpus nobody reviews."""
     total = sum(p.stat().st_size for p in GOLDEN_DIR.rglob("*") if p.is_file())

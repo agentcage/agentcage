@@ -6,6 +6,10 @@ Everything in this directory except this file is **generated**. Do not hand-edit
 uv run python scripts/gen-golden-corpus.py
 ```
 
+Then verify it across interpreters before committing — see
+[Regenerating](#regenerating). "I generated it twice on my machine" is not the
+check; the corpus has to be identical on every Python the CI matrix runs.
+
 ## What it is
 
 A characterization net over the host's config handling. For a large set of
@@ -129,7 +133,54 @@ Two consequences worth knowing:
 * `fingerprint-inputs.json` is a *recipe*, not a copy: it names the files that
   were hashed rather than duplicating megabytes of quadlet text.
 
-To verify determinism: generate twice into two directories and `diff -r` them.
+### Interpreter independence
+
+Determinism across *runs* is not enough: the corpus must also be byte-identical
+across every CPython the CI matrix runs (3.12, 3.13, 3.14). That rules out a
+whole class of generator code — **anything whose output text is produced by a
+pretty-printer that ships with the interpreter must never reach a committed
+byte.**
+
+The concrete trap, because it already bit once: `ast.unparse`. PEP 701 changed
+its quote selection for f-strings containing nested quotes, so
+
+```python
+raise ValueError(f"unknown agents: {', '.join(sorted(unknown))}")
+```
+
+unparses with an outer `"` on 3.12/3.13 and an outer `'` on 3.14. A corpus
+generated on 3.14 then failed on two thirds of the matrix over pure quote
+style. `RAISE-COVERAGE.md` is now rendered from node *types* and *constant
+values* (`_message_template` in the harness), which are fixed by the grammar,
+so a raise site reads as `ValueError: unknown agents: {…}` — the message
+template, with every interpolation collapsed — rather than as round-tripped
+source. That is both stable and closer to what the Rust port actually has to
+reproduce.
+
+`tests/test_golden_corpus.py::test_harness_emits_nothing_interpreter_dependent`
+is the cheap tripwire: it fails if the harness ever calls `ast.unparse` or
+`ast.dump` again. It is not a substitute for the cross-interpreter run below.
+
+### Regenerating
+
+```sh
+# 1. regenerate in place
+uv run python scripts/gen-golden-corpus.py
+
+# 2. prove it is deterministic AND interpreter-independent
+for v in 3.12 3.13 3.14; do
+    uv run --python $v python scripts/gen-golden-corpus.py --out /tmp/corpus-$v
+done
+diff -r /tmp/corpus-3.12 /tmp/corpus-3.13
+diff -r /tmp/corpus-3.13 /tmp/corpus-3.14
+
+# 3. run the suite on the ends of the matrix
+uv run --python 3.12 pytest -q
+uv run --python 3.14 pytest -q
+```
+
+Step 2 is the one that matters. Two runs on a single interpreter will happily
+agree with each other and still fail CI.
 
 ## No real secrets
 
@@ -164,7 +215,28 @@ their sizes so the diff says *which* file moved.
   `backends/apple_container.py`, not quadlets. Those directories carry a
   `quadlets/NOT-APPLICABLE.txt` saying so.
 * **11 of `config.py`'s 91 raise sites are unreachable** from any cage.yaml —
-  see `RAISE-COVERAGE.md`. Most are shadowed by an earlier guard that raises
-  the same or a near-identical message; one is an explicit internal-invariant
-  assertion. The Rust port does not need to reproduce dead code, but it should
-  not be surprised by its absence either.
+  see `RAISE-COVERAGE.md` for the list. They fall into three groups, and the
+  middle one matters for the port:
+
+  1. *Shadowed, identical wording.* `load_config#4`, `load_config#5`,
+     `validate_config#29`, `validate_config#40`. An earlier guard raises the
+     exact same string first (`validate_agents_raw` → `_agent_mapping`, or
+     `load_config`'s own `api_key` scheme check). The message is in the corpus;
+     it just comes from the other site.
+
+  2. *Shadowed, **different** wording — dead strings.* `load_config#6`, `#9`,
+     `#10`, `#12`, `#13`. These are the `agents.decider.enable`,
+     `agents.watcher.enable`, `auto_revoke` and `dedup_samples` boolean
+     guards, each of which appends a `— got <type>` suffix. `validate_agents_raw`
+     runs first and rejects the same input with the *suffix-free* wording, so
+     **the `— got <type>` variants can never be produced by any input.**
+     Reproducing them in Rust would be reproducing dead code. If you want
+     those messages to be the ones users see, the fix is to delete or relax
+     the earlier guard, not to port both.
+
+  3. *Structurally unreachable.* `_validate_agent_max_tokens#0` (`must be an
+     integer`) — `_llm_client` coerces with `int()` before validation and a
+     bool is caught by the earlier "must be a number, not a boolean" guard.
+     `validate_config#35` (`host must always be in never_grant (internal
+     invariant violated)`) — `effective_never_grant()` adds the host by
+     construction; it is an assertion, not a user-facing error.

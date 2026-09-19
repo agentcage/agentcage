@@ -290,19 +290,71 @@ class Scrubber:
 class RaiseSite:
     key: str          # "<qualname>#<n>" — stable across unrelated line shifts
     lineno: int       # used only to match execution traces; never reported
-    label: str        # the raised expression, so the report says something
+    label: str        # "<ExcType>: <message template>", see _raise_label
+
+
+# NOTE — this report is a committed fixture, so every byte of it must be
+# interpreter-independent. ``ast.unparse`` is NOT: its quote selection for
+# f-strings moved with PEP 701, so 3.12/3.13 render
+# ``f"...{d['k']}..."`` with an outer double quote while 3.14 reuses the
+# single quote. Generating on one interpreter and checking on another then
+# fails on pure quote style. So nothing here round-trips source text. The
+# renderer below reads only node *types* and *constant values*, both of which
+# are fixed by the grammar rather than by a pretty-printer.
+
+_ELLIPSIS = "{…}"
+
+
+def _message_template(node: ast.AST) -> str:
+    """Render an exception's message argument as a stable template.
+
+    Literal text survives verbatim; every interpolated expression collapses to
+    ``{…}``. That is the part the Rust port actually has to reproduce, and it
+    cannot drift with the host interpreter.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else str(node.value)
+    if isinstance(node, ast.JoinedStr):          # an f-string
+        return "".join(_message_template(v) for v in node.values)
+    if isinstance(node, ast.FormattedValue):
+        return _ELLIPSIS
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        # "a" + b and "a %s" % b both read as one message.
+        return _message_template(node.left) + _message_template(node.right)
+    return _ELLIPSIS
+
+
+def _exception_name(node: ast.AST) -> str:
+    """The raised exception's name, without unparsing anything."""
+    if isinstance(node, ast.Call):
+        return _exception_name(node.func)
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return "?"
 
 
 def _raise_label(node: ast.Raise) -> str:
-    """A short, line-number-free description of what a raise raises."""
+    """``"<ExcType>: <message template>"`` for one raise statement."""
     if node.exc is None:
-        return "raise"
-    try:
-        text = ast.unparse(node.exc)
-    except Exception:                            # pragma: no cover - defensive
-        return "raise"
-    text = " ".join(text.split())
-    return text if len(text) <= 160 else text[:157] + "..."
+        return "bare re-raise"
+    name = _exception_name(node.exc)
+    message = ""
+    if isinstance(node.exc, ast.Call) and node.exc.args:
+        message = _message_template(node.exc.args[0])
+    message = " ".join(message.split())
+    label = f"{name}: {message}" if message else name
+    return label if len(label) <= 200 else label[:197] + "..."
+
+
+def _md_code(text: str) -> str:
+    """Wrap *text* in a Markdown code span that survives embedded backticks."""
+    if "`" not in text:
+        return f"`{text}`"
+    run = max(len(m) for m in re.findall(r"`+", text))
+    fence = "`" * (run + 1)
+    return f"{fence} {text} {fence}"
 
 
 def _collect_raise_sites(path: Path) -> list[RaiseSite]:
@@ -2137,12 +2189,12 @@ def _write_raise_coverage(out_root: Path, config_path: Path,
         "",
     ]
     for site in covered:
-        lines.append(f"- `{site.key}` — `{site.label}`")
+        lines.append(f"- `{site.key}` — {_md_code(site.label)}")
     lines += ["", "## Not reached", ""]
     if not uncovered:
         lines.append("_none_")
     for site in uncovered:
-        lines.append(f"- `{site.key}` — `{site.label}`")
+        lines.append(f"- `{site.key}` — {_md_code(site.label)}")
     lines.append("")
     (out_root / "RAISE-COVERAGE.md").write_text("\n".join(lines))
     (out_root / "raise-coverage.json").write_text(_json_text({
