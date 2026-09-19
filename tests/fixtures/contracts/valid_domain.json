@@ -1,0 +1,687 @@
+{
+  "contract": "valid_domain",
+  "summary": "Is this string a syntactically valid lowercase DNS domain? The gate that stops an overlay string from being rendered into a dnsmasq directive, and the gate the addon applies to a runtime grant request.",
+  "implementations": {
+    "host": "agentcage.config.valid_domain (src/agentcage/config.py)",
+    "proxy": "policy_api.PolicyApi._valid_domain (src/agentcage/data/proxy/policy_api.py)"
+  },
+  "fields": {
+    "input": "the candidate domain string",
+    "expected": "strict mode \u2014 the shape BOTH sides implement. The proxy's _valid_domain has no other mode; the host's valid_domain defaults to it.",
+    "expected_allow_single_label": "host-only: valid_domain(d, allow_single_label=True), which additionally accepts a bare LAN/mDNS label on OPERATOR-owned paths (domains.allow, `domain add`). The runtime grant paths never take this branch, so the proxy has no counterpart and must not be checked against it."
+  },
+  "cases": [
+    {
+      "id": "plain-two-label",
+      "why": "the common case",
+      "input": "example.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "subdomain",
+      "why": "the other common case",
+      "input": "api.example.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "deep",
+      "why": "many labels are fine",
+      "input": "a.b.c.deep.example.co.uk",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "hyphenated",
+      "why": "hyphens are legal mid-label",
+      "input": "my-api.example.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "double-hyphen",
+      "why": "RFC allows -- mid-label",
+      "input": "a--b.example.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "digit-leading-label",
+      "why": "3com.com is a real name",
+      "input": "3com.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "all-digit-label",
+      "why": "digits-only labels are legal DNS",
+      "input": "123.example.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "short-tld-two",
+      "why": ".io is the shortest real TLD shape",
+      "input": "example.io",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "long-tld",
+      "why": "long TLDs exist",
+      "input": "example.international",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "cdn-ish",
+      "why": "a real name the allowlist sees daily",
+      "input": "registry.npmjs.org",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "uppercase-all",
+      "why": "the validator is lowercase-only by design; callers lowercase before validating",
+      "input": "EXAMPLE.COM",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "uppercase-mixed",
+      "why": "one capital is enough to fail",
+      "input": "Example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "uppercase-tld",
+      "why": "capitals anywhere fail",
+      "input": "example.COM",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "trailing-dot",
+      "why": "the fully-qualified form; NOT accepted here even though the never-grant walk strips it",
+      "input": "example.com.",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "trailing-dot-double",
+      "why": "two trailing dots",
+      "input": "example.com..",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "leading-dot",
+      "why": "the 'apex and everything under it' spelling operators reach for",
+      "input": ".example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "leading-dot-double",
+      "why": "two leading dots",
+      "input": "..example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "dot-only",
+      "why": "a lone separator",
+      "input": ".",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "dot-dot",
+      "why": "two lone separators",
+      "input": "..",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "wildcard-star-dot",
+      "why": "the spelling operators try first; agentcage suffix-matches instead, so '*' is not a legal entry",
+      "input": "*.example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "wildcard-star-tld",
+      "why": "a maximally broad wildcard",
+      "input": "*.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "wildcard-bare",
+      "why": "the broadest string possible",
+      "input": "*",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "wildcard-double-star",
+      "why": "glob-style recursion",
+      "input": "**.example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "wildcard-mid",
+      "why": "a star inside a label",
+      "input": "ex*mple.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "empty",
+      "why": "the empty string",
+      "input": "",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "empty-label-mid",
+      "why": "a doubled separator",
+      "input": "example..com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "empty-label-lead",
+      "why": "starts with a separator",
+      "input": ".com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "empty-label-trail",
+      "why": "ends with a separator",
+      "input": "com.",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "single-label-lan",
+      "why": "a LAN/mDNS host: rejected strictly, accepted under allow_single_label on operator-owned paths",
+      "input": "nas",
+      "expected": false,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "single-label-hostname",
+      "why": "the shape config.valid_domain's allow_single_label branch exists for",
+      "input": "fcos-vm-home-01",
+      "expected": false,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "single-label-localhost",
+      "why": "single-label AND a never-grant suffix",
+      "input": "localhost",
+      "expected": false,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "single-label-one-char",
+      "why": "one character is a legal DNS label, but the last-label >= 2 rule applies to the single-label branch too, so even allow_single_label rejects it",
+      "input": "a",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "single-label-digit",
+      "why": "same, with a digit",
+      "input": "7",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "single-label-two-char",
+      "why": "two characters clear the last-label rule",
+      "input": "ns",
+      "expected": false,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "single-label-63",
+      "why": "the longest legal label",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": false,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "single-label-64",
+      "why": "one over the label limit",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "single-label-trailing-hyphen",
+      "why": "labels may not end in a hyphen",
+      "input": "nas-",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "single-label-leading-hyphen",
+      "why": "labels may not start with a hyphen",
+      "input": "-nas",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "label-63",
+      "why": "the longest legal label, dotted",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "label-64",
+      "why": "one over the RFC 1035 label limit",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "label-63-mid",
+      "why": "a long label in the middle",
+      "input": "x.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "label-64-mid",
+      "why": "an over-long label in the middle",
+      "input": "x.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "total-252",
+      "why": "one byte under the limit",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaa",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "total-253",
+      "why": "exactly at the RFC 1035 name limit \u2014 the last length the regex's (?=.{1,253}$) lookahead admits",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaa",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "total-254",
+      "why": "one byte over the limit. The host reaches this via the regex lookahead, the proxy via an explicit len() check before the regex \u2014 two routes to the same answer, which is exactly the kind of thing that drifts",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaa",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "total-260",
+      "why": "well over the limit",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaa",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "leading-hyphen-label",
+      "why": "a label may not start with a hyphen",
+      "input": "-lead.example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "trailing-hyphen-label",
+      "why": "a label may not end with a hyphen",
+      "input": "trail-.example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "hyphen-only-label",
+      "why": "a label of one hyphen",
+      "input": "-.example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "one-char-tld",
+      "why": "the regex alone permits x.c; the explicit last-label >= 2 check is what rejects it",
+      "input": "x.c",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "two-char-tld",
+      "why": "the shortest accepted last label",
+      "input": "x.co",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "numeric-tld",
+      "why": "an all-digit last label is not an IP and passes",
+      "input": "example.123",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "numeric-tld-one-char",
+      "why": "one-char numeric last label",
+      "input": "example.1",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv4-literal",
+      "why": "matches the dotted-label shape; rejected explicitly because a dnsmasq server=/ key is a name, not an address",
+      "input": "1.2.3.4",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv4-public-dns",
+      "why": "a real address someone would try",
+      "input": "8.8.8.8",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv4-unspecified",
+      "why": "0.0.0.0 is still an IP literal",
+      "input": "0.0.0.0",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv4-loopback",
+      "why": "127.0.0.1 is still an IP literal",
+      "input": "127.0.0.1",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv4-broadcast",
+      "why": "255.255.255.255",
+      "input": "255.255.255.255",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv4-metadata",
+      "why": "the endpoint the whole guard exists for",
+      "input": "169.254.169.254",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv4-like-not-ip",
+      "why": "four dotted numeric labels where the last is > 255: NOT an IP, so it passes as a domain",
+      "input": "1.2.3.456",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "ipv4-three-octet",
+      "why": "not an IP literal in Python",
+      "input": "1.2.3",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv6-loopback",
+      "why": "':' is outside the char class",
+      "input": "::1",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv6-full",
+      "why": "a routable v6 literal",
+      "input": "2001:db8::1",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv6-mapped-v4",
+      "why": "the IPv4-mapped spelling",
+      "input": "::ffff:127.0.0.1",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "ipv6-bracketed",
+      "why": "the URL-authority spelling",
+      "input": "[::1]",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "punycode",
+      "why": "the encoded form of b\u00fccher.de \u2014 this is what a resolver actually sees, and it passes",
+      "input": "xn--bcher-kva.de",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "punycode-tld",
+      "why": "a punycode TLD",
+      "input": "xn--fsq.jp",
+      "expected": true,
+      "expected_allow_single_label": true
+    },
+    {
+      "id": "idn-unicode-german",
+      "why": "the DECODED form is rejected: callers must IDNA-encode before validating",
+      "input": "b\u00fccher.de",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "idn-unicode-cjk",
+      "why": "decoded CJK",
+      "input": "\u4f8b\u3048.jp",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "idn-arabic-digits",
+      "why": "Arabic-Indic digits are Unicode decimals but outside the ASCII char class",
+      "input": "\u0661\u0662\u0663.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "idn-homoglyph-cyrillic",
+      "why": "Cyrillic '\u0430' in an otherwise-ASCII name",
+      "input": "ex\u0430mple.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "zero-width-space",
+      "why": "an invisible character inside a label",
+      "input": "exa\u200bmple.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "punycode-prefix-only",
+      "why": "a bare punycode marker",
+      "input": "xn--.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "underscore-leading",
+      "why": "_dmarc is a real DNS name but not a legal hostname; the validator gates hostnames",
+      "input": "_dmarc.example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "underscore-mid",
+      "why": "an underscore mid-label",
+      "input": "foo_bar.example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "underscore-tld",
+      "why": "an underscore in the last label",
+      "input": "example._com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "trailing-newline",
+      "why": "the '$' vs '\\Z' anchor bug: '$' matches before ONE trailing newline, which would render as a split dnsmasq directive and corrupt the per-cage config",
+      "input": "evil.com\n",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "trailing-newline-double",
+      "why": "two trailing newlines",
+      "input": "evil.com\n\n",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "embedded-newline-directive",
+      "why": "the actual injection payload",
+      "input": "evil.com\nserver=/anything/1.2.3.4",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "trailing-cr",
+      "why": "carriage return",
+      "input": "evil.com\r",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "crlf",
+      "why": "the Windows-flavoured payload",
+      "input": "evil.com\r\n",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "leading-space",
+      "why": "leading whitespace",
+      "input": " example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "trailing-space",
+      "why": "trailing whitespace",
+      "input": "example.com ",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "embedded-space",
+      "why": "whitespace mid-string",
+      "input": "evil com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "tab",
+      "why": "a tab",
+      "input": "evil.com\t",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "nbsp",
+      "why": "a non-breaking space \u2014 str.isspace() is True for it, which is why the guard uses isspace() and not a literal space check",
+      "input": "evil.com\u00a0",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "slash-path",
+      "why": "a URL path fragment",
+      "input": "example.com/path",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "slash-traversal",
+      "why": "traversal-looking input",
+      "input": "example.com/../x",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "scheme-prefixed",
+      "why": "a full URL",
+      "input": "https://example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "port-suffixed",
+      "why": "host:port",
+      "input": "example.com:443",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "userinfo",
+      "why": "a URL authority with userinfo",
+      "input": "user@example.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "semicolon",
+      "why": "a config-separator character",
+      "input": "example.com;",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "hash",
+      "why": "a comment character",
+      "input": "example.com#",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "nul",
+      "why": "an embedded NUL byte",
+      "input": "example.com\u0000",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "backslash",
+      "why": "a backslash",
+      "input": "example\\.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    },
+    {
+      "id": "brace",
+      "why": "a brace",
+      "input": "example{}.com",
+      "expected": false,
+      "expected_allow_single_label": false
+    }
+  ]
+}
