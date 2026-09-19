@@ -718,7 +718,7 @@ These are independent of each other and can land in any order, or in parallel.
 | D4 | `output`, `terminal`, `_timing` | Golden help/banner text; termios restore test under a pty |
 | D5 | clap skeleton: `--version`, `--help`, banner, `AliasGroup` equivalents, hidden back-compat flags, `clap_complete` shell completions (click provides these implicitly via `_AGENTCAGE_COMPLETE`; clap needs generated scripts) | Golden diff of `--help` for every subcommand vs the Python click output; completion scripts for bash/zsh/fish generated and smoke-loaded |
 | D6 | `cage create` / `cage update` + `services.build_and_deploy` + container backend | **e2e phase 1** green under `AGENTCAGE=<rust binary>` |
-| D7 | `cage list` / `show` / `status` / `start` / `stop` / `restart` / `destroy` / `prune` | e2e phase 1 (full) |
+| D7 | `cage list` / `show` / `status` / `start` / `stop` / `restart` / `destroy` / `prune` | e2e phase 1 (full), **plus `test_v021_legacy_cage.py`** — the v0.21 legacy-cage detector at the command entry point (`cage stop` refuses with a migration message; `destroy` and `list` are exempt). It is a command-tree test, not a `legacy_watcher` one |
 | D8 | `cage logs` / `cage audit` | **e2e phase 2** |
 | D9 | `secret` group + live-apply path | **e2e phase 3** |
 | D10 | `domain` group + `grants` group + DNS quadlet reload | **e2e phase 4** |
@@ -727,7 +727,7 @@ These are independent of each other and can land in any order, or in parallel.
 | D13 | `cage har` | Corpus diff + manual DevTools load |
 | D14 | `init` + `scaffold` + `run` (ephemeral flow) | Scaffold render diff vs Python; **e2e phase 8** (the openclaw scaffold regression canary) |
 | D15 | `doctor` (minus `check_python_version`) | Golden output on the CI runner |
-| D16 | `legacy_watcher` cleanup path | Unit test against a synthesized legacy cage (`test_v021_legacy_cage.py` port) |
+| D16 | `legacy_watcher` cleanup path | Unit test against a synthesized legacy cage (port of **`test_legacy_watcher.py`** — an earlier draft named `test_v021_legacy_cage.py`, which does not import `legacy_watcher` at all) |
 
 D6–D12 map almost 1:1 onto the existing e2e phases, which is what makes them
 individually verifiable. Each one ends with a CI job that runs its phase against
