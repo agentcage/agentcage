@@ -55,6 +55,7 @@
 //! [`services.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/services.py
 
 pub mod audit;
+pub mod volume_mounts;
 
 /// The agentcage version, baked in at compile time.
 ///
