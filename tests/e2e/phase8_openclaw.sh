@@ -149,14 +149,25 @@ fi
 # single curl here can catch the gap and time out (curl: (28) Operation
 # timed out). The recovery idiom mirrors 8.4 below, which already waits
 # for the gateway after a SIGUSR1 restart.
+#
+# The match is a bash substring test rather than `echo "$body" | grep -q`.
+# lib.sh sets `pipefail`, and the gateway's HTML is large: when grep -q
+# finds the string early it exits at once, leaving echo writing into a
+# closed pipe. echo then dies with SIGPIPE (141), pipefail reports 141
+# for the whole pipeline, and the `if` takes the false branch *even
+# though the string was there* -- reporting "expected 'OpenClaw Control'
+# within 30s" against a body that contains it, after only ~60ms. Whether
+# grep wins that race depends on scheduling, which is why this failed
+# intermittently on master rather than always. `[[ ]]` spawns no process
+# and has no pipe, so the race cannot occur.
 e2e_timer_start
 body=""
 for _ in $(seq 1 15); do
   body=$(curl -sS --max-time 5 "$BASE/" 2>&1 || true)
-  echo "$body" | grep -q "OpenClaw Control" && break
+  [[ "$body" == *"OpenClaw Control"* ]] && break
   sleep 2
 done
-if echo "$body" | grep -q "OpenClaw Control"; then
+if [[ "$body" == *"OpenClaw Control"* ]]; then
   e2e_pass "8.1" "gateway serves OpenClaw Control UI"
 else
   e2e_fail "8.1" "gateway serves OpenClaw Control UI" \
