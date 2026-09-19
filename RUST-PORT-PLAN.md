@@ -287,7 +287,18 @@ includes upgrading a live Python-deployed cage in place.
 **Known gap:** the staged Containerfile and build context that
 `fingerprint.scaffold_context_version` hashes is not captured, because it needs
 a real scaffold build. If the Rust `cage update` no-op path depends on it, that
-needs a follow-up fixture.
+needs a follow-up fixture. C4 confirmed this is still open: it ported the
+digest itself but the directory walk is owed to Track D, and nothing verifies
+it end to end.
+
+**A second corpus recipe gap, found by C4.** For the three cases with a
+generated `agentcage:secret:NAME:<hex>` placeholder, `gen-golden-corpus.py`
+writes `resolved-config.json` from the config as *first loaded*, then calls
+`fill_placeholders`, reloads, and fingerprints *that*. So the committed
+resolved config cannot rebuild the fingerprint's `resolved_config` component
+for those three. Their other four components reproduce, and `stored-cage.yaml`
+(which is post-fill) reproduces exactly. Worth fixing the recipe so the corpus
+is whole.
 
 ### 2.8 YAML: PyYAML speaks 1.1, every Rust crate speaks 1.2
 
@@ -334,6 +345,26 @@ The crates already quote the YAML-1.2 specials — `true`, `null`, `~`, `0755`,
 patterns that leak, which is why this cannot be left to the crate's default
 quoting. Both crates behave identically here, so the choice between them does
 not affect it.
+
+**Known reader gap, tracked (found by C4, verified 2026-09-19).** B2's reader
+resolves 1.1 **booleans** only. The full resolver table exists in the crate but
+is wired to the *emitter* predicate, so on load:
+
+| YAML | PyYAML | Rust reader |
+| :-- | :-- | :-- |
+| `no` | `False` | `Bool(false)` ✓ |
+| `0755` | `493` | `String("0755")` |
+| `1:30` | `90` | `String("1:30")` |
+| `1_000` | `1000` | `String("1_000")` |
+| `2024-01-02` | `datetime.date` | `String("2024-01-02")` |
+
+Booleans were the right place to stop: they map cleanly onto a `Value` variant
+and carried the TLS impact above, whereas PyYAML's timestamps have no variant
+to land in, so full parity is not a small change. The consequences are mild —
+a numeric field receiving a string is a **loud** type error from C2/C3, and a
+fingerprint over an unquoted octal drifts once, costing one spurious rebuild.
+No shipped config, doc or corpus case hits it. Close the integer families
+before Track D; timestamps need a decision about `Value` first.
 
 **The read side has a sharper edge than the write side.** PyYAML reads bare
 `no` as `False` but quoted `'no'` as the *string* `"no"`, and
