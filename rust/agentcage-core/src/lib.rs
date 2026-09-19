@@ -45,11 +45,12 @@
 //!
 //! # Dependencies
 //!
-//! None, today. That is not an aspiration to keep it that way — C8 needs
-//! `minijinja`, C1 needs `serde` and a YAML crate (PR B2 picks which
-//! one). It is a statement that each one arrives in the PR that needs it,
-//! with the reasoning in that PR's body, rather than being pre-imported
-//! here on a guess.
+//! Each one arrives in the PR that needs it, with the reasoning in
+//! `Cargo.toml` next to the entry, rather than being pre-imported here
+//! on a guess. C8 is the one that breaks the "pure logic, no crates"
+//! reading hardest: it depends on [`agentcage_assets`] for the `.j2`
+//! sources it renders, because the alternative was a second copy of
+//! those bytes in the binary.
 //!
 //! [`config.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/config.py
 //! [`services.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/services.py
@@ -59,6 +60,7 @@ pub mod config;
 pub mod fingerprint;
 pub mod har;
 pub mod python;
+pub mod quadlets;
 pub mod relays;
 pub mod volume_mounts;
 pub mod yaml;

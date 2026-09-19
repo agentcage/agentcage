@@ -44,7 +44,11 @@ serde_json = "1"
 # `BTreeMap` would silently re-sort both. `serde_norway` already
 # depends on this crate for the same reason, so it costs nothing new
 # in the tree.
-indexmap = "2"
+# `features = ["serde"]` is PR C8's: the quadlet render context is
+# built from `Serialize` structs, and `container.env` /
+# `container.named_volumes` reach the templates as these maps
+# directly, so they have to serialize -- in order.
+indexmap = { version = "2", features = ["serde"] }
 
 serde_norway = "0.9.42"
 saphyr-parser = "0.1.0"
@@ -56,6 +60,57 @@ saphyr-parser = "0.1.0"
 # system OpenSSL to find, and a fixed output for a fixed input on every
 # target, which is the only property that matters here.
 sha2 = "0.10"
+
+# The cage subnet (PR C8). `cage_network_addrs` derives a cage's
+# `10.89.<octet>.0/24` from `md5(name)[:8] % 254 + 1`, and an already
+# deployed cage's podman network is pinned to the octet Python computed
+# -- a different answer renders static IPs outside the existing subnet
+# and the egress refuses to start. So the digest is a compatibility
+# constraint, not a security one (it buckets a name; nothing trusts it),
+# and `md-5` is the RustCrypto sibling of `sha2` above, sharing its
+# `Digest` trait and adding no new transitive dependency.
+md-5 = "0.10"
+
+# Template rendering (PR C8). The `.j2` sources under
+# `src/agentcage/templates/` are NOT rewritten by the port: they are
+# still rendered by Python until cutover, so they have to keep working
+# for both, and minijinja is Jinja2-compatible enough to render them
+# unmodified.
+#
+# Features are pared to what the templates actually reach:
+#
+#   * `builtins` -- `join`, `default`, `indent`, `lower`.
+#   * `serde` -- the render context is built from `Serialize` values,
+#     including the config's own `IndexMap`s.
+#   * `preserve_order` -- load-bearing, not cosmetic. `cage.container.j2`
+#     emits one `Environment=` line per `container.env` entry via
+#     `env.items()`, and the corpus records them in cage.yaml order.
+#     Without this, minijinja's `ValueMap` is a `BTreeMap` and every
+#     generated unit silently re-sorts those lines. It pulls in
+#     `indexmap`, which this crate already depends on for the same
+#     reason.
+#
+# Dropped: `multi_template`/`macros` (no template `include`s, `extend`s
+# or `macro`s -- checked across `templates/**`), `deserialization` (the
+# context only goes in), `adjacent_loop_items` (`loop.last` is core;
+# `loop.previtem`/`nextitem`/`changed` are unused), `std_collections`
+# (the maps that reach a template are `IndexMap`s, serialized via
+# `serde`), and `debug` (its contribution is a source excerpt appended
+# to render errors; the template name and line number are in the error
+# either way, and these templates are fixed at compile time).
+minijinja = { version = "2.24", default-features = false, features = [
+    "builtins",
+    "serde",
+    "preserve_order",
+] }
+
+# The `.j2` sources themselves, which this crate does not read from
+# disk. `agentcage-assets` already embeds `templates/` for exactly this
+# reason (its `EMBEDDED_TREES` docs name PR C8), so the alternative was
+# a second `include_str!` copy of the same bytes in the binary and two
+# places to notice when a template is added. No cycle: the assets crate
+# deliberately does not depend on this one.
+agentcage-assets = { path = "../agentcage-assets" }
 
 # Test-only, and deliberately not a runtime dependency.
 #
