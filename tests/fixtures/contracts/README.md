@@ -163,14 +163,22 @@ of shared-logic sites visible is worth removing in a commit that says so.
 - **Check order is part of the contract.** The `order-*` cases pin which
   of two problems is reported when an entry has both.
 - **`encoded_private_ip` "non-global" is CPython's
-  `ipaddress.IPv4Address.is_global`**, whose special-purpose-registry
-  table changed in CPython 3.12.4 / 3.11.9 / 3.13 (gh-113171): 100.64/10
-  and 0.0.0.0/8 became non-global. These fixtures were generated on a
-  post-change interpreter. A Rust port should implement the IANA
-  special-purpose registry explicitly rather than lean on a crate's notion
-  of "private" — the `cgnat-*` and `test-net-*` cases exist to make that
-  mistake fail loudly (and the mutation test
-  `test_host_encoded_private_ip_mutation_is_caught` demonstrates it).
+  `ipaddress.IPv4Address.is_global`**, and it does *not* vary by
+  interpreter version. Every case in `encoded_private_ip.json` and
+  `valid_domain.json` was run on CPython 3.12.0, 3.12.3, 3.12.4, 3.13.0
+  and 3.14.7 and produced identical answers on all five (`is_global` is
+  the same expression on each: `addr not in 100.64.0.0/10 and not
+  addr.is_private`).
+
+  A Rust port should nonetheless implement the IANA special-purpose
+  registry explicitly rather than reach for a crate's `is_private()` —
+  not because of version drift, but because **the two are different
+  predicates**. 100.64.0.0/10 is the proof: `is_global` is `False` and
+  `is_private` is *also* `False`, so `not is_private` would let
+  carrier-grade NAT straight through. The `cgnat-*` and `test-net-*`
+  cases exist to make that substitution fail loudly, and the mutation
+  test `test_host_encoded_private_ip_mutation_is_caught` shows it doing
+  exactly that.
 - **`scaffold_inspectors.json` records `inspectors` chain ORDER.** The
   inspectors run as a chain, so a reordering is a behaviour change even
   when the set is identical.

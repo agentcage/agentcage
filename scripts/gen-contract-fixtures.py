@@ -533,14 +533,23 @@ def _gen_encoded_private_ip() -> dict:
             ),
         },
         "notes": [
-            "'Non-global' is CPython's ipaddress.IPv4Address.is_global, "
-            "whose special-purpose-registry table CHANGED in CPython "
-            "3.12.4 / 3.11.9 / 3.13 (gh-113171): 100.64.0.0/10 and "
-            "0.0.0.0/8 became non-global. These fixtures were generated on "
-            "a post-change interpreter, and the CGNAT cases below encode "
-            "the post-change answers. A Rust port must implement the "
-            "IANA special-purpose registry explicitly rather than lean on "
-            "a library's notion of 'global'.",
+            "'Non-global' is CPython's ipaddress.IPv4Address.is_global. "
+            "This is NOT interpreter-version-sensitive: every case in this "
+            "file was run on CPython 3.12.0, 3.12.3, 3.12.4, 3.13.0 and "
+            "3.14.7 and produced identical answers on all five. The "
+            "is_global implementation is the same expression on all of "
+            "them (`addr not in 100.64.0.0/10 and not addr.is_private`); "
+            "gh-113171 altered is_private for some ranges and the is_global "
+            "docstring, without moving the answer for any address here.",
+            "A Rust port should still implement the IANA "
+            "special-purpose registry explicitly rather than reach for a "
+            "crate's is_private(): the two are different predicates, not "
+            "synonyms. 100.64.0.0/10 is the proof — is_global is False and "
+            "is_private is ALSO False for it, so 'not is_private' would "
+            "let carrier-grade NAT through. The cgnat-* and test-net-* "
+            "cases exist to make that substitution fail loudly, and "
+            "test_host_encoded_private_ip_mutation_is_caught demonstrates "
+            "it doing so.",
         ],
         "cases": cases,
     }

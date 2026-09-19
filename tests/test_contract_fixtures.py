@@ -713,11 +713,16 @@ class TestFixturesBite:
     def test_host_encoded_private_ip_mutation_is_caught(self):
         """Host: ``is_global`` -> ``is_private``.
 
-        The tempting simplification, and wrong: CGNAT (100.64/10), the
-        TEST-NET ranges and the reserved 240/4 block are all reachable and
-        none of them is "private". A Rust port that reaches for a crate's
-        ``is_private()`` ships this bug.
+        The tempting simplification, and wrong: the two are different
+        predicates, not synonyms. CGNAT is the proof — 100.64.0.0/10 is
+        non-global AND non-private at the same time — so a Rust port that
+        reaches for a crate's ``is_private()`` ships this bug.
         """
+        # Pin the claim the README rests on, rather than asserting it in
+        # prose: these two properties genuinely disagree for CGNAT.
+        assert ipaddress.ip_address("100.64.0.1").is_global is False
+        assert ipaddress.ip_address("100.64.0.1").is_private is False
+
         mutant = _mutate(
             "src/agentcage/config.py",
             ("return None if ip.is_global else str(ip)",
