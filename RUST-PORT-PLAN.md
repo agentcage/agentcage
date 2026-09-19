@@ -251,13 +251,19 @@ must read all of it in place, on its first invocation, with no migration step:
 This table is corrected against the source as of PR A7. An earlier draft got
 four of these wrong, and each error is a way a Rust reader would have failed:
 
+This table has now been corrected **twice** — once by A7 building the fixtures
+and again by D2 porting the readers. Treat it as the best current account, not
+as settled.
+
 | Location | Files |
 | :-- | :-- |
-| `~/.config/agentcage/**cages**/<name>/` | `cage.yaml`, `metadata.json`, `fingerprint.json`, `creds/<key>.cred`, `secret_keys.json`, `pending_secrets.json` |
+| `~/.config/agentcage/**cages**/<name>/` | `cage.yaml`, `metadata.json`, `fingerprint.json`, `creds/<key>.cred`, `secret_keys.json`, `pending_secrets.json`, **`proxy-config.yaml`, `cage-env/placeholders.env`, `dns-allowlist.conf`** |
+| `~/.config/systemd/user/` | **native `.service` units** — *not* the quadlet dir. Putting a `.service` in the quadlet dir fails silently at boot |
+| `~/Library/LaunchAgents/io.agentcage.<name>.plist` | the apple backend's opt-in autostart, outside every other root |
 | `~/.config/agentcage/apple-container/<name>/` | **a third root, and it uses `~` directly, not `XDG_CONFIG_HOME`** — `logs/{audit,capture}.jsonl`, `dnsmasq.log`, `ready`, `mask-mountpoints.json` |
 | `~/.local/share/agentcage/<name>/` | `grants/grants.**yaml**` (a top-level YAML **list**), `capture/`, `policy-audit.jsonl` |
 | `~/.local/share/agentcage/patches/` | **shared, not per-cage**: `resolv-<name>.conf`, `resolv-egress-<name>.conf`, the `nested/` podman shim |
-| `~/.config/containers/systemd/` | quadlets Python rendered, still running |
+| `~/.config/containers/systemd/` | quadlets Python rendered, still running. **Also ignores `XDG_CONFIG_HOME`** — the same bare `expanduser` wart as the apple root, so an XDG-only sandbox writes quadlets into the developer's real home |
 | user-chosen paths | backup tarballs: gzipped tar with a `manifest.json` (`cli.py:3209`) |
 
 Three traps worth stating outright:
@@ -269,8 +275,19 @@ Three traps worth stating outright:
 - **`pending_secrets.json` is a JSON array of `[key, value]` pairs, not an
   object.** Both writers agree on this. A Rust reader assuming a map fails on
   every cage that used either path.
-- **The apple-container state root ignores `XDG_CONFIG_HOME`.** That is both a
-  portability wart and a testing hazard: an XDG sandbox does not redirect it.
+- **Two roots ignore `XDG_CONFIG_HOME`**, not one: the apple-container state
+  root and the quadlet directory. Both are a portability wart and a testing
+  hazard, since an XDG sandbox redirects neither.
+- **The apple backend stages secrets to persistent disk.** Its `_state_dir`
+  holds `secrets/` alongside `egress-config/`, `certs/`, `public-certs/` and the
+  launchd logs. The container backend stages into a **tmpfs** under
+  `$XDG_RUNTIME_DIR`; macOS has neither that nor a tmpfs to use. That is a real
+  security-relevant difference between backends and it is easy to miss.
+- **The atomic writer is not a blanket policy.** `save_fingerprint` uses a plain
+  temp-plus-rename with no `O_EXCL` and no PID suffix, and `proxy-config.yaml`
+  and `placeholders.env` are written **in place** rather than renamed, because
+  the quadlets bind-mount them and a rename swaps the inode out from under the
+  mount. All three asymmetries are deliberate.
 
 **None of this carries a schema version.** `metadata.json` is a bare
 `json.dumps(dict)`; there is no `state_version` field anywhere in `state.py`.
