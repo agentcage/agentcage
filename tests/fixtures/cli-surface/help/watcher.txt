@@ -1,0 +1,19 @@
+Usage: agentcage watcher [OPTIONS] COMMAND [ARGS]...
+
+  Read the traffic watcher's findings and scan status.
+
+  The watcher is an opt-in in-egress LLM agent that re-analyzes the cage's
+  recent traffic (audit + capture) after the fact and flags suspicious patterns;
+  it can revoke the runtime grants its analysis damns (narrowing only) and
+  recommends — never applies — baseline edits. Enable it with the
+  ``agents.watcher:`` block in cage.yaml. See docs/explain/traffic-watcher.md.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  findings  Show the traffic watcher's recorded findings.
+  status    Show the traffic watcher's configuration and last scan.
+
+Aliases:
+  ls → findings

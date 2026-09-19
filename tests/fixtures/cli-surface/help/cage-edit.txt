@@ -1,0 +1,16 @@
+Usage: agentcage cage edit [OPTIONS] NAME
+
+  Edit a cage's stored config in $EDITOR, with validation and safe save.
+
+  Unlike `$EDITOR ~/.config/agentcage/cages/NAME/cage.yaml`, this command:
+
+    - Validates the edited YAML before saving (rejected edits are written     to
+    cage.yaml.rejected so you don't lose them).   - Writes atomically (temp file
+    + rename) so a crash mid-edit cannot     corrupt your cage state.   - Backs
+    up the previous good config to cage.yaml.bak.   - Shows a unified diff of
+    what changed.   - Auto-applies domain changes via dnsmasq SIGHUP (no cage
+    restart).   - Tells you exactly which next command will pick up other
+    changes.
+
+Options:
+  --help  Show this message and exit.

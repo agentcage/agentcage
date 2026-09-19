@@ -1,0 +1,5352 @@
+{
+  "_generated_by": "scripts/gen-cli-surface.py",
+  "aliases": [
+    {
+      "alias": "config",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "edit"
+      ]
+    },
+    {
+      "alias": "delete",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "destroy"
+      ]
+    },
+    {
+      "alias": "describe",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "show"
+      ]
+    },
+    {
+      "alias": "edit",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "edit"
+      ]
+    },
+    {
+      "alias": "exec",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "exec"
+      ]
+    },
+    {
+      "alias": "inspect",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "show"
+      ]
+    },
+    {
+      "alias": "logs",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "logs"
+      ]
+    },
+    {
+      "alias": "ls",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "list"
+      ]
+    },
+    {
+      "alias": "ps",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "list"
+      ]
+    },
+    {
+      "alias": "reload",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "restart"
+      ]
+    },
+    {
+      "alias": "restart",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "restart"
+      ]
+    },
+    {
+      "alias": "rm",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "destroy"
+      ]
+    },
+    {
+      "alias": "run",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "run"
+      ]
+    },
+    {
+      "alias": "shell",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "shell"
+      ]
+    },
+    {
+      "alias": "show",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "show"
+      ]
+    },
+    {
+      "alias": "start",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "start"
+      ]
+    },
+    {
+      "alias": "status",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "status"
+      ]
+    },
+    {
+      "alias": "stop",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "stop"
+      ]
+    },
+    {
+      "alias": "update",
+      "parent": [
+        "agentcage"
+      ],
+      "target": [
+        "cage",
+        "update"
+      ]
+    },
+    {
+      "alias": "config",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "edit"
+      ]
+    },
+    {
+      "alias": "delete",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "destroy"
+      ]
+    },
+    {
+      "alias": "describe",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "show"
+      ]
+    },
+    {
+      "alias": "inspect",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "show"
+      ]
+    },
+    {
+      "alias": "ls",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "list"
+      ]
+    },
+    {
+      "alias": "ps",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "list"
+      ]
+    },
+    {
+      "alias": "reload",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "restart"
+      ]
+    },
+    {
+      "alias": "rm",
+      "parent": [
+        "agentcage",
+        "cage"
+      ],
+      "target": [
+        "destroy"
+      ]
+    },
+    {
+      "alias": "ls",
+      "parent": [
+        "agentcage",
+        "cage",
+        "grants"
+      ],
+      "target": [
+        "list"
+      ]
+    },
+    {
+      "alias": "ls",
+      "parent": [
+        "agentcage",
+        "domain"
+      ],
+      "target": [
+        "list"
+      ]
+    },
+    {
+      "alias": "ls",
+      "parent": [
+        "agentcage",
+        "secret"
+      ],
+      "target": [
+        "list"
+      ]
+    },
+    {
+      "alias": "ls",
+      "parent": [
+        "agentcage",
+        "watcher"
+      ],
+      "target": [
+        "findings"
+      ]
+    }
+  ],
+  "click_version": "8.4.0",
+  "counts": {
+    "aliases": 31,
+    "arguments": 44,
+    "commands": 41,
+    "groups": 7,
+    "hidden_options": 4,
+    "nodes": 48,
+    "options": 129,
+    "passthrough_commands": 2,
+    "top_level": 7,
+    "variadic_arguments": 4
+  },
+  "nodes": [
+    {
+      "aliases": {
+        "config": "cage edit",
+        "delete": "cage destroy",
+        "describe": "cage show",
+        "edit": "cage edit",
+        "exec": "cage exec",
+        "inspect": "cage show",
+        "logs": "cage logs",
+        "ls": "cage list",
+        "ps": "cage list",
+        "reload": "cage restart",
+        "restart": "cage restart",
+        "rm": "cage destroy",
+        "run": "cage run",
+        "shell": "cage shell",
+        "show": "cage show",
+        "start": "cage start",
+        "status": "cage status",
+        "stop": "cage stop",
+        "update": "cage update"
+      },
+      "allow_extra_args": false,
+      "class": "_BannerGroup",
+      "deprecated": false,
+      "help": "Defense-in-depth proxy sandbox for AI agents.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": true,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "version",
+          "help": "Show the version and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--version"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage"
+      ],
+      "short_help": "Defense-in-depth proxy sandbox for AI agents.",
+      "subcommands": [
+        "cage",
+        "doctor",
+        "domain",
+        "init",
+        "scaffold",
+        "secret",
+        "watcher"
+      ]
+    },
+    {
+      "aliases": {
+        "config": "edit",
+        "delete": "destroy",
+        "describe": "show",
+        "inspect": "show",
+        "ls": "list",
+        "ps": "list",
+        "reload": "restart",
+        "rm": "destroy"
+      },
+      "allow_extra_args": false,
+      "class": "AliasGroup",
+      "deprecated": false,
+      "help": "Manage cages.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": true,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage"
+      ],
+      "short_help": "Manage cages.",
+      "subcommands": [
+        "audit",
+        "backup",
+        "create",
+        "destroy",
+        "edit",
+        "exec",
+        "grants",
+        "har",
+        "list",
+        "logs",
+        "prune",
+        "restart",
+        "restore",
+        "run",
+        "shell",
+        "show",
+        "start",
+        "status",
+        "stop",
+        "update",
+        "verify"
+      ]
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Query, filter, and summarize proxy audit logs.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "decisions",
+          "help": "Filter by decision (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "-d",
+            "--decision"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "blocked",
+              "flagged",
+              "allowed"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "hosts",
+          "help": "Filter by target host (substring match, repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--host"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "inspectors",
+          "help": "Filter by inspector name (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--inspector"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "severity",
+          "help": "Minimum inspector severity.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--severity"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "debug",
+              "info",
+              "warning",
+              "error",
+              "critical"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "directions",
+          "help": "Filter by traffic direction (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--direction"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "inbound",
+              "outbound"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "methods",
+          "help": "Filter by HTTP method (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--method"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "since",
+          "help": "Time window: 1h, 30m, 7d, or ISO date.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--since"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": 100,
+          "dest": "max_entries",
+          "help": "Max entries to show (0 = unlimited).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-n",
+            "--max-entries"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "name": "integer"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "max_entries_compat",
+          "help": "Backward compat alias for --max-entries.",
+          "hidden": true,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--lines"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "integer"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "follow",
+          "help": "Stream new entries in real time.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-f",
+            "--follow"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "as_json",
+          "help": "Output as JSON lines.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "as_json_lines",
+          "help": "Backward compat alias for --json.",
+          "hidden": true,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json-lines"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "summary",
+          "help": "Show aggregated statistics.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--summary"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "no_color",
+          "help": "Disable colored output.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--no-color"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "audit"
+      ],
+      "short_help": "Query, filter, and summarize proxy audit logs.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Create a backup tarball of a cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "output",
+          "help": "Output path (default: ./{name}-backup-{timestamp}.tar.gz)",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-o",
+            "--output"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "path",
+            "path_exists": false
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "include_secrets",
+          "help": "Include secret values in the backup (handle with care)",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--include-secrets"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "backup"
+      ],
+      "short_help": "Create a backup tarball of a cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Build images, generate quadlets, install, and start a new cage.\n\nThe config may be given positionally (`agentcage create ./cage.yaml`)\nor with -c (`agentcage create -c ./cage.yaml`).\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "config_pos",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "config_pos"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "path",
+            "path_exists": true
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "config_path",
+          "help": "Path to the cage config (cage.yaml). May also be given positionally.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-c",
+            "--config"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "path",
+            "path_exists": true
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "secrets",
+          "help": "Set a secret (KEY=VALUE or KEY to prompt). Repeatable.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "-s",
+            "--set-secret"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "no_cache",
+          "help": "Force a full image rebuild (ignore podman's layer cache).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--no-cache"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "pull",
+          "help": "Force re-pull of the base image from the registry.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--pull"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "show_timing",
+          "help": "Echo per-phase wall times and print a summary on completion.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--time"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "create"
+      ],
+      "short_help": "Build images, generate quadlets, install, and start a new cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Stop containers, remove quadlets, state, and scoped secrets.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "yes",
+          "help": "Skip confirmation prompt",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-y",
+            "--yes"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "keep_secrets",
+          "help": "Keep scoped secrets (useful for recreating the cage)",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--keep-secrets"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "destroy"
+      ],
+      "short_help": "Stop containers, remove quadlets, state, and scoped secrets.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Edit a cage's stored config in $EDITOR, with validation and safe save.\n\nUnlike `$EDITOR ~/.config/agentcage/cages/NAME/cage.yaml`, this command:\n\n  - Validates the edited YAML before saving (rejected edits are written\n    to cage.yaml.rejected so you don't lose them).\n  - Writes atomically (temp file + rename) so a crash mid-edit cannot\n    corrupt your cage state.\n  - Backs up the previous good config to cage.yaml.bak.\n  - Shows a unified diff of what changed.\n  - Auto-applies domain changes via dnsmasq SIGHUP (no cage restart).\n  - Tells you exactly which next command will pick up other changes.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "edit"
+      ],
+      "short_help": "Edit a cage's stored config in $EDITOR, with validation and safe save.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Run a command inside a cage container.\n\n\b\nExample:\n  agentcage cage exec --as-root myapp -- openclaw devices list\n",
+      "hidden": false,
+      "ignore_unknown_options": true,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": "cage",
+          "dest": "service",
+          "help": "Container service to exec into.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-s",
+            "--service"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "choices": [
+              "cage",
+              "egress"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "as_root",
+          "help": "Run the command as root (uid 0) instead of the workload's uid 1000 user (debug only).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--as-root"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "command",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": -1,
+          "opts": [
+            "command"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "exec"
+      ],
+      "short_help": "Run a command inside a cage container.",
+      "subcommands": []
+    },
+    {
+      "aliases": {
+        "ls": "list"
+      },
+      "allow_extra_args": false,
+      "class": "AliasGroup",
+      "deprecated": false,
+      "help": "Manage Policy API runtime domain grants (see docs/explain/policy-api.md).",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": true,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "grants"
+      ],
+      "short_help": "Manage Policy API runtime domain grants (see docs/explain/policy-api.md).",
+      "subcommands": [
+        "list",
+        "promote",
+        "revoke",
+        "sync"
+      ]
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "List runtime grants (overlay) and the static baseline for a cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "grants",
+        "list"
+      ],
+      "short_help": "List runtime grants (overlay) and the static baseline for a cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Promote a runtime grant into the permanent baseline, then drop it from the overlay.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "domain",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "domain"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "grants",
+        "promote"
+      ],
+      "short_help": "Promote a runtime grant into the permanent baseline, then drop it from the overlay.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Remove a runtime grant from the overlay (does not touch the baseline).\n\nThe addon hot-reloads the overlay on its mtime poll, so the grant stops\nbeing effective on the next proxied request \u2014 no explicit signal needed.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "domain",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "domain"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "grants",
+        "revoke"
+      ],
+      "short_help": "Remove a runtime grant from the overlay (does not touch the baseline).",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Reconcile decided grants into the operator's cage.yaml baseline.\n\nThis is bookkeeping, not enforcement. A granted domain is already live:\nthe addon applies it to the L7 inspector in-memory and publishes the zone\nto the egress supervisor, which re-renders dnsmasq's servers-file and\nSIGHUPs it. This command makes the grant DURABLE \u2014 it writes the domain\ninto the operator's ``domains.allow`` so it survives a cage rebuild and\nshows up in ``domain list`` \u2014 and prunes entries whose expiry has passed.\n\nIt runs implicitly from the CLI paths that read a cage, so an operator\nnormally never types it. See docs/explain/egress-local-dns-apply.md.\n\nMirrors ``agentcage domain add`` exactly: for each grant the egress's\ndecider approved (an overlay entry), this command appends the domain to\nthe static ``domains.allow`` baseline (preserving its TTL into\n``domains.expires``) and runs the live-reload chain\n(``save_raw_config`` \u2192 ``save_proxy_config`` \u2192\n``_update_dns_quadlet`` \u2192 dnsmasq SIGHUP). That is what makes a granted\ndomain actually *reachable*: mitmproxy resolves its upstreams through\ndnsmasq, so the L7 ``DomainInspector.grant()`` alone (which the addon\nalso applies) is not enough \u2014 the domain must be resolvable too, and\nthe only component that can write the dnsmasq allowlist + SIGHUP it is\nthe host CLI (the addon runs as ``acproxy``, uid 200, no ``CAP_KILL``).\n\nRobustness:\n  * Idempotent \u2014 promoted entries are removed from the overlay (they\n    now live in the baseline), so a duplicate decision never\n    re-promotes the same domain.\n  * TTL-aware \u2014 when an entry's ``expires_at`` passes, the domain is\n    removed from the baseline (via the ``domain rm`` chain) and the\n    entry dropped from the overlay, so a TTL'd grant stops being\n    reachable instead of silently becoming permanent.\n  * Serial \u2014 pending grants are promoted in one batch (one\n    ``save_raw_config`` + one reload) so a burst of decisions makes one\n    atomic baseline edit, not a thundering herd of read-modify-writes.\n\nGrants are APPLIED in-egress automatically: the addon publishes the\ndecided zone and raises the supervisor's reload flag, the supervisor\nre-renders dnsmasq's servers-file (baseline + granted) and SIGHUPs it,\nand the in-egress sweeper prunes expired grants (30s poll) so they drop\nout of the runtime DNS via the next render. This command only PROMOTES\na decided grant into the operator's STATIC baseline so it survives a\ncage rebuild \u2014 there is no continuous watcher to run, so it needs no\nsupervision unit.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "grants",
+        "sync"
+      ],
+      "short_help": "Reconcile decided grants into the operator's cage.yaml baseline.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Export captured HTTP traffic as HAR 1.2 JSON.\n\nReads the capture JSONL file for a cage and produces standard HAR JSON\nloadable in Chrome DevTools (Network > Import HAR).\n\nTwo perspectives are available:\n\n\b\n  inbound   What the bot saw inside the cage (placeholders, redacted\n            secrets). Safe to share. This is the default.\n  outbound  What went on the wire (real injected secrets, raw server\n            responses). Treat as sensitive.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": "inbound",
+          "dest": "view",
+          "help": "Perspective to export: inbound (cage sees, safe to share) or outbound (wire, contains secrets).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--view"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "choices": [
+              "inbound",
+              "outbound"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "decisions",
+          "help": "Filter by decision (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "-d",
+            "--decision"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "blocked",
+              "flagged",
+              "allowed"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "hosts",
+          "help": "Filter by host (substring match, repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--host"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "methods",
+          "help": "Filter by HTTP method (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--method"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "directions",
+          "help": "Filter by traffic direction (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--direction"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "inbound",
+              "outbound"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "since",
+          "help": "Time window: 1h, 30m, 7d, or ISO date.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--since"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": 0,
+          "dest": "max_entries",
+          "help": "Max entries (0 = unlimited).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-n",
+            "--max-entries"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "name": "integer"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "output_file",
+          "help": "Output file (default: stdout).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-o",
+            "--output"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "path",
+            "path_exists": false
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "json_lines",
+          "help": "Output raw capture JSONL instead of HAR.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json-lines"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "json_compat",
+          "help": "Backward compat alias for --json-lines.",
+          "hidden": true,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "har"
+      ],
+      "short_help": "Export captured HTTP traffic as HAR 1.2 JSON.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "List all cages with status.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "list"
+      ],
+      "short_help": "List all cages with status.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Show journalctl logs for a cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "services",
+          "help": null,
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "-s",
+            "--service"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "cage",
+              "egress"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": 50,
+          "dest": "lines",
+          "help": "Number of lines to show (alias: --tail, like docker/podman).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-n",
+            "--lines",
+            "--tail"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "name": "integer"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "follow",
+          "help": "Stream logs in real time.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-f",
+            "--follow"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "no_follow",
+          "help": "Backward compat no-op.",
+          "hidden": true,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--no-follow"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "since",
+          "help": "Show entries since a time, journalctl syntax (e.g. '10 min ago', 'today', '2026-05-29 14:00'). Not supported on apple-container.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--since"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "min_level",
+          "help": "Minimum severity level to show.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-l",
+            "--severity"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "debug",
+              "info",
+              "warning",
+              "error",
+              "critical"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "logs"
+      ],
+      "short_help": "Show journalctl logs for a cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Remove all exited interactive and ephemeral cages.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "yes",
+          "help": "Skip confirmation prompt",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-y",
+            "--yes"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "prune"
+      ],
+      "short_help": "Remove all exited interactive and ephemeral cages.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Restart services without rebuilding images.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "restart"
+      ],
+      "short_help": "Restart services without rebuilding images.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Restore a cage from a backup tarball.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "tarball",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "tarball"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "path",
+            "path_exists": true
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "new_name",
+          "help": "Restore with a different name (for cloning)",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--name"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "force",
+          "help": "Overwrite existing cage",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--force"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "no_start",
+          "help": "Restore without starting",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--no-start"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "restore"
+      ],
+      "short_help": "Restore a cage from a backup tarball.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Run a coding agent in a sandboxed cage.\n\n\b\nExamples:\n  agentcage run claude-code -s ANTHROPIC_API_KEY\n  agentcage run codex --project /path/to/repo -s OPENAI_API_KEY=sk-...\n  agentcage run claude-code --isolation vm -s ANTHROPIC_API_KEY\n  agentcage run claude-code --no-cache --pull -s ANTHROPIC_API_KEY\n  agentcage run codex --name my-session -s OPENAI_API_KEY -- codex --help\n\n\b\nSecrets: every secret a scaffold declares is required. `run` aborts\nbefore starting the cage if one is missing \u2014 supply it with `-s KEY`\n(prompts) / `-s KEY=VALUE`, or via a configured `source:`. There is no\n\"optional secret\": an agent that would otherwise authenticate without a\nkey (e.g. claude-code's interactive OAuth `/login`) still needs one here,\nor must be run from a persistent cage built with `agentcage init` whose\nconfig you can edit. `--no-cache`/`--pull` force a clean rebuild (ignore\nthe layer cache / re-pull the base image) across every isolation backend\n\u2014 container, vm, and apple-container alike.\n",
+      "hidden": false,
+      "ignore_unknown_options": true,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "scaffold",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "scaffold"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "project_dir",
+          "help": "Project directory to mount (default: current directory).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--project"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "path",
+            "path_exists": true
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "name",
+          "help": "Cage name (default: auto-generated).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--name"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "secrets",
+          "help": "Set a secret (KEY=VALUE or KEY to prompt). Repeatable.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "-s",
+            "--set-secret"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "verbose",
+          "help": "Show full build output.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-v",
+            "--verbose"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "isolation",
+          "help": "Isolation backend (default: auto-detect from platform).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--isolation"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "container",
+              "vm",
+              "apple-container"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "as_root",
+          "help": "Run the session as root (uid 0) instead of the workload's uid 1000 user (debug only).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--as-root"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "show_timing",
+          "help": "Echo per-phase wall times and print a summary on completion.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--time"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "no_cache",
+          "help": "Force a full image rebuild (ignore podman's layer cache).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--no-cache"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "pull",
+          "help": "Force re-pull of the base image from the registry.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--pull"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "extra_args",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": -1,
+          "opts": [
+            "extra_args"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "run"
+      ],
+      "short_help": "Run a coding agent in a sandboxed cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Open an interactive shell in a cage container.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": "cage",
+          "dest": "service",
+          "help": "Container service to shell into.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-s",
+            "--service"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "choices": [
+              "cage",
+              "egress"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "as_root",
+          "help": "Open the shell as root (uid 0) instead of the workload's uid 1000 user (debug only).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--as-root"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "shell"
+      ],
+      "short_help": "Open an interactive shell in a cage container.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Show cage configuration and status.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "show"
+      ],
+      "short_help": "Show cage configuration and status.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Start a stopped cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "start"
+      ],
+      "short_help": "Start a stopped cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Show status \u2014 one cage's detail (with NAME) or all cages (without).\n\nMirrors `systemctl status`: `agentcage status` lists every cage;\n`agentcage status <name>` shows that cage's detail (same as `cage show`).\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "status"
+      ],
+      "short_help": "Show status \u2014 one cage's detail (with NAME) or all cages (without).",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Stop a running cage without destroying it.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "stop"
+      ],
+      "short_help": "Stop a running cage without destroying it.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Rebuild and restart an existing cage.\n\nNAME is optional when ``-c`` is given \u2014 the cage to update is taken\nfrom the config's ``name:`` field. Mirrors ``cage create``, which\nhas never required a positional NAME for the same reason.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "config_path",
+          "help": null,
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-c",
+            "--config"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "path",
+            "path_exists": true
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "no_cache",
+          "help": "Force a full image rebuild (ignore podman's layer cache). Use after pulling a fresh agentcage release that changed the Containerfile or any of its build context.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--no-cache"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "pull",
+          "help": "Force re-pull of the base image from the registry (--pull=always). Combine with --no-cache for a fully clean rebuild.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--pull"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "force",
+          "help": "Rebuild and restart even when inputs are unchanged.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--force"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "update"
+      ],
+      "short_help": "Rebuild and restart an existing cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Check that a cage is healthy.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "cage",
+        "verify"
+      ],
+      "short_help": "Check that a cage is healthy.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Check system health and diagnose common issues.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "doctor"
+      ],
+      "short_help": "Check system health and diagnose common issues.",
+      "subcommands": []
+    },
+    {
+      "aliases": {
+        "ls": "list"
+      },
+      "allow_extra_args": false,
+      "class": "AliasGroup",
+      "deprecated": false,
+      "help": "Manage cage domain filters.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": true,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "domain"
+      ],
+      "short_help": "Manage cage domain filters.",
+      "subcommands": [
+        "add",
+        "list",
+        "rm"
+      ]
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Add one or more domains to a cage's filter list.\n\nMultiple domains may be passed; the cage is reloaded at most once.\nWith ``--expires-in`` the entry is time-limited (allowlist mode only):\nit works until its TTL elapses, then the proxy blocks it at L7 and the\nnext reconcile (``cage grants <name> sync``, which also runs implicitly\nfrom the CLI paths that read a cage) prunes it from the allowlist +\ndnsmasq. Permanent by default.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "domain_names",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": -1,
+          "opts": [
+            "domain_names"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "passthrough",
+          "help": "Also add to TLS passthrough list (no MITM interception).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--passthrough"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "expires_in",
+          "help": "Time-limit the entry: e.g. 30m, 1h, 2d (or a bare number of seconds). After it expires the domain is blocked at the proxy and pruned from the allowlist. Useful for a one-off task like `npm install`. Only valid in allowlist mode.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--expires-in"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "domain",
+        "add"
+      ],
+      "short_help": "Add one or more domains to a cage's filter list.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "List domains for a cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "domain",
+        "list"
+      ],
+      "short_help": "List domains for a cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Remove a domain from a cage's filter list.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "domain_name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "domain_name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "passthrough",
+          "help": "Remove only from passthrough list (keep in allow/block).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--passthrough"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "domain",
+        "rm"
+      ],
+      "short_help": "Remove a domain from a cage's filter list.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Scaffold a new agentcage config file.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": null,
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": "cage.yaml",
+          "dest": "output",
+          "help": "Output file path.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-o",
+            "--output"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": "node:22-slim",
+          "dest": "image",
+          "help": "Container image.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--image"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "isolation",
+          "help": "Isolation backend (default: auto-detect from platform \u2014 container on Linux, apple-container on macOS 26+ ASi when Apple `container` is installed, vm otherwise).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--isolation"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "container",
+              "vm",
+              "apple-container"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "force",
+          "help": "Overwrite existing file.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--force"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "scaffold",
+          "help": "Use a scaffold template (e.g. openclaw).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--scaffold"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "list_scaffolds",
+          "help": "List available scaffolds and exit.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--list-scaffolds"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "port",
+          "help": "Host port to publish (scaffold-specific).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--port"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "integer"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "init"
+      ],
+      "short_help": "Scaffold a new agentcage config file.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Group",
+      "deprecated": false,
+      "help": "Create and manage custom scaffolds.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": true,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "scaffold"
+      ],
+      "short_help": "Create and manage custom scaffolds.",
+      "subcommands": [
+        "create",
+        "delete",
+        "edit",
+        "export",
+        "list",
+        "show"
+      ]
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Create a new user scaffold.\n\n\b\nExamples:\n  agentcage scaffold create my-agent\n  agentcage scaffold create my-claude --from claude-code\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": null,
+          "dest": "from_scaffold",
+          "help": "Fork an existing scaffold as starting point.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--from"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "force",
+          "help": "Overwrite existing scaffold.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--force"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "scaffold",
+        "create"
+      ],
+      "short_help": "Create a new user scaffold.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Delete a user scaffold.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "yes",
+          "help": "Skip confirmation.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-y",
+            "--yes"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "scaffold",
+        "delete"
+      ],
+      "short_help": "Delete a user scaffold.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Open a user scaffold in $EDITOR.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "scaffold",
+        "edit"
+      ],
+      "short_help": "Open a user scaffold in $EDITOR.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Export a scaffold to a directory.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "dest",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "dest"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "path",
+            "path_exists": false
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "scaffold",
+        "export"
+      ],
+      "short_help": "Export a scaffold to a directory.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "List all available scaffolds.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "scaffold",
+        "list"
+      ],
+      "short_help": "List all available scaffolds.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Show details of a scaffold.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "scaffold",
+        "show"
+      ],
+      "short_help": "Show details of a scaffold.",
+      "subcommands": []
+    },
+    {
+      "aliases": {
+        "ls": "list"
+      },
+      "allow_extra_args": false,
+      "class": "AliasGroup",
+      "deprecated": false,
+      "help": "Manage cage-scoped secrets.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": true,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "secret"
+      ],
+      "short_help": "Manage cage-scoped secrets.",
+      "subcommands": [
+        "list",
+        "rm",
+        "rotate-placeholders",
+        "set"
+      ]
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "List secrets for a cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "secret",
+        "list"
+      ],
+      "short_help": "List secrets for a cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Remove a secret for a cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "key",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "key"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "secret",
+        "rm"
+      ],
+      "short_help": "Remove a secret for a cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Mint fresh entropic placeholders for a cage's injection rules.\n\nRotates every secret_injection rule's placeholder, or only the named\nKEYS. Use this to retire a compromised placeholder or migrate a legacy\nstatic/guessable one (e.g. ``{{GH_TOKEN}}``) to an entropic token. The\nnew tokens are persisted to the stored cage.yaml; a running cage is\nrestarted so the old placeholders stop injecting and the cage process\npicks up the new ones.\n\nNote: this fixes the live cage, not a cage.yaml you track elsewhere. If\nyour source config pins an explicit placeholder, the next ``cage update\n-c`` reintroduces it \u2014 drop the ``placeholder:`` line from your source\nso agentcage owns (and preserves) the generated token instead.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "keys",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": -1,
+          "opts": [
+            "keys"
+          ],
+          "required": false,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "secret",
+        "rotate-placeholders"
+      ],
+      "short_help": "Mint fresh entropic placeholders for a cage's injection rules.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Set a secret for a cage.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "key",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "key"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "declare",
+          "help": "Declare a secret_injection rule for KEY if none exists (entropic placeholder, persisted to the stored cage.yaml) \u2014 makes a brand-new secret usable in one command.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--declare"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": "",
+          "dest": "placeholder_opt",
+          "help": "Explicit placeholder for the declared rule (implies --declare).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--placeholder"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "inject_to",
+          "help": "Domain(s) the declared rule injects to (implies --declare). Repeatable. Omitted = all domains.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--inject-to"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "secret",
+        "set"
+      ],
+      "short_help": "Set a secret for a cage.",
+      "subcommands": []
+    },
+    {
+      "aliases": {
+        "ls": "findings"
+      },
+      "allow_extra_args": false,
+      "class": "AliasGroup",
+      "deprecated": false,
+      "help": "Read the traffic watcher's findings and scan status.\n\nThe watcher is an opt-in in-egress LLM agent that re-analyzes the\ncage's recent traffic (audit + capture) after the fact and flags\nsuspicious patterns; it can revoke the runtime grants its analysis\ndamns (narrowing only) and recommends \u2014 never applies \u2014 baseline\nedits. Enable it with the ``agents.watcher:`` block in cage.yaml. See\ndocs/explain/traffic-watcher.md.\n",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": true,
+      "params": [
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "watcher"
+      ],
+      "short_help": "Read the traffic watcher's findings and scan status.",
+      "subcommands": [
+        "findings",
+        "status"
+      ]
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Show the traffic watcher's recorded findings.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "severities",
+          "help": "Filter by severity (repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "-s",
+            "--severity"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "choices": [
+              "info",
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "name": "choice"
+          }
+        },
+        {
+          "count": false,
+          "default": {
+            "unset": true
+          },
+          "dest": "hosts",
+          "help": "Filter by domain/host (substring match, repeatable).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": true,
+          "nargs": 1,
+          "opts": [
+            "--host"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": 50,
+          "dest": "max_entries",
+          "help": "Max findings to show (most recent; 0 = all).",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": false,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "-n",
+            "--max-entries"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": true,
+          "type": {
+            "name": "integer"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "as_json",
+          "help": "Output raw finding entries as JSON lines.",
+          "hidden": false,
+          "is_eager": false,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--json"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "watcher",
+        "findings"
+      ],
+      "short_help": "Show the traffic watcher's recorded findings.",
+      "subcommands": []
+    },
+    {
+      "aliases": {},
+      "allow_extra_args": false,
+      "class": "Command",
+      "deprecated": false,
+      "help": "Show the traffic watcher's configuration and last scan.",
+      "hidden": false,
+      "ignore_unknown_options": false,
+      "is_group": false,
+      "params": [
+        {
+          "default": {
+            "unset": true
+          },
+          "dest": "name",
+          "help": null,
+          "hidden": false,
+          "is_flag": false,
+          "kind": "argument",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "name"
+          ],
+          "required": true,
+          "secondary_opts": [],
+          "type": {
+            "name": "text"
+          }
+        },
+        {
+          "count": false,
+          "default": false,
+          "dest": "help",
+          "help": "Show this message and exit.",
+          "hidden": false,
+          "is_eager": true,
+          "is_flag": true,
+          "kind": "option",
+          "metavar": null,
+          "multiple": false,
+          "nargs": 1,
+          "opts": [
+            "--help"
+          ],
+          "prompt": null,
+          "required": false,
+          "secondary_opts": [],
+          "show_default": false,
+          "type": {
+            "name": "boolean"
+          }
+        }
+      ],
+      "path": [
+        "agentcage",
+        "watcher",
+        "status"
+      ],
+      "short_help": "Show the traffic watcher's configuration and last scan.",
+      "subcommands": []
+    }
+  ]
+}

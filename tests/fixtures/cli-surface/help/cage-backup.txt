@@ -1,0 +1,8 @@
+Usage: agentcage cage backup [OPTIONS] NAME
+
+  Create a backup tarball of a cage.
+
+Options:
+  -o, --output PATH  Output path (default: ./{name}-backup-{timestamp}.tar.gz)
+  --include-secrets  Include secret values in the backup (handle with care)
+  --help             Show this message and exit.

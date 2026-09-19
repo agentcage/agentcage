@@ -1,0 +1,6 @@
+Usage: agentcage scaffold list [OPTIONS]
+
+  List all available scaffolds.
+
+Options:
+  --help  Show this message and exit.

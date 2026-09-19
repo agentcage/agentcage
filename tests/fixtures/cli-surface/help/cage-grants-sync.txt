@@ -1,0 +1,45 @@
+Usage: agentcage cage grants sync [OPTIONS]
+
+  Reconcile decided grants into the operator's cage.yaml baseline.
+
+  This is bookkeeping, not enforcement. A granted domain is already live: the
+  addon applies it to the L7 inspector in-memory and publishes the zone to the
+  egress supervisor, which re-renders dnsmasq's servers-file and SIGHUPs it.
+  This command makes the grant DURABLE — it writes the domain into the
+  operator's ``domains.allow`` so it survives a cage rebuild and shows up in
+  ``domain list`` — and prunes entries whose expiry has passed.
+
+  It runs implicitly from the CLI paths that read a cage, so an operator
+  normally never types it. See docs/explain/egress-local-dns-apply.md.
+
+  Mirrors ``agentcage domain add`` exactly: for each grant the egress's decider
+  approved (an overlay entry), this command appends the domain to the static
+  ``domains.allow`` baseline (preserving its TTL into ``domains.expires``) and
+  runs the live-reload chain (``save_raw_config`` → ``save_proxy_config`` →
+  ``_update_dns_quadlet`` → dnsmasq SIGHUP). That is what makes a granted domain
+  actually *reachable*: mitmproxy resolves its upstreams through dnsmasq, so the
+  L7 ``DomainInspector.grant()`` alone (which the addon also applies) is not
+  enough — the domain must be resolvable too, and the only component that can
+  write the dnsmasq allowlist + SIGHUP it is the host CLI (the addon runs as
+  ``acproxy``, uid 200, no ``CAP_KILL``).
+
+  Robustness:   * Idempotent — promoted entries are removed from the overlay
+  (they     now live in the baseline), so a duplicate decision never     re-
+  promotes the same domain.   * TTL-aware — when an entry's ``expires_at``
+  passes, the domain is     removed from the baseline (via the ``domain rm``
+  chain) and the     entry dropped from the overlay, so a TTL'd grant stops
+  being     reachable instead of silently becoming permanent.   * Serial —
+  pending grants are promoted in one batch (one     ``save_raw_config`` + one
+  reload) so a burst of decisions makes one     atomic baseline edit, not a
+  thundering herd of read-modify-writes.
+
+  Grants are APPLIED in-egress automatically: the addon publishes the decided
+  zone and raises the supervisor's reload flag, the supervisor re-renders
+  dnsmasq's servers-file (baseline + granted) and SIGHUPs it, and the in-egress
+  sweeper prunes expired grants (30s poll) so they drop out of the runtime DNS
+  via the next render. This command only PROMOTES a decided grant into the
+  operator's STATIC baseline so it survives a cage rebuild — there is no
+  continuous watcher to run, so it needs no supervision unit.
+
+Options:
+  --help  Show this message and exit.
