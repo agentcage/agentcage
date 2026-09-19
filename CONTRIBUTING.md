@@ -14,6 +14,41 @@ uv sync --dev
 uv run pytest
 ```
 
+## The Rust tree
+
+The host CLI is being ported to Rust; the egress proxy under
+`src/agentcage/data/proxy/` stays Python permanently. The two halves talk
+only through files on a bind mount, which is what makes the split
+possible.
+
+You do not need Rust to work on the Python side, and you do not need
+Python to work on the Rust side. They have separate CI jobs and neither
+can fail the other.
+
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+The workspace manifest is the root `Cargo.toml`; the crates live under
+`rust/`:
+
+| Crate | Rule |
+| :-- | :-- |
+| `agentcage-core` | pure logic. No subprocess, no I/O, no CLI. |
+| `agentcage-assets` | embeds and extracts `data/`, `templates/`, `scaffolds/`. |
+| `agentcage-cli` | the `agentcage` binary: argument parsing, subprocess, terminal, exit codes. |
+
+Each crate's `//!` docs say what it will hold and which PR brings it.
+The plan is `RUST-PORT-PLAN.md` on the `rust-port` branch.
+
+The version lives in the root `VERSION` file and nowhere else. Cargo
+cannot read it from there, so `[workspace.package] version` carries a
+copy and `scripts/check-version.sh` fails when the two disagree. Bump
+`VERSION`, then the copy.
+
 ## Making Changes
 
 1. Fork the repository and create a feature branch.

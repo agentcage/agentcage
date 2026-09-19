@@ -1,0 +1,15 @@
+[package]
+name = "agentcage-core"
+description = "Pure agentcage logic: config, fingerprint, audit, HAR, quadlet rendering."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No dependencies yet, and that is deliberate -- see the crate docs.
+[dependencies]
+
+[lints]
+workspace = true

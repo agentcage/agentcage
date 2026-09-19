@@ -4,8 +4,9 @@
 #
 # The version is written down once, in VERSION. Everything else derives
 # from it: pyproject declares it `dynamic` and hatchling reads the file,
-# the CHANGELOG heading is matched against it, and a release tag has to
-# name it. This script is the thing that notices when one of those drifts.
+# the Cargo workspace carries a copy that the Rust crates inherit, the
+# CHANGELOG heading is matched against it, and a release tag has to name
+# it. This script is the thing that notices when one of those drifts.
 #
 # It is deliberately POSIX sh with no dependencies -- not pytest, not
 # Python -- so it runs in the Release workflow before anything is built
@@ -13,7 +14,7 @@
 # and there is no Python toolchain on the host to lean on.
 #
 # Usage:
-#   scripts/check-version.sh              # check VERSION vs pyproject + CHANGELOG
+#   scripts/check-version.sh              # check VERSION vs pyproject, Cargo + CHANGELOG
 #   scripts/check-version.sh v0.40.1      # ... and require the tag to match
 #
 # In GitHub Actions the tag is picked up from GITHUB_REF_NAME on a tag
@@ -65,7 +66,53 @@ if ! grep -q 'path = "VERSION"' "$root/pyproject.toml"; then
     err "pyproject.toml does not point [tool.hatch.version] at the VERSION file"
 fi
 
-# ── 3. CHANGELOG ─────────────────────────────────────────────
+# ── 3. Cargo workspace ───────────────────────────────────────
+# Cargo cannot read a version out of a file, so the root Cargo.toml
+# carries a copy of VERSION under [workspace.package] and the member
+# crates inherit it with `version.workspace = true`. That copy is the
+# number `agentcage --version` prints once the CLI is Rust, and it is
+# also the egress image tag and the quadlet Image= pin -- so it drifting
+# is not cosmetic. This is the guard that makes the copy safe.
+cargo_toml="$root/Cargo.toml"
+if [ -f "$cargo_toml" ]; then
+    cargo_version=$(awk '
+        /^\[workspace\.package\]/ { p = 1; next }
+        /^\[/                       { p = 0 }
+        p && /^version[[:space:]]*=/ {
+            sub(/^version[[:space:]]*=[[:space:]]*/, "")
+            gsub(/["\r]/, "")
+            sub(/[[:space:]]*(#.*)?$/, "")
+            print
+            exit
+        }
+    ' "$cargo_toml")
+
+    if [ -z "$cargo_version" ]; then
+        err "Cargo.toml has no [workspace.package] version"
+    elif [ "$cargo_version" != "$version" ]; then
+        err "Cargo.toml [workspace.package] version is '$cargo_version' but VERSION is '$version'"
+    fi
+
+    # A member crate with its own `version = "..."` would silently win
+    # over the workspace copy for that crate alone -- the binary would
+    # report one number while the image tag used another.
+    for member in "$root"/rust/*/Cargo.toml; do
+        [ -f "$member" ] || continue
+        if awk '
+            /^\[package\]/              { p = 1; next }
+            /^\[/                       { p = 0 }
+            p && /^version[[:space:]]*=[[:space:]]*"/ { found = 1 }
+            END { exit !found }
+        ' "$member"; then
+            err "${member#"$root"/} sets a static version; it must use version.workspace = true"
+        fi
+        if ! grep -q '^version\.workspace[[:space:]]*=[[:space:]]*true' "$member"; then
+            err "${member#"$root"/} does not inherit version.workspace = true"
+        fi
+    done
+fi
+
+# ── 4. CHANGELOG ─────────────────────────────────────────────
 # publish.yml pulls the release body out of the `## [VERSION]` section,
 # so a missing or misnamed heading ships a release with no notes. Check
 # the newest released heading, skipping an [Unreleased] section if one
@@ -82,7 +129,7 @@ elif [ "$newest" != "$version" ]; then
     err "CHANGELOG.md's newest release heading is '$newest' but VERSION is '$version'"
 fi
 
-# ── 4. Release tag, when there is one ────────────────────────
+# ── 5. Release tag, when there is one ────────────────────────
 tag="${1:-}"
 if [ -z "$tag" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
     tag="${GITHUB_REF_NAME:-}"

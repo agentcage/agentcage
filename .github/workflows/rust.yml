@@ -1,0 +1,99 @@
+# The Rust port's CI gate.
+#
+# Separate from test.yml on purpose. The Python suite must not grow a
+# Rust dependency -- proxy work (data/proxy/** stays Python forever)
+# should stay a pytest-only round trip, and the Rust job should not wait
+# on a three-version Python matrix. Neither job can fail the other; both
+# are required for a merge.
+#
+# Scope: `rust/**` plus the root workspace manifest. See
+# RUST-PORT-PLAN.md (branch `rust-port`), section 5 Phase 0 and Track B.
+
+name: Rust
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# A new push to a PR makes the previous run's answer irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # There are no dependencies to fetch yet, and when B2/B3 add some there
+  # is still no reason to build with incremental state that the cache
+  # then has to carry.
+  CARGO_INCREMENTAL: 0
+  # Full backtraces on a test failure; the runner is not the place to
+  # re-run with RUST_BACKTRACE set.
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: build, test, clippy, fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup is preinstalled on the GitHub runners; this installs
+      # whatever rust-toolchain.toml asks for, which is `stable` plus
+      # clippy and rustfmt.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+
+      - name: Cache cargo registry and target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          # Cargo.lock is committed (this workspace produces a binary),
+          # so it identifies the dependency set exactly. The manifests
+          # are in the key too because a profile or lint change
+          # invalidates every artifact in target/ without touching the
+          # lockfile.
+          key: >-
+            cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # Formatting first: it needs no build, so a misformatted PR fails
+      # in seconds instead of after a full compile.
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo build
+        run: cargo build --workspace --locked
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      # --all-targets covers tests and examples, which is where the lints
+      # that matter (unwrap in a helper, a stray dbg!) actually land.
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Cheap, and it is the check that would otherwise only fail during
+      # a release: the version the binary reports has to be the one in
+      # the root VERSION file. scripts/check-version.sh is the same
+      # guard publish.yml runs.
+      - name: Version agrees with the VERSION file
+        run: |
+          scripts/check-version.sh
+          expected="agentcage, version $(cat VERSION)"
+          actual=$(cargo run --quiet --locked --bin agentcage -- --version)
+          echo "expected: $expected"
+          echo "actual:   $actual"
+          [ "$actual" = "$expected" ]
