@@ -248,23 +248,46 @@ cross-compiling Darwin from Linux is not worth attempting.
 At cutover every existing user has cages that Python deployed. The Rust binary
 must read all of it in place, on its first invocation, with no migration step:
 
+This table is corrected against the source as of PR A7. An earlier draft got
+four of these wrong, and each error is a way a Rust reader would have failed:
+
 | Location | Files |
 | :-- | :-- |
-| `~/.config/agentcage/<name>/` | `cage.yaml`, `metadata.json`, `creds/<key>.cred`, `secret_keys.json`, `pending_secrets.json` |
-| `~/.local/share/agentcage/<name>/` | `grants/grants.json`, `capture/`, `policy-audit.jsonl`, `audit.jsonl` |
+| `~/.config/agentcage/**cages**/<name>/` | `cage.yaml`, `metadata.json`, `fingerprint.json`, `creds/<key>.cred`, `secret_keys.json`, `pending_secrets.json` |
+| `~/.config/agentcage/apple-container/<name>/` | **a third root, and it uses `~` directly, not `XDG_CONFIG_HOME`** — `logs/{audit,capture}.jsonl`, `dnsmasq.log`, `ready`, `mask-mountpoints.json` |
+| `~/.local/share/agentcage/<name>/` | `grants/grants.**yaml**` (a top-level YAML **list**), `capture/`, `policy-audit.jsonl` |
+| `~/.local/share/agentcage/patches/` | **shared, not per-cage**: `resolv-<name>.conf`, `resolv-egress-<name>.conf`, the `nested/` podman shim |
 | `~/.config/containers/systemd/` | quadlets Python rendered, still running |
 | user-chosen paths | backup tarballs: gzipped tar with a `manifest.json` (`cli.py:3209`) |
 
-**None of these carry a schema version.** `metadata.json` is a bare
+Three traps worth stating outright:
+
+- **`audit.jsonl` does not exist host-side for `container` or `vm` cages.** The
+  addon writes its audit trail to stderr and the host reads it back out of
+  `journalctl`. Only apple-container has a file. A Rust `cage audit` that looks
+  for a file on Linux finds nothing.
+- **`pending_secrets.json` is a JSON array of `[key, value]` pairs, not an
+  object.** Both writers agree on this. A Rust reader assuming a map fails on
+  every cage that used either path.
+- **The apple-container state root ignores `XDG_CONFIG_HOME`.** That is both a
+  portability wart and a testing hazard: an XDG sandbox does not redirect it.
+
+**None of this carries a schema version.** `metadata.json` is a bare
 `json.dumps(dict)`; there is no `state_version` field anywhere in `state.py`.
 So there is nothing to branch on — the Rust readers simply have to accept
 exactly what the Python writers produced, and the first `cage update` under
-Rust on an untouched cage must be a fingerprint no-op.
+Rust on an untouched cage must be a fingerprint no-op. `fingerprint.json` is
+what makes that checkable, which is why it belongs in the table.
 
-**Mitigation:** commit a Python-generated state directory and a Python-made
-backup tarball as fixtures (PR A7). Every Rust reader is tested against them,
-and F2's acceptance check includes upgrading a live Python-deployed cage in
-place.
+**Mitigation:** PR A7 commits a generated state tree and backup tarball for
+three cages, produced by driving the real code paths rather than by writing
+JSON by hand. Every Rust reader is tested against it, and F2's acceptance check
+includes upgrading a live Python-deployed cage in place.
+
+**Known gap:** the staged Containerfile and build context that
+`fingerprint.scaffold_context_version` hashes is not captured, because it needs
+a real scaffold build. If the Rust `cage update` no-op path depends on it, that
+needs a follow-up fixture.
 
 ### 2.8 YAML: PyYAML speaks 1.1, every Rust crate speaks 1.2
 
