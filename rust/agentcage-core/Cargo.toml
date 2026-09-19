@@ -20,5 +20,21 @@ authors.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Test-only, and deliberately not a runtime dependency.
+#
+# `volume_mounts` itself moves strings around and needs nothing. What
+# needs JSON is the golden-corpus test: the corpus stores each case's
+# `volume-mounts.json` exactly as Python's
+# `json.dumps(..., indent=2, sort_keys=True, ensure_ascii=False)` wrote
+# it, and the test rebuilds that document and compares the bytes. Hand-
+# rolling an emitter to match CPython's would put the thing under test
+# and the thing testing it in the same pair of hands.
+#
+# serde_json's defaults line up with those arguments: two-space pretty
+# printing, `Map` ordered as a `BTreeMap` (so `sort_keys=True` for the
+# ASCII keys here), and no \uXXXX escaping of non-ASCII.
+[dev-dependencies]
+serde_json = "1"
+
 [lints]
 workspace = true
