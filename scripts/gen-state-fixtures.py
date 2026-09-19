@@ -515,12 +515,15 @@ def _generate_cage_state(name: str, config_path: Path, *, rich: bool) -> None:
         network_octet=FROZEN_NETWORK_OCTET,
         store_secrets={"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "IMAP_PASSWORD"},
     )
+    # Mirrors ContainerBackend.install_units: quadlet types go to the quadlet
+    # dir, plain .service units to the systemd-user dir. Each directory is
+    # created only when something lands in it — an empty one cannot be
+    # committed (see _copy_tree), and today no .service unit is emitted.
     unit_dir = SANDBOX / ".config" / "containers" / "systemd"
     user_unit_dir = SANDBOX / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    user_unit_dir.mkdir(parents=True, exist_ok=True)
     for filename, content in units.items():
         dest = user_unit_dir if filename.endswith(".service") else unit_dir
+        dest.mkdir(parents=True, exist_ok=True)
         (dest / filename).write_text(content)
 
     # ── Fingerprint ────────────────────────────────────────
@@ -866,12 +869,18 @@ def _rewrite_tarball_deterministic(path: Path) -> None:
 
     A ``tar.gz`` embeds per-run data that has nothing to do with the format
     contract: the gzip header carries an mtime and the original filename, and
-    every tar member carries mtime, uid/gid and uname/gname from the machine
-    that packed it. Normalize all of it, and run each member's text through
-    :func:`_scrub` (the tarball carries a copy of ``cage.yaml``, which holds
-    absolute host paths). Member *names, order, types and modes* — the parts
-    a Rust reader actually has to handle — are left exactly as ``cage
+    every tar member carries mtime, uid/gid, uname/gname and a *mode* from the
+    machine that packed it. Normalize all of it, and run each member's text
+    through :func:`_scrub` (the tarball carries a copy of ``cage.yaml``, which
+    holds absolute host paths). Member *names, order, types and contents* —
+    the parts a Rust reader actually has to handle — are left as ``cage
     backup`` produced them.
+
+    Mode is normalized rather than preserved because it is not a stable part
+    of the format: ``tar.add`` copies each state file's mode, which is
+    whatever the producing host's umask happened to make it. Running the
+    generator under ``umask 077`` instead of ``umask 022`` changed every
+    member from 0644/0755 to 0600/0700 and so changed the archive bytes.
     """
     with tarfile.open(path, "r:gz") as tar:
         members = []
@@ -895,6 +904,7 @@ def _rewrite_tarball_deterministic(path: Path) -> None:
             member.gid = 0
             member.uname = ""
             member.gname = ""
+            member.mode = 0o755 if member.isdir() else 0o644
             tar.addfile(member, io.BytesIO(data) if data is not None else None)
 
     with open(path, "wb") as fh:
@@ -923,20 +933,170 @@ def _scrub(text: str) -> str:
 
 
 def _copy_tree(src: Path, dst: Path) -> None:
+    """Copy *src* into *dst*, scrubbing text and skipping empty directories.
+
+    Empty directories are skipped deliberately: **git cannot represent one**.
+    If the generator emitted an empty directory it would survive in the
+    author's working tree, be silently dropped by ``git add``, and then make
+    ``--check`` fail on every fresh checkout (CI) while passing locally — the
+    directory is present on the generating side and absent on the committed
+    side. Anything that cannot round-trip through git must not be produced.
+    """
     for path in sorted(src.rglob("*")):
-        rel = path.relative_to(src)
-        target = dst / rel
-        if path.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            continue
         if not path.is_file():
             continue
+        target = dst / path.relative_to(src)
         target.parent.mkdir(parents=True, exist_ok=True)
         if path.suffix in _BINARY_SUFFIXES:
             target.write_bytes(path.read_bytes())
         else:
             target.write_text(_scrub(path.read_text()))
-        os.chmod(target, path.stat().st_mode & 0o777)
+        # Modes are deliberately NOT copied. git records only the executable
+        # bit, so a 0600 file (pending_secrets.json, the creds blobs) comes
+        # back from a checkout as 0644 no matter what is written here —
+        # preserving it would imply a guarantee the fixture cannot make. The
+        # 0600-at-rest property is asserted in the writers' own tests, not
+        # here, and the comparison in compare_trees ignores modes to match.
+
+
+def _assert_no_empty_dirs(out: Path) -> None:
+    """Refuse to emit a tree git cannot reproduce — see :func:`_copy_tree`."""
+    empty = sorted(
+        str(d.relative_to(out))
+        for d in out.rglob("*")
+        if d.is_dir() and not any(d.iterdir())
+    )
+    if empty:
+        raise SystemExit(
+            "fixture contains directories git cannot track:\n  "
+            + "\n  ".join(empty)
+        )
+
+
+# ── Tree comparison (``--check``) ──────────────────────────
+
+#: Cap on how much of any one file's diff is printed.
+_DIFF_LINE_CAP = 40
+
+
+def _tar_members(blob: bytes) -> dict[str, bytes | None]:
+    """Decompressed ``{member name: bytes or None for non-files}``."""
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        return {
+            m.name: (tar.extractfile(m).read() if m.isfile() else None)
+            for m in tar.getmembers()
+        }
+
+
+def _text_diff(rel: str, want: bytes, got: bytes) -> list[str]:
+    """A unified diff when both sides decode, byte facts when they do not."""
+    import difflib
+
+    try:
+        want_lines = want.decode().splitlines(keepends=True)
+        got_lines = got.decode().splitlines(keepends=True)
+    except UnicodeDecodeError:
+        offset = next(
+            (i for i, (a, b) in enumerate(zip(want, got)) if a != b),
+            min(len(want), len(got)),
+        )
+        return [
+            f"  binary: committed {len(want)}B, regenerated {len(got)}B, "
+            f"first difference at byte {offset}"
+        ]
+    lines = list(
+        difflib.unified_diff(
+            want_lines, got_lines,
+            fromfile=f"committed/{rel}", tofile=f"regenerated/{rel}",
+        )
+    )
+    out = ["  " + line.rstrip("\n") for line in lines[:_DIFF_LINE_CAP]]
+    if len(lines) > _DIFF_LINE_CAP:
+        out.append(f"  … {len(lines) - _DIFF_LINE_CAP} more diff lines")
+    return out
+
+
+def _tarball_diff(rel: str, want: bytes, got: bytes) -> list[str]:
+    """Compare the archive's *contents*, never the gzip stream.
+
+    The gzip container carries an mtime, an original filename and a
+    compression level, none of which are part of the backup format. Reporting
+    "the bytes moved" for a tarball is useless; the member list and the member
+    bytes are what a reader cares about.
+    """
+    try:
+        want_members, got_members = _tar_members(want), _tar_members(got)
+    except tarfile.TarError as e:  # pragma: no cover — corrupt fixture
+        return [f"  cannot read as tar.gz: {e}"]
+
+    out: list[str] = []
+    for name in sorted(set(want_members) - set(got_members)):
+        out.append(f"  - member only in committed: {name}")
+    for name in sorted(set(got_members) - set(want_members)):
+        out.append(f"  + member only in regenerated: {name}")
+    # Order matters (the reader walks members in stream order), but only
+    # report it when the *shared* members are ordered differently — an
+    # added or removed member already explains a raw list mismatch.
+    shared = set(want_members) & set(got_members)
+    want_order = [n for n in want_members if n in shared]
+    got_order = [n for n in got_members if n in shared]
+    if want_order != got_order:
+        out.append("  member order differs:")
+        out.append(f"    committed:   {want_order}")
+        out.append(f"    regenerated: {got_order}")
+    for name in sorted(set(want_members) & set(got_members)):
+        a, b = want_members[name], got_members[name]
+        if a != b:
+            out.append(f"  member differs: {name}")
+            if a is not None and b is not None:
+                out.extend(
+                    "  " + line for line in _text_diff(f"{rel}!{name}", a, b)
+                )
+    if not out:
+        out.append(
+            "  members are identical — only the gzip/tar container bytes "
+            "differ (compression level or header metadata)"
+        )
+    return out
+
+
+def compare_trees(committed: Path, regenerated: Path) -> tuple[int, list[str]]:
+    """Return ``(files_differing, report_lines)``, file by file.
+
+    Returns ``(0, [])`` when the trees match. Directories are not compared
+    (see :func:`_copy_tree`), and neither are file modes: git records only the
+    executable bit, so a mode comparison would report differences that cannot
+    be committed either way.
+    """
+    def _files(root: Path) -> dict[str, Path]:
+        return {
+            str(p.relative_to(root)): p
+            for p in root.rglob("*") if p.is_file()
+        }
+
+    want, got = _files(committed), _files(regenerated)
+    report: list[str] = []
+    differing = 0
+
+    for rel in sorted(set(want) - set(got)):
+        differing += 1
+        report.append(f"- in committed, NOT regenerated: {rel}")
+    for rel in sorted(set(got) - set(want)):
+        differing += 1
+        report.append(f"+ regenerated, NOT committed: {rel}")
+
+    for rel in sorted(set(want) & set(got)):
+        a, b = want[rel].read_bytes(), got[rel].read_bytes()
+        if a == b:
+            continue
+        differing += 1
+        report.append(f"~ bytes differ: {rel}")
+        if rel.endswith(".gz"):
+            report.extend(_tarball_diff(rel, a, b))
+        else:
+            report.extend(_text_diff(rel, a, b))
+
+    return differing, report
 
 
 def _assert_clean(out: Path) -> None:
@@ -1000,8 +1160,18 @@ The generator drives the real code paths — `state.save_deployment`,
 click command — inside a throwaway XDG sandbox, then scrubs and copies the
 result here. Re-running it on a clean tree produces a byte-identical tree.
 
-`--check` regenerates into a temporary directory and diffs, which is how CI (or
-you) can prove the committed fixture still matches the code.
+`--check` regenerates into a temporary directory and reports every difference
+file by file — added, removed, and changed with a unified diff; for the backup
+tarball it compares decompressed members rather than the gzip stream. That is
+how CI (and you) can prove the committed fixture still matches the code, and a
+CI log alone is enough to diagnose a drift.
+
+One trap worth knowing about: git cannot store an empty directory. If the
+generator ever emits one it survives in the author's working tree, is silently
+dropped by `git add`, and then makes `--check` fail on every fresh checkout
+while passing locally. The generator refuses to write such a tree, and
+`tests/test_state_compat.py` additionally asserts that every fixture file is
+tracked by git.
 
 ## Adding a new generation
 
@@ -1053,9 +1223,18 @@ Determinism is a hard requirement, so everything that varies per run is pinned:
   source is frozen so the minted token is fixed.
 - **Subnet octet** — pinned to `{octet}` rather than hash-derived.
 - **Tarball metadata** — the gzip header mtime/filename and each tar member's
-  mtime, uid/gid and uname/gname are normalized after `cage backup` runs, and
-  member text goes through the same path scrub as everything else. Member
-  names, order, types and modes are exactly what `cage backup` emitted.
+  mtime, uid/gid, uname/gname and mode are normalized after `cage backup`
+  runs, and member text goes through the same path scrub as everything else.
+  Member names, order, types and contents are what `cage backup` emitted.
+  Mode is normalized because it is not a stable part of the format: `tar.add`
+  copies each state file's mode, which is whatever the producing host's umask
+  made it, so `umask 077` and `umask 022` produce different archive bytes for
+  identical state.
+- **File modes are not part of this fixture.** git records only the
+  executable bit, so a file that is 0600 on a real host (`pending_secrets.json`,
+  `creds/*.cred`) comes back from a checkout as 0644. The at-rest mode is a
+  real property of those writers and is asserted in their own tests; it cannot
+  be carried here, so the regeneration check ignores modes.
 
 ## Secrets
 
@@ -1143,6 +1322,7 @@ def build(out: Path) -> str:
     (out / "backup").mkdir(parents=True, exist_ok=True)
     (out / "backup" / tarball.name).write_bytes(tarball.read_bytes())
 
+    _assert_no_empty_dirs(out)
     _assert_clean(out)
     _write_readme(out, version)
     _write_manifest(out, version)
@@ -1163,17 +1343,27 @@ def main() -> int:
     committed = repo / "tests" / "fixtures" / "state-compat" / version
 
     if args.check:
+        if not committed.is_dir():
+            print(
+                f"no committed fixture at {committed} "
+                f"(installed agentcage version is {version})",
+                file=sys.stderr,
+            )
+            return 1
         scratch = SANDBOX / "check-out"
         build(scratch)
-        import filecmp
-        import subprocess
-        if not committed.is_dir():
-            print(f"no committed fixture at {committed}", file=sys.stderr)
-            return 1
-        rc = subprocess.run(["diff", "-r", str(committed), str(scratch)]).returncode
-        print("fixture matches" if rc == 0 else "fixture DIFFERS", file=sys.stderr)
-        del filecmp
-        return rc
+        differing, report = compare_trees(committed, scratch)
+        if not differing:
+            print("fixture matches", file=sys.stderr)
+            return 0
+        print(
+            f"fixture DIFFERS ({differing} file(s))\n"
+            f"  committed:   {committed}\n"
+            f"  regenerated: {scratch}\n",
+            file=sys.stderr,
+        )
+        print("\n".join(report))
+        return 1
 
     out = args.out or committed
     version = build(out)

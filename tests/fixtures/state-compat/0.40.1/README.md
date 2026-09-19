@@ -29,8 +29,18 @@ The generator drives the real code paths — `state.save_deployment`,
 click command — inside a throwaway XDG sandbox, then scrubs and copies the
 result here. Re-running it on a clean tree produces a byte-identical tree.
 
-`--check` regenerates into a temporary directory and diffs, which is how CI (or
-you) can prove the committed fixture still matches the code.
+`--check` regenerates into a temporary directory and reports every difference
+file by file — added, removed, and changed with a unified diff; for the backup
+tarball it compares decompressed members rather than the gzip stream. That is
+how CI (and you) can prove the committed fixture still matches the code, and a
+CI log alone is enough to diagnose a drift.
+
+One trap worth knowing about: git cannot store an empty directory. If the
+generator ever emits one it survives in the author's working tree, is silently
+dropped by `git add`, and then makes `--check` fail on every fresh checkout
+while passing locally. The generator refuses to write such a tree, and
+`tests/test_state_compat.py` additionally asserts that every fixture file is
+tracked by git.
 
 ## Adding a new generation
 
@@ -82,9 +92,18 @@ Determinism is a hard requirement, so everything that varies per run is pinned:
   source is frozen so the minted token is fixed.
 - **Subnet octet** — pinned to `137` rather than hash-derived.
 - **Tarball metadata** — the gzip header mtime/filename and each tar member's
-  mtime, uid/gid and uname/gname are normalized after `cage backup` runs, and
-  member text goes through the same path scrub as everything else. Member
-  names, order, types and modes are exactly what `cage backup` emitted.
+  mtime, uid/gid, uname/gname and mode are normalized after `cage backup`
+  runs, and member text goes through the same path scrub as everything else.
+  Member names, order, types and contents are what `cage backup` emitted.
+  Mode is normalized because it is not a stable part of the format: `tar.add`
+  copies each state file's mode, which is whatever the producing host's umask
+  made it, so `umask 077` and `umask 022` produce different archive bytes for
+  identical state.
+- **File modes are not part of this fixture.** git records only the
+  executable bit, so a file that is 0600 on a real host (`pending_secrets.json`,
+  `creds/*.cred`) comes back from a checkout as 0644. The at-rest mode is a
+  real property of those writers and is asserted in their own tests; it cannot
+  be carried here, so the regeneration check ignores modes.
 
 ## Secrets
 

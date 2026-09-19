@@ -780,7 +780,52 @@ def test_cage_restore_of_the_fixture_tarball(generation, tmp_path, monkeypatch):
     assert "server=/api.anthropic.com/1.1.1.1" in dns
 
 
-# ── the fixture is regenerable ─────────────────────────────
+# ── the fixture must survive a fresh checkout ──────────────
+
+
+def test_fixture_has_no_empty_directories(generation):
+    """git cannot represent an empty directory.
+
+    One that the generator emitted would live on in the author's working tree,
+    be silently dropped by ``git add``, and then make the regeneration check
+    below fail on every fresh checkout while passing locally. This test fails
+    on the generating machine — which is the only place it can be fixed.
+    """
+    empty = sorted(
+        str(d.relative_to(generation))
+        for d in generation.rglob("*")
+        if d.is_dir() and not any(d.iterdir())
+    )
+    assert empty == [], (
+        "these directories cannot be committed and will make CI diverge "
+        "from a local run"
+    )
+
+
+def test_every_fixture_file_is_tracked_by_git():
+    """The same trap as empty directories, for files.
+
+    A fixture file that exists locally but was never ``git add``-ed passes
+    every local check and is simply absent on CI. Compare what is on disk
+    against what git actually has.
+    """
+    import subprocess
+
+    repo = Path(__file__).parent.parent
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--", "tests/fixtures/state-compat"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if listed.returncode != 0:  # pragma: no cover — not a git checkout
+        pytest.skip("not a git checkout")
+
+    tracked = {p for p in listed.stdout.split("\0") if p}
+    on_disk = {
+        str(p.relative_to(repo))
+        for p in (FIXTURE_ROOT).rglob("*") if p.is_file()
+    }
+    assert on_disk - tracked == set(), "untracked fixture files"
+    assert tracked - on_disk == set(), "tracked fixture files missing on disk"
 
 
 def _package_version() -> str | None:
@@ -805,6 +850,11 @@ def test_generator_reproduces_the_committed_fixture_byte_for_byte():
 
     Only the generation matching the *installed* version is checked — older
     generations are snapshots of code that no longer exists here.
+
+    On failure the generator prints a per-file report (added / removed /
+    changed, with a unified diff, and for the backup tarball a comparison of
+    decompressed members rather than the gzip stream). It is relayed verbatim
+    so a CI log is enough to diagnose the drift without reproducing it.
     """
     import subprocess
     import sys
@@ -821,7 +871,10 @@ def test_generator_reproduces_the_committed_fixture_byte_for_byte():
         cwd=repo,
     )
     assert result.returncode == 0, (
-        "the committed fixture no longer matches the generator; re-run\n"
-        "  uv run python scripts/gen-state-fixtures.py\n\n"
-        + result.stdout + result.stderr
+        "\n\nThe committed fixture no longer matches what the generator "
+        "produces.\nIf the change is intended, re-run:\n"
+        "    uv run python scripts/gen-state-fixtures.py\n\n"
+        + result.stderr
+        + "\n"
+        + result.stdout
     )
