@@ -33,7 +33,7 @@ produces* from each one:
 | `shared/audit/*` | `audit.py`, over the committed `_inputs/audit.jsonl` |
 | `shared/volume-mounts.json` | `volume_mounts.py`, over a standalone spec table |
 | `shared/domain-validation.json` | `config.valid_domain` / `config.encoded_private_ip` |
-| `shared/egress-content-hash.txt` | `backends/apple_container._egress_content_hash` |
+| `shared/egress-content-hash.txt` | `egress_hash._egress_content_hash` (still re-exported from `backends/apple_container` before PR A5 lands) |
 
 The most valuable part is the last column of that first group: **every
 validation error message and every warning string**, captured verbatim. Those
@@ -204,6 +204,12 @@ edit under `src/agentcage/data/proxy/` moves it. That is the intended
 behaviour (§2.1 of the port plan — the tag must not drift between the Python
 and Rust builds); `shared/egress-build-inputs.txt` lists the hashed files and
 their sizes so the diff says *which* file moved.
+
+Moving the hash *code* must not move the hash *value*. The harness imports
+`agentcage.egress_hash` and falls back to the pre-A5 home in
+`backends/apple_container`, so it is correct on either side of that
+refactor — and this corpus records `25cff145d1e6` over 24 build inputs from
+both import paths, which is the same value PR A5 measured independently.
 
 ## Known gaps
 

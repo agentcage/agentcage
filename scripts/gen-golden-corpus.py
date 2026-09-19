@@ -2085,8 +2085,18 @@ def _write_shared(out_root: Path, scrubber: Scrubber) -> None:
     ]))
 
     # ── egress image content hash ──────────────────────────
+    # These two live in ``agentcage.egress_hash`` once PR A5 has extracted
+    # them out of ``backends/apple_container.py``; that PR keeps the old
+    # private names as aliases, so both spellings work. Prefer the real home
+    # and fall back, so this script is correct both before and after A5 lands
+    # in whatever branch it is run from. The VALUE must not move either way —
+    # the image tag it feeds must not drift between the Python and Rust
+    # builds (RUST-PORT-PLAN.md §2.1).
     try:
-        from agentcage.backends import apple_container as ac
+        try:
+            from agentcage import egress_hash as ac
+        except ImportError:
+            from agentcage.backends import apple_container as ac
         inputs = ac._egress_build_inputs()
         w.write("egress-content-hash.txt", ac._egress_content_hash() + "\n")
         w.write("egress-build-inputs.txt", "".join(
