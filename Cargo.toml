@@ -14,6 +14,7 @@ resolver = "3"
 members = [
     "rust/agentcage-core",
     "rust/agentcage-assets",
+    "rust/agentcage-exec",
     "rust/agentcage-cli",
 ]
 
