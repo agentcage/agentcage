@@ -312,6 +312,7 @@ fn the_shared_domain_table_matches() {
 /// buckets shows up as a named diff.
 const REPRODUCED: &[&str] = &[
     "err-agents-auto-revoke-not-bool",
+    "err-agents-decider-api-key-no-scheme",
     "err-agents-decider-context-not-string",
     "err-agents-decider-kind",
     "err-agents-decider-wrapper-agent",
@@ -325,6 +326,7 @@ const REPRODUCED: &[&str] = &[
     "err-agents-role-not-mapping",
     "err-agents-top-level-watcher",
     "err-agents-unknown-role",
+    "err-agents-watcher-api-key-no-scheme",
     "err-agents-watcher-context-not-string",
     "err-agents-watcher-number-not-number",
     "err-agents-watcher-wrapper-decider",
@@ -370,11 +372,20 @@ const REPRODUCED: &[&str] = &[
     "err-ports-udp-allow-not-list",
     "err-ports-udp-not-mapping",
     "err-relay-auth-not-mapping",
+    "err-relay-ca-file-and-pem",
+    "err-relay-ca-file-not-string",
+    "err-relay-ca-pem-not-pem",
+    "err-relay-ca-pem-not-string",
     "err-relay-entry-not-mapping",
     "err-relay-folder-allowlist-not-list",
     "err-relay-missing-fields",
     "err-relay-servername-not-string",
+    "err-relay-tls-false-with-ca",
+    "err-relay-unknown-type",
+    "err-relay-upstream-bad-port",
     "err-relay-upstream-not-mapping",
+    "err-relay-write-mode-contradicts-readonly",
+    "err-relay-write-mode-invalid",
     "err-secret-env-name-invalid",
     "err-secret-source-scheme-unknown",
     "err-secret-transform-unknown",
@@ -392,13 +403,10 @@ const REPRODUCED: &[&str] = &[
 ///
 /// | Cases | Owner | Why |
 /// | :-- | :-- | :-- |
-/// | `err-agents-*-api-key-no-scheme`, `err-decider-*`, `err-watcher-*` | C3 | the decider and watcher validation blocks |
-/// | `err-relay-*` past the required-key check | C3 | `relays/_validate.validate_relay_entry` |
+/// | `err-decider-*`, `err-watcher-*` | C3 | the decider and watcher validation blocks |
 /// | `err-volume-outside-home` | C8 | raised by `quadlets.py`, not by `validate_config` — a rendering check, not a config one |
 /// | `err-yaml-syntax`, `err-yaml-tab` | — | in [`KNOWN_DIVERGENT`]: the line and column match, the scanner's own wording cannot |
 const DEFERRED: &[&str] = &[
-    "err-agents-decider-api-key-no-scheme",
-    "err-agents-watcher-api-key-no-scheme",
     "err-decider-api-key-cmd",
     "err-decider-api-key-missing",
     "err-decider-api-key-podman",
@@ -414,17 +422,8 @@ const DEFERRED: &[&str] = &[
     "err-decider-requires-allowlist",
     "err-decider-timeout-not-positive",
     "err-relay-auth-source-scheme",
-    "err-relay-ca-file-and-pem",
     "err-relay-ca-file-missing",
     "err-relay-ca-file-not-pem",
-    "err-relay-ca-file-not-string",
-    "err-relay-ca-pem-not-pem",
-    "err-relay-ca-pem-not-string",
-    "err-relay-tls-false-with-ca",
-    "err-relay-unknown-type",
-    "err-relay-upstream-bad-port",
-    "err-relay-write-mode-contradicts-readonly",
-    "err-relay-write-mode-invalid",
     "err-volume-outside-home",
     "err-watcher-api-key-cmd",
     "err-watcher-api-key-missing",
