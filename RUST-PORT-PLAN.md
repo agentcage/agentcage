@@ -258,6 +258,31 @@ YAML crate implements 1.2, where those are the strings `"yes"`, `"0755"`, and
   `no` unquoted — as a domain, a header value, anything — PyYAML inside the
   egress reads it as `False`. The emitter must quote every 1.1-ambiguous scalar.
 
+**Measured, not assumed** (2026-09-19, `serde_norway` 0.9 and `serde_yaml_ng`
+0.10 against PyYAML 6.0): emit each hazardous scalar from Rust *as a string*,
+read it back with `yaml.safe_load`. **14 of 34 come back as the wrong type.**
+
+| Corrupted | Rust emits | PyYAML reads |
+| :-- | :-- | :-- |
+| `yes` `Yes` `YES` `on` `On` `ON` | bare | `True` |
+| `no` `No` `NO` `off` `Off` `OFF` | bare | `False` |
+| `1:30` | bare | `90` (sexagesimal) |
+| `1_000` | bare | `1000` |
+
+The crates already quote the YAML-1.2 specials — `true`, `null`, `~`, `0755`,
+`0x1F`, `.inf`, `.nan` — so those are safe. It is precisely the **1.1-only**
+spellings that leak, which is why this cannot be left to the crate's default
+quoting. Both crates behave identically here, so the choice between them does
+not affect it.
+
+Note the asymmetry: PyYAML *does* quote `'no'` on output, so Python→Rust and
+Python→Python are both safe. **Only Rust→Python corrupts.** A round-trip test
+that runs Rust→Rust will not catch this; the fixture has to cross the language
+boundary in that one direction.
+
+`serde_norway` preserves mapping key order on round-trip (verified), which
+satisfies the other hard requirement.
+
 Separately, **PyYAML's output formatting is not reproducible** from Rust: it
 wraps at 80 columns, does not indent sequences under mapping keys, and has its
 own quoting heuristics. `cage edit`, `domain add`, and `save_proxy_config` all
@@ -479,7 +504,7 @@ verified against what they produce, so they must be right before Rust starts.
 | # | PR | Acceptance check | Deps |
 | :-- | :-- | :-- | :-- |
 | B1 | Cargo workspace skeleton (`agentcage-core`, `agentcage-assets`, `agentcage-cli`) + CI job (build, clippy, fmt) | CI green; no behavior change anywhere | A1 |
-| B2 | YAML crate decision + round-trip test over every `tests/configs/**` file + a 1.1-ambiguity fixture (§2.8) | Key order preserved on 100% of configs; every 1.1-ambiguous scalar is quoted on output and PyYAML reads it back as a string; written as an ADR in the PR body | B1 |
+| B2 | YAML crate decision + round-trip test over every `tests/configs/**` file + the 1.1-ambiguity fixture (§2.8) | Key order preserved on 100% of configs; **the 14 measured hazard scalars survive a Rust-emit → PyYAML-read round trip as strings**; written as an ADR in the PR body | B1 |
 | B3 | `agentcage-assets`: embed `data/`, `templates/`, `scaffolds/`; extract to a cache dir; reproduce `_egress_content_hash` | Matches the A5 fixture exactly; extracted tree byte- and mode-identical to the source | A5, B1 |
 
 B3 is deliberately early: it is the highest-risk piece of new (not ported) work,
