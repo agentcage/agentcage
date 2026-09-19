@@ -16,9 +16,89 @@ authors.workspace = true
 name = "agentcage"
 path = "src/main.rs"
 
+# The binary's own modules, exposed as a library.
+#
+# Not a second place for code to live: `main.rs` is still the program.
+# This exists because a Rust integration test is a separate crate and
+# cannot reach into a `[[bin]]`, and PR D4's modules are precisely the
+# ones that have to be checked against something outside the process --
+# the styling fixtures under `tests/fixtures/output/`, generated from
+# the Python, and a pty for the terminal-restore test.
+[lib]
+name = "agentcage_cli"
+path = "src/lib.rs"
+
 [dependencies]
 agentcage-core = { path = "../agentcage-core" }
 agentcage-assets = { path = "../agentcage-assets" }
+
+# The termios work (PR D4), and the plan names it: `terminal.py`
+# snapshots the controlling terminal with `tcgetattr` and puts it back
+# with `tcsetattr(TCSADRAIN)`, and it writes its escape sequence with a
+# raw `write(2)` because the descriptor may be stdin, which `std` will
+# not write to.
+#
+# Features are pared to what is reached:
+#
+#   * `term`    -- tcgetattr / tcsetattr / cfmakeraw.
+#   * `process` -- execvp, for the non-interactive hand-off that keeps
+#                  the Python's `os.execvp` semantics.
+#   * `fs`      -- write(2)/read(2)/pipe(2) on a borrowed descriptor.
+#
+# Note what is NOT here: no TUI crate. `crossterm` would bring its own
+# escape sequences, its own set of modes to reset and its own
+# restoration policy, and the requirement is the opposite of sensible
+# defaults -- the bytes have to be the bytes the Python wrote, in that
+# order, including a Kitty keyboard-protocol pop that no general-purpose
+# crate emits.
+nix = { version = "0.31", default-features = false, features = [
+    "term",
+    "process",
+    "fs",
+] }
+
+# SIGINT, and the reason it is a second dependency rather than more of
+# `nix`.
+#
+# Ctrl-C reaches every process in the terminal's foreground group, so it
+# reaches the CLI as well as the session inside the cage. With the
+# default disposition the CLI dies on the spot -- which skips the
+# destructor that restores the terminal, i.e. exactly the case this PR
+# exists to handle. The Python installs a no-op handler for the duration
+# and restores the previous one after.
+#
+# Installing or restoring a disposition means `sigaction`, which `nix`
+# exposes as an `unsafe fn`, and `[workspace.lints.rust] unsafe_code =
+# "forbid"` cannot be overridden by a crate-level `allow`. signal-hook's
+# `flag` module is the safe equivalent: its actions are async-signal-
+# safe by construction, so the registration functions are safe fns.
+# `register_conditional_default` in particular gives the Python's
+# semantics exactly -- a no-op while a session is running, the default
+# action the rest of the time -- without a restore step to get wrong.
+#
+# `default-features = false` drops the `iterator` module (a background
+# thread and a mio dependency); the flag API needs none of it.
+signal-hook = { version = "0.3", default-features = false }
+
+# The timing ledger (PR D4). `_timing.py` appends one JSON object per
+# phase and reads them back for `--timings`; the records are written by
+# one version of agentcage and read by another, so the reader ignores
+# unknown keys and defaults missing ones rather than failing a
+# diagnostic. Already in the tree via `agentcage-core`.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# The `poll` the terminal-restore test reads the pty master with.
+# `openpty` itself is already under `term`. Same crate as above; Cargo
+# unifies the features, so this adds nothing to the shipped binary.
+nix = { version = "0.31", default-features = false, features = [
+    "term",
+    "process",
+    "fs",
+    "poll",
+] }
+serde_json = "1"
 
 [lints]
 workspace = true
