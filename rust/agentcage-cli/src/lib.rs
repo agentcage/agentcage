@@ -13,6 +13,8 @@
 
 /// Styled terminal output: the banner, the status marks, the spinner.
 pub mod output;
+/// Secret resolution and the at-rest stores (PR D3).
+pub mod secrets;
 /// Host terminal hygiene around interactive cage sessions.
 pub mod terminal;
 /// Per-phase wall times, behind the hidden `--timings` flags.

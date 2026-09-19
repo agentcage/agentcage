@@ -16,6 +16,7 @@ version = "0.40.1"
 dependencies = [
  "agentcage-assets",
  "agentcage-core",
+ "agentcage-exec",
  "clap",
  "clap_complete",
  "nix",

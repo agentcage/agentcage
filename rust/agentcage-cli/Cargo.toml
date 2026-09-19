@@ -32,6 +32,12 @@ path = "src/lib.rs"
 agentcage-core = { path = "../agentcage-core" }
 agentcage-assets = { path = "../agentcage-assets" }
 
+# The subprocess seam (PR D1). PR D3's secret stores are nothing but
+# decisions about which command to build -- `systemd-creds encrypt`,
+# `podman secret create`, `security add-generic-password` -- so they are
+# written against `CommandRunner` and tested against `FakeRunner`.
+agentcage-exec = { path = "../agentcage-exec" }
+
 # The termios work (PR D4), and the plan names it: `terminal.py`
 # snapshots the controlling terminal with `tcgetattr` and puts it back
 # with `tcsetattr(TCSADRAIN)`, and it writes its escape sequence with a
@@ -55,6 +61,12 @@ nix = { version = "0.31", default-features = false, features = [
     "term",
     "process",
     "fs",
+    # `user`: `geteuid`, for PR D3. `secret_resolver.detect_default_scope`
+    # asks "is the invoker root?" before it probes the per-user systemd
+    # key, because root's per-user key is not the operator's and a
+    # credential encrypted with it could not be decrypted by the unit
+    # that needs it. `std` has no euid API.
+    "user",
 ] }
 
 # SIGINT, and the reason it is a second dependency rather than more of
