@@ -7,10 +7,18 @@ every platform — Linux and macOS alike**. The in-egress proxy — mitmproxy, t
 addon, inspectors, protocol relays, the Policy API, the traffic watcher, and the
 custom-inspector extension point — **stays in Python, unchanged**.
 
-The target invariant: **Python exists only inside the egress container image.**
-Not on the host, not in the Lima guest, not as an installable package. It ships
-as data embedded in the Rust binary and baked into the egress image at build
-time.
+The target invariant: **Python is not an agentcage runtime dependency anywhere
+except inside the egress container image.** Not on the host, not in the Lima
+guest, not as an installable package. It ships as data embedded in the Rust
+binary and baked into the egress image at build time.
+
+Two things are deliberately outside that sentence. Workload images are the
+user's business: the `claude-code`, `codex`, and `pi` scaffold Containerfiles
+all install `python3` because the agents need it, and that is fine. And
+dev/test tooling keeps Python: pytest for the proxy suite, `scripts/update-deps.py`,
+and the e2e harness itself, which shells to host `python3` in phases 2, 7, and 8
+to parse JSON. The invariant is about what a user must have installed to run
+agentcage, not about what a contributor needs to hack on it.
 
 That invariant is already almost true. The only host-side `python3` reference in
 shipped code is `cli.py:1618`, and it runs *inside the cage container* as a
@@ -160,8 +168,12 @@ agentcage` is the documented install path. After the port:
   allowlisted exception: the in-cage `cage verify` probe).
 - Fail the build if `data/proxy/**` imports anything outside stdlib + `yaml` +
   `cryptography`, since those are the only packages the egress image installs.
-- Fail the build if any Containerfile other than `Containerfile.egress` installs
-  Python.
+- Fail the build if any Containerfile under `data/containers/` other than
+  `Containerfile.egress` installs Python. Scaffold Containerfiles are exempt
+  (they build workload images, see above). `Containerfile.helper` — alpine plus
+  `python3` and `py3-yaml` — is shipped today but referenced by nothing except
+  `scripts/update-deps.py` and one test fixture. Delete it in F4 rather than
+  allowlist it.
 
 Two test files straddle the language boundary and must be **split**, with the
 cross-language half moving to the §2.2 fixture:
@@ -207,6 +219,54 @@ weight.
 for Linux hosts, plus the two Darwin targets. macOS builds need a macOS runner;
 cross-compiling Darwin from Linux is not worth attempting.
 
+### 2.7 The Rust binary inherits Python's on-disk state, unversioned
+
+At cutover every existing user has cages that Python deployed. The Rust binary
+must read all of it in place, on its first invocation, with no migration step:
+
+| Location | Files |
+| :-- | :-- |
+| `~/.config/agentcage/<name>/` | `cage.yaml`, `metadata.json`, `creds/<key>.cred`, `secret_keys.json`, `pending_secrets.json` |
+| `~/.local/share/agentcage/<name>/` | `grants/grants.json`, `capture/`, `policy-audit.jsonl`, `audit.jsonl` |
+| `~/.config/containers/systemd/` | quadlets Python rendered, still running |
+| user-chosen paths | backup tarballs: gzipped tar with a `manifest.json` (`cli.py:3209`) |
+
+**None of these carry a schema version.** `metadata.json` is a bare
+`json.dumps(dict)`; there is no `state_version` field anywhere in `state.py`.
+So there is nothing to branch on — the Rust readers simply have to accept
+exactly what the Python writers produced, and the first `cage update` under
+Rust on an untouched cage must be a fingerprint no-op.
+
+**Mitigation:** commit a Python-generated state directory and a Python-made
+backup tarball as fixtures (PR A7). Every Rust reader is tested against them,
+and F2's acceptance check includes upgrading a live Python-deployed cage in
+place.
+
+### 2.8 YAML: PyYAML speaks 1.1, every Rust crate speaks 1.2
+
+This is the one place where a *correct* Rust port silently disagrees with the
+Python it replaces. PyYAML's `safe_load` follows YAML 1.1: `yes`, `no`, `on`,
+`off` are booleans, `0755` is octal 493, `1:30` is sexagesimal 90. Every Rust
+YAML crate implements 1.2, where those are the strings `"yes"`, `"0755"`, and
+`"1:30"`. It bites in both directions:
+
+- **Rust reading cage.yaml.** A user with `tls: no` in a relay entry today gets
+  `False`; after F2 they get the string `"no"`, which `bool("no")` semantics in
+  the port could turn into `True`. No shipped config or doc uses these spellings
+  (checked), but user configs can.
+- **Rust writing proxy-config.yaml.** If the Rust emitter writes the string
+  `no` unquoted — as a domain, a header value, anything — PyYAML inside the
+  egress reads it as `False`. The emitter must quote every 1.1-ambiguous scalar.
+
+Separately, **PyYAML's output formatting is not reproducible** from Rust: it
+wraps at 80 columns, does not indent sequences under mapping keys, and has its
+own quoting heuristics. `cage edit`, `domain add`, and `save_proxy_config` all
+rewrite YAML, and the port will change that formatting. That is acceptable
+(comments are already dropped today, `state.py:195`), but it means the golden
+corpus must assert **semantic equality for YAML artifacts** — parse both, compare
+values — and byte equality only for everything else. The fingerprint is safe:
+`fingerprint.py:40` hashes the parsed value, not the text.
+
 ---
 
 ## 3. Module-by-module disposition
@@ -216,13 +276,13 @@ cross-compiling Darwin from Linux is not worth attempting.
 | Python | LOC | Rust approach |
 | :-- | --: | :-- |
 | `config.py` | 2,473 | `serde` structs + hand-written validator. ~90% is validation and error strings asserted verbatim by `test_config.py`. Must now also reimplement `validate_relay_entry` (§2.2). |
-| `quadlets.py` + `templates/*.j2` | 1,177 | `minijinja` 2.24 is Jinja2-compatible; templates should need no edits. Preserve `SandboxedEnvironment` semantics. |
+| `quadlets.py` + `templates/*.j2` | 1,177 | `minijinja` 2.24 is Jinja2-compatible; templates should need no edits. The built-in filters used (`indent`, `default`, `join`, `lower`) all exist; register the two custom ones (`systemd_exec` filter in `quadlets.py:267`, `placeholder` global in `init.py:132`). Preserve `SandboxedEnvironment` semantics. |
 | `state.py` | 580 | Port `_atomic_write_text`'s O_EXCL + PID-suffix + single-retry logic line for line — the in-container addon writes the same files from a different PID namespace, and the comment explains exactly why each branch exists. |
 | `audit.py`, `har.py`, `fingerprint.py` | 685 | Pure functions. `fingerprint.stable_json` must be byte-identical or every `cage update` no-op detection breaks. |
 | `volume_mounts.py`, `registry.py`, `secret_resolver.py` | 693 | Mechanical. |
 | `podman.py`, `systemd.py`, `lima/*`, `apple_container/cli.py` | 1,073 | `std::process::Command` behind traits (§4). |
 | `output.py`, `terminal.py`, `_timing.py` | 493 | `terminal.py`'s raw-mode / Kitty-protocol / bracketed-paste restoration is fiddly; `nix` covers the termios work. |
-| `doctor.py`, `legacy_watcher.py` | 719 | Mechanical. |
+| `doctor.py`, `legacy_watcher.py` | 719 | Mechanical. `check_python_version` is dropped, not ported. |
 
 ### Needs care
 
@@ -231,7 +291,7 @@ cross-compiling Darwin from Linux is not worth attempting.
 | `cli.py` | 5,632 | `clap` 4.6 vs click. `AliasGroup` (`ls`→`list`, `rm`→`destroy`, `ps`→`list`, `reload`→`restart`, `config`→`edit`, …), `_BannerGroup` help override, hidden back-compat options (`--lines`, `--json`, `--no-follow`), and `ignore_unknown_options` passthrough for `run`/`exec`. Split one module per command group — 5.6k lines in one file is already this codebase's worst seam. |
 | `backends/apple_container.py` | 2,591 | Largest backend, but **most of it is fixture-testable on Linux** (§4): image naming + `_egress_content_hash`, `generate_units`, launchd plist rendering, `_user_volume_argv` / `_tmpfs_targets` / `_tmpfs_copyup_seeds`, `exec_argv` / `logs_argv` / `audit_argv`. Only `start`/`stop`/`_stage_secrets`/`_cleanup_mask_mountpoints` need real hardware. |
 | `backends/vm.py` | 1,297 | Same split: `generate_units`, `push_config_files`, argv builders and the secret-bridging logic are fixture-testable; `_deploy_cage` and the readiness waits need a live Lima guest. |
-| `secret_store.py` | 410 | Four stores (systemd-creds, Keychain, plaintext ×2). The Keychain `security(1)` interaction-blocked detection is macOS-only and fiddly. |
+| `secret_store.py` | 410 | Four stores (systemd-creds, Keychain, plaintext ×2). The Keychain `security(1)` interaction-blocked detection and the `sudo -n` System-keychain probe are macOS-only but argv-testable on Linux with a fake runner (PR E2b). |
 | `run.py`, `init.py`, `scaffold_cli.py`, `scaffold_brief.py` | 1,460 | Ephemeral-cage flow + scaffold rendering + embedded-asset extraction (§2.1). |
 | `services.py`, `backends/container.py` | 975 | Core deploy path; straightforward but load-bearing. |
 
@@ -254,9 +314,10 @@ A Python harness walks `tests/configs/**` plus a generated config matrix and
 dumps, per case: rendered quadlets, `proxy-config.yaml`, `dns-allowlist.conf`,
 `placeholders.env`, the fingerprint hash, `_egress_content_hash`, HAR output for
 a fixed capture, and **every validation error message**. Committed as fixtures;
-Rust reproduces them byte-for-byte under `insta`. This converts "did I port 2,473
-lines of validation correctly?" from judgement into a diff, and it is useful on
-`master` whether or not the port proceeds.
+Rust reproduces them under `insta` — byte-for-byte for quadlets, env files,
+hashes, and error strings, and by parsed-value comparison for YAML (§2.8). This
+converts "did I port 2,473 lines of validation correctly?" from judgement into a
+diff, and it is useful on `master` whether or not the port proceeds.
 
 **Layer 2 — cross-language contract fixtures (Phase 0).** §2.2. Generated from
 Python, asserted by both suites. Non-negotiable.
@@ -310,8 +371,9 @@ the Python implementation and freeze them. Move `VERSION` to the repo root and
 wire both build systems to it. Settle the YAML crate: `serde_yaml` is deprecated
 (last release 2024-03); evaluate `serde_norway` (maintained fork) or
 `serde_yaml_ng`; `saphyr` only reached 0.1.0 on 2026-09-19 and is likely too
-fresh. Hard requirement: **order-preserving mappings** — `save_raw_config` uses
-`sort_keys=False` and cage.yaml key order is user-visible after `cage edit`.
+fresh. Hard requirements: **order-preserving mappings** — `save_raw_config` uses
+`sort_keys=False` and cage.yaml key order is user-visible after `cage edit` —
+and **quoting of YAML-1.1-ambiguous scalars on output** (§2.8).
 
 **Phase 1 — Pure core (3–4 weeks)**
 `agentcage-core`: config parse + validate (including the reimplemented
@@ -356,6 +418,8 @@ variance, and neither blocks a Linux-only release.
 | **`_egress_content_hash` mismatch** silently forces rebuilds and tag drift on macOS | Golden-corpus case; port `_egress_copy_sources` verbatim including continuation handling. |
 | **Asset extraction bugs** — wrong modes or missing files break the podman build context in ways that surface as opaque build errors | e2e phases 1–6 catch this immediately; they build the real egress image. |
 | **Validation error-message drift** changes UX and breaks the suite | Corpus captures every message; treat a diff as a build failure. |
+| **YAML 1.1/1.2 divergence** (§2.8) — a user's `tls: no` changes meaning, or Rust writes an unquoted `no` that the proxy reads as `False` | B2 ambiguity fixture; emitter quotes 1.1-ambiguous scalars; corpus compares YAML by value. |
+| **Rust cannot read Python-written state** (§2.7) — no schema version to branch on; a bad reader bricks every existing cage at F2 | A7 fixtures from a real Python deployment + backup; F2 acceptance is an in-place upgrade of a live cage. |
 | **macOS release engineering** — signing, notarization, four build targets | §2.6. Front-load a signed pre-release spike in Phase 0 so the Apple Developer ID and `notarytool` flow are proven before they are on the critical path. |
 | **apple-container execution paths untestable in CI** | Unchanged from today (§4.1) — `phase_apple.sh` is already a manual Mac gate. Port the fixture-testable two thirds on Linux CI; keep the manual gate. A self-hosted Mac runner is an upgrade, not a prerequisite. |
 | **Python creeps back onto the host** after the invariant is established | §2.4 CI guards: no `python3` in Rust code paths, no non-stdlib imports in `data/proxy/**` beyond pyyaml/cryptography, no Python installed by any Containerfile but the egress one. |
@@ -373,7 +437,8 @@ variance, and neither blocks a Linux-only release.
    literal code today.
 3. Move `VERSION` to the repo root; wire `pyproject.toml` to read it.
 4. Settle the YAML crate with a round-trip test over every `tests/configs/**`
-   file, asserting key-order preservation.
+   file, asserting key-order preservation and quoting of `yes`/`no`/`on`/`off`/
+   octal-looking scalars on output.
 5. Stand up the Cargo workspace + asset embedding, and prove
    `_egress_content_hash` parity as the first Rust test that matters.
 6. Spike macOS signing + notarization (§2.6) on a throwaway binary. Apple
@@ -403,17 +468,18 @@ onward but ships to nobody until E.
 | A3 | Golden-corpus harness: walk `tests/configs/**` + a generated matrix, dump quadlets, `proxy-config.yaml`, `dns-allowlist.conf`, `placeholders.env`, fingerprints, HAR, and every validation error string | Harness is deterministic (run twice, empty diff); a deliberate one-char mutation in `config.py` fails the corpus check | M |
 | A4 | Cross-language contract fixtures for `relays/_validate.validate_relay_entry`, `valid_domain`, `encoded_private_ip`, `_is_never_grant` (§2.2) | pytest asserts Python matches each fixture; mutation of either implementation fails | M |
 | A5 | Extract `_egress_copy_sources` / `_egress_build_inputs` / `_egress_content_hash` into a standalone module + fixture | Hash for the current tree is pinned in a fixture; `test_apple_container.py` still green | S |
-| A6 | Split the two boundary-straddling test files (`test_addon_reload_inspector_config.py`, `test_policy_api_ssrf_guard.py`) into host-side and proxy-side halves | Same assertion count, both halves green | S |
+| A6 | Split the boundary-straddling test files into host-side and proxy-side halves. Find them by import scan (`tests/` holds 86 files; the 63/20 split above is approximate), not by the two named in §2.4 | Same assertion count, both halves green; the scan is committed as the §2.4 guard's seed | S |
+| A7 | State-compatibility fixtures (§2.7): a Python-deployed cage's `~/.config` and `~/.local/share` trees plus a `cage backup` tarball, committed with secrets replaced by fixed test values | pytest loads every file through the Python readers unchanged; fixture is regenerated by a script, not by hand | S |
 
-A3 and A4 are the load-bearing ones. Everything in Tracks C and D is verified
-against what they produce, so they must be right before Rust starts.
+A3, A4, and A7 are the load-bearing ones. Everything in Tracks C, D, and F is
+verified against what they produce, so they must be right before Rust starts.
 
 ### Track B — Rust foundations
 
 | # | PR | Acceptance check | Deps |
 | :-- | :-- | :-- | :-- |
 | B1 | Cargo workspace skeleton (`agentcage-core`, `agentcage-assets`, `agentcage-cli`) + CI job (build, clippy, fmt) | CI green; no behavior change anywhere | A1 |
-| B2 | YAML crate decision + round-trip test over every `tests/configs/**` file | Key order preserved on 100% of configs; written as an ADR in the PR body | B1 |
+| B2 | YAML crate decision + round-trip test over every `tests/configs/**` file + a 1.1-ambiguity fixture (§2.8) | Key order preserved on 100% of configs; every 1.1-ambiguous scalar is quoted on output and PyYAML reads it back as a string; written as an ADR in the PR body | B1 |
 | B3 | `agentcage-assets`: embed `data/`, `templates/`, `scaffolds/`; extract to a cache dir; reproduce `_egress_content_hash` | Matches the A5 fixture exactly; extracted tree byte- and mode-identical to the source | A5, B1 |
 
 B3 is deliberately early: it is the highest-risk piece of new (not ported) work,
@@ -430,7 +496,7 @@ and it fails loudly and cheaply.
 | C5 | `audit` parse / filter / summary | Corpus diff |
 | C6 | `har` builder | Corpus diff on a fixed capture |
 | C7 | `volume_mounts` (incl. tmpfs mask + copyup) | Corpus diff |
-| C8 | `quadlets` + minijinja over the existing `.j2` templates | Rendered quadlets byte-identical for every corpus case |
+| C8 | `quadlets` + minijinja over the existing `.j2` templates, with the `systemd_exec` filter and `placeholder` global registered | Rendered quadlets byte-identical for every corpus case |
 
 These are independent of each other and can land in any order, or in parallel.
 
@@ -439,20 +505,20 @@ These are independent of each other and can land in any order, or in parallel.
 | # | PR | Acceptance check |
 | :-- | :-- | :-- |
 | D1 | `CommandRunner` trait + podman wrapper + recording fake | argv assertions against `test_podman.py`'s expectations |
-| D2 | `state` (atomic writes, deployment dirs) + `systemd` | Concurrency test on `_atomic_write_text`; argv assertions |
-| D3 | `secret_resolver` + `secret_store` (systemd-creds, plaintext) | argv assertions; round-trip against a real `systemd-creds` on the CI runner |
+| D2 | `state` (atomic writes, deployment dirs) + `systemd` | Concurrency test on `_atomic_write_text`; argv assertions; reads every file in the A7 fixture |
+| D3 | `secret_resolver` + `secret_store` (systemd-creds, plaintext) | argv assertions; reads A7's `creds/` and `secret_keys.json`; round-trip against real `systemd-creds` behind the same availability probe e2e phase 3 uses (`phase3_secrets.sh:378`) |
 | D4 | `output`, `terminal`, `_timing` | Golden help/banner text; termios restore test under a pty |
-| D5 | clap skeleton: `--version`, `--help`, banner, `AliasGroup` equivalents, hidden back-compat flags | Golden diff of `--help` for every subcommand vs the Python click output |
+| D5 | clap skeleton: `--version`, `--help`, banner, `AliasGroup` equivalents, hidden back-compat flags, `clap_complete` shell completions (click provides these implicitly via `_AGENTCAGE_COMPLETE`; clap needs generated scripts) | Golden diff of `--help` for every subcommand vs the Python click output; completion scripts for bash/zsh/fish generated and smoke-loaded |
 | D6 | `cage create` / `cage update` + `services.build_and_deploy` + container backend | **e2e phase 1** green under `AGENTCAGE=<rust binary>` |
 | D7 | `cage list` / `show` / `status` / `start` / `stop` / `restart` / `destroy` / `prune` | e2e phase 1 (full) |
 | D8 | `cage logs` / `cage audit` | **e2e phase 2** |
 | D9 | `secret` group + live-apply path | **e2e phase 3** |
 | D10 | `domain` group + `grants` group + DNS quadlet reload | **e2e phase 4** |
-| D11 | `cage backup` / `cage restore` | **e2e phase 5** |
+| D11 | `cage backup` / `cage restore` | **e2e phase 5**; restores the A7 Python-made tarball |
 | D12 | `cage exec` / `cage shell` / `cage verify` | **e2e phase 6** |
 | D13 | `cage har` | Corpus diff + manual DevTools load |
-| D14 | `init` + `scaffold` + `run` (ephemeral flow) | Scaffold render diff vs Python; `agentcage run busybox` smoke |
-| D15 | `doctor` | Golden output on the CI runner |
+| D14 | `init` + `scaffold` + `run` (ephemeral flow) | Scaffold render diff vs Python; **e2e phase 8** (the openclaw scaffold regression canary) |
+| D15 | `doctor` (minus `check_python_version`) | Golden output on the CI runner |
 | D16 | `legacy_watcher` cleanup path | Unit test against a synthesized legacy cage (`test_v021_legacy_cage.py` port) |
 
 D6–D12 map almost 1:1 onto the existing e2e phases, which is what makes them
@@ -473,6 +539,7 @@ Mac and can run in parallel with Track D as soon as Track C lands.
 | :-- | :-- | :-- | :-- |
 | E1 | `vm` backend, generation half: `generate_units`, `push_config_files`, Lima YAML rendering, argv builders, secret-bridging logic | Corpus diff + argv assertions on Linux CI (mirrors `test_vm_backend.py` / `test_lima_*.py`) | none |
 | E2 | `apple-container`, generation half A: image naming, `_egress_content_hash` wiring, `_render_egress_config`, `_user_volume_argv`, `_tmpfs_targets`, `_tmpfs_copyup_seeds` | Fixture diff; mirrors `test_apple_container*.py`, which runs on Linux by patching `platform.system()` | none |
+| E2b | `KeychainStore`: `security(1)` argv, `_security_interaction_blocked` detection, the `sudo -n` System-keychain probe | argv assertions with the recording fake; stderr fixtures for the interaction-blocked case | none |
 | E3 | `apple-container`, generation half B: `generate_units`, launchd plist rendering, `exec_argv` / `logs_argv` / `audit_argv` | Golden unit + plist diff vs Python | none |
 | E4 | `vm` backend, execution half: `_deploy_cage`, readiness waits, in-guest build | **e2e phase 7** | Lima host |
 | E5 | `apple-container`, execution half: `start`/`stop`, `_stage_secrets`, mask mountpoint record/cleanup, `_wait_supervisor_ready` | **`phase_apple.sh`**, manual — the same gate this code has today | Apple Silicon, macOS 26+ |
@@ -482,9 +549,9 @@ Mac and can run in parallel with Track D as soon as Track C lands.
 | # | PR | Acceptance check |
 | :-- | :-- | :-- |
 | F1 | macOS signing + notarization in the release workflow; four-target build matrix | A signed, notarized pre-release binary opens on a clean Mac with no Gatekeeper prompt |
-| F2 | Flip the default: Rust binary becomes `agentcage`; Python CLI entry point removed | Full e2e suite green on the Rust binary; `phase_apple.sh` green manually |
+| F2 | Flip the default: Rust binary becomes `agentcage`; Python CLI entry point removed | Full e2e suite green on the Rust binary; `phase_apple.sh` green manually; **a cage deployed by the last Python release is upgraded in place and `cage update` reports no changes** |
 | F3 | `install.sh` rewrite; release binaries; Homebrew tap; AUR | Fresh-VM install test on Arch, Ubuntu, and macOS |
-| F4 | Reduce `pyproject.toml` to dev/test-only; add the §2.4 CI invariant guards; final PyPI shim release | Proxy pytest green without installing the package; guards fail on a deliberate violation |
+| F4 | Reduce `pyproject.toml` to dev/test-only; add the §2.4 CI invariant guards; delete `Containerfile.helper`; final PyPI shim release | Proxy pytest green without installing the package; guards fail on a deliberate violation |
 | F5 | Docs pass over `docs/**`, `README.md`, `CONTRIBUTING.md` | Link check; manual read |
 
 F1 is first in this track and should be attempted during Phase 0 as a throwaway
@@ -493,7 +560,7 @@ final week would be avoidable self-harm.
 
 ### Sequencing notes
 
-- **Critical path:** A1 → A3/A4 → B1/B3 → C2/C3/C8 → D5 → D6 → D7–D12 → F2.
+- **Critical path:** A1 → A3/A4/A7 → B1/B2/B3 → C2/C3/C8 → D5 → D6 → D7–D12 → F2.
 - **Parallelizable:** all of Track C after C1; D13–D16; E1–E3 (no hardware) can
   run alongside Track D; E4 and E5 are independent of each other.
 - **First externally visible change is F2.** Everything before it is additive,
@@ -501,16 +568,5 @@ final week would be avoidable self-harm.
 - **Natural stopping point:** after D12 + E4, every Linux backend is complete
   and shippable as an opt-in `agentcage-rs`. E5 is the only PR that cannot be
   verified without a Mac in hand, and it is the last one.
-- **Roughly 35 PRs.** Track A ~1 week, B ~1 week, C ~3 weeks, D ~7 weeks,
+- **Roughly 37 PRs.** Track A ~1 week, B ~1 week, C ~3 weeks, D ~7 weeks,
   E ~4 weeks, F ~2–3 weeks.
-
-
-- **Critical path:** A1 → A3/A4 → B1/B3 → C2/C3/C8 → D5 → D6 → D7–D12 → E4.
-- **Parallelizable:** all of Track C after C1; D13–D16; E1 vs E2/E3.
-- **First externally visible change is E4.** Everything before it is additive.
-- **Natural stopping points:** after D12 (Linux container backend complete,
-  could ship as an opt-in `agentcage-rs`), and after E1 (all Linux backends).
-  If apple-container hardware access is thin, E2/E3 can lag indefinitely with
-  the Python CLI retained for that backend only.
-- **Roughly 30 PRs.** Track A ~1 week, B ~1 week, C ~3 weeks, D ~7 weeks,
-  E ~4 weeks.
