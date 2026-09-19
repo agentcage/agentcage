@@ -1130,7 +1130,7 @@ impl DoctorHost for SystemDoctorHost {
 ///
 /// See [`SystemDoctorHost::apple_container_issues`] for why this is a
 /// subprocess and the Python's is not.
-fn macos_major(runner: &dyn CommandRunner) -> Option<u32> {
+pub(crate) fn macos_major(runner: &dyn CommandRunner) -> Option<u32> {
     let cmd = Command::new("sw_vers")
         .arg("-productVersion")
         .captured()

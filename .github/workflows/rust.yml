@@ -135,6 +135,16 @@ jobs:
         run: |
           uv run python scripts/gen-doctor-fixture.py --check
 
+      # The `cage har` fixtures (PR D13) are 26 recordings of the real
+      # `agentcage cage har` over a copy of A7's frozen state. `cargo
+      # test` replays every one byte for byte, so a Rust-side drift
+      # already fails; what this adds is noticing when `cli.py`'s
+      # `cage har` changes a message, a default or a file location and
+      # the committed recording goes stale.
+      - name: cage har fixtures are current
+        run: |
+          uv run python scripts/gen-cage-har-fixture.py --check
+
       # The CLI surface fixture (PR D5) is generated from the live click
       # tree in cli.py. `cargo test` asserts the clap tree against it, so
       # a Rust-side drift already fails -- what this adds is noticing

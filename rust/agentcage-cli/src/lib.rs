@@ -13,11 +13,15 @@
 
 /// `agentcage doctor` — the host diagnostics (PR D15).
 pub mod doctor;
+/// `agentcage cage har` — the HAR export (PR D13).
+pub mod har;
 /// Removal of the pre-rework grants watcher a legacy cage left behind
 /// (PR D16).
 pub mod legacy_watcher;
 /// Styled terminal output: the banner, the status marks, the spinner.
 pub mod output;
+/// The checks a cage-addressing command runs before it does anything.
+pub mod preflight;
 /// Secret resolution and the at-rest stores (PR D3).
 pub mod secrets;
 /// Host terminal hygiene around interactive cage sessions.

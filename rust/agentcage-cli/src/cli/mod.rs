@@ -223,7 +223,32 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
         return ExitCode::from(agentcage_cli::doctor::main());
     }
 
-    not_implemented(&canonical_path(name, sub))
+    let path = canonical_path(name, sub);
+
+    // PR D13. `cage har` reads one file the egress addon wrote and
+    // writes JSON; it touches no container and no unit, so like
+    // `doctor` its body can land before the e2e phase that would
+    // otherwise gate it.
+    if path == "cage har" {
+        return ExitCode::from(agentcage_cli::har::main(&cage::query::har_args(leaf(sub))));
+    }
+
+    not_implemented(&path)
+}
+
+/// The deepest `ArgMatches` under `sub` — where a leaf command's own
+/// options were parsed.
+///
+/// `canonical_path` walks the same chain to spell the command; this
+/// returns what is at the end of it, so an invocation through one of the
+/// hidden top-level aliases reaches the same matches as the canonical
+/// spelling.
+fn leaf(sub: &ArgMatches) -> &ArgMatches {
+    let mut current = sub;
+    while let Some((_, next)) = current.subcommand() {
+        current = next;
+    }
+    current
 }
 
 /// The command a parse resolved to, spelled the way the user would type

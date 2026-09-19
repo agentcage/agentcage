@@ -6,7 +6,10 @@
 //! writes and share five filter options verbatim; keeping them next to
 //! each other is what makes a divergence between the two visible.
 
-use clap::{Arg, ArgAction, Command};
+use std::path::PathBuf;
+
+use agentcage_cli::har::HarArgs;
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::cli::args::{
     DECISIONS, DIRECTIONS, INTEGER, PATH, SERVICES, SEVERITIES, TEXT, cage_name, flag, leaf,
@@ -191,6 +194,13 @@ pub(crate) fn har() -> Command {
             )
             .short('n')
             .value_parser(clap::value_parser!(i64))
+            // click's `default=0` is an `int` parameter with no bound,
+            // so `-n -3` is accepted there and simply does not limit
+            // anything (`cli.py` tests `max_entries > 0`). clap treats a
+            // leading `-` as another flag unless told otherwise, so
+            // without this `agentcage cage har x -n -3` would be a usage
+            // error against a command line the Python runs.
+            .allow_negative_numbers(true)
             .default_value("0"),
         )
         .arg(
@@ -215,6 +225,50 @@ pub(crate) fn har() -> Command {
             )
             .hide(true),
         )
+}
+
+/// Read a parsed `cage har` invocation into [`HarArgs`].
+///
+/// Deliberately next to [`har`]'s declaration rather than in the command
+/// body: these ids are a contract between two files, and a typo in one
+/// of them is a silently ignored option. Reading the list beside the one
+/// that declares it is the only cheap way to check it.
+pub(crate) fn har_args(matches: &ArgMatches) -> HarArgs {
+    HarArgs {
+        name: string(matches, "name"),
+        view: string(matches, "view"),
+        decisions: strings(matches, "decisions"),
+        hosts: strings(matches, "hosts"),
+        methods: strings(matches, "methods"),
+        directions: strings(matches, "directions"),
+        since: matches.get_one::<String>("since").cloned(),
+        max_entries: matches
+            .get_one::<i64>("max_entries")
+            .copied()
+            .unwrap_or_default(),
+        output_file: matches.get_one::<String>("output_file").map(PathBuf::from),
+        // `json_lines = json_lines or json_compat`, resolved here so the
+        // body never learns there were two spellings.
+        json_lines: matches.get_flag("json_lines") || matches.get_flag("json_compat"),
+    }
+}
+
+/// A required-or-defaulted string, which the parser guarantees.
+fn string(matches: &ArgMatches, id: &str) -> String {
+    matches
+        .get_one::<String>(id)
+        .cloned()
+        .unwrap_or_else(|| panic!("`{id}` is required or defaulted by the parser"))
+}
+
+/// A repeatable option, in the order it was given. click's `multiple=True`
+/// and clap's `Append` both yield an empty collection when absent, which
+/// is what every filter downstream reads as "no constraint".
+fn strings(matches: &ArgMatches, id: &str) -> Vec<String> {
+    matches
+        .get_many::<String>(id)
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default()
 }
 
 // ── cage logs ───────────────────────────────────────────────────────
@@ -271,4 +325,91 @@ pub(crate) fn logs() -> Command {
             .short('l')
             .value_parser(SEVERITIES),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::har_args;
+    use crate::cli::command;
+
+    /// Parse a `cage har` command line through the real tree.
+    fn parse(argv: &[&str]) -> super::HarArgs {
+        let matches = command(false)
+            .try_get_matches_from(std::iter::once("agentcage").chain(argv.iter().copied()))
+            .expect("the tree accepts this command line");
+        let (_, cage) = matches.subcommand().expect("cage");
+        let (name, har) = cage.subcommand().expect("har");
+        assert_eq!(name, "har");
+        har_args(har)
+    }
+
+    /// Every id in `har_args` has to be an id `har()` declared. A typo
+    /// is not a compile error — it is an option that silently does
+    /// nothing — so this reads one of each out of a full command line.
+    #[test]
+    fn every_option_reaches_its_field() {
+        let args = parse(&[
+            "cage",
+            "har",
+            "myapp",
+            "--view",
+            "outbound",
+            "-d",
+            "blocked",
+            "-d",
+            "flagged",
+            "--host",
+            "example.com",
+            "--method",
+            "post",
+            "--direction",
+            "inbound",
+            "--since",
+            "1h",
+            "-n",
+            "5",
+            "-o",
+            "/tmp/x.har",
+            "--json-lines",
+        ]);
+        assert_eq!(args.name, "myapp");
+        assert_eq!(args.view, "outbound");
+        assert_eq!(args.decisions, ["blocked", "flagged"]);
+        assert_eq!(args.hosts, ["example.com"]);
+        assert_eq!(args.methods, ["post"]);
+        assert_eq!(args.directions, ["inbound"]);
+        assert_eq!(args.since.as_deref(), Some("1h"));
+        assert_eq!(args.max_entries, 5);
+        assert_eq!(args.output_file, Some(PathBuf::from("/tmp/x.har")));
+        assert!(args.json_lines);
+    }
+
+    /// click's defaults, which `show_default` makes part of the surface.
+    #[test]
+    fn the_bare_invocation_carries_clicks_defaults() {
+        let args = parse(&["cage", "har", "myapp"]);
+        assert_eq!(args.view, "inbound");
+        assert_eq!(args.max_entries, 0);
+        assert!(args.decisions.is_empty());
+        assert!(args.since.is_none());
+        assert!(args.output_file.is_none());
+        assert!(!args.json_lines);
+    }
+
+    /// The hidden back-compat spelling folds into the same field.
+    #[test]
+    fn the_json_alias_sets_json_lines() {
+        assert!(parse(&["cage", "har", "myapp", "--json"]).json_lines);
+        assert!(parse(&["cage", "har", "myapp", "--json-lines"]).json_lines);
+    }
+
+    /// `-n -3` is a command line the Python runs — and does not limit
+    /// anything, because `cli.py` tests `max_entries > 0`. clap would
+    /// read `-3` as a flag without `allow_negative_numbers`.
+    #[test]
+    fn a_negative_max_entries_parses_rather_than_erroring() {
+        assert_eq!(parse(&["cage", "har", "myapp", "-n", "-3"]).max_entries, -3);
+    }
 }

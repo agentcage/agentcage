@@ -38,6 +38,15 @@ agentcage-assets = { path = "../agentcage-assets" }
 # written against `CommandRunner` and tested against `FakeRunner`.
 agentcage-exec = { path = "../agentcage-exec" }
 
+# The on-disk state (PR D2). `cage har` is the first ported command body
+# that has to find a file a *previous* deploy wrote, and where that file
+# lives is not one rule: a container or vm cage keeps its capture under
+# `$XDG_DATA_HOME`, an apple-container cage under a `~`-rooted path that
+# ignores `XDG_CONFIG_HOME` entirely. `Paths` is where that is written
+# down, and a command that rebuilt those paths itself would be one more
+# place to get it wrong.
+agentcage-state = { path = "../agentcage-state" }
+
 # The termios work (PR D4), and the plan names it: `terminal.py`
 # snapshots the controlling terminal with `tcgetattr` and puts it back
 # with `tcsetattr(TCSADRAIN)`, and it writes its escape sequence with a

@@ -17,6 +17,7 @@ dependencies = [
  "agentcage-assets",
  "agentcage-core",
  "agentcage-exec",
+ "agentcage-state",
  "clap",
  "clap_complete",
  "nix",
