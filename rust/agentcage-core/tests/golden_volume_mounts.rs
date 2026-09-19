@@ -112,18 +112,28 @@ fn tmpfs_row(spec: &str, mounts: &[MountTarget]) -> Value {
     })
 }
 
-/// The harness records only the *keys* of `mask_mountpoint_dirs`.
+/// Serialize `mask_mountpoint_dirs` as ordered `[source, [dirs]]` pairs.
 ///
-/// `_volume_report` iterates the returned `dict` directly, and iterating a
-/// Python dict yields its keys, so what lands in the corpus is the list of
-/// bind sources that have mount points to clean up — in insertion order — and
-/// not the per-source path lists themselves. Reproduce what is there; the
-/// lists are pinned by the unit tests in the module instead.
+/// The harness used to iterate the returned Python `dict` directly, which
+/// yields only its keys, so the corpus recorded the bind sources and dropped
+/// the host paths under each one. Those paths are the half #320's
+/// `ExecStopPost` rmdir chain consumes, and their order is load-bearing —
+/// deepest first, so `<project>/.git/hooks` is retired before
+/// `<project>/.git`. The harness now records the pairs, so this compares the
+/// values rather than trusting the module's own unit tests for them.
+///
+/// Pairs rather than a JSON object: an object would not promise to preserve
+/// that ordering.
 fn mask_dirs_json(tmpfs: &[String], mounts: &[MountTarget]) -> Value {
     Value::Array(
         mask_mountpoint_dirs(tmpfs, mounts)
             .into_iter()
-            .map(|entry| Value::String(entry.host_source))
+            .map(|entry| {
+                Value::Array(vec![
+                    Value::String(entry.host_source),
+                    Value::Array(entry.dirs.into_iter().map(Value::String).collect()),
+                ])
+            })
             .collect(),
     )
 }
