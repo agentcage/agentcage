@@ -2,11 +2,22 @@
 
 Against `461c99b` (v0.40.1).
 
-**Scope decision (2026-09-19):** port the host CLI and tooling to Rust. The
-in-egress proxy — mitmproxy, the addon, inspectors, protocol relays, the Policy
-API, the traffic watcher, and the custom-inspector extension point — **stays in
-Python, unchanged**. It ships as data assets inside the Rust binary and is built
-into the egress container image exactly as today.
+**Scope decision (2026-09-19):** port the host CLI and tooling to Rust **on
+every platform — Linux and macOS alike**. The in-egress proxy — mitmproxy, the
+addon, inspectors, protocol relays, the Policy API, the traffic watcher, and the
+custom-inspector extension point — **stays in Python, unchanged**.
+
+The target invariant: **Python exists only inside the egress container image.**
+Not on the host, not in the Lima guest, not as an installable package. It ships
+as data embedded in the Rust binary and baked into the egress image at build
+time.
+
+That invariant is already almost true. The only host-side `python3` reference in
+shipped code is `cli.py:1618`, and it runs *inside the cage container* as a
+last-resort HTTP client during `cage verify` — a probe of the workload image,
+not a host dependency. The Lima guest installs podman and its network stack and
+no Python at all (`templates/lima/provision.sh.j2`). The port closes the
+remaining gap, which is the CLI itself.
 
 ---
 
@@ -112,33 +123,47 @@ implementation so it cannot drift silently.
 **This is the single largest new risk in this scope** and deserves to be built
 first, in Phase 0, not discovered in Phase 2.
 
-### 2.3 Version lockstep
+### 2.3 Version ownership (simpler than it first appears)
 
-`importlib.metadata.version("agentcage")` is read in at least 10 host call sites
-and determines:
+`importlib.metadata.version("agentcage")` is read at ~10 host call sites and
+determines the egress image tag, the `Image=` pin in `egress.container.j2`,
+`agentcage_version` in `cage.container.j2`, `metadata.json` stamps, and
+`proxy_cfg["agentcage_version"]`.
 
-- the egress image tag (`agentcage-egress:<version>`) built by all three
-  backends, **and** the `Image=` pin emitted into `egress.container.j2`
-- `agentcage_version` rendered into `cage.container.j2`
-- `metadata.json` stamps used by `cage list` and backup/restore
-- `proxy_cfg["agentcage_version"]` in `save_proxy_config`, which the Policy API
-  reports through introspection
+The good news: **the Python side never reads its own package metadata.**
+`policy_api._version()` (line 1557) takes `AGENTCAGE_VERSION` from the
+environment — set by every backend — and falls back to the `proxy-config.yaml`
+stamp the host writes. So once the CLI is Rust, the Rust binary owns the version
+outright as a compile-time constant, and nothing needs to keep two package
+versions in lockstep.
 
-With a Rust CLI and a Python proxy package these are two build systems. A single
-`VERSION` file at the repo root, read by `build.rs` (into a compile-time
-constant) and by `pyproject.toml`/hatchling, keeps them from drifting. A CI
-check should fail the build if `Cargo.toml`, `VERSION`, and the Python package
-metadata disagree.
+A root `VERSION` file is still worth having so the Containerfiles, docs, and the
+dev-only `pyproject.toml` agree, but it is bookkeeping, not a correctness
+constraint.
 
-### 2.4 The repo stays bilingual
+### 2.4 Python stops being a distributable package
 
-`pyproject.toml` remains, but describes a *proxy-only* package: no
-`[project.scripts]` entry point, dependencies drop to `pyyaml` (+ `cryptography`
-for the JWT transform). `tests/conftest.py`'s mitmproxy stubbing and the 20
-proxy test files stay exactly as they are. `.github/workflows/test.yml` grows a
-Rust job beside the pytest job rather than replacing it.
+Today `pyproject.toml` builds a wheel published to PyPI, and `uv tool install
+agentcage` is the documented install path. After the port:
 
-Two test files straddle the boundary and must be **split**, with the
+- `pyproject.toml` remains **dev/test-only**: no `[project.scripts]`, no publish.
+  Its job is to let `pytest` run the 20 proxy test files, which it already does
+  via `pythonpath = ["src", "src/agentcage/data/proxy"]` — no install required.
+- The proxy's runtime dependencies (`pyyaml`, `cryptography`) are declared where
+  they are actually installed: `Containerfile.egress`'s `pip install`.
+- One final PyPI release ships a shim that prints a migration notice, then the
+  package is yanked from the install path.
+
+**Enforce the invariant in CI**, or it will rot:
+
+- Fail the build if Rust source shells out to `python`/`python3` (one
+  allowlisted exception: the in-cage `cage verify` probe).
+- Fail the build if `data/proxy/**` imports anything outside stdlib + `yaml` +
+  `cryptography`, since those are the only packages the egress image installs.
+- Fail the build if any Containerfile other than `Containerfile.egress` installs
+  Python.
+
+Two test files straddle the language boundary and must be **split**, with the
 cross-language half moving to the §2.2 fixture:
 
 - `test_addon_reload_inspector_config.py` — imports `agentcage.data.proxy.addon` *and* host config
@@ -161,6 +186,26 @@ for this port should not claim otherwise. The real wins are host-side:
 - Startup drops from interpreter + click import to ~1ms — noticeable on
   `cage list`, `domain list`, and shell completions.
 - A single static binary to distribute.
+- The host stops needing a Python toolchain entirely, on Linux *and* macOS.
+
+### 2.6 macOS becomes a first-class build and release target
+
+Porting the Mac path is less risky than it sounds, because of what CI already
+does — see §4 — but it does add two genuinely new costs.
+
+**Code signing and notarization.** A Python tool installed via `uv`/`pip` never
+meets Gatekeeper. A downloaded Rust binary does. `install.sh` piping from curl
+avoids the quarantine xattr, and Homebrew installs generally do too, but a
+direct download from a GitHub release does not. Budget for an Apple Developer ID
+plus `codesign` and `notarytool` steps in the release workflow, and decide
+between a universal binary (`lipo`) and separate `aarch64-apple-darwin` /
+`x86_64-apple-darwin` artifacts. Note `apple-container` is Apple-Silicon-only
+while the `vm` (Lima) backend runs on both, so the x86_64 build is not dead
+weight.
+
+**Three cross-compilation targets, not one.** `x86_64`/`aarch64-unknown-linux-musl`
+for Linux hosts, plus the two Darwin targets. macOS builds need a macOS runner;
+cross-compiling Darwin from Linux is not worth attempting.
 
 ---
 
@@ -184,8 +229,8 @@ for this port should not claim otherwise. The real wins are host-side:
 | Python | LOC | Why |
 | :-- | --: | :-- |
 | `cli.py` | 5,632 | `clap` 4.6 vs click. `AliasGroup` (`ls`→`list`, `rm`→`destroy`, `ps`→`list`, `reload`→`restart`, `config`→`edit`, …), `_BannerGroup` help override, hidden back-compat options (`--lines`, `--json`, `--no-follow`), and `ignore_unknown_options` passthrough for `run`/`exec`. Split one module per command group — 5.6k lines in one file is already this codebase's worst seam. |
-| `backends/apple_container.py` | 2,591 | Largest backend, macOS-only, untestable on this Arch VM. Carries `_egress_content_hash` (§2.1). Port last. |
-| `backends/vm.py` | 1,297 | Lima orchestration + secret bridging (`_bridge_secrets`, `_resolve_source_secrets`) + the in-guest build-dir push. |
+| `backends/apple_container.py` | 2,591 | Largest backend, but **most of it is fixture-testable on Linux** (§4): image naming + `_egress_content_hash`, `generate_units`, launchd plist rendering, `_user_volume_argv` / `_tmpfs_targets` / `_tmpfs_copyup_seeds`, `exec_argv` / `logs_argv` / `audit_argv`. Only `start`/`stop`/`_stage_secrets`/`_cleanup_mask_mountpoints` need real hardware. |
+| `backends/vm.py` | 1,297 | Same split: `generate_units`, `push_config_files`, argv builders and the secret-bridging logic are fixture-testable; `_deploy_cage` and the readiness waits need a live Lima guest. |
 | `secret_store.py` | 410 | Four stores (systemd-creds, Keychain, plaintext ×2). The Keychain `security(1)` interaction-blocked detection is macOS-only and fiddly. |
 | `run.py`, `init.py`, `scaffold_cli.py`, `scaffold_brief.py` | 1,460 | Ephemeral-cage flow + scaffold rendering + embedded-asset extraction (§2.1). |
 | `services.py`, `backends/container.py` | 975 | Core deploy path; straightforward but load-bearing. |
@@ -228,6 +273,32 @@ against Python and Rust builds side by side throughout the transition;
 also exercise the unmodified Python egress**, so they directly validate that the
 Rust host still drives it correctly — which is the whole bet of this scope.
 
+### 4.1 What CI covers today, and why macOS is less scary than it looks
+
+Every workflow — `test.yml`, `e2e.yml`, `supervisor.yml` — runs on
+`ubuntu-latest` / `ubuntu-24.04`. **There is no macOS runner anywhere in CI.**
+
+`test_apple_container.py` nonetheless exercises the Mac backend on Linux, by
+patching `platform.system()` to return `"Darwin"` (line 44) and asserting on
+generated argv, units, and plists. `phase_apple.sh` is never run in CI at all —
+it is a manual, run-it-on-a-Mac gate.
+
+Two consequences for this port:
+
+1. **The fixture-testable majority of `apple_container.py` and `vm.py` can be
+   ported and verified on Linux CI**, exactly as the Python is today. That is
+   roughly two thirds of `apple_container.py`.
+2. **The port does not regress Mac coverage, because there is none to regress.**
+   The hardware-gated remainder stays a manual pre-release gate on Luca's Mac,
+   the same arrangement as now.
+
+If automated Mac coverage is wanted, it is a separate decision with its own
+cost: GitHub-hosted macOS runners are VMs on Apple Silicon, and both Apple's
+`container` CLI and Lima's `vz` driver want the Virtualization framework, which
+is not reliably available nested. A self-hosted Mac runner is the realistic
+option. **Do not put this on the port's critical path** — it is an improvement
+over the status quo, not a prerequisite for matching it.
+
 ---
 
 ## 5. Phasing
@@ -257,19 +328,23 @@ backup/restore, `run` + scaffolds, `domain` and `grants` groups.
 **Exit: e2e phases 1–6 green, driving the unmodified Python egress image.**
 This is a shippable Linux release.
 
-**Phase 3 — Remaining backends (3–4 weeks)**
-`vm` (Lima), then `apple-container`. Needs Mac hardware; `apple_container.py` is
-2.6k lines validated only by `phase_apple.sh` on a real machine. Reasonable to
-leave apple-container on the Python CLI longest if hardware access is thin.
+**Phase 3 — Remaining backends (4–5 weeks)**
+`vm` (Lima) and `apple-container`, each split into a Linux-CI-verified
+generation half and a hardware-gated execution half (§4.1). The generation half
+can start as soon as Phase 1 lands and run in parallel with Phase 2 — worth
+doing, because it front-loads the parts that need scarce hardware to *discover*
+problems, even if the fixes wait.
 
-**Phase 4 — Cutover (1–2 weeks)**
-Rewrite `install.sh`. Publish GitHub release binaries, Homebrew tap, AUR package.
-Reduce `pyproject.toml` to the proxy-only package and drop `[project.scripts]`.
-Final PyPI release of the Python CLI printing a migration notice. Docs pass over
-the 39 files in `docs/` for changed install paths.
+**Phase 4 — Cutover (2–3 weeks)**
+Rewrite `install.sh`. Set up macOS signing + notarization (§2.6). Publish
+release binaries for four targets, a Homebrew tap, and an AUR package. Reduce
+`pyproject.toml` to dev/test-only and add the §2.4 CI invariant guards. Final
+PyPI shim release with a migration notice. Docs pass over the 39 files in
+`docs/`.
 
-**Rough total: 3.5–4.5 months solo.** Phases 0–2 are high-confidence; Phase 3's
-apple-container work is the main unknown, and it is bounded.
+**Rough total: 4–5 months solo.** Phases 0–2 are high-confidence. Phase 3's
+hardware-gated remainder and Phase 4's macOS release engineering carry the
+variance, and neither blocks a Linux-only release.
 
 ---
 
@@ -281,8 +356,9 @@ apple-container work is the main unknown, and it is bounded.
 | **`_egress_content_hash` mismatch** silently forces rebuilds and tag drift on macOS | Golden-corpus case; port `_egress_copy_sources` verbatim including continuation handling. |
 | **Asset extraction bugs** — wrong modes or missing files break the podman build context in ways that surface as opaque build errors | e2e phases 1–6 catch this immediately; they build the real egress image. |
 | **Validation error-message drift** changes UX and breaks the suite | Corpus captures every message; treat a diff as a build failure. |
-| **Version desync** between Rust CLI and Python proxy package | Single root `VERSION` + CI consistency check. |
-| **apple-container untestable** without a Mac | Port last; gate on `phase_apple.sh`; acceptable to ship Linux-first. |
+| **macOS release engineering** — signing, notarization, four build targets | §2.6. Front-load a signed pre-release spike in Phase 0 so the Apple Developer ID and `notarytool` flow are proven before they are on the critical path. |
+| **apple-container execution paths untestable in CI** | Unchanged from today (§4.1) — `phase_apple.sh` is already a manual Mac gate. Port the fixture-testable two thirds on Linux CI; keep the manual gate. A self-hosted Mac runner is an upgrade, not a prerequisite. |
+| **Python creeps back onto the host** after the invariant is established | §2.4 CI guards: no `python3` in Rust code paths, no non-stdlib imports in `data/proxy/**` beyond pyyaml/cryptography, no Python installed by any Containerfile but the egress one. |
 | **Losing the rationale comments** — this codebase's comments are unusually good and load-bearing | Port comments with the code. Where one explains a Python-specific workaround, rewrite rather than delete: the reason usually outlives the language. |
 | **Bilingual repo friction** — contributors now need both toolchains | Document in `CONTRIBUTING.md`; keep the pytest job fast so proxy work doesn't require Rust. |
 
@@ -300,6 +376,8 @@ apple-container work is the main unknown, and it is bounded.
    file, asserting key-order preservation.
 5. Stand up the Cargo workspace + asset embedding, and prove
    `_egress_content_hash` parity as the first Rust test that matters.
+6. Spike macOS signing + notarization (§2.6) on a throwaway binary. Apple
+   Developer enrollment has lead time; find out now, not in the final week.
 
 ---
 
@@ -386,21 +464,46 @@ binaries and diff `audit.jsonl`, `capture.jsonl`, the generated quadlets, and
 `proxy-config.yaml`. That is the strongest single signal that the Rust host
 still drives the unmodified Python egress correctly.
 
-### Track E — Backends and cutover
+### Track E — Backends
+
+Split by what each PR can be *verified* against, not by backend. E1–E3 need no
+Mac and can run in parallel with Track D as soon as Track C lands.
+
+| # | PR | Acceptance check | Hardware |
+| :-- | :-- | :-- | :-- |
+| E1 | `vm` backend, generation half: `generate_units`, `push_config_files`, Lima YAML rendering, argv builders, secret-bridging logic | Corpus diff + argv assertions on Linux CI (mirrors `test_vm_backend.py` / `test_lima_*.py`) | none |
+| E2 | `apple-container`, generation half A: image naming, `_egress_content_hash` wiring, `_render_egress_config`, `_user_volume_argv`, `_tmpfs_targets`, `_tmpfs_copyup_seeds` | Fixture diff; mirrors `test_apple_container*.py`, which runs on Linux by patching `platform.system()` | none |
+| E3 | `apple-container`, generation half B: `generate_units`, launchd plist rendering, `exec_argv` / `logs_argv` / `audit_argv` | Golden unit + plist diff vs Python | none |
+| E4 | `vm` backend, execution half: `_deploy_cage`, readiness waits, in-guest build | **e2e phase 7** | Lima host |
+| E5 | `apple-container`, execution half: `start`/`stop`, `_stage_secrets`, mask mountpoint record/cleanup, `_wait_supervisor_ready` | **`phase_apple.sh`**, manual — the same gate this code has today | Apple Silicon, macOS 26+ |
+
+### Track F — Cutover
 
 | # | PR | Acceptance check |
 | :-- | :-- | :-- |
-| E1 | `vm` backend (Lima) | **e2e phase 7** on a runner with Lima |
-| E2 | `apple-container` backend, part 1: image build, `_egress_content_hash` wiring, unit generation | `phase_apple.sh` partial, on a Mac |
-| E3 | `apple-container` backend, part 2: start/stop, secret staging, mask mountpoints, launchd | `phase_apple.sh` full |
-| E4 | Flip the default: Rust binary becomes `agentcage`; Python CLI entry point removed | Full e2e suite green on the Rust binary only |
-| E5 | `install.sh` rewrite; release binaries; Homebrew tap; AUR | Fresh-VM install test on Arch and Ubuntu |
-| E6 | Reduce `pyproject.toml` to the proxy-only package; final PyPI release with migration notice | Proxy pytest suite green from the reduced package |
-| E7 | Docs pass over `docs/**` + `README.md` + `CONTRIBUTING.md` for install paths and the bilingual layout | Link check; manual read |
+| F1 | macOS signing + notarization in the release workflow; four-target build matrix | A signed, notarized pre-release binary opens on a clean Mac with no Gatekeeper prompt |
+| F2 | Flip the default: Rust binary becomes `agentcage`; Python CLI entry point removed | Full e2e suite green on the Rust binary; `phase_apple.sh` green manually |
+| F3 | `install.sh` rewrite; release binaries; Homebrew tap; AUR | Fresh-VM install test on Arch, Ubuntu, and macOS |
+| F4 | Reduce `pyproject.toml` to dev/test-only; add the §2.4 CI invariant guards; final PyPI shim release | Proxy pytest green without installing the package; guards fail on a deliberate violation |
+| F5 | Docs pass over `docs/**`, `README.md`, `CONTRIBUTING.md` | Link check; manual read |
 
-E1 and E2/E3 are independent of each other and of D13–D16.
+F1 is first in this track and should be attempted during Phase 0 as a throwaway
+spike — Apple Developer enrollment has lead time, and discovering that in the
+final week would be avoidable self-harm.
 
 ### Sequencing notes
+
+- **Critical path:** A1 → A3/A4 → B1/B3 → C2/C3/C8 → D5 → D6 → D7–D12 → F2.
+- **Parallelizable:** all of Track C after C1; D13–D16; E1–E3 (no hardware) can
+  run alongside Track D; E4 and E5 are independent of each other.
+- **First externally visible change is F2.** Everything before it is additive,
+  so the effort can be abandoned at any point losing only the Rust tree.
+- **Natural stopping point:** after D12 + E4, every Linux backend is complete
+  and shippable as an opt-in `agentcage-rs`. E5 is the only PR that cannot be
+  verified without a Mac in hand, and it is the last one.
+- **Roughly 35 PRs.** Track A ~1 week, B ~1 week, C ~3 weeks, D ~7 weeks,
+  E ~4 weeks, F ~2–3 weeks.
+
 
 - **Critical path:** A1 → A3/A4 → B1/B3 → C2/C3/C8 → D5 → D6 → D7–D12 → E4.
 - **Parallelizable:** all of Track C after C1; D13–D16; E1 vs E2/E3.
