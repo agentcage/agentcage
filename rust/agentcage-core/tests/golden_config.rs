@@ -347,14 +347,14 @@ fn no_committed_config_uses_an_unresolved_yaml_1_1_scalar() {
     );
 }
 
-/// Which `invalid/` cases C1 already reproduces verbatim.
+/// Which `invalid/` cases the parser already reproduces verbatim.
 ///
 /// The point of this test is not the list — it is the third bucket. A
-/// case C1 *errors* on with different wording than `config.py` is a
-/// failure, because that is a message a user would read. A case C1
-/// accepts is fine: it is a value check, and C2 or C3 will add it. So
-/// the list below grows as those PRs land, and nothing here has to be
-/// touched when they do except the count.
+/// case that *errors* with different wording than `config.py` is a
+/// failure, because that is a message a user would read. A case that
+/// is accepted is fine: it is a value check, and C2 or C3 will add it.
+/// So the two lists below grow as those PRs land, one per PR, and
+/// nothing else here has to be touched.
 #[test]
 fn the_structural_invalid_cases_match_verbatim() {
     let root = corpus().join("invalid");
@@ -402,16 +402,19 @@ fn the_structural_invalid_cases_match_verbatim() {
         differed.join("\n")
     );
 
-    let expected: Vec<&str> = C1_OWNED.to_vec();
+    let mut expected: Vec<&str> = C1_OWNED.iter().chain(C3_OWNED).copied().collect();
+    expected.sort_unstable();
     let matched: Vec<&str> = matched.iter().map(String::as_str).collect();
     assert_eq!(
         matched, expected,
-        "the set of invalid cases C1 reproduces changed. Adding one is usually right \
-         (C2/C3 landing); losing one is a regression."
+        "the set of invalid cases the parser reproduces changed. Adding one is usually \
+         right (C2/C3 landing); losing one is a regression."
     );
     println!(
-        "{} invalid cases reproduced verbatim, {} deferred to C2/C3",
+        "{} invalid cases reproduced verbatim ({} by C1, {} by C3), {} deferred to C2",
         matched.len(),
+        C1_OWNED.len(),
+        C3_OWNED.len(),
         deferred.len()
     );
 }
@@ -458,6 +461,32 @@ const C1_OWNED: &[&str] = &[
     "err-relay-missing-fields",
     "err-relay-servername-not-string",
     "err-relay-upstream-not-mapping",
+];
+
+/// The `invalid/` cases PR C3 added to the *parse* path.
+///
+/// `config.py` calls `relays/_validate.validate_relay_entry` from
+/// inside `load_config` and runs the `source:NAME` shape check on each
+/// agent API key as soon as the roster entry is built, so these are
+/// `load` errors rather than `validate_config` errors — which is why
+/// they belong in this test and not in `golden_validate_agents.rs`.
+///
+/// Every relay message here comes from [`agentcage_core::relays`], the
+/// module the egress proxy's `_validate.py` is now a second copy of;
+/// `tests/contract_relay_entry.rs` holds it to the A4 fixture, and
+/// this list is the corpus half of the same claim.
+const C3_OWNED: &[&str] = &[
+    "err-agents-decider-api-key-no-scheme",
+    "err-agents-watcher-api-key-no-scheme",
+    "err-relay-ca-file-and-pem",
+    "err-relay-ca-file-not-string",
+    "err-relay-ca-pem-not-pem",
+    "err-relay-ca-pem-not-string",
+    "err-relay-tls-false-with-ca",
+    "err-relay-unknown-type",
+    "err-relay-upstream-bad-port",
+    "err-relay-write-mode-contradicts-readonly",
+    "err-relay-write-mode-invalid",
 ];
 
 /// Cases where C1 errors, deliberately, with wording of its own.

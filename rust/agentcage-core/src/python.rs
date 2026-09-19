@@ -32,6 +32,47 @@ use std::fmt::Write as _;
 use crate::har::json::format_float;
 use crate::yaml::Value;
 
+/// `type(value).__name__`, for the `(got X)` half of a message.
+///
+/// The other half of the same job as [`repr`]: `config.py` and
+/// `relays/_validate.py` name the offending value's Python *type* at
+/// ~15 sites, and the golden corpus and the A4 contract fixtures record
+/// every one of them. The mapping is the fixture README's, verbatim:
+///
+/// | YAML / JSON | `type(x).__name__` |
+/// | :-- | :-- |
+/// | `null` | `NoneType` |
+/// | `true` / `false` | `bool` |
+/// | integer | `int` |
+/// | fractional number | `float` |
+/// | string | `str` |
+/// | sequence | `list` |
+/// | mapping | `dict` |
+///
+/// # Divergences
+///
+/// A `Value::Tagged` has no `safe_load` counterpart, for the reason
+/// [`repr`] gives. `object` is the closest Python name and nothing
+/// that reaches an error message can be one.
+#[must_use]
+pub fn type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "NoneType",
+        Value::Bool(_) => "bool",
+        Value::Number(number) => {
+            if number.is_f64() {
+                "float"
+            } else {
+                "int"
+            }
+        }
+        Value::String(_) => "str",
+        Value::Sequence(_) => "list",
+        Value::Mapping(_) => "dict",
+        Value::Tagged(_) => "object",
+    }
+}
+
 /// `repr(value)`, for a value that came out of `yaml.safe_load`.
 ///
 /// # Divergences
@@ -80,7 +121,13 @@ pub fn str_of(value: &Value) -> String {
 /// CPython prefers `'`, and switches to `"` only when the text contains
 /// a `'` and no `"` — so `"it's"` renders as `"it's"` rather than
 /// `'it\'s'`.
-fn repr_str(text: &str) -> String {
+///
+/// Public because half of `config.py`'s `{!r}` sites interpolate a
+/// field that is already a `String` — `config.name`, `pa.host`,
+/// `w.api_key` — and wrapping each one in a [`Value`] only to unwrap
+/// it again would be ceremony around the same six lines.
+#[must_use]
+pub fn repr_str(text: &str) -> String {
     let quote = if text.contains('\'') && !text.contains('"') {
         '"'
     } else {
