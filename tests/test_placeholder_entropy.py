@@ -3,9 +3,15 @@
 Covers generation (config.generate_placeholder), declare-time filling of
 omitted placeholders (config.fill_raw_placeholders / state.fill_placeholders),
 parser acceptance of placeholder-less rules, the guessable-placeholder
-warning, empty-placeholder guards in quadlet rendering and the proxy
-injector, scaffold render-time generation, and the `secret list`
-PLACEHOLDER column.
+warning, the empty-placeholder guard in quadlet rendering, scaffold render-time
+generation, and the `secret list` PLACEHOLDER column.
+
+Boundary note (RUST-PORT-PLAN.md §2.4): the injector's own empty-placeholder
+guard runs inside the egress container and stays Python — see
+``tests/test_placeholder_entropy_proxy.py``. The
+``agentcage:secret:NAME:<hex>`` grammar itself is a §2.2 format contract
+(``config.PLACEHOLDER_PREFIX`` ↔ ``secret_injector``) that PR A4 turns into a
+language-neutral fixture.
 """
 
 import platform
@@ -262,28 +268,6 @@ class TestQuadletEmptyPlaceholderGuard:
         )
         assert "podman secret inspect --showsecret" in egress_unit
         assert '"%t/agentcage/guardtest/secrets/MY_KEY"' in egress_unit
-
-
-class TestInjectorEmptyPlaceholderGuard:
-
-    def test_empty_placeholder_rule_skipped(self, monkeypatch):
-        """`"" in text` is always True and `text.replace("", v)` corrupts
-        content — an empty placeholder must never become an active rule."""
-        monkeypatch.setenv("MY_KEY", "real-value")
-        from agentcage.data.proxy.secret_injector import SecretInjector
-        inj = SecretInjector()
-        inj.configure([{"env": "MY_KEY", "placeholder": ""}])
-        assert inj.rules == []
-
-    def test_normal_rule_kept(self, monkeypatch):
-        monkeypatch.setenv("MY_KEY", "real-value")
-        from agentcage.data.proxy.secret_injector import SecretInjector
-        inj = SecretInjector()
-        inj.configure([
-            {"env": "MY_KEY",
-             "placeholder": "agentcage:secret:MY_KEY:0123456789abcdef0123456789abcdef"},
-        ])
-        assert len(inj.rules) == 1
 
 
 class TestScaffoldRenderTimeGeneration:
