@@ -1,0 +1,78 @@
+# agentcage Rust workspace.
+#
+# The Rust port of the host CLI lives under `rust/`; the Python tree it
+# replaces stays where it is under `src/agentcage/`. The manifest sits at
+# the repo root so `cargo build`, `cargo test` and `cargo clippy` work
+# from the root the same way `uv run pytest` does, and so `target/` has
+# one home instead of one per crate.
+#
+# See RUST-PORT-PLAN.md (branch `rust-port`) section 5, Phase 0 and the
+# Track B table for why this exists and what lands next.
+
+[workspace]
+resolver = "3"
+members = [
+    "rust/agentcage-core",
+    "rust/agentcage-assets",
+    "rust/agentcage-cli",
+]
+
+# ── Shared package metadata ──────────────────────────────────
+#
+# `version` here is the one the whole workspace inherits, and it is a
+# copy of the root VERSION file. Cargo cannot read a version out of a
+# file, and a build.rs that did would move the number out of the
+# manifest where `cargo metadata`, Cargo.lock and any future release
+# tooling look for it.
+#
+# So the number is duplicated and the duplication is *guarded*:
+# scripts/check-version.sh already exists to notice exactly this kind of
+# drift for pyproject.toml and the CHANGELOG, and it now checks this
+# field too. Keep VERSION as the thing you edit; this follows.
+[workspace.package]
+version = "0.40.1"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/agentcage/agentcage"
+authors = ["Luca Martinetti"]
+
+# ── Shared lints ─────────────────────────────────────────────
+#
+# Every member opts in with `[lints] workspace = true`, so a lint added
+# here reaches the crates Tracks C, D and E will fill in without another
+# edit.
+#
+# These are `warn`, not `deny`, on purpose. `deny` in the manifest makes
+# a new rustc release break `cargo build` for anyone who upgrades, which
+# is a bad trade for a tool people install. CI is where warnings are
+# fatal: `.github/workflows/rust.yml` runs clippy with `-D warnings`, so
+# nothing warning-clean-on-my-machine can merge, and a toolchain bump
+# breaks CI rather than every contributor's build.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+print_stderr = "allow"
+print_stdout = "allow"
+
+# ── Release profile ──────────────────────────────────────────
+#
+# Section 2.5 of the plan sells this port partly on startup time and on
+# shipping a single binary, so the release profile optimizes for size
+# and for a binary with no loose ends rather than for raw throughput.
+# The CLI's hot path is process start, not compute.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

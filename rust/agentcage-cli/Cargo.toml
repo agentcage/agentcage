@@ -1,0 +1,24 @@
+[package]
+name = "agentcage-cli"
+description = "The agentcage command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The installed binary is `agentcage`, matching the Python entry point it
+# will eventually replace (PR F2). The crate is named `agentcage-cli` so
+# it does not collide with the `agentcage` name on crates.io or with the
+# library crates beside it.
+[[bin]]
+name = "agentcage"
+path = "src/main.rs"
+
+[dependencies]
+agentcage-core = { path = "../agentcage-core" }
+agentcage-assets = { path = "../agentcage-assets" }
+
+[lints]
+workspace = true
