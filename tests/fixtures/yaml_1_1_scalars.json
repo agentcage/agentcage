@@ -1,0 +1,809 @@
+{
+  "contract": "yaml_1_1_plain_scalars",
+  "summary": "Plain (unquoted) YAML scalars where PyYAML's YAML 1.1 resolver and every Rust crate's YAML 1.2 resolver disagree, plus the near misses that prove the rule is a pattern and not a word list.",
+  "why_this_file_exists": [
+    "The host writes proxy-config.yaml; the egress proxy reads it with yaml.safe_load.",
+    "PyYAML is YAML 1.1: a plain `no` is False, `1:30` is 90, `2024-01-02` is a date, `<<` raises.",
+    "Every Rust YAML crate is YAML 1.2, where all of those are strings, so it emits them unquoted.",
+    "PyYAML quotes 'no' on output, so Python->Rust and Python->Python are safe. Only Rust->Python corrupts.",
+    "A Rust round-trip test therefore passes while the bug is live. The crossing test has to run real PyYAML."
+  ],
+  "implementations": {
+    "host": "agentcage-core `yaml::is_yaml_1_1_ambiguous` (rust/agentcage-core/src/yaml/pyyaml.rs), which transliterates PyYAML's implicit-resolver table",
+    "proxy": "PyYAML's own yaml.resolver.Resolver, as shipped in the egress image"
+  },
+  "oracle": {
+    "plain_tag": "yaml.resolver.Resolver().resolve(yaml.ScalarNode, scalar, (True, False)), with the tag:yaml.org,2002: prefix stripped",
+    "note": "Every expectation in this file is re-derived from the running PyYAML by rust/agentcage-core/tests/yaml_pyyaml_crossing.rs before it is used, so the file cannot rot against a PyYAML upgrade without the test saying so. Recording it anyway keeps the corpus readable in a diff and lets the pure-Rust tests assert against it without Python."
+  },
+  "fields": {
+    "id": "stable anchor a diff is read against",
+    "scalar": "the exact text, as a JSON string",
+    "why": "what this case is for; a deliberate adversarial case reads differently from noise",
+    "plain_tag": "the YAML tag PyYAML resolves this text to when it appears PLAIN. Anything other than \"str\" means agentcage's emitter must quote it."
+  },
+  "counts": {
+    "cases": 104,
+    "resolve_to_non_string_when_plain": 56,
+    "by_tag": {
+      "bool": 18,
+      "float": 10,
+      "int": 15,
+      "merge": 1,
+      "null": 5,
+      "str": 48,
+      "timestamp": 6,
+      "value": 1
+    },
+    "read_side_cases": 28
+  },
+  "cases": [
+    {
+      "id": "bool-1-1-yes",
+      "scalar": "yes",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-Yes",
+      "scalar": "Yes",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-YES",
+      "scalar": "YES",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-no",
+      "scalar": "no",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-No",
+      "scalar": "No",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-NO",
+      "scalar": "NO",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-on",
+      "scalar": "on",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-On",
+      "scalar": "On",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-ON",
+      "scalar": "ON",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-off",
+      "scalar": "off",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-Off",
+      "scalar": "Off",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-1-OFF",
+      "scalar": "OFF",
+      "why": "YAML 1.1 boolean spelling YAML 1.2 dropped",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-2-true",
+      "scalar": "true",
+      "why": "YAML 1.2 boolean; the crate quotes it already",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-2-True",
+      "scalar": "True",
+      "why": "YAML 1.2 boolean; the crate quotes it already",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-2-TRUE",
+      "scalar": "TRUE",
+      "why": "YAML 1.2 boolean; the crate quotes it already",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-2-false",
+      "scalar": "false",
+      "why": "YAML 1.2 boolean; the crate quotes it already",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-2-False",
+      "scalar": "False",
+      "why": "YAML 1.2 boolean; the crate quotes it already",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-1-2-FALSE",
+      "scalar": "FALSE",
+      "why": "YAML 1.2 boolean; the crate quotes it already",
+      "plain_tag": "bool"
+    },
+    {
+      "id": "bool-near-y",
+      "scalar": "y",
+      "why": "the spec allows bare y; PyYAML does not",
+      "plain_tag": "str"
+    },
+    {
+      "id": "bool-near-Y",
+      "scalar": "Y",
+      "why": "the spec allows bare Y; PyYAML does not",
+      "plain_tag": "str"
+    },
+    {
+      "id": "bool-near-n",
+      "scalar": "n",
+      "why": "the spec allows bare n; PyYAML does not",
+      "plain_tag": "str"
+    },
+    {
+      "id": "bool-near-N",
+      "scalar": "N",
+      "why": "the spec allows bare N; PyYAML does not",
+      "plain_tag": "str"
+    },
+    {
+      "id": "bool-near-mixed-case",
+      "scalar": "yEs",
+      "why": "PyYAML's bool list is three fixed cases, not case-insensitive",
+      "plain_tag": "str"
+    },
+    {
+      "id": "bool-near-word",
+      "scalar": "yes-man",
+      "why": "a hazard spelling as a prefix is not a hazard",
+      "plain_tag": "str"
+    },
+    {
+      "id": "bool-near-nocache",
+      "scalar": "no-cache",
+      "why": "a real HTTP header value that starts with 'no'",
+      "plain_tag": "str"
+    },
+    {
+      "id": "null-word",
+      "scalar": "null",
+      "why": "1.2 null",
+      "plain_tag": "null"
+    },
+    {
+      "id": "null-Null",
+      "scalar": "Null",
+      "why": "1.2 null",
+      "plain_tag": "null"
+    },
+    {
+      "id": "null-NULL",
+      "scalar": "NULL",
+      "why": "1.2 null",
+      "plain_tag": "null"
+    },
+    {
+      "id": "null-tilde",
+      "scalar": "~",
+      "why": "1.2 null",
+      "plain_tag": "null"
+    },
+    {
+      "id": "null-empty",
+      "scalar": "",
+      "why": "the empty scalar resolves to null in both schemas",
+      "plain_tag": "null"
+    },
+    {
+      "id": "null-near-none",
+      "scalar": "None",
+      "why": "Python's spelling is not YAML's",
+      "plain_tag": "str"
+    },
+    {
+      "id": "null-near-nil",
+      "scalar": "nil",
+      "why": "not a YAML null",
+      "plain_tag": "str"
+    },
+    {
+      "id": "value-key",
+      "scalar": "=",
+      "why": "tag:yaml.org,2002:value has no safe constructor",
+      "plain_tag": "value"
+    },
+    {
+      "id": "merge-key",
+      "scalar": "<<",
+      "why": "tag:yaml.org,2002:merge has no safe constructor",
+      "plain_tag": "merge"
+    },
+    {
+      "id": "merge-near",
+      "scalar": "<<<",
+      "why": "one character past the merge key",
+      "plain_tag": "str"
+    },
+    {
+      "id": "int-zero",
+      "scalar": "0",
+      "why": "decimal",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-plain",
+      "scalar": "8080",
+      "why": "an ordinary port number written as a string",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-signed",
+      "scalar": "-7",
+      "why": "signed decimal",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-underscore",
+      "scalar": "1_000",
+      "why": "1.1 underscore separator; 1.2 dropped it",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-underscore-signed",
+      "scalar": "-1_000",
+      "why": "signed underscore separator",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-octal",
+      "scalar": "0755",
+      "why": "1.1 leading-zero octal; PyYAML reads 493",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-octal-short",
+      "scalar": "010",
+      "why": "leading-zero octal",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-hex",
+      "scalar": "0x1F",
+      "why": "hex, a number in both schemas",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-hex-underscore",
+      "scalar": "0x_1f",
+      "why": "hex with the 1.1 underscore",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-binary",
+      "scalar": "0b1010",
+      "why": "1.1 binary literal",
+      "plain_tag": "int"
+    },
+    {
+      "id": "int-near-octal",
+      "scalar": "08080",
+      "why": "a leading zero and an 8: not octal, not decimal, a string",
+      "plain_tag": "str"
+    },
+    {
+      "id": "int-near-0o",
+      "scalar": "0o17",
+      "why": "1.2 octal spelling; PyYAML 1.1 has no 0o and reads a string",
+      "plain_tag": "str"
+    },
+    {
+      "id": "int-near-underscore-lead",
+      "scalar": "_1",
+      "why": "leading underscore is not a number",
+      "plain_tag": "str"
+    },
+    {
+      "id": "sexagesimal-minutes",
+      "scalar": "1:30",
+      "why": "1.1 base-60; PyYAML reads 90",
+      "plain_tag": "int"
+    },
+    {
+      "id": "sexagesimal-clock",
+      "scalar": "12:00:00",
+      "why": "a plausible schedule string; PyYAML reads 43200",
+      "plain_tag": "int"
+    },
+    {
+      "id": "sexagesimal-three",
+      "scalar": "1:30:15",
+      "why": "three groups",
+      "plain_tag": "int"
+    },
+    {
+      "id": "sexagesimal-large",
+      "scalar": "190:20:30",
+      "why": "leading group beyond 59",
+      "plain_tag": "int"
+    },
+    {
+      "id": "sexagesimal-signed",
+      "scalar": "-1:30",
+      "why": "signed base-60",
+      "plain_tag": "int"
+    },
+    {
+      "id": "sexagesimal-float",
+      "scalar": "1:30.5",
+      "why": "the float branch of base-60",
+      "plain_tag": "float"
+    },
+    {
+      "id": "sexagesimal-float-zero",
+      "scalar": "0:30.5",
+      "why": "float branch allows a leading zero; the int branch does not",
+      "plain_tag": "float"
+    },
+    {
+      "id": "sexagesimal-near-zero",
+      "scalar": "0:30",
+      "why": "int branch excludes a leading-zero group: a string",
+      "plain_tag": "str"
+    },
+    {
+      "id": "sexagesimal-near-60",
+      "scalar": "1:60",
+      "why": "60 is out of range for a group",
+      "plain_tag": "str"
+    },
+    {
+      "id": "sexagesimal-near-tz",
+      "scalar": "12:34:56Z",
+      "why": "a trailing Z stops it being a number",
+      "plain_tag": "str"
+    },
+    {
+      "id": "sexagesimal-near-host",
+      "scalar": "sha256:abc",
+      "why": "a colon in an ordinary identifier",
+      "plain_tag": "str"
+    },
+    {
+      "id": "float-plain",
+      "scalar": "1.5",
+      "why": "float in both schemas",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-underscore",
+      "scalar": "1_000.5",
+      "why": "1.1 underscore separator in a float",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-trailing-dot",
+      "scalar": "1.",
+      "why": "PyYAML's float pattern allows an empty fraction",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-leading-dot",
+      "scalar": ".5",
+      "why": "unsigned leading-dot float",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-exponent",
+      "scalar": "1.5e+3",
+      "why": "PyYAML requires the exponent's sign",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-near-exponent",
+      "scalar": "1.5e3",
+      "why": "no sign on the exponent: a string to PyYAML",
+      "plain_tag": "str"
+    },
+    {
+      "id": "float-near-e-only",
+      "scalar": "1e3",
+      "why": "no dot either: a string to PyYAML, a float to YAML 1.2",
+      "plain_tag": "str"
+    },
+    {
+      "id": "float-near-signed-dot",
+      "scalar": "-.5",
+      "why": "PyYAML's leading-dot branch takes no sign",
+      "plain_tag": "str"
+    },
+    {
+      "id": "float-inf",
+      "scalar": ".inf",
+      "why": "1.1 and 1.2 infinity",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-neg-inf",
+      "scalar": "-.inf",
+      "why": "signed infinity",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-nan",
+      "scalar": ".nan",
+      "why": "not-a-number",
+      "plain_tag": "float"
+    },
+    {
+      "id": "float-near-version",
+      "scalar": "1.2.3",
+      "why": "a version string is not a float",
+      "plain_tag": "str"
+    },
+    {
+      "id": "float-near-dot",
+      "scalar": ".",
+      "why": "a bare dot",
+      "plain_tag": "str"
+    },
+    {
+      "id": "timestamp-date",
+      "scalar": "2024-01-02",
+      "why": "1.1 timestamp; safe_load returns datetime.date",
+      "plain_tag": "timestamp"
+    },
+    {
+      "id": "timestamp-datetime-t",
+      "scalar": "2024-01-02T03:04:05",
+      "why": "1.1 timestamp with a T separator",
+      "plain_tag": "timestamp"
+    },
+    {
+      "id": "timestamp-datetime-space",
+      "scalar": "2024-01-02 03:04:05",
+      "why": "1.1 timestamp with a space separator",
+      "plain_tag": "timestamp"
+    },
+    {
+      "id": "timestamp-fraction-tz",
+      "scalar": "2024-1-2t3:04:05.5Z",
+      "why": "single-digit fields, fraction and Z",
+      "plain_tag": "timestamp"
+    },
+    {
+      "id": "timestamp-offset",
+      "scalar": "2024-01-02 03:04:05.123 +05:30",
+      "why": "explicit offset",
+      "plain_tag": "timestamp"
+    },
+    {
+      "id": "timestamp-offset-short",
+      "scalar": "2024-01-02T03:04:05-07",
+      "why": "hour-only offset",
+      "plain_tag": "timestamp"
+    },
+    {
+      "id": "timestamp-near-loose-date",
+      "scalar": "2024-1-2",
+      "why": "the date-only branch needs two-digit month and day",
+      "plain_tag": "str"
+    },
+    {
+      "id": "timestamp-near-no-seconds",
+      "scalar": "2024-01-02T03:04",
+      "why": "seconds are mandatory",
+      "plain_tag": "str"
+    },
+    {
+      "id": "timestamp-near-short-year",
+      "scalar": "24-01-02",
+      "why": "two-digit year",
+      "plain_tag": "str"
+    },
+    {
+      "id": "timestamp-near-date-z",
+      "scalar": "2024-01-02Z",
+      "why": "a Z with no time",
+      "plain_tag": "str"
+    },
+    {
+      "id": "timestamp-near-version-date",
+      "scalar": "v2024-01-02",
+      "why": "a prefixed date",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-domain",
+      "scalar": "api.anthropic.com",
+      "why": "a domain from domains.allow",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-wildcard",
+      "scalar": "*.githubusercontent.com",
+      "why": "a wildcard domain",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-header",
+      "scalar": "On-Behalf-Of",
+      "why": "a header name that starts with a hazard spelling",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-env-key",
+      "scalar": "ANTHROPIC_API_KEY",
+      "why": "a placeholder key",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-relay-type",
+      "scalar": "imap",
+      "why": "a relay type",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-mode",
+      "scalar": "read-only",
+      "why": "a policy write_mode",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-path",
+      "scalar": "/workspace/src",
+      "why": "a volume mount path",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-version",
+      "scalar": "0.40.1",
+      "why": "the agentcage version stamp",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-image",
+      "scalar": "ghcr.io/agentcage/agentcage-egress:0.40.1",
+      "why": "an image reference with a tag colon",
+      "plain_tag": "str"
+    },
+    {
+      "id": "real-port-string",
+      "scalar": "8080:8080",
+      "why": "a podman port mapping; two groups, both in range",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-colon-space",
+      "scalar": "a: b",
+      "why": "a colon-space inside a value forces quoting",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-hash",
+      "scalar": "# not a comment",
+      "why": "a leading hash",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-dash",
+      "scalar": "- not an item",
+      "why": "a leading dash",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-trailing-space",
+      "scalar": "tail  ",
+      "why": "trailing whitespace a plain scalar would lose",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-leading-space",
+      "scalar": "  lead",
+      "why": "leading whitespace",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-apostrophe",
+      "scalar": "it's",
+      "why": "the single-quote escape",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-tab",
+      "scalar": "tab\there",
+      "why": "a tab forces double quotes",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-unicode",
+      "scalar": "emoji \ud83d\ude00",
+      "why": "a non-ASCII scalar",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-anchor",
+      "scalar": "*anchor",
+      "why": "an alias indicator",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-multiline",
+      "scalar": "line one\nline two",
+      "why": "a literal block scalar",
+      "plain_tag": "str"
+    },
+    {
+      "id": "awkward-multiline-trailing",
+      "scalar": "prompt line\n",
+      "why": "a block scalar with clip chomping",
+      "plain_tag": "str"
+    }
+  ],
+  "read_side_note": "Documents for the reading half of the boundary. Unlike `cases`, these carry no recorded expectation: rust/agentcage-core/tests/yaml_pyyaml_crossing.rs loads each one with yaml.safe_load AND with agentcage's yaml::load and requires the two to describe the same value, plus the same answer from Python's bool(). Nothing here is a human's guess about what PyYAML does.",
+  "read_side_cases": [
+    {
+      "id": "plain-no",
+      "yaml": "tls: no\n",
+      "why": "the case the whole read side is about: PyYAML gives False"
+    },
+    {
+      "id": "single-quoted-no",
+      "yaml": "tls: 'no'\n",
+      "why": "quoted: PyYAML gives the string, and bool('no') is True -- TLS stays ON"
+    },
+    {
+      "id": "double-quoted-no",
+      "yaml": "tls: \"no\"\n",
+      "why": "same, double quotes"
+    },
+    {
+      "id": "plain-false",
+      "yaml": "tls: false\n",
+      "why": "the YAML 1.2 spelling, a boolean in both schemas"
+    },
+    {
+      "id": "double-quoted-false",
+      "yaml": "tls: \"false\"\n",
+      "why": "config.py:1255's trap: bool('false') is True"
+    },
+    {
+      "id": "single-quoted-false",
+      "yaml": "tls: 'false'\n",
+      "why": "same, single quotes"
+    },
+    {
+      "id": "plain-yes",
+      "yaml": "tls: yes\n",
+      "why": "1.1 true spelling"
+    },
+    {
+      "id": "plain-on",
+      "yaml": "tls: on\n",
+      "why": "1.1 true spelling"
+    },
+    {
+      "id": "plain-off",
+      "yaml": "tls: off\n",
+      "why": "1.1 false spelling"
+    },
+    {
+      "id": "plain-Off",
+      "yaml": "tls: Off\n",
+      "why": "title case"
+    },
+    {
+      "id": "plain-NO",
+      "yaml": "tls: NO\n",
+      "why": "upper case"
+    },
+    {
+      "id": "plain-ON",
+      "yaml": "tls: ON\n",
+      "why": "upper case"
+    },
+    {
+      "id": "tagged-str-no",
+      "yaml": "tls: !!str no\n",
+      "why": "an explicit tag beats the resolver: a plain scalar that is still a string"
+    },
+    {
+      "id": "literal-block-no",
+      "yaml": "tls: |-\n  no\n",
+      "why": "a block scalar is never plain"
+    },
+    {
+      "id": "folded-block-no",
+      "yaml": "tls: >-\n  no\n",
+      "why": "folded style, likewise"
+    },
+    {
+      "id": "hazard-as-key",
+      "yaml": "no: 1\n",
+      "why": "safe_load gives {False: 1}; keys resolve too"
+    },
+    {
+      "id": "sequence-items",
+      "yaml": "list:\n- no\n- 'no'\n- off\n",
+      "why": "plain and quoted side by side in a sequence"
+    },
+    {
+      "id": "anchor-and-alias",
+      "yaml": "a: &x no\nb: *x\n",
+      "why": "serde_norway expands the alias; the style pass has to as well"
+    },
+    {
+      "id": "nested-relay",
+      "yaml": "relays:\n- upstream:\n    tls: no\n    host: mail.example.com\n",
+      "why": "the shape relays/_validate.py actually reads"
+    },
+    {
+      "id": "flow-mapping",
+      "yaml": "{tls: no, other: 'no'}\n",
+      "why": "flow style, not block"
+    },
+    {
+      "id": "flow-sequence",
+      "yaml": "list: [no, 'no']\n",
+      "why": "flow sequence"
+    },
+    {
+      "id": "trailing-comment",
+      "yaml": "tls: no # turn it off\n",
+      "why": "a comment after the scalar must not change its style"
+    },
+    {
+      "id": "empty-string",
+      "yaml": "tls: ''\n",
+      "why": "bool('') is False -- the one string Python calls falsey"
+    },
+    {
+      "id": "explicit-null",
+      "yaml": "tls: ~\n",
+      "why": "null in both schemas"
+    },
+    {
+      "id": "single-letter-n",
+      "yaml": "tls: n\n",
+      "why": "PyYAML does not take the spec's bare n"
+    },
+    {
+      "id": "single-letter-y",
+      "yaml": "tls: y\n",
+      "why": "nor bare y"
+    },
+    {
+      "id": "not-a-spelling",
+      "yaml": "tls: nope\n",
+      "why": "an ordinary string"
+    },
+    {
+      "id": "multiline-plain",
+      "yaml": "tls: no\nother: yes\nthird: 'off'\n",
+      "why": "several in one document"
+    }
+  ]
+}

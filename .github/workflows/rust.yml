@@ -80,6 +80,26 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --locked
 
+      # The Rust->Python crossing test (PR B2). It is #[ignore]d so that
+      # `cargo test` works without an interpreter -- the whole point of
+      # the port is that Python stops being a runtime dependency -- but
+      # the property it checks is a cross-language contract with the
+      # egress proxy, so it has to run somewhere. Here.
+      #
+      # It asserts four things a pure-Rust test cannot: that every
+      # scalar in tests/fixtures/yaml_1_1_scalars.json survives
+      # `yaml.safe_load` as the string it went in as, that the bare crate
+      # really does corrupt the ones the fixture calls hazardous (the
+      # control arm), that every committed config means the same thing to
+      # PyYAML after a Rust round trip, and -- the reading direction --
+      # that `yaml::load` and `yaml.safe_load` produce the same value for
+      # every document in the read-side corpus, including the four
+      # corners of `tls: no` / `'no'` / `false` / `"false"`.
+      - name: Rust to PyYAML crossing test
+        run: |
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
+          cargo test --locked -p agentcage-core --test yaml_pyyaml_crossing -- --ignored
+
       # --all-targets covers tests and examples, which is where the lints
       # that matter (unwrap in a helper, a stray dbg!) actually land.
       - name: cargo clippy
