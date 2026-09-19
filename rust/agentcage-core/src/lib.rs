@@ -59,6 +59,7 @@ pub mod config;
 pub mod fingerprint;
 pub mod har;
 pub mod python;
+pub mod relays;
 pub mod volume_mounts;
 pub mod yaml;
 

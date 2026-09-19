@@ -20,15 +20,23 @@
 //! | `secret_resolver.validate_env_name` | `invalid env name: …` | C2 |
 //! | `secret_resolver.validate_source` ×5 | `unknown secret source scheme: …` | C2 |
 //! | `config.validate_transform` | `unknown secret_injection transform: …` | C2 |
-//! | `relays/_validate.validate_relay_entry`, past its required-key check | 15 messages | C3 |
-//! | `agents.{decider,watcher}.api_key` scheme shape | `must use the 'source:NAME' scheme …` | C3 |
+//! | `relays/_validate.validate_relay_entry`, past its required-key check | 15 messages | C3 — **landed**, [`crate::relays`] |
+//! | `agents.{decider,watcher}.api_key` scheme shape | `must use the 'source:NAME' scheme …` | C3 — **landed**, [`api_key_shape`] |
 //!
-//! Two of those have a structural *part* that this module does make,
-//! because parsing cannot continue without it:
-//! `validate_relay_entry`'s "requires name/type/listen" (`load_config`
-//! then indexes `entry["name"]`, which would be a `KeyError`), and the
-//! `api_key` split into scheme and name (which decides whether the
-//! name is stripped from the cage's environment).
+//! PR C3 closed the last two rows by calling the real thing from this
+//! module rather than by re-deriving it: the relay loop runs
+//! [`crate::relays::validate_relay_entry`] whole, in `load_config`'s
+//! position, and each roster entry runs the `source:NAME` shape check
+//! as soon as it is built. Both are places `config.py` raises from
+//! `load_config`, not from `validate_config`, and the distinction is
+//! observable — it decides which of two faults a user is told about.
+//!
+//! The one thing still missing from the relay call is its
+//! `source_validator` hook, which is `secret_resolver.validate_source`
+//! and therefore C2's. `crate::relays` takes it as an argument, so
+//! turning it on is one call-site edit; until then
+//! `err-relay-auth-source-scheme` is the single corpus case that
+//! reaches this module and is not refused.
 //!
 //! # Dead error strings
 //!
@@ -98,7 +106,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use crate::python::{repr, str_of};
+use crate::python::{repr, str_of, type_name};
 use crate::yaml::{self, Mapping, Value};
 
 use super::types::{
@@ -384,22 +392,30 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     let relays_raw = value_list(raw.get("protocol_relays"), "protocol_relays")?;
     let mut relay_secret_names: BTreeSet<String> = BTreeSet::new();
     for entry in &relays_raw {
+        // `validate_relay_entry(entry, source_validator=validate_source)`
+        // — the whole of it, not a part. `config.py:15` imports this
+        // validator from `agentcage.data.proxy.relays._validate`,
+        // which is the same module the egress proxy imports as
+        // `relays._validate`; after the port it is [`crate::relays`]
+        // here and `_validate.py` there, held together by the A4
+        // fixture rather than by `import`
+        // (RUST-PORT-PLAN.md §2.2).
+        //
+        // It runs before any field is read because `load_config` does:
+        // the validator is what makes `entry["name"]` on the next line
+        // an index rather than a `KeyError`.
+        //
+        // The `source_validator` hook is `None` until PR C2 lands
+        // `secret_resolver.validate_source`. What it costs meanwhile is
+        // exactly one corpus case — `err-relay-auth-source-scheme`, a
+        // relay credential naming an unknown scheme — which C2 turns on
+        // by passing its validator here. Everything else this validator
+        // refuses is already refused.
+        crate::relays::validate_relay_entry(entry, None)?;
         let entry = mapping_of(entry, "protocol_relays entry")?;
-        // The required-key half of `validate_relay_entry`. The rest of
-        // that validator is C3's; this part is here because
-        // `load_config` indexes `entry["name"]` straight after it.
         let name = raw_string(entry.get("name"), "", "protocol_relays[].name")?;
         let relay_type = raw_string(entry.get("type"), "", "protocol_relays[].type")?;
         let listen = raw_string(entry.get("listen"), "", "protocol_relays[].listen")?;
-        if name.is_empty() || relay_type.is_empty() || listen.is_empty() {
-            return Err(ConfigError::value(format!(
-                "protocol_relays entry requires name/type/listen (got name={}, type={}, \
-                 listen={})",
-                repr(entry.get("name").unwrap_or(&Value::String(String::new()))),
-                repr(entry.get("type").unwrap_or(&Value::String(String::new()))),
-                repr(entry.get("listen").unwrap_or(&Value::String(String::new()))),
-            )));
-        }
 
         // From here on the relay's own name goes in every path, the
         // way `validate_relay_entry` writes them —
@@ -583,7 +599,7 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
     let decider = if truthy(decider_raw.get("enable")) {
         let rate_limit_raw =
             agent_mapping(decider_raw.get("rate_limit"), "agents.decider.rate_limit")?;
-        Some(DeciderAgentConfig {
+        let decider = DeciderAgentConfig {
             llm: llm_client(
                 &decider_raw,
                 15.0,
@@ -610,14 +626,16 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
                 5,
                 "agents.decider.rate_limit.burst",
             )?,
-        })
+        };
+        api_key_shape(&decider.llm.api_key, "agents.decider")?;
+        Some(decider)
     } else {
         None
     };
 
     let watcher_raw = agent_mapping(agents_raw.get("watcher"), "agents.watcher")?;
     let watcher = if truthy(watcher_raw.get("enable")) {
-        Some(WatcherAgentConfig {
+        let watcher = WatcherAgentConfig {
             context: agent_context(watcher_raw.get("context"), "agents.watcher.context")?,
             auto_revoke: real_bool(
                 watcher_raw.get("auto_revoke"),
@@ -642,7 +660,9 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
                 &mut policy_secret_names,
             )?,
             enable: true,
-        })
+        };
+        api_key_shape(&watcher.llm.api_key, "agents.watcher")?;
+        Some(watcher)
     } else {
         None
     };
@@ -934,6 +954,29 @@ fn llm_client(
     Ok(client)
 }
 
+/// `load_config`'s half of the agent API-key check.
+///
+/// `config.py` runs the `source:NAME` *shape* check here, right after
+/// the roster entry is built and before the next one is read, and runs
+/// it again — along with the `cmd:` and unknown-scheme rules — in
+/// `validate_config`. Both spell the message identically, so which one
+/// fires is invisible until the config has a second fault that a
+/// `validate_config` rule would catch in between. Reproducing the
+/// early one keeps that ordering.
+///
+/// `if _key:` guards it: an empty key is "required" in
+/// `validate_config`'s words, not "malformed" in these.
+///
+/// The `validate_source(_key)` call that follows it in `config.py` is
+/// PR C2's (`secret_resolver`), and the `env:` name it collects for
+/// stripping is already gathered by [`llm_client`].
+fn api_key_shape(api_key: &str, label: &str) -> Parsed<()> {
+    if api_key.is_empty() {
+        return Ok(());
+    }
+    super::agents::require_api_key_shape(api_key, label).map(|_| ())
+}
+
 /// `agents.*.context` — optional free-text describing the cage's
 /// purpose.
 ///
@@ -1095,25 +1138,6 @@ fn port_list(value: Option<&Value>, path: &str) -> Parsed<Vec<i64>> {
 }
 
 // ── small helpers over the raw document ─────────────────
-
-/// Python's type name, for the `(got X)` half of a message.
-fn type_name(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "NoneType",
-        Value::Bool(_) => "bool",
-        Value::Number(number) => {
-            if number.is_f64() {
-                "float"
-            } else {
-                "int"
-            }
-        }
-        Value::String(_) => "str",
-        Value::Sequence(_) => "list",
-        Value::Mapping(_) => "dict",
-        Value::Tagged(_) => "object",
-    }
-}
 
 /// `x.get(key)` filtered through Python's `not in (None, "")`.
 fn present(value: Option<&Value>) -> Option<&Value> {

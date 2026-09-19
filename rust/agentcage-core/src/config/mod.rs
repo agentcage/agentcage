@@ -12,7 +12,25 @@
 //! | structural rejection (a list where a mapping belongs) | [`parse`] | |
 //! | `resolved-config.json` | [`json`] | |
 //! | domains, ports, secrets, placeholders | | PR C2 |
-//! | relays, agents, capture, inspectors | | PR C3 |
+//! | `validate_config`'s agent rules | [`agents`] | |
+//! | `validate_config`'s inspector warnings | [`inspectors`] | |
+//! | one `protocol_relays` entry | [`crate::relays`] | |
+//!
+//! PR C3 added the last three rows. It owns the relay, agent, capture
+//! and inspector half of `validate_config`; PR C2 owns the domain,
+//! port, secret and placeholder half. The single ordered driver that
+//! calls both is in neither: the two PRs land in parallel, and a
+//! function whose body is half one branch and half the other is a
+//! merge conflict with an observable ordering inside it. Each half is
+//! a self-contained step, in `config.py`'s order internally.
+//!
+//! "Capture" has no validator of its own — `config.py` bounds
+//! `capture.max_body_size` and `capture.max_file_size` by their
+//! defaults rather than by a check. What C3 owed that area was the
+//! cross-boundary constant: [`types::MAX_CAPTURE_FILE_BYTES`] must
+//! equal the literal `capture.CaptureWriter` falls back to, which
+//! `shared_constants.json` pins and
+//! `tests/contract_relay_entry.rs` asserts.
 //!
 //! The line between the halves is **structure versus value**. "`ports`
 //! must be a mapping" is structural and lives here; "port 70000 is out
@@ -56,10 +74,17 @@
 //! and can *fail* when it is — a config that sets its own resolvers
 //! must load on a host that has none.
 
+pub mod agents;
+pub mod inspectors;
 pub mod json;
 pub mod parse;
 pub mod types;
 
+pub use agents::{
+    AGENT_MAX_TOKENS_FLOOR, VALID_AGENT_KEY_SCHEMES, VALID_AGENT_PROVIDERS, require_api_key_shape,
+    validate_agent_api_key, validate_agent_max_tokens, validate_agents,
+};
+pub use inspectors::inspector_warnings;
 pub use json::to_json;
 pub use parse::load;
 pub use types::{
