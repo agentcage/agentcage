@@ -35,6 +35,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -298,11 +299,35 @@ impl Drop for Phase {
         if let Some(cage) = &self.cage {
             append(cage, &self.label, ms);
         }
-        if std::env::var_os("AGENTCAGE_TIMING").is_some_and(|v| v == "1") {
+        if echoing() {
             output::echo_err(&phase_echo_line(&self.label, ms));
         }
     }
 }
+
+/// `--time`, which the Python spells `os.environ["AGENTCAGE_TIMING"] = "1"`.
+///
+/// A process-global flag rather than an environment write, for one
+/// reason: `std::env::set_var` is `unsafe` from Rust 2024 on (it races
+/// with any concurrent `getenv` in the process), and this workspace
+/// forbids `unsafe_code`. The flag is read alongside the variable, so an
+/// operator who exported `AGENTCAGE_TIMING=1` still gets the echo and a
+/// child process still inherits it from their own environment -- the
+/// only thing lost is agentcage exporting it to children it spawns,
+/// which nothing reads.
+pub fn enable_echo() {
+    ECHO.store(true, Ordering::Relaxed);
+}
+
+/// Whether `[timing]` lines go to stderr: the flag, or the variable.
+#[must_use]
+pub fn echoing() -> bool {
+    ECHO.load(Ordering::Relaxed)
+        || std::env::var_os("AGENTCAGE_TIMING").is_some_and(|value| value == "1")
+}
+
+/// Set by [`enable_echo`].
+static ECHO: AtomicBool = AtomicBool::new(false);
 
 /// The `AGENTCAGE_TIMING=1` stderr line.
 ///

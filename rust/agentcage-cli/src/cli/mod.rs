@@ -57,6 +57,7 @@ pub(crate) mod cage;
 pub(crate) mod completions;
 #[cfg(test)]
 mod conformance;
+pub(crate) mod context;
 pub(crate) mod domain;
 pub(crate) mod init;
 pub(crate) mod run;
@@ -224,16 +225,46 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
     }
 
     let path = canonical_path(name, sub);
-
-    // PR D13. `cage har` reads one file the egress addon wrote and
-    // writes JSON; it touches no container and no unit, so like
-    // `doctor` its body can land before the e2e phase that would
-    // otherwise gate it.
-    if path == "cage har" {
-        return ExitCode::from(agentcage_cli::har::main(&cage::query::har_args(leaf(sub))));
+    if let Some(code) = dispatch_ported(&path, name, sub) {
+        return code;
     }
-
     not_implemented(&path)
+}
+
+/// The command bodies this port has, keyed by canonical path.
+///
+/// `None` means "still a stub", which keeps [`not_implemented`] as the
+/// single place that says so. The match is on the *canonical* path, so
+/// `agentcage rm x` and `agentcage cage destroy x` reach the same body
+/// without the aliases being listed twice.
+fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode> {
+    use crate::cli::cage::{audit, create, lifecycle, update, verify};
+    use crate::cli::context::Ctx;
+
+    // The leaf's own matches: a top-level alias resolves to a command
+    // with none below it, a `cage <cmd>` invocation has one.
+    let leaf = sub.subcommand().map_or(sub, |(_, leaf)| leaf);
+    let _ = name;
+
+    // Nothing is constructed until a path matches, so a stubbed
+    // command still costs no filesystem probe.
+    let named = |id: &str| -> String { leaf.get_one::<String>(id).cloned().unwrap_or_default() };
+    Some(match path {
+        "cage create" => create::main(&Ctx::system(), leaf),
+        "cage update" => update::main(&Ctx::system(), leaf),
+        "cage list" => lifecycle::list(&Ctx::system()),
+        "cage status" => lifecycle::status(&Ctx::system(), leaf),
+        "cage show" => lifecycle::show(&Ctx::system(), &named("name")),
+        "cage destroy" => lifecycle::destroy(&Ctx::system(), leaf),
+        "cage verify" => verify::main(&Ctx::system(), &named("name")),
+        "cage audit" => audit::main(&Ctx::system(), leaf),
+        // PR D13. `cage har` reads one file the egress addon wrote
+        // and writes JSON; it touches no container and no unit.
+        "cage har" => ExitCode::from(agentcage_cli::har::main(&cage::query::har_args(
+            self::leaf(sub),
+        ))),
+        _ => return None,
+    })
 }
 
 /// The deepest `ArgMatches` under `sub` — where a leaf command's own
