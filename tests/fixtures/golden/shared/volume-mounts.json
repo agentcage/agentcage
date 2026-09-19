@@ -7,7 +7,14 @@
     ]
   ],
   "mask_mountpoint_dirs": [
-    "/host/project"
+    [
+      "/host/project",
+      [
+        "/host/project/.git/hooks",
+        "/host/project/.git",
+        "/host/project/.claude"
+      ]
+    ]
   ],
   "mount_targets": [
     [

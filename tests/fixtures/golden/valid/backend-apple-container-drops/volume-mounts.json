@@ -7,7 +7,14 @@
     ]
   ],
   "mask_mountpoint_dirs": [
-    "${HOME}/workspace"
+    [
+      "${HOME}/workspace",
+      [
+        "${HOME}/workspace/.git/hooks",
+        "${HOME}/workspace/.git",
+        "${HOME}/workspace/.claude"
+      ]
+    ]
   ],
   "mount_targets": [
     [

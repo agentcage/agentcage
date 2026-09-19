@@ -1,7 +1,13 @@
 {
   "mask_copyup_entries": [],
   "mask_mountpoint_dirs": [
-    "${HOME}/project"
+    [
+      "${HOME}/project",
+      [
+        "${HOME}/project/.git/hooks",
+        "${HOME}/project/.git"
+      ]
+    ]
   ],
   "mount_targets": [
     [

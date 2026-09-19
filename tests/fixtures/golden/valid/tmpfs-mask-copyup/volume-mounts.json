@@ -7,7 +7,12 @@
     ]
   ],
   "mask_mountpoint_dirs": [
-    "${HOME}/project"
+    [
+      "${HOME}/project",
+      [
+        "${HOME}/project/.claude"
+      ]
+    ]
   ],
   "mount_targets": [
     [

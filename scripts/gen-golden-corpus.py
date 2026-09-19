@@ -1760,10 +1760,16 @@ def _volume_report(cfg) -> dict:
         "mount_targets": [list(t) for t in mount_targets],
         "volumes": volumes,
         "tmpfs": tmpfs,
+        # mask_mountpoint_dirs returns dict[host_source -> [host dirs]].
+        # Iterating it yields only the KEYS, which silently recorded the bind
+        # sources and dropped the host paths underneath them -- the half that
+        # #320's ExecStopPost rmdir chain actually consumes, including its
+        # deepest-first ordering. Record ordered [source, [dirs]] pairs so the
+        # ordering stays visible; a JSON object would not promise to keep it.
         "mask_mountpoint_dirs": [
-            list(entry) if isinstance(entry, tuple) else entry
-            for entry in vm.mask_mountpoint_dirs(
-                cfg.container.tmpfs, mount_targets)
+            [source, list(dirs)]
+            for source, dirs in vm.mask_mountpoint_dirs(
+                cfg.container.tmpfs, mount_targets).items()
         ],
         "mask_copyup_entries": [
             list(entry) for entry in vm.mask_copyup_entries(
@@ -2031,9 +2037,11 @@ def _write_shared(out_root: Path, scrubber: Scrubber) -> None:
         "volume_specs": [],
         "tmpfs_specs": [],
         "mount_targets": [list(t) for t in mount_targets],
+        # See the note in _volume_report: this is a dict, and iterating it
+        # recorded only the bind sources.
         "mask_mountpoint_dirs": [
-            list(e) if isinstance(e, tuple) else e
-            for e in vm.mask_mountpoint_dirs(tmpfs_specs, mount_targets)],
+            [source, list(dirs)] for source, dirs
+            in vm.mask_mountpoint_dirs(tmpfs_specs, mount_targets).items()],
         "mask_copyup_entries": [
             list(e) for e in vm.mask_copyup_entries(tmpfs_specs, mount_targets)],
     }
