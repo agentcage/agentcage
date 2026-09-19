@@ -63,6 +63,10 @@ pub fn to_json(config: &Config) -> String {
         // `ensure_ascii=False`: a `help:` string with an em dash stays
         // an em dash rather than becoming `—`.
         ensure_ascii: false,
+        // `None` is Python's own indent-dependent defaulting, which is
+        // what the harness's plain `json.dumps(..., indent=2)` gets.
+        // Only `fingerprint.stable_json` overrides this (PR C4).
+        separators: None,
     };
     format!("{}\n", dumps(&to_value(config), options))
 }
