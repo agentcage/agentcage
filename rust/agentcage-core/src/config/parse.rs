@@ -869,7 +869,18 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
 /// Removed keys are rejected by *presence*, even when empty or
 /// disabled. Silently ignoring old settings could turn off monitoring
 /// or change egress policy.
-fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
+///
+/// Public because it is not only [`load`]'s business: `state.py` calls
+/// it from `save_deployment`, `save_raw_config` and `load_raw_config`,
+/// so the stored `cage.yaml` is re-checked on the way in *and* on the
+/// way out without a full parse. [`validate_agents_document`] is the
+/// entry point those three want, since they hold a whole YAML document
+/// rather than a mapping.
+///
+/// # Errors
+///
+/// [`ConfigError::Value`] with `config.py`'s wording byte for byte.
+pub fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
     let domains = agent_mapping(raw.get("domains"), "domains")?;
     if domains.contains_key("auto") {
         return Err(ConfigError::value(
@@ -925,6 +936,34 @@ fn validate_agents_raw(raw: &Mapping) -> Parsed<()> {
         }
     }
     Ok(())
+}
+
+/// `validate_agents_raw` over a whole YAML document.
+///
+/// The Python signature is `validate_agents_raw(raw: dict)` and every
+/// caller in `state.py` reaches it as `validate_agents_raw(yaml.safe_load(f)
+/// or {})`. Two behaviours hide in that expression and both are here:
+///
+/// * `... or {}` — a *falsy* document (null, `{}`, `[]`, `0`, `""`)
+///   becomes an empty mapping and passes. That is why an empty
+///   `cage.yaml` is storable.
+/// * a truthy non-mapping (a populated list, a bare string) reaches
+///   `if not isinstance(raw, dict): raise ValueError("config must be a
+///   mapping")`.
+///
+/// # Errors
+///
+/// [`ConfigError::Value`], as [`validate_agents_raw`] does, plus
+/// `"config must be a mapping"` for a truthy non-mapping document.
+pub fn validate_agents_document(document: &Value) -> Parsed<()> {
+    if !yaml::python_bool(document) {
+        // `or {}` — nothing to check.
+        return Ok(());
+    }
+    let Value::Mapping(raw) = document else {
+        return Err(ConfigError::value("config must be a mapping"));
+    };
+    validate_agents_raw(raw)
 }
 
 /// The flat LLM client fields, shared by every roster entry.
