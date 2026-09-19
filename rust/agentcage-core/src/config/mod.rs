@@ -11,7 +11,7 @@
 //! | `load_config` — reading a document into that tree | [`parse`] | |
 //! | structural rejection (a list where a mapping belongs) | [`parse`] | |
 //! | `resolved-config.json` | [`json`] | |
-//! | domains, ports, secrets, placeholders | | PR C2 |
+//! | domains, ports, secrets, placeholders | [`domain`], [`secret`], [`placeholder`], [`mod@validate`] | |
 //! | `validate_config`'s agent rules | [`agents`] | |
 //! | `validate_config`'s inspector warnings | [`inspectors`] | |
 //! | one `protocol_relays` entry | [`crate::relays`] | |
@@ -75,11 +75,16 @@
 //! must load on a host that has none.
 
 pub mod agents;
+pub mod domain;
 pub mod inspectors;
 pub mod json;
 pub mod parse;
+pub mod placeholder;
+pub mod secret;
 pub mod types;
+pub mod validate;
 
+pub use domain::{LabelPolicy, encoded_private_ip, valid_domain};
 pub use agents::{
     AGENT_MAX_TOKENS_FLOOR, VALID_AGENT_KEY_SCHEMES, VALID_AGENT_PROVIDERS, require_api_key_shape,
     validate_agent_api_key, validate_agent_max_tokens, validate_agents,
@@ -87,6 +92,8 @@ pub use agents::{
 pub use inspectors::inspector_warnings;
 pub use json::to_json;
 pub use parse::load;
+pub use placeholder::{fill_raw_placeholders, is_canonical, placeholder_for};
+pub use secret::{KNOWN_BACKENDS, KNOWN_SOURCE_SCHEMES};
 pub use types::{
     AUTO_MAX_GRANTS, AUTO_NEVER_GRANT, AUTO_REQUIRE_ALLOWLIST_MODE, AUTO_TTL_SECONDS, AgentsConfig,
     BUILTIN_INSPECTOR_NAMES, BuildConfig, CaptureConfig, Config, ContainerConfig,
@@ -97,6 +104,7 @@ pub use types::{
     TcpPortsConfig, UdpPortsConfig, VALID_LIFECYCLES, VALID_LOG_LEVELS, VALID_SECRET_SCOPES,
     VmConfig, WatcherAgentConfig,
 };
+pub use validate::{FixedValidationHost, ValidationHost, validate};
 
 use std::fmt;
 
