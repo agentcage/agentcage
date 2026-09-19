@@ -392,6 +392,29 @@ corpus must assert **semantic equality for YAML artifacts** — parse both, comp
 values — and byte equality only for everything else. The fingerprint is safe:
 `fingerprint.py:40` hashes the parsed value, not the text.
 
+### 2.9 Python bugs the port found, and what to do about them
+
+Porting reads every line of the original against a fixture, which turns out to
+be an unusually good bug detector. These are **reproduced faithfully** in Rust
+rather than fixed there, because a port that quietly diverges is worse than one
+that carries a known wart. Each needs a product decision, and a fix has to land
+on the Python, the corpus and the port together — as the audit one did.
+
+| Found by | Bug | Status |
+| :-- | :-- | :-- |
+| C5 | The coloured `cage audit` table padded DIRECTION to 4 where the header and the plain branch used 10, shifting every column from METHOD onward by a different amount per row. Colour is the default. | **Fixed**, with the invariant "colour only adds escapes" now asserted on both sides |
+| C3 | `agents.decider.host` is matched with `$`, not `\Z`. Python's `$` matches before one trailing newline, so `host: "agentcage.local\n"` validates — while `valid_domain` uses `\Z` specifically to refuse that shape. Verified end to end. | Open; reproduced and pinned |
+| C3 | `_validate.py` coercion gaps in front of its branches: `port: true` becomes port 1; `host: [1]` becomes the string `"[1]"` and so looks present; a non-mapping `policy:` **silently skips the whole policy block**, `write_mode` included, because the guard is `isinstance(policy, dict)` rather than a refusal | Open; reproduced and pinned |
+| C1 | `container.timeout_start_sec` defaults to 600 in the dataclass and 120 in `load_config`. Since `load_config` is the only way a `Config` is built from a file, **600 is unreachable** | Open; both reproduced, each pinned |
+| C4 | The corpus recipe writes `resolved-config.json` pre-placeholder-fill and fingerprints post-fill, so three cases cannot rebuild one component | Open; corpus gap, not a product bug |
+| C7 | The corpus recorded only the keys of the mask-mountpoint map, leaving the paths the cleanup chain consumes unverified | **Fixed** in C7 |
+
+The decider-host anchor is the one worth attention. It is narrow — only a
+*trailing* newline passes, so a newline followed by content is still refused —
+and the practical effect is a control host that silently never matches rather
+than an injection. But `valid_domain` and `policy_api` both treat the same
+value, and one of the three is deliberately stricter than the others.
+
 ---
 
 ## 3. Module-by-module disposition
