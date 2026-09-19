@@ -408,6 +408,31 @@ on the Python, the corpus and the port together — as the audit one did.
 | C1 | `container.timeout_start_sec` defaults to 600 in the dataclass and 120 in `load_config`. Since `load_config` is the only way a `Config` is built from a file, **600 is unreachable** | Open; both reproduced, each pinned |
 | C4 | The corpus recipe writes `resolved-config.json` pre-placeholder-fill and fingerprints post-fill, so three cases cannot rebuild one component | Open; corpus gap, not a product bug |
 | C7 | The corpus recorded only the keys of the mask-mountpoint map, leaving the paths the cleanup chain consumes unverified | **Fixed** in C7 |
+| C2 | `name` and `container.image` are matched with `$`, not `\Z` — the same anchor bug as the decider host. `name: "my-cage\n"` validates, and that name becomes a systemd unit name, a podman object name and a state directory. Verified end to end | Open; reproduced and pinned |
+| **D1** | **`secret_store.py:226` puts a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Open — see below** |
+
+**The Keychain finding is the most serious thing this port has turned up**, because
+it is a live exposure in shipped code rather than a porting concern. Every other
+secret path in the codebase honours the stdin rule: `podman secret create <name> -`,
+`systemd-creds encrypt --name K - <out>` (where `--name` is the *variable* name,
+not its value), the VM bridge through `limactl shell --tty=false`, and the
+apple backend's bind-mount staging. The macOS Keychain store is the one
+exception, and it is the one that runs on a laptop where other processes of the
+same user are most likely to exist.
+
+It is **not** fixed in the port. `security(1)`'s behaviour with a bare `-w` and a
+non-tty stdin is undocumented, and `KeychainStore` is PR **E2b**, gated on Apple
+hardware — guessing on Linux against no runnable test would be worse than
+flagging it. D1 reproduces the argv as-is, marks the argument so it is redacted
+from every debug dump and fake-runner trace, and pins the behaviour in a test
+named after the bug. The `execve` exposure is unchanged and deliberate until it
+can be fixed against a real `security(1)`.
+
+**Three anchor sites, one bug.** `name`, `container.image` and
+`agents.decider.host` all use `$` where `valid_domain` uses `\Z`, and
+`valid_domain`'s docstring says why it made that switch. The fix is one
+character in three places plus a test, but it changes what validates, so it is a
+product decision rather than a port one.
 
 The decider-host anchor is the one worth attention. It is narrow — only a
 *trailing* newline passes, so a newline followed by content is still refused —
