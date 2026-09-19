@@ -11,6 +11,9 @@
 //! `_timing.py`. The command tree (D5) and the `CommandRunner` seam (D1)
 //! land beside these.
 
+/// Removal of the pre-rework grants watcher a legacy cage left behind
+/// (PR D16).
+pub mod legacy_watcher;
 /// Styled terminal output: the banner, the status marks, the spinner.
 pub mod output;
 /// Secret resolution and the at-rest stores (PR D3).
