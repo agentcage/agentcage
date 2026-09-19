@@ -451,6 +451,22 @@ impl<'a> ContainerBackend<'a> {
             .unwrap_or_default()
     }
 
+    /// `_FILE_LOG_DRIVERS` — whether this container's output bypasses
+    /// the journal entirely.
+    ///
+    /// Under either file driver conmon writes to a podman-owned file and
+    /// nothing reaches `journalctl`, so a journal reader comes back
+    /// empty and exits 0. Both `cage logs` (which warns) and
+    /// [`Self::audit_reads_journal`] (which picks another reader) have
+    /// to ask before they read.
+    #[must_use]
+    pub fn logs_to_file(&self, container: &str) -> bool {
+        matches!(
+            self.container_log_driver(container).as_str(),
+            "k8s-file" | "json-file"
+        )
+    }
+
     /// `audit_reads_journal` — whether this cage's audit stream is in
     /// the journal.
     ///
@@ -458,8 +474,7 @@ impl<'a> ContainerBackend<'a> {
     /// only place history could still live.
     #[must_use]
     pub fn audit_reads_journal(&self, name: &str) -> bool {
-        let driver = self.container_log_driver(&format!("{name}-egress"));
-        !matches!(driver.as_str(), "k8s-file" | "json-file")
+        !self.logs_to_file(&format!("{name}-egress"))
     }
 
     /// `audit_argv` — the command that prints this cage's audit stream.

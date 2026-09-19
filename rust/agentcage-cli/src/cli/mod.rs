@@ -238,7 +238,7 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
 /// `agentcage rm x` and `agentcage cage destroy x` reach the same body
 /// without the aliases being listed twice.
 fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode> {
-    use crate::cli::cage::{audit, create, lifecycle, update, verify};
+    use crate::cli::cage::{audit, create, lifecycle, logs, update, verify};
     use crate::cli::context::Ctx;
 
     // The leaf's own matches: a top-level alias resolves to a command
@@ -258,6 +258,7 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "cage destroy" => lifecycle::destroy(&Ctx::system(), leaf),
         "cage verify" => verify::main(&Ctx::system(), &named("name")),
         "cage audit" => audit::main(&Ctx::system(), leaf),
+        "cage logs" => logs::main(&Ctx::system(), leaf),
         // PR D13. `cage har` reads one file the egress addon wrote
         // and writes JSON; it touches no container and no unit.
         "cage har" => ExitCode::from(agentcage_cli::har::main(&cage::query::har_args(
