@@ -153,11 +153,16 @@ pub fn run(
         return EXIT_FAILURE;
     }
 
-    // The warning guards the *HAR* output only. `--json-lines --view
-    // outbound` prints the same secrets and says nothing, which is
-    // `cli.py`'s `if view == "outbound" and not json_lines` and is
-    // recorded as a case in `tests/fixtures/cage-har/`.
-    if args.view == "outbound" && !args.json_lines {
+    // Every outbound view carries real injected secrets, whichever
+    // output form it takes, so every one of them warns.
+    //
+    // `cli.py` used to write `if view == "outbound" and not
+    // json_lines`, which dropped the warning from the one form people
+    // pipe into other tools while the piped bytes still held the API
+    // keys. The warning goes to stderr and cannot corrupt stdout, so
+    // there was nothing for the suppression to protect. Fixed in the
+    // same commit as this port; see `tests/fixtures/cage-har/`.
+    if args.view == "outbound" {
         let _ = writeln!(
             stderr,
             "WARNING: --view outbound includes real secrets (API keys, tokens). \

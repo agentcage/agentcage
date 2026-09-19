@@ -3046,8 +3046,14 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         click.echo("      enable_har: true", err=True)
         sys.exit(1)
 
-    # Warn about sensitive outbound data
-    if view == "outbound" and not json_lines:
+    # Warn about sensitive outbound data.
+    #
+    # The warning goes to stderr, so it cannot corrupt piped stdout --
+    # which means there was never a reason to suppress it for
+    # --json-lines. That suppression silently dropped the warning from
+    # the one output mode people pipe into other tools, while the bytes
+    # being piped still carried the injected API keys.
+    if view == "outbound":
         click.echo(
             "WARNING: --view outbound includes real secrets (API keys, tokens). "
             "Treat the output as sensitive.",
