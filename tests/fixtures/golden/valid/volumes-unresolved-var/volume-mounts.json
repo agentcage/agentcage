@@ -1,0 +1,23 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/x",
+      "${GOLDEN_UNSET_VAR}/x"
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "ro"
+      ],
+      "raw_options": "ro",
+      "source": "${GOLDEN_UNSET_VAR}/x",
+      "spec": "${GOLDEN_UNSET_VAR}/x:/x:ro",
+      "target": "/x"
+    }
+  ]
+}

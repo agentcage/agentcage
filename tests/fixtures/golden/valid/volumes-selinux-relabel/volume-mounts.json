@@ -1,0 +1,24 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/workspace",
+      "${HOME}/workspace"
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "rw",
+        "z"
+      ],
+      "raw_options": "rw,z",
+      "source": "${HOME}/workspace",
+      "spec": "${HOME}/workspace:/workspace:rw,z",
+      "target": "/workspace"
+    }
+  ]
+}

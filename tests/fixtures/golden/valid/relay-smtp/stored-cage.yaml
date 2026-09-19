@@ -1,0 +1,43 @@
+name: relay-smtp
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+protocol_relays:
+- name: out
+  type: smtp
+  listen: 0.0.0.0:1587
+  upstream:
+    host: smtp.example.com
+    port: 587
+    tls: true
+  auth:
+    type: plain
+    user_source: env:GOLDEN_SET_VAR
+    password_source: cmd:printf fake-smtp-password
+  policy:
+    sender_allowlist:
+    - agent@example.com
+    recipient_allowlist:
+      addresses:
+      - ops@example.com
+      domains:
+      - example.com
+    max_message_bytes: 1048576
+    max_recipients: 3
+    send_rate_limit: 5/hour
+    idle_timeout_seconds: 300
+ports:
+  tcp:
+    allow:
+    - 80
+    - 443
+    passthrough:
+    - 1587

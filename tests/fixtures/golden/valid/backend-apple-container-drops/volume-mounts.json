@@ -1,0 +1,78 @@
+{
+  "mask_copyup_entries": [
+    [
+      "/workspace/.git/hooks",
+      "${HOME}/workspace/.git/hooks",
+      "${HOME}/workspace"
+    ]
+  ],
+  "mask_mountpoint_dirs": [
+    "${HOME}/workspace"
+  ],
+  "mount_targets": [
+    [
+      "/workspace",
+      "${HOME}/workspace"
+    ],
+    [
+      "/data",
+      ""
+    ]
+  ],
+  "tmpfs": [
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [
+        "rw",
+        "noexec",
+        "nosuid",
+        "size=64M"
+      ],
+      "spec": "/tmp:rw,noexec,nosuid,size=64M",
+      "target": "/tmp",
+      "wants_copyup": false
+    },
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "${HOME}/workspace"
+      ],
+      "options": [
+        "rw",
+        "noexec",
+        "tmpcopyup"
+      ],
+      "spec": "/workspace/.git/hooks:rw,noexec,tmpcopyup",
+      "target": "/workspace/.git/hooks",
+      "wants_copyup": true
+    },
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "${HOME}/workspace"
+      ],
+      "options": [
+        "rw",
+        "nosuid"
+      ],
+      "spec": "/workspace/.claude:rw,nosuid",
+      "target": "/workspace/.claude",
+      "wants_copyup": false
+    }
+  ],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "rw"
+      ],
+      "raw_options": "rw",
+      "source": "${HOME}/workspace",
+      "spec": "${HOME}/workspace:/workspace:rw",
+      "target": "/workspace"
+    }
+  ]
+}

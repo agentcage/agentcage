@@ -1,0 +1,20 @@
+name: container-caps
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  drop_capabilities:
+  - CAP_NET_RAW
+  - CAP_SYS_ADMIN
+  add_capabilities:
+  - NET_BIND_SERVICE
+  no_new_privileges: false
+  read_only: false
+  security_label_disable: false
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

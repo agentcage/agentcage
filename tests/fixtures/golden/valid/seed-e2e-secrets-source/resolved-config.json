@@ -1,0 +1,159 @@
+{
+  "agents": {
+    "decider": {
+      "api_key": "",
+      "base_url": "",
+      "context": "",
+      "enable": false,
+      "host": "agentcage.local",
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "rate_limit_burst": 5,
+      "rate_limit_rps": 1.0,
+      "timeout_seconds": 15.0
+    },
+    "watcher": {
+      "api_key": "",
+      "auto_revoke": true,
+      "base_url": "",
+      "context": "",
+      "dedup_samples": true,
+      "enable": false,
+      "interval_seconds": 900.0,
+      "max_digest_tokens": 8000,
+      "max_flows": 200,
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "timeout_seconds": 30.0,
+      "window_seconds": 3600.0
+    }
+  },
+  "apple_container_autostart": false,
+  "capture": {
+    "domains": [],
+    "enable_har": false,
+    "exclude_domains": [],
+    "max_body_size": 10485760,
+    "max_file_size": 134217728,
+    "min_action": "all"
+  },
+  "container": {
+    "add_capabilities": [],
+    "build": {
+      "args": {},
+      "containerfile": ""
+    },
+    "command": [
+      "node",
+      "/app/agent.js"
+    ],
+    "cpus": "",
+    "drop_capabilities": [
+      "ALL"
+    ],
+    "env": {},
+    "image": "node:22-slim",
+    "memory": "",
+    "named_volumes": {},
+    "nested_containers": false,
+    "no_new_privileges": true,
+    "podman_secrets": [],
+    "ports": [
+      "127.0.0.1:3105:3000"
+    ],
+    "read_only": true,
+    "restart": "on-failure",
+    "restart_sec": 10,
+    "security_label_disable": true,
+    "timeout_start_sec": 120,
+    "timeout_stop_sec": 30,
+    "tmpfs": [],
+    "user": "1000:1000",
+    "userns": "",
+    "volumes": [
+      "${HOME}/agent:/app:ro"
+    ]
+  },
+  "dns_servers": [
+    "192.0.2.53",
+    "192.0.2.54"
+  ],
+  "domains": {
+    "allow": [
+      "httpbin.org"
+    ],
+    "block": [],
+    "expires": {},
+    "mode": "allowlist",
+    "passthrough": []
+  },
+  "exec_aliases": {},
+  "help": "",
+  "inspectors": [],
+  "isolation": "container",
+  "lifecycle": "service",
+  "logging": {
+    "allowed_requests": false,
+    "cage": "",
+    "dns": "",
+    "dns_queries": false,
+    "level": "info",
+    "proxy": "",
+    "proxy_connections": false
+  },
+  "name": "e2e-secrets-src",
+  "ports": {
+    "icmp": {
+      "allow": false
+    },
+    "tcp": {
+      "allow": [
+        80,
+        443
+      ],
+      "passthrough": []
+    },
+    "udp": {
+      "allow": []
+    }
+  },
+  "protocol_relays": [],
+  "scaffold": "",
+  "secret_injection": [
+    {
+      "env": "SRC_ENV_KEY",
+      "inject_body": false,
+      "inject_headers": [],
+      "inject_to": [
+        "httpbin.org"
+      ],
+      "placeholder": "{{SRC_ENV_KEY}}",
+      "source": "env:E2E_SRC_ENV_SECRET",
+      "transform": "",
+      "transform_config": {}
+    },
+    {
+      "env": "SRC_CMD_KEY",
+      "inject_body": false,
+      "inject_headers": [],
+      "inject_to": [
+        "httpbin.org"
+      ],
+      "placeholder": "{{SRC_CMD_KEY}}",
+      "source": "cmd:echo cmd-secret-value-42",
+      "transform": "",
+      "transform_config": {}
+    }
+  ],
+  "secrets": {
+    "allow_plaintext": true,
+    "backend": "auto",
+    "scope": "auto"
+  },
+  "vm": {
+    "mem_mb": 4096,
+    "vcpus": 4
+  }
+}

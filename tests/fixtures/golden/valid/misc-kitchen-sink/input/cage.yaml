@@ -1,0 +1,66 @@
+name: misc-kitchen-sink
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  volumes:
+  - ${HOME}/project:/workspace:rw
+  - ${HOME}/data:/data:rw,np
+  named_volumes:
+    state: /var/lib/state:rw
+  tmpfs:
+  - /tmp:rw,noexec,nosuid,size=64M
+  - /workspace/.git/hooks:rw,noexec,nosuid,nodev,size=64M
+  ports:
+  - 127.0.0.1:3000:3000
+  env:
+    NODE_ENV: production
+  memory: 2g
+  cpus: '2'
+  user: 1000:1000
+  userns: keep-id
+  read_only: false
+domains:
+  allow:
+  - api.example.com
+  - registry.example.net
+  passthrough:
+  - registry.example.net
+dns_servers:
+- 192.0.2.53
+isolation: container
+lifecycle: interactive
+capture:
+  enable_har: true
+  min_action: flag
+logging:
+  level: debug
+  dns_queries: true
+ports:
+  tcp:
+    allow:
+    - 80
+    - 443
+    - 9418
+    passthrough:
+    - 9418
+  udp:
+    allow:
+    - 443
+  icmp:
+    allow: true
+secret_injection:
+- env: FAKE_API_KEY
+  inject_to:
+  - api.example.com
+  source: systemd-creds:FAKE_API_KEY
+inspectors:
+- name: domain
+- name: secrets
+agents:
+  decider:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: systemd-creds:FAKE_DECIDER_KEY

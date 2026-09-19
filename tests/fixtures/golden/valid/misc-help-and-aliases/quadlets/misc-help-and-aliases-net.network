@@ -1,0 +1,4 @@
+[Network]
+NetworkName=misc-help-and-aliases-net
+Internal=true
+Subnet=10.89.236.0/24

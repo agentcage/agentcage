@@ -1,0 +1,2661 @@
+{
+  "cases": [
+    {
+      "cage_name": "agents-both",
+      "case": "agents-both",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "agents-decider-anthropic",
+      "case": "agents-decider-anthropic",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "agents-decider-full",
+      "case": "agents-decider-full",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "agents-decider-openai",
+      "case": "agents-decider-openai",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "agents-decider-openrouter",
+      "case": "agents-decider-openrouter",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "agents-disabled-blocks",
+      "case": "agents-disabled-blocks",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "agents-watcher-expensive",
+      "case": "agents-watcher-expensive",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "agents-watcher-full",
+      "case": "agents-watcher-full",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "agents-watcher-no-domains",
+      "case": "agents-watcher-no-domains",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "agents-watcher-unbounded-digest",
+      "case": "agents-watcher-unbounded-digest",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "backend-apple-container",
+      "case": "backend-apple-container",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 0,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "backend-apple-container-autostart",
+      "case": "backend-apple-container-autostart",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 0,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "backend-apple-container-copyup-unseedable",
+      "case": "backend-apple-container-copyup-unseedable",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 0,
+      "warning_count": 4
+    },
+    {
+      "cage_name": "backend-apple-container-drops",
+      "case": "backend-apple-container-drops",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 0,
+      "warning_count": 8
+    },
+    {
+      "cage_name": "backend-apple-container-inspectors",
+      "case": "backend-apple-container-inspectors",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 0,
+      "warning_count": 3
+    },
+    {
+      "cage_name": "backend-container",
+      "case": "backend-container",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "backend-firecracker-migration",
+      "case": "backend-firecracker-migration",
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "backend-vm",
+      "case": "backend-vm",
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "backend-vm-defaults",
+      "case": "backend-vm-defaults",
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "backend-vm-file-volume",
+      "case": "backend-vm-file-volume",
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "capture-off",
+      "case": "capture-off",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "capture-on",
+      "case": "capture-on",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "capture-tuned",
+      "case": "capture-tuned",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-build",
+      "case": "container-build",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-caps",
+      "case": "container-caps",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-drop-caps-empty",
+      "case": "container-drop-caps-empty",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-drop-caps-scalar",
+      "case": "container-drop-caps-scalar",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-env-refs",
+      "case": "container-env-refs",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 2
+    },
+    {
+      "cage_name": "container-image-digest-pin",
+      "case": "container-image-digest-pin",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-nested",
+      "case": "container-nested",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "container-podman-secrets",
+      "case": "container-podman-secrets",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-resources",
+      "case": "container-resources",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-timeouts-zero",
+      "case": "container-timeouts-zero",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-user-explicit",
+      "case": "container-user-explicit",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-user-image-default",
+      "case": "container-user-image-default",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "container-userns-keep-id",
+      "case": "container-userns-keep-id",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "dns-servers-autodetected",
+      "case": "dns-servers-autodetected",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-allow-and-block-empty",
+      "case": "domains-allow-and-block-empty",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-allow-empty",
+      "case": "domains-allow-empty",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "domains-allowlist",
+      "case": "domains-allowlist",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-blocklist",
+      "case": "domains-blocklist",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-expires-list",
+      "case": "domains-expires-list",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-expires-map",
+      "case": "domains-expires-map",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-legacy-blocklist",
+      "case": "domains-legacy-blocklist",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-legacy-mode-list",
+      "case": "domains-legacy-mode-list",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-none",
+      "case": "domains-none",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "domains-passthrough",
+      "case": "domains-passthrough",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 2
+    },
+    {
+      "cage_name": "domains-single-label",
+      "case": "domains-single-label",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "domains-two-letter-tld",
+      "case": "domains-two-letter-tld",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "case": "err-agents-auto-revoke-not-bool",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-decider-api-key-no-scheme",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-decider-context-not-string",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-decider-kind",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-decider-wrapper-agent",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-dedup-samples-not-bool",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-domains-auto",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-domains-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-enable-not-bool",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-llm-max-tokens-not-number",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-llm-timeout-bool",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-role-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-top-level-watcher",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-unknown-role",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-watcher-api-key-no-scheme",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-watcher-context-not-string",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-watcher-number-not-number",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-agents-watcher-wrapper-decider",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-config-not-a-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "stage": "special"
+    },
+    {
+      "case": "err-container-port-not-a-number",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-container-port-out-of-range",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-container-port-spec-shape",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-api-key-cmd",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-api-key-missing",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-api-key-podman",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-base-url-http",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-context-too-long",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-host-in-allow",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-host-single-label",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-max-tokens-too-small",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-model-missing",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-provider-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-provider-wrong-case",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-rate-limit-negative",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-requires-allowlist",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-timeout-not-finite",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-decider-timeout-not-positive",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-dns-detect-linux",
+      "error_type": "RuntimeError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "stage": "special"
+    },
+    {
+      "case": "err-dns-detect-macos",
+      "error_type": "RuntimeError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "stage": "special"
+    },
+    {
+      "case": "err-domain-syntax-block",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-domain-syntax-expires-key",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-domain-syntax-ip-literal",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-domain-syntax-newline",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-domain-syntax-passthrough",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-domain-syntax-short-tld",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-domain-syntax-uppercase",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-domains-allow-and-block",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-file-unreadable",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "stage": "special"
+    },
+    {
+      "case": "err-image-invalid-ref",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-image-missing",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-isolation-apple-on-intel-mac",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Darwin",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-isolation-apple-on-linux",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-isolation-container-on-macos",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ]
+    },
+    {
+      "case": "err-isolation-unknown",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-lifecycle-unknown",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-logging-level-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-logging-service-level-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-name-invalid-chars",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-name-missing",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-name-too-long",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-nested-containers-on-vm",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-collides-with-publish",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-collides-with-relay",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-entry-bool",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-entry-duplicate",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-entry-not-int",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-entry-out-of-range",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-reserved-8080",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-port-reserved-8443",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-icmp-allow-not-bool",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-icmp-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-tcp-allow-not-list",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-tcp-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-tcp-passthrough-not-list",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-udp-allow-not-list",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-ports-udp-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-auth-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-auth-source-scheme",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-ca-file-and-pem",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-ca-file-missing",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "stage": "render"
+    },
+    {
+      "case": "err-relay-ca-file-not-pem",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "stage": "render"
+    },
+    {
+      "case": "err-relay-ca-file-not-string",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-ca-pem-not-pem",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-ca-pem-not-string",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-entry-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-folder-allowlist-not-list",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-missing-fields",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-servername-not-string",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-tls-false-with-ca",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-unknown-type",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-upstream-bad-port",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-upstream-not-mapping",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-write-mode-contradicts-readonly",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-relay-write-mode-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-secret-env-name-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-secret-source-scheme-unknown",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-secret-transform-unknown",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-secrets-backend-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-secrets-scope-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-vm-mem-too-low",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-vm-vcpus-too-low",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-volume-np-with-z",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-volume-outside-home",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "stage": "render"
+    },
+    {
+      "case": "err-watcher-api-key-cmd",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-api-key-missing",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-api-key-podman",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-base-url-http",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-blocklist-mode",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-context-too-long",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-digest-tokens-too-high",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-digest-tokens-too-low",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-interval-too-fast",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-max-flows-too-high",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-max-flows-too-low",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-max-tokens-too-small",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-model-missing",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-provider-invalid",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-timeout-not-positive",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-window-too-long",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-watcher-window-zero",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-yaml-syntax",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "err-yaml-tab",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "cage_name": "inspectors-builtin-chain",
+      "case": "inspectors-builtin-chain",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "inspectors-custom-path",
+      "case": "inspectors-custom-path",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "inspectors-empty",
+      "case": "inspectors-empty",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "lifecycle-ephemeral",
+      "case": "lifecycle-ephemeral",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "lifecycle-interactive",
+      "case": "lifecycle-interactive",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "lifecycle-service",
+      "case": "lifecycle-service",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "logging-legacy-log-allowed",
+      "case": "logging-legacy-log-allowed",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "logging-level-critical",
+      "case": "logging-level-critical",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "logging-level-debug",
+      "case": "logging-level-debug",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "logging-level-error",
+      "case": "logging-level-error",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "logging-level-info",
+      "case": "logging-level-info",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "logging-level-warning",
+      "case": "logging-level-warning",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "logging-per-service",
+      "case": "logging-per-service",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "case": "misc-empty-config",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "cage_name": "misc-help-and-aliases",
+      "case": "misc-help-and-aliases",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "misc-kitchen-sink",
+      "case": "misc-kitchen-sink",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "ports-all-inspected-removed",
+      "case": "ports-all-inspected-removed",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "ports-container-publish",
+      "case": "ports-container-publish",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "ports-defaults",
+      "case": "ports-defaults",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "ports-icmp",
+      "case": "ports-icmp",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "ports-none",
+      "case": "ports-none",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 2
+    },
+    {
+      "cage_name": "ports-tcp-extra",
+      "case": "ports-tcp-extra",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "ports-tcp-passthrough",
+      "case": "ports-tcp-passthrough",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "ports-tcp-passthrough-implicit",
+      "case": "ports-tcp-passthrough-implicit",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "ports-udp",
+      "case": "ports-udp",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "proxy-keys-rate-limit",
+      "case": "proxy-keys-rate-limit",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "relay-ca-pem-inline",
+      "case": "relay-ca-pem-inline",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "relay-imap",
+      "case": "relay-imap",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "relay-imap-ca-file",
+      "case": "relay-imap-ca-file",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "relay-imap-plaintext-upstream",
+      "case": "relay-imap-plaintext-upstream",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "relay-imap-write-mode",
+      "case": "relay-imap-write-mode",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "relay-smtp",
+      "case": "relay-smtp",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "relay-smtp-recipient-shorthand",
+      "case": "relay-smtp-recipient-shorthand",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "secrets-backend-auto",
+      "case": "secrets-backend-auto",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-backend-plaintext",
+      "case": "secrets-backend-plaintext",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-backend-systemd-creds",
+      "case": "secrets-backend-systemd-creds",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-injection-options",
+      "case": "secrets-injection-options",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-injection-rules-mapping",
+      "case": "secrets-injection-rules-mapping",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-placeholder-generated",
+      "case": "secrets-placeholder-generated",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-placeholder-legacy",
+      "case": "secrets-placeholder-legacy",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "secrets-scope-auto",
+      "case": "secrets-scope-auto",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-scope-system",
+      "case": "secrets-scope-system",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-scope-user",
+      "case": "secrets-scope-user",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-source-cmd",
+      "case": "secrets-source-cmd",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-source-empty",
+      "case": "secrets-source-empty",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-source-env",
+      "case": "secrets-source-env",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-source-podman",
+      "case": "secrets-source-podman",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-source-systemd-creds",
+      "case": "secrets-source-systemd-creds",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-stripped-from-env",
+      "case": "secrets-stripped-from-env",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "secrets-transform-google-jwt",
+      "case": "secrets-transform-google-jwt",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "basic",
+      "case": "seed-e2e-basic",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "e2e-har",
+      "case": "seed-e2e-har",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "e2e-hardened",
+      "case": "seed-e2e-hardened",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "e2e-second",
+      "case": "seed-e2e-second",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "e2e-secrets",
+      "case": "seed-e2e-secrets",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "e2e-secrets-src",
+      "case": "seed-e2e-secrets-source",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 2
+    },
+    {
+      "cage_name": "e2e-vm",
+      "case": "seed-e2e-vm",
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "e2e-mask",
+      "case": "seed-e2e-workspace-mask",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "case": "seed-unit-test",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "case": "seed-unit-test-curl",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "cage_name": "tmpfs-mask-copyup",
+      "case": "tmpfs-mask-copyup",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "tmpfs-mask-no-copyup",
+      "case": "tmpfs-mask-no-copyup",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "tmpfs-mask-over-bind",
+      "case": "tmpfs-mask-over-bind",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "tmpfs-mask-over-named-volume",
+      "case": "tmpfs-mask-over-named-volume",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "tmpfs-mask-over-np",
+      "case": "tmpfs-mask-over-np",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "tmpfs-mask-trailing-slash",
+      "case": "tmpfs-mask-trailing-slash",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "tmpfs-no-options",
+      "case": "tmpfs-no-options",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "tmpfs-plain",
+      "case": "tmpfs-plain",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-missing-source",
+      "case": "volumes-missing-source",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-multiple",
+      "case": "volumes-multiple",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-named",
+      "case": "volumes-named",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-no-options",
+      "case": "volumes-no-options",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-np",
+      "case": "volumes-np",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-np-file",
+      "case": "volumes-np-file",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-np-rw",
+      "case": "volumes-np-rw",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-ro",
+      "case": "volumes-ro",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-rw",
+      "case": "volumes-rw",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-selinux-relabel",
+      "case": "volumes-selinux-relabel",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "volumes-unresolved-var",
+      "case": "volumes-unresolved-var",
+      "isolation": "container",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 5,
+      "warning_count": 0
+    }
+  ],
+  "schema": 1,
+  "stats": {
+    "distinct_error_messages": 122,
+    "invalid": 127,
+    "total": 252,
+    "valid": 125
+  }
+}

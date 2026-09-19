@@ -1,0 +1,1 @@
+ValueError: could not read {{WORK}}/staging/definitely-absent.yaml: [Errno 2] No such file or directory: '{{WORK}}/staging/definitely-absent.yaml'

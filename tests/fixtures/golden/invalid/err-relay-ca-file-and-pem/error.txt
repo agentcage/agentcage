@@ -1,0 +1,1 @@
+ValueError: protocol_relays[mail].upstream sets both ca_file and ca_pem; use one. ca_file is read at deploy time and becomes ca_pem in the proxy's config.

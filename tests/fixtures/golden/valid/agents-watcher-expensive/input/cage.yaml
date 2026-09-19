@@ -1,0 +1,21 @@
+name: agents-watcher-expensive
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+agents:
+  watcher:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: env:GOLDEN_SET_VAR
+    interval_seconds: 60
+    max_flows: 2000
+    max_digest_tokens: 100000

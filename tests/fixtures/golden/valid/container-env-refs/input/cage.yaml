@@ -1,0 +1,18 @@
+name: container-env-refs
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  env:
+    SET: ${GOLDEN_SET_VAR}
+    UNSET: ${GOLDEN_UNSET_VAR}
+    MIXED: a${GOLDEN_UNSET_VAR}b${GOLDEN_SET_VAR}c
+    UNCLOSED: ${GOLDEN_UNSET
+    PLAIN: literal
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

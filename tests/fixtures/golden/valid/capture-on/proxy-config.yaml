@@ -1,0 +1,7 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+capture:
+  enable_har: true
+agentcage_version: 0.0.0-golden

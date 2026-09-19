@@ -1,0 +1,15 @@
+name: container-timeouts-zero
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  timeout_start_sec: 0
+  timeout_stop_sec: 0
+  restart_sec: 0
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

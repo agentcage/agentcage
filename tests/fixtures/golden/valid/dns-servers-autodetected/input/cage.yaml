@@ -1,0 +1,6 @@
+name: dns-servers-autodetected
+container:
+  image: docker.io/library/node:22-slim
+domains:
+  allow:
+  - api.example.com

@@ -1,0 +1,19 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+agents:
+  watcher:
+    enable: true
+    provider: openai
+    model: gpt-fake-1
+    api_key: systemd-creds:FAKE_WATCHER_KEY
+    interval_seconds: 600
+    window_seconds: 7200
+    max_flows: 500
+    max_digest_tokens: 16000
+    auto_revoke: false
+    dedup_samples: false
+    context: Read-only documentation cage.
+    timeout_seconds: 45
+agentcage_version: 0.0.0-golden

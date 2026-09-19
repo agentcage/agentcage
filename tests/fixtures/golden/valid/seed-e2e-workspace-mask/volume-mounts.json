@@ -1,0 +1,57 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [
+    "${HOME}/project"
+  ],
+  "mount_targets": [
+    [
+      "/workspace",
+      "${HOME}/project"
+    ]
+  ],
+  "tmpfs": [
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [
+        "rw",
+        "noexec",
+        "nosuid",
+        "size=256M"
+      ],
+      "spec": "/tmp:rw,noexec,nosuid,size=256M",
+      "target": "/tmp",
+      "wants_copyup": false
+    },
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "${HOME}/project"
+      ],
+      "options": [
+        "rw",
+        "noexec",
+        "nosuid",
+        "nodev",
+        "size=64M"
+      ],
+      "spec": "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M",
+      "target": "/workspace/.git/hooks/",
+      "wants_copyup": false
+    }
+  ],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "rw"
+      ],
+      "raw_options": "rw",
+      "source": "${HOME}/project",
+      "spec": "${HOME}/project:/workspace:rw",
+      "target": "/workspace"
+    }
+  ]
+}

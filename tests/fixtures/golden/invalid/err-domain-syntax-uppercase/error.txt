@@ -1,0 +1,1 @@
+ValueError: invalid domain syntax: 'API.example.com' — expected a plain lowercase hostname (e.g. 'api.example.com', or a bare LAN name like 'fcos-vm-home-01')

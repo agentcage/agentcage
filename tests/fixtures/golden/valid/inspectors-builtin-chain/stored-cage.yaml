@@ -1,0 +1,26 @@
+name: inspectors-builtin-chain
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+inspectors:
+- name: domain
+- name: secrets
+  config:
+    action: block
+- name: body-size
+  config:
+    max_bytes: 1048576
+- name: entropy
+  config:
+    threshold: 4.5
+- name: content-type
+  config:
+    action: flag

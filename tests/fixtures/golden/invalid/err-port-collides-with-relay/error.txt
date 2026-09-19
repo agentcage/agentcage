@@ -1,0 +1,1 @@
+ValueError: ports.tcp.allow entry 1143 collides with protocol_relays['mail'].listen='0.0.0.0:1143'; the REDIRECT would intercept connections meant for the relay. Move it to ports.tcp.passthrough if the cage also talks to an external service on this port

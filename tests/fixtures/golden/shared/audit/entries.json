@@ -1,0 +1,316 @@
+[
+  {
+    "decision": "allowed",
+    "direction": "outbound",
+    "host": "api.example.com",
+    "inspectors": [],
+    "method": "GET",
+    "path": "/v1/data",
+    "port": 443,
+    "raw": {
+      "decision": "allowed",
+      "direction": "outbound",
+      "host": "api.example.com",
+      "inspectors": [],
+      "method": "GET",
+      "path": "/v1/data",
+      "port": 443,
+      "reason": "",
+      "secrets_injected": [
+        "FAKE_API_KEY"
+      ],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:00:00+00:00",
+      "url": "https://api.example.com/v1/data"
+    },
+    "reason": "",
+    "secrets_injected": [
+      "FAKE_API_KEY"
+    ],
+    "secrets_redacted": [],
+    "source": "10.89.7.2",
+    "ts": "2024-01-01T00:00:00+00:00",
+    "url": "https://api.example.com/v1/data"
+  },
+  {
+    "decision": "flagged",
+    "direction": "outbound",
+    "host": "upload.example.net",
+    "inspectors": [
+      {
+        "name": "entropy",
+        "severity": "warning"
+      }
+    ],
+    "method": "post",
+    "path": "/put",
+    "port": 443,
+    "raw": {
+      "decision": "flagged",
+      "direction": "outbound",
+      "host": "upload.example.net",
+      "inspectors": [
+        {
+          "name": "entropy",
+          "severity": "warning"
+        }
+      ],
+      "method": "post",
+      "path": "/put",
+      "port": 443,
+      "reason": "high entropy",
+      "secrets_injected": [],
+      "secrets_redacted": [
+        "FAKE_API_KEY"
+      ],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:01:00+00:00",
+      "url": "https://upload.example.net/put"
+    },
+    "reason": "high entropy",
+    "secrets_injected": [],
+    "secrets_redacted": [
+      "FAKE_API_KEY"
+    ],
+    "source": "10.89.7.2",
+    "ts": "2024-01-01T00:01:00+00:00",
+    "url": "https://upload.example.net/put"
+  },
+  {
+    "decision": "blocked",
+    "direction": "outbound",
+    "host": "evil.example.org",
+    "inspectors": [
+      {
+        "name": "domain",
+        "severity": "error"
+      },
+      {
+        "name": "secrets",
+        "severity": "critical"
+      }
+    ],
+    "method": "POST",
+    "path": "/exfil",
+    "port": 443,
+    "raw": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "evil.example.org",
+      "inspectors": [
+        {
+          "name": "domain",
+          "severity": "error"
+        },
+        {
+          "name": "secrets",
+          "severity": "critical"
+        }
+      ],
+      "method": "POST",
+      "path": "/exfil",
+      "port": 443,
+      "reason": "domain not allowed",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:02:00+00:00",
+      "url": "https://evil.example.org/exfil"
+    },
+    "reason": "domain not allowed",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "10.89.7.2",
+    "ts": "2024-01-01T00:02:00+00:00",
+    "url": "https://evil.example.org/exfil"
+  },
+  {
+    "decision": "blocked",
+    "direction": "outbound",
+    "host": "evil.example.org",
+    "inspectors": [
+      {
+        "name": "domain",
+        "severity": "error"
+      }
+    ],
+    "method": "GET",
+    "path": "/beacon",
+    "port": 443,
+    "raw": {
+      "decision": "blocked",
+      "direction": "outbound",
+      "host": "evil.example.org",
+      "inspectors": [
+        {
+          "name": "domain",
+          "severity": "error"
+        }
+      ],
+      "method": "GET",
+      "path": "/beacon",
+      "port": 443,
+      "reason": "domain not allowed",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-01-01T00:03:00+00:00",
+      "url": "https://evil.example.org/beacon"
+    },
+    "reason": "domain not allowed",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "10.89.7.2",
+    "ts": "2024-01-01T00:03:00+00:00",
+    "url": "https://evil.example.org/beacon"
+  },
+  {
+    "decision": "allowed",
+    "direction": "inbound",
+    "host": "127.0.0.1",
+    "inspectors": [],
+    "method": "PUT",
+    "path": "/hook",
+    "port": 3000,
+    "raw": {
+      "decision": "allowed",
+      "direction": "inbound",
+      "host": "127.0.0.1",
+      "inspectors": [],
+      "method": "PUT",
+      "path": "/hook",
+      "port": 3000,
+      "reason": "",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "127.0.0.1",
+      "ts": "2024-01-01T00:04:00+00:00",
+      "url": "http://127.0.0.1:3000/hook"
+    },
+    "reason": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "127.0.0.1",
+    "ts": "2024-01-01T00:04:00+00:00",
+    "url": "http://127.0.0.1:3000/hook"
+  },
+  {
+    "decision": "allowed",
+    "direction": "outbound",
+    "host": "cdn.example.com",
+    "inspectors": [
+      {
+        "name": "content-type",
+        "severity": "info"
+      },
+      {
+        "name": "watcher",
+        "severity": "high"
+      }
+    ],
+    "method": "HEAD",
+    "path": "/a.bin",
+    "port": 443,
+    "raw": {
+      "decision": "allowed",
+      "direction": "outbound",
+      "host": "cdn.example.com",
+      "inspectors": [
+        {
+          "name": "content-type",
+          "severity": "info"
+        },
+        {
+          "name": "watcher",
+          "severity": "high"
+        }
+      ],
+      "method": "HEAD",
+      "path": "/a.bin",
+      "port": 443,
+      "reason": "",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-06-01T12:00:00+00:00",
+      "url": "https://cdn.example.com/a.bin"
+    },
+    "reason": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "10.89.7.2",
+    "ts": "2024-06-01T12:00:00+00:00",
+    "url": "https://cdn.example.com/a.bin"
+  },
+  {
+    "decision": "allowed",
+    "direction": "outbound",
+    "host": "legacy.example.com",
+    "inspectors": [],
+    "method": "GET",
+    "path": "/",
+    "port": 80,
+    "raw": {
+      "decision": "allowed",
+      "direction": "outbound",
+      "host": "legacy.example.com",
+      "inspectors": [],
+      "method": "GET",
+      "path": "/",
+      "port": 80,
+      "reason": "",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "not-a-timestamp",
+      "url": "https://legacy.example.com/"
+    },
+    "reason": "",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "10.89.7.2",
+    "ts": "not-a-timestamp",
+    "url": "https://legacy.example.com/"
+  },
+  {
+    "decision": "flagged",
+    "direction": "outbound",
+    "host": "api.example.com",
+    "inspectors": [
+      {
+        "name": "watcher",
+        "severity": "medium"
+      }
+    ],
+    "method": "DELETE",
+    "path": "/v1/item/9",
+    "port": 443,
+    "raw": {
+      "decision": "flagged",
+      "direction": "outbound",
+      "host": "api.example.com",
+      "inspectors": [
+        {
+          "name": "watcher",
+          "severity": "medium"
+        }
+      ],
+      "method": "DELETE",
+      "path": "/v1/item/9",
+      "port": 443,
+      "reason": "watcher finding",
+      "secrets_injected": [],
+      "secrets_redacted": [],
+      "source": "10.89.7.2",
+      "ts": "2024-02-02T08:30:00",
+      "url": "https://api.example.com/v1/item/9"
+    },
+    "reason": "watcher finding",
+    "secrets_injected": [],
+    "secrets_redacted": [],
+    "source": "10.89.7.2",
+    "ts": "2024-02-02T08:30:00",
+    "url": "https://api.example.com/v1/item/9"
+  }
+]

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=container-image-digest-pin-net
+Internal=true
+Subnet=10.89.188.0/24

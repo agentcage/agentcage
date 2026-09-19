@@ -1,0 +1,5 @@
+domains:
+  mode: allowlist
+  list:
+  - legacy.example.com
+agentcage_version: 0.0.0-golden

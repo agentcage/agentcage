@@ -1,0 +1,14 @@
+name: err-nested-containers-on-vm
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  nested_containers: true
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+isolation: vm

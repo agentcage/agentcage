@@ -1,0 +1,4 @@
+[Network]
+NetworkName=volumes-np-file-net
+Internal=true
+Subnet=10.89.59.0/24

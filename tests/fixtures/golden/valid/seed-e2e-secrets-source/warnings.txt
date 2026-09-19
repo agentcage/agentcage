@@ -1,0 +1,2 @@
+secret_injection['SRC_ENV_KEY']: placeholder '{{SRC_ENV_KEY}}' is not in the 'agentcage:secret:*' form — omit `placeholder:` to auto-generate an entropic token, or run `agentcage secret rotate-placeholders` to mint one
+secret_injection['SRC_CMD_KEY']: placeholder '{{SRC_CMD_KEY}}' is not in the 'agentcage:secret:*' form — omit `placeholder:` to auto-generate an entropic token, or run `agentcage secret rotate-placeholders` to mint one

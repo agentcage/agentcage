@@ -1,0 +1,5 @@
+isolation: apple-container renders `container run` argv and a
+launchd plist through backends/apple_container.py, not the
+quadlet templates. The cage.yaml-derived artifacts in this
+directory (warnings, resolved config, proxy-config,
+dns-allowlist, placeholders) still apply.

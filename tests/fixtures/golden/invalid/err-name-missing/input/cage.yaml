@@ -1,0 +1,4 @@
+container:
+  image: docker.io/library/node:22-slim
+dns_servers:
+- 192.0.2.53

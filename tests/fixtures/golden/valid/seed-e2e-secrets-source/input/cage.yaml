@@ -1,0 +1,25 @@
+name: e2e-secrets-src
+# CI has no usable systemd-creds; opt into the plaintext store for the test.
+secrets:
+  allow_plaintext: true
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${HOME}/agent:/app:ro"
+  ports:
+    - "127.0.0.1:3105:3000"
+domains:
+  allow:
+    - httpbin.org
+secret_injection:
+  - env: SRC_ENV_KEY
+    placeholder: "{{SRC_ENV_KEY}}"
+    inject_to:
+      - httpbin.org
+    source: "env:E2E_SRC_ENV_SECRET"
+  - env: SRC_CMD_KEY
+    placeholder: "{{SRC_CMD_KEY}}"
+    inject_to:
+      - httpbin.org
+    source: "cmd:echo cmd-secret-value-42"

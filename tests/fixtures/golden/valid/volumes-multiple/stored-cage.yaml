@@ -1,0 +1,18 @@
+name: volumes-multiple
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  volumes:
+  - ${HOME}/workspace:/workspace:rw
+  - ${HOME}/project:/project:ro
+  - ${HOME}/data:/data:rw,np
+  named_volumes:
+    state: /var/lib/state:rw
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
