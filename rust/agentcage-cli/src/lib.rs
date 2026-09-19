@@ -11,6 +11,8 @@
 //! `_timing.py`. The command tree (D5) and the `CommandRunner` seam (D1)
 //! land beside these.
 
+/// `agentcage doctor` — the host diagnostics (PR D15).
+pub mod doctor;
 /// Removal of the pre-rework grants watcher a legacy cage left behind
 /// (PR D16).
 pub mod legacy_watcher;

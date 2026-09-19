@@ -60,7 +60,17 @@ agentcage-exec = { path = "../agentcage-exec" }
 nix = { version = "0.31", default-features = false, features = [
     "term",
     "process",
+    # `fs`: write(2)/read(2)/pipe(2), and `statvfs` for PR D15's disk
+    # check -- `shutil.disk_usage(...).free` is `f_bavail * f_frsize`,
+    # and `std` exposes no filesystem statistics at all.
     "fs",
+    # `socket`: PR D15's port probe. `std::net::TcpListener::bind` sets
+    # `SO_REUSEADDR` on Unix and the Python's raw socket does not, so a
+    # port in TIME_WAIT would read as free through `std` and as busy
+    # through the Python -- a diagnostic disagreeing with itself.
+    "socket",
+    # `net`: `SockaddrIn`, which `socket` alone does not export.
+    "net",
     # `user`: `geteuid`, for PR D3. `secret_resolver.detect_default_scope`
     # asks "is the invoker root?" before it probes the per-user systemd
     # key, because root's per-user key is not the operator's and a

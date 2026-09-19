@@ -116,7 +116,6 @@ fn a_bare_group_prints_help_to_stderr_and_exits_two() {
 fn a_parsed_command_fails_loudly_and_names_itself() {
     for (args, expected) in [
         (vec!["cage", "destroy", "myapp", "-y"], "cage destroy"),
-        (vec!["doctor"], "doctor"),
         (vec!["cage", "grants", "myapp", "sync"], "cage grants sync"),
         (
             vec!["secret", "rotate-placeholders", "myapp"],
@@ -130,6 +129,50 @@ fn a_parsed_command_fails_loudly_and_names_itself() {
         assert!(text.contains(&format!("`{expected}`")), "{args:?}: {text}");
         assert!(text.contains("not implemented"), "{args:?}: {text}");
     }
+}
+
+/// `doctor` is no longer a stub (PR D15).
+///
+/// Run against the real machine, so nothing here asserts *what* it found
+/// -- that is `tests/golden_doctor.rs`'s job, over 37 faked hosts. What
+/// this adds is the half a fixture cannot reach: that the binary wires
+/// the command up, prints to stdout, and exits on the error count rather
+/// than on `EX_SOFTWARE`.
+#[test]
+fn doctor_runs_for_real() {
+    let out = agentcage(&["doctor"]);
+    assert!(
+        code(&out) == 0 || code(&out) == 1,
+        "doctor exited {} -- 0 and 1 are the only outcomes `cli.py:632` \
+         produces: {}",
+        code(&out),
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    for want in [
+        "agentcage doctor",
+        "Prerequisites",
+        "System",
+        "Secrets",
+        "Network",
+        "Summary:",
+    ] {
+        assert!(
+            text.contains(want),
+            "doctor output is missing {want:?}:\n{text}"
+        );
+    }
+    assert!(
+        stderr(&out).is_empty(),
+        "doctor wrote to stderr: {}",
+        stderr(&out)
+    );
+    // The check the port deletes: RUST-PORT-PLAN.md §2.4 makes "no host
+    // Python" an invariant, so `doctor` must not go looking for one.
+    assert!(
+        !text.contains("Python"),
+        "doctor still reports a host Python version:\n{text}"
+    );
 }
 
 /// An alias reports the command it resolves to, not the alias.

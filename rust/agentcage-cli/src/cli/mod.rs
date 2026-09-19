@@ -216,6 +216,13 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // PR D15. `doctor` takes no arguments, reads no state and writes
+    // nothing, so it is the one command whose body can land before the
+    // e2e phase that would otherwise gate it.
+    if name == "doctor" {
+        return ExitCode::from(agentcage_cli::doctor::main());
+    }
+
     not_implemented(&canonical_path(name, sub))
 }
 
