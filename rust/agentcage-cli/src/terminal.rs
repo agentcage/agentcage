@@ -494,26 +494,6 @@ mod tests {
         slave: OwnedFd,
     }
 
-    /// Serializes the tests that construct a [`RestoredTerminal`].
-    ///
-    /// `SESSIONS` is process-global, deliberately -- it is what stops a
-    /// nested guard re-arming SIGINT -- so two guards built concurrently
-    /// by `cargo test`'s thread pool are indistinguishable from a real
-    /// nesting. `nested_guards_each_restore` asserts the counter's exact
-    /// value, which makes it a race against every other guard in this
-    /// module. It stayed hidden until another module added enough tests
-    /// to change the scheduling.
-    static GUARD_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Hold this for the duration of any test that builds a guard.
-    ///
-    /// A poisoned lock is a previous test panicking on purpose
-    /// (`termios_is_restored_after_a_panic`), which says nothing about
-    /// this one, so the poison is stepped over rather than propagated.
-    fn one_session_at_a_time() -> MutexGuard<'static, ()> {
-        GUARD_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     fn pty() -> Pty {
         let pair = nix::pty::openpty(None, None).expect("openpty");
         Pty {
