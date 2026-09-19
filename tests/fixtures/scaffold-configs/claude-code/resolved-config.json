@@ -1,0 +1,158 @@
+{
+  "agents": {
+    "decider": {
+      "api_key": "",
+      "base_url": "",
+      "context": "",
+      "enable": false,
+      "host": "agentcage.local",
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "rate_limit_burst": 5,
+      "rate_limit_rps": 1.0,
+      "timeout_seconds": 15.0
+    },
+    "watcher": {
+      "api_key": "",
+      "auto_revoke": true,
+      "base_url": "",
+      "context": "",
+      "dedup_samples": true,
+      "enable": false,
+      "interval_seconds": 900.0,
+      "max_digest_tokens": 8000,
+      "max_flows": 200,
+      "max_tokens": 8192,
+      "model": "",
+      "provider": "",
+      "timeout_seconds": 30.0,
+      "window_seconds": 3600.0
+    }
+  },
+  "apple_container_autostart": false,
+  "capture": {
+    "domains": [],
+    "enable_har": false,
+    "exclude_domains": [],
+    "max_body_size": 10485760,
+    "max_file_size": 134217728,
+    "min_action": "all"
+  },
+  "container": {
+    "add_capabilities": [],
+    "build": {
+      "args": {},
+      "containerfile": "Containerfile"
+    },
+    "command": [
+      "sleep",
+      "infinity"
+    ],
+    "cpus": "4.0",
+    "drop_capabilities": [
+      "ALL"
+    ],
+    "env": {},
+    "image": "localhost/agentcage-scaffold-claude-code:latest",
+    "memory": "8g",
+    "named_volumes": {},
+    "nested_containers": false,
+    "no_new_privileges": true,
+    "podman_secrets": [],
+    "ports": [],
+    "read_only": false,
+    "restart": "on-failure",
+    "restart_sec": 10,
+    "security_label_disable": true,
+    "timeout_start_sec": 60,
+    "timeout_stop_sec": 30,
+    "tmpfs": [
+      "/tmp:rw,noexec,nosuid,size=256M",
+      "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup",
+      "/workspace/.claude/:rw,noexec,nosuid,nodev,size=64M,tmpcopyup"
+    ],
+    "user": "",
+    "userns": "keep-id",
+    "volumes": [
+      "${PROJECT_DIR}:/workspace:rw"
+    ]
+  },
+  "dns_servers": [
+    "192.0.2.53",
+    "192.0.2.54"
+  ],
+  "domains": {
+    "allow": [
+      "anthropic.com",
+      "claude.com"
+    ],
+    "block": [],
+    "expires": {},
+    "mode": "allowlist",
+    "passthrough": []
+  },
+  "exec_aliases": {
+    "claude": [
+      "claude"
+    ]
+  },
+  "help": "Start a Claude Code session:\n  agentcage cage exec demo -- claude\n\nOr use the run command (creates ephemeral cage):\n  agentcage run claude-code\n\nAuthentication:\n  Subscription: agentcage cage exec demo -- claude login\n  API key:      agentcage secret set demo ANTHROPIC_API_KEY\n",
+  "inspectors": [
+    {
+      "name": "content-type"
+    }
+  ],
+  "isolation": "container",
+  "lifecycle": "interactive",
+  "logging": {
+    "allowed_requests": false,
+    "cage": "",
+    "dns": "warning",
+    "dns_queries": false,
+    "level": "info",
+    "proxy": "",
+    "proxy_connections": false
+  },
+  "name": "demo",
+  "ports": {
+    "icmp": {
+      "allow": false
+    },
+    "tcp": {
+      "allow": [
+        80,
+        443
+      ],
+      "passthrough": []
+    },
+    "udp": {
+      "allow": []
+    }
+  },
+  "protocol_relays": [],
+  "scaffold": "claude-code",
+  "secret_injection": [
+    {
+      "env": "ANTHROPIC_API_KEY",
+      "inject_body": false,
+      "inject_headers": [],
+      "inject_to": [
+        "anthropic.com"
+      ],
+      "placeholder": "agentcage:secret:ANTHROPIC_API_KEY:00000000000000000000000000000001",
+      "source": "",
+      "transform": "",
+      "transform_config": {}
+    }
+  ],
+  "secrets": {
+    "allow_plaintext": false,
+    "backend": "auto",
+    "scope": "auto"
+  },
+  "vm": {
+    "mem_mb": 4096,
+    "vcpus": 4
+  }
+}

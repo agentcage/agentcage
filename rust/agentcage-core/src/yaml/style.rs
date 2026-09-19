@@ -390,7 +390,7 @@ fn misaligned(source: &str, path: &[String], detail: &str) -> Error {
 }
 
 /// `a.b[0].c`, or `the document root`.
-fn display_path(path: &[String]) -> String {
+pub(super) fn display_path(path: &[String]) -> String {
     if path.is_empty() {
         return "the document root".to_owned();
     }
@@ -409,7 +409,7 @@ fn display_path(path: &[String]) -> String {
 }
 
 /// A mapping key, for an error message.
-fn display_key(key: &Value) -> String {
+pub(super) fn display_key(key: &Value) -> String {
     match key {
         Value::String(text) => text.clone(),
         Value::Bool(flag) => flag.to_string(),
