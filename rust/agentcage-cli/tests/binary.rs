@@ -22,6 +22,24 @@ fn agentcage(args: &[&str]) -> Output {
         .expect("the binary is built by `cargo test`")
 }
 
+/// The same, with every state root pointed at a throwaway home.
+///
+/// Required for any command with a body (PR D6 onwards): `cage list`
+/// run against the developer's real `HOME` reports the cages they
+/// actually have, and the quadlet directory and the apple-container
+/// root follow `~` rather than `XDG_CONFIG_HOME`, so redirecting the
+/// XDG variables alone would leave two roots pointing at their machine.
+fn agentcage_sandboxed(dir: &std::path::Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_agentcage"))
+        .args(args)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
+        .env("XDG_DATA_HOME", dir.join(".local/share"))
+        .env("XDG_RUNTIME_DIR", dir.join("run"))
+        .output()
+        .expect("the binary is built by `cargo test`")
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -115,7 +133,7 @@ fn a_bare_group_prints_help_to_stderr_and_exits_two() {
 #[test]
 fn a_parsed_command_fails_loudly_and_names_itself() {
     for (args, expected) in [
-        (vec!["cage", "destroy", "myapp", "-y"], "cage destroy"),
+        (vec!["cage", "restart", "myapp"], "cage restart"),
         (vec!["cage", "grants", "myapp", "sync"], "cage grants sync"),
         (
             vec!["secret", "rotate-placeholders", "myapp"],
@@ -179,12 +197,12 @@ fn doctor_runs_for_real() {
 #[test]
 fn aliases_report_their_canonical_command() {
     for (alias, canonical) in [
-        (["rm", "myapp"], "cage destroy"),
-        (["ls", "--"], "cage list"),
-        (["ps", "--"], "cage list"),
         (["reload", "myapp"], "cage restart"),
         (["config", "myapp"], "cage edit"),
-        (["describe", "myapp"], "cage show"),
+        (["edit", "myapp"], "cage edit"),
+        (["start", "myapp"], "cage start"),
+        (["stop", "myapp"], "cage stop"),
+        (["shell", "myapp"], "cage shell"),
     ] {
         let args: Vec<&str> = alias.iter().copied().filter(|a| *a != "--").collect();
         let out = agentcage(&args);
@@ -331,5 +349,91 @@ fn generated_scripts_load_without_error() {
     assert!(
         checked > 0,
         "no shell was available to check a completion script; bash at minimum is expected"
+    );
+}
+
+// ── the bodies PR D6 landed ─────────────────────────────────────────
+
+/// The eight commands with bodies are no longer stubs.
+///
+/// Read-only or refusing, all of them, and all run against a throwaway
+/// home so nothing on the developer's machine is read or touched. What
+/// this asserts is only that the dispatch reaches a body: the *output*
+/// is the e2e suite's business, which is where this PR's real
+/// acceptance check lives (phase 1, under `AGENTCAGE=<this binary>`).
+#[test]
+fn the_ported_commands_are_wired_up() {
+    let dir = agentcage_state::TestDir::new("binary-ported");
+    for (args, wanted) in [
+        (vec!["cage", "list"], "No cages found."),
+        (vec!["cage", "status"], "No cages found."),
+        (vec!["ls"], "No cages found."),
+        (vec!["ps"], "No cages found."),
+    ] {
+        let out = agentcage_sandboxed(dir.path(), &args);
+        assert_eq!(code(&out), 0, "{args:?}: {}", stderr(&out));
+        assert!(stdout(&out).contains(wanted), "{args:?}: {}", stdout(&out));
+    }
+}
+
+/// A command that names a cage which does not exist refuses with the
+/// Python's message and exit 1 — not with the stub's 70.
+#[test]
+fn an_unknown_cage_is_refused_rather_than_stubbed() {
+    let dir = agentcage_state::TestDir::new("binary-unknown");
+    for args in [
+        vec!["cage", "show", "nope"],
+        vec!["describe", "nope"],
+        vec!["cage", "update", "nope"],
+        vec!["cage", "audit", "nope"],
+    ] {
+        let out = agentcage_sandboxed(dir.path(), &args);
+        assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("does not exist"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+/// `cage destroy` on a cage with no state and no quadlets removes
+/// nothing and says so, without ever reaching podman.
+#[test]
+fn destroying_an_absent_cage_is_a_reported_no_op() {
+    let dir = agentcage_state::TestDir::new("binary-destroy");
+    let out = agentcage_sandboxed(dir.path(), &["rm", "nope", "-y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("no stored config and no backend resources"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// `cage create` with neither a positional config nor `-c` is the
+/// Python's own error, not clap's usage message.
+#[test]
+fn create_without_a_config_names_both_ways_to_give_one() {
+    let dir = agentcage_state::TestDir::new("binary-create");
+    let out = agentcage_sandboxed(dir.path(), &["cage", "create"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("missing config") && stderr(&out).contains("-c/--config"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// `cage update` with neither a NAME nor `-c` cannot identify a cage.
+#[test]
+fn update_without_a_target_says_why() {
+    let dir = agentcage_state::TestDir::new("binary-update");
+    let out = agentcage_sandboxed(dir.path(), &["cage", "update"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("either NAME or -c/--config is required"),
+        "{}",
+        stderr(&out)
     );
 }

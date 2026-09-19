@@ -11,10 +11,16 @@
 //! `_timing.py`. The command tree (D5) and the `CommandRunner` seam (D1)
 //! land beside these.
 
+/// The container backend: podman, quadlets, systemd (PR D6).
+pub mod backend;
+/// Fingerprint gathering — what makes `cage update` a no-op (PR D6).
+pub mod deploy;
 /// `agentcage doctor` — the host diagnostics (PR D15).
 pub mod doctor;
 /// `agentcage cage har` — the HAR export (PR D13).
 pub mod har;
+/// The host probes `agentcage-core` declares and does not implement.
+pub mod hostenv;
 /// Removal of the pre-rework grants watcher a legacy cage left behind
 /// (PR D16).
 pub mod legacy_watcher;
@@ -22,8 +28,14 @@ pub mod legacy_watcher;
 pub mod output;
 /// The checks a cage-addressing command runs before it does anything.
 pub mod preflight;
+/// Point-in-time image-tag resolution for build args (PR D6).
+pub mod registry;
 /// Secret resolution and the at-rest stores (PR D3).
 pub mod secrets;
+/// `services.py` — build, render, install, start (PR D6).
+pub mod services;
+/// Staging a Containerfile's build context into a cage (PR D6).
+pub mod staging;
 /// Host terminal hygiene around interactive cage sessions.
 pub mod terminal;
 /// Per-phase wall times, behind the hidden `--timings` flags.

@@ -446,6 +446,61 @@ pub fn run_interactive(argv: &[String]) -> Result<i32, SessionError> {
     Ok(exit_status_of(&status))
 }
 
+// ── hidden prompts ───────────────────────────────────────────
+
+/// `click.prompt(label, hide_input=True)` — read one line with echo off.
+///
+/// Used by `cage create -s KEY` (and every other bare-key secret
+/// prompt): the value is a credential, so it must not be echoed and it
+/// must not reach the shell history.
+///
+/// Echo is disabled on the controlling terminal and restored whatever
+/// happens, including a `?` on the read itself — that is the whole
+/// reason the `Termios` is put back in a guard-shaped block rather than
+/// after the read. When stdin is not a terminal there is nothing to
+/// disable and the line is read plainly, which is how a piped
+/// `echo value | agentcage ...` keeps working.
+///
+/// # Errors
+///
+/// [`io::Error`] if the line cannot be read, or if EOF arrives first.
+pub fn prompt_hidden(label: &str) -> io::Result<String> {
+    use std::io::{BufRead as _, Write as _};
+
+    let mut err = io::stderr();
+    write!(err, "{label}: ")?;
+    err.flush()?;
+
+    let stdin = io::stdin();
+    let saved = if stdin.is_terminal() {
+        termios::tcgetattr(&stdin).ok()
+    } else {
+        None
+    };
+    if let Some(saved) = &saved {
+        let mut quiet = saved.clone();
+        quiet.local_flags.remove(termios::LocalFlags::ECHO);
+        let _ = termios::tcsetattr(&stdin, SetArg::TCSAFLUSH, &quiet);
+    }
+
+    let mut line = String::new();
+    let read = stdin.lock().read_line(&mut line);
+
+    if let Some(saved) = &saved {
+        let _ = termios::tcsetattr(&stdin, SetArg::TCSAFLUSH, saved);
+        // The newline the user typed was swallowed with the echo.
+        let _ = writeln!(err);
+    }
+
+    match read? {
+        0 => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "no value on stdin",
+        )),
+        _ => Ok(line.trim_end_matches(['\n', '\r']).to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

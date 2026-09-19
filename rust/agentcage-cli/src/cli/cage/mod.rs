@@ -6,8 +6,13 @@
 //! registered here and again at the root. Everything else — the cage
 //! lifecycle — is below.
 
+pub(crate) mod audit;
+pub(crate) mod create;
 pub(crate) mod grants;
+pub(crate) mod lifecycle;
 pub(crate) mod query;
+pub(crate) mod update;
+pub(crate) mod verify;
 
 use clap::{Arg, Command};
 
