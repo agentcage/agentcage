@@ -62,9 +62,36 @@ def validate_relay_entry(
         raise ValueError(
             f"protocol_relays[{name}].upstream must be a mapping"
         )
-    host = str(upstream.get("host", "") or "")
+    # `str()` on whatever is there would turn `host: [1]` into the
+    # string "[1]", which is non-empty and therefore "present" — a
+    # config that validates and then fails DNS resolution with a name
+    # nobody wrote. A string or nothing; anything else is a mistake
+    # worth naming, the same way `upstream` itself is.
+    #
+    # Truthiness before type, matching ``ca_file``/``ca_pem`` above: a
+    # falsy host means "absent", whatever its type, and gets the
+    # requires-host-and-port message rather than a type complaint. Only
+    # a truthy non-string is a mistake worth naming.
+    raw_host = upstream.get("host", "")
+    if raw_host and not isinstance(raw_host, str):
+        raise ValueError(
+            f"protocol_relays[{name}].upstream.host must be a string "
+            f"(got {type(raw_host).__name__})"
+        )
+    host = str(raw_host or "")
+    # `port: "993"` and `port: 993.7` coerce on purpose — YAML makes both
+    # easy to write and both mean a port. `port: true` does not: `bool`
+    # is an `int` subclass in Python, so it would coerce to **1** and
+    # connect to a port the operator never named.
+    raw_port = upstream.get("port", 0)
+    if isinstance(raw_port, bool):
+        raise ValueError(
+            f"protocol_relays[{name}].upstream.port must be a number "
+            f"(got bool) — note that YAML reads bare yes/no/on/off as "
+            f"booleans; quote the port if you meant a number"
+        )
     try:
-        port = int(upstream.get("port", 0) or 0)
+        port = int(raw_port or 0)
     except (TypeError, ValueError):
         port = 0
     if not host or not (1 <= port <= 65535):
@@ -124,6 +151,17 @@ def validate_relay_entry(
                 )
 
     policy = entry.get("policy") or {}
+    # `upstream` refuses a non-mapping outright; `policy` used to guard
+    # with `isinstance` and no else branch, so a mistyped `policy:` —
+    # a list, a bare string — skipped every check below it in silence,
+    # `write_mode` included. The relay then reached `policy.get(...)` on
+    # a list and died with an `AttributeError` naming nothing. This is
+    # the block that gates writes to a mailbox; it says so instead.
+    if policy and not isinstance(policy, dict):
+        raise ValueError(
+            f"protocol_relays[{name}].policy must be a mapping "
+            f"(got {type(policy).__name__})"
+        )
     if isinstance(policy, dict):
         mode = policy.get("write_mode")
         if mode is not None:

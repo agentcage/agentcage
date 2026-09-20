@@ -4675,14 +4675,23 @@ def _host_never_grant(raw: dict) -> set[str]:
 
     Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
     ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
-    ``{internal, local, localhost}`` plus the control host from
-    ``agents.decider.host`` (default ``agentcage.local``). The reconcile runs
-    on the HOST (``grants sync`` / the implicit ``domain list`` reconcile)
-    and cannot import the addon (which lives in the egress image), so this
-    is a deliberate mirror kept in sync with
+    ``{internal, local, localhost, metadata.goog}`` plus the control host
+    from ``agents.decider.host`` (default ``agentcage.local``). The reconcile
+    runs on the HOST (``grants sync`` / the implicit ``domain list``
+    reconcile) and cannot import the addon (which lives in the egress
+    image), so this is a deliberate mirror kept in sync with
     ``config._AUTO_NEVER_GRANT`` / ``DeciderAgentConfig.host``. Suffix-matched
     so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
     and ``local`` covers the default control host's TLD family.
+
+    ``metadata.goog`` is GCP's *public* metadata alias — the one cloud
+    metadata name that does not end in ``.internal``; AWS and Azure address
+    theirs by IP, which the syntax check already rejects. It has been in
+    ``_AUTO_NEVER_GRANT`` and in the addon all along; only this docstring
+    said three. The three copies are pinned against each other by
+    ``tests/fixtures/contracts/shared_constants.json``, which is what would
+    actually catch a drift — a stale docstring is not load-bearing, but it
+    is the first thing someone reads before editing the set.
     """
     from agentcage.config import _AUTO_NEVER_GRANT
     out = {str(h).lower().rstrip(".") for h in _AUTO_NEVER_GRANT}

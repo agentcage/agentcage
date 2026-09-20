@@ -809,9 +809,15 @@ _RELAY_INPUTS = [
        entry=_pol(folder_allowlist=None, folder_denylist=None)),
     _c("ok-policy-null", "policy: null is normalised to {}",
        entry=_entry(policy=None)),
-    _c("ok-policy-not-mapping", "a non-mapping policy is SILENTLY skipped "
-       "— the isinstance guard has no else branch. Recorded as observed "
-       "behaviour", entry=_entry(policy=["write_mode: none"])),
+    _c("err-policy-not-mapping", "a truthy non-mapping policy is refused. "
+       "It used to be skipped in silence — write_mode included — because "
+       "the isinstance guard had no else branch, and the relay then died "
+       "on policy.get() with an AttributeError naming nothing",
+       entry=_entry(policy=["write_mode: none"])),
+    _c("err-policy-string", "the same, spelled as a bare string",
+       entry=_entry(policy="none")),
+    _c("ok-policy-empty-list", "falsy is 'absent': `or {}` normalises it "
+       "before the type is ever examined", entry=_entry(policy=[])),
     _c("ok-auth-mapping", "an auth block with no source_validator",
        entry=_entry(auth={"user_source": "env:MAIL_USER",
                           "password_source": "file:/run/secrets/mail"})),
@@ -869,6 +875,19 @@ _RELAY_INPUTS = [
     _c("err-port-non-numeric", "a non-numeric string is caught by the "
        "try/except and becomes 0", entry=_up(port="imaps")),
     _c("err-port-list", "a list is caught by the try/except", entry=_up(port=[993])),
+    _c("err-port-bool", "bool is an int subclass, so int(True) is 1 — a "
+       "relay pointed at port 1 is never what the operator wrote, and "
+       "YAML reads bare yes/on as booleans",
+       entry=_up(port=True)),
+    _c("err-host-list", "str() would make this the string '[1]', which is "
+       "non-empty and so reads as 'present' — a config that validates and "
+       "then fails DNS on a name nobody wrote", entry=_up(host=[1])),
+    _c("err-host-mapping", "the same for a mapping", entry=_up(host={"a": 1})),
+    _c("err-host-int", "a bare number", entry=_up(host=993)),
+    _c("err-host-falsy-is-absent-not-a-type-error", "a falsy host is "
+       "'absent', type unexamined — truthiness before type, matching "
+       "ca_file/ca_pem — so it gets the requires-host-and-port message "
+       "rather than a type complaint", entry=_up(host=[])),
     _c("ok-port-float-truncates", "a float truncates toward zero, so "
        "993.7 becomes 993 and PASSES", entry=_up(port=993.7)),
     _c("err-port-float-sub-one", "0.5 truncates to 0", entry=_up(port=0.5)),

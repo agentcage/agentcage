@@ -457,8 +457,8 @@
       "source_validator_calls": []
     },
     {
-      "id": "ok-policy-not-mapping",
-      "why": "a non-mapping policy is SILENTLY skipped \u2014 the isinstance guard has no else branch. Recorded as observed behaviour",
+      "id": "err-policy-not-mapping",
+      "why": "a truthy non-mapping policy is refused. It used to be skipped in silence \u2014 write_mode included \u2014 because the isinstance guard had no else branch, and the relay then died on policy.get() with an AttributeError naming nothing",
       "entry": {
         "name": "mail",
         "type": "imap",
@@ -470,6 +470,40 @@
         "policy": [
           "write_mode: none"
         ]
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy must be a mapping (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-policy-string",
+      "why": "the same, spelled as a bare string",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": "none"
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy must be a mapping (got str)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-policy-empty-list",
+      "why": "falsy is 'absent': `or {}` normalises it before the type is ever examined",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": []
       },
       "ok": true,
       "error": null,
@@ -952,6 +986,90 @@
           "port": [
             993
           ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-bool",
+      "why": "bool is an int subclass, so int(True) is 1 \u2014 a relay pointed at port 1 is never what the operator wrote, and YAML reads bare yes/on as booleans",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": true
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.port must be a number (got bool) \u2014 note that YAML reads bare yes/no/on/off as booleans; quote the port if you meant a number",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-list",
+      "why": "str() would make this the string '[1]', which is non-empty and so reads as 'present' \u2014 a config that validates and then fails DNS on a name nobody wrote",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": [
+            1
+          ],
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.host must be a string (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-mapping",
+      "why": "the same for a mapping",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": {
+            "a": 1
+          },
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.host must be a string (got dict)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-int",
+      "why": "a bare number",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": 993,
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.host must be a string (got int)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-falsy-is-absent-not-a-type-error",
+      "why": "a falsy host is 'absent', type unexamined \u2014 truthiness before type, matching ca_file/ca_pem \u2014 so it gets the requires-host-and-port message rather than a type complaint",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": [],
+          "port": 993
         }
       },
       "ok": false,

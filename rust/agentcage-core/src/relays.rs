@@ -176,12 +176,34 @@ pub fn validate_relay_entry(
 
     // ── upstream ────────────────────────────────────────
     let upstream = falsy_to_empty_mapping(entry.get("upstream"), &format!("{at}.upstream"))?;
+    // `str()` on whatever is there would turn `host: [1]` into the
+    // string "[1]", which is non-empty and therefore "present" — a
+    // config that validates and then fails DNS resolution with a name
+    // nobody wrote. A string or nothing; anything else is named.
     let host = match upstream.get("host") {
-        // `str(x or "")`: a falsy host is the empty string, and a
-        // sequence or mapping becomes its own repr, which is truthy.
-        Some(value) if python_bool(value) => str_of(value),
+        // A falsy host is the empty string, type unexamined: `host: 0`
+        // and `host: []` both mean "absent" and get the
+        // requires-host-and-port message, not a type complaint.
+        Some(value) if python_bool(value) => match value {
+            Value::String(text) => text.clone(),
+            other => {
+                return Err(ConfigError::value(format!(
+                    "{at}.upstream.host must be a string (got {})",
+                    type_name(other)
+                )));
+            }
+        },
         _ => String::new(),
     };
+    // `port: "993"` and `port: 993.7` coerce on purpose — YAML makes
+    // both easy to write and both mean a port. `port: true` does not:
+    // `bool` is an `int` subclass in Python, so it coerced to **1** and
+    // named a port the operator never wrote.
+    if matches!(upstream.get("port"), Some(Value::Bool(_))) {
+        return Err(ConfigError::value(format!(
+            "{at}.upstream.port must be a number (got bool) — note that YAML reads bare yes/no/on/off as booleans; quote the port if you meant a number"
+        )));
+    }
     let port = coerce_port(upstream.get("port"));
     if host.is_empty() || !(1..=65535).contains(&port) {
         return Err(ConfigError::value(format!(
@@ -242,11 +264,26 @@ pub fn validate_relay_entry(
 
     // ── policy ──────────────────────────────────────────
     //
-    // `isinstance(policy, dict)` rather than a refusal: a `policy:`
-    // that is a list is skipped in silence, not rejected. Reproduced,
-    // and flagged in the PR — it is the one gap in this validator, and
-    // widening it is a behaviour change that has to land on both sides
-    // of the boundary at once.
+    // `upstream` refuses a non-mapping outright; `policy` guarded with
+    // `isinstance` and no else branch, so a mistyped `policy:` — a
+    // list, a bare string — skipped every check below it in silence,
+    // `write_mode` included. The relay then reached `policy.get(...)`
+    // on a list and died with an `AttributeError` naming nothing. This
+    // is the block that gates writes to a mailbox; both sides of the
+    // boundary now say so.
+    //
+    // Falsy stays "absent": `policy: null` and `policy: []` normalise
+    // to `{}` through `or {}` before the type is ever examined, so
+    // only a *truthy* non-mapping is an error.
+    match entry.get("policy") {
+        Some(value) if python_bool(value) && !matches!(value, Value::Mapping(_)) => {
+            return Err(ConfigError::value(format!(
+                "{at}.policy must be a mapping (got {})",
+                type_name(value)
+            )));
+        }
+        _ => {}
+    }
     if let Some(policy) = mapping_or_skip(entry.get("policy")) {
         let mode = policy.get("write_mode");
         if let Some(mode) = mode.filter(|value| !matches!(value, Value::Null)) {
@@ -356,7 +393,8 @@ fn falsy_to_empty_string(value: Option<&Value>, sentence: &str) -> Result<String
 
 /// `x.get("policy") or {}` followed by `if isinstance(policy, dict)`.
 ///
-/// Not a refusal — a truthy non-mapping skips the whole policy block.
+/// The caller refuses a truthy non-mapping before this runs, so what
+/// reaches here is a mapping or a falsy value that means "absent".
 fn mapping_or_skip(value: Option<&Value>) -> Option<&Mapping> {
     match value {
         Some(Value::Mapping(mapping)) => Some(mapping),
@@ -382,6 +420,10 @@ fn coerce_port(value: Option<&Value>) -> i64 {
         return 0;
     };
     match value {
+        // Unreachable: the caller refuses `port: true` by type before
+        // coercion, because `int(True)` is 1 and a relay pointed at
+        // port 1 is never what the operator wrote. Kept so this
+        // function still totals `int()` on its own.
         Value::Bool(_) => 1,
         Value::Number(number) => number
             .as_i64()
@@ -492,52 +534,58 @@ mod tests {
         assert!(check(&format!("{base}tls: 'no'\n")).is_ok());
     }
 
-    /// The inputs the A4 fixture does **not** cover.
+    /// The coercions in front of the `raise` branches.
     ///
-    /// The fixture is 107 cases and reaches every `raise` branch, but
-    /// coverage of the branches is not coverage of the *coercions* in
-    /// front of them. Each expectation below was measured against
-    /// `_validate.py` on CPython 3.13 rather than reasoned about, and
-    /// each is a place where this validator accepts something an
-    /// operator probably did not mean:
+    /// The fixture reaches every `raise`, but coverage of the branches
+    /// is not coverage of the coercions ahead of them, and three of
+    /// those coercions used to accept input no operator meant. Each
+    /// expectation below is measured against `_validate.py` on CPython
+    /// 3.13 rather than reasoned about — the two sides of this trust
+    /// boundary have to agree exactly, and the fixture is regenerated
+    /// from the same run.
     ///
-    /// | Input | Why it is accepted |
+    /// | Input | Now |
     /// | :-- | :-- |
-    /// | `port: true` | `int(True)` is 1, a valid port |
-    /// | `host: [1]` | `str([1] or "")` is the text `[1]`, non-empty |
-    /// | `policy: [..]` / `policy: none` | `isinstance(policy, dict)` guards the whole block — a mistyped policy is skipped in silence, not refused |
-    /// | `ca_file: 0` | `0 or ""` is `""`, so the `isinstance` check never sees the integer |
+    /// | `port: true` | refused — `int(True)` was 1, a valid port |
+    /// | `host: [1]` | refused — `str([1] or "")` was the text `[1]`, non-empty, so the host looked present |
+    /// | `policy: [..]` / `policy: none` | refused — the `isinstance` guard had no else branch, so a mistyped policy skipped the whole block, `write_mode` included |
+    /// | `host: 0` | still "absent", not a type error: truthiness before type |
+    /// | `ca_file: 0` | still accepted — `0 or ""` is `""`, so the `isinstance` check never sees the integer |
     ///
-    /// They are reproduced, not fixed. Widening any of them is a
-    /// behaviour change that has to land on both sides of the trust
-    /// boundary at once, and it would refuse configs that deploy
-    /// today. The PR body flags them.
+    /// The last two are the ordering this validator has always used for
+    /// `ca_file`/`ca_pem`, and the new host check follows it rather
+    /// than inventing a second convention.
     #[test]
-    fn the_coercions_the_fixture_does_not_reach() {
+    fn the_coercions_in_front_of_the_raise_branches() {
         let relay = |extra: &str| {
             format!(
                 "name: mail\ntype: imap\nlisten: 'a:1'\nupstream:\n  host: h\n  port: 993\n{extra}"
             )
         };
-        // `int(True)` is 1.
-        assert!(
-            check("name: mail\ntype: imap\nlisten: 'a:1'\nupstream:\n  host: h\n  port: true\n")
-                .is_ok()
+        assert_eq!(
+            message("name: mail\ntype: imap\nlisten: 'a:1'\nupstream:\n  host: h\n  port: true\n"),
+            "protocol_relays[mail].upstream.port must be a number (got bool) — note that \
+             YAML reads bare yes/no/on/off as booleans; quote the port if you meant a number"
         );
-        // `str([1])` is truthy, so the host looks present.
-        assert!(
-            check("name: mail\ntype: imap\nlisten: 'a:1'\nupstream:\n  host: [1]\n  port: 993\n")
-                .is_ok()
+        assert_eq!(
+            message("name: mail\ntype: imap\nlisten: 'a:1'\nupstream:\n  host: [1]\n  port: 993\n"),
+            "protocol_relays[mail].upstream.host must be a string (got list)"
         );
-        // ... but a falsy host is the empty string and is refused.
+        // ... but a falsy host is "absent", type unexamined.
         assert_eq!(
             message("name: mail\ntype: imap\nlisten: 'a:1'\nupstream:\n  host: 0\n  port: 993\n"),
             "protocol_relays[mail].upstream requires host and port in [1, 65535]"
         );
-        // A policy that is not a mapping skips the entire block --
-        // including the write_mode inside it.
-        assert!(check(&relay("policy:\n- 'write_mode: bogus'\n")).is_ok());
-        assert!(check(&relay("policy: none\n")).is_ok());
+        assert_eq!(
+            message(&relay("policy:\n- 'write_mode: bogus'\n")),
+            "protocol_relays[mail].policy must be a mapping (got list)"
+        );
+        assert_eq!(
+            message(&relay("policy: none\n")),
+            "protocol_relays[mail].policy must be a mapping (got str)"
+        );
+        // Falsy is "absent" here too, so an empty list is `{}`.
+        assert!(check(&relay("policy: []\n")).is_ok());
         // `0 or ""` is a str, so the type check never fires.
         assert!(check(&relay("  ca_file: 0\n")).is_ok());
         assert!(check(&relay("  ca_file: {}\n")).is_ok());
