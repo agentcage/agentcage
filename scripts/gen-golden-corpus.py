@@ -2001,24 +2001,6 @@ def _run_case(case_id: str, yaml_text: str, opts: dict, out_root: Path,
         w.write("volume-mounts.json", _json_text(_volume_report(cfg)))
         w.write("render-warnings.txt", stderr.getvalue())
 
-        if units is None:
-            # E3 records the real `container run` argv below, so this is no
-            # longer a placeholder for missing coverage -- it explains why
-            # there are no `.container` files here, and points at the two
-            # places the rest of this backend's derivations live.
-            w.write(
-                "quadlets/NOT-APPLICABLE.txt",
-                "isolation: apple-container renders `container run` argv and a\n"
-                "launchd plist through backends/apple_container.py, not the\n"
-                "quadlet templates -- so there are no .container files here.\n"
-                "The argv itself is recorded beside this note as <case>.json\n"
-                "(PR E3), and the launchd job under ../launchd/.\n"
-                "\n"
-                "The volume/tmpfs derivations and the three egress-config\n"
-                "files are recorded separately in tests/fixtures/apple-container/\n"
-                "(PR E2, scripts/gen-apple-container-fixtures.py), under the id\n"
-                "`corpus:<case>`.\n",
-            )
         for filename, content in sorted((units or {}).items()):
             w.write(f"quadlets/{filename}", content)
         # The launchd job, for the apple-container cases only. It is NOT a
