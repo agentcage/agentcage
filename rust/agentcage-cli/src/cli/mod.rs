@@ -265,7 +265,6 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         // it three times. See `cage/logs.rs`.
         "cage logs" => logs::main(&Ctx::system(), leaf),
         "cage audit" => audit::main(&Ctx::system(), leaf),
-        "cage logs" => logs::main(&Ctx::system(), leaf),
         // PR D13. `cage har` reads one file the egress addon wrote
         // and writes JSON; it touches no container and no unit.
         "cage har" => ExitCode::from(agentcage_cli::har::main(&cage::query::har_args(
