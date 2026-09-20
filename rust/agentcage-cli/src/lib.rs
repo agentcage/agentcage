@@ -11,6 +11,9 @@
 //! `_timing.py`. The command tree (D5) and the `CommandRunner` seam (D1)
 //! land beside these.
 
+/// The backup tarball's container format: deterministic gzipped tar
+/// out, traversal-safe extraction in (PR D11).
+pub mod archive;
 /// The container backend: podman, quadlets, systemd (PR D6).
 pub mod backend;
 /// Fingerprint gathering — what makes `cage update` a no-op (PR D6).
