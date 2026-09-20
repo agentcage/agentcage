@@ -427,6 +427,8 @@ on the Python, the corpus and the port together — as the audit one did.
 | C7 | The corpus recorded only the keys of the mask-mountpoint map, leaving the paths the cleanup chain consumes unverified | **Fixed** in C7 |
 | C2 | `name` and `container.image` are matched with `$`, not `\Z` — the same anchor bug as the decider host. `name: "my-cage\n"` validates, and that name becomes a systemd unit name, a podman object name and a state directory. Verified end to end | Open; reproduced and pinned |
 | **D1** | **`secret_store.py:226` puts a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Open — see below** |
+| E2b | **The Rust port built the System-keychain argv scrambled** — the keychain path landed *before* the value and `-U`, so the path would be stored as the password. The Python appends it last. Only reachable on a headless Mac, the one configuration nobody could test | **Fixed** in E2b |
+| E2b | `_security_interaction_blocked` is **dead code**: defined at `secret_store.py:136` and never called. The fall-through treats every non-zero exit alike, so the stderr text is never consulted | Open; pinned, deliberately not wired in — doing so would *narrow* the fall-through and turn a headless Mac failing for any other reason into a hard failure |
 | D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; a policy call, see below |
 
 **The Keychain finding is the most serious thing this port has turned up**, because
@@ -438,10 +440,34 @@ apple backend's bind-mount staging. The macOS Keychain store is the one
 exception, and it is the one that runs on a laptop where other processes of the
 same user are most likely to exist.
 
-It is **not** fixed in the port. `security(1)`'s behaviour with a bare `-w` and a
-non-tty stdin is undocumented, and `KeychainStore` is PR **E2b**, gated on Apple
-hardware — guessing on Linux against no runnable test would be worse than
-flagging it. D1 reproduces the argv as-is, marks the argument so it is redacted
+**E2b researched it and the obvious fix is refuted, not merely unverified.**
+Reading Apple's shipping source rather than man-page prose: a bare `-w` routes
+to `getpass(3)`, which opens `/dev/tty` first and falls back to stdin only when
+the process has *no controlling terminal at all* — not when stdin is a pipe.
+There is no `isatty` check. So the same pipeline works under launchd or a
+terminal-less ssh and hangs on a developer's machine, which is why reports in
+the wild contradict each other. It also prompts **twice** and compares, so a
+one-line pipe is wrong even where the pipe is read. Worst of all, on EOF
+`getpass` returns an empty string, both prompts match, and **`security` stores
+an empty password and exits 0** — silent failure in the unsafe direction.
+
+The channel that does work is `security -i`, which reads command *lines* from
+stdin and splits them in process, so the kernel's argv stays `security -i`.
+Its own hazards are documented too: a 4096-byte line limit whose overflow is
+parsed as the next command (echoing part of the secret to stderr), and a
+splitter that treats backslash as an escape inside single quotes, unlike a
+shell.
+
+One scope correction worth having: XNU refuses the process-arguments sysctl
+across uids, so this is a **same-user and root** exposure rather than the
+world-readable one the Linux intuition suggests. On a laptop that still means
+every other agent session and every package postinstall.
+
+It is **not** fixed in the port. E2b prepared the change behind a single
+constant, with the refuted variant deliberately **absent** so it cannot be
+flipped on by mistake, and wrote the Mac-only test that settles it — `#[ignore]`d
+with a reason rather than `cfg`-gated, so it stays visible on the machines
+where the decision is pending. D1 reproduces the argv as-is, marks the argument so it is redacted
 from every debug dump and fake-runner trace, and pins the behaviour in a test
 named after the bug. The `execve` exposure is unchanged and deliberate until it
 can be fixed against a real `security(1)`.
