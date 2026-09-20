@@ -18,11 +18,13 @@ const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
 
 /// Split `input` the way `shlex.split(input)` does.
 ///
+/// # Errors
+///
 /// Returns `Err` where Python raises `ValueError`: an unterminated quote
 /// (`No closing quotation`) or a trailing backslash (`No escaped
 /// character`). The caller's only use for the distinction is to skip the
 /// line, so the error carries no payload.
-pub(crate) fn split(input: &str) -> Result<Vec<String>, ShlexError> {
+pub fn split(input: &str) -> Result<Vec<String>, ShlexError> {
     let mut tokens = Vec::new();
     let mut token: Option<String> = None;
     let mut chars = input.chars();
@@ -76,7 +78,7 @@ pub(crate) fn split(input: &str) -> Result<Vec<String>, ShlexError> {
 
 /// Python's `ValueError` from `shlex.split`, with the message dropped.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ShlexError;
+pub struct ShlexError;
 
 #[cfg(test)]
 mod tests {

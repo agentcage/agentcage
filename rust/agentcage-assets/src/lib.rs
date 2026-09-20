@@ -58,7 +58,9 @@
 
 pub mod egress;
 pub mod extract;
-mod shlex;
+/// Just enough of Python's `shlex.split` for a `COPY` line and for
+/// `$EDITOR` (PR D14).
+pub mod shlex;
 
 use std::fmt;
 

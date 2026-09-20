@@ -230,25 +230,18 @@ fn unrecognised_input_exits_two() {
 
 // ── passthrough ─────────────────────────────────────────────────────
 
-/// `cage run`, the passthrough command that is still a stub.
-///
-/// A flag-shaped argument after `--` must reach the workload rather than
-/// being parsed. The binary cannot yet *run* a workload, so what is
-/// asserted is the observable consequence: the command parsed (exit 70,
-/// naming itself) instead of failing on the flag (exit 2).
-///
-/// `cage exec`'s half of this moved to
-/// [`passthrough_exec_reaches_its_body`] when D12 gave it a body — and
-/// the *values* it parses are pinned by `cli::cage::session`'s own
-/// tests, which can read the argv rather than infer it from an exit
-/// code.
-#[test]
-fn passthrough_accepts_flag_shaped_arguments() {
-    for args in [
-        vec!["run", "codex", "--", "codex", "--version"],
-        vec!["cage", "run", "claude-code", "--", "claude", "-p", "hi"],
-        // A known flag before the separator is still this command's own.
-        vec!["run", "claude-code", "--verbose", "--", "--not-a-flag"],
+// `passthrough_accepts_flag_shaped_arguments` lived here. It proved that
+// a flag-shaped argument after `--` reaches the workload rather than the
+// parser, by asserting the *stub's* exit code — the only observable a
+// command without a body has.
+//
+// Both halves now have bodies: `cage exec` in PR D12, `run` in PR D14.
+// Running either row would deploy a cage from a parser test. The
+// assertion did not weaken, it moved somewhere stronger:
+// `cli::conformance::recorded_click_parses_reproduce` replays the
+// recorded click parses for both commands — including
+// `run claude-code --verbose -- --not-a-flag` — and compares every
+// parsed parameter rather than inferring one from an exit status.
     ] {
         let out = agentcage(&args);
         assert_eq!(
@@ -446,6 +439,166 @@ fn the_ported_commands_are_wired_up() {
         assert_eq!(code(&out), 0, "{args:?}: {}", stderr(&out));
         assert!(stdout(&out).contains(wanted), "{args:?}: {}", stdout(&out));
     }
+}
+
+/// `run` refuses an unknown scaffold before it touches anything.
+///
+/// The one end-to-end assertion this suite can make about `run`: it
+/// reaches its own body (so the passthrough parsed), it resolves the
+/// scaffold search path, and it stops — no state directory, no podman,
+/// no deploy. The trailing `--verbose -- --not-a-flag` is there to prove
+/// the flag-shaped passthrough survives the trip through a real
+/// invocation.
+#[test]
+fn run_refuses_an_unknown_scaffold_without_deploying() {
+    let dir = agentcage_state::TestDir::new("binary-run-unknown");
+    for args in [
+        vec!["run", "no-such-scaffold", "--verbose", "--", "--not-a-flag"],
+        vec!["cage", "run", "no-such-scaffold"],
+    ] {
+        let out = agentcage_sandboxed(dir.path(), &args);
+        assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("Unknown scaffold 'no-such-scaffold'"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+        // It lists what there is, which is how the operator recovers.
+        assert!(
+            stderr(&out).contains("openclaw"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+    }
+    assert!(
+        !dir.path().join(".config/agentcage/cages").exists(),
+        "run created state for a cage it refused"
+    );
+}
+
+/// `init` writes a config, and `init --scaffold <name>` writes the
+/// scaffold's — with the build context beside it, because that is what
+/// `cage create -c` will build from.
+#[test]
+fn init_writes_a_config_and_stages_the_scaffold_context() {
+    let dir = agentcage_state::TestDir::new("binary-init");
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let config = work.join("cage.yaml");
+
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "init",
+            "e2e-demo",
+            "--output",
+            &config.display().to_string(),
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("name: e2e-demo"), "{text}");
+    assert!(stdout(&out).contains("Next steps:"), "{}", stdout(&out));
+
+    // Without `--force`, a second run refuses rather than clobbering.
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "init",
+            "e2e-demo",
+            "--output",
+            &config.display().to_string(),
+        ],
+    );
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("already exists"), "{}", stderr(&out));
+
+    // An unknown scaffold is named, and lists the alternatives.
+    let out = agentcage_sandboxed(dir.path(), &["init", "x", "--scaffold", "nope"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("unknown scaffold 'nope'"),
+        "{}",
+        stderr(&out)
+    );
+
+    // A name that could be a path is refused.
+    let out = agentcage_sandboxed(dir.path(), &["init", "../escape"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("lowercase"), "{}", stderr(&out));
+
+    // `--list-scaffolds` needs no NAME.
+    let out = agentcage_sandboxed(dir.path(), &["init", "--list-scaffolds"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("openclaw"), "{}", stdout(&out));
+}
+
+/// The `scaffold` group, end to end against a sandboxed `XDG_CONFIG_HOME`.
+#[test]
+fn the_scaffold_group_creates_shows_lists_and_deletes() {
+    let dir = agentcage_state::TestDir::new("binary-scaffold");
+
+    let out = agentcage_sandboxed(dir.path(), &["scaffold", "list"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("NAME"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("built-in"), "{}", stdout(&out));
+
+    let out = agentcage_sandboxed(dir.path(), &["scaffold", "show", "openclaw"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Scaffold: openclaw"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stdout(&out).contains("Build steps:"), "{}", stdout(&out));
+
+    // A built-in cannot be edited or deleted in place.
+    for args in [
+        vec!["scaffold", "edit", "openclaw"],
+        vec!["scaffold", "delete", "openclaw", "-y"],
+    ] {
+        let out = agentcage_sandboxed(dir.path(), &args);
+        assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
+        assert!(stderr(&out).contains("built-in"), "{args:?}");
+    }
+
+    // Forking one produces a user scaffold that then shadows it.
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &["scaffold", "create", "my-claw", "--from", "openclaw"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let forked = dir.path().join(".config/agentcage/scaffolds/my-claw");
+    assert!(forked.join("cage.yaml.j2").is_file());
+    assert!(forked.join("Containerfile").is_file());
+
+    let out = agentcage_sandboxed(dir.path(), &["scaffold", "show", "my-claw"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("Source:   user"), "{}", stdout(&out));
+
+    // The starter template substitutes the name.
+    let out = agentcage_sandboxed(dir.path(), &["scaffold", "create", "from-starter"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let starter = dir.path().join(".config/agentcage/scaffolds/from-starter");
+    let rendered = std::fs::read_to_string(starter.join("cage.yaml.j2")).unwrap();
+    assert!(!rendered.contains("{{SCAFFOLD_NAME}}"), "{rendered}");
+
+    // Export, then delete.
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "scaffold",
+            "export",
+            "my-claw",
+            &dir.path().join("out").display().to_string(),
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(dir.path().join("out/my-claw/cage.yaml.j2").is_file());
+
+    let out = agentcage_sandboxed(dir.path(), &["scaffold", "delete", "my-claw", "-y"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(!forked.exists());
 }
 
 /// A command that names a cage which does not exist refuses with the

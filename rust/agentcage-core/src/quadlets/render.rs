@@ -1345,7 +1345,7 @@ fn shlex_quote(text: &str) -> String {
 /// password database, which [`QuadletHost::user_home`] may or may not
 /// provide — when it does not, the path is returned unchanged, exactly
 /// as Python does on `KeyError`.
-fn expanduser(path: &str, host: &dyn QuadletHost) -> String {
+pub fn expanduser(path: &str, host: &dyn QuadletHost) -> String {
     if !path.starts_with('~') {
         return path.to_owned();
     }
@@ -1373,7 +1373,7 @@ fn expanduser(path: &str, host: &dyn QuadletHost) -> String {
 /// braces and all — which is exactly what makes the caller's `"$" in
 /// host_path` check a reliable "did not expand" test. A substituted
 /// value is never rescanned.
-fn expandvars(path: &str, host: &dyn QuadletHost) -> String {
+pub fn expandvars(path: &str, host: &dyn QuadletHost) -> String {
     if !path.contains('$') {
         return path.to_owned();
     }

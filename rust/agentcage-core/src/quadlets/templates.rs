@@ -131,6 +131,10 @@ pub fn environment() -> Result<Environment<'static>, Error> {
         }
     });
     environment.add_filter("systemd_exec", systemd_exec);
+    // Jinja2's `default` takes three arguments; minijinja's takes two.
+    // `openclaw/cage.yaml.j2` uses the third — see [`jinja_default`].
+    environment.add_filter("default", jinja_default);
+    environment.add_filter("d", jinja_default);
     environment.add_global(
         "placeholder",
         Value::from_function(|_name: &str| -> Result<String, Error> {
@@ -156,6 +160,36 @@ pub(crate) fn render(name: &str, context: Value) -> Result<String, Error> {
     shared().get_template(name)?.render(context)
 }
 
+/// Render a template that is not one of the embedded ones, with a live
+/// `placeholder()`.
+///
+/// This is what `init.py`'s second environment does: a scaffold's
+/// `cage.yaml.j2` is read from wherever the scaffold was found — a
+/// project checkout, `~/.config`, or the extracted asset tree — so it
+/// cannot come from the embedded set, but it must be rendered by the
+/// *same* environment, with the same whitespace settings, the same
+/// filters and the same globals.
+///
+/// The environment is built fresh rather than shared: it carries a
+/// caller-supplied `placeholder` global, and installing that on the
+/// process-wide one would leak entropy policy between renders.
+///
+/// # Errors
+///
+/// [`Error`] when the source fails to parse or the render raises.
+pub fn render_source<S: serde::Serialize>(
+    name: &str,
+    source: &str,
+    context: &S,
+    generator: impl Fn(&str) -> String + Send + Sync + 'static,
+) -> Result<String, Error> {
+    let mut environment = with_placeholder_global(environment()?, generator);
+    environment.add_template_owned(name.to_owned(), source.to_owned())?;
+    environment
+        .get_template(name)?
+        .render(Value::from_serialize(context))
+}
+
 /// The `systemd_exec` filter — `quadlets._systemd_exec_join`.
 ///
 /// Takes the command list the way Jinja2 hands a Python `list[str]` to
@@ -176,6 +210,39 @@ fn systemd_exec(args: &Value) -> Result<String, Error> {
         items.push(text.to_owned());
     }
     Ok(super::systemd_exec_join(&items))
+}
+
+/// Jinja2's `default(value, default_value='', boolean=False)`.
+///
+/// minijinja ships a two-argument `default` that substitutes only for an
+/// *undefined* value. Jinja2's third argument switches the test to
+/// falsiness, and `scaffolds/openclaw/cage.yaml.j2` opens with
+///
+/// ```jinja
+/// {% set gateway_port = port | default(18789, true) %}
+/// ```
+///
+/// which is the one construct in the scaffold corpus minijinja's builtin
+/// cannot express. Without this filter the render fails outright on the
+/// extra argument, and with only the two-argument semantics it would
+/// succeed and emit `none` — `port` is passed as Python's `None`, which
+/// is defined-but-falsy, so `{% if port %}` and `default(..., true)`
+/// have to agree that it is absent.
+///
+/// Registered for `d` as well, Jinja2's own alias for it.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "minijinja's `Function` impls are over owned argument types; \
+              `Rest<Value>` by reference does not satisfy the bound"
+)]
+fn jinja_default(value: &Value, rest: minijinja::value::Rest<Value>) -> Value {
+    let fallback = rest.first().cloned().unwrap_or_else(|| Value::from(""));
+    let boolean = rest.get(1).is_some_and(Value::is_true);
+    if value.is_undefined() || (boolean && !value.is_true()) {
+        fallback
+    } else {
+        value.clone()
+    }
 }
 
 /// Install a `placeholder(env_name)` global backed by `generator`.
@@ -323,6 +390,34 @@ mod tests {
             .render(context! { command => vec!["bash", "-c", "echo hi"] })
             .expect("renders");
         assert_eq!(rendered, "Exec=bash -c \"echo hi\"");
+    }
+
+    /// Jinja2's three-argument `default`, which the openclaw scaffold
+    /// opens with. `none | default(18789, true)` is `18789`, not
+    /// `none` — and not a `TooManyArguments` error.
+    #[test]
+    fn default_has_jinja2s_three_argument_form() {
+        let mut environment = environment().expect("environment");
+        environment
+            .add_template(
+                "t.j2",
+                "{{ port | default(18789, true) }}|{{ missing | default('x') }}|\
+                 {{ port | default(18789) }}|{{ set_port | default(18789, true) }}|\
+                 {{ empty | d('fallback', true) }}",
+            )
+            .expect("parses");
+        let rendered = environment
+            .get_template("t.j2")
+            .expect("template")
+            .render(context! {
+                port => None::<i64>, set_port => 19999, empty => "",
+            })
+            .expect("renders");
+        // `port` is defined-but-None: the boolean form substitutes, the
+        // two-argument form keeps it (which is Jinja2's behaviour too,
+        // and why the scaffold passes `true`) and renders it as `None`,
+        // the Python spelling minijinja also uses.
+        assert_eq!(rendered, "18789|x|None|19999|fallback");
     }
 
     /// The `placeholder` global is reachable, and the default one

@@ -280,6 +280,15 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         // phase 3 -- D9's acceptance check -- cannot be run without
         // them; see their module docs.
         "cage restart" => lifecycle::restart(&Ctx::system(), leaf),
+        // PR D14.
+        "init" => init::main(&Ctx::system(), leaf),
+        "cage run" => run::main(&Ctx::system(), leaf),
+        "scaffold create" => scaffold::create_main(&Ctx::system(), leaf),
+        "scaffold delete" => scaffold::delete_main(&Ctx::system(), leaf),
+        "scaffold edit" => scaffold::edit_main(&Ctx::system(), leaf),
+        "scaffold export" => scaffold::export_main(&Ctx::system(), leaf),
+        "scaffold list" => scaffold::list_main(&Ctx::system()),
+        "scaffold show" => scaffold::show_main(&Ctx::system(), leaf),
         _ => return None,
     })
 }

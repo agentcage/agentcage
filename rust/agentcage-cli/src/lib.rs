@@ -30,6 +30,10 @@ pub mod output;
 pub mod preflight;
 /// Point-in-time image-tag resolution for build args (PR D6).
 pub mod registry;
+/// The ephemeral `agentcage run` flow (PR D14).
+pub mod run;
+/// `init.py` — the scaffold search path and renderer (PR D14).
+pub mod scaffold;
 /// Secret resolution and the at-rest stores (PR D3).
 pub mod secrets;
 /// `services.py` — build, render, install, start (PR D6).
