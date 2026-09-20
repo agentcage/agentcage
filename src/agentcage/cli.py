@@ -683,7 +683,7 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
         click.echo("error: missing argument 'NAME'", err=True)
         sys.exit(1)
 
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {name!r})",
@@ -2745,7 +2745,7 @@ def _normalize_since(since: str) -> str:
 
     Accepts ``1h``, ``30m``, ``7d`` or ISO dates (passed through).
     """
-    m = re.match(r"^(\d+)([hHmMdD])$", since)
+    m = re.match(r"^(\d+)([hHmMdD])\Z", since)
     if not m:
         return since  # assume ISO date, pass through
     val, unit = int(m.group(1)), m.group(2).lower()
@@ -3072,7 +3072,21 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         )
 
     # Build filter
-    since_dt = parse_since(since) if since else None
+    #
+    # An unparseable --since is an error, not "no filter". Falling through
+    # to None silently exported the whole capture, which is the opposite of
+    # what a narrowing flag should do when it is wrong; `cage audit` has
+    # always refused the same input explicitly.
+    since_dt = None
+    if since:
+        since_dt = parse_since(since)
+        if since_dt is None:
+            click.echo(
+                f"error: could not parse --since '{since}' "
+                f"(use 1h, 30m, 7d, or an ISO date)",
+                err=True,
+            )
+            sys.exit(1)
     filt = CaptureFilter(
         decisions=list(decisions),
         directions=list(directions),
@@ -3252,7 +3266,7 @@ def _cage_restore_apple_container(
     from agentcage.backends.apple_container import AppleContainerBackend
 
     target_name = new_name or manifest["cage_name"]
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', target_name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', target_name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {target_name!r})",
@@ -3515,7 +3529,7 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
 
     target_name = new_name or manifest["cage_name"]
 
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', target_name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', target_name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {target_name!r})",

@@ -218,6 +218,13 @@ run_and_tally() {
   _tally_output "$phase" "$rc" "$elapsed" "$output"
 }
 
+# A phase fail-fast skipped. Recorded rather than omitted: a summary
+# that simply leaves the row out reads as "everything ran and 1 assertion
+# failed", when in fact a whole phase never started.
+note_skipped_phase() {
+  PHASE_RESULTS+=("Phase $1: SKIPPED (an earlier phase failed)")
+}
+
 # Tally results from a background phase's temp file
 tally_bg_phase() {
   local phase="$1"
@@ -284,15 +291,16 @@ fi
 BG_PIDS=()
 BG_PHASES=()
 
-if [ "$SUITE_FAILED" = false ]; then
-  for phase in 3 5 6; do
-    if HAS_PHASE "$phase"; then
-      run_phase "$phase" &
-      BG_PIDS+=($!)
-      BG_PHASES+=("$phase")
-    fi
-  done
-fi
+for phase in 3 5 6; do
+  HAS_PHASE "$phase" || continue
+  if [ "$SUITE_FAILED" = false ]; then
+    run_phase "$phase" &
+    BG_PIDS+=($!)
+    BG_PHASES+=("$phase")
+  else
+    note_skipped_phase "$phase"
+  fi
+done
 
 # ── wait for parallel phases and collect results ───────────────────
 for i in "${!BG_PIDS[@]}"; do
@@ -301,15 +309,23 @@ for i in "${!BG_PIDS[@]}"; do
 done
 
 # ── phase 7 (VM) runs after parallel phases ───────────────────────
-if HAS_PHASE 7 && [ "$SUITE_FAILED" = false ]; then
-  run_and_tally 7
+if HAS_PHASE 7; then
+  if [ "$SUITE_FAILED" = false ]; then
+    run_and_tally 7
+  else
+    note_skipped_phase 7
+  fi
 fi
 
 # ── phase 8 (openclaw) runs sequentially after VM ─────────────────
 # Heavy cage (4 GiB even after CI trim); keep out of the parallel block
 # so it doesn't contend with other phases for Podman resources.
-if HAS_PHASE 8 && [ "$SUITE_FAILED" = false ]; then
-  run_and_tally 8
+if HAS_PHASE 8; then
+  if [ "$SUITE_FAILED" = false ]; then
+    run_and_tally 8
+  else
+    note_skipped_phase 8
+  fi
 fi
 
 # ── summary ──────────────────────────────────────────────────────────

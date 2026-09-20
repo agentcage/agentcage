@@ -152,7 +152,7 @@ def _normalize_cpus(value: str) -> str:
     return str(math.ceil(f)) if f != int(f) else str(int(f))
 
 
-_MEMORY_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?$")
+_MEMORY_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?\Z")
 
 
 def _normalize_memory(value: str) -> str:

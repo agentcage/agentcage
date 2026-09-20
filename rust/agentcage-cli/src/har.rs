@@ -170,6 +170,23 @@ pub fn run(
         );
     }
 
+    // An unparseable `--since` is an error, not "no filter". Falling
+    // through to `None` silently exported the whole capture, which is the
+    // opposite of what a narrowing flag should do when it is wrong;
+    // `cage audit` has always refused the same input explicitly.
+    let mut since = None;
+    if let Some(text) = args.since.as_deref() {
+        let Some(parsed) = parse_since(text) else {
+            let _ = writeln!(
+                stderr,
+                "error: could not parse --since '{text}' \
+                 (use 1h, 30m, 7d, or an ISO date)"
+            );
+            return EXIT_FAILURE;
+        };
+        since = Some(parsed);
+    }
+
     let filter = CaptureFilter {
         decisions: args.decisions.clone(),
         directions: args.directions.clone(),
@@ -177,7 +194,7 @@ pub fn run(
         methods: args.methods.clone(),
         // `cage har` declares no `--min-action`; `cage audit` does.
         min_action: None,
-        since: args.since.as_deref().and_then(parse_since),
+        since,
     };
 
     let mut entries = match read_entries(&capture_path, &filter) {

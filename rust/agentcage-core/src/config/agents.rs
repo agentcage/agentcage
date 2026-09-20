@@ -456,24 +456,20 @@ fn validate_context(context: &str, path: &str) -> Checked<()> {
 
 // ── small helpers ───────────────────────────────────────
 
-/// `re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$", host)`.
+/// `re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z", host)`.
 ///
 /// Hand-written rather than a regex crate, because the *anchor* is the
 /// whole subtlety and a crate would hide it. Python's `$` matches at
 /// end of string **or immediately before one trailing newline**, so
-/// `agentcage.local\n` satisfies this pattern in `config.py` today.
+/// `agentcage.local\n` satisfied this pattern until 0.41.0.
 ///
-/// That is a real hole and it is reproduced, not fixed: the control
-/// host rides into `proxy-config.yaml`, and a host carrying a newline
-/// is the same shape of injection `valid_domain`'s `\Z` anchor exists
-/// to refuse on the domain lists. Tightening it is a behaviour change
-/// that belongs in its own commit, on both sides of the boundary —
-/// `policy_api` resolves the same control host. Flagged in the PR body.
+/// That was a real hole — the control host rides into
+/// `proxy-config.yaml`, and a host carrying a newline is the same shape
+/// of injection `valid_domain`'s `\Z` anchor has always existed to
+/// refuse on the domain lists. The anchor sweep closed it on both sides
+/// of the boundary at once, `policy_api` included.
 fn matches_control_host_shape(host: &str) -> bool {
-    // The one trailing newline `$` forgives. At most one: for a second
-    // one to be inside the match, the character class would have to
-    // accept `\n`, and it does not.
-    let body = host.strip_suffix('\n').unwrap_or(host);
+    let body = host;
     let mut characters = body.chars();
     let Some(first) = characters.next() else {
         return false;
@@ -568,17 +564,16 @@ mod tests {
     };
     use crate::config::{FixedHost, load};
 
-    /// The `$` anchor's trailing-newline hole, reproduced.
+    /// The `$` anchor's trailing-newline hole, closed.
     ///
-    /// `valid_domain` uses `\Z` for exactly this reason and the A4
-    /// fixture has a case for it. `agents.decider.host` uses `$`, so
-    /// `agentcage.local\n` passes here — and must keep passing until
-    /// the Python is fixed too, or the two implementations disagree
-    /// about a control host that rides into `proxy-config.yaml`.
+    /// `valid_domain` has always used `\Z` for exactly this reason and
+    /// the A4 fixture has a case for it. `agents.decider.host` used `$`
+    /// until 0.41.0, so `agentcage.local\n` passed; both sides now
+    /// refuse it, and the A4 fixture was regenerated to match.
     #[test]
-    fn the_control_host_pattern_forgives_one_trailing_newline() {
+    fn the_control_host_pattern_refuses_a_trailing_newline() {
         assert!(matches_control_host_shape("agentcage.local"));
-        assert!(matches_control_host_shape("agentcage.local\n"));
+        assert!(!matches_control_host_shape("agentcage.local\n"));
         assert!(!matches_control_host_shape("agentcage.local\n\n"));
         assert!(!matches_control_host_shape("agentcage.local\nx"));
         assert!(!matches_control_host_shape(""));
@@ -591,15 +586,20 @@ mod tests {
         assert!(matches_control_host_shape("a"));
     }
 
-    /// End to end, against a config `config.py` accepts today.
+    /// End to end, against a config `config.py` now refuses.
     ///
     /// Measured, not reasoned about: `load_config` + `validate_config`
-    /// on CPython 3.13 return `[]` for this document. So must this,
-    /// or the host CLI and the egress `policy_api` — which resolves
-    /// the same control host out of `proxy-config.yaml` — disagree
-    /// about what the control host is.
+    /// on CPython 3.13 raise this exact `ValueError` for this document.
+    /// So must this, or the host CLI and the egress `policy_api` —
+    /// which resolves the same control host out of `proxy-config.yaml`
+    /// — disagree about what the control host is.
+    ///
+    /// The document parses; only validation refuses it. That split
+    /// matters: `load` still carries the newline through, so a config
+    /// written before 0.41.0 is readable, and it is the validator that
+    /// reports why it will not deploy.
     #[test]
-    fn a_control_host_with_a_trailing_newline_is_accepted_exactly_as_python_accepts_it() {
+    fn a_control_host_with_a_trailing_newline_is_refused_exactly_as_python_refuses_it() {
         let host = FixedHost::linux(&["192.0.2.53"]);
         let document = "name: c\ncontainer:\n  image: alpine\ndomains:\n  allow: [example.com]\n\
                         agents:\n  decider:\n    enable: true\n    host: \"agentcage.local\\n\"\n    \
@@ -607,8 +607,11 @@ mod tests {
         let config = load("<test>", document, &host).expect("parse");
         assert_eq!(config.agents.decider.host, "agentcage.local\n");
         assert_eq!(
-            validate_agents(&config).expect("python accepts it"),
-            Vec::<String>::new()
+            validate_agents(&config)
+                .expect_err("python raises")
+                .message(),
+            "agents.decider.host 'agentcage.local\\n' must be a dotted hostname \
+             (e.g. 'agentcage.local'), not an IP literal or single label"
         );
     }
 

@@ -101,13 +101,34 @@ fi
 rm -f "$HAR_FILE"
 
 # ── VM Mount Isolation ──────────────────────────────────────────────
-assert_cmd_fail "7.16" "Home dir NOT mounted" \
+#
+# Two different homes are in play, and which one an assertion means is
+# the whole point of this block:
+#
+#   * The HOST's home. `~` below is expanded by the host shell before
+#     limactl is even called, so `ls ~/.ssh` asks the guest about the
+#     *host's* path — `/home/luca/.ssh`. That is exactly what 7.16-7.18
+#     want to know: lima.yaml.j2 mounts two named directories and not
+#     the whole home, so the host's private files must not be reachable
+#     under their own paths inside the guest.
+#   * The GUEST's own home, `/home/<user>.guest`. Lima creates it, puts
+#     its own `authorized_keys` in it, and it is where `backends/vm.py`
+#     pushes the quadlets (`mkdir -p ~/.config/containers/systemd`, run
+#     through a guest-side shell). Nothing about it is a host mount.
+#
+# 7.21 asked about the host's `~/.config/containers/systemd` and had
+# failed since the home mount was narrowed: that path is not mounted and
+# never should be. Rewriting the isolation assertions to use the guest
+# home instead would be worse — 7.17 would then find Lima's own
+# `authorized_keys` and fail. So the two groups quote differently on
+# purpose: expanded on the host above, single-quoted for the guest here.
+assert_cmd_fail "7.16" "Host home dir NOT mounted" \
   limactl shell "$VM_NAME" -- ls ~/Documents
 
-assert_cmd_fail "7.17" "SSH keys NOT accessible" \
+assert_cmd_fail "7.17" "Host SSH keys NOT accessible" \
   limactl shell "$VM_NAME" -- ls ~/.ssh
 
-assert_cmd_fail "7.18" "GPG keys NOT accessible" \
+assert_cmd_fail "7.18" "Host GPG keys NOT accessible" \
   limactl shell "$VM_NAME" -- ls ~/.gnupg
 
 assert_cmd_ok "7.19" "Config dir mounted" \
@@ -116,8 +137,9 @@ assert_cmd_ok "7.19" "Config dir mounted" \
 assert_cmd_fail "7.20" "Config dir read-only" \
   limactl shell "$VM_NAME" -- touch ~/.config/agentcage/testfile
 
-assert_cmd_ok "7.21" "Containers dir mounted (rw)" \
-  limactl shell "$VM_NAME" -- ls ~/.config/containers/systemd/
+# Guest-side `$HOME`: single-quoted so the host shell leaves it alone.
+assert_cmd_ok "7.21" "Quadlets pushed to the guest home" \
+  limactl shell "$VM_NAME" -- sh -c 'ls "$HOME"/.config/containers/systemd/'
 
 assert_cmd_ok "7.22" "State dir mounted (rw)" \
   limactl shell "$VM_NAME" -- ls ~/.local/share/agentcage/

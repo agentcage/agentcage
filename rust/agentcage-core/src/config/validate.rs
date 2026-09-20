@@ -26,19 +26,12 @@
 //! Each hole is a `── C3 ──` comment at the exact point `config.py` makes
 //! the check, so filling it in is an insertion rather than a merge.
 //!
-//! # Two Python behaviours reproduced rather than fixed
+//! # One Python behaviour reproduced rather than fixed
 //!
-//! Both are noted again at their sites. Neither is fixed here — a port is
-//! not the place to change what a validator accepts — but both look like
-//! bugs rather than choices:
+//! It is noted again at its site. It is not fixed here, but it looks
+//! like a bug rather than a choice:
 //!
-//! 1. **A trailing newline passes `name` and `container.image`.** Both
-//!    patterns anchor on `$`, which in Python matches immediately before
-//!    one trailing newline, so `name: "my-cage\n"` validates and is then
-//!    rendered into a systemd unit name. `valid_domain` anchors on `\Z`
-//!    for exactly this reason and says so in its docstring; these two did
-//!    not get the same treatment. See `matches_name` below.
-//! 2. **`_check_port_entry` runs after seven other checks.** It is the
+//! 1. **`_check_port_entry` runs after seven other checks.** It is the
 //!    one type check in `validate_config` rather than in `load_config`,
 //!    which is why this port reports it earlier than Python does — see
 //!    "Error precedence" below.
@@ -916,24 +909,19 @@ fn python_tuple(values: &[&str]) -> String {
     }
 }
 
-/// `re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', name)`.
+/// `re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', name)`.
 ///
-/// # The trailing newline
+/// # The anchor
 ///
-/// Python's `$` matches at the end of the string **or immediately before
-/// one trailing newline**, so `"my-cage\n"` passes this check. That is
-/// almost certainly not intended — `valid_domain` switched its own
-/// anchor to `\Z` for exactly this reason, and says so in its docstring —
-/// and the name goes on to become a systemd unit name, a podman object
-/// name and a directory under the state dir.
-///
-/// It is reproduced rather than fixed: this is a port, and a validator
-/// that accepts strictly less than the Python one would reject configs
-/// that deploy today. Flagged for a follow-up on the Python side, where
-/// changing the anchor is a one-character fix that belongs with a test.
+/// This pattern anchored on `$` until 0.41.0. Python's `$` matches at
+/// the end of the string **or immediately before one trailing newline**,
+/// so `"my-cage\n"` used to pass — and the name goes on to become a
+/// systemd unit name, a podman object name and a directory under the
+/// state dir. `valid_domain` had always anchored on `\Z` for exactly
+/// that reason; `name` and `container.image` did not get the same
+/// treatment until the anchor sweep. Both sides now reject it.
 fn matches_name(name: &str) -> bool {
-    let body = name.strip_suffix('\n').unwrap_or(name);
-    let bytes = body.as_bytes();
+    let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > 63 {
         return false;
     }
@@ -943,19 +931,17 @@ fn matches_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-/// `re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(@sha256:[a-f0-9]{64})?$', image)`.
+/// `re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(@sha256:[a-f0-9]{64})?\Z', image)`.
 ///
-/// Carries the same trailing-newline behaviour as [`matches_name`], for
-/// the same reason and with the same caveat.
+/// Anchored on `\Z` since 0.41.0, for the reason [`matches_name`] gives.
 ///
 /// No backtracking is needed: `@` is not in the body charset, so the
 /// optional digest can only begin at the first `@`, and the split point
 /// is unambiguous.
 fn matches_image_reference(image: &str) -> bool {
-    let body = image.strip_suffix('\n').unwrap_or(image);
-    let (reference, digest) = match body.split_once('@') {
+    let (reference, digest) = match image.split_once('@') {
         Some((reference, digest)) => (reference, Some(digest)),
-        None => (body, None),
+        None => (image, None),
     };
 
     let bytes = reference.as_bytes();
@@ -1059,13 +1045,16 @@ mod tests {
         assert_eq!(python_tuple(&["a"]), "('a',)");
     }
 
-    /// Reproduced, not fixed — see [`matches_name`].
+    /// The `\Z` anchor — see [`matches_name`]. A trailing newline used
+    /// to pass both patterns and no longer does, on either side.
     #[test]
-    fn a_trailing_newline_passes_name_and_image_exactly_as_it_does_in_python() {
-        assert!(matches_name("my-cage\n"));
+    fn a_trailing_newline_fails_name_and_image_exactly_as_it_does_in_python() {
+        assert!(matches_name("my-cage"));
+        assert!(!matches_name("my-cage\n"));
         assert!(!matches_name("my-cage\n\n"));
         assert!(!matches_name("my_cage"));
-        assert!(matches_image_reference("alpine:3\n"));
+        assert!(matches_image_reference("alpine:3"));
+        assert!(!matches_image_reference("alpine:3\n"));
         assert!(!matches_image_reference("!!not a ref!!"));
     }
 

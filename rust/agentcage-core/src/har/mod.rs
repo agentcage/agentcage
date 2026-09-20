@@ -430,14 +430,15 @@ pub fn parse_since(since: &str) -> Option<DateTime> {
     DateTime::from_isoformat(since).map(DateTime::assume_utc)
 }
 
-/// `re.match(r"^(\d+)([hHmMdD])$", since)`, lowercased unit.
+/// `re.match(r"^(\d+)([hHmMdD])\Z", since)`, lowercased unit.
 ///
-/// Python's `$` also matches immediately before a trailing newline, so
-/// `"1h\n"` is a valid relative offset there. That is faithfully
-/// reproduced rather than tidied away: it is the difference between
-/// `--since "$(cat file)"` working and silently exporting everything.
+/// Anchored on `$` until 0.41.0, so `"1h\n"` was a valid relative
+/// offset. The reason that hole stayed open was that failing to parse
+/// meant `cage har` silently exported everything — a worse outcome than
+/// accepting the newline. Both were fixed together: the anchor is `\Z`
+/// here, and an unparseable `--since` is now an error on both
+/// subcommands rather than an empty filter.
 fn split_relative(since: &str) -> Option<(i64, char)> {
-    let since = since.strip_suffix('\n').unwrap_or(since);
     let mut chars = since.chars();
     let unit = chars.next_back()?;
     if !matches!(unit, 'h' | 'H' | 'm' | 'M' | 'd' | 'D') {
@@ -725,12 +726,10 @@ mod tests {
             parse_since("2H").map(|d| now.seconds_since(&d)),
             Some(Some(7_200))
         );
-        // Python's `$` matches before a trailing newline, so this is a
-        // valid relative offset there too.
-        assert_eq!(
-            parse_since("1h\n").map(|d| now.seconds_since(&d)),
-            Some(Some(3_600))
-        );
+        // `\Z`, not `$` — a trailing newline is not a relative offset
+        // on either side, and does not fall through to the ISO branch
+        // either, so `--since "1h\n"` is a hard error.
+        assert!(parse_since("1h\n").is_none());
 
         // An ISO value is absolute, and a naive one is read as UTC.
         assert_eq!(

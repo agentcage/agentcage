@@ -812,6 +812,29 @@ class TestValidateConfig:
         cfg = load_config(str(p))
         validate_config(cfg)  # should not raise
 
+    def test_rejects_a_trailing_newline_in_name_and_image(self, tmp_path):
+        """``\\Z``, not ``$``.
+
+        A YAML literal block (``name: |``) produces a scalar with a
+        trailing newline. Python's ``$`` matches immediately before one,
+        so such a name used to validate and was then rendered into a
+        systemd unit name, a podman object name and a state directory.
+        ``valid_domain`` had always anchored on ``\\Z``; ``name`` and
+        ``container.image`` now do too.
+        """
+        p = tmp_path / "config.yaml"
+        p.write_text("name: |\n  mycage\ncontainer:\n  image: x\n")
+        cfg = load_config(str(p))
+        assert cfg.name == "mycage\n"
+        with pytest.raises(ValueError, match="name"):
+            validate_config(cfg)
+
+        p.write_text("name: ok\ncontainer:\n  image: |\n    alpine:3\n")
+        cfg = load_config(str(p))
+        assert cfg.container.image == "alpine:3\n"
+        with pytest.raises(ValueError, match="image"):
+            validate_config(cfg)
+
     def test_missing_image(self, tmp_path):
         p = tmp_path / "config.yaml"
         p.write_text("name: test\n")
