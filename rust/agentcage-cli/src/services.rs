@@ -489,6 +489,191 @@ pub fn collect_used_octets(paths: &Paths, exclude: &str) -> BTreeSet<u32> {
     used
 }
 
+// ── the live secret channel ──────────────────────────
+//
+// `secret set` on a *running* cage does not restart it. The value goes
+// into a tmpfs file the egress already has mounted, and the proxy picks
+// it up on its next `proxy-config.yaml` mtime poll. The three functions
+// below are that path; `cli::secret::live` is the policy that sequences
+// them.
+
+/// `services.current_placeholders` — (env, placeholder) pairs from a
+/// cage's stored config, read *now*.
+///
+/// Read at call time, not from the cage container's frozen environment:
+/// a rule declared after the container started is usable in a new
+/// `cage exec` session without a restart, which is what makes
+/// `secret set --declare` a one-command operation.
+///
+/// Rules with no `env:` or no `placeholder:` are skipped — a
+/// half-written rule must not put an empty `--env NAME=` on the exec
+/// argv.
+///
+/// A config that cannot be read at all yields no pairs. Python narrows
+/// that to `FileNotFoundError`; the difference is only visible for a
+/// `cage.yaml` that is present and malformed, where Python would abort
+/// the exec with a YAML traceback and this drops the placeholder
+/// environment instead. Neither is better and the config was validated
+/// on the way in.
+#[must_use]
+pub fn current_placeholders(paths: &Paths, name: &str) -> Vec<(String, String)> {
+    let Ok(raw) = paths.load_raw_config(name, agentcage_state::AgentSchema::Check) else {
+        return Vec::new();
+    };
+    let mut pairs = Vec::new();
+    for rule in agentcage_core::config::injection_rules(&raw) {
+        let Some(rule) = rule.as_mapping() else {
+            continue;
+        };
+        let (Some(env), Some(placeholder)) = (rule.get("env"), rule.get("placeholder")) else {
+            continue;
+        };
+        if !agentcage_core::yaml::python_bool(env)
+            || !agentcage_core::yaml::python_bool(placeholder)
+        {
+            continue;
+        }
+        pairs.push((
+            agentcage_core::python::str_of(env),
+            agentcage_core::python::str_of(placeholder),
+        ));
+    }
+    pairs
+}
+
+/// The staged-secrets mount point inside the egress container.
+const STAGED_SECRETS_MOUNT: &str = "/home/acproxy/secrets";
+
+/// `services.cage_has_live_secret_channel` — does the **running**
+/// egress mount the staging directory?
+///
+/// The question is asked of the live container, not of the installed
+/// unit file, and the distinction is the whole point: units may have
+/// been converged (regenerated and installed without a restart) after
+/// the container started, in which case the running egress still has no
+/// `/home/acproxy/secrets` mount and a staged value could never reach
+/// its proxy. The caller must then take the restart path, which also
+/// adopts the converged units.
+///
+/// Only the container backend is answered here. `vm` needs the
+/// Lima-routed podman (Track E1) and `apple-container` has its own
+/// staging lifecycle tied to `start()`; both read as "no live channel",
+/// which is the safe answer — it costs a restart, not a wrong value.
+#[must_use]
+pub fn cage_has_live_secret_channel(
+    podman: &agentcage_exec::tools::podman::Podman<'_>,
+    name: &str,
+    config: &Config,
+) -> bool {
+    if config.isolation != "container" {
+        return false;
+    }
+    let Ok(info) = podman.container_inspect(&format!("{name}-egress")) else {
+        return false;
+    };
+    info.get("Mounts")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|mounts| {
+            mounts.iter().any(|mount| {
+                mount.get("Destination").and_then(serde_json::Value::as_str)
+                    == Some(STAGED_SECRETS_MOUNT)
+            })
+        })
+}
+
+/// `services._STAGE_WRITE_SCRIPT`, verbatim.
+///
+/// Runs under `podman unshare`, so uid 0 inside the script is the host
+/// user and the `chown` maps to the in-container `acproxy` uid through
+/// the rootless user namespace. A plain host-user write would get
+/// `EACCES` on a file a previous egress start already chowned to the
+/// subuid.
+const STAGE_WRITE_SCRIPT: &str =
+    r#"umask 077; mkdir -p "$(dirname "$1")"; cat > "$1" && chown 200:200 "$1""#;
+
+/// `services.stage_secret_value` — write `value` into the cage's staged
+/// tmpfs file, live.
+///
+/// The egress quadlet mounts the staging directory read-only at
+/// `/home/acproxy/secrets`; the proxy's `secret_injector` prefers a
+/// staged file over its own (frozen) process environment and re-reads
+/// it on the next `proxy-config.yaml` mtime bump, so callers pair this
+/// with [`agentcage_state::Paths::save_proxy_config`] — **after**, not
+/// before, or the reload can happen between the bump and the write and
+/// never re-trigger.
+///
+/// An empty `value` writes a tombstone, which is `secret rm`: the rule
+/// stops injecting rather than falling back to the stale value frozen
+/// in the egress process environment.
+///
+/// # The value does not reach argv
+///
+/// It goes to the script's stdin as
+/// [`agentcage_exec::Command::stdin_secret`], and the only argument is
+/// the *target path*. The path is a key name under a directory this
+/// process composed, so it carries no secret either.
+///
+/// The target is composed from [`Paths::runtime_secrets_dir`] rather
+/// than created with `ensure_runtime_secrets_dir`, deliberately: once
+/// the egress has started, the staging directory belongs to the
+/// `acproxy` subuid and a host-side `chmod` would `EPERM`. The script
+/// does its own `mkdir -p` with the right identity.
+///
+/// # Errors
+///
+/// [`agentcage_exec::ExecError`] if `podman unshare` could not be run
+/// or exited non-zero. The caller falls back to the restart path.
+pub fn stage_secret_value(
+    podman: &agentcage_exec::tools::podman::Podman<'_>,
+    runner: &dyn agentcage_exec::CommandRunner,
+    paths: &Paths,
+    name: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), agentcage_exec::ExecError> {
+    let target = paths.runtime_secrets_dir(name).join(key);
+    let command = podman
+        .base()
+        .args([
+            "unshare",
+            "sh",
+            "-c",
+            STAGE_WRITE_SCRIPT,
+            "_",
+            &target.display().to_string(),
+        ])
+        .stdin_secret(value.to_owned())
+        .captured();
+    runner.run(&command)?.check("podman")?;
+    Ok(())
+}
+
+/// How long [`restart_cage`] waits for the cage service to come back.
+const RESTART_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `services.restart_cage` — restart the services, then wait for the
+/// cage to actually be up.
+///
+/// Without the wait, `cage restart` returns while the cage container is
+/// still in podman's "starting" phase, the operator runs `cage ls`
+/// immediately after, sees `degraded (2/3)`, and concludes the restart
+/// failed. 30 seconds matches the cage quadlet's `ExecStartPre` CA-cert
+/// poll plus a few seconds for podman to register the container.
+///
+/// Returns silently either way: a cage still not active at the deadline
+/// may simply be slow, and `backend.restart` has already surfaced any
+/// failure of its own.
+pub fn restart_cage(backend: &ContainerBackend<'_>, name: &str) {
+    backend.restart(name);
+    let deadline = std::time::Instant::now() + RESTART_DEADLINE;
+    while std::time::Instant::now() < deadline {
+        if backend.is_running(name, "cage") {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 /// A JSON number that is a plausible third octet.
 fn as_u32(value: &agentcage_core::har::json::Json) -> Option<u32> {
     match value {

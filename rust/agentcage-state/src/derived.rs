@@ -34,7 +34,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use agentcage_core::config::HostProbe;
+use agentcage_core::config::{HostProbe, injection_rules};
 use agentcage_core::python::{repr_str, str_of};
 use agentcage_core::quadlets::effective_dns_allowlist;
 use agentcage_core::yaml::{self, Mapping, Value};
@@ -294,25 +294,6 @@ impl Paths {
             candidate = parent;
         }
         Ok(dir)
-    }
-}
-
-/// `si.get("rules", []) if isinstance(si, dict) else si`.
-///
-/// `secret_injection:` accepts two shapes — a bare list of rules, and
-/// a mapping with a `rules:` key — and both reach this file.
-fn injection_rules(raw: &Value) -> &[Value] {
-    const NONE: &[Value] = &[];
-    let Value::Mapping(raw) = raw else {
-        return NONE;
-    };
-    match raw.get("secret_injection") {
-        Some(Value::Sequence(rules)) => rules,
-        Some(Value::Mapping(block)) => match block.get("rules") {
-            Some(Value::Sequence(rules)) => rules,
-            _ => NONE,
-        },
-        _ => NONE,
     }
 }
 

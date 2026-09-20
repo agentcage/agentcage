@@ -101,7 +101,7 @@ pub fn fill_raw_placeholders(
     // the document said, and Python's dict lookup compares the same way.
     let mut carried: HashMap<Value, Value> = HashMap::new();
     if let Some(previous) = previous {
-        for rule in rules_of(previous) {
+        for rule in injection_rules(previous) {
             if let Value::Mapping(rule) = rule {
                 carried.insert(
                     rule.get("env").cloned().unwrap_or(Value::Null),
@@ -114,7 +114,7 @@ pub fn fill_raw_placeholders(
     }
 
     let mut changed = false;
-    for rule in rules_of_mut(raw) {
+    for rule in injection_rules_mut(raw) {
         // `if not isinstance(entry, dict): continue`.
         let Value::Mapping(rule) = rule else {
             continue;
@@ -153,9 +153,15 @@ pub fn fill_raw_placeholders(
 ///
 /// The section accepts a bare list or `{"rules": [...]}`, and anything
 /// else — a scalar, a mapping without `rules` — is no rules at all rather
-/// than an error. That leniency is `fill_raw_placeholders`'s alone:
+/// than an error. That leniency is the *raw* readers' alone:
 /// `load_config` is stricter about the same section, and runs later.
-fn rules_of(document: &Value) -> &[Value] {
+///
+/// Public because three raw readers want it and had grown three copies:
+/// this one, `state::derived`'s `placeholders.env` writer, and
+/// `cli.py::_injection_rules` (the `secret rotate-placeholders` /
+/// `secret set --declare` pair, PR D9).
+#[must_use]
+pub fn injection_rules(document: &Value) -> &[Value] {
     const NONE: &[Value] = &[];
     let Some(section) = document.get("secret_injection") else {
         return NONE;
@@ -173,12 +179,13 @@ fn rules_of(document: &Value) -> &[Value] {
     }
 }
 
-/// [`rules_of`], for mutation.
+/// [`injection_rules`], for mutation.
 ///
-/// Written out rather than shared with [`rules_of`] because the borrow
-/// checker will not let one function return both, and the alternative —
-/// an index path — reads worse than the duplication.
-fn rules_of_mut(document: &mut Value) -> &mut [Value] {
+/// Written out rather than shared with [`injection_rules`] because the
+/// borrow checker will not let one function return both, and the
+/// alternative — an index path — reads worse than the duplication.
+#[must_use]
+pub fn injection_rules_mut(document: &mut Value) -> &mut [Value] {
     let Some(section) = document.get_mut("secret_injection") else {
         return &mut [];
     };

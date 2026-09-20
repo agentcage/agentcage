@@ -451,11 +451,24 @@ pub(crate) fn build_container_image(
 ///
 /// `KEY=VALUE` or a bare `KEY`, which prompts. The prompt is
 /// `click.prompt(..., hide_input=True)`: a terminal read with echo off.
+///
+/// The storing itself is [`SecretWriter`], shared with `secret set` —
+/// it is `cli._store_secret`, and the two call sites have to agree
+/// about which backend takes a value and what happens when it refuses.
+///
+/// The `KEY=VALUE` form puts a credential in agentcage's own argv and
+/// in the operator's shell history. That is pre-existing and
+/// deliberately reproduced (see [`agentcage_cli::secrets`]); the bare
+/// `KEY` form is the one to reach for, and `secret set` has no other.
 fn store_secrets(ctx: &Ctx, config: &Config, name: &str, specs: &[String]) -> Result<(), ExitCode> {
     let env = agentcage_cli::secrets::SystemEnv;
-    let host = agentcage_cli::secrets::SecretHost::detect(ctx.runner.as_ref(), &env);
-    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-    let state_dir = ctx.paths.deployment_dir(name);
+    let writer = crate::cli::secret::set::SecretWriter::new(
+        ctx.runner.as_ref(),
+        &env,
+        config,
+        name,
+        ctx.paths.deployment_dir(name),
+    );
 
     for spec in specs {
         let (key, value) = if let Some((key, value)) = spec.split_once('=') {
@@ -468,66 +481,7 @@ fn store_secrets(ctx: &Ctx, config: &Config, name: &str, specs: &[String]) -> Re
                 })?;
             (spec.clone(), value)
         };
-        let source_scheme = config
-            .secret_injection
-            .iter()
-            .find(|rule| rule.env == key)
-            .map(|rule| rule.source.split(':').next().unwrap_or_default())
-            .unwrap_or_default();
-
-        let store = agentcage_cli::secrets::resolve_store(
-            config,
-            &host,
-            Some(&podman),
-            source_scheme,
-            agentcage_cli::secrets::Platform::host(),
-        )
-        .map_err(|error| {
-            eprintln!(
-                "error: refusing to store secret '{key}': {}",
-                error.message()
-            );
-            eprintln!(
-                "  Fix: enable an encrypting backend (Linux: systemd-creds with a \
-                 TPM2/host/per-user key; macOS: an unlocked login keychain or \
-                 passwordless sudo for the System keychain) or, to accept \
-                 unencrypted at-rest storage, set `secrets:\\n  allow_plaintext: \
-                 true` in cage.yaml."
-            );
-            ExitCode::from(EXIT_FAILURE)
-        })?;
-
-        let full = format!("{name}.{key}");
-        let mut store = store;
-        if let Err(error) = store.set(name, &key, &value, &state_dir) {
-            // An encrypting backend failed at runtime (TPM2 contention,
-            // a locked keychain). Fall back only when it was allowed.
-            if config.secrets.allow_plaintext && store.name() != "plaintext" {
-                eprintln!(
-                    "warning: {} storage failed: {}",
-                    store.name(),
-                    error.message()
-                );
-                store = agentcage_cli::secrets::plaintext_store_for(config, Some(&podman));
-                if let Err(error) = store.set(name, &key, &value, &state_dir) {
-                    eprintln!("error: failed to store secret '{key}': {}", error.message());
-                    return Err(ExitCode::from(EXIT_FAILURE));
-                }
-            } else {
-                eprintln!("error: failed to store secret '{key}': {}", error.message());
-                return Err(ExitCode::from(EXIT_FAILURE));
-            }
-        }
-
-        match store.name() {
-            "plaintext" => {
-                eprintln!("warning: secret '{full}' stored UNENCRYPTED at rest.");
-                println!("Secret '{full}' set (unencrypted).");
-            }
-            "systemd-creds" => println!("Secret '{key}' encrypted with systemd-creds."),
-            "keychain" => println!("Secret '{key}' stored in the macOS keychain."),
-            other => println!("Secret '{full}' set ({other})."),
-        }
+        writer.set(&key, &value)?;
     }
     Ok(())
 }
