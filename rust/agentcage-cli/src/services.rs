@@ -517,7 +517,9 @@ pub fn collect_used_octets(paths: &Paths, exclude: &str) -> BTreeSet<u32> {
 /// on the way in.
 #[must_use]
 pub fn current_placeholders(paths: &Paths, name: &str) -> Vec<(String, String)> {
-    let Ok(raw) = paths.load_raw_config(name, agentcage_state::AgentSchema::Check) else {
+    // `Skip`, not `Check`: this feeds `cage exec`'s placeholder
+    // environment, and an agents-schema quibble is no reason to drop it.
+    let Ok(raw) = paths.load_raw_config(name, agentcage_state::AgentSchema::Skip) else {
         return Vec::new();
     };
     let mut pairs = Vec::new();
@@ -680,52 +682,6 @@ fn as_u32(value: &agentcage_core::har::json::Json) -> Option<u32> {
         agentcage_core::har::json::Json::Int(n) => u32::try_from(*n).ok(),
         _ => None,
     }
-}
-
-/// `services.current_placeholders` — `(env, placeholder)` pairs read
-/// from a cage's *stored* `cage.yaml`, live.
-///
-/// Not from the parsed [`Config`] a caller already has: the point is
-/// that an exec session built from this sees placeholders declared
-/// **after** the cage container started, which is what makes a
-/// newly-added secret usable without a restart. PID 1's environment
-/// only refreshes via `EnvironmentFile=` on the next restart.
-///
-/// Every failure is "no pairs": a missing config, a malformed one, a
-/// `secret_injection` that is a bare list rather than a mapping with
-/// `rules:`. The Python catches only `FileNotFoundError` and then
-/// duck-types its way through the rest, which comes to the same thing
-/// for every shape a validated cage can have on disk.
-///
-/// Rules whose placeholder was never filled in are skipped — the
-/// Python's `and` chain treats an empty string as absent, so the
-/// emptiness check is part of the contract rather than defensiveness.
-#[must_use]
-pub fn current_placeholders(paths: &Paths, name: &str) -> Vec<(String, String)> {
-    use agentcage_core::yaml::Value;
-
-    let Ok(raw) = paths.load_raw_config(name, agentcage_state::AgentSchema::Skip) else {
-        return Vec::new();
-    };
-    let injection = raw.get("secret_injection");
-    // `si.get("rules", []) if isinstance(si, dict) else si` — a mapping
-    // carries its rules under `rules:`, a bare sequence *is* the rules.
-    let rules = match injection {
-        Some(Value::Mapping(_)) => injection.and_then(|value| value.get("rules")),
-        other => other,
-    };
-    let Some(rules) = rules.and_then(Value::as_sequence) else {
-        return Vec::new();
-    };
-    rules
-        .iter()
-        .filter_map(|entry| {
-            let env = entry.get("env")?.as_str()?;
-            let placeholder = entry.get("placeholder")?.as_str()?;
-            (!env.is_empty() && !placeholder.is_empty())
-                .then(|| (env.to_owned(), placeholder.to_owned()))
-        })
-        .collect()
 }
 
 #[cfg(test)]
