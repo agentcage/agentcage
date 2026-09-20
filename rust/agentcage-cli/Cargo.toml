@@ -142,6 +142,33 @@ clap = { version = "4", features = ["wrap_help"] }
 # already configured the click protocol.
 clap_complete = "4"
 
+# ── `cage backup` / `cage restore` (PR D11) ──────────────────
+#
+# The backup format is a gzipped tar with a `manifest.json`
+# (`cli.py:3209`), and PR A7 committed a tarball the *Python* produced
+# that `cage restore` has to read. PR D2 pinned its contract by shelling
+# to the system `tar` and said outright that the decoder is this PR's
+# dependency to add.
+#
+# `tar` is the only maintained pure-Rust implementation of the format,
+# and `default-features = false` drops `xattr`: nothing in a backup
+# carries extended attributes, and a crate that could set them on
+# extraction is a capability this path has no use for. `filetime`
+# remains (it is not optional), but no mtime is ever restored — see
+# `archive::extract_into`, which writes every member itself rather than
+# calling the crate's `unpack`, precisely so that what lands on disk is
+# decided here.
+tar = { version = "0.4", default-features = false }
+
+# gzip, in Rust. The default `rust_backend` feature selects
+# `miniz_oxide`; `zlib`/`libz-sys` would add a C toolchain requirement
+# to a project that builds for four targets. Deterministic output is a
+# requirement of this PR (`archive::write_gz`), and a fixed backend at a
+# fixed level is what makes it one.
+flate2 = { version = "1", default-features = false, features = [
+    "rust_backend",
+] }
+
 [dev-dependencies]
 # The `poll` the terminal-restore test reads the pty master with.
 # `openpty` itself is already under `term`. Same crate as above; Cargo

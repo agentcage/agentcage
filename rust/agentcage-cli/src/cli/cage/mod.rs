@@ -7,6 +7,7 @@
 //! lifecycle — is below.
 
 pub(crate) mod audit;
+pub(crate) mod backup;
 pub(crate) mod create;
 pub(crate) mod grants;
 pub(crate) mod lifecycle;
