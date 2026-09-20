@@ -875,6 +875,9 @@ _RELAY_INPUTS = [
     _c("err-port-non-numeric", "a non-numeric string is caught by the "
        "try/except and becomes 0", entry=_up(port="imaps")),
     _c("err-port-list", "a list is caught by the try/except", entry=_up(port=[993])),
+    _c("err-port-bool-false", "a falsy bool is refused too: there is no "
+       "reading of port: false, and YAML 1.1 makes `port: no` the same "
+       "thing", entry=_up(port=False)),
     _c("err-port-bool", "bool is an int subclass, so int(True) is 1 — a "
        "relay pointed at port 1 is never what the operator wrote, and "
        "YAML reads bare yes/on as booleans",

@@ -993,6 +993,22 @@
       "source_validator_calls": []
     },
     {
+      "id": "err-port-bool-false",
+      "why": "a falsy bool is refused too: there is no reading of port: false, and YAML 1.1 makes `port: no` the same thing",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": false
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.port must be a number (got bool) \u2014 note that YAML reads bare yes/no/on/off as booleans; quote the port if you meant a number",
+      "source_validator_calls": []
+    },
+    {
       "id": "err-port-bool",
       "why": "bool is an int subclass, so int(True) is 1 \u2014 a relay pointed at port 1 is never what the operator wrote, and YAML reads bare yes/on as booleans",
       "entry": {

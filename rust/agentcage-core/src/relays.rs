@@ -199,6 +199,12 @@ pub fn validate_relay_entry(
     // both easy to write and both mean a port. `port: true` does not:
     // `bool` is an `int` subclass in Python, so it coerced to **1** and
     // named a port the operator never wrote.
+    //
+    // Unlike `host` above, this refuses a *falsy* bool too. There is no
+    // reading of `port: false` — or of `port: no`, which YAML 1.1 makes
+    // the same thing — so the type message is more use than the range
+    // one, whereas a falsy host has always been the ordinary spelling
+    // of "absent".
     if matches!(upstream.get("port"), Some(Value::Bool(_))) {
         return Err(ConfigError::value(format!(
             "{at}.upstream.port must be a number (got bool) — note that YAML reads bare yes/no/on/off as booleans; quote the port if you meant a number"

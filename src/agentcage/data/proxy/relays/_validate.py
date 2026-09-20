@@ -64,14 +64,13 @@ def validate_relay_entry(
         )
     # `str()` on whatever is there would turn `host: [1]` into the
     # string "[1]", which is non-empty and therefore "present" — a
-    # config that validates and then fails DNS resolution with a name
-    # nobody wrote. A string or nothing; anything else is a mistake
-    # worth naming, the same way `upstream` itself is.
+    # config that validates and then fails DNS resolution on a name
+    # nobody wrote.
     #
-    # Truthiness before type, matching ``ca_file``/``ca_pem`` above: a
+    # Truthiness before type, matching ``ca_file``/``ca_pem`` below: a
     # falsy host means "absent", whatever its type, and gets the
     # requires-host-and-port message rather than a type complaint. Only
-    # a truthy non-string is a mistake worth naming.
+    # a *truthy* non-string is a mistake worth naming.
     raw_host = upstream.get("host", "")
     if raw_host and not isinstance(raw_host, str):
         raise ValueError(
@@ -83,6 +82,12 @@ def validate_relay_entry(
     # easy to write and both mean a port. `port: true` does not: `bool`
     # is an `int` subclass in Python, so it would coerce to **1** and
     # connect to a port the operator never named.
+    #
+    # Unlike ``host`` above, this refuses a *falsy* bool too. There is
+    # no reading of ``port: false`` — or of ``port: no``, which YAML 1.1
+    # makes the same thing — so the type message is more use than the
+    # range one, whereas a falsy host has always been the ordinary
+    # spelling of "absent".
     raw_port = upstream.get("port", 0)
     if isinstance(raw_port, bool):
         raise ValueError(
