@@ -463,6 +463,7 @@ const C1_OWNED: &[&str] = &[
     "err-ports-udp-allow-not-list",
     "err-ports-udp-not-mapping",
     "err-relay-auth-not-mapping",
+    "err-relay-auth-source-scheme",
     "err-relay-entry-not-mapping",
     "err-relay-folder-allowlist-not-list",
     "err-relay-missing-fields",

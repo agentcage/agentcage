@@ -20,11 +20,18 @@
 //! | domains: `allow`/`block` exclusivity, per-entry syntax | C2 |
 //! | secrets: scope, backend, env names, source schemes, transforms | C2 (in [`super::parse`], where `load_config` makes them) |
 //! | placeholders: the canonical-form warning | C2 |
-//! | `agents.decider` / `agents.watcher` | **C3** |
-//! | the apple-container inspector-chain warnings | **C3** |
+//! | `agents.decider` / `agents.watcher` | C3 |
+//! | the apple-container inspector-chain warnings | C3 |
 //!
-//! Each hole is a `── C3 ──` comment at the exact point `config.py` makes
-//! the check, so filling it in is an insertion rather than a merge.
+//! Both C3 rows were left as `── C3 ──` comments at the exact point
+//! `config.py` makes the check, so that filling them in would be an
+//! insertion rather than a merge. **Both are filled.** The first
+//! delegates to [`super::agents::validate_agents`], which C3 wrote but
+//! never called from here; the second is inline at the end of
+//! `apple_container_warnings`. Until they were, this function validated
+//! every config *except* its agents — and `tests/golden_validate.rs`
+//! measured the cost at thirty-one invalid corpus cases the port
+//! accepted and `config.py` refused.
 //!
 //! # One Python behaviour reproduced rather than fixed
 //!
@@ -63,7 +70,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::python::repr_str;
+use crate::python::{repr, repr_str};
 use crate::volume_mounts::{
     self, MountTarget, TMPFS_COPYUP_OPTIONS, is_non_persistent_volume, mask_copyup_entries,
     split_volume_spec, tmpfs_wants_copyup, validate_non_persistent_volume,
@@ -73,8 +80,10 @@ use super::ConfigError;
 use super::domain::{LabelPolicy, valid_domain};
 use super::placeholder::is_canonical;
 use super::types::{
-    Config, MITMDUMP_RESERVED_PORTS, PLACEHOLDER_PREFIX, VALID_LIFECYCLES, VALID_LOG_LEVELS,
+    BUILTIN_INSPECTOR_NAMES, Config, MITMDUMP_RESERVED_PORTS, PLACEHOLDER_PREFIX, VALID_LIFECYCLES,
+    VALID_LOG_LEVELS,
 };
+use crate::yaml::{Value, python_bool};
 
 type Validated<T> = Result<T, ConfigError>;
 
@@ -575,10 +584,11 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
         }
     }
 
-    // ── C3 ──────────────────────────────────────────────
+    // ── C3: the agents blocks ───────────────────────────
     //
     // `config.py`'s "Policy API validation", "agents.decider validation"
-    // and "agents.watcher validation" blocks go here, in that order:
+    // and "agents.watcher validation" run last, in that order, and
+    // [`super::agents::validate_agents`] reproduces all three:
     //
     //   * `agents.{decider,watcher}.timeout_seconds must be finite and > 0`
     //     for each enabled role, both roles checked before either one's
@@ -592,8 +602,15 @@ pub fn validate(config: &Config, host: &dyn ValidationHost) -> Validated<Vec<Str
     //     checks field for field, then interval / window / max_flows /
     //     max_digest_tokens, the two spend warnings, and context length.
     //
-    // Nothing below this point depends on them, so an insertion here is
-    // all that is needed. See RUST-PORT-PLAN.md Track C, row C3.
+    // C3 wrote that function and left this as a seam. The seam stayed
+    // empty, so until it was filled the CLI validated every config
+    // *except* its agents: a bad control host, an `api_key` in a scheme
+    // the egress cannot resolve, or a `max_tokens` under the measured
+    // 1024 floor all passed here and were caught only by the Python.
+    // The last of those is the one that hurt — 0.38.0 added that floor
+    // precisely because a starved decider denies every request while
+    // looking healthy.
+    warnings.extend(super::agents::validate_agents(config)?);
 
     Ok(warnings)
 }
@@ -866,14 +883,63 @@ fn apple_container_warnings(config: &Config, warnings: &mut Vec<String>) {
         }
     }
 
-    // ── C3 ──────────────────────────────────────────────
+    // ── C3: the inspector chain ─────────────────────────
     //
-    // `config.py`'s inspector-chain warnings go here, last in this
-    // block: one per `config.inspectors` entry, warning that a `path:`
-    // (custom Python file) inspector is not staged into the
-    // apple-container wrapper image, and that an unrecognised built-in
-    // name will silently no-op. `types::BUILTIN_INSPECTOR_NAMES` is the
-    // set those names are checked against.
+    // Last in this block, one warning per `config.inspectors` entry.
+    // Built-in inspectors run end to end on apple-container and are
+    // accepted in silence. The two that are not:
+    //
+    //   * an entry with `path:` — a custom Python file — is not staged
+    //     into the wrapper image, so the in-cage addon skips it;
+    //   * an unrecognised built-in name, so a typo does not no-op
+    //     silently.
+    //
+    // `name` is `entry.get("name", "")`, so a missing key is the empty
+    // string and `{name!r}` renders it `''`. A non-string name is not
+    // in the built-in set either, and [`python::repr`] renders it the
+    // way Python's `!r` would — `5`, not `'5'`.
+    //
+    // `config.inspectors` is already filtered to mappings at parse
+    // time, so the index here is the post-filter one, exactly as in
+    // `config.py`: both enumerate the same already-filtered list.
+    let empty = Value::String(String::new());
+    for (index, entry) in config.inspectors.iter().enumerate() {
+        let name = entry.get("name").unwrap_or(&empty);
+        if entry.get("path").is_some_and(python_bool) {
+            warnings.push(format!(
+                "inspectors[{index}] {}: custom Python file inspectors (path: ...) are \
+                 not yet staged into the apple-container wrapper image — the in-cage \
+                 addon will skip this entry. Use a built-in inspector or stay on the \
+                 container backend.",
+                repr(name)
+            ));
+        } else if python_bool(name) && !is_builtin_inspector(name) {
+            warnings.push(format!(
+                "inspectors[{index}] {}: not a known built-in inspector — the in-cage \
+                 addon will skip this entry. Valid names: {}.",
+                repr(name),
+                sorted_builtin_inspector_names().join(", ")
+            ));
+        }
+    }
+}
+
+/// `name in _BUILTIN_INSPECTOR_NAMES`.
+///
+/// A non-string is never in a `frozenset` of strings, so it falls to
+/// the warning — which is what `config.py` does.
+fn is_builtin_inspector(name: &Value) -> bool {
+    name.as_str()
+        .is_some_and(|text| BUILTIN_INSPECTOR_NAMES.contains(&text))
+}
+
+/// `', '.join(sorted(_BUILTIN_INSPECTOR_NAMES))`.
+///
+/// The constant is declared in registry order; the message is sorted.
+fn sorted_builtin_inspector_names() -> Vec<&'static str> {
+    let mut names = BUILTIN_INSPECTOR_NAMES.to_vec();
+    names.sort_unstable();
+    names
 }
 
 /// A `container.tmpfs` entry's target — `entry.partition(":")[0]`.

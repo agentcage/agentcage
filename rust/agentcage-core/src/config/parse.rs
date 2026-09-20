@@ -427,13 +427,14 @@ pub fn load(source: &str, text: &str, host: &dyn HostProbe) -> Parsed<Config> {
         // the validator is what makes `entry["name"]` on the next line
         // an index rather than a `KeyError`.
         //
-        // The `source_validator` hook is `None` until PR C2 lands
-        // `secret_resolver.validate_source`. What it costs meanwhile is
-        // exactly one corpus case — `err-relay-auth-source-scheme`, a
-        // relay credential naming an unknown scheme — which C2 turns on
-        // by passing its validator here. Everything else this validator
-        // refuses is already refused.
-        crate::relays::validate_relay_entry(entry, None)?;
+        // The `source_validator` hook is C2's
+        // [`super::secret::validate_source`], the same function
+        // `secret_injection` rules are checked with. Passing it here is
+        // what refuses a relay credential naming an unknown scheme
+        // (`auth.user_source: vault:X`) at parse time rather than
+        // letting it materialise as an empty credential at runtime.
+        let mut validate_source = |source: &str| super::secret::validate_source(source);
+        crate::relays::validate_relay_entry(entry, Some(&mut validate_source))?;
         let entry = mapping_of(entry, "protocol_relays entry")?;
         let name = raw_string(entry.get("name"), "", "protocol_relays[].name")?;
         let relay_type = raw_string(entry.get("type"), "", "protocol_relays[].type")?;

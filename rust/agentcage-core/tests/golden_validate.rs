@@ -307,9 +307,11 @@ fn the_shared_domain_table_matches() {
 /// Everything the port refuses with `config.py`'s exact words, in
 /// manifest order.
 ///
-/// PR C1's 34 structural refusals, plus the 42 value checks PR C2 adds.
-/// The list is asserted rather than counted so that a case moving between
-/// buckets shows up as a named diff.
+/// PR C1's structural refusals, PR C2's value checks, and — since the
+/// two `── C3 ──` seams in `config::validate` were filled — the whole
+/// decider and watcher blocks, which is what took this list from 85
+/// entries to 118. The list is asserted rather than counted so that a
+/// case moving between buckets shows up as a named diff.
 const REPRODUCED: &[&str] = &[
     "err-agents-auto-revoke-not-bool",
     "err-agents-decider-api-key-no-scheme",
@@ -333,7 +335,21 @@ const REPRODUCED: &[&str] = &[
     "err-container-port-not-a-number",
     "err-container-port-out-of-range",
     "err-container-port-spec-shape",
+    "err-decider-api-key-cmd",
+    "err-decider-api-key-missing",
+    "err-decider-api-key-podman",
+    "err-decider-base-url-http",
+    "err-decider-context-too-long",
+    "err-decider-host-in-allow",
+    "err-decider-host-single-label",
+    "err-decider-max-tokens-too-small",
+    "err-decider-model-missing",
+    "err-decider-provider-invalid",
+    "err-decider-provider-wrong-case",
+    "err-decider-rate-limit-negative",
+    "err-decider-requires-allowlist",
     "err-decider-timeout-not-finite",
+    "err-decider-timeout-not-positive",
     "err-domain-syntax-block",
     "err-domain-syntax-expires-key",
     "err-domain-syntax-ip-literal",
@@ -372,6 +388,7 @@ const REPRODUCED: &[&str] = &[
     "err-ports-udp-allow-not-list",
     "err-ports-udp-not-mapping",
     "err-relay-auth-not-mapping",
+    "err-relay-auth-source-scheme",
     "err-relay-ca-file-and-pem",
     "err-relay-ca-file-not-string",
     "err-relay-ca-pem-not-pem",
@@ -394,37 +411,6 @@ const REPRODUCED: &[&str] = &[
     "err-vm-mem-too-low",
     "err-vm-vcpus-too-low",
     "err-volume-np-with-z",
-    "misc-empty-config",
-    "seed-unit-test",
-    "seed-unit-test-curl",
-];
-
-/// The cases this pipeline still accepts, each with its owner.
-///
-/// | Cases | Owner | Why |
-/// | :-- | :-- | :-- |
-/// | `err-decider-*`, `err-watcher-*` | C3 | the decider and watcher validation blocks |
-/// | `err-volume-outside-home` | C8 | raised by `quadlets.py`, not by `validate_config` — a rendering check, not a config one |
-/// | `err-yaml-syntax`, `err-yaml-tab` | — | in [`KNOWN_DIVERGENT`]: the line and column match, the scanner's own wording cannot |
-const DEFERRED: &[&str] = &[
-    "err-decider-api-key-cmd",
-    "err-decider-api-key-missing",
-    "err-decider-api-key-podman",
-    "err-decider-base-url-http",
-    "err-decider-context-too-long",
-    "err-decider-host-in-allow",
-    "err-decider-host-single-label",
-    "err-decider-max-tokens-too-small",
-    "err-decider-model-missing",
-    "err-decider-provider-invalid",
-    "err-decider-provider-wrong-case",
-    "err-decider-rate-limit-negative",
-    "err-decider-requires-allowlist",
-    "err-decider-timeout-not-positive",
-    "err-relay-auth-source-scheme",
-    "err-relay-ca-file-missing",
-    "err-relay-ca-file-not-pem",
-    "err-volume-outside-home",
     "err-watcher-api-key-cmd",
     "err-watcher-api-key-missing",
     "err-watcher-api-key-podman",
@@ -442,6 +428,30 @@ const DEFERRED: &[&str] = &[
     "err-watcher-timeout-not-positive",
     "err-watcher-window-too-long",
     "err-watcher-window-zero",
+    "misc-empty-config",
+    "seed-unit-test",
+    "seed-unit-test-curl",
+];
+
+/// The cases this pipeline still accepts, each with its owner.
+///
+/// The `err-decider-*` and `err-watcher-*` rows are gone: C3's seam in
+/// `config::validate` is filled, so those thirty-one cases are in
+/// [`REPRODUCED`] now, and so is `err-relay-auth-source-scheme` — the
+/// relay `source_validator` hook is wired to
+/// `config::secret::validate_source`. **What is left does not run in
+/// `load_config`/`validate_config` at all**, which is why none of it
+/// has a Track C owner any more.
+///
+/// | Cases | Why |
+/// | :-- | :-- |
+/// | `err-relay-ca-file-missing`, `err-relay-ca-file-not-pem` | raised by `state.py`'s deploy path, which reads the relay's CA off disk to inline it as `ca_pem`; validation never touches the filesystem |
+/// | `err-volume-outside-home` | raised by `quadlets.py` — a rendering check, not a config one |
+/// | `err-yaml-syntax`, `err-yaml-tab` | in [`KNOWN_DIVERGENT`]: the line and column match, the scanner's own wording cannot |
+const DEFERRED: &[&str] = &[
+    "err-relay-ca-file-missing",
+    "err-relay-ca-file-not-pem",
+    "err-volume-outside-home",
     "err-yaml-syntax",
     "err-yaml-tab",
 ];
@@ -454,21 +464,17 @@ const DEFERRED: &[&str] = &[
 /// reproduced.
 const KNOWN_DIVERGENT: &[&str] = &["err-yaml-syntax", "err-yaml-tab"];
 
-/// Valid cases whose `warnings.txt` needs a check this PR does not make.
+/// Valid cases whose `warnings.txt` needs a check the port does not make.
 ///
-/// All three are C3's, and each is missing exactly the lines C3 adds —
-/// the rest of every list is already produced:
+/// **Empty**, and kept as a tripwire rather than deleted: a case
+/// appearing here again means a warning `config.py` emits has stopped
+/// being emitted, which no other assertion in this file would catch.
 ///
-/// - the two `agents-watcher-*` cases want the watcher's spend
-///   warnings, which belong with the rest of the watcher block;
-/// - `backend-apple-container-inspectors` wants the per-entry
-///   inspector-chain warnings, the `── C3 ──` marker at the end of
-///   `config::validate::apple_container_warnings`.
-const WARNINGS_DEFERRED: &[&str] = &[
-    "agents-watcher-expensive",
-    "agents-watcher-unbounded-digest",
-    "backend-apple-container-inspectors",
-];
+/// It held three entries until C3's two seams were filled — the two
+/// `agents-watcher-*` cases wanted the watcher's spend warnings, and
+/// `backend-apple-container-inspectors` wanted the per-entry
+/// inspector-chain warnings.
+const WARNINGS_DEFERRED: &[&str] = &[];
 
 // ── error precedence ─────────────────────────────────────
 
