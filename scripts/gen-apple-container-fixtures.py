@@ -955,10 +955,17 @@ def main(argv: list[str] | None = None) -> int:
     # stale file nothing regenerates is worse than a missing one: the Rust
     # side would keep asserting against a recording of code that no longer
     # exists. `--check` reports them; a write removes them.
+    #
+    # `argv.json` is not ours. `gen-apple-argv-fixture.py` writes it into
+    # this same directory, so without this exemption `--check` reports
+    # permanent drift and the regenerate command it prints *deletes* a
+    # fixture the apple argv tests assert against. Anything else another
+    # generator adds here belongs in this set too.
+    _NOT_OURS = {"README.md", "argv.json"}
     committed = {
         str(path.relative_to(_OUT))
         for path in _OUT.rglob("*")
-        if path.is_file() and path.name != "README.md"
+        if path.is_file() and path.name not in _NOT_OURS
     }
     for orphan in sorted(committed - set(rendered)):
         if args.check:
