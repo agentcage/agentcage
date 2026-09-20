@@ -480,6 +480,30 @@ pub fn build_and_deploy(
 
     backend.build_artifacts(Some(config), deploy_name, no_cache, pull, quiet)?;
 
+    // `state.capture_dir()` CREATES the directory as a side effect of
+    // computing its path, and `quadlets.py` calls it while rendering the
+    // egress unit. The port made the renderer pure — `StatePaths` in
+    // `agentcage-core` touches no filesystem, by design — so the mkdir
+    // has to happen here, on the deploy path, or not at all.
+    //
+    // Not at all is not survivable. With `capture.enable_har`, the
+    // egress unit gets
+    //
+    //     ExecStartPre=... podman unshare chown 200:200 "<dir>" \
+    //                      2>/dev/null || chmod 1777 "<dir>"
+    //
+    // and both halves fail on a directory that is not there, so the
+    // egress never starts and the cage reports only "A dependency job
+    // for <name>-cage.service failed". It reproduced on a CI runner and
+    // nowhere else, because any machine that had ever captured for this
+    // cage name already had the directory.
+    //
+    // Guarded on the same flag as the render, so a cage without capture
+    // gets no directory — matching what Python leaves on disk.
+    if config.capture.enable_har {
+        paths.ensure_capture_dir(deploy_name)?;
+    }
+
     let units = backend.generate_units(
         config,
         config_host_path,

@@ -312,3 +312,89 @@ fn an_unqueryable_secret_store_does_not_fail_the_deploy() {
     deploy(&paths, &fake, &config("acme"), None);
     fake.assert_drained();
 }
+
+/// The same config, with HAR capture on.
+fn capture_config(name: &str) -> Config {
+    let host = FixedHost {
+        isolation: "container".to_owned(),
+        dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+    };
+    load(
+        "cage.yaml",
+        &format!(
+            "name: {name}\n\
+             container:\n  \
+               image: node:22-slim\n\
+             domains:\n  \
+               allow:\n    \
+                 - example.com\n\
+             capture:\n  \
+               enable_har: true\n"
+        ),
+        &host,
+    )
+    .expect("the fixture parses")
+}
+
+/// The capture directory has to EXIST after a deploy, not merely be
+/// named by one.
+///
+/// `state.capture_dir()` creates it as a side effect of computing its
+/// path, and `quadlets.py` calls it while rendering the egress unit.
+/// This port made the renderer pure, so the mkdir belongs on the deploy
+/// path — and for a while it was nowhere: `Paths::ensure_capture_dir`
+/// existed with no caller.
+///
+/// The cost was not a missing directory. With `capture.enable_har` the
+/// egress unit carries
+///
+/// ```text
+/// ExecStartPre=... podman unshare chown 200:200 "<dir>" \
+///                  2>/dev/null || chmod 1777 "<dir>"
+/// ```
+///
+/// and both halves fail on a directory that is not there, so the egress
+/// never starts and `systemctl` reports only "A dependency job for
+/// <name>-cage.service failed" — naming neither the unit nor the
+/// reason. It reproduced on a CI runner and on no developer machine,
+/// because any machine that had captured for this cage name before
+/// already had the directory.
+#[test]
+fn a_capture_deploy_creates_the_capture_directory() {
+    let dir = TestDir::new("deploy-capture");
+    let paths = Paths::under(dir.path());
+    let fake = FakeRunner::new();
+    stub_deploy(&fake);
+
+    let capture = paths.capture_dir("acme");
+    assert!(!capture.exists(), "the fixture starts without it");
+
+    deploy(&paths, &fake, &capture_config("acme"), None);
+
+    assert!(
+        capture.is_dir(),
+        "deploying a cage with capture.enable_har must create {}",
+        capture.display()
+    );
+}
+
+/// ... and a cage without capture does not get one.
+///
+/// Same reason the render is guarded: `capture_dir()` is only called
+/// when `enable_har` is set, so a cage without it leaves nothing on
+/// disk. Asserted so the fix above cannot drift into an unconditional
+/// mkdir that litters the data root.
+#[test]
+fn a_deploy_without_capture_creates_no_capture_directory() {
+    let dir = TestDir::new("deploy-no-capture");
+    let paths = Paths::under(dir.path());
+    let fake = FakeRunner::new();
+    stub_deploy(&fake);
+
+    deploy(&paths, &fake, &config("acme"), None);
+
+    assert!(
+        !paths.capture_dir("acme").exists(),
+        "a cage without capture.enable_har must not get a capture dir"
+    );
+}
