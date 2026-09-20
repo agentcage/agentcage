@@ -136,8 +136,9 @@ fn a_parsed_command_fails_loudly_and_names_itself() {
         (vec!["cage", "edit", "myapp"], "cage edit"),
         // `cage grants … sync` and `domain list` used to be here. Both
         // have bodies as of PR D10; `an_unknown_cage_is_refused_rather_
-        // than_stubbed` covers them instead.
-        (vec!["cage", "backup", "myapp"], "cage backup"),
+        // than_stubbed` covers them instead. `cage backup` was a
+        // replacement row until PR D11 gave it a body too — it is now in
+        // `legacy_cage.rs`'s guarded list.
         (vec!["watcher", "findings", "myapp"], "watcher findings"),
     ] {
         let out = agentcage(&args);

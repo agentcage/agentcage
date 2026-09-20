@@ -145,9 +145,13 @@ fn the_guarded_commands_refuse_a_v021_cage() {
         vec!["cage", "update", "test"],
         vec!["secret", "list", "test"],
         vec!["secret", "rm", "test", "KEY"],
-        // PR D11 gave `cage backup` a body, correctly gated; this
-        // row moved up from the stub list that D7 left as a tripwire.
+        // PR D11 gave `cage backup` a body and PR D10 the three
+        // `domain` commands, all correctly gated; these rows moved up
+        // from the stub list D7 left as a tripwire.
         vec!["cage", "backup", "test"],
+        vec!["domain", "list", "test"],
+        vec!["domain", "add", "test", "example.com"],
+        vec!["domain", "rm", "test", "example.com"],
     ] {
         let out = agentcage(dir.path(), &args);
         assert_eq!(code(&out), LEGACY, "{args:?}: {}", stderr(&out));
@@ -184,7 +188,7 @@ fn the_root_aliases_refuse_it_too() {
 /// The commands the Python file guards that this port has not reached.
 ///
 /// They are asserted to be *stubs*, not to be guarded, which is the
-/// point: when `cage edit` or the `domain` group lands,
+/// point: when `cage edit` lands,
 /// this test fails and whoever landed it has to move the row up into
 /// [`the_guarded_commands_refuse_a_v021_cage`]. A guarded command that
 /// quietly arrives ungated is exactly what that would otherwise look
@@ -194,20 +198,19 @@ fn the_unported_guarded_commands_are_still_stubs() {
     let dir = agentcage_state::TestDir::new("legacy-unported");
     stage(dir.path(), "test", Some("0.21.5"));
 
-    for args in [
-        vec!["cage", "edit", "test"],
-        vec!["domain", "list", "test"],
-        vec!["domain", "add", "test", "example.com"],
-        vec!["domain", "rm", "test", "example.com"],
-    ] {
-        let out = agentcage(dir.path(), &args);
-        assert_eq!(
-            code(&out),
-            NOT_IMPLEMENTED,
-            "{args:?} has a body now — add it to the guarded list: {}",
-            stderr(&out)
-        );
-    }
+    // Down to one. `cage backup` (PR D11) and the three `domain`
+    // commands (PR D10) started here and moved up into the guarded list
+    // as they gained bodies, which is exactly what this tripwire is for.
+    // When `cage edit` lands, this test has nothing left to guard and
+    // should be deleted rather than emptied.
+    let args = ["cage", "edit", "test"];
+    let out = agentcage(dir.path(), &args);
+    assert_eq!(
+        code(&out),
+        NOT_IMPLEMENTED,
+        "`cage edit` has a body now — move it into the guarded list: {}",
+        stderr(&out)
+    );
 }
 
 // ── exempt ──────────────────────────────────────────────────────────
