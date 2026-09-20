@@ -173,6 +173,48 @@ jobs:
         run: |
           uv run python scripts/gen-apple-argv-fixture.py --check
 
+      # The contract fixtures (PR A4) pin the four pieces of security
+      # logic that exist on BOTH sides of agentcage's trust boundary —
+      # the host CLI and the in-egress proxy. Before the port a pytest
+      # imported both implementations and compared them; neither half of
+      # that trick survives a Rust host CLI, so the fixture is the only
+      # oracle left. `cargo test` asserts the port against it; this step
+      # is what notices when the Python side of the boundary moves and
+      # the recording does not.
+      - name: Contract fixtures are current
+        run: |
+          uv run python scripts/gen-contract-fixtures.py --check
+
+      # The state-compat fixtures (PR A7) are a byte-for-byte recording
+      # of the on-disk state a Python deploy leaves behind. Nothing in
+      # that state carries a schema version, so there is nothing for the
+      # Rust readers to branch on — they simply have to accept what the
+      # Python writers produce. This step notices when the writers
+      # change and the recording the readers are tested against does not.
+      - name: State-compat fixtures are current
+        run: |
+          uv run python scripts/gen-state-fixtures.py --check
+
+      # The output fixtures (PR D4) pin every symbol, space and SGR
+      # escape the CLI emits, because the port cannot import click and
+      # has to re-emit those bytes itself. A `output.py` tweak that
+      # changes a colour or a glyph is invisible to every other check
+      # here.
+      - name: Output fixtures are current
+        run: |
+          uv run python scripts/gen-output-fixture.py --check
+
+      # The vm fixtures (PR E1) cover `VmBackend.generate_units`, the
+      # one renderer the golden corpus does not reach: the corpus calls
+      # `generate_quadlets` directly and so never sees the Lima YAML or
+      # the `TimeoutStartSec` floor. Phase 7 exercises the real thing but
+      # runs on no CI runner, which is exactly how an assertion in it
+      # rotted unnoticed — so this recording is the only continuous
+      # watch on that backend's generation half.
+      - name: vm fixtures are current
+        run: |
+          uv run python scripts/gen-vm-fixture.py --check
+
       # The CLI surface fixture (PR D5) is generated from the live click
       # tree in cli.py. `cargo test` asserts the clap tree against it, so
       # a Rust-side drift already fails -- what this adds is noticing
