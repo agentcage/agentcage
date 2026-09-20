@@ -145,6 +145,9 @@ fn the_guarded_commands_refuse_a_v021_cage() {
         vec!["cage", "update", "test"],
         vec!["secret", "list", "test"],
         vec!["secret", "rm", "test", "KEY"],
+        // PR D11 gave `cage backup` a body, correctly gated; this
+        // row moved up from the stub list that D7 left as a tripwire.
+        vec!["cage", "backup", "test"],
     ] {
         let out = agentcage(dir.path(), &args);
         assert_eq!(code(&out), LEGACY, "{args:?}: {}", stderr(&out));
@@ -181,7 +184,7 @@ fn the_root_aliases_refuse_it_too() {
 /// The commands the Python file guards that this port has not reached.
 ///
 /// They are asserted to be *stubs*, not to be guarded, which is the
-/// point: when `cage edit`, `cage backup` or the `domain` group lands,
+/// point: when `cage edit` or the `domain` group lands,
 /// this test fails and whoever landed it has to move the row up into
 /// [`the_guarded_commands_refuse_a_v021_cage`]. A guarded command that
 /// quietly arrives ungated is exactly what that would otherwise look
@@ -192,7 +195,6 @@ fn the_unported_guarded_commands_are_still_stubs() {
     stage(dir.path(), "test", Some("0.21.5"));
 
     for args in [
-        vec!["cage", "backup", "test"],
         vec!["cage", "edit", "test"],
         vec!["domain", "list", "test"],
         vec!["domain", "add", "test", "example.com"],
