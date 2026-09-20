@@ -133,12 +133,9 @@ fn a_bare_group_prints_help_to_stderr_and_exits_two() {
 #[test]
 fn a_parsed_command_fails_loudly_and_names_itself() {
     for (args, expected) in [
-        (vec!["cage", "restart", "myapp"], "cage restart"),
+        (vec!["cage", "edit", "myapp"], "cage edit"),
         (vec!["cage", "grants", "myapp", "sync"], "cage grants sync"),
-        (
-            vec!["secret", "rotate-placeholders", "myapp"],
-            "secret rotate-placeholders",
-        ),
+        (vec!["domain", "list", "myapp"], "domain list"),
     ] {
         let out = agentcage(&args);
         assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}");
@@ -197,7 +194,6 @@ fn doctor_runs_for_real() {
 #[test]
 fn aliases_report_their_canonical_command() {
     for (alias, canonical) in [
-        (["reload", "myapp"], "cage restart"),
         (["config", "myapp"], "cage edit"),
         (["edit", "myapp"], "cage edit"),
         (["start", "myapp"], "cage start"),
@@ -326,6 +322,32 @@ fn aliases_of_ported_commands_reach_the_body() {
     for args in [vec!["shell", "myapp"], vec!["stop", "myapp"]] {
         let out = agentcage_sandboxed(dir.path(), &args);
         assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("cage 'myapp' does not exist"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+    }
+
+    for args in [
+        vec!["cage", "exec", "myapp", "--", "ls", "-la"],
+        vec![
+            "cage",
+            "exec",
+            "--as-root",
+            "myapp",
+            "--",
+            "openclaw",
+            "devices",
+            "list",
+        ],
+        // Without `--` too: click's `ignore_unknown_options` does not
+        // require the separator, and neither does this.
+        vec!["cage", "exec", "myapp", "ls", "-la"],
+        vec!["exec", "myapp", "--", "ls", "-la"],
+    ] {
+        let out = agentcage(&args);
+        assert_ne!(code(&out), 2, "{args:?} failed to parse: {}", stderr(&out));
         assert!(
             stderr(&out).contains("cage 'myapp' does not exist"),
             "{args:?}: {}",

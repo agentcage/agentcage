@@ -92,7 +92,9 @@ pub use domain::{LabelPolicy, encoded_private_ip, valid_domain};
 pub use inspectors::inspector_warnings;
 pub use json::to_json;
 pub use parse::{load, validate_agents_document, validate_agents_raw};
-pub use placeholder::{fill_raw_placeholders, is_canonical, placeholder_for};
+pub use placeholder::{
+    fill_raw_placeholders, injection_rules, injection_rules_mut, is_canonical, placeholder_for,
+};
 pub use secret::{KNOWN_BACKENDS, KNOWN_SOURCE_SCHEMES};
 pub use types::{
     AUTO_MAX_GRANTS, AUTO_NEVER_GRANT, AUTO_REQUIRE_ALLOWLIST_MODE, AUTO_TTL_SECONDS, AgentsConfig,

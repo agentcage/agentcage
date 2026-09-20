@@ -240,6 +240,7 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
 fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode> {
     use crate::cli::cage::{audit, create, lifecycle, logs, session, update, verify};
     use crate::cli::context::Ctx;
+    use crate::cli::secret;
 
     // The leaf's own matches: a top-level alias resolves to a command
     // with none below it, a `cage <cmd>` invocation has one.
@@ -270,6 +271,15 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "cage har" => ExitCode::from(agentcage_cli::har::main(&cage::query::har_args(
             self::leaf(sub),
         ))),
+        // PR D9. The `secret` group and the live-apply path behind it.
+        "secret list" => secret::list(&Ctx::system(), leaf),
+        "secret set" => secret::set::main(&Ctx::system(), leaf),
+        "secret rm" => secret::rm::main(&Ctx::system(), leaf),
+        "secret rotate-placeholders" => secret::rotate::main(&Ctx::system(), leaf),
+        // Both belong to other PRs (D7, D12). They are here because e2e
+        // phase 3 -- D9's acceptance check -- cannot be run without
+        // them; see their module docs.
+        "cage restart" => lifecycle::restart(&Ctx::system(), leaf),
         _ => return None,
     })
 }

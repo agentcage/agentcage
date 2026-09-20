@@ -1,4 +1,4 @@
-//! `cage list`, `cage show`, `cage status`, `cage destroy`.
+//! `cage list`, `cage show`, `cage status`, `cage restart`, `cage destroy`.
 //!
 //! The read-only half of the cage lifecycle plus the one command that
 //! removes things. They land here rather than waiting for PR D7 because
@@ -242,6 +242,51 @@ fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     ctx.backend().stop(name);
     println!("Stopped cage '{name}'");
     Ok(())
+
+/// `cage restart` — restart the services without rebuilding anything.
+///
+/// `cli.py:1803`. PR D7's command; it is here because **e2e phase 3**
+/// needs it (3.3b proves a placeholder edit applies on a plain restart,
+/// with no `cage update`; 3.5c proves the cage still boots after a
+/// `secret rm`) and because the same `_restart_cage` is already the
+/// fallback half of this PR's live-apply path.
+///
+/// The patch files are re-copied from the embedded assets first, which
+/// overwrites any tampering — the same thing `cage create` does.
+pub(crate) fn restart(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
+    let name = matches
+        .get_one::<String>("name")
+        .expect("required by the parser")
+        .clone();
+    if !ctx.paths.deployment_exists(&name) {
+        eprintln!("error: cage '{name}' does not exist");
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    if let Err(code) = ensure_v022_cage(&ctx.paths, &name) {
+        return code;
+    }
+    let Ok(config) = ctx
+        .paths
+        .load_deployment_config(&name, &agentcage_cli::hostenv::RealHost)
+    else {
+        eprintln!("error: cage '{name}' does not exist or has invalid config");
+        return ExitCode::from(EXIT_FAILURE);
+    };
+    if config.isolation != "container" {
+        eprintln!(
+            "error: `cage restart` on the '{}' backend is not ported yet \
+             (RUST-PORT-PLAN.md Track E)",
+            config.isolation
+        );
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    if let Err(error) = agentcage_cli::services::ensure_patches(&ctx.paths) {
+        eprintln!("error: {error}");
+        return ExitCode::from(EXIT_FAILURE);
+    }
+    crate::cli::secret::live::restart(ctx, &name);
+    println!("Restarted cage '{name}'");
+    ExitCode::SUCCESS
 }
 
 /// `cage destroy` — stop, remove quadlets, podman resources and state.
