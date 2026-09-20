@@ -242,6 +242,7 @@ fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     ctx.backend().stop(name);
     println!("Stopped cage '{name}'");
     Ok(())
+}
 
 /// `cage restart` — restart the services without rebuilding anything.
 ///
