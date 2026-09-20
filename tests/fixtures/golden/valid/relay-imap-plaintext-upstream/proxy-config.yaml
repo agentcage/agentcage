@@ -1,0 +1,14 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 127.0.0.1:1143
+  upstream:
+    host: imap.internal.example
+    port: 143
+    tls: false
+  auth: {}
+agentcage_version: 0.0.0-golden

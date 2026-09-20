@@ -1,0 +1,4 @@
+[Network]
+NetworkName=e2e-hardened-net
+Internal=true
+Subnet=10.89.247.0/24

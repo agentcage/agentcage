@@ -1,0 +1,14 @@
+name: err-container-port-out-of-range
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  ports:
+  - 127.0.0.1:99999:3000
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

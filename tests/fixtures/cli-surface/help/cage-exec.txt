@@ -1,0 +1,12 @@
+Usage: agentcage cage exec [OPTIONS] NAME COMMAND...
+
+  Run a command inside a cage container.
+
+  Example:
+    agentcage cage exec --as-root myapp -- openclaw devices list
+
+Options:
+  -s, --service [cage|egress]  Container service to exec into.  [default: cage]
+  --as-root                    Run the command as root (uid 0) instead of the
+                               workload's uid 1000 user (debug only).
+  --help                       Show this message and exit.

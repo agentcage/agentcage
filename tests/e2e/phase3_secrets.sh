@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 3: Container Mode — Secret Injection & Management
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl
+preflight_check "$AGENTCAGE" podman curl
 phase_header 3 "Container Mode — Secret Injection & Management"
 
 CAGE="e2e-secrets"
@@ -40,7 +40,7 @@ fi
 
 # 3.1: Secret listed
 assert_output_contains "3.1" "Secret listed" "MY_API_KEY" \
-  agentcage secret list "$CAGE"
+  "$AGENTCAGE" secret list "$CAGE"
 
 # 3.2: Placeholder in cage env
 e2e_timer_start
@@ -98,7 +98,7 @@ while [ "$SECONDS" -lt "$DEADLINE" ]; do
   curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
     -d '{"key":"{{MY_API_KEY}}"}' "$BASE/check-secret" >/dev/null 2>&1 || true
   sleep "$_delay"
-  OUTPUT=$(agentcage cage audit "$CAGE" --json-lines -n 50 2>&1) || true
+  OUTPUT=$("$AGENTCAGE" cage audit "$CAGE" --json-lines -n 50 2>&1) || true
   if echo "$OUTPUT" | grep -q "secrets_injected"; then
     FOUND=true
     break
@@ -123,7 +123,7 @@ fi
 e2e_timer_start
 NEW_PH="agentcage:secret:MY_API_KEY:e2e0000000000001e2e0000000000001"
 sed -i "s#{{MY_API_KEY}}#$NEW_PH#g" "$DEPLOY_DIR/cage.yaml"
-agentcage cage restart "$CAGE" >/dev/null 2>&1
+"$AGENTCAGE" cage restart "$CAGE" >/dev/null 2>&1
 wait_ready "$BASE" 60 >/dev/null || true
 OUTPUT=$(podman exec "${CAGE}-cage" printenv MY_API_KEY 2>&1) || true
 if [ "$OUTPUT" = "$NEW_PH" ]; then
@@ -139,7 +139,7 @@ fi
 e2e_timer_start
 CAGE_STARTED=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
 EGRESS_STARTED=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-egress" 2>/dev/null)
-SET_OUTPUT=$(echo "new-value" | agentcage secret set "$CAGE" MY_API_KEY 2>&1) || true
+SET_OUTPUT=$(echo "new-value" | "$AGENTCAGE" secret set "$CAGE" MY_API_KEY 2>&1) || true
 CAGE_STARTED_2=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
 EGRESS_STARTED_2=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-egress" 2>/dev/null)
 if echo "$SET_OUTPUT" | grep -q "without a restart" \
@@ -164,14 +164,14 @@ fi
 # 3.4c: Proxy injects with the NEW value/rules on the next request — a
 # fresh secrets_injected audit entry appears after the live apply.
 e2e_timer_start
-COUNT_BEFORE=$(agentcage cage audit "$CAGE" --json-lines -n 200 2>/dev/null | grep -c "secrets_injected" || true)
+COUNT_BEFORE=$("$AGENTCAGE" cage audit "$CAGE" --json-lines -n 200 2>/dev/null | grep -c "secrets_injected" || true)
 FOUND=false
 DEADLINE=$((SECONDS + 60))
 while [ "$SECONDS" -lt "$DEADLINE" ]; do
   curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
     -d "{\"key\":\"$NEW_PH\"}" "$BASE/check-secret" >/dev/null 2>&1 || true
   sleep 2
-  COUNT_AFTER=$(agentcage cage audit "$CAGE" --json-lines -n 200 2>/dev/null | grep -c "secrets_injected" || true)
+  COUNT_AFTER=$("$AGENTCAGE" cage audit "$CAGE" --json-lines -n 200 2>/dev/null | grep -c "secrets_injected" || true)
   if [ "${COUNT_AFTER:-0}" -gt "${COUNT_BEFORE:-0}" ]; then
     FOUND=true
     break
@@ -191,10 +191,10 @@ fi
 # the next request.
 e2e_timer_start
 CAGE_STARTED_3=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
-echo "brand-new-value-777" | agentcage secret set "$CAGE" BRAND_NEW_KEY \
+echo "brand-new-value-777" | "$AGENTCAGE" secret set "$CAGE" BRAND_NEW_KEY \
   --declare --inject-to httpbin.org >/dev/null 2>&1 || true
 CAGE_STARTED_4=$(podman inspect --format '{{.State.StartedAt}}' "${CAGE}-cage" 2>/dev/null)
-NEW_KEY_PH=$(agentcage cage exec "$CAGE" -- printenv BRAND_NEW_KEY 2>/dev/null | tr -d '\r') || true
+NEW_KEY_PH=$("$AGENTCAGE" cage exec "$CAGE" -- printenv BRAND_NEW_KEY 2>/dev/null | tr -d '\r') || true
 if [ "$CAGE_STARTED_3" = "$CAGE_STARTED_4" ] \
    && echo "$NEW_KEY_PH" | grep -Eq '^agentcage:secret:BRAND_NEW_KEY:[0-9a-f]{32}$'; then
   e2e_pass "3.4d" "New secret declared+usable live (exec env, no restart)"
@@ -209,14 +209,14 @@ fi
 # proxy substitutes the placeholder. Fresh secrets_injected audit entry =
 # proof the live-applied rule + value are active.
 e2e_timer_start
-COUNT_BEFORE=$(agentcage cage audit "$CAGE" --json-lines -n 300 2>/dev/null | grep -c "secrets_injected" || true)
+COUNT_BEFORE=$("$AGENTCAGE" cage audit "$CAGE" --json-lines -n 300 2>/dev/null | grep -c "secrets_injected" || true)
 FOUND=false
 DEADLINE=$((SECONDS + 60))
 while [ "$SECONDS" -lt "$DEADLINE" ]; do
   curl -s --max-time 10 -X POST -H 'Content-Type: application/json' \
     -d "{\"auth\":\"$NEW_KEY_PH\"}" "$BASE/check-secret" >/dev/null 2>&1 || true
   sleep 2
-  COUNT_AFTER=$(agentcage cage audit "$CAGE" --json-lines -n 300 2>/dev/null | grep -c "secrets_injected" || true)
+  COUNT_AFTER=$("$AGENTCAGE" cage audit "$CAGE" --json-lines -n 300 2>/dev/null | grep -c "secrets_injected" || true)
   if [ "${COUNT_AFTER:-0}" -gt "${COUNT_BEFORE:-0}" ]; then
     FOUND=true
     break
@@ -234,10 +234,10 @@ fi
 # replace it with a *different* entropic token, visible in the cage env
 # (the rotate restarts the running cage so PID 1 picks it up).
 e2e_timer_start
-OLD_PH=$(agentcage cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d '\r') || true
-agentcage secret rotate-placeholders "$CAGE" MY_AUTO_KEY >/dev/null 2>&1 || true
+OLD_PH=$("$AGENTCAGE" cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d '\r') || true
+"$AGENTCAGE" secret rotate-placeholders "$CAGE" MY_AUTO_KEY >/dev/null 2>&1 || true
 if wait_ready "$BASE" 60; then
-  NEW_PH=$(agentcage cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d '\r') || true
+  NEW_PH=$("$AGENTCAGE" cage exec "$CAGE" -- printenv MY_AUTO_KEY 2>/dev/null | tr -d '\r') || true
   if echo "$NEW_PH" | grep -Eq '^agentcage:secret:MY_AUTO_KEY:[0-9a-f]{32}$' \
      && [ "$NEW_PH" != "$OLD_PH" ]; then
     e2e_pass "3.4f" "rotate-placeholders mints+applies a fresh token"
@@ -252,7 +252,7 @@ fi
 
 # 3.5: Remove secret
 e2e_timer_start
-agentcage secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
+"$AGENTCAGE" secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
 e2e_pass "3.5" "Remove secret"
 
 # 3.5b: Converged egress quadlet must not reference the removed store
@@ -273,7 +273,7 @@ fi
 # egress with `no secret with name or ID ...` on the next start.
 e2e_timer_start
 systemctl --user reset-failed "${CAGE}-egress" >/dev/null 2>&1 || true
-agentcage cage restart "$CAGE" >/dev/null 2>&1 || true
+"$AGENTCAGE" cage restart "$CAGE" >/dev/null 2>&1 || true
 if wait_ready "$BASE" 90; then
   e2e_pass "3.5c" "Cage boots after secret rm (no start-limit-hit)"
 else
@@ -286,18 +286,18 @@ repatch_mock "$CAGE" httpbin.org || true
 # 3.5d: `secret set` re-adds the Secret= line — units track store
 # reality in both directions (rm drops, set re-adds).
 e2e_timer_start
-echo "revived-value" | agentcage secret set "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
+echo "revived-value" | "$AGENTCAGE" secret set "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
 if grep -q "Secret=${CAGE}.MY_API_KEY" "$QUADLET" 2>/dev/null; then
   e2e_pass "3.5d" "secret set re-adds Secret= line"
 else
   e2e_fail "3.5d" "secret set re-adds Secret= line" \
     "Secret=${CAGE}.MY_API_KEY not back in $QUADLET after set"
 fi
-agentcage secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
+"$AGENTCAGE" secret rm "$CAGE" MY_API_KEY >/dev/null 2>&1 || true
 
 # 3.6: Missing secret warning
 e2e_timer_start
-OUTPUT=$(agentcage secret list "$CAGE" 2>&1) || true
+OUTPUT=$("$AGENTCAGE" secret list "$CAGE" 2>&1) || true
 if echo "$OUTPUT" | grep -q "MISSING"; then
   e2e_pass "3.6" "Missing secret warning"
 else
@@ -326,7 +326,7 @@ fi
 
 # 3.8: cmd: source resolves from shell command
 e2e_timer_start
-OUTPUT=$(agentcage secret list "$CAGE_SRC" 2>&1) || true
+OUTPUT=$("$AGENTCAGE" secret list "$CAGE_SRC" 2>&1) || true
 if echo "$OUTPUT" | grep -q "SRC_ENV_KEY" && echo "$OUTPUT" | grep -q "SRC_CMD_KEY"; then
   e2e_pass "3.8" "Source secrets listed"
 else
@@ -364,7 +364,7 @@ secret_injection:
     placeholder: "{{BAD_KEY}}"
     source: "typo-backend:foo"
 YAML
-OUTPUT=$(agentcage cage create -c "$TMPYAML" 2>&1) || true
+OUTPUT=$("$AGENTCAGE" cage create -c "$TMPYAML" 2>&1) || true
 rm -f "$TMPYAML"
 destroy_cage e2e-bad-source 2>/dev/null || true
 if echo "$OUTPUT" | grep -qi "unknown secret source scheme"; then
@@ -391,7 +391,7 @@ secret_injection:
       - httpbin.org
     source: "systemd-creds:"
 YAML
-  agentcage cage create -c "$TMPYAML" -s CREDS_KEY=creds-test-value >/dev/null 2>&1 || true
+  "$AGENTCAGE" cage create -c "$TMPYAML" -s CREDS_KEY=creds-test-value >/dev/null 2>&1 || true
   register_cage "$CAGE_CREDS"
   # State dir follows XDG_CONFIG_HOME (default: ~/.config/agentcage/cages/NAME)
   DEPLOY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agentcage/cages/$CAGE_CREDS"

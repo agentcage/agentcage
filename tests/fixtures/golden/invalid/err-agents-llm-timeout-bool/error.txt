@@ -1,0 +1,1 @@
+ValueError: agents.decider: invalid LLM client value (timeout_seconds must be a number, not a boolean)

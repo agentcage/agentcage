@@ -1,0 +1,244 @@
+# The Rust port's CI gate.
+#
+# Separate from test.yml on purpose. The Python suite must not grow a
+# Rust dependency -- proxy work (data/proxy/** stays Python forever)
+# should stay a pytest-only round trip, and the Rust job should not wait
+# on a three-version Python matrix. Neither job can fail the other; both
+# are required for a merge.
+#
+# Scope: `rust/**` plus the root workspace manifest. See
+# RUST-PORT-PLAN.md (branch `rust-port`), section 5 Phase 0 and Track B.
+
+name: Rust
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# A new push to a PR makes the previous run's answer irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # There are no dependencies to fetch yet, and when B2/B3 add some there
+  # is still no reason to build with incremental state that the cache
+  # then has to carry.
+  CARGO_INCREMENTAL: 0
+  # Full backtraces on a test failure; the runner is not the place to
+  # re-run with RUST_BACKTRACE set.
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: build, test, clippy, fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup is preinstalled on the GitHub runners; this installs
+      # whatever rust-toolchain.toml asks for, which is `stable` plus
+      # clippy and rustfmt.
+      - name: Install the pinned toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+
+      - name: Cache cargo registry and target/
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          # Cargo.lock is committed (this workspace produces a binary),
+          # so it identifies the dependency set exactly. The manifests
+          # are in the key too because a profile or lint change
+          # invalidates every artifact in target/ without touching the
+          # lockfile.
+          key: >-
+            cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # Formatting first: it needs no build, so a misformatted PR fails
+      # in seconds instead of after a full compile.
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo build
+        run: cargo build --workspace --locked
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      # The Rust->Python crossing test (PR B2). It is #[ignore]d so that
+      # `cargo test` works without an interpreter -- the whole point of
+      # the port is that Python stops being a runtime dependency -- but
+      # the property it checks is a cross-language contract with the
+      # egress proxy, so it has to run somewhere. Here.
+      #
+      # It asserts four things a pure-Rust test cannot: that every
+      # scalar in tests/fixtures/yaml_1_1_scalars.json survives
+      # `yaml.safe_load` as the string it went in as, that the bare crate
+      # really does corrupt the ones the fixture calls hazardous (the
+      # control arm), that every committed config means the same thing to
+      # PyYAML after a Rust round trip, and -- the reading direction --
+      # that `yaml::load` and `yaml.safe_load` produce the same value for
+      # every document in the read-side corpus, including the four
+      # corners of `tls: no` / `'no'` / `false` / `"false"`.
+      - name: Rust to PyYAML crossing test
+        run: |
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)'
+          cargo test --locked -p agentcage-core --test yaml_pyyaml_crossing -- --ignored
+
+      # The fingerprint crossing test (PR C4), #[ignore]d for the same
+      # reason and run here for a different one. `cage update` decides
+      # whether a cage needs redeploying by comparing a sha256 against
+      # the fingerprint.json the last deploy wrote -- and at cutover
+      # that file was written by the Python. The golden corpus proves
+      # the port reproduces the 126 fingerprints that already exist;
+      # this proves it reproduces the next one, over the inputs no
+      # corpus case has: floats (Python's `repr` is not Rust's
+      # `Display`), unbounded integers, and non-ASCII keys and values,
+      # which `ensure_ascii=False` puts into the hash as raw UTF-8.
+      - name: Fingerprint to CPython crossing test
+        run: |
+          cargo test --locked -p agentcage-core --test fingerprint_python_crossing -- --ignored
+      # The scaffold config fixtures (PR C1) are generated from the
+      # scaffolds' own cage.yaml.j2 by rendering them with Jinja and
+      # parsing the result with config.py -- neither of which Rust can
+      # do. `cargo test` checks that every scaffold directory appears in
+      # the fixture, so a NEW scaffold fails without this step; what
+      # this adds is noticing when an EXISTING scaffold's template
+      # changes and the committed render goes stale.
+      - uses: astral-sh/setup-uv@v5
+      - name: Scaffold config fixtures are current
+        run: |
+          uv sync --dev
+          uv run python scripts/gen-scaffold-configs.py --check
+
+      # The doctor fixtures (PR D15) record what the real `run_doctor`
+      # prints across 39 faked host environments. `cargo test` asserts
+      # the port against them, so a Rust-side drift already fails; what
+      # this adds is noticing when `doctor.py` itself changes a message,
+      # a hint table or a branch and the committed recording goes stale.
+      - name: Doctor fixtures are current
+        run: |
+          uv run python scripts/gen-doctor-fixture.py --check
+
+      # The `cage har` fixtures (PR D13) are 26 recordings of the real
+      # `agentcage cage har` over a copy of A7's frozen state. `cargo
+      # test` replays every one byte for byte, so a Rust-side drift
+      # already fails; what this adds is noticing when `cli.py`'s
+      # `cage har` changes a message, a default or a file location and
+      # the committed recording goes stale.
+      - name: cage har fixtures are current
+        run: |
+          uv run python scripts/gen-cage-har-fixture.py --check
+
+      # The apple-container fixtures (PR E2) record what the largest
+      # backend derives from a cage.yaml, with platform.system() patched
+      # to Darwin -- the same trick tests/test_apple_container.py has
+      # always used, because there is no macOS runner here and never has
+      # been. `cargo test` replays them, so a Rust-side drift already
+      # fails; what this adds is noticing when apple_container.py itself
+      # changes a warning, a path or the egress build argv and the
+      # committed recording goes stale. That matters more here than
+      # elsewhere: this backend has no CI on real hardware at all, so
+      # the fixture is the only thing watching it.
+      - name: apple-container fixtures are current
+        run: |
+          uv run python scripts/gen-apple-container-fixtures.py --check
+
+      # The apple-container argv fixture (PR E3) is 38 calls into the
+      # real `AppleContainerBackend.exec_argv` / `logs_argv` /
+      # `audit_argv`, recorded with `platform.system()` patched to
+      # "Darwin" -- the same technique `tests/test_apple_container.py`
+      # has used since that backend was written, because there is no
+      # macOS runner in CI and never has been. `cargo test` replays
+      # every case, so a Rust-side drift already fails; what this adds
+      # is noticing when `backends/apple_container.py` changes a flag,
+      # a target name or a refusal message and the committed recording
+      # goes stale.
+      - name: apple-container argv fixture is current
+        run: |
+          uv run python scripts/gen-apple-argv-fixture.py --check
+
+      # The contract fixtures (PR A4) pin the four pieces of security
+      # logic that exist on BOTH sides of agentcage's trust boundary —
+      # the host CLI and the in-egress proxy. Before the port a pytest
+      # imported both implementations and compared them; neither half of
+      # that trick survives a Rust host CLI, so the fixture is the only
+      # oracle left. `cargo test` asserts the port against it; this step
+      # is what notices when the Python side of the boundary moves and
+      # the recording does not.
+      - name: Contract fixtures are current
+        run: |
+          uv run python scripts/gen-contract-fixtures.py --check
+
+      # The state-compat fixtures (PR A7) are a byte-for-byte recording
+      # of the on-disk state a Python deploy leaves behind. Nothing in
+      # that state carries a schema version, so there is nothing for the
+      # Rust readers to branch on — they simply have to accept what the
+      # Python writers produce. This step notices when the writers
+      # change and the recording the readers are tested against does not.
+      - name: State-compat fixtures are current
+        run: |
+          uv run python scripts/gen-state-fixtures.py --check
+
+      # The output fixtures (PR D4) pin every symbol, space and SGR
+      # escape the CLI emits, because the port cannot import click and
+      # has to re-emit those bytes itself. A `output.py` tweak that
+      # changes a colour or a glyph is invisible to every other check
+      # here.
+      - name: Output fixtures are current
+        run: |
+          uv run python scripts/gen-output-fixture.py --check
+
+      # The vm fixtures (PR E1) cover `VmBackend.generate_units`, the
+      # one renderer the golden corpus does not reach: the corpus calls
+      # `generate_quadlets` directly and so never sees the Lima YAML or
+      # the `TimeoutStartSec` floor. Phase 7 exercises the real thing but
+      # runs on no CI runner, which is exactly how an assertion in it
+      # rotted unnoticed — so this recording is the only continuous
+      # watch on that backend's generation half.
+      - name: vm fixtures are current
+        run: |
+          uv run python scripts/gen-vm-fixture.py --check
+
+      # The CLI surface fixture (PR D5) is generated from the live click
+      # tree in cli.py. `cargo test` asserts the clap tree against it, so
+      # a Rust-side drift already fails -- what this adds is noticing
+      # when `cli.py` itself gains a command, a flag or an alias and the
+      # committed surface goes stale. Without it, the Rust tree would
+      # keep matching a fixture that no longer matches the Python.
+      - name: CLI surface fixture is current
+        run: |
+          uv run python scripts/gen-cli-surface.py --check
+
+      # --all-targets covers tests and examples, which is where the lints
+      # that matter (unwrap in a helper, a stray dbg!) actually land.
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Cheap, and it is the check that would otherwise only fail during
+      # a release: the version the binary reports has to be the one in
+      # the root VERSION file. scripts/check-version.sh is the same
+      # guard publish.yml runs.
+      - name: Version agrees with the VERSION file
+        run: |
+          scripts/check-version.sh
+          expected="agentcage, version $(cat VERSION)"
+          actual=$(cargo run --quiet --locked --bin agentcage -- --version)
+          echo "expected: $expected"
+          echo "actual:   $actual"
+          [ "$actual" = "$expected" ]

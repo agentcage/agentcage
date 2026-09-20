@@ -1,0 +1,229 @@
+{
+  "mask_copyup_entries": [
+    [
+      "/workspace/.git/hooks",
+      "/host/project/.git/hooks",
+      "/host/project"
+    ]
+  ],
+  "mask_mountpoint_dirs": [
+    [
+      "/host/project",
+      [
+        "/host/project/.git/hooks",
+        "/host/project/.git",
+        "/host/project/.claude"
+      ]
+    ]
+  ],
+  "mount_targets": [
+    [
+      "/workspace",
+      "/host/project"
+    ],
+    [
+      "/var/lib/state",
+      ""
+    ],
+    [
+      "/data",
+      "/host/data"
+    ]
+  ],
+  "tmpfs_specs": [
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [],
+      "spec": "/tmp",
+      "target": "/tmp",
+      "wants_copyup": false
+    },
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [
+        "rw",
+        "noexec",
+        "nosuid",
+        "size=64M"
+      ],
+      "spec": "/tmp:rw,noexec,nosuid,size=64M",
+      "target": "/tmp",
+      "wants_copyup": false
+    },
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "/host/project"
+      ],
+      "options": [
+        "rw",
+        "tmpcopyup"
+      ],
+      "spec": "/workspace/.git/hooks:rw,tmpcopyup",
+      "target": "/workspace/.git/hooks",
+      "wants_copyup": true
+    },
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "/host/project"
+      ],
+      "options": [
+        "rw",
+        "notmpcopyup"
+      ],
+      "spec": "/workspace/.git/hooks:rw,notmpcopyup",
+      "target": "/workspace/.git/hooks",
+      "wants_copyup": false
+    },
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "/host/project"
+      ],
+      "options": [
+        "rw",
+        "tmpcopyup",
+        "notmpcopyup"
+      ],
+      "spec": "/workspace/.git/hooks:rw,tmpcopyup,notmpcopyup",
+      "target": "/workspace/.git/hooks",
+      "wants_copyup": false
+    },
+    {
+      "enclosing_mount": [
+        "/workspace",
+        "/host/project"
+      ],
+      "options": [],
+      "spec": "/workspace/.claude/",
+      "target": "/workspace/.claude/",
+      "wants_copyup": false
+    },
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [],
+      "spec": "/a:",
+      "target": "/a",
+      "wants_copyup": false
+    }
+  ],
+  "volume_specs": [
+    {
+      "non_persistent": false,
+      "options": [],
+      "raw_options": "",
+      "source": "/src",
+      "spec": "/src:/dst",
+      "target": "/dst",
+      "validation_error": null
+    },
+    {
+      "non_persistent": false,
+      "options": [
+        "ro"
+      ],
+      "raw_options": "ro",
+      "source": "/src",
+      "spec": "/src:/dst:ro",
+      "target": "/dst",
+      "validation_error": null
+    },
+    {
+      "non_persistent": true,
+      "options": [
+        "rw",
+        "np"
+      ],
+      "raw_options": "rw,np",
+      "source": "/src",
+      "spec": "/src:/dst:rw,np",
+      "target": "/dst",
+      "validation_error": null
+    },
+    {
+      "non_persistent": true,
+      "options": [
+        "np"
+      ],
+      "raw_options": "np",
+      "source": "/src",
+      "spec": "/src:/dst:np",
+      "target": "/dst",
+      "validation_error": null
+    },
+    {
+      "non_persistent": true,
+      "options": [
+        "np",
+        "z"
+      ],
+      "raw_options": "np,z",
+      "source": "/src",
+      "spec": "/src:/dst:np,z",
+      "target": "/dst",
+      "validation_error": "volume '/src:/dst:np,z': the np option cannot be combined with z; only rw,np is supported"
+    },
+    {
+      "non_persistent": false,
+      "options": [
+        "rw",
+        "z",
+        "U"
+      ],
+      "raw_options": "rw,z,U",
+      "source": "/src",
+      "spec": "/src:/dst:rw,z,U",
+      "target": "/dst",
+      "validation_error": null
+    },
+    {
+      "non_persistent": false,
+      "options": [],
+      "raw_options": "",
+      "source": "/src",
+      "spec": "/src",
+      "target": "",
+      "validation_error": null
+    },
+    {
+      "non_persistent": false,
+      "options": [],
+      "raw_options": "",
+      "source": "",
+      "spec": "",
+      "target": "",
+      "validation_error": null
+    },
+    {
+      "non_persistent": false,
+      "options": [],
+      "raw_options": "",
+      "source": "/src",
+      "spec": "/src:/dst:",
+      "target": "/dst",
+      "validation_error": null
+    },
+    {
+      "non_persistent": false,
+      "options": [
+        "ro",
+        "nosuid"
+      ],
+      "raw_options": "ro,nosuid",
+      "source": "/a/b/c",
+      "spec": "/a/b/c:/x/y/z:ro,nosuid",
+      "target": "/x/y/z",
+      "validation_error": null
+    }
+  ]
+}

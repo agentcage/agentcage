@@ -1,0 +1,7 @@
+Usage: agentcage scaffold delete [OPTIONS] NAME
+
+  Delete a user scaffold.
+
+Options:
+  -y, --yes  Skip confirmation.
+  --help     Show this message and exit.

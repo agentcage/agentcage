@@ -1,0 +1,9 @@
+TIMESTAMP                  DIRECTION  METHOD   HOST                      PORT  PATH                 DECISION   REASON
+2024-01-01T00:00:00+00:00  OUTBOUND   GET      api.example.com           443   /v1/data             [32mallowed   [0m source 10.89.7.2; [injected: FAKE_API_KEY]
+2024-01-01T00:01:00+00:00  OUTBOUND   post     upload.example.net        443   /put                 [33mflagged   [0m source 10.89.7.2; high entropy; [redacted: FAKE_API_KEY]
+2024-01-01T00:02:00+00:00  OUTBOUND   POST     evil.example.org          443   /exfil               [31mblocked   [0m source 10.89.7.2; domain not allowed
+2024-01-01T00:03:00+00:00  OUTBOUND   GET      evil.example.org          443   /beacon              [31mblocked   [0m source 10.89.7.2; domain not allowed
+2024-01-01T00:04:00+00:00  INBOUND    PUT      127.0.0.1                 3000  /hook                [32mallowed   [0m source 127.0.0.1
+2024-06-01T12:00:00+00:00  OUTBOUND   HEAD     cdn.example.com           443   /a.bin               [32mallowed   [0m source 10.89.7.2
+not-a-timestamp            OUTBOUND   GET      legacy.example.com        80    /                    [32mallowed   [0m source 10.89.7.2
+2024-02-02T08:30:00        OUTBOUND   DELETE   api.example.com           443   /v1/item/9           [33mflagged   [0m source 10.89.7.2; watcher finding

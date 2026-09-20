@@ -1,0 +1,1 @@
+secret_injection['LEGACY_KEY']: placeholder '{{LEGACY_KEY}}' is not in the 'agentcage:secret:*' form — omit `placeholder:` to auto-generate an entropic token, or run `agentcage secret rotate-placeholders` to mint one

@@ -14,6 +14,41 @@ uv sync --dev
 uv run pytest
 ```
 
+## The Rust tree
+
+The host CLI is being ported to Rust; the egress proxy under
+`src/agentcage/data/proxy/` stays Python permanently. The two halves talk
+only through files on a bind mount, which is what makes the split
+possible.
+
+You do not need Rust to work on the Python side, and you do not need
+Python to work on the Rust side. They have separate CI jobs and neither
+can fail the other.
+
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+The workspace manifest is the root `Cargo.toml`; the crates live under
+`rust/`:
+
+| Crate | Rule |
+| :-- | :-- |
+| `agentcage-core` | pure logic. No subprocess, no I/O, no CLI. |
+| `agentcage-assets` | embeds and extracts `data/`, `templates/`, `scaffolds/`. |
+| `agentcage-cli` | the `agentcage` binary: argument parsing, subprocess, terminal, exit codes. |
+
+Each crate's `//!` docs say what it will hold and which PR brings it.
+The plan is `RUST-PORT-PLAN.md` on the `rust-port` branch.
+
+The version lives in the root `VERSION` file and nowhere else. Cargo
+cannot read it from there, so `[workspace.package] version` carries a
+copy and `scripts/check-version.sh` fails when the two disagree. Bump
+`VERSION`, then the copy.
+
 ## Making Changes
 
 1. Fork the repository and create a feature branch.
@@ -34,6 +69,29 @@ All dependencies are pinned (lock files, image digests, binary checksums). To ch
 Categories: `python`, `containers`, `node`, `pip`.
 
 Requires `skopeo` for container image checks (`sudo pacman -S skopeo` on Arch).
+
+## Changing the Egress Image
+
+The shared `agentcage-egress` image is tagged by content
+(`localhost/agentcage-egress:<version>-<12 hex>`), so an in-release fix to
+`Containerfile.egress`, `supervisor-egress.sh`, or the `data/proxy/` tree
+actually reaches hosts that already hold the previous tag (#312). The
+digest is computed by `src/agentcage/egress_hash.py` and pinned, together
+with the full list of files that feed it, in
+`tests/fixtures/egress_hash.json`.
+
+If you deliberately change what goes into the egress image, `uv run pytest
+tests/test_egress_hash.py` will fail. Re-bless the fixture in the same
+commit:
+
+```bash
+./scripts/bless-egress-hash.py          # rewrite the fixture
+./scripts/bless-egress-hash.py --check  # exit 1 if it is stale
+```
+
+Re-bless deliberately: the digest is a cross-language contract that the
+Rust port must reproduce byte-exactly, and the fixture's input list is
+there so a review sees exactly which files entered or left the image.
 
 ## Code Style
 

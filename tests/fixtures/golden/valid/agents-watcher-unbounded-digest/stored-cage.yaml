@@ -1,0 +1,19 @@
+name: agents-watcher-unbounded-digest
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+agents:
+  watcher:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: env:GOLDEN_SET_VAR
+    max_digest_tokens: 0

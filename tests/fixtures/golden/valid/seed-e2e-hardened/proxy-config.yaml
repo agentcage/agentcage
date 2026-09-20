@@ -1,0 +1,8 @@
+domains:
+  allow:
+  - httpbin.org
+logging:
+  dns_queries: true
+  proxy_connections: true
+  level: debug
+agentcage_version: 0.0.0-golden

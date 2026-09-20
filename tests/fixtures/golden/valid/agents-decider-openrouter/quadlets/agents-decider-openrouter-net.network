@@ -1,0 +1,4 @@
+[Network]
+NetworkName=agents-decider-openrouter-net
+Internal=true
+Subnet=10.89.217.0/24

@@ -1,0 +1,55 @@
+[package]
+name = "agentcage-exec"
+description = "The subprocess seam: a CommandRunner trait, a recording fake, and thin wrappers over the tools agentcage drives."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Why a fourth crate rather than a module in `agentcage-cli`:
+#
+#   * `agentcage-cli` is a `[[bin]]` with no library target, so a module
+#     there can only be tested from `#[cfg(test)]` blocks inside the
+#     binary. This crate's whole reason to exist is argv assertions, and
+#     those belong in `tests/` where they are integration tests against
+#     the public API -- the same API that D2, D3 and Track E will use.
+#   * D2 (state + systemd), D3 (secret stores) and all of Track E depend
+#     on this. A crate boundary makes that dependency explicit and gives
+#     each of them the recording fake as an ordinary dependency instead
+#     of a `#[path = "..."]` include.
+#   * `agentcage-core` is deliberately pure. Keeping the seam out of it
+#     is enforced by the fact that core does not depend on this crate,
+#     and the compiler will say so if someone tries.
+#
+# See `src/lib.rs` for the rest of the reasoning, and RUST-PORT-PLAN.md
+# (branch `rust-port`) section 4, Layer 3.
+
+[dependencies]
+# `podman info`, `podman inspect`, `container inspect`, `limactl list
+# --json` and `skopeo list-tags` all answer in JSON, and the wrappers
+# hand their callers a parsed document rather than bytes -- the same
+# thing `podman.py` and `lima/instance.py` do. `agentcage-core` already
+# depends on serde_json, so this adds nothing to the tree.
+serde_json = "1"
+
+# Two syscalls this crate cannot reach from `std`, and one it can but
+# should not.
+#
+#   * `geteuid()` -- `_podman_cmd()` / `_systemctl_cmd()` prefix with
+#     `runuser -u $SUDO_USER --` only when euid is 0. There is no `std`
+#     API for it.
+#   * `kill(pid, SIGTERM)` -- `_audit_follow` ends its stream with
+#     `proc.terminate()`. `std`'s `Child::kill` is SIGKILL, which is the
+#     wrong signal here: the audit and logs streams run through
+#     `journalctl -f` and, on the VM backend, through `limactl shell` ->
+#     ssh, where a SIGKILLed client leaves the remote side running.
+#
+# `rustix` rather than `libc` because the workspace forbids `unsafe`:
+# rustix's process module is a safe wrapper, so the call sites here need
+# no escape hatch and the `unsafe_code = "forbid"` lint stays honest.
+rustix = { version = "1", features = ["process"] }
+
+[lints]
+workspace = true

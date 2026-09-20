@@ -1,0 +1,4 @@
+[Network]
+NetworkName=domains-legacy-mode-list-net
+Internal=true
+Subnet=10.89.150.0/24

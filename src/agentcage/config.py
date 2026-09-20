@@ -1601,7 +1601,7 @@ def validate_config(config: Config) -> list[str]:
     """
     if not config.name:
         raise ValueError("'name' is required in config")
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', config.name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', config.name):
         raise ValueError(
             f"'name' must be 1-63 lowercase alphanumeric characters or hyphens, "
             f"starting with a letter or digit (got: {config.name!r})"
@@ -1611,7 +1611,7 @@ def validate_config(config: Config) -> list[str]:
     for volume in config.container.volumes:
         validate_non_persistent_volume(volume)
     if not re.match(
-        r'^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(@sha256:[a-f0-9]{64})?$',
+        r'^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(@sha256:[a-f0-9]{64})?\Z',
         config.container.image,
     ):
         raise ValueError(
@@ -2233,7 +2233,7 @@ def validate_config(config: Config) -> list[str]:
         # with a domain the operator already allow/passthrough'd (that would
         # make the synthetic control host also a real egress target).
         host = pa.host.lower().rstrip(".")
-        if not _re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$", host) or "." not in host:
+        if not _re.match(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z", host) or "." not in host:
             raise ValueError(
                 f"agents.decider.host {pa.host!r} must be a dotted hostname "
                 f"(e.g. 'agentcage.local'), not an IP literal or single label"

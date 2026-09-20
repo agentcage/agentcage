@@ -6,12 +6,30 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+  # Phase 7 only — see the e2e-vm job for why it is not on the PR path.
+  schedule:
+    - cron: "17 4 * * *"
 
+# Both CLIs run the same phases against the same real podman.
+#
+# `tests/e2e/lib.sh` and `run.sh` take the binary under test from
+# $AGENTCAGE (PR A2), which is the whole reason the port can be verified
+# end to end at all. Running only the Python leg would leave the Rust
+# binary's behaviour checked by unit tests and fixtures alone — and a
+# fixture is a recording of a decision, not evidence that the decision
+# survives contact with podman, systemd and a live egress container.
+#
+# The two legs are independent: a Rust regression must not report itself
+# as a Python failure, and vice versa.
 jobs:
   e2e-container:
-    name: E2E Container (Phases 1-6)
+    name: E2E Container (Phases 1-6, ${{ matrix.cli }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        cli: [python, rust]
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +37,38 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install agentcage
+      - name: Install agentcage (Python)
+        if: matrix.cli == 'python'
         run: uv tool install -e .
+
+      - name: Install the pinned Rust toolchain
+        if: matrix.cli == 'rust'
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry and target/
+        if: matrix.cli == 'rust'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: >-
+            cargo-e2e-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-e2e-${{ runner.os }}-
+
+      # --release, not debug: phase 6 has a 20s tmpfs-mask assertion and
+      # phase 3 drives a live secret channel, both of which are timing
+      # sensitive enough that an unoptimised binary is a false-failure
+      # generator rather than a faster build.
+      - name: Build agentcage (Rust)
+        if: matrix.cli == 'rust'
+        run: |
+          cargo build --release --locked --bin agentcage
+          echo "AGENTCAGE=$PWD/target/release/agentcage" >> "$GITHUB_ENV"
 
       - name: Setup rootless Podman
         run: |
@@ -51,9 +99,13 @@ jobs:
         run: bash tests/e2e/run.sh container
 
   e2e-openclaw:
-    name: E2E OpenClaw (Phase 8)
+    name: E2E OpenClaw (Phase 8, ${{ matrix.cli }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        cli: [python, rust]
     steps:
       - uses: actions/checkout@v4
 
@@ -61,8 +113,34 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install agentcage
+      - name: Install agentcage (Python)
+        if: matrix.cli == 'python'
         run: uv tool install -e .
+
+      - name: Install the pinned Rust toolchain
+        if: matrix.cli == 'rust'
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry and target/
+        if: matrix.cli == 'rust'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: >-
+            cargo-e2e-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-e2e-${{ runner.os }}-
+
+      - name: Build agentcage (Rust)
+        if: matrix.cli == 'rust'
+        run: |
+          cargo build --release --locked --bin agentcage
+          echo "AGENTCAGE=$PWD/target/release/agentcage" >> "$GITHUB_ENV"
 
       - name: Install jq + skopeo
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq skopeo
@@ -92,3 +170,100 @@ jobs:
 
       - name: Run phase 8
         run: bash tests/e2e/run.sh openclaw
+
+  # Phase 7 — the Lima VM backend.
+  #
+  # Deliberately NOT on the pull_request path. It boots a real guest: a
+  # ~350 MB Debian cloud image, a provision script, rootless podman
+  # inside the guest, and three cage restarts. Locally it is three and a
+  # half minutes with KVM and considerably longer without, and a
+  # download that size is a flake source that would land on every PR
+  # rather than on the ones that touch the backend.
+  #
+  # It runs nightly and on demand instead, which is the trade that
+  # matters: before this job, NOTHING watched the vm backend
+  # continuously. Assertion 7.21 asserted a path that stopped existing
+  # when the home mount was narrowed, and stayed red and unnoticed
+  # because no runner ever executed it. A nightly that reports rot the
+  # next morning is the whole point.
+  #
+  # `runs-on: ubuntu-24.04` has /dev/kvm on GitHub's hosted Linux
+  # runners; the step below checks rather than assumes, because the
+  # failure mode without it is a silent fall back to TCG and a timeout.
+  e2e-vm:
+    name: E2E VM (Phase 7, ${{ matrix.cli }})
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        cli: [python, rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install agentcage (Python)
+        if: matrix.cli == 'python'
+        run: uv tool install -e .
+
+      - name: Install the pinned Rust toolchain
+        if: matrix.cli == 'rust'
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry and target/
+        if: matrix.cli == 'rust'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: >-
+            cargo-e2e-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml',
+            'rust/*/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-e2e-${{ runner.os }}-
+
+      - name: Build agentcage (Rust)
+        if: matrix.cli == 'rust'
+        run: |
+          cargo build --release --locked --bin agentcage
+          echo "AGENTCAGE=$PWD/target/release/agentcage" >> "$GITHUB_ENV"
+
+      - name: Check for KVM
+        run: |
+          test -e /dev/kvm || {
+            echo "::error::/dev/kvm is absent; phase 7 would fall back to TCG and time out." >&2
+            exit 1
+          }
+          ls -l /dev/kvm
+
+      # Lima is pinned rather than resolved from the releases API, for
+      # the same two reasons `lima.yaml.j2` pins the guest image: the
+      # unauthenticated API is rate-limited per runner IP, and a new
+      # Lima can change a default under us — 1.0 changing `mountType` to
+      # 9p is exactly how every mount in that template started failing
+      # silently on a kernel without CONFIG_9P_FS. Bump deliberately.
+      - name: Install Lima and QEMU
+        env:
+          LIMA_VERSION: "2.2.0"
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils podman uidmap slirp4netns
+          curl -fsSL "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/lima-${LIMA_VERSION}-Linux-x86_64.tar.gz" \
+            | sudo tar -C /usr/local -xzf -
+          limactl --version
+
+      - name: Cache the Lima base image
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/lima
+          key: lima-image-${{ hashFiles('src/agentcage/templates/lima/lima.yaml.j2') }}
+
+      - name: Run phase 7
+        run: bash tests/e2e/run.sh vm

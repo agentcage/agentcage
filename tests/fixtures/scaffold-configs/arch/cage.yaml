@@ -1,0 +1,111 @@
+# agentcage configuration for demo (arch scaffold)
+#
+# Minimal cage — no AI agent, no tools
+# beyond what archlinux:latest ships, no outbound network allowed by default.
+#
+# Quick start:
+#   1. Deploy:  agentcage cage create -c cage.yaml
+#   2. Drop into a shell:
+#        agentcage cage exec demo -- bash
+#   3. Or use the run command:
+#        agentcage run arch
+
+name: demo
+
+lifecycle: interactive
+
+scaffold: arch
+
+container:
+  image: "localhost/agentcage-scaffold-arch:latest"
+  build:
+    containerfile: "Containerfile"
+  # Install the agentcage MITM proxy CA into the system trust store at
+  # startup so pacman (and any other tool that doesn't read SSL_CERT_FILE)
+  # can talk to the package mirrors over the intercepted TLS connection.
+  command:
+    - "sh"
+    - "-c"
+    - "cp /certs/mitmproxy-ca-cert.pem /etc/ca-certificates/trust-source/anchors/agentcage-proxy.crt && trust extract-compat && exec sleep infinity"
+
+  # Project directory — mount your repo here if you want to poke at it.
+  volumes:
+    - "${PROJECT_DIR}:/workspace:rw"
+
+  # Use the image's default USER (root for these base images). The
+  # agentcage default of "1000:1000" doesn't resolve to a real user
+  # in minimal base images, so `whoami` returns nothing and sudo is
+  # uninstallable. Inside the cage you are root; rootless podman maps
+  # that UID to your host user for bind-mounted writes.
+  user: ""
+
+  read_only: false
+
+  tmpfs:
+    - "/tmp:rw,noexec,nosuid,size=64M"
+    # Mask the host's .git/hooks/ so a caged agent can't plant a git hook
+    # (pre-commit, post-checkout, …) that the next host-side `git commit`
+    # runs as the host user — a cage→host pivot (#170). tmpfs overlays the
+    # bind-mounted path: the cage sees an empty, transient .git/hooks/
+    # (writes vanish on stop); the host's hooks are untouched.
+    # `notmpcopyup` is what makes "empty" true (#328). Without it podman
+    # copies the host's hooks into the mask, and the mask is `noexec` so
+    # none of them could ever run in the cage anyway — the copy would only
+    # add confusion plus a Permission denied whenever the agent edits one.
+    - "/workspace/.git/hooks/:rw,noexec,nosuid,nodev,size=64M,notmpcopyup"
+
+  # Resource limits — test cages are small
+  memory: "1g"
+  cpus: "1.0"
+
+  timeout_start_sec: 30
+
+  # Capabilities needed by pacman to install packages (chown installed
+  # files, set setuid bits, etc.). The cage drops ALL caps by default;
+  # these are the minimum re-added for `pacman -S <pkg>` to succeed as root.
+  add_capabilities:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+    - SETUID
+    - SETGID
+
+# ── Secret injection (none by default) ──
+# Uncomment for GitHub push over HTTPS or any other host you want to inject to.
+#secret_injection:
+#  - env: GITHUB_TOKEN
+#    placeholder: "agentcage:secret:GITHUB_TOKEN:00000000000000000000000000000001"
+#    inject_to:
+#      - github.com
+
+# ── Domain allowlist ──
+# Subdomains are matched automatically (e.g. "github.com" also allows
+# "api.github.com").
+domains:
+  allow:
+    # ── Arch package mirrors (pacman -Syu / pacman -S) ──
+    - pkgbuild.com
+    - archlinux.org
+    # Add more hosts your test needs:
+    # - example.com
+
+# ── Logging ──
+logging:
+  level: info
+  dns: warning
+
+# ── Inspectors ──
+inspectors:
+  - name: content-type
+
+# ── Exec aliases ──
+exec_aliases:
+  bash: ["bash"]
+
+# ── Help ──
+help: |
+  Drop into a shell:
+    agentcage cage exec demo -- bash
+
+  Or use the run command (creates ephemeral cage):
+    agentcage run arch

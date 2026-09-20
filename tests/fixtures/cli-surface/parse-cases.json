@@ -1,0 +1,2072 @@
+{
+  "_generated_by": "scripts/gen-cli-surface.py",
+  "cases": [
+    {
+      "argv": [
+        "cage",
+        "exec",
+        "myapp",
+        "--",
+        "ls",
+        "-la"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "exec"
+          ],
+          "params": {
+            "as_root": false,
+            "command": [
+              "ls",
+              "-la"
+            ],
+            "name": "myapp",
+            "service": "cage"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "exec",
+        "--as-root",
+        "myapp",
+        "--",
+        "openclaw",
+        "devices",
+        "list"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "exec"
+          ],
+          "params": {
+            "as_root": true,
+            "command": [
+              "openclaw",
+              "devices",
+              "list"
+            ],
+            "name": "myapp",
+            "service": "cage"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "exec",
+        "myapp",
+        "ls",
+        "-la"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "exec"
+          ],
+          "params": {
+            "as_root": false,
+            "command": [
+              "ls",
+              "-la"
+            ],
+            "name": "myapp",
+            "service": "cage"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "exec",
+        "-s",
+        "egress",
+        "myapp",
+        "--",
+        "sh",
+        "-c",
+        "echo $HOME"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "exec"
+          ],
+          "params": {
+            "as_root": false,
+            "command": [
+              "sh",
+              "-c",
+              "echo $HOME"
+            ],
+            "name": "myapp",
+            "service": "egress"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "exec",
+        "myapp",
+        "--",
+        "ls",
+        "-la"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "exec"
+          ],
+          "params": {
+            "as_root": false,
+            "command": [
+              "ls",
+              "-la"
+            ],
+            "name": "myapp",
+            "service": "cage"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "run",
+        "claude-code",
+        "--",
+        "claude",
+        "--help"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "run"
+          ],
+          "params": {
+            "as_root": false,
+            "extra_args": [
+              "claude",
+              "--help"
+            ],
+            "isolation": null,
+            "name": null,
+            "no_cache": false,
+            "project_dir": null,
+            "pull": false,
+            "scaffold": "claude-code",
+            "secrets": [],
+            "show_timing": false,
+            "verbose": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "run",
+        "codex",
+        "-s",
+        "OPENAI_API_KEY",
+        "--",
+        "codex",
+        "--version"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "run"
+          ],
+          "params": {
+            "as_root": false,
+            "extra_args": [
+              "codex",
+              "--version"
+            ],
+            "isolation": null,
+            "name": null,
+            "no_cache": false,
+            "project_dir": null,
+            "pull": false,
+            "scaffold": "codex",
+            "secrets": [
+              "OPENAI_API_KEY"
+            ],
+            "show_timing": false,
+            "verbose": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "run",
+        "claude-code",
+        "--no-cache",
+        "--",
+        "claude",
+        "-p",
+        "hi"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "run"
+          ],
+          "params": {
+            "as_root": false,
+            "extra_args": [
+              "claude",
+              "-p",
+              "hi"
+            ],
+            "isolation": null,
+            "name": null,
+            "no_cache": true,
+            "project_dir": null,
+            "pull": false,
+            "scaffold": "claude-code",
+            "secrets": [],
+            "show_timing": false,
+            "verbose": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "run",
+        "claude-code",
+        "--verbose",
+        "--",
+        "--not-a-flag"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "run"
+          ],
+          "params": {
+            "as_root": false,
+            "extra_args": [
+              "--not-a-flag"
+            ],
+            "isolation": null,
+            "name": null,
+            "no_cache": false,
+            "project_dir": null,
+            "pull": false,
+            "scaffold": "claude-code",
+            "secrets": [],
+            "show_timing": false,
+            "verbose": true
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "audit",
+        "myapp",
+        "--lines",
+        "10"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "audit"
+          ],
+          "params": {
+            "as_json": false,
+            "as_json_lines": false,
+            "decisions": [],
+            "directions": [],
+            "follow": false,
+            "hosts": [],
+            "inspectors": [],
+            "max_entries": 100,
+            "max_entries_compat": 10,
+            "methods": [],
+            "name": "myapp",
+            "no_color": false,
+            "severity": null,
+            "since": null,
+            "summary": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "audit",
+        "myapp",
+        "--json-lines"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "audit"
+          ],
+          "params": {
+            "as_json": false,
+            "as_json_lines": true,
+            "decisions": [],
+            "directions": [],
+            "follow": false,
+            "hosts": [],
+            "inspectors": [],
+            "max_entries": 100,
+            "max_entries_compat": null,
+            "methods": [],
+            "name": "myapp",
+            "no_color": false,
+            "severity": null,
+            "since": null,
+            "summary": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "har",
+        "myapp",
+        "--json"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "har"
+          ],
+          "params": {
+            "decisions": [],
+            "directions": [],
+            "hosts": [],
+            "json_compat": true,
+            "json_lines": false,
+            "max_entries": 0,
+            "methods": [],
+            "name": "myapp",
+            "output_file": null,
+            "since": null,
+            "view": "inbound"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "logs",
+        "myapp",
+        "--no-follow"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "logs"
+          ],
+          "params": {
+            "follow": false,
+            "lines": 50,
+            "min_level": null,
+            "name": "myapp",
+            "no_follow": true,
+            "services": [],
+            "since": null
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "logs",
+        "myapp",
+        "--tail",
+        "5"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "logs"
+          ],
+          "params": {
+            "follow": false,
+            "lines": 5,
+            "min_level": null,
+            "name": "myapp",
+            "no_follow": false,
+            "services": [],
+            "since": null
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "ls"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "list"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "ps"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "list"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "rm",
+        "myapp",
+        "-y"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "destroy"
+          ],
+          "params": {
+            "keep_secrets": false,
+            "name": "myapp",
+            "yes": true
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "delete",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "destroy"
+          ],
+          "params": {
+            "keep_secrets": false,
+            "name": "myapp",
+            "yes": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "reload",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "restart"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "config",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "edit"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "describe",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "show"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "inspect",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "show"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "ls"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "list"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "rm",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "destroy"
+          ],
+          "params": {
+            "keep_secrets": false,
+            "name": "myapp",
+            "yes": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "config",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "edit"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "domain",
+        "ls",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "domain"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "domain",
+            "list"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "secret",
+        "ls",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret",
+            "list"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "watcher",
+        "ls",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "watcher"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "watcher",
+            "findings"
+          ],
+          "params": {
+            "as_json": false,
+            "hosts": [],
+            "max_entries": 50,
+            "name": "myapp",
+            "severities": []
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "grants",
+        "myapp",
+        "ls"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "grants"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "grants",
+            "list"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "audit",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "audit"
+          ],
+          "params": {
+            "as_json": false,
+            "as_json_lines": false,
+            "decisions": [],
+            "directions": [],
+            "follow": false,
+            "hosts": [],
+            "inspectors": [],
+            "max_entries": 100,
+            "max_entries_compat": null,
+            "methods": [],
+            "name": "myapp",
+            "no_color": false,
+            "severity": null,
+            "since": null,
+            "summary": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "audit",
+        "myapp",
+        "-d",
+        "blocked",
+        "-d",
+        "flagged",
+        "--host",
+        "a.example"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "audit"
+          ],
+          "params": {
+            "as_json": false,
+            "as_json_lines": false,
+            "decisions": [
+              "blocked",
+              "flagged"
+            ],
+            "directions": [],
+            "follow": false,
+            "hosts": [
+              "a.example"
+            ],
+            "inspectors": [],
+            "max_entries": 100,
+            "max_entries_compat": null,
+            "methods": [],
+            "name": "myapp",
+            "no_color": false,
+            "severity": null,
+            "since": null,
+            "summary": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "logs",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "logs"
+          ],
+          "params": {
+            "follow": false,
+            "lines": 50,
+            "min_level": null,
+            "name": "myapp",
+            "no_follow": false,
+            "services": [],
+            "since": null
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "har",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "har"
+          ],
+          "params": {
+            "decisions": [],
+            "directions": [],
+            "hosts": [],
+            "json_compat": false,
+            "json_lines": false,
+            "max_entries": 0,
+            "methods": [],
+            "name": "myapp",
+            "output_file": null,
+            "since": null,
+            "view": "inbound"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "shell",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "shell"
+          ],
+          "params": {
+            "as_root": false,
+            "name": "myapp",
+            "service": "cage"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "init"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "init"
+          ],
+          "params": {
+            "force": false,
+            "image": "node:22-slim",
+            "isolation": null,
+            "list_scaffolds": false,
+            "name": null,
+            "output": "cage.yaml",
+            "port": null,
+            "scaffold": null
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "init",
+        "myapp",
+        "--port",
+        "8080"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "init"
+          ],
+          "params": {
+            "force": false,
+            "image": "node:22-slim",
+            "isolation": null,
+            "list_scaffolds": false,
+            "name": "myapp",
+            "output": "cage.yaml",
+            "port": 8080,
+            "scaffold": null
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "watcher",
+        "findings",
+        "myapp",
+        "-s",
+        "high",
+        "-s",
+        "critical"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "watcher"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "watcher",
+            "findings"
+          ],
+          "params": {
+            "as_json": false,
+            "hosts": [],
+            "max_entries": 50,
+            "name": "myapp",
+            "severities": [
+              "high",
+              "critical"
+            ]
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "secret",
+        "set",
+        "myapp",
+        "KEY",
+        "--declare"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret",
+            "set"
+          ],
+          "params": {
+            "declare": true,
+            "inject_to": [],
+            "key": "KEY",
+            "name": "myapp",
+            "placeholder_opt": ""
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "secret",
+        "rotate-placeholders",
+        "myapp"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret",
+            "rotate-placeholders"
+          ],
+          "params": {
+            "keys": [],
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "secret",
+        "rotate-placeholders",
+        "myapp",
+        "A",
+        "B"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "secret",
+            "rotate-placeholders"
+          ],
+          "params": {
+            "keys": [
+              "A",
+              "B"
+            ],
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "domain",
+        "add",
+        "myapp",
+        "a.example",
+        "b.example",
+        "--passthrough"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "domain"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "domain",
+            "add"
+          ],
+          "params": {
+            "domain_names": [
+              "a.example",
+              "b.example"
+            ],
+            "expires_in": null,
+            "name": "myapp",
+            "passthrough": true
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "create",
+        "."
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "create"
+          ],
+          "params": {
+            "config_path": null,
+            "config_pos": ".",
+            "no_cache": false,
+            "pull": false,
+            "secrets": [],
+            "show_timing": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "create",
+        "-c",
+        ".",
+        "-s",
+        "K=V",
+        "--no-cache",
+        "--pull",
+        "--time"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "create"
+          ],
+          "params": {
+            "config_path": ".",
+            "config_pos": null,
+            "no_cache": true,
+            "pull": true,
+            "secrets": [
+              "K=V"
+            ],
+            "show_timing": true
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "update"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "update"
+          ],
+          "params": {
+            "config_path": null,
+            "force": false,
+            "name": null,
+            "no_cache": false,
+            "pull": false
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [
+        "cage",
+        "status"
+      ],
+      "exit_code": 0,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "status"
+          ],
+          "params": {
+            "name": null
+          }
+        }
+      ],
+      "outcome": "parsed",
+      "trailing": []
+    },
+    {
+      "argv": [],
+      "error_kind": "NoArgsIsHelpError",
+      "error_message": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502 \u273b agentcage v{VERSION}                        \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\nUsage: agentcage [OPTIONS] COMMAND [ARGS]...\n\n  Defense-in-depth proxy sandbox for AI agents.\n\nOptions:\n  --version  Show the version and exit.\n  --help     Show this message and exit.\n\nCommands:\n  cage      Manage cages.\n  doctor    Check system health and diagnose common issues.\n  domain    Manage cage domain filters.\n  init      Scaffold a new agentcage config file.\n  scaffold  Create and manage custom scaffolds.\n  secret    Manage cage-scoped secrets.\n  watcher   Read the traffic watcher's findings and scan status.\n\nAliases:\n  config \u2192 cage edit\n  delete \u2192 cage destroy\n  describe \u2192 cage show\n  edit \u2192 cage edit\n  exec \u2192 cage exec\n  inspect \u2192 cage show\n  logs \u2192 cage logs\n  ls \u2192 cage list\n  ps \u2192 cage list\n  reload \u2192 cage restart\n  restart \u2192 cage restart\n  rm \u2192 cage destroy\n  run \u2192 cage run\n  shell \u2192 cage shell\n  show \u2192 cage show\n  start \u2192 cage start\n  status \u2192 cage status\n  stop \u2192 cage stop\n  update \u2192 cage update",
+      "exit_code": 2,
+      "frames": [],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage"
+      ],
+      "error_kind": "NoArgsIsHelpError",
+      "error_message": "Usage: agentcage cage [OPTIONS] COMMAND [ARGS]...\n\n  Manage cages.\n\nOptions:\n  --help  Show this message and exit.\n\nCommands:\n  audit    Query, filter, and summarize proxy audit logs.\n  backup   Create a backup tarball of a cage.\n  create   Build images, generate quadlets, install, and start a new cage.\n  destroy  Stop containers, remove quadlets, state, and scoped secrets.\n  edit     Edit a cage's stored config in $EDITOR, with validation and safe...\n  exec     Run a command inside a cage container.\n  grants   Manage Policy API runtime domain grants (see...\n  har      Export captured HTTP traffic as HAR 1.2 JSON.\n  list     List all cages with status.\n  logs     Show journalctl logs for a cage.\n  prune    Remove all exited interactive and ephemeral cages.\n  restart  Restart services without rebuilding images.\n  restore  Restore a cage from a backup tarball.\n  run      Run a coding agent in a sandboxed cage.\n  shell    Open an interactive shell in a cage container.\n  show     Show cage configuration and status.\n  start    Start a stopped cage.\n  status   Show status \u2014 one cage's detail (with NAME) or all cages (without).\n  stop     Stop a running cage without destroying it.\n  update   Rebuild and restart an existing cage.\n  verify   Check that a cage is healthy.\n\nAliases:\n  config \u2192 edit\n  delete \u2192 destroy\n  describe \u2192 show\n  inspect \u2192 show\n  ls \u2192 list\n  ps \u2192 list\n  reload \u2192 restart\n  rm \u2192 destroy",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "grants"
+      ],
+      "error_kind": "NoArgsIsHelpError",
+      "error_message": "Usage: agentcage cage grants [OPTIONS] NAME COMMAND [ARGS]...\n\n  Manage Policy API runtime domain grants (see docs/explain/policy-api.md).\n\nOptions:\n  --help  Show this message and exit.\n\nCommands:\n  list     List runtime grants (overlay) and the static baseline for a cage.\n  promote  Promote a runtime grant into the permanent baseline, then drop...\n  revoke   Remove a runtime grant from the overlay (does not touch the...\n  sync     Reconcile decided grants into the operator's cage.yaml baseline.\n\nAliases:\n  ls \u2192 list",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "grants",
+        "myapp"
+      ],
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage",
+            "grants"
+          ],
+          "params": {
+            "name": "myapp"
+          }
+        }
+      ],
+      "outcome": "no_args_is_help"
+    },
+    {
+      "argv": [
+        "nosuchcommand"
+      ],
+      "error_kind": "NoSuchCommand",
+      "error_message": "No such command 'nosuchcommand'.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "nosuchcommand"
+      ],
+      "error_kind": "NoSuchCommand",
+      "error_message": "No such command 'nosuchcommand'.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "doctor",
+        "--nope"
+      ],
+      "error_kind": "NoSuchOption",
+      "error_message": "No such option '--nope'.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "exec",
+        "myapp"
+      ],
+      "error_kind": "MissingParameter",
+      "error_message": "Missing argument 'COMMAND...'.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "show"
+      ],
+      "error_kind": "MissingParameter",
+      "error_message": "Missing argument 'NAME'.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "audit",
+        "myapp",
+        "-d",
+        "nope"
+      ],
+      "error_kind": "BadParameter",
+      "error_message": "Invalid value for '-d' / '--decision': 'nope' is not one of 'blocked', 'flagged', 'allowed'.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "logs",
+        "myapp",
+        "-n",
+        "notanumber"
+      ],
+      "error_kind": "BadParameter",
+      "error_message": "Invalid value for '-n' / '--lines' / '--tail': 'notanumber' is not a valid integer.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "domain",
+        "add",
+        "myapp"
+      ],
+      "error_kind": "MissingParameter",
+      "error_message": "Missing argument 'DOMAIN_NAMES...'.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "domain"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    },
+    {
+      "argv": [
+        "cage",
+        "create",
+        "./definitely-missing.yaml"
+      ],
+      "error_kind": "BadParameter",
+      "error_message": "Invalid value for '[CONFIG_POS]': Path './definitely-missing.yaml' does not exist.",
+      "exit_code": 2,
+      "frames": [
+        {
+          "command": [
+            "agentcage"
+          ],
+          "params": {}
+        },
+        {
+          "command": [
+            "agentcage",
+            "cage"
+          ],
+          "params": {}
+        }
+      ],
+      "outcome": "error"
+    }
+  ]
+}

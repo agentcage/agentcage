@@ -1,0 +1,16 @@
+domains:
+  mode: allowlist
+  allow:
+  - api.anthropic.com
+secrets:
+  backend: keychain
+secret_injection:
+- env: ANTHROPIC_API_KEY
+  inject_to:
+  - api.anthropic.com
+  inject_headers:
+  - x-api-key
+  placeholder: agentcage:secret:ANTHROPIC_API_KEY:0f1e2d3c4b5a69788796a5b4c3d2e1f0
+capture:
+  enable_har: true
+agentcage_version: 0.40.1

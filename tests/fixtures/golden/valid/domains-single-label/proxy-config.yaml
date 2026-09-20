@@ -1,0 +1,6 @@
+domains:
+  allow:
+  - api.example.com
+  - fcos-vm-home-01
+  - nas
+agentcage_version: 0.0.0-golden

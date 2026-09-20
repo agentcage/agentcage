@@ -7,6 +7,20 @@ on:
     branches: [master]
 
 jobs:
+  boundary:
+    # Seed of the RUST-PORT-PLAN.md §2.4 invariant guards. The host side
+    # (src/agentcage/** except data/proxy/) becomes Rust; the egress proxy
+    # (src/agentcage/data/proxy/**) stays Python. A test file that imports both
+    # has no home after the split, so the count must stay at zero. Runs on its
+    # own job: it is a static AST scan, needs no dependencies, and should fail
+    # in seconds rather than behind the matrix.
+    name: Trust-boundary import guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No test file may import both sides of the trust boundary
+        run: python3 scripts/classify-tests.py --fail-on-both
+
   test:
     runs-on: ubuntu-latest
     strategy:

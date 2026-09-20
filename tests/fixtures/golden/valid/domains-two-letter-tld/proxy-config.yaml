@@ -1,0 +1,5 @@
+domains:
+  allow:
+  - api.example.io
+  - docs.example.co.uk
+agentcage_version: 0.0.0-golden

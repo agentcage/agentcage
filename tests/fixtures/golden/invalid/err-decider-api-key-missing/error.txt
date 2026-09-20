@@ -1,0 +1,1 @@
+ValueError: agents.decider.api_key is required — the decider agent needs its own API key, an egress-only secret using the source: scheme (e.g. 'systemd-creds:POLICY_LLM_KEY' or 'env:OPENROUTER_API_KEY').

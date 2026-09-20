@@ -1,0 +1,13 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+secrets:
+  scope: system
+secret_injection:
+- env: SCOPED_KEY
+  placeholder: agentcage:secret:SCOPED_KEY:55555555555555555555555555555555
+  inject_to:
+  - api.example.com
+  source: systemd-creds:SCOPED_KEY
+agentcage_version: 0.0.0-golden

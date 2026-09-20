@@ -1,0 +1,4 @@
+[Network]
+NetworkName=basic-net
+Internal=true
+Subnet=10.89.151.0/24

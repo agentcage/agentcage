@@ -23,6 +23,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
 
+      # Before anything is built or published: the tag, the root VERSION
+      # file and the CHANGELOG heading all have to name the same release.
+      # A mismatch here used to mean a wheel published under one number
+      # while the release notes came from another section (or from the
+      # "no CHANGELOG entry" placeholder). Runs first because PyPI
+      # uploads cannot be taken back.
+      - name: Check version agreement
+        run: ./scripts/check-version.sh
+
       - name: Build wheel + sdist
         run: uv build
 

@@ -1,0 +1,13 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+logging:
+  level: warning
+  dns: debug
+  proxy: error
+  cage: critical
+  dns_queries: true
+  proxy_connections: true
+  allowed_requests: true
+agentcage_version: 0.0.0-golden

@@ -1,0 +1,1 @@
+ValueError: agents.watcher.base_url must be an https:// URL (the watcher API key is sent on every call; http:// would leak it in cleartext — got 'http://llm.example.com/v1')

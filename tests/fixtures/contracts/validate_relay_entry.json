@@ -1,0 +1,1980 @@
+{
+  "contract": "validate_relay_entry",
+  "summary": "Structural validation of one protocol_relays entry. The only contract of the four that is currently ONE module imported from both sides \u2014 the host as agentcage.data.proxy.relays._validate, the proxy as relays._validate. After the port it becomes two implementations, and the error strings are user-visible: `agentcage cage create` surfaces them verbatim.",
+  "implementations": {
+    "host": "agentcage.data.proxy.relays._validate.validate_relay_entry, called from agentcage.config with source_validator=secret_resolver.validate_source",
+    "proxy": "relays._validate.validate_relay_entry, called from addon.py with no source_validator"
+  },
+  "fields": {
+    "entry": "the protocol_relays entry, exactly as parsed from YAML",
+    "ok": "true when the entry validates",
+    "error": "when ok is false, the ValueError message VERBATIM",
+    "source_validator_calls": "the arguments the optional source_validator hook receives, in order. The host passes secret_resolver.validate_source here; the proxy passes None. A hook that never raises must not change ok/error, which the generator asserts."
+  },
+  "notes": [
+    "Error messages interpolate Python type names (type(x).__name__) and Python reprs. The JSON-to-Python mapping a Rust port must reproduce: null -> NoneType, true/false -> bool, integer -> int, fractional number -> float, string -> str, array -> list, object -> dict.",
+    "Python repr of a string uses single quotes ('imap'); repr of a number, boolean or null is bare (123, True, None).",
+    "Check ORDER is part of the contract: an entry with two problems must report the SAME one on both sides, or an operator fixing errors one at a time gets different guidance depending on which implementation ran."
+  ],
+  "cases": [
+    {
+      "id": "ok-minimal",
+      "why": "the minimum viable entry",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-smtp",
+      "why": "the other known relay type",
+      "entry": {
+        "name": "mail",
+        "type": "smtp",
+        "listen": "127.0.0.1:11587",
+        "upstream": {
+          "host": "smtp.example.com",
+          "port": 465
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-port-1",
+      "why": "the bottom of the accepted port range",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 1
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-port-65535",
+      "why": "the top of the accepted port range",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 65535
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-port-string",
+      "why": "YAML quoting turns a port into a string; int() coercion accepts it",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": "993"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-plaintext-upstream",
+      "why": "tls: false with no TLS-only fields set",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": false
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-ca-file",
+      "why": "the operator-facing CA form",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_file": "/certs/ca.pem"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-ca-pem",
+      "why": "the proxy-facing CA form",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-ca-pem-inline",
+      "why": "a PEM with the marker not at position 0",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": "# issued by corp CA\n-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-servername",
+      "why": "an SNI override on a TLS upstream",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls_servername": "bridge.internal"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-empty-ca-on-plaintext",
+      "why": "empty TLS-only fields do not trip the tls: false guard \u2014 only truthy ones do",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": false,
+          "ca_file": "",
+          "ca_pem": "",
+          "tls_servername": ""
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-null-ca-on-plaintext",
+      "why": "null is normalised to '' by `or ''`",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": false,
+          "ca_file": null,
+          "ca_pem": null,
+          "tls_servername": null
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-write-mode-none",
+      "why": "the most restrictive write mode",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "none"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-write-mode-organise",
+      "why": "file and flag, never destroy",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "organise"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-write-mode-full",
+      "why": "unrestricted",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "full"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-write-mode-uppercase",
+      "why": "the mode is lowercased before checking",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "FULL"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-write-mode-mixed-case",
+      "why": "mixed case",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "Organise"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-readonly-agrees-none",
+      "why": "legacy readonly: true agrees with write_mode: none",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "none",
+          "readonly": true
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-readonly-agrees-full",
+      "why": "legacy readonly: false agrees with write_mode: full",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "full",
+          "readonly": false
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-readonly-alone",
+      "why": "the legacy spelling on its own is untouched by this validator",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "readonly": true
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-write-mode-null",
+      "why": "write_mode: null is treated as unset",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": null,
+          "readonly": true
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-folder-lists",
+      "why": "both folder lists present and well-formed",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "folder_allowlist": [
+            "INBOX",
+            "Archive"
+          ],
+          "folder_denylist": []
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-folder-lists-null",
+      "why": "null is 'unset', not 'wrong type'",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "folder_allowlist": null,
+          "folder_denylist": null
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-policy-null",
+      "why": "policy: null is normalised to {}",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": null
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-policy-not-mapping",
+      "why": "a truthy non-mapping policy is refused. It used to be skipped in silence \u2014 write_mode included \u2014 because the isinstance guard had no else branch, and the relay then died on policy.get() with an AttributeError naming nothing",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": [
+          "write_mode: none"
+        ]
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy must be a mapping (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-policy-string",
+      "why": "the same, spelled as a bare string",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": "none"
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy must be a mapping (got str)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-policy-empty-list",
+      "why": "falsy is 'absent': `or {}` normalises it before the type is ever examined",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": []
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-auth-mapping",
+      "why": "an auth block with no source_validator",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "auth": {
+          "user_source": "env:MAIL_USER",
+          "password_source": "file:/run/secrets/mail"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": [
+        "env:MAIL_USER",
+        "file:/run/secrets/mail"
+      ]
+    },
+    {
+      "id": "ok-auth-null",
+      "why": "auth: null is normalised to {}",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "auth": null
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-unknown-keys",
+      "why": "unknown keys are ignored; the validator is structural, not a schema",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "future_key": "whatever"
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-upstream-extra-keys",
+      "why": "same for upstream",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "timeout_seconds": 30
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-entry-list",
+      "why": "a list where a mapping belongs",
+      "entry": [
+        "name",
+        "mail"
+      ],
+      "ok": false,
+      "error": "protocol_relays entry must be a mapping (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-entry-string",
+      "why": "a bare string",
+      "entry": "mail",
+      "ok": false,
+      "error": "protocol_relays entry must be a mapping (got str)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-entry-null",
+      "why": "YAML's '- ' with nothing after it",
+      "entry": null,
+      "ok": false,
+      "error": "protocol_relays entry must be a mapping (got NoneType)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-entry-int",
+      "why": "a number",
+      "entry": 7,
+      "ok": false,
+      "error": "protocol_relays entry must be a mapping (got int)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-entry-bool",
+      "why": "a bare boolean",
+      "entry": true,
+      "ok": false,
+      "error": "protocol_relays entry must be a mapping (got bool)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-missing-name",
+      "why": "no name key",
+      "entry": {
+        "type": "imap",
+        "listen": "127.0.0.1:11143"
+      },
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name='', type='imap', listen='127.0.0.1:11143')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-missing-type",
+      "why": "no type key",
+      "entry": {
+        "name": "mail",
+        "listen": "127.0.0.1:11143"
+      },
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name='mail', type='', listen='127.0.0.1:11143')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-missing-listen",
+      "why": "no listen key",
+      "entry": {
+        "name": "mail",
+        "type": "imap"
+      },
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name='mail', type='imap', listen='')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-empty-entry",
+      "why": "an empty mapping",
+      "entry": {},
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name='', type='', listen='')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-empty-name",
+      "why": "an empty name string",
+      "entry": {
+        "name": "",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name='', type='imap', listen='127.0.0.1:11143')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-null-listen",
+      "why": "listen: null",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": null,
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name='mail', type='imap', listen=None)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-name-numeric",
+      "why": "a YAML-numeric name; the message interpolates the value with Python repr, so it appears unquoted",
+      "entry": {
+        "name": 123,
+        "type": "",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name=123, type='', listen='127.0.0.1:11143')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-unknown-type",
+      "why": "a plausible-but-unsupported protocol",
+      "entry": {
+        "name": "mail",
+        "type": "xmpp",
+        "listen": "127.0.0.1:5222",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "unknown protocol_relays type: 'xmpp'. Valid: imap, smtp",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-type-case",
+      "why": "the type check is case-SENSITIVE",
+      "entry": {
+        "name": "mail",
+        "type": "IMAP",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "unknown protocol_relays type: 'IMAP'. Valid: imap, smtp",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-type-whitespace",
+      "why": "a stray space",
+      "entry": {
+        "name": "mail",
+        "type": "imap ",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "unknown protocol_relays type: 'imap '. Valid: imap, smtp",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-type-pop3",
+      "why": "another real protocol that is not supported",
+      "entry": {
+        "name": "mail",
+        "type": "pop3",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "unknown protocol_relays type: 'pop3'. Valid: imap, smtp",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-upstream-list",
+      "why": "upstream as a list",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": [
+          "host"
+        ]
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream must be a mapping",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-upstream-string",
+      "why": "upstream as a bare string",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": "imap.example.com:993"
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream must be a mapping",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-upstream-missing",
+      "why": "no upstream at all \u2014 normalised to {}, then fails the host/port check",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143"
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-upstream-null",
+      "why": "upstream: null",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": null
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-upstream-no-host",
+      "why": "port but no host",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-upstream-empty-host",
+      "why": "an empty host string",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "",
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-0",
+      "why": "0 is below the range",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 0
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-negative",
+      "why": "a negative port",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": -1
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-65536",
+      "why": "one above the range",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 65536
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-huge",
+      "why": "far above the range",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 999999
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-missing",
+      "why": "no port key",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-null",
+      "why": "port: null coerces to 0",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": null
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-non-numeric",
+      "why": "a non-numeric string is caught by the try/except and becomes 0",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": "imaps"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-list",
+      "why": "a list is caught by the try/except",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": [
+            993
+          ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-bool-false",
+      "why": "a falsy bool is refused too: there is no reading of port: false, and YAML 1.1 makes `port: no` the same thing",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": false
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.port must be a number (got bool) \u2014 note that YAML reads bare yes/no/on/off as booleans; quote the port if you meant a number",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-bool",
+      "why": "bool is an int subclass, so int(True) is 1 \u2014 a relay pointed at port 1 is never what the operator wrote, and YAML reads bare yes/on as booleans",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": true
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.port must be a number (got bool) \u2014 note that YAML reads bare yes/no/on/off as booleans; quote the port if you meant a number",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-list",
+      "why": "str() would make this the string '[1]', which is non-empty and so reads as 'present' \u2014 a config that validates and then fails DNS on a name nobody wrote",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": [
+            1
+          ],
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.host must be a string (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-mapping",
+      "why": "the same for a mapping",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": {
+            "a": 1
+          },
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.host must be a string (got dict)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-int",
+      "why": "a bare number",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": 993,
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.host must be a string (got int)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-host-falsy-is-absent-not-a-type-error",
+      "why": "a falsy host is 'absent', type unexamined \u2014 truthiness before type, matching ca_file/ca_pem \u2014 so it gets the requires-host-and-port message rather than a type complaint",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": [],
+          "port": 993
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-port-float-truncates",
+      "why": "a float truncates toward zero, so 993.7 becomes 993 and PASSES",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993.7
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-port-float-sub-one",
+      "why": "0.5 truncates to 0",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 0.5
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-file-list",
+      "why": "a YAML list where a path belongs",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_file": [
+            "/certs/ca.pem"
+          ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_file must be a path string (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-file-mapping",
+      "why": "a mapping",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_file": {
+            "path": "/c.pem"
+          }
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_file must be a path string (got dict)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-file-int",
+      "why": "a number",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_file": 1
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_file must be a path string (got int)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-pem-list",
+      "why": "a list of lines instead of one blob",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": [
+            "cert"
+          ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem must be a PEM string (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-pem-mapping",
+      "why": "a mapping",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": {
+            "pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+          }
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem must be a PEM string (got dict)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-servername-list",
+      "why": "a list",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls_servername": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.tls_servername must be a string (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-servername-int",
+      "why": "a number",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls_servername": 443
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.tls_servername must be a string (got int)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-pem-is-a-path",
+      "why": "the commonest mistake: pointing ca_pem at a file. The error names ca_file rather than failing at connect time",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": "/certs/bridge.pem"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem does not look like PEM \u2014 expected a '-----BEGIN CERTIFICATE-----' block. To point at a file on disk, use upstream.ca_file.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-pem-private-key",
+      "why": "a PEM block of the wrong kind",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem does not look like PEM \u2014 expected a '-----BEGIN CERTIFICATE-----' block. To point at a file on disk, use upstream.ca_file.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-pem-base64-only",
+      "why": "the body without the armour",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": "MIIBfooMIIBfoo"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem does not look like PEM \u2014 expected a '-----BEGIN CERTIFICATE-----' block. To point at a file on disk, use upstream.ca_file.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-pem-marker-lowercase",
+      "why": "the marker match is case-sensitive",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": "-----begin certificate-----\nMIIB\n"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem does not look like PEM \u2014 expected a '-----BEGIN CERTIFICATE-----' block. To point at a file on disk, use upstream.ca_file.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-both",
+      "why": "ambiguous about which wins",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_file": "/certs/ca.pem",
+          "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream sets both ca_file and ca_pem; use one. ca_file is read at deploy time and becomes ca_pem in the proxy's config.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-ca-both-pem-invalid",
+      "why": "the PEM check runs BEFORE the both-set check, so a bad PEM wins the race",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_file": "/certs/ca.pem",
+          "ca_pem": "/certs/other.pem"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem does not look like PEM \u2014 expected a '-----BEGIN CERTIFICATE-----' block. To point at a file on disk, use upstream.ca_file.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-plaintext-ca-file",
+      "why": "a CA next to tls: false reads as 'verified' in review but verifies nothing",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": false,
+          "ca_file": "/certs/ca.pem"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_file requires upstream.tls: true (got tls: false, which connects in plaintext and verifies nothing)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-plaintext-ca-pem",
+      "why": "same for the inline form",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": false,
+          "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem requires upstream.tls: true (got tls: false, which connects in plaintext and verifies nothing)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-plaintext-servername",
+      "why": "same for the SNI override",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": false,
+          "tls_servername": "bridge.internal"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.tls_servername requires upstream.tls: true (got tls: false, which connects in plaintext and verifies nothing)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-plaintext-all-three",
+      "why": "all three set; the iteration order of the check decides which is named first",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": false,
+          "ca_file": "/c.pem",
+          "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n",
+          "tls_servername": "bridge.internal"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream sets both ca_file and ca_pem; use one. ca_file is read at deploy time and becomes ca_pem in the proxy's config.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-plaintext-tls-null",
+      "why": "tls: null is falsy, so bool() makes it a plaintext upstream \u2014 NOT the default-true path",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": null,
+          "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem requires upstream.tls: true (got tls: false, which connects in plaintext and verifies nothing)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-plaintext-tls-zero",
+      "why": "tls: 0 is falsy too",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": 0,
+          "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem requires upstream.tls: true (got tls: false, which connects in plaintext and verifies nothing)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-tls-truthy-string",
+      "why": "tls: 'false' is a non-empty STRING, which is truthy \u2014 a YAML-quoting footgun that silently keeps TLS ON",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "tls": "false",
+          "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-write-mode-unknown",
+      "why": "a plausible-but-wrong mode",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "readonly"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got 'readonly')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-write-mode-empty",
+      "why": "an empty string",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": ""
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got '')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-write-mode-bool",
+      "why": "a boolean",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": true
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got True)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-write-mode-int",
+      "why": "a number",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": 0
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got 0)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-write-mode-list",
+      "why": "a list",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": [
+            "none"
+          ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got ['none'])",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-readonly-contradicts-none",
+      "why": "readonly: false with write_mode: none \u2014 guessing which the operator meant is exactly the wrong call for a policy that gates writes",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "none",
+          "readonly": false
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy sets readonly=False and write_mode='none', which contradict. Use write_mode alone.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-readonly-contradicts-full",
+      "why": "readonly: true with write_mode: full",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "full",
+          "readonly": true
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy sets readonly=True and write_mode='full', which contradict. Use write_mode alone.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-readonly-contradicts-organise",
+      "why": "readonly: true implies 'none', which is not 'organise'",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "organise",
+          "readonly": true
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy sets readonly=True and write_mode='organise', which contradict. Use write_mode alone.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-readonly-contradicts-organise-false",
+      "why": "readonly: false implies 'full', which is not 'organise'",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "organise",
+          "readonly": false
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy sets readonly=False and write_mode='organise', which contradict. Use write_mode alone.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-readonly-null-implies-full",
+      "why": "readonly: null is falsy, so it implies 'full' and agrees with write_mode: full",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "full",
+          "readonly": null
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-readonly-null-vs-none",
+      "why": "readonly: null implies 'full', which contradicts write_mode: none",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "none",
+          "readonly": null
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy sets readonly=None and write_mode='none', which contradict. Use write_mode alone.",
+      "source_validator_calls": []
+    },
+    {
+      "id": "ok-readonly-truthy-string",
+      "why": "readonly: 'no' is a non-empty string, hence truthy, hence implies 'none' \u2014 another YAML-quoting footgun",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "none",
+          "readonly": "no"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-folder-allowlist-string",
+      "why": "a bare string instead of a list \u2014 the commonest YAML slip",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "folder_allowlist": "INBOX"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.folder_allowlist must be a list (got str)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-folder-allowlist-mapping",
+      "why": "a mapping",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "folder_allowlist": {
+            "INBOX": true
+          }
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.folder_allowlist must be a list (got dict)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-folder-denylist-string",
+      "why": "same for the denylist",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "folder_denylist": "Trash"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.folder_denylist must be a list (got str)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-folder-denylist-int",
+      "why": "a number",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "folder_denylist": 1
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.folder_denylist must be a list (got int)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-folder-allowlist-checked-first",
+      "why": "both wrong: allowlist is checked first",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "folder_allowlist": "INBOX",
+          "folder_denylist": "Trash"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.folder_allowlist must be a list (got str)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-auth-list",
+      "why": "auth as a list",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "auth": [
+          "user:bob"
+        ]
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].auth must be a mapping",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-auth-string",
+      "why": "auth as a bare string",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "auth": "bob:hunter2"
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].auth must be a mapping",
+      "source_validator_calls": []
+    },
+    {
+      "id": "err-auth-int",
+      "why": "auth as a number",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "auth": 1
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].auth must be a mapping",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-type-before-upstream",
+      "why": "an unknown type is reported before a bad upstream",
+      "entry": {
+        "name": "mail",
+        "type": "xmpp",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "port": 0
+        }
+      },
+      "ok": false,
+      "error": "unknown protocol_relays type: 'xmpp'. Valid: imap, smtp",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-required-before-type",
+      "why": "missing listen is reported before an unknown type",
+      "entry": {
+        "name": "mail",
+        "type": "xmpp"
+      },
+      "ok": false,
+      "error": "protocol_relays entry requires name/type/listen (got name='mail', type='xmpp', listen='')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-upstream-before-ca",
+      "why": "a bad port is reported before a bad PEM",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 0,
+          "ca_pem": "/certs/x.pem"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream requires host and port in [1, 65535]",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-ca-pem-type-before-content",
+      "why": "a non-string ca_pem is reported before the PEM-content check",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993,
+          "ca_pem": [
+            "-----BEGIN CERTIFICATE-----\nMIIBfoo\n-----END CERTIFICATE-----\n"
+          ]
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].upstream.ca_pem must be a PEM string (got list)",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-write-mode-before-folders",
+      "why": "an invalid write_mode is reported before a malformed folder list",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "bogus",
+          "folder_allowlist": "INBOX"
+        }
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got 'bogus')",
+      "source_validator_calls": []
+    },
+    {
+      "id": "order-policy-before-auth",
+      "why": "a policy error is reported before an auth error",
+      "entry": {
+        "name": "mail",
+        "type": "imap",
+        "listen": "127.0.0.1:11143",
+        "upstream": {
+          "host": "imap.example.com",
+          "port": 993
+        },
+        "policy": {
+          "write_mode": "bogus"
+        },
+        "auth": "bob"
+      },
+      "ok": false,
+      "error": "protocol_relays[mail].policy.write_mode must be one of full, none, organise (got 'bogus')",
+      "source_validator_calls": []
+    }
+  ]
+}

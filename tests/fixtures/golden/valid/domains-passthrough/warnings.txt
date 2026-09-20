@@ -1,0 +1,2 @@
+domains.passthrough bypasses TLS interception for listed domains (proxy inspectors will not see this traffic)
+passthrough domain 'chat.example.net' is not in the allow list and will be added automatically for DNS resolution

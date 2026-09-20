@@ -57,7 +57,7 @@ def _project_scaffolds_dir() -> Path | None:
     return None
 
 
-_SCAFFOLD_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
+_SCAFFOLD_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}\Z')
 
 
 def _valid_scaffold_name(name: str) -> bool:

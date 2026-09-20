@@ -1,0 +1,1 @@
+nested_containers grants elevated capabilities, disables NoNewPrivileges, and disables seccomp

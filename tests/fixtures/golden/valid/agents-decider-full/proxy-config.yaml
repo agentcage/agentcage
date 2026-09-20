@@ -1,0 +1,18 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+agents:
+  decider:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: env:GOLDEN_SET_VAR
+    host: control.agentcage.local
+    context: This cage builds documentation for an internal wiki.
+    rate_limit:
+      requests_per_second: 0
+      burst: 0
+    timeout_seconds: 20
+    max_tokens: 4096
+agentcage_version: 0.0.0-golden

@@ -1,0 +1,32 @@
+{
+  "_comment": "Pinned digest of the agentcage-egress image build inputs. Regenerate ONLY for a deliberate change to those inputs: python3 scripts/bless-egress-hash.py. See src/agentcage/egress_hash.py for the wire format, which the Rust port must reproduce byte-exactly.",
+  "algorithm": "sha256 over sorted inputs, each contributing relpath(utf-8) || 0x00 || len(body) as 8-byte big-endian || body; hex digest truncated to the first 12 characters",
+  "hash": "4983c4732f42",
+  "input_count": 24,
+  "inputs": {
+    "containers/Containerfile.egress": 6084,
+    "containers/dns-audit.sh": 3730,
+    "containers/supervisor-egress.sh": 39836,
+    "proxy/addon.py": 76929,
+    "proxy/capture.py": 9036,
+    "proxy/inspectors/__init__.py": 213,
+    "proxy/inspectors/_chain.py": 4513,
+    "proxy/inspectors/base.py": 2850,
+    "proxy/inspectors/body_size.py": 3009,
+    "proxy/inspectors/content_type.py": 4969,
+    "proxy/inspectors/domain.py": 16366,
+    "proxy/inspectors/entropy.py": 10474,
+    "proxy/inspectors/secrets.py": 8822,
+    "proxy/inspectors/util.py": 2177,
+    "proxy/policy_api.py": 79849,
+    "proxy/relays/__init__.py": 2316,
+    "proxy/relays/_tls.py": 3575,
+    "proxy/relays/_validate.py": 8885,
+    "proxy/relays/imap.py": 32071,
+    "proxy/relays/smtp.py": 48306,
+    "proxy/secret_injector.py": 30864,
+    "proxy/transforms/__init__.py": 1604,
+    "proxy/transforms/google_jwt_bearer.py": 9144,
+    "proxy/watcher.py": 91859
+  }
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 6: Container Mode — Edge Cases & Security Hardening
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl
+preflight_check "$AGENTCAGE" podman curl
 phase_header 6 "Container Mode — Edge Cases & Security Hardening"
 
 CAGE="e2e-hardened"
@@ -53,16 +53,16 @@ fi
 
 # 6.5: DNS query logging (now reads from the unified egress journal)
 assert_cmd_ok "6.5" "DNS query logging" \
-  agentcage cage logs "$CAGE" -s egress -n 20
+  "$AGENTCAGE" cage logs "$CAGE" -s egress -n 20
 
 # 6.6: Proxy connection logging (also egress; mitmproxy + dnsmasq share
 # the supervisor's stderr stream)
 assert_cmd_ok "6.6" "Proxy connection logging" \
-  agentcage cage logs "$CAGE" -s egress -n 20
+  "$AGENTCAGE" cage logs "$CAGE" -s egress -n 20
 
 # 6.7: Severity filtering
 assert_cmd_ok "6.7" "Log severity filtering" \
-  agentcage cage logs "$CAGE" -l error -n 50
+  "$AGENTCAGE" cage logs "$CAGE" -l error -n 50
 
 # 6.8: Invalid config rejected
 BAD_CONFIG=$(mktemp /tmp/e2e-bad-XXXXXX.yaml)
@@ -78,7 +78,7 @@ domains:
     - example.com
 EOF
 assert_cmd_fail "6.8" "Invalid config rejected" \
-  agentcage cage create -c "$BAD_CONFIG"
+  "$AGENTCAGE" cage create -c "$BAD_CONFIG"
 rm -f "$BAD_CONFIG"
 
 # 6.9: Port conflict detected
@@ -95,7 +95,7 @@ domains:
     - example.com
 EOF
 assert_cmd_fail "6.9" "Port conflict detected" \
-  agentcage cage create -c "$CONFLICT_CONFIG"
+  "$AGENTCAGE" cage create -c "$CONFLICT_CONFIG"
 rm -f "$CONFLICT_CONFIG"
 
 # 6.10: Subnet allocation (different /24 for each cage)
@@ -154,7 +154,7 @@ else
   # is up (cage exec refuses a stopped cage with a clear error).
   MASK_READY=false
   for _ in $(seq 1 30); do
-    if agentcage cage exec "$MASK_CAGE" -- true >/dev/null 2>&1; then
+    if "$AGENTCAGE" cage exec "$MASK_CAGE" -- true >/dev/null 2>&1; then
       MASK_READY=true
       break
     fi
@@ -171,21 +171,21 @@ else
     # here the host's 0755 .git/hooks — with a root-owned root, so without the
     # mask-mode pin (#321) this write fails with EACCES; keep its stderr so
     # that shows up in the failure message instead of an empty file.
-    MASK_WRITE_ERR=$(agentcage cage exec "$MASK_CAGE" -- sh -c \
+    MASK_WRITE_ERR=$("$AGENTCAGE" cage exec "$MASK_CAGE" -- sh -c \
       'echo pwned > /workspace/.git/hooks/pre-commit && chmod +x /workspace/.git/hooks/pre-commit' \
       2>&1 >/dev/null | tr -d '\r' | tr '\n' ' ') || true
     # The write MUST be visible inside the cage (proves the tmpfs is there
     # and writable — the mask is a transient overlay, not a read-only block).
-    IN_CAGE=$(agentcage cage exec "$MASK_CAGE" -- \
+    IN_CAGE=$("$AGENTCAGE" cage exec "$MASK_CAGE" -- \
       cat /workspace/.git/hooks/pre-commit 2>/dev/null | tr -d '\r\n') || true
     # Snapshot the mask's runtime shape while the cage is still up. A bare
     # "Permission denied" cannot distinguish a wrong tmpfs mode (#321) from a
     # /workspace whose modes deny the workload before the mask is reached.
-    MASK_DIAG=$(agentcage cage exec "$MASK_CAGE" -- sh -c \
+    MASK_DIAG=$("$AGENTCAGE" cage exec "$MASK_CAGE" -- sh -c \
       'id; ls -ldn /workspace /workspace/.git /workspace/.git/hooks; grep hooks /proc/self/mounts' \
       2>&1 | tr -d '\r' | tr '\n' '|') || true
     # Stop the cage so the tmpfs is torn down.
-    agentcage cage stop "$MASK_CAGE" >/dev/null 2>&1 || true
+    "$AGENTCAGE" cage stop "$MASK_CAGE" >/dev/null 2>&1 || true
     if [ -f "$MASK_PROJECT/.git/hooks/pre-commit" ]; then
       e2e_fail "6.11" "Workspace .git/hooks tmpfs mask" \
         "cage write reached the host — cage→host pivot NOT blocked (in-cage content: ${IN_CAGE:-<empty>})"

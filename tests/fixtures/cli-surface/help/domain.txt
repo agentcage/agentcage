@@ -1,0 +1,14 @@
+Usage: agentcage domain [OPTIONS] COMMAND [ARGS]...
+
+  Manage cage domain filters.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  add   Add one or more domains to a cage's filter list.
+  list  List domains for a cage.
+  rm    Remove a domain from a cage's filter list.
+
+Aliases:
+  ls → list

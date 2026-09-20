@@ -1,0 +1,28 @@
+domains:
+  allow:
+  - api.example.com
+  - registry.example.net
+  passthrough:
+  - registry.example.net
+capture:
+  enable_har: true
+  min_action: flag
+logging:
+  level: debug
+  dns_queries: true
+secret_injection:
+- env: FAKE_API_KEY
+  inject_to:
+  - api.example.com
+  source: systemd-creds:FAKE_API_KEY
+  placeholder: agentcage:secret:FAKE_API_KEY:00000000000000000000000000000001
+inspectors:
+- name: domain
+- name: secrets
+agents:
+  decider:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: systemd-creds:FAKE_DECIDER_KEY
+agentcage_version: 0.0.0-golden

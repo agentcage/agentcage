@@ -1,0 +1,18 @@
+name: container-resources
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  memory: 4g
+  cpus: '2.5'
+  restart: always
+  restart_sec: 30
+  timeout_start_sec: 900
+  timeout_stop_sec: 90
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

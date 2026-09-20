@@ -1,0 +1,44 @@
+{
+  "mask_copyup_entries": [
+    [
+      "/workspace/.git/hooks",
+      "",
+      ""
+    ]
+  ],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/workspace",
+      ""
+    ]
+  ],
+  "tmpfs": [
+    {
+      "enclosing_mount": [
+        "/workspace",
+        ""
+      ],
+      "options": [
+        "rw",
+        "tmpcopyup"
+      ],
+      "spec": "/workspace/.git/hooks:rw,tmpcopyup",
+      "target": "/workspace/.git/hooks",
+      "wants_copyup": true
+    }
+  ],
+  "volumes": [
+    {
+      "non_persistent": true,
+      "options": [
+        "rw",
+        "np"
+      ],
+      "raw_options": "rw,np",
+      "source": "${HOME}/project",
+      "spec": "${HOME}/project:/workspace:rw,np",
+      "target": "/workspace"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+name: err-image-missing
+container: {}
+dns_servers:
+- 192.0.2.53

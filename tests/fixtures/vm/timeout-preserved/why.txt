@@ -1,0 +1,1 @@
+A value at or above the floor is left alone.

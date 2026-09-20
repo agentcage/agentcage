@@ -1,0 +1,8 @@
+Usage: agentcage cage destroy [OPTIONS] NAME
+
+  Stop containers, remove quadlets, state, and scoped secrets.
+
+Options:
+  -y, --yes       Skip confirmation prompt
+  --keep-secrets  Keep scoped secrets (useful for recreating the cage)
+  --help          Show this message and exit.

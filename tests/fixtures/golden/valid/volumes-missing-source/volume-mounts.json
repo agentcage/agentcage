@@ -1,0 +1,23 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/missing",
+      "${HOME}/does-not-exist"
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": [
+    {
+      "non_persistent": false,
+      "options": [
+        "ro"
+      ],
+      "raw_options": "ro",
+      "source": "${HOME}/does-not-exist",
+      "spec": "${HOME}/does-not-exist:/missing:ro",
+      "target": "/missing"
+    }
+  ]
+}

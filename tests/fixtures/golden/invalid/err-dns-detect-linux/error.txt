@@ -1,0 +1,1 @@
+RuntimeError: Could not detect usable DNS servers: /etc/resolv.conf contains only loopback addresses (e.g. 127.0.0.53 from systemd-resolved) and /run/systemd/resolve/resolv.conf is missing or empty. Set dns_servers explicitly in your agentcage config.

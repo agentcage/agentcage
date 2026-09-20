@@ -1,0 +1,24 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [
+    [
+      "/project",
+      ""
+    ]
+  ],
+  "tmpfs": [],
+  "volumes": [
+    {
+      "non_persistent": true,
+      "options": [
+        "rw",
+        "np"
+      ],
+      "raw_options": "rw,np",
+      "source": "${HOME}/project",
+      "spec": "${HOME}/project:/project:rw,np",
+      "target": "/project"
+    }
+  ]
+}

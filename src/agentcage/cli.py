@@ -683,7 +683,7 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
         click.echo("error: missing argument 'NAME'", err=True)
         sys.exit(1)
 
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {name!r})",
@@ -1053,10 +1053,21 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
         _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets,
                            no_cache=no_cache, pull=pull)
     except Exception:
-        # Stop partially-started services but preserve state for debugging
+        # Stop partially-started services but preserve state for debugging.
+        #
+        # Not on the vm backend. ``VmBackend.stop`` stops the cage's two
+        # units and then powers the Lima guest off — which is what ``cage
+        # stop`` means for a vm cage, but it is the opposite of
+        # "preserve state for debugging" here: the guest IS the state.
+        # Every one of the four recovery commands printed below needs it
+        # up (``cage logs`` and ``cage update`` shell into it; even
+        # ``cage destroy`` has to boot it again to remove the instance),
+        # and the units the teardown would stop are inside it and go
+        # down with it anyway.
         backend = get_backend(cfg)
         try:
-            backend.stop(name)
+            if cfg.isolation != "vm":
+                backend.stop(name)
         except Exception:
             pass
         click.echo()
@@ -2734,7 +2745,7 @@ def _normalize_since(since: str) -> str:
 
     Accepts ``1h``, ``30m``, ``7d`` or ISO dates (passed through).
     """
-    m = re.match(r"^(\d+)([hHmMdD])$", since)
+    m = re.match(r"^(\d+)([hHmMdD])\Z", since)
     if not m:
         return since  # assume ISO date, pass through
     val, unit = int(m.group(1)), m.group(2).lower()
@@ -3046,8 +3057,14 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         click.echo("      enable_har: true", err=True)
         sys.exit(1)
 
-    # Warn about sensitive outbound data
-    if view == "outbound" and not json_lines:
+    # Warn about sensitive outbound data.
+    #
+    # The warning goes to stderr, so it cannot corrupt piped stdout --
+    # which means there was never a reason to suppress it for
+    # --json-lines. That suppression silently dropped the warning from
+    # the one output mode people pipe into other tools, while the bytes
+    # being piped still carried the injected API keys.
+    if view == "outbound":
         click.echo(
             "WARNING: --view outbound includes real secrets (API keys, tokens). "
             "Treat the output as sensitive.",
@@ -3055,7 +3072,21 @@ def cage_har(name, view, decisions, hosts, methods, directions, since,
         )
 
     # Build filter
-    since_dt = parse_since(since) if since else None
+    #
+    # An unparseable --since is an error, not "no filter". Falling through
+    # to None silently exported the whole capture, which is the opposite of
+    # what a narrowing flag should do when it is wrong; `cage audit` has
+    # always refused the same input explicitly.
+    since_dt = None
+    if since:
+        since_dt = parse_since(since)
+        if since_dt is None:
+            click.echo(
+                f"error: could not parse --since '{since}' "
+                f"(use 1h, 30m, 7d, or an ISO date)",
+                err=True,
+            )
+            sys.exit(1)
     filt = CaptureFilter(
         decisions=list(decisions),
         directions=list(directions),
@@ -3235,7 +3266,7 @@ def _cage_restore_apple_container(
     from agentcage.backends.apple_container import AppleContainerBackend
 
     target_name = new_name or manifest["cage_name"]
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', target_name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', target_name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {target_name!r})",
@@ -3498,7 +3529,7 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
 
     target_name = new_name or manifest["cage_name"]
 
-    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}$', target_name):
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,62}\Z', target_name):
         click.echo(
             "error: name must be 1-63 lowercase alphanumeric characters or "
             f"hyphens, starting with a letter or digit (got: {target_name!r})",
@@ -4644,14 +4675,23 @@ def _host_never_grant(raw: dict) -> set[str]:
 
     Mirrors the in-container addon's ``PolicyApi._effective_never_grant`` /
     ``_is_never_grant`` (data/proxy/policy_api.py): the built-in suffix set
-    ``{internal, local, localhost}`` plus the control host from
-    ``agents.decider.host`` (default ``agentcage.local``). The reconcile runs
-    on the HOST (``grants sync`` / the implicit ``domain list`` reconcile)
-    and cannot import the addon (which lives in the egress image), so this
-    is a deliberate mirror kept in sync with
+    ``{internal, local, localhost, metadata.goog}`` plus the control host
+    from ``agents.decider.host`` (default ``agentcage.local``). The reconcile
+    runs on the HOST (``grants sync`` / the implicit ``domain list``
+    reconcile) and cannot import the addon (which lives in the egress
+    image), so this is a deliberate mirror kept in sync with
     ``config._AUTO_NEVER_GRANT`` / ``DeciderAgentConfig.host``. Suffix-matched
     so ``internal`` covers ``*.internal`` (e.g. ``metadata.google.internal``)
     and ``local`` covers the default control host's TLD family.
+
+    ``metadata.goog`` is GCP's *public* metadata alias — the one cloud
+    metadata name that does not end in ``.internal``; AWS and Azure address
+    theirs by IP, which the syntax check already rejects. It has been in
+    ``_AUTO_NEVER_GRANT`` and in the addon all along; only this docstring
+    said three. The three copies are pinned against each other by
+    ``tests/fixtures/contracts/shared_constants.json``, which is what would
+    actually catch a drift — a stale docstring is not load-bearing, but it
+    is the first thing someone reads before editing the set.
     """
     from agentcage.config import _AUTO_NEVER_GRANT
     out = {str(h).lower().rstrip(".") for h in _AUTO_NEVER_GRANT}

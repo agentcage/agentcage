@@ -1,0 +1,13 @@
+domains:
+  allow:
+  - oauth2.googleapis.com
+secret_injection:
+- env: GOOGLE_SA
+  placeholder: agentcage:secret:GOOGLE_SA:22222222222222222222222222222222
+  inject_to:
+  - oauth2.googleapis.com
+  source: env:GOLDEN_SET_VAR
+  transform: google-jwt-bearer
+  transform_config:
+    scope: https://www.googleapis.com/auth/cloud-platform
+agentcage_version: 0.0.0-golden

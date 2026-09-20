@@ -1,0 +1,6 @@
+name: vm-blocked
+isolation: vm
+container:
+  image: docker.io/library/alpine:3.20
+  volumes:
+  - "${HOME}/.ssh:/keys:ro"

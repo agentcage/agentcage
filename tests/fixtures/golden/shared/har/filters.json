@@ -1,0 +1,36 @@
+{
+  "all": [
+    "flow-0001",
+    "flow-0002",
+    "flow-0003",
+    "flow-0004",
+    "flow-0005"
+  ],
+  "decision-blocked": [
+    "flow-0003"
+  ],
+  "direction-outbound": [
+    "flow-0001",
+    "flow-0002",
+    "flow-0003",
+    "flow-0005"
+  ],
+  "host-example-com": [
+    "flow-0001",
+    "flow-0005"
+  ],
+  "method-post-lowercase": [
+    "flow-0002",
+    "flow-0003"
+  ],
+  "min-action-block": [
+    "flow-0003"
+  ],
+  "min-action-flag": [
+    "flow-0002",
+    "flow-0003"
+  ],
+  "since-2024-03": [
+    "flow-0005"
+  ]
+}

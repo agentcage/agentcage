@@ -1,0 +1,6 @@
+Usage: agentcage cage list [OPTIONS]
+
+  List all cages with status.
+
+Options:
+  --help  Show this message and exit.

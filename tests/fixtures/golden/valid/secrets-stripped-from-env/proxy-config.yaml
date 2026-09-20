@@ -1,0 +1,10 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+secret_injection:
+- env: FAKE_API_KEY
+  placeholder: agentcage:secret:FAKE_API_KEY:44444444444444444444444444444444
+  inject_to:
+  - api.example.com
+agentcage_version: 0.0.0-golden

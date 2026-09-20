@@ -1,0 +1,1 @@
+ValueError: agents.decider.base_url must be an https:// URL (the decider API key is sent on every call; http:// would leak it in cleartext — got 'http://llm.example.com/v1')

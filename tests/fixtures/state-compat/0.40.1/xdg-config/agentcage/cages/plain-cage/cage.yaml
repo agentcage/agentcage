@@ -1,0 +1,5 @@
+name: plain-cage
+container:
+  image: "localhost/plain:latest"
+dns_servers:
+  - 1.1.1.1

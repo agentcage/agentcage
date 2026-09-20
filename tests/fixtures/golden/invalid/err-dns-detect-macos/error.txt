@@ -1,0 +1,1 @@
+RuntimeError: Could not detect usable DNS servers: /etc/resolv.conf contains only loopback addresses and `scutil --dns` reported no usable upstream resolvers. Set dns_servers explicitly in your agentcage config.

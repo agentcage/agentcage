@@ -1,0 +1,4 @@
+[Network]
+NetworkName=volumes-np-rw-net
+Internal=true
+Subnet=10.89.144.0/24

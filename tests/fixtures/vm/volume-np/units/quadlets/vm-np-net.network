@@ -1,0 +1,4 @@
+[Network]
+NetworkName=vm-np-net
+Internal=true
+Subnet=10.89.74.0/24

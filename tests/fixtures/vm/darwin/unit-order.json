@@ -1,0 +1,8 @@
+[
+  "lima.yaml",
+  "quadlets/vm-darwin-net.network",
+  "quadlets/vm-darwin-certs.volume",
+  "quadlets/vm-darwin-public-certs.volume",
+  "quadlets/vm-darwin-egress.container",
+  "quadlets/vm-darwin-cage.container"
+]

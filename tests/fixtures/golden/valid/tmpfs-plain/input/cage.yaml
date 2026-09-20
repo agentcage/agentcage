@@ -1,0 +1,14 @@
+name: tmpfs-plain
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  tmpfs:
+  - /tmp:rw,noexec,nosuid,size=64M
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

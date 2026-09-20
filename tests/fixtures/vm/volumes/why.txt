@@ -1,0 +1,1 @@
+Every _extra_mounts_for_volumes branch that does not raise: an ro directory, an rw directory, a duplicate of the first, a path under the default data mount, a path that does not exist (warning), and a single-file source (no Lima mount; the quadlet stages a copy).

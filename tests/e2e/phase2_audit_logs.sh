@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 2: Container Mode — Audit, Logs & HAR Capture
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl
+preflight_check "$AGENTCAGE" podman curl
 phase_header 2 "Container Mode — Audit, Logs & HAR Capture"
 
 CAGE="basic"
@@ -23,7 +23,7 @@ if ! curl -sf "$BASE/" >/dev/null 2>&1; then
   # Poll until audit log contains the expected entry (up to 10s)
   _audit_deadline=$((SECONDS + 10))
   while [ "$SECONDS" -lt "$_audit_deadline" ]; do
-    if agentcage cage audit "$CAGE" --json-lines -n 10 2>&1 | grep -q '"decision"'; then
+    if "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 10 2>&1 | grep -q '"decision"'; then
       break
     fi
     sleep 1
@@ -34,7 +34,7 @@ else
   # Poll until audit log contains the blocked entry (up to 10s)
   _audit_deadline=$((SECONDS + 10))
   while [ "$SECONDS" -lt "$_audit_deadline" ]; do
-    if agentcage cage audit "$CAGE" --json-lines -n 10 2>&1 | grep -q '"decision"'; then
+    if "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 10 2>&1 | grep -q '"decision"'; then
       break
     fi
     sleep 1
@@ -43,23 +43,23 @@ fi
 
 # Audit tests
 assert_output_contains "2.1" "Audit: all entries" '"decision"' \
-  agentcage cage audit "$CAGE" --json-lines -n 10
+  "$AGENTCAGE" cage audit "$CAGE" --json-lines -n 10
 
 assert_output_contains "2.2" "Audit: blocked only" '"blocked"' \
-  agentcage cage audit "$CAGE" -d blocked --json-lines
+  "$AGENTCAGE" cage audit "$CAGE" -d blocked --json-lines
 
 assert_output_contains "2.3" "Audit: by host" "httpbin.org" \
-  agentcage cage audit "$CAGE" --host httpbin.org --json-lines
+  "$AGENTCAGE" cage audit "$CAGE" --host httpbin.org --json-lines
 
 assert_output_contains "2.4" "Audit: summary" "allowed" \
-  agentcage cage audit "$CAGE" --summary
+  "$AGENTCAGE" cage audit "$CAGE" --summary
 
 # Log tests
 assert_cmd_ok "2.5" "Logs: cage service" \
-  agentcage cage logs "$CAGE" -s cage -n 5
+  "$AGENTCAGE" cage logs "$CAGE" -s cage -n 5
 
 assert_cmd_ok "2.6" "Logs: egress service" \
-  agentcage cage logs "$CAGE" -s egress -n 5
+  "$AGENTCAGE" cage logs "$CAGE" -s egress -n 5
 
 # HAR capture tests
 e2e_timer_start
@@ -81,7 +81,7 @@ if wait_ready "$HAR_BASE" 120; then
   _har_deadline=$((SECONDS + 15))
   _har_ready=false
   while [ "$SECONDS" -lt "$_har_deadline" ]; do
-    if agentcage cage har "$HAR_CAGE" --json-lines -n 1 2>&1 | grep -q '"flow_id"'; then
+    if "$AGENTCAGE" cage har "$HAR_CAGE" --json-lines -n 1 2>&1 | grep -q '"flow_id"'; then
       _har_ready=true
       break
     fi
@@ -89,7 +89,7 @@ if wait_ready "$HAR_BASE" 120; then
   done
 
   HAR_FILE=$(mktemp /tmp/e2e-har-XXXXXX.har)
-  if agentcage cage har "$HAR_CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
+  if "$AGENTCAGE" cage har "$HAR_CAGE" --view inbound -o "$HAR_FILE" >/dev/null 2>&1; then
     if python3 -c "import json; json.load(open('$HAR_FILE'))" 2>/dev/null; then
       e2e_pass "2.8" "HAR export (inbound)"
     else
@@ -101,7 +101,7 @@ if wait_ready "$HAR_BASE" 120; then
   rm -f "$HAR_FILE"
 
   e2e_timer_start
-  OUTPUT=$(agentcage cage har "$HAR_CAGE" --json-lines -n 5 2>&1) || true
+  OUTPUT=$("$AGENTCAGE" cage har "$HAR_CAGE" --json-lines -n 5 2>&1) || true
   if echo "$OUTPUT" | grep -q '"flow_id"'; then
     e2e_pass "2.9" "HAR export (JSONL)"
   else

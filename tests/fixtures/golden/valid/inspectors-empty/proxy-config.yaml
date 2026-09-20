@@ -1,0 +1,6 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+inspectors: []
+agentcage_version: 0.0.0-golden

@@ -1,0 +1,15 @@
+Usage: agentcage cage logs [OPTIONS] NAME
+
+  Show journalctl logs for a cage.
+
+Options:
+  -s, --service [cage|egress]
+  -n, --lines, --tail INTEGER     Number of lines to show (alias: --tail, like
+                                  docker/podman).  [default: 50]
+  -f, --follow                    Stream logs in real time.
+  --since TEXT                    Show entries since a time, journalctl syntax
+                                  (e.g. '10 min ago', 'today', '2026-05-29
+                                  14:00'). Not supported on apple-container.
+  -l, --severity [debug|info|warning|error|critical]
+                                  Minimum severity level to show.
+  --help                          Show this message and exit.

@@ -1,0 +1,21 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+rate_limit:
+  requests_per_second: 5
+  burst: 20
+max_request_body: 2097152
+entropy:
+  threshold: 4.2
+  action: flag
+content_type:
+  action: block
+  allow:
+  - application/json
+secrets:
+  enabled: true
+  action: block
+  extra_patterns:
+  - FAKE-[0-9]{4}
+agentcage_version: 0.0.0-golden

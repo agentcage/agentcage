@@ -1,0 +1,40 @@
+Usage: agentcage cage run [OPTIONS] SCAFFOLD [EXTRA_ARGS]...
+
+  Run a coding agent in a sandboxed cage.
+
+  Examples:
+    agentcage run claude-code -s ANTHROPIC_API_KEY
+    agentcage run codex --project /path/to/repo -s OPENAI_API_KEY=sk-...
+    agentcage run claude-code --isolation vm -s ANTHROPIC_API_KEY
+    agentcage run claude-code --no-cache --pull -s ANTHROPIC_API_KEY
+    agentcage run codex --name my-session -s OPENAI_API_KEY -- codex --help
+
+  Secrets: every secret a scaffold declares is required. `run` aborts
+  before starting the cage if one is missing — supply it with `-s KEY`
+  (prompts) / `-s KEY=VALUE`, or via a configured `source:`. There is no
+  "optional secret": an agent that would otherwise authenticate without a
+  key (e.g. claude-code's interactive OAuth `/login`) still needs one here,
+  or must be run from a persistent cage built with `agentcage init` whose
+  config you can edit. `--no-cache`/`--pull` force a clean rebuild (ignore
+  the layer cache / re-pull the base image) across every isolation backend
+  — container, vm, and apple-container alike.
+
+Options:
+  --project PATH                  Project directory to mount (default: current
+                                  directory).
+  --name TEXT                     Cage name (default: auto-generated).
+  -s, --set-secret TEXT           Set a secret (KEY=VALUE or KEY to prompt).
+                                  Repeatable.
+  -v, --verbose                   Show full build output.
+  --isolation [container|vm|apple-container]
+                                  Isolation backend (default: auto-detect from
+                                  platform).
+  --as-root                       Run the session as root (uid 0) instead of the
+                                  workload's uid 1000 user (debug only).
+  --time                          Echo per-phase wall times and print a summary
+                                  on completion.
+  --no-cache                      Force a full image rebuild (ignore podman's
+                                  layer cache).
+  --pull                          Force re-pull of the base image from the
+                                  registry.
+  --help                          Show this message and exit.

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=domains-blocklist-net
+Internal=true
+Subnet=10.89.181.0/24

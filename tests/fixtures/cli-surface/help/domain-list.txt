@@ -1,0 +1,6 @@
+Usage: agentcage domain list [OPTIONS] NAME
+
+  List domains for a cage.
+
+Options:
+  --help  Show this message and exit.

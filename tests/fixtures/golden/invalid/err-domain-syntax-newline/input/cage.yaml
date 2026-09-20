@@ -1,0 +1,13 @@
+name: err-domain-syntax-newline
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - 'evil.example.com
+
+    server=/x/1.2.3.4'
+dns_servers:
+- 192.0.2.53

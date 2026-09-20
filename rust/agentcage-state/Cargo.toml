@@ -1,0 +1,71 @@
+[package]
+name = "agentcage-state"
+description = "agentcage's on-disk state: deployment dirs, atomic writes, the grants overlay and systemd unit lifecycle."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Why this is a crate and not a module of one of the other three:
+#
+#   * `agentcage-core` forbids I/O by construction (see its `lib.rs`) --
+#     that promise is what lets the golden corpus test it by fixture
+#     diff, and this crate is nothing but I/O.
+#   * `agentcage-cli` is a `[[bin]]` with no library target, so a module
+#     there is unreachable from another crate's tests. D3's secret
+#     stores, D5's command tree and every backend in Track E need these
+#     paths, and D6-D12's tests need to point them at a sandbox.
+#
+# Same reasoning `agentcage-exec` was split out under in D1.
+[dependencies]
+agentcage-core = { path = "../agentcage-core" }
+
+# The systemd half. `systemd.py` is six `subprocess.run` calls behind a
+# `shutil.which` guard; D1 already put that behind `tools::systemctl`,
+# so what is left here is the unit *files* -- which directory each kind
+# goes in, and the daemon-reload that has to follow a write.
+agentcage-exec = { path = "../agentcage-exec" }
+
+# No `serde_json`, and no `serde`.
+#
+# Every JSON file in the state tree goes through
+# `agentcage_core::har::json`, core's Python-shaped JSON value:
+# insertion-ordered objects, `json.dumps`'s separators, and
+# `ensure_ascii` / `sort_keys` / `indent` as options. That is not a
+# preference, it is the only type that reads `metadata.json` back
+# without re-ordering it -- `serde_json::Value`'s object is a
+# `BTreeMap`, and `cli.py` does a read-modify-write on that file in
+# five places. serde_json's `preserve_order` feature would fix the
+# ordering and break something worse: Cargo unifies features across a
+# workspace, so it would also re-order `agentcage-core`'s
+# `stable_json`, which every `cage update` no-op check depends on
+# being sorted.
+
+# The YAML value tree the grants overlay and the raw `cage.yaml` are
+# held in is `agentcage-core`'s -- it re-exports `serde_norway`'s
+# `Value` from `core::yaml` and owns the *emitting* (the PyYAML-safe
+# quoting rules from B2). Naming `serde_norway` again here would give
+# this crate a second path to the same type and a second version to
+# keep in step, so it does not.
+
+rustix = { version = "1", features = ["process"] }
+
+# The state-compat fixture test reads the quadlets the Python installed
+# and checks they are routed to the directory `Units` would put them
+# in, and it drives that router with the recording fake -- so the
+# fixture suite proves the systemd half against the same tree as the
+# state half. `agentcage-exec` is a normal dependency above; this is
+# only here to say why the test reaches for `FakeRunner`.
+# Test-only, and the exception that proves the rule above.
+# `AuditEntry::inspectors` is `Vec<serde_json::Value>` in
+# `agentcage-core` -- deliberately unparsed, so fields a custom
+# inspector wrote survive a round trip -- and the state-compat suite
+# reaches into one to check the fixture's `severity`. Nothing in the
+# library links it.
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
