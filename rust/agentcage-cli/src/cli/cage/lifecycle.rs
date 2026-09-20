@@ -1,9 +1,31 @@
-//! `cage list`, `cage show`, `cage status`, `cage restart`, `cage destroy`.
+//! The cage lifecycle: `list`, `show`, `status`, `start`, `stop`,
+//! `restart`, `destroy`, `prune`.
 //!
-//! The read-only half of the cage lifecycle plus the one command that
-//! removes things. They land here rather than waiting for PR D7 because
-//! e2e phase 1 — this PR's acceptance check — asserts on all four, and
-//! a phase that cannot clean up after itself is not repeatable.
+//! # Why they are all in one file
+//!
+//! They were not, at first. D6 landed `list` / `show` / `status` /
+//! `destroy` because e2e phase 1 could not clean up after itself
+//! without them, D12 added `stop` for phase 6's tmpfs teardown and D9
+//! added `restart` because the live-secret path falls back to it. Each
+//! took only the slice its own phase needed.
+//!
+//! PR D7 owns the group, so the slices are one module now. That is not
+//! tidiness: `start` and `restart` regenerate the same two derived
+//! files, `prune` runs `destroy`'s teardown in a loop, and five of the
+//! eight open with the identical existence-then-version gate. Spread
+//! across three files those would have drifted — the `cage stop` that
+//! refuses a `vm` cage and the `cage start` that quietly mis-starts one
+//! is exactly the kind of pair this collapses.
+//!
+//! # The shape every command here shares
+//!
+//! 1. Does the cage exist? No → `error: cage '<name>' does not exist`,
+//!    exit 1.
+//! 2. Is it a v0.22 cage? No → the migration procedure, exit 2. See
+//!    [`ensure_v022_cage`]; `destroy` and `list` are exempt, and
+//!    deliberately so.
+//! 3. Is its backend ported? No → refuse rather than address the wrong
+//!    containers (RUST-PORT-PLAN.md Track E).
 
 use std::process::ExitCode;
 
@@ -214,15 +236,112 @@ pub(crate) fn stop(ctx: &Ctx, name: &str) -> ExitCode {
 }
 
 fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
+    // A legacy cage is refused here and *not* in `destroy` — stopping
+    // one would address units that no longer exist under these names,
+    // while destroy is the documented way out.
+    let _config = addressable(ctx, name, "stop")?;
+    ctx.backend().stop(name);
+    println!("Stopped cage '{name}'");
+    Ok(())
+}
+
+/// `cage start` — bring a stopped cage back up.
+///
+/// `cli.py:2107`. It is not `backend.start` with a gate in front of it:
+/// four things are refreshed first, and each one exists because the
+/// cage was editable while it was down.
+///
+/// 1. **The nested-podman patch tree** is re-copied from the embedded
+///    assets, overwriting whatever is in the work directory. `cage
+///    create` and `cage restart` both do it; a `start` that did not
+///    would be the one way to boot a cage against a tampered shim.
+/// 2. **`env:` and `cmd:` secrets are re-resolved** into the podman
+///    store. The value behind `env:GITHUB_TOKEN` is whatever the
+///    operator's environment says *now*, and the quadlet's `Secret=`
+///    directives resolve at container creation — so a stale store
+///    boots the cage with last week's token. Strict, as at create: a
+///    resolution failure aborts the start rather than launching a
+///    container whose `Secret=` names nothing.
+/// 3. **`proxy-config.yaml`** (and, through it,
+///    `cage-env/placeholders.env`) and **`dns-allowlist.conf`** are
+///    regenerated from `cage.yaml`, so an edit made while the cage was
+///    stopped applies on this boot. Neither is baked into a unit file,
+///    which is why no quadlet regeneration and no `daemon-reload` is
+///    needed here.
+/// 4. **The backend's prerequisites** are checked, which is
+///    `_ensure_backend_ready` — the diagnostics that turn a downed
+///    podman into a named prerequisite rather than an "image not
+///    found" three steps later.
+pub(crate) fn start(ctx: &Ctx, name: &str) -> ExitCode {
+    match start_inner(ctx, name) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => code,
+    }
+}
+
+fn start_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
+    let config = addressable(ctx, name, "start")?;
+
+    if let Err(error) = agentcage_cli::services::ensure_patches(&ctx.paths) {
+        eprintln!("error: {error}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+    let env = agentcage_cli::secrets::SystemEnv;
+    let host = agentcage_cli::secrets::SecretHost::detect(ctx.runner.as_ref(), &env);
+    if let Err(error) = host.resolve_and_populate(
+        &podman,
+        &config,
+        name,
+        &ctx.paths.deployment_dir(name),
+        &std::collections::BTreeSet::new(),
+        true,
+    ) {
+        eprintln!("error: {}", error.message());
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    ctx.paths
+        .save_proxy_config(name, &ctx.version)
+        .map_err(|error| {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        })?;
+    ctx.paths
+        .save_dns_allowlist(name, &agentcage_cli::hostenv::RealHost)
+        .map_err(|error| {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        })?;
+
+    let backend = ctx.ensure_backend_ready(&config)?;
+    backend.start(name, false).map_err(|error| {
+        eprintln!("error: {error}");
+        ExitCode::from(EXIT_FAILURE)
+    })?;
+    println!("Started cage '{name}'");
+    Ok(())
+}
+
+/// Steps 1–3 of the preamble every command in this module shares: the
+/// cage exists, it is not a v0.21 cage, and its backend is one this
+/// port can address. Returns the stored config, which every caller
+/// wants next anyway.
+///
+/// `verb` names the command in the Track E refusal, so `cage start` on
+/// a `vm` cage says `cage start` and not the name of whichever helper
+/// happened to notice.
+fn addressable(
+    ctx: &Ctx,
+    name: &str,
+    verb: &str,
+) -> Result<agentcage_core::config::Config, ExitCode> {
     if !ctx.paths.deployment_exists(name) {
         eprintln!("error: cage '{name}' does not exist");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
-    // A legacy cage is refused here and *not* in `destroy` — stopping
-    // one would address units that no longer exist under these names,
-    // while destroy is the documented way out.
     ensure_v022_cage(&ctx.paths, name)?;
-
     let config = ctx
         .paths
         .load_deployment_config(name, &agentcage_cli::hostenv::RealHost)
@@ -232,16 +351,13 @@ fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         })?;
     if config.isolation != "container" {
         eprintln!(
-            "error: `cage stop` on the '{}' backend is not ported yet \
+            "error: `cage {verb}` on the '{}' backend is not ported yet \
              (RUST-PORT-PLAN.md Track E)",
             config.isolation
         );
         return Err(ExitCode::from(EXIT_FAILURE));
     }
-
-    ctx.backend().stop(name);
-    println!("Stopped cage '{name}'");
-    Ok(())
+    Ok(config)
 }
 
 /// `cage restart` — restart the services without rebuilding anything.
@@ -259,35 +375,21 @@ pub(crate) fn restart(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         .get_one::<String>("name")
         .expect("required by the parser")
         .clone();
-    if !ctx.paths.deployment_exists(&name) {
-        eprintln!("error: cage '{name}' does not exist");
-        return ExitCode::from(EXIT_FAILURE);
+    match restart_inner(ctx, &name) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => code,
     }
-    if let Err(code) = ensure_v022_cage(&ctx.paths, &name) {
-        return code;
-    }
-    let Ok(config) = ctx
-        .paths
-        .load_deployment_config(&name, &agentcage_cli::hostenv::RealHost)
-    else {
-        eprintln!("error: cage '{name}' does not exist or has invalid config");
-        return ExitCode::from(EXIT_FAILURE);
-    };
-    if config.isolation != "container" {
-        eprintln!(
-            "error: `cage restart` on the '{}' backend is not ported yet \
-             (RUST-PORT-PLAN.md Track E)",
-            config.isolation
-        );
-        return ExitCode::from(EXIT_FAILURE);
-    }
+}
+
+fn restart_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
+    let _config = addressable(ctx, name, "restart")?;
     if let Err(error) = agentcage_cli::services::ensure_patches(&ctx.paths) {
         eprintln!("error: {error}");
-        return ExitCode::from(EXIT_FAILURE);
+        return Err(ExitCode::from(EXIT_FAILURE));
     }
-    crate::cli::secret::live::restart(ctx, &name);
+    crate::cli::secret::live::restart(ctx, name);
     println!("Restarted cage '{name}'");
-    ExitCode::SUCCESS
+    Ok(())
 }
 
 /// `cage destroy` — stop, remove quadlets, podman resources and state.
@@ -329,7 +431,7 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         }
     }
 
-    let removed = destroy_cage(ctx, &name, keep_secrets);
+    let removed = destroy_cage(ctx, &name, keep_secrets, true);
 
     println!();
     if removed.is_empty() {
@@ -351,18 +453,24 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 /// so the fallback here is simply "use it anyway": its `has_resources`
 /// is a filesystem check and its podman calls already tolerate a podman
 /// that cannot be run.
-fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool) -> Vec<String> {
+fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<String> {
     let backend = ctx.backend();
     let known = ctx.paths.deployment_exists(name);
     if !known && !backend.has_resources(name) {
-        println!("Nothing to remove for '{name}' (no stored config and no backend resources).");
+        if echo {
+            println!("Nothing to remove for '{name}' (no stored config and no backend resources).");
+        }
         return Vec::new();
     }
 
-    println!("Stopping services...");
+    if echo {
+        println!("Stopping services...");
+    }
     backend.stop(name);
 
-    println!("Removing resources...");
+    if echo {
+        println!("Removing resources...");
+    }
     let mut removed = backend
         .destroy_resources(name, keep_secrets)
         .unwrap_or_else(|error| {
@@ -378,6 +486,93 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool) -> Vec<String> {
         }
     }
     removed
+}
+
+/// `cage prune` — remove every *exited* interactive or ephemeral cage.
+///
+/// `cli.py:1445`. Three filters decide the candidate list, and all
+/// three matter:
+///
+/// * **Lifecycle.** Only `interactive` and `ephemeral` cages are
+///   prunable. A `service` cage that happens to be down is down on
+///   purpose — `cage stop` is a thing operators do — and removing it
+///   would be indistinguishable from data loss. The lifecycle is read
+///   from metadata first, falling back to `cage.yaml`, because `cage
+///   run` records the lifecycle it actually deployed with.
+/// * **Version.** A v0.21 cage is skipped, not refused: its containers
+///   are named `<name>-proxy` / `<name>-dns`, so probing the v0.22
+///   shape would answer "not running" for a *live* legacy cage and
+///   prune it out from under its workload. The operator destroys those
+///   by name. This is the third exemption from the v0.21 gate and the
+///   only one that is silent — `list` annotates, `destroy` proceeds,
+///   `prune` walks past.
+/// * **Running.** Zero of the cage's services up.
+///
+/// The teardown itself is `destroy`'s, run with its narration
+/// suppressed: the Python passes no `echo` here, so a ten-cage prune
+/// prints ten `Removing <name>...` lines rather than thirty. A failure
+/// on one cage warns and continues — a prune that stops at the first
+/// stuck cage leaves the rest of the list uncollected.
+pub(crate) fn prune(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
+    let yes = matches.get_flag("yes");
+    let backend = ctx.backend();
+    let mut candidates: Vec<String> = Vec::new();
+
+    for name in ctx.paths.list_deployments().unwrap_or_default() {
+        let Ok(config) = ctx
+            .paths
+            .load_deployment_config(&name, &agentcage_cli::hostenv::RealHost)
+        else {
+            continue;
+        };
+        // Track E. The container backend's probe would report a
+        // running `vm` cage as exited, and prune acts on that answer.
+        if config.isolation != "container" {
+            continue;
+        }
+        let metadata = ctx
+            .paths
+            .load_metadata(&name)
+            .unwrap_or_else(|_| Json::Object(Vec::new()));
+        let lifecycle = string_or(&metadata, "lifecycle", &config.lifecycle);
+        if lifecycle != "interactive" && lifecycle != "ephemeral" {
+            continue;
+        }
+        let version = string_or(&metadata, "agentcage_version", "0.0.0");
+        let version = if version.is_empty() {
+            "0.0.0".to_owned()
+        } else {
+            version
+        };
+        if parse_version(&version) < (0, 22) {
+            continue;
+        }
+        if backend.running_count(&name).0 == 0 {
+            candidates.push(name);
+        }
+    }
+
+    if candidates.is_empty() {
+        println!("Nothing to prune.");
+        return ExitCode::SUCCESS;
+    }
+
+    println!("The following exited cages will be removed:");
+    for name in &candidates {
+        println!("  {name}");
+    }
+
+    if !yes && !confirm(&format!("\nRemove {} cage(s)?", candidates.len())) {
+        eprintln!("Aborted!");
+        return ExitCode::from(EXIT_FAILURE);
+    }
+
+    for name in &candidates {
+        println!("Removing {name}...");
+        destroy_cage(ctx, name, false, false);
+    }
+    println!("Pruned {} cage(s).", candidates.len());
+    ExitCode::SUCCESS
 }
 
 /// `click.confirm` — `[y/N]`, default no, EOF is no.

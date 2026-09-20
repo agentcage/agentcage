@@ -114,7 +114,8 @@ pub fn ensure_v022_cage(paths: &Paths, name: &str, stderr: &mut dyn Write) -> Op
 /// surrounding whitespace and a leading `+`/`-`; `str::parse::<u32>`
 /// tolerates neither, which only matters for a metadata stamp no writer
 /// produces.
-fn parse_version(version: &str) -> (u32, u32) {
+#[must_use]
+pub fn parse_version(version: &str) -> (u32, u32) {
     let mut parts = version.split('.');
     let major = parts.next().and_then(|p| p.parse().ok());
     let minor = parts.next().and_then(|p| p.parse().ok());
