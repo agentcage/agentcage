@@ -1478,10 +1478,14 @@ fn a_running_guests_secret_store_reaches_the_renderer() {
             None,
         )
         .expect("renders");
-    let cage = units.files["quadlets/demo-cage.container"].as_str();
+    // The `Secret=` directives land in the EGRESS unit, not the cage:
+    // the proxy is what resolves the credential and injects it, so the
+    // workload container never holds one.
+    let cage = units.files["quadlets/demo-egress.container"].as_str();
     // Store-aware emission: the secret the guest holds is referenced,
     // the one it does not is skipped rather than rendered as a
     // directive that fails the next boot with start-limit-hit.
+
     assert!(cage.contains("Secret=demo.API_KEY,type=env,target=API_KEY"));
     assert!(!cage.contains("ABSENT"));
 
@@ -1541,7 +1545,8 @@ fn an_unreachable_guest_keeps_the_legacy_emission() {
             None,
         )
         .expect("renders");
-    assert!(units.files["quadlets/demo-cage.container"].contains("Secret=demo.API_KEY"));
+    // Egress, not cage: the proxy resolves the credential.
+    assert!(units.files["quadlets/demo-egress.container"].contains("Secret=demo.API_KEY"));
 }
 
 /// The used-octet set is forwarded, not swallowed.
