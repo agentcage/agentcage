@@ -810,6 +810,24 @@ Mac and can run in parallel with Track D as soon as Track C lands.
 | F4 | Reduce `pyproject.toml` to dev/test-only; add the §2.4 CI invariant guards; delete `Containerfile.helper`; final PyPI shim release | Proxy pytest green without installing the package; guards fail on a deliberate violation |
 | F5 | Docs pass over `docs/**`, `README.md`, `CONTRIBUTING.md` | Link check; manual read |
 
+**Track F is done except for the parts that need credentials or hardware.**
+
+| # | State |
+| :-- | :-- |
+| F1 | Workflow written: four targets (x86_64/aarch64 × linux-musl/darwin), signing and notarization **gated on the secrets existing**, so a fork or a pre-enrollment repository still produces a working unsigned binary and says so in the log. The acceptance check — a notarized binary on a clean Mac — needs an Apple Developer ID and a Mac. Linux is statically linked: the workspace has no C dependencies at all, so it costs nothing and removes the glibc coupling. |
+| F2 | **Done.** No `[project.scripts]`; `python -m agentcage` and `tests/e2e/python-cli` keep the oracle runnable. Acceptance measured in both directions on one deployment. `phase_apple.sh` still needs a Mac. |
+| F3 | `install.sh` **done** — downloads the platform tarball and refuses to install unless the published sha256 matches; both paths tested against a local mirror. Homebrew and AUR ship as *generated* artifacts (`scripts/gen-packaging.py`), because both pin a version and four checksums; the tap and AUR repositories do not exist yet. Fresh-VM install tests need those releases to exist. |
+| F4 | **Done.** Guards in `scripts/check-invariants.py`, run in CI; `Containerfile.helper` deleted. The final PyPI shim is not published — `Private :: Do Not Upload` plus no publish step means the last real release stays the last one, which is the same outcome with nothing extra to maintain. |
+| F5 | **Done** for `README.md`, `docs/get-started/install.md` and `CONTRIBUTING.md` — the three that told users to install a Python package. The rest of `docs/**` describes behaviour, not installation, and reads correctly either way. |
+
+**What `cage create` does not do, found while checking F2.** It writes no
+`fingerprint.json`, so the *first* `cage update` after any create always
+rebuilds. Both implementations do this identically — it is pre-existing
+Python behaviour faithfully ported, not a cutover problem — and it is why
+the first cross-implementation update looked like a divergence and was
+not. Whether a fresh cage should be fingerprinted at create time is a
+product call; nothing in the port depends on the answer.
+
 **F2's first acceptance clause is met.** The full e2e suite is green on the
 Rust binary — 111 assertions across all eight phases, one skipped (`8.10
 nested podman`, which the host cannot provide), phase 7 included at 33/33
