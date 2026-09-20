@@ -386,6 +386,17 @@ create_cage() {
   rm -f "$tmpconfig"
   if [ "$rc" -ne 0 ]; then
     _dump_captured "cage create FAILED (exit $rc): $(basename "$config")" "$output"
+    # `systemctl start` reports a failed Requires= dependency as the
+    # single line "A dependency job for <cage>-cage.service failed",
+    # naming neither the dependency nor the reason — and on a CI runner
+    # there is no second chance to go and look. `dump_cage_diagnostics`
+    # answers what that line leaves open: unit states, podman container
+    # states, the egress container log and its journal.
+    local cage_name
+    cage_name=$(sed -n 's/^name:[[:space:]]*//p' "$config" | head -1)
+    if [ -n "$cage_name" ]; then
+      dump_cage_diagnostics "$cage_name" "create failure"
+    fi
   fi
   return $rc
 }
