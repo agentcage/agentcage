@@ -243,13 +243,19 @@ jobs:
           }
           ls -l /dev/kvm
 
+      # Lima is pinned rather than resolved from the releases API, for
+      # the same two reasons `lima.yaml.j2` pins the guest image: the
+      # unauthenticated API is rate-limited per runner IP, and a new
+      # Lima can change a default under us — 1.0 changing `mountType` to
+      # 9p is exactly how every mount in that template started failing
+      # silently on a kernel without CONFIG_9P_FS. Bump deliberately.
       - name: Install Lima and QEMU
+        env:
+          LIMA_VERSION: "2.2.0"
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86 qemu-utils podman uidmap slirp4netns
-          LIMA_VERSION=$(curl -fsSL https://api.github.com/repos/lima-vm/lima/releases/latest \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
-          curl -fsSL "https://github.com/lima-vm/lima/releases/download/${LIMA_VERSION}/lima-${LIMA_VERSION#v}-Linux-x86_64.tar.gz" \
+          curl -fsSL "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/lima-${LIMA_VERSION}-Linux-x86_64.tar.gz" \
             | sudo tar -C /usr/local -xzf -
           limactl --version
 
