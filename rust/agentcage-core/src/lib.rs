@@ -66,6 +66,7 @@ pub mod audit;
 pub mod config;
 pub mod fingerprint;
 pub mod har;
+pub mod lima;
 pub mod python;
 pub mod quadlets;
 pub mod relays;

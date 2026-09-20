@@ -1,0 +1,4 @@
+[Network]
+NetworkName=vm-full-net
+Internal=true
+Subnet=10.89.175.0/24

@@ -1,0 +1,8 @@
+[
+  "lima.yaml",
+  "quadlets/vm-defaults-net.network",
+  "quadlets/vm-defaults-certs.volume",
+  "quadlets/vm-defaults-public-certs.volume",
+  "quadlets/vm-defaults-egress.container",
+  "quadlets/vm-defaults-cage.container"
+]

@@ -1,0 +1,153 @@
+{
+  "cases": [
+    {
+      "cage_name": "vm-darwin",
+      "case": "darwin",
+      "config_timeout_start_sec": 120,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-defaults",
+      "case": "defaults",
+      "config_timeout_start_sec": 120,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-full",
+      "case": "kitchen-sink",
+      "config_timeout_start_sec": 90,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-ports",
+      "case": "ports",
+      "config_timeout_start_sec": 120,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-resources",
+      "case": "resources-rounded",
+      "config_timeout_start_sec": 120,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-timeout-low",
+      "case": "timeout-floored",
+      "config_timeout_start_sec": 60,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-timeout-high",
+      "case": "timeout-preserved",
+      "config_timeout_start_sec": 600,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 600,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-blocked",
+      "case": "volume-blocked",
+      "error_type": "ValueError",
+      "kind": "invalid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ]
+    },
+    {
+      "cage_name": "vm-np",
+      "case": "volume-np",
+      "config_timeout_start_sec": 120,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 0
+    },
+    {
+      "cage_name": "vm-volumes",
+      "case": "volumes",
+      "config_timeout_start_sec": 120,
+      "isolation": "vm",
+      "kind": "valid",
+      "platform": [
+        "Linux",
+        "x86_64"
+      ],
+      "unit_count": 6,
+      "unit_timeout_start_sec": 300,
+      "warning_count": 2
+    }
+  ],
+  "creds_scope": "user",
+  "dns_servers": [
+    "192.0.2.53",
+    "192.0.2.54"
+  ],
+  "lima_user": "cageuser",
+  "schema": 1,
+  "stats": {
+    "invalid": 1,
+    "total": 10,
+    "valid": 9
+  },
+  "version": "0.0.0-golden"
+}

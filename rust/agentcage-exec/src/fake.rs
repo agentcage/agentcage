@@ -223,6 +223,7 @@ enum WhichDefault {
 struct State {
     queue: VecDeque<Reply>,
     rules: Vec<(Vec<String>, Reply)>,
+    default: Option<Reply>,
     which: BTreeMap<String, Option<PathBuf>>,
     which_default: WhichDefault,
     calls: Vec<RecordedCall>,
@@ -294,6 +295,23 @@ impl FakeRunner {
     {
         let prefix: Vec<String> = prefix.into_iter().map(Into::into).collect();
         self.lock().rules.push((prefix, reply));
+        self
+    }
+
+    /// The reply for any call no rule and no queued reply answers.
+    ///
+    /// Without this, a test that cares about three invocations has to
+    /// stub every *other* invocation its subject happens to make, and
+    /// the usual shortcut — one broad `on` prefix — shadows the
+    /// specific rules registered after it, because the first matching
+    /// rule wins. A default is checked last, so it cannot shadow
+    /// anything.
+    ///
+    /// It is deliberately not the constructor's behaviour: an
+    /// unexpected call should still panic by default, naming itself.
+    #[allow(clippy::must_use_candidate)]
+    pub fn default_reply(&self, reply: Reply) -> &Self {
+        self.lock().default = Some(reply);
         self
     }
 
@@ -472,7 +490,13 @@ impl FakeRunner {
         {
             return reply.clone();
         }
-        state.queue.pop_front().unwrap_or_else(|| {
+        if let Some(reply) = state.queue.pop_front() {
+            return reply;
+        }
+        if let Some(reply) = state.default.clone() {
+            return reply;
+        }
+        {
             panic!(
                 "FakeRunner: unexpected call #{}: {:?}\nNo queued reply and no matching rule. \
                  Calls so far:\n{}",
@@ -480,7 +504,7 @@ impl FakeRunner {
                 command.argv_redacted(),
                 render(&state.calls),
             )
-        })
+        }
     }
 }
 

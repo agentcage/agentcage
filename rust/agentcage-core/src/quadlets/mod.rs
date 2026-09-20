@@ -58,6 +58,7 @@ pub mod templates;
 
 pub use render::{
     GenerateOptions, QuadletHost, Quadlets, StatePaths, expanduser, expandvars, generate_quadlets,
+    shlex_quote,
 };
 
 use crate::config::Config;
@@ -490,8 +491,20 @@ fn dedup(ports: &[i64], keep: impl Fn(&i64) -> bool) -> Vec<i64> {
 /// anything), and the golden corpus checks every byte it produces.
 #[must_use]
 pub fn b64(value: &str) -> String {
+    b64_bytes(value.as_bytes())
+}
+
+/// The same, over bytes.
+///
+/// `base64.b64encode` takes bytes and every caller that matters hands
+/// it bytes: `vm.py`'s host-to-guest pushes read `proxy-config.yaml`,
+/// `dns-allowlist.conf` and `placeholders.env` with `read_bytes()` and
+/// pipe the result through `base64 -d` in the guest. Routing those
+/// through a `str` would mean a lossy decode in the middle of a
+/// pipeline whose whole point is that it is byte-exact.
+#[must_use]
+pub fn b64_bytes(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes = value.as_bytes();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = u32::from(chunk[0]);
