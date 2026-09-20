@@ -11,6 +11,8 @@
 //! `_timing.py`. The command tree (D5) and the `CommandRunner` seam (D1)
 //! land beside these.
 
+/// The apple-container backend's generation half (Track E).
+pub mod apple;
 /// The backup tarball's container format: deterministic gzipped tar
 /// out, traversal-safe extraction in (PR D11).
 pub mod archive;
