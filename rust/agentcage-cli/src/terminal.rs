@@ -321,10 +321,7 @@ impl<F: AsFd> Drop for RestoredTerminal<F> {
 /// no-op rather than an error.
 #[must_use]
 pub fn restored_terminal() -> Option<RestoredTerminal<Tty>> {
-    if !is_interactive() {
-        return None;
-    }
-    controlling_tty().map(RestoredTerminal::new)
+    session_tty().map(RestoredTerminal::new)
 }
 
 // ── running the session ──────────────────────────────────────
@@ -417,32 +414,93 @@ impl std::error::Error for SessionError {}
 /// `execvp` fails on the non-interactive path, or if the child cannot be
 /// spawned or waited for.
 pub fn run_interactive(argv: &[String]) -> Result<i32, SessionError> {
+    if argv.is_empty() {
+        return Err(SessionError::EmptyArgv);
+    }
+
+    if !is_interactive() {
+        return Err(exec_replacing(argv));
+    }
+
+    run_guarded(session_tty(), argv)
+}
+
+/// Replace this process with `argv`.
+///
+/// `os.execvp`, and it only returns when the exec failed — hence a bare
+/// [`SessionError`] rather than a `Result`. The Python reaches for this
+/// wherever the CLI has nothing left to do after handing off: a
+/// non-interactive session, and every `cage logs` stream that needs no
+/// client-side filtering, where it is also what gives `journalctl -f`
+/// its native Ctrl-C.
+#[must_use]
+pub fn exec_replacing(argv: &[String]) -> SessionError {
+    let Some(program) = argv.first() else {
+        return SessionError::EmptyArgv;
+    };
+    let path = match CString::new(program.as_str()) {
+        Ok(path) => path,
+        Err(error) => return SessionError::NulInArgument(error),
+    };
+    let c_args = match argv
+        .iter()
+        .map(|a| CString::new(a.as_str()))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(converted) => converted,
+        Err(error) => return SessionError::NulInArgument(error),
+    };
+    // Only returns on failure.
+    SessionError::Exec(nix::unistd::execvp(&path, &c_args).unwrap_err())
+}
+
+/// The terminal a session should guard, or `None`.
+///
+/// The two early `yield`s of the Python's context manager, as a value:
+/// no terminal on stdin means nothing inside the cage can have touched
+/// the host terminal, and no standard stream being a terminal means
+/// there is nothing to write the restore sequence to.
+#[must_use]
+pub fn session_tty() -> Option<Tty> {
+    if is_interactive() {
+        controlling_tty()
+    } else {
+        None
+    }
+}
+
+/// Run `body` with `tty` snapshotted and restored afterwards.
+///
+/// The seam every interactive command's session goes through, and the
+/// reason it takes the terminal as an argument: [`session_tty`] reads
+/// the process's own streams, which a test cannot swap, while this
+/// takes a pty the test owns.
+///
+/// Restoration is a `Drop`, so it also runs when `body` panics or when
+/// the caller leaves the enclosing scope by `?` — see the module
+/// documentation for why that is not incidental.
+pub fn guarded<F: AsFd, R>(tty: Option<F>, body: impl FnOnce() -> R) -> R {
+    let _guard = tty.map(RestoredTerminal::new);
+    body()
+}
+
+/// Run `argv` as a child with `tty` guarded, and map its status.
+///
+/// Not the `CommandRunner` seam (PR D1): that exists to capture and
+/// assert output, and this child must *inherit* the terminal rather
+/// than have its streams taken away. There is nothing to record.
+///
+/// # Errors
+///
+/// [`SessionError::EmptyArgv`] for an empty argv, [`SessionError::Spawn`]
+/// if the child cannot be spawned or waited for. The guard is dropped
+/// before either error leaves this function.
+pub fn run_guarded<F: AsFd>(tty: Option<F>, argv: &[String]) -> Result<i32, SessionError> {
     let Some(program) = argv.first() else {
         return Err(SessionError::EmptyArgv);
     };
-
-    if !is_interactive() {
-        let path = CString::new(program.as_str()).map_err(SessionError::NulInArgument)?;
-        let c_args = argv
-            .iter()
-            .map(|a| CString::new(a.as_str()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(SessionError::NulInArgument)?;
-        // Only returns on failure.
-        let err = nix::unistd::execvp(&path, &c_args).unwrap_err();
-        return Err(SessionError::Exec(err));
-    }
-
-    // Not the `CommandRunner` seam (PR D1): that exists to capture and
-    // assert output, and this child must *inherit* the terminal rather
-    // than have its streams taken away. There is nothing to record.
-    let status = {
-        let _guard = restored_terminal();
-        Command::new(program)
-            .args(&argv[1..])
-            .status()
-            .map_err(SessionError::Spawn)?
-    };
+    let status = guarded(tty, || Command::new(program).args(&argv[1..]).status())
+        .map_err(SessionError::Spawn)?;
     Ok(exit_status_of(&status))
 }
 
