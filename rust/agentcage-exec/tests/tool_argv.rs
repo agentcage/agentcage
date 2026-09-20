@@ -11,7 +11,9 @@
 use agentcage_exec::tools::apple::{AppleContainer, container_state};
 use agentcage_exec::tools::creds::{PROBE_NAME, Scope, SystemdCreds};
 use agentcage_exec::tools::limactl::LimaInstance;
-use agentcage_exec::tools::security::{KeychainTarget, Security};
+use agentcage_exec::tools::security::{
+    KeychainTarget, PasswordChannel, SHIPPED_PASSWORD_CHANNEL, Security,
+};
 use agentcage_exec::tools::skopeo::{LIST_TAGS_TIMEOUT, Skopeo};
 use agentcage_exec::tools::systemctl::Systemctl;
 use agentcage_exec::{Elevation, FakeRunner, Reply, Stdin};
@@ -510,6 +512,120 @@ fn keychain_get_has_no_secret_in_argv() {
     let call = fake.call(0);
     assert_eq!(*call.command.secret_arg_indices(), [] as [usize; 0]);
     assert_eq!(call.raw_argv().last().unwrap(), "-w");
+}
+
+/// **The ordering bug.** Every `security` invocation, on the System
+/// keychain, with the path where the Python puts it: last.
+///
+/// The login target cannot see this -- its keychain is `None`, so
+/// nothing is appended and any argument order looks right. `add` was
+/// building
+///
+/// ```text
+/// sudo -n security add-generic-password -s agentcage -a A \
+///      -w /Library/Keychains/System.keychain <CLEARTEXT> -U
+/// ```
+///
+/// which would have stored the keychain path as the password and
+/// handed the credential to `security` as a positional argument. On a
+/// headless Mac -- the *only* host that reaches the System keychain --
+/// that is every `cage secret set`. PR E2b found it and fixed it; this
+/// is the argv that says so.
+#[test]
+fn every_system_keychain_command_puts_the_path_last() {
+    let fake = FakeRunner::new();
+    fake.push(Reply::status(0)); // add
+    fake.push(Reply::ok("hunter2\n")); // find
+    fake.push(Reply::status(0)); // delete
+    let security = Security::new(&fake);
+    let system = KeychainTarget::system();
+
+    security.add(&system, "myapp.API_KEY", "hunter2").unwrap();
+    security.find(&system, "myapp.API_KEY").unwrap();
+    security.delete(&system, "myapp.API_KEY").unwrap();
+
+    assert_eq!(
+        fake.call(0).raw_argv(),
+        [
+            "sudo",
+            "-n",
+            "security",
+            "add-generic-password",
+            "-s",
+            "agentcage",
+            "-a",
+            "myapp.API_KEY",
+            "-w",
+            "hunter2",
+            "-U",
+            "/Library/Keychains/System.keychain",
+        ]
+    );
+    fake.assert_call(
+        1,
+        &[
+            "sudo",
+            "-n",
+            "security",
+            "find-generic-password",
+            "-s",
+            "agentcage",
+            "-a",
+            "myapp.API_KEY",
+            "-w",
+            "/Library/Keychains/System.keychain",
+        ],
+    );
+    fake.assert_call(
+        2,
+        &[
+            "sudo",
+            "-n",
+            "security",
+            "delete-generic-password",
+            "-s",
+            "agentcage",
+            "-a",
+            "myapp.API_KEY",
+            "/Library/Keychains/System.keychain",
+        ],
+    );
+    // And the redaction survives the fix: index 9 is the value.
+    assert_eq!(fake.argv(0)[9], "<redacted>");
+    assert!(!format!("{:?}", fake.calls()).contains("hunter2"));
+}
+
+/// The prepared fix, driven through the real `add` path so that the
+/// only unknown left is what the keychain does with the bytes.
+///
+/// `PasswordChannel::Interactive` is **not shipped** --
+/// `keychain_set_puts_the_cleartext_in_argv_and_that_is_the_bug` pins
+/// that -- but it is reachable, and this is the argv and the stdin it
+/// would produce. `security -i` reads command lines from stdin and
+/// splits them in process, so the kernel's argv, the one `ps` reads,
+/// is `security -i` and nothing more. See
+/// `tests/keychain_stdin_probe.rs`.
+#[test]
+fn the_unshipped_interactive_channel_carries_nothing_in_argv() {
+    let fake = FakeRunner::new();
+    fake.push(Reply::status(0));
+    Security::new(&fake)
+        .with_password_channel(PasswordChannel::Interactive)
+        .add(&KeychainTarget::system(), "myapp.API_KEY", "hunter2")
+        .unwrap();
+
+    let call = fake.call(0);
+    assert_eq!(call.raw_argv(), ["sudo", "-n", "security", "-i"]);
+    assert_eq!(
+        call.stdin_text().as_deref(),
+        Some(
+            "add-generic-password -s agentcage -a 'myapp.API_KEY' -w 'hunter2' -U \
+             '/Library/Keychains/System.keychain'\n"
+        ),
+        "the same arguments, the same order, the keychain still last"
+    );
+    assert!(!format!("{call:?}").contains("hunter2"));
+    assert_eq!(SHIPPED_PASSWORD_CHANNEL, PasswordChannel::Argv);
 }
 
 /// An absent item is `None`, not an error.

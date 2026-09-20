@@ -22,9 +22,14 @@ use agentcage_cli::secrets::{
     SystemdCredsStore,
 };
 use agentcage_exec::tools::podman::Podman;
+use agentcage_exec::tools::security::{PasswordChannel, SHIPPED_PASSWORD_CHANNEL};
 use agentcage_exec::{FakeRunner, Reply};
 
 use common::TempDir;
+
+/// The macOS System keychain, appended last to every `security`
+/// invocation that targets it.
+const KC: &str = "/Library/Keychains/System.keychain";
 
 /// The value every test uses, so a leak is greppable in a failure dump.
 const VALUE: &str = "TEST-NOT-A-REAL-SECRET-hunter2";
@@ -412,6 +417,228 @@ fn the_keychain_add_puts_the_cleartext_in_argv() {
         std::fs::read_to_string(KeychainStore::index_path(temp.path())).unwrap(),
         r#"["API_KEY"]"#
     );
+}
+
+/// **The System-keychain path, whole.** The store's three commands on
+/// the target a headless Mac actually uses, with the keychain path
+/// where `security(1)` wants it: last, after every flag and every
+/// flag's value.
+///
+/// Every other `add` assertion in this suite and in
+/// `agentcage-exec/tests/tool_argv.rs` used the *login* target, whose
+/// keychain is `None` -- so nothing is appended and any ordering looks
+/// correct. That blind spot hid a real bug: `add` chained the value and
+/// `-U` on after the path, producing
+/// `-w /Library/Keychains/System.keychain <CLEARTEXT> -U`, which stores
+/// the path as the password and hands the credential to `security` as a
+/// positional argument. PR E2b fixed it; this is the test that keeps it
+/// fixed.
+#[test]
+fn the_system_keychain_carries_the_path_last_in_every_command() {
+    let temp = TempDir::new("keychain-system");
+    let fake = FakeRunner::new();
+    fake.push(Reply::failed(1, "User interaction is not allowed.")); // login probe add
+    fake.push(Reply::success()); // system probe add
+    fake.push(Reply::success()); // system probe delete
+    fake.push(Reply::success()); // set
+    fake.push(Reply::ok(format!("{VALUE}\n"))); // get
+    fake.push(Reply::success()); // delete
+    let store = KeychainStore::new(&fake, Platform::MacOs);
+
+    store.set("acme", "API_KEY", VALUE, temp.path()).unwrap();
+    assert_eq!(
+        store
+            .get("acme", "API_KEY", temp.path())
+            .unwrap()
+            .as_deref(),
+        Some(VALUE)
+    );
+    store.delete("acme", "API_KEY", temp.path()).unwrap();
+
+    assert_eq!(
+        fake.call(3).raw_argv(),
+        [
+            "sudo",
+            "-n",
+            "security",
+            "add-generic-password",
+            "-s",
+            "agentcage",
+            "-a",
+            "acme.API_KEY",
+            "-w",
+            VALUE,
+            "-U",
+            KC,
+        ]
+    );
+    assert_eq!(
+        fake.argv(4),
+        [
+            "sudo",
+            "-n",
+            "security",
+            "find-generic-password",
+            "-s",
+            "agentcage",
+            "-a",
+            "acme.API_KEY",
+            "-w",
+            KC,
+        ]
+    );
+    assert_eq!(
+        fake.argv(5),
+        [
+            "sudo",
+            "-n",
+            "security",
+            "delete-generic-password",
+            "-s",
+            "agentcage",
+            "-a",
+            "acme.API_KEY",
+            KC,
+        ]
+    );
+    // Every invocation, including the two probes, ends at the keychain.
+    for n in 1..fake.call_count() {
+        assert_eq!(
+            fake.argv(n).last().map(String::as_str),
+            Some(KC),
+            "call {n} lost the keychain path"
+        );
+    }
+    // The value is still redacted from everything that prints.
+    assert_eq!(fake.argv(3)[9], "<redacted>");
+    assert!(!format!("{:?}", fake.calls()).contains(VALUE));
+}
+
+/// The interaction-blocked stderr, and the thing it does *not* do.
+///
+/// `secret_store.py:136` defines `_security_interaction_blocked` --
+/// "interaction is not allowed", lowercased -- and then **never calls
+/// it**. `_writable` returns `False` on any non-zero exit, and
+/// `_target` falls through on `False`. So the stderr text is not
+/// consulted anywhere, and the fall-through is identical whether the
+/// login keychain is locked, `security` is missing a flag, or the item
+/// already exists.
+///
+/// That is worth pinning rather than fixing, because the helper reads
+/// like a guard someone would later wire in -- and wiring it in would
+/// *narrow* the fall-through, turning a headless Mac that fails for any
+/// other reason into a hard failure instead of a System-keychain
+/// attempt. The Rust keeps the predicate available
+/// ([`agentcage_exec::tools::security::interaction_blocked`], unit
+/// tested there) and keeps it out of the decision, exactly as shipped.
+#[test]
+fn the_fall_through_ignores_what_the_stderr_actually_says() {
+    const STDERRS: [&str; 3] = [
+        "SecKeychainItemCreateFromContent: User interaction is not allowed.",
+        "SecKeychainItemCreateFromContent: The specified item already exists in the keychain.",
+        "",
+    ];
+    for stderr in STDERRS {
+        let fake = FakeRunner::new();
+        fake.push(Reply::failed(1, stderr));
+        fake.push(Reply::success());
+        fake.push(Reply::success());
+        let store = KeychainStore::new(&fake, Platform::MacOs);
+
+        assert!(
+            store.available(),
+            "stderr {stderr:?} should still fall through to the System keychain"
+        );
+        assert_eq!(
+            fake.argv(1).first().map(String::as_str),
+            Some("sudo"),
+            "stderr {stderr:?}"
+        );
+        assert_eq!(fake.call_count(), 3);
+    }
+}
+
+/// **The prepared fix, driven through the whole store.**
+///
+/// Not shipped -- [`the_keychain_add_puts_the_cleartext_in_argv`] pins
+/// that it is not -- but reachable, and this asserts that switching the
+/// channel changes exactly one thing: the value leaves argv for the
+/// child's stdin. Target selection, the argument order, the index write
+/// and the read-back path are untouched.
+///
+/// `security -i` reads command lines from stdin and splits them in
+/// process, so the kernel's argv -- what `ps` reads -- is `security -i`
+/// and nothing more. The seam exists so that a Mac owner has one thing
+/// left to establish, a round trip against a real keychain, rather than
+/// a patch to write. See
+/// `agentcage-exec/tests/keychain_stdin_probe.rs` and
+/// [`agentcage_exec::tools::security::AddPassword::how_to_settle_it`].
+#[test]
+fn the_unshipped_interactive_channel_changes_the_value_and_nothing_else() {
+    let temp = TempDir::new("keychain-stdin-seam");
+    let fake = FakeRunner::new();
+    fake.push(Reply::success()); // probe add
+    fake.push(Reply::success()); // probe delete
+    fake.push(Reply::success()); // the real add
+    let store = KeychainStore::new(&fake, Platform::MacOs)
+        .with_password_channel(PasswordChannel::Interactive);
+
+    store.set("acme", "API_KEY", VALUE, temp.path()).unwrap();
+
+    let add = fake.call(2);
+    assert_eq!(add.raw_argv(), ["security", "-i"]);
+    assert_eq!(
+        add.stdin_text().as_deref(),
+        Some(
+            format!("add-generic-password -s agentcage -a 'acme.API_KEY' -w '{VALUE}' -U\n")
+                .as_str()
+        )
+    );
+    assert!(!format!("{add:?}").contains(VALUE));
+    assert!(
+        !fake
+            .argv_sequence()
+            .iter()
+            .flatten()
+            .any(|a| a.contains(VALUE))
+    );
+    // The rest of the store does not notice.
+    assert_eq!(store.names("acme", temp.path()).unwrap(), ["API_KEY"]);
+    // And the probe followed the channel, so `available()` cannot pass
+    // on a shape `set` would not use.
+    assert_eq!(fake.call(0).raw_argv(), ["security", "-i"]);
+
+    assert_eq!(
+        SHIPPED_PASSWORD_CHANNEL,
+        PasswordChannel::Argv,
+        "the decision is still unmade -- see keychain_stdin_probe.rs"
+    );
+}
+
+/// A secret `security -i` cannot carry is refused, not truncated.
+///
+/// Its reader breaks on `\n` and its line buffer is 4096 bytes, and in
+/// both cases the remainder is parsed as the next command -- storing
+/// the wrong bytes *and* echoing a fragment of the secret to stderr.
+/// The store turns the refusal into the same `keychain add failed:`
+/// message an operator already knows, and nothing runs.
+#[test]
+fn the_interactive_channel_refuses_a_secret_it_would_corrupt() {
+    let temp = TempDir::new("keychain-refusal");
+    let fake = FakeRunner::new();
+    fake.push(Reply::success()); // probe add
+    fake.push(Reply::success()); // probe delete
+    let store = KeychainStore::new(&fake, Platform::MacOs)
+        .with_password_channel(PasswordChannel::Interactive);
+
+    let err = store
+        .set("acme", "API_KEY", "two\nlines", temp.path())
+        .unwrap_err();
+    assert!(err.is_store_error());
+    assert!(err.to_string().starts_with("keychain add failed:"), "{err}");
+    assert!(err.to_string().contains("line terminator"), "{err}");
+    assert_eq!(fake.call_count(), 2, "the two probes, and no add");
+    assert!(!KeychainStore::index_path(temp.path()).exists());
 }
 
 /// Retrieval is clean: the `-w` here takes no value, it asks for the

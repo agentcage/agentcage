@@ -53,7 +53,9 @@ use agentcage_core::config::types::Config;
 use agentcage_core::har::json::{DumpOptions, Json, dumps, parse};
 use agentcage_core::python::repr_str;
 use agentcage_exec::tools::podman::Podman;
-use agentcage_exec::tools::security::{KeychainTarget, Security};
+use agentcage_exec::tools::security::{
+    KeychainTarget, PasswordChannel, SHIPPED_PASSWORD_CHANNEL, Security,
+};
 use agentcage_exec::{CommandRunner, ExecError};
 
 use super::resolver::{SecretHost, replace_podman_secret};
@@ -394,18 +396,17 @@ impl SecretStore for PlaintextStore<'_> {
     }
 }
 
-// ── keychain (macOS; PR E2b owns the behaviour) ──────────────
+// ── keychain (macOS) ────────────────────────────────────────
 
 /// macOS: a keychain item per secret, plus a non-secret name index.
 ///
 /// # Whose PR this is
 ///
-/// The keychain *behaviour* is PR E2b's, gated on Apple hardware, and
-/// the argv was pinned by PR D1 in
-/// [`agentcage_exec::tools::security`]. What is here is the wiring: the
-/// target-selection order, the index file (which PR A7's fixture
-/// captures and this PR must read), and the store trait impl. Nothing
-/// here re-derives an argv.
+/// The argv was pinned by PR D1 in
+/// [`agentcage_exec::tools::security`] and the wiring -- target
+/// selection, the index file PR A7's fixture captures, the store trait
+/// impl -- by PR D3. PR E2b finished the store and took the decision
+/// about the exposure below. Nothing here re-derives an argv.
 ///
 /// # The known argv exposure
 ///
@@ -413,12 +414,26 @@ impl SecretStore for PlaintextStore<'_> {
 /// [`agentcage_exec::tools::security::Security::add`], which builds
 /// `security add-generic-password -s agentcage -a <cage>.<KEY> -w
 /// <CLEARTEXT> -U`. The cleartext is in argv and therefore in `ps` for
-/// the life of the child. It is the only such path in the code being
-/// ported, it is marked with
-/// [`agentcage_exec::Command::secret_arg`] so it is redacted from
-/// everything this workspace prints, and it is *not* changed here --
-/// see the module docs in [`agentcage_exec::tools::security`] for why
-/// the obvious fix needs a Mac to verify.
+/// the life of the child -- readable by any process of the same user,
+/// and by root. It is the only such path in the code being ported, it
+/// is marked with [`agentcage_exec::Command::secret_arg`] so it is
+/// redacted from everything this workspace prints, and it is **not
+/// changed here**.
+///
+/// PR E2b settled half the question and left the other half where it
+/// belongs. The obvious fix -- a bare `-w` with the value piped in --
+/// is *refuted*: that path is `getpass(3)`, which reads `/dev/tty`,
+/// prompts twice, and on EOF stores an empty password and exits 0. The
+/// fix that does work is `security -i`, which is written and reachable
+/// here as
+/// [`agentcage_exec::tools::security::PasswordChannel::Interactive`]
+/// and switched on by [`KeychainStore::with_password_channel`] -- but
+/// it is not shipped, because whether the keychain ends up holding the
+/// exact bytes depends on quoting that only a round trip against a real
+/// keychain can check. See the module docs in
+/// [`agentcage_exec::tools::security`] for the sources, and
+/// `agentcage-exec/tests/keychain_stdin_probe.rs` for the one test that
+/// settles it.
 ///
 /// # Target selection
 ///
@@ -432,17 +447,41 @@ pub struct KeychainStore<'a> {
     runner: &'a dyn CommandRunner,
     platform: Platform,
     target: OnceCell<KeychainTarget>,
+    channel: PasswordChannel,
 }
 
 impl<'a> KeychainStore<'a> {
-    /// A keychain store for this platform.
+    /// A keychain store for this platform, on the shipped password
+    /// channel.
     #[must_use]
     pub fn new(runner: &'a dyn CommandRunner, platform: Platform) -> Self {
         Self {
             runner,
             platform,
             target: OnceCell::new(),
+            channel: SHIPPED_PASSWORD_CHANNEL,
         }
+    }
+
+    /// The same store, forced onto a particular
+    /// [`PasswordChannel`].
+    ///
+    /// The seam described in
+    /// [`agentcage_exec::tools::security`]: it exists so a Mac owner
+    /// can drive the *whole store* -- target selection, add, read-back,
+    /// index -- through the candidate fix without editing anything, and
+    /// so a Linux test can assert both shapes. Production never calls
+    /// it; [`KeychainStore::new`] takes the shipped channel from the
+    /// one `const` that holds the decision.
+    #[must_use]
+    pub fn with_password_channel(mut self, channel: PasswordChannel) -> Self {
+        self.channel = channel;
+        self
+    }
+
+    /// A `security` wrapper on this store's channel.
+    fn security(&self) -> Security<'_> {
+        Security::new(self.runner).with_password_channel(self.channel)
     }
 
     /// `_target()` -- which keychain, and whether it needs `sudo -n`.
@@ -462,7 +501,7 @@ impl<'a> KeychainStore<'a> {
         if !self.platform.is_darwin() {
             return Err(SecretError::store("keychain backend is macOS-only"));
         }
-        let security = Security::new(self.runner);
+        let security = self.security();
         let found = if security
             .writable(&KeychainTarget::login())
             .map_err(|e| SecretError::store(e.to_string()))?
@@ -562,7 +601,7 @@ impl SecretStore for KeychainStore<'_> {
     fn set(&self, cage: &str, key: &str, value: &str, state_dir: &Path) -> Result<(), SecretError> {
         let target = self.target()?;
         let account = Security::account(cage, key);
-        Security::new(self.runner)
+        self.security()
             .add(target, &account, value)
             .map_err(|e| match e {
                 ExecError::Failed { stderr, .. } => {
@@ -577,7 +616,9 @@ impl SecretStore for KeychainStore<'_> {
         let target = self.target()?;
         // The Python ignores the result entirely: deleting a key that
         // is not in the keychain still has to clear the index.
-        let _ = Security::new(self.runner).delete(target, &Security::account(cage, key));
+        let _ = self
+            .security()
+            .delete(target, &Security::account(cage, key));
         Self::index_remove(state_dir, key)
     }
 
@@ -590,7 +631,7 @@ impl SecretStore for KeychainStore<'_> {
 
     fn get(&self, cage: &str, key: &str, _state_dir: &Path) -> Result<Option<String>, SecretError> {
         let target = self.target()?;
-        Security::new(self.runner)
+        self.security()
             .find(target, &Security::account(cage, key))
             .map_err(|e| SecretError::store(e.to_string()))
     }
