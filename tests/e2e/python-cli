@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The Python CLI, for use as $AGENTCAGE.
+#
+# `pyproject.toml` installs no console script any more (§2.4: a
+# `pip install` must not be able to put a second, older implementation
+# on PATH ahead of the real binary). The Python is still the oracle the
+# Rust port is checked against, so the suite needs a single executable
+# path it can put in $AGENTCAGE:
+#
+#   AGENTCAGE=tests/e2e/python-cli bash tests/e2e/run.sh container
+#
+# Prefers an already-synced virtualenv over `uv run`, because this is
+# called a few hundred times in a full suite and `uv run` re-checks the
+# lockfile on each one. Falls back to `uv run` so it works in a fresh
+# checkout with no venv.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here/../.." && pwd)"
+
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+    exec "$VIRTUAL_ENV/bin/python" -m agentcage "$@"
+fi
+if [ -x "$root/.venv/bin/python" ]; then
+    exec "$root/.venv/bin/python" -m agentcage "$@"
+fi
+exec uv run --project "$root" python -m agentcage "$@"

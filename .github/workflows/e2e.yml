@@ -33,13 +33,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only the python leg. The rust leg runs no uv at all now that the
+      # package installs no console script, and `setup-uv` fails its own
+      # post-job cache save when nothing ever populated the cache. The
+      # phase scripts' `python3 -c` one-liners are stdlib and use the
+      # runner's interpreter.
       - uses: astral-sh/setup-uv@v5
+        if: matrix.cli == 'python'
         with:
           python-version: "3.13"
 
+      # No `uv tool install`: the package installs no console script any
+      # more (§2.4). `uv sync --dev` builds the venv that
+      # `tests/e2e/python-cli` runs `python -m agentcage` out of.
       - name: Install agentcage (Python)
         if: matrix.cli == 'python'
-        run: uv tool install -e .
+        run: |
+          uv sync --dev
+          echo "AGENTCAGE=$PWD/tests/e2e/python-cli" >> "$GITHUB_ENV"
 
       - name: Install the pinned Rust toolchain
         if: matrix.cli == 'rust'
@@ -109,13 +120,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only the python leg. The rust leg runs no uv at all now that the
+      # package installs no console script, and `setup-uv` fails its own
+      # post-job cache save when nothing ever populated the cache. The
+      # phase scripts' `python3 -c` one-liners are stdlib and use the
+      # runner's interpreter.
       - uses: astral-sh/setup-uv@v5
+        if: matrix.cli == 'python'
         with:
           python-version: "3.13"
 
+      # No `uv tool install`: the package installs no console script any
+      # more (§2.4). `uv sync --dev` builds the venv that
+      # `tests/e2e/python-cli` runs `python -m agentcage` out of.
       - name: Install agentcage (Python)
         if: matrix.cli == 'python'
-        run: uv tool install -e .
+        run: |
+          uv sync --dev
+          echo "AGENTCAGE=$PWD/tests/e2e/python-cli" >> "$GITHUB_ENV"
 
       - name: Install the pinned Rust toolchain
         if: matrix.cli == 'rust'
@@ -202,13 +224,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only the python leg. The rust leg runs no uv at all now that the
+      # package installs no console script, and `setup-uv` fails its own
+      # post-job cache save when nothing ever populated the cache. The
+      # phase scripts' `python3 -c` one-liners are stdlib and use the
+      # runner's interpreter.
       - uses: astral-sh/setup-uv@v5
+        if: matrix.cli == 'python'
         with:
           python-version: "3.13"
 
+      # No `uv tool install`: the package installs no console script any
+      # more (§2.4). `uv sync --dev` builds the venv that
+      # `tests/e2e/python-cli` runs `python -m agentcage` out of.
       - name: Install agentcage (Python)
         if: matrix.cli == 'python'
-        run: uv tool install -e .
+        run: |
+          uv sync --dev
+          echo "AGENTCAGE=$PWD/tests/e2e/python-cli" >> "$GITHUB_ENV"
 
       - name: Install the pinned Rust toolchain
         if: matrix.cli == 'rust'

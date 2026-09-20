@@ -1,6 +1,6 @@
 # Installing agentcage
 
-agentcage is a Python 3.12+ command-line tool that drives an isolated container or microVM runtime on your host machine. It installs as an unprivileged, user-level utility — no root daemons, no background services, and no system-wide configuration.
+agentcage is a single, statically linked command-line binary that drives an isolated container or microVM runtime on your host machine. It installs as an unprivileged, user-level utility — no root daemons, no background services, and no system-wide configuration, and no runtime to install first.
 
 ---
 
@@ -8,13 +8,12 @@ agentcage is a Python 3.12+ command-line tool that drives an isolated container 
 
 | Component | Minimum Version | Notes |
 | :--- | :--- | :--- |
-| **Python** | 3.12+ | Python 3.12 and 3.13 are fully supported. |
 | **Linux Runtime** | Podman 4.4+ (rootless), cgroups v2, systemd | `systemd` 250+ enables encrypted secret storage via `systemd-creds`. |
 | **macOS (Apple Silicon, 26+)** | Apple `container` CLI | Default and fastest backend on modern Apple Silicon Macs (`brew install container`). |
 | **macOS (Intel / Older)** | Lima 0.19+ | MicroVM isolation using Lima (`brew install lima`). |
 | **Disk Space** | ≥ 2 GB free in `$HOME` | Used for base container images and per-cage persistent volumes. |
 
-agentcage has minimal Python dependencies (`click`, `pyyaml`, `jinja2`). Heavy components (such as `mitmproxy` and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use.
+agentcage has no host dependencies of its own: the Linux builds are statically linked against musl, so there is no glibc version to match and no interpreter to install. Heavy components (such as `mitmproxy` and `dnsmasq`) run inside the isolated egress container image, which agentcage builds automatically on first use — that image carries its own Python, and it is the only Python in the product.
 
 ---
 
@@ -42,39 +41,55 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ---
 
-### Option 2: Package Managers (`uv`, `pipx`, `pip`)
+### Option 2: Download the binary yourself
 
-If you manage Python CLI tools using modern package managers:
+Every release publishes one tarball per platform, each with a `.sha256`
+beside it. Pick your target, verify it, and put the binary on your
+`PATH`:
 
-#### Using `uv` (Fastest)
-
-```bash
-uv tool install agentcage
-```
-
-#### Using `pipx` (Isolated virtual environment)
-
-```bash
-pipx install agentcage
-```
-
-#### Using standard `pip` in a virtual environment
+| Platform | Asset |
+| :--- | :--- |
+| Linux x86-64 | `agentcage-<version>-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `agentcage-<version>-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Apple Silicon | `agentcage-<version>-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `agentcage-<version>-x86_64-apple-darwin.tar.gz` |
 
 ```bash
-python3 -m venv ~/.local/share/agentcage-venv
-~/.local/share/agentcage-venv/bin/pip install agentcage
-ln -s ~/.local/share/agentcage-venv/bin/agentcage ~/.local/bin/agentcage
+VERSION=0.41.0
+TARGET=x86_64-unknown-linux-musl
+BASE="https://github.com/agentcage/agentcage/releases/download/v$VERSION"
+
+curl -fsSLO "$BASE/agentcage-$VERSION-$TARGET.tar.gz"
+curl -fsSLO "$BASE/agentcage-$VERSION-$TARGET.tar.gz.sha256"
+sha256sum -c "agentcage-$VERSION-$TARGET.tar.gz.sha256"
+
+tar xzf "agentcage-$VERSION-$TARGET.tar.gz"
+install -m 755 "agentcage-$VERSION-$TARGET/agentcage" ~/.local/bin/agentcage
 ```
 
-#### Installing from Source
+The macOS binaries are signed with a Developer ID and notarized. A
+binary fetched with `curl` carries no quarantine attribute, so Gatekeeper
+does not prompt on the download path either way.
+
+#### Building from source
+
+Needs a Rust toolchain; the pinned version is in `rust-toolchain.toml`.
 
 ```bash
 git clone https://github.com/agentcage/agentcage.git
 cd agentcage
-uv sync
-# Or with standard pip:
-pip install -e .
+cargo build --release --bin agentcage
+install -m 755 target/release/agentcage ~/.local/bin/agentcage
 ```
+
+> **The Python package is not an install path.** `pip install agentcage`
+> and `uv tool install agentcage` used to be how you got the CLI. They
+> are not any more: the host CLI is the Rust binary above, and the
+> `pyproject.toml` in this repository is dev/test-only — it installs no
+> `agentcage` command, and it is not published to PyPI. If you have an
+> old Python install, remove it (`uv tool uninstall agentcage`, or
+> `pipx uninstall agentcage`) so it cannot shadow the binary on your
+> `PATH`.
 
 ---
 
@@ -165,7 +180,6 @@ Example successful output:
 
 ```text
 === System & Dependencies ===
-[PASS] Python 3.12.3 (/home/user/.local/bin/python3)
 [PASS] Platform: Linux 6.8.0-45-generic (x86_64)
 
 === Runtime & Isolation ===
@@ -183,6 +197,11 @@ All checks passed! Your system is ready to run agentcage.
 ```
 
 If any check fails, `agentcage doctor` outputs the exact command required to fix the issue.
+
+There is no Python check. There used to be one, and it was dropped
+rather than ported: the host does not need an interpreter any more, so a
+check for one would fail on exactly the machines this design exists to
+support.
 
 ---
 

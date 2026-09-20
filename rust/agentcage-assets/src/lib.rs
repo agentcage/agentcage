@@ -364,7 +364,7 @@ mod tests {
     fn the_embedded_file_count_is_pinned() {
         assert_eq!(
             embedded_files().len(),
-            79,
+            78,
             "embedded file set changed: {:#?}",
             embedded_files().iter().map(|f| f.path).collect::<Vec<_>>()
         );
