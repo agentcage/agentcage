@@ -19,10 +19,6 @@ use agentcage_cli::backend::ContainerBackend;
 /// operator-facing refusal in `cli.py` uses.
 pub(crate) const EXIT_FAILURE: u8 = 1;
 
-/// click's `sys.exit(2)` — a usage error, and what the v0.21 legacy-cage
-/// gate exits with.
-pub(crate) const EXIT_USAGE: u8 = 2;
-
 /// The process-wide handles a command body runs against.
 pub(crate) struct Ctx {
     /// The state roots.
@@ -83,16 +79,14 @@ impl Ctx {
 }
 
 /// `cli._parse_version` — `'X.Y[.Z…]'` to `(X, Y)`, `(0, 0)` on garbage.
+///
+/// One line, delegating, because there must be exactly one of these:
+/// `cage list` and `cage prune` compare the same stamp the gate below
+/// compares, and a second parser that rounded `"1"` differently would
+/// annotate a cage as legacy that the gate then let through.
 #[must_use]
 pub(crate) fn parse_version(version: &str) -> (u32, u32) {
-    let mut parts = version.split('.');
-    match (
-        parts.next().and_then(|p| p.parse().ok()),
-        parts.next().and_then(|p| p.parse().ok()),
-    ) {
-        (Some(major), Some(minor)) => (major, minor),
-        _ => (0, 0),
-    }
+    agentcage_cli::preflight::parse_version(version)
 }
 
 /// `cli._ensure_v022_cage` — refuse to operate on a pre-v0.22 cage.
@@ -106,33 +100,27 @@ pub(crate) fn parse_version(version: &str) -> (u32, u32) {
 /// documented escape hatch, and its filename enumeration covers both
 /// shapes. `cage list` skips it too and annotates legacy entries inline.
 ///
+/// The wording, the version parse and the "a malformed `metadata.json`
+/// is exit 1, not exit 2" distinction all live in
+/// [`agentcage_cli::preflight`], which `cage har` already reaches
+/// through directly. This is the `ExitCode`-shaped face of it: the
+/// `cli` bodies thread `Result<(), ExitCode>`, `har` threads a stream
+/// and a `u8`, and neither should own a second copy of the message an
+/// operator is told to follow.
+///
 /// # Errors
 ///
-/// [`EXIT_USAGE`], with the migration procedure printed.
+/// [`agentcage_cli::preflight::EXIT_LEGACY_CAGE`] (2), with the
+/// migration procedure printed — except for a `metadata.json` that
+/// exists and will not parse, which is
+/// [`agentcage_cli::preflight::EXIT_NO_SUCH_CAGE`] (1) and a read
+/// error, because telling someone to migrate away from a layout their
+/// metadata never claimed is worse than saying the file is broken.
 pub(crate) fn ensure_v022_cage(paths: &Paths, name: &str) -> Result<(), ExitCode> {
-    let metadata = paths
-        .load_metadata(name)
-        .unwrap_or_else(|_| agentcage_core::har::json::Json::Object(Vec::new()));
-    let version = metadata
-        .get("agentcage_version")
-        .and_then(agentcage_core::har::json::Json::as_str)
-        .filter(|v| !v.is_empty())
-        .unwrap_or("0.0.0")
-        .to_owned();
-    if parse_version(&version) >= (0, 22) {
-        return Ok(());
+    match agentcage_cli::preflight::ensure_v022_cage(paths, name, &mut std::io::stderr()) {
+        None => Ok(()),
+        Some(code) => Err(ExitCode::from(code)),
     }
-    eprintln!(
-        "error: cage '{name}' was created with agentcage v{version}, which used the\n  \
-         legacy 3-service layout (cage / proxy / dns). v0.22 unified these into a\n  \
-         single 'egress' service. The cage cannot be addressed by v0.22 commands.\n\
-         \n  \
-         To migrate, run:\n    \
-         systemctl --user stop {name}-cage {name}-proxy {name}-dns\n    \
-         agentcage cage destroy {name}\n    \
-         agentcage cage create -c <your cage.yaml>\n"
-    );
-    Err(ExitCode::from(EXIT_USAGE))
 }
 
 /// Load, validate and report a config file the way both `cage create`

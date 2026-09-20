@@ -196,10 +196,9 @@ fn aliases_report_their_canonical_command() {
     for (alias, canonical) in [
         (["config", "myapp"], "cage edit"),
         (["edit", "myapp"], "cage edit"),
-        (["start", "myapp"], "cage start"),
-        // `stop`, `shell` and `exec` used to be here. They have bodies
-        // as of PR D12, so they answer "does not exist" rather than
-        // naming themselves as unported — which
+        // `start`, `stop`, `shell` and `exec` used to be here. They
+        // have bodies as of PRs D12 and D7, so they answer "does not
+        // exist" rather than naming themselves as unported — which
         // `aliases_of_ported_commands_reach_the_body` asserts instead.
     ] {
         let args: Vec<&str> = alias.iter().copied().filter(|a| *a != "--").collect();
@@ -293,14 +292,19 @@ fn passthrough_exec_reaches_its_body() {
     }
 }
 
-/// `cage shell` and `cage stop` reached through their root aliases.
+/// `cage shell`, `cage stop` and `cage start` reached through their
+/// root aliases.
 ///
 /// The alias clones are separate `Command` values, so "the canonical
 /// spelling has a body" does not imply the alias does.
 #[test]
 fn aliases_of_ported_commands_reach_the_body() {
     let dir = agentcage_state::TestDir::new("binary-ported-aliases");
-    for args in [vec!["shell", "myapp"], vec!["stop", "myapp"]] {
+    for args in [
+        vec!["shell", "myapp"],
+        vec!["stop", "myapp"],
+        vec!["start", "myapp"],
+    ] {
         let out = agentcage_sandboxed(dir.path(), &args);
         assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
         assert!(
@@ -512,6 +516,73 @@ fn stage_cage(home: &std::path::Path, name: &str, isolation: &str) {
             )]),
         )
         .expect("the metadata is writable");
+}
+
+/// `cage prune`'s three filters, each shown by the cage it walks past.
+///
+/// None of these reaches the teardown, which is the point: a prune
+/// that removes a `service` cage, or a v0.21 cage it cannot probe, is
+/// indistinguishable from data loss. The candidate list is the whole
+/// command.
+#[test]
+fn prune_walks_past_everything_it_must_not_remove() {
+    let dir = agentcage_state::TestDir::new("binary-prune");
+
+    // Nothing at all.
+    let out = agentcage_sandboxed(dir.path(), &["cage", "prune"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Nothing to prune."),
+        "{}",
+        stdout(&out)
+    );
+
+    // A stopped `service` cage: down on purpose, not exited.
+    stage_cage(dir.path(), "svc", "container");
+    let out = agentcage_sandboxed(dir.path(), &["cage", "prune"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Nothing to prune."),
+        "prune targeted a service cage: {}",
+        stdout(&out)
+    );
+
+    // An `interactive` v0.21 cage: the third exemption from the
+    // legacy gate. `list` annotates it, `destroy` proceeds on it, and
+    // `prune` must walk past — probing the v0.22 shape would answer
+    // "not running" for a cage that is running under the old names.
+    let paths = agentcage_state::Paths::under(dir.path());
+    std::fs::create_dir_all(paths.deployment_dir("old")).expect("writable");
+    std::fs::write(
+        paths.deployment_dir("old").join("cage.yaml"),
+        "name: old
+isolation: container
+lifecycle: interactive
+container:
+  image: \"alpine\"\n",
+    )
+    .expect("writable");
+    paths
+        .save_metadata(
+            "old",
+            &agentcage_core::har::json::Json::Object(vec![(
+                "agentcage_version".to_owned(),
+                agentcage_core::har::json::Json::string("0.21.5"),
+            )]),
+        )
+        .expect("writable");
+    let out = agentcage_sandboxed(dir.path(), &["cage", "prune"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Nothing to prune."),
+        "prune targeted a v0.21 cage: {}",
+        stdout(&out)
+    );
+    assert!(
+        !stderr(&out).contains("legacy 3-service"),
+        "prune consulted the gate instead of skipping: {}",
+        stderr(&out)
+    );
 }
 
 /// `cage logs` and `cage audit` both read their source through a

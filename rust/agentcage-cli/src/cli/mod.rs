@@ -258,6 +258,9 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "cage show" => lifecycle::show(&Ctx::system(), &named("name")),
         "cage destroy" => lifecycle::destroy(&Ctx::system(), leaf),
         "cage stop" => lifecycle::stop(&Ctx::system(), &named("name")),
+        // PR D7 proper: the two commands no earlier phase needed.
+        "cage start" => lifecycle::start(&Ctx::system(), &named("name")),
+        "cage prune" => lifecycle::prune(&Ctx::system(), leaf),
         "cage verify" => verify::main(&Ctx::system(), &named("name")),
         "cage exec" => session::exec(&Ctx::system(), leaf),
         "cage shell" => session::shell(&Ctx::system(), leaf),
@@ -276,9 +279,6 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "secret set" => secret::set::main(&Ctx::system(), leaf),
         "secret rm" => secret::rm::main(&Ctx::system(), leaf),
         "secret rotate-placeholders" => secret::rotate::main(&Ctx::system(), leaf),
-        // Both belong to other PRs (D7, D12). They are here because e2e
-        // phase 3 -- D9's acceptance check -- cannot be run without
-        // them; see their module docs.
         "cage restart" => lifecycle::restart(&Ctx::system(), leaf),
         // PR D14.
         "init" => init::main(&Ctx::system(), leaf),
