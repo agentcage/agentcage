@@ -12,6 +12,7 @@ pub(crate) mod grants;
 pub(crate) mod lifecycle;
 pub(crate) mod logs;
 pub(crate) mod query;
+pub(crate) mod session;
 pub(crate) mod update;
 pub(crate) mod verify;
 

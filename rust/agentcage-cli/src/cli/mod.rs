@@ -238,7 +238,7 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
 /// `agentcage rm x` and `agentcage cage destroy x` reach the same body
 /// without the aliases being listed twice.
 fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode> {
-    use crate::cli::cage::{audit, create, lifecycle, logs, update, verify};
+    use crate::cli::cage::{audit, create, lifecycle, logs, session, update, verify};
     use crate::cli::context::Ctx;
 
     // The leaf's own matches: a top-level alias resolves to a command
@@ -256,7 +256,14 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "cage status" => lifecycle::status(&Ctx::system(), leaf),
         "cage show" => lifecycle::show(&Ctx::system(), &named("name")),
         "cage destroy" => lifecycle::destroy(&Ctx::system(), leaf),
+        "cage stop" => lifecycle::stop(&Ctx::system(), &named("name")),
         "cage verify" => verify::main(&Ctx::system(), &named("name")),
+        "cage exec" => session::exec(&Ctx::system(), leaf),
+        "cage shell" => session::shell(&Ctx::system(), leaf),
+        // PR D8 owns `cage logs`; the container reader lands here
+        // because e2e phase 6 -- D12's acceptance check -- asserts on
+        // it three times. See `cage/logs.rs`.
+        "cage logs" => logs::main(&Ctx::system(), leaf),
         "cage audit" => audit::main(&Ctx::system(), leaf),
         "cage logs" => logs::main(&Ctx::system(), leaf),
         // PR D13. `cage har` reads one file the egress addon wrote

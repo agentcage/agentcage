@@ -201,8 +201,10 @@ fn aliases_report_their_canonical_command() {
         (["config", "myapp"], "cage edit"),
         (["edit", "myapp"], "cage edit"),
         (["start", "myapp"], "cage start"),
-        (["stop", "myapp"], "cage stop"),
-        (["shell", "myapp"], "cage shell"),
+        // `stop`, `shell` and `exec` used to be here. They have bodies
+        // as of PR D12, so they answer "does not exist" rather than
+        // naming themselves as unported — which
+        // `aliases_of_ported_commands_reach_the_body` asserts instead.
     ] {
         let args: Vec<&str> = alias.iter().copied().filter(|a| *a != "--").collect();
         let out = agentcage(&args);
@@ -232,46 +234,25 @@ fn unrecognised_input_exits_two() {
 
 // ── passthrough ─────────────────────────────────────────────────────
 
-/// The two `ignore_unknown_options` commands, end to end.
+/// `cage run`, the passthrough command that is still a stub.
 ///
 /// A flag-shaped argument after `--` must reach the workload rather than
 /// being parsed. The binary cannot yet *run* a workload, so what is
 /// asserted is the observable consequence: the command parsed (exit 70,
 /// naming itself) instead of failing on the flag (exit 2).
+///
+/// `cage exec`'s half of this moved to
+/// [`passthrough_exec_reaches_its_body`] when D12 gave it a body — and
+/// the *values* it parses are pinned by `cli::cage::session`'s own
+/// tests, which can read the argv rather than infer it from an exit
+/// code.
 #[test]
 fn passthrough_accepts_flag_shaped_arguments() {
-    for (args, expected) in [
-        (
-            vec!["cage", "exec", "myapp", "--", "ls", "-la"],
-            "cage exec",
-        ),
-        (
-            vec![
-                "cage",
-                "exec",
-                "--as-root",
-                "myapp",
-                "--",
-                "openclaw",
-                "devices",
-                "list",
-            ],
-            "cage exec",
-        ),
-        // Without `--` too: click's `ignore_unknown_options` does not
-        // require the separator, and neither does this.
-        (vec!["cage", "exec", "myapp", "ls", "-la"], "cage exec"),
-        (vec!["exec", "myapp", "--", "ls", "-la"], "cage exec"),
-        (vec!["run", "codex", "--", "codex", "--version"], "cage run"),
-        (
-            vec!["cage", "run", "claude-code", "--", "claude", "-p", "hi"],
-            "cage run",
-        ),
+    for args in [
+        vec!["run", "codex", "--", "codex", "--version"],
+        vec!["cage", "run", "claude-code", "--", "claude", "-p", "hi"],
         // A known flag before the separator is still this command's own.
-        (
-            vec!["run", "claude-code", "--verbose", "--", "--not-a-flag"],
-            "cage run",
-        ),
+        vec!["run", "claude-code", "--verbose", "--", "--not-a-flag"],
     ] {
         let out = agentcage(&args);
         assert_eq!(
@@ -280,7 +261,76 @@ fn passthrough_accepts_flag_shaped_arguments() {
             "{args:?} should have parsed: {}",
             stderr(&out)
         );
-        assert!(stderr(&out).contains(&format!("`{expected}`")), "{args:?}");
+        assert!(stderr(&out).contains("`cage run`"), "{args:?}");
+    }
+}
+
+/// The same claim for `cage exec`, now that it has a body.
+///
+/// Every spelling has to get past the parser and reach the body, which
+/// refuses an unknown cage with exit 1 — never clap's exit 2, which is
+/// what a `-la` parsed as this command's own option would produce.
+#[test]
+fn passthrough_exec_reaches_its_body() {
+    let dir = agentcage_state::TestDir::new("binary-exec-passthrough");
+    for args in [
+        vec!["cage", "exec", "myapp", "--", "ls", "-la"],
+        vec![
+            "cage",
+            "exec",
+            "--as-root",
+            "myapp",
+            "--",
+            "openclaw",
+            "devices",
+            "list",
+        ],
+        // Without `--` too: click's `ignore_unknown_options` does not
+        // require the separator, and neither does this.
+        vec!["cage", "exec", "myapp", "ls", "-la"],
+        vec!["exec", "myapp", "--", "ls", "-la"],
+        vec![
+            "cage",
+            "exec",
+            "-s",
+            "egress",
+            "myapp",
+            "--",
+            "sh",
+            "-c",
+            "echo $HOME",
+        ],
+    ] {
+        let out = agentcage_sandboxed(dir.path(), &args);
+        assert_eq!(
+            code(&out),
+            1,
+            "{args:?} should have parsed and been refused: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("cage 'myapp' does not exist"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+/// `cage shell` and `cage stop` reached through their root aliases.
+///
+/// The alias clones are separate `Command` values, so "the canonical
+/// spelling has a body" does not imply the alias does.
+#[test]
+fn aliases_of_ported_commands_reach_the_body() {
+    let dir = agentcage_state::TestDir::new("binary-ported-aliases");
+    for args in [vec!["shell", "myapp"], vec!["stop", "myapp"]] {
+        let out = agentcage_sandboxed(dir.path(), &args);
+        assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("cage 'myapp' does not exist"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
     }
 }
 

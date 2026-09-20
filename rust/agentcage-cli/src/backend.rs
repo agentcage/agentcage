@@ -431,6 +431,60 @@ impl<'a> ContainerBackend<'a> {
         Ok(removed)
     }
 
+    /// `exec_argv` — `podman exec [-it] -u <uid:gid> [--env …] <name>-<service> <cmd>`.
+    ///
+    /// `-u` is passed explicitly because the cage Quadlet's `User=` may
+    /// be empty — the ubuntu scaffold sets `user: ""`, since a default
+    /// of 1000:1000 does not resolve to a real user in a minimal base
+    /// image — and without `-u`, `podman exec` inherits the image's
+    /// `USER`, typically root on `ubuntu:latest`. That put
+    /// `agentcage run ubuntu` at uid 0 on podman while the
+    /// apple-container path correctly dropped to uid 1000.
+    ///
+    /// Both halves of the spec are pinned. `-u 1000` alone leaves the
+    /// gid at the container default, which for an image with no uid
+    /// 1000 in `/etc/passwd` (busybox, scratch-based) is gid 0 — the
+    /// root group, and group-readable root files with it.
+    ///
+    /// `as_root` is the operator debug path: uid 0 re-acquires the
+    /// container's cap set. `NoNewPrivileges=1` and the dropped
+    /// `CapBnd` from the cage's Quadlet are inherited by the exec
+    /// session, so no `capsh` wrap is needed here — unlike
+    /// apple-container, whose wrapper image runs as root.
+    ///
+    /// A **cage** session also gets the current secret-injection
+    /// placeholders from the stored config (decoy tokens, never
+    /// sensitive), so a secret declared after the container started is
+    /// usable in a new session without a restart.
+    #[must_use]
+    pub fn exec_argv(
+        &self,
+        name: &str,
+        service: &str,
+        command: &[String],
+        interactive: bool,
+        as_root: bool,
+    ) -> Vec<String> {
+        let mut argv = vec![
+            "podman".to_owned(),
+            "exec".to_owned(),
+            "-u".to_owned(),
+            uid_spec(as_root).to_owned(),
+        ];
+        if interactive {
+            argv.push("-it".to_owned());
+        }
+        if service == "cage" {
+            for (env, placeholder) in crate::services::current_placeholders(self.paths, name) {
+                argv.push("--env".to_owned());
+                argv.push(format!("{env}={placeholder}"));
+            }
+        }
+        argv.push(format!("{name}-{service}"));
+        argv.extend(command.iter().cloned());
+        argv
+    }
+
     /// `container_log_driver` — the driver podman actually picked.
     ///
     /// Read back rather than derived: podman selects `journald` only
@@ -540,4 +594,14 @@ pub fn patches_work_dir(paths: &Paths) -> std::io::Result<PathBuf> {
     let dir = paths.patches_dir();
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// The `podman exec -u` spec a session runs under.
+///
+/// One function rather than two literals because `cage shell` builds
+/// its own argv (it has to probe for `/bin/bash` first) and the two
+/// must not drift.
+#[must_use]
+pub fn uid_spec(as_root: bool) -> &'static str {
+    if as_root { "0:0" } else { "1000:1000" }
 }

@@ -198,6 +198,52 @@ fn show_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     Ok(())
 }
 
+/// `cage stop` — stop both units without destroying anything.
+///
+/// Here rather than in PR D7 for the same reason the four above are
+/// here: **e2e phase 6** tears the `e2e-mask` cage down with it, and
+/// that teardown is what makes the `/workspace/.git/hooks` tmpfs
+/// vanish — the exact thing 6.11 is measuring. A `cage stop` that
+/// exits `EX_SOFTWARE` leaves the mask standing and the assertion
+/// meaningless.
+pub(crate) fn stop(ctx: &Ctx, name: &str) -> ExitCode {
+    match stop_inner(ctx, name) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => code,
+    }
+}
+
+fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
+    if !ctx.paths.deployment_exists(name) {
+        eprintln!("error: cage '{name}' does not exist");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+    // A legacy cage is refused here and *not* in `destroy` — stopping
+    // one would address units that no longer exist under these names,
+    // while destroy is the documented way out.
+    ensure_v022_cage(&ctx.paths, name)?;
+
+    let config = ctx
+        .paths
+        .load_deployment_config(name, &agentcage_cli::hostenv::RealHost)
+        .map_err(|error| {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        })?;
+    if config.isolation != "container" {
+        eprintln!(
+            "error: `cage stop` on the '{}' backend is not ported yet \
+             (RUST-PORT-PLAN.md Track E)",
+            config.isolation
+        );
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    ctx.backend().stop(name);
+    println!("Stopped cage '{name}'");
+    Ok(())
+}
+
 /// `cage destroy` — stop, remove quadlets, podman resources and state.
 pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     let name = matches
