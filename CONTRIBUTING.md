@@ -5,25 +5,41 @@
 ```bash
 git clone https://github.com/agentcage/agentcage.git
 cd agentcage
-uv sync --dev
+uv sync --dev          # the proxy suite, the fixture generators, the oracle
+cargo build --workspace  # the CLI
 ```
+
+The Python package here is **dev/test-only**. It installs no `agentcage`
+command and is not published — `pip install agentcage` is not how anyone
+gets the CLI any more. What it is for:
+
+* the proxy test suite, which imports `agentcage.data.proxy.X` and bare
+  `X`, the two spellings the egress image itself uses;
+* the fixture generators under `scripts/`, which run the real Python to
+  produce the recordings the Rust is asserted against;
+* `tests/e2e/python-cli`, which runs the end-to-end suite against the
+  Python so the two implementations can be compared phase by phase.
+
+Run the Python CLI with `python -m agentcage`, or through that wrapper.
 
 ## Running Tests
 
 ```bash
-uv run pytest
+uv run pytest                                    # Python
+cargo test --workspace --all-targets             # Rust
+python3 scripts/check-invariants.py              # Python stays out of the binary
 ```
 
 ## The Rust tree
 
-The host CLI is being ported to Rust; the egress proxy under
+**The host CLI is Rust.** The egress proxy under
 `src/agentcage/data/proxy/` stays Python permanently. The two halves talk
 only through files on a bind mount, which is what makes the split
 possible.
 
-You do not need Rust to work on the Python side, and you do not need
-Python to work on the Rust side. They have separate CI jobs and neither
-can fail the other.
+You do not need Rust to work on the proxy, and you do not need Python to
+work on the CLI. They have separate CI jobs and neither can fail the
+other.
 
 ```bash
 cargo build --workspace

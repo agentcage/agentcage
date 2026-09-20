@@ -37,9 +37,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      # No `uv tool install`: the package installs no console script any
+      # more (§2.4). `uv sync --dev` builds the venv that
+      # `tests/e2e/python-cli` runs `python -m agentcage` out of.
       - name: Install agentcage (Python)
         if: matrix.cli == 'python'
-        run: uv tool install -e .
+        run: |
+          uv sync --dev
+          echo "AGENTCAGE=$PWD/tests/e2e/python-cli" >> "$GITHUB_ENV"
 
       - name: Install the pinned Rust toolchain
         if: matrix.cli == 'rust'
@@ -113,9 +118,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      # No `uv tool install`: the package installs no console script any
+      # more (§2.4). `uv sync --dev` builds the venv that
+      # `tests/e2e/python-cli` runs `python -m agentcage` out of.
       - name: Install agentcage (Python)
         if: matrix.cli == 'python'
-        run: uv tool install -e .
+        run: |
+          uv sync --dev
+          echo "AGENTCAGE=$PWD/tests/e2e/python-cli" >> "$GITHUB_ENV"
 
       - name: Install the pinned Rust toolchain
         if: matrix.cli == 'rust'
@@ -206,9 +216,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      # No `uv tool install`: the package installs no console script any
+      # more (§2.4). `uv sync --dev` builds the venv that
+      # `tests/e2e/python-cli` runs `python -m agentcage` out of.
       - name: Install agentcage (Python)
         if: matrix.cli == 'python'
-        run: uv tool install -e .
+        run: |
+          uv sync --dev
+          echo "AGENTCAGE=$PWD/tests/e2e/python-cli" >> "$GITHUB_ENV"
 
       - name: Install the pinned Rust toolchain
         if: matrix.cli == 'rust'

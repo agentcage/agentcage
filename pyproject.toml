@@ -1,13 +1,40 @@
+# agentcage's Python package is DEV/TEST-ONLY and is not published.
+#
+# The host CLI is a Rust binary (RUST-PORT-PLAN.md). The only Python
+# that ships is the egress proxy, and it ships inside the mitmproxy
+# image — `Containerfile.egress` pip-installs its two dependencies
+# there, which is the only place they are ever installed.
+#
+# What this file is still for:
+#
+#   * `pytest` — `pythonpath` below lets the proxy suite import both
+#     `agentcage.data.proxy.X` and bare `X`, the two spellings the
+#     egress image itself uses, with nothing installed;
+#   * the fixture generators under `scripts/`, which run the real
+#     Python to produce the recordings the Rust is asserted against;
+#   * `tests/e2e/python-cli`, which runs the same end-to-end suite
+#     against the Python so the two implementations can be compared
+#     phase by phase.
+#
+# It deliberately installs no console script. A `pip install agentcage`
+# that put a second, older implementation on PATH ahead of the real
+# binary would present as "agentcage behaves differently on this
+# machine", not as two programs — see `src/agentcage/__main__.py`.
 [project]
 name = "agentcage"
 dynamic = ["version"]
 requires-python = ">=3.12"
-description = "Defense-in-depth proxy sandbox for AI agents"
+description = "Defense-in-depth proxy sandbox for AI agents (dev/test package; the CLI ships as a Rust binary)"
 authors = [{name = "Luca Martinetti"}]
 license = {text = "MIT"}
 readme = "README.md"
 keywords = ["ai", "agent", "sandbox", "proxy", "security", "mitmproxy", "container"]
 classifiers = [
+    # PyPI refuses an upload carrying this classifier. Belt to the
+    # braces of `publish.yml` no longer running `uv publish`: if that
+    # step is ever restored by accident, the upload fails rather than
+    # shipping a package that shadows the binary.
+    "Private :: Do Not Upload",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
@@ -25,9 +52,6 @@ dependencies = [
     "pyyaml>=6.0",
     "jinja2>=3.1",
 ]
-
-[project.scripts]
-agentcage = "agentcage.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/agentcage/agentcage"
