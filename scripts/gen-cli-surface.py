@@ -49,6 +49,7 @@ See tests/fixtures/cli-surface/README.md.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import re
@@ -153,7 +154,7 @@ def _param_info(param: click.Parameter) -> dict:
             {
                 "is_flag": bool(param.is_flag),
                 "hidden": bool(param.hidden),
-                "help": param.help,
+                "help": _cleandoc(param.help),
                 "show_default": bool(param.show_default),
                 "count": bool(param.count),
                 "prompt": _jsonable(param.prompt),
@@ -189,6 +190,29 @@ def _aliases(cmd: click.Command) -> dict[str, str]:
     return {}
 
 
+def _cleandoc(text):
+    """``inspect.cleandoc`` a help string, or pass ``None`` through.
+
+    **This is what makes the fixture reproducible.** `cmd.help` is the
+    command's ``__doc__``, and CPython 3.13 changed what that is:
+    since gh-81283 the *compiler* strips each docstring's common leading
+    indentation, so the same `cli.py` yields indented help on 3.12 and
+    dedented help on 3.13+. Recording it raw made `--check` pass or fail
+    depending on which interpreter `uv` happened to pick — and a
+    developer on 3.12 would silently rewrite every help string in the
+    fixture just by regenerating it.
+
+    ``inspect.cleandoc`` is the right normaliser rather than an
+    arbitrary one: it is what click itself applies before *displaying*
+    help, so this records the text a user actually sees. It is
+    idempotent on the 3.13+ form apart from the trailing newline, which
+    `conformance.rs`'s `normalize_help` already trims on the Rust side.
+    """
+    if text is None:
+        return None
+    return inspect.cleandoc(text)
+
+
 def _node(cmd: click.Command, path: list[str]) -> dict:
     parent_ctx = None
     for name in path[:-1]:
@@ -208,7 +232,7 @@ def _node(cmd: click.Command, path: list[str]) -> dict:
         "path": path,
         "is_group": isinstance(cmd, click.Group),
         "class": type(cmd).__name__,
-        "help": cmd.help,
+        "help": _cleandoc(cmd.help),
         "short_help": cmd.get_short_help_str(limit=200) or None,
         "hidden": bool(cmd.hidden),
         "deprecated": bool(cmd.deprecated),
