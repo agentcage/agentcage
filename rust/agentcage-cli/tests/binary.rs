@@ -134,8 +134,11 @@ fn a_bare_group_prints_help_to_stderr_and_exits_two() {
 fn a_parsed_command_fails_loudly_and_names_itself() {
     for (args, expected) in [
         (vec!["cage", "edit", "myapp"], "cage edit"),
-        (vec!["cage", "grants", "myapp", "sync"], "cage grants sync"),
-        (vec!["domain", "list", "myapp"], "domain list"),
+        // `cage grants … sync` and `domain list` used to be here. Both
+        // have bodies as of PR D10; `an_unknown_cage_is_refused_rather_
+        // than_stubbed` covers them instead.
+        (vec!["cage", "backup", "myapp"], "cage backup"),
+        (vec!["watcher", "findings", "myapp"], "watcher findings"),
     ] {
         let out = agentcage(&args);
         assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}");
@@ -197,7 +200,7 @@ fn aliases_report_their_canonical_command() {
         (["config", "myapp"], "cage edit"),
         (["edit", "myapp"], "cage edit"),
         // `start`, `stop`, `shell` and `exec` used to be here. They
-        // have bodies as of PRs D12 and D7, so they answer "does not
+        // have bodies as of PRs D12, D7 and D10, so they answer "does not
         // exist" rather than naming themselves as unported — which
         // `aliases_of_ported_commands_reach_the_body` asserts instead.
     ] {
@@ -444,6 +447,16 @@ fn an_unknown_cage_is_refused_rather_than_stubbed() {
         vec!["cage", "update", "nope"],
         vec!["cage", "audit", "nope"],
         vec!["cage", "logs", "nope"],
+        // PR D10. `domain list` reconciles first and the reconcile is
+        // deliberately quiet about a missing cage, so the refusal here
+        // is the one the listing itself makes.
+        vec!["domain", "list", "nope"],
+        vec!["domain", "add", "nope", "example.com"],
+        vec!["domain", "rm", "nope", "example.com"],
+        vec!["cage", "grants", "nope", "list"],
+        vec!["cage", "grants", "nope", "sync"],
+        vec!["cage", "grants", "nope", "promote", "example.com"],
+        vec!["cage", "grants", "nope", "revoke", "example.com"],
     ] {
         let out = agentcage_sandboxed(dir.path(), &args);
         assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));

@@ -359,6 +359,72 @@ fn addressable(
     }
     Ok(config)
 }
+fn start_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
+    if !ctx.paths.deployment_exists(name) {
+        eprintln!("error: cage '{name}' does not exist");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+    ensure_v022_cage(&ctx.paths, name)?;
+
+    let config = ctx
+        .paths
+        .load_deployment_config(name, &agentcage_cli::hostenv::RealHost)
+        .map_err(|error| {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        })?;
+    if config.isolation != "container" {
+        eprintln!(
+            "error: `cage start` on the '{}' backend is not ported yet \
+             (RUST-PORT-PLAN.md Track E)",
+            config.isolation
+        );
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+    if let Err(error) = agentcage_cli::services::ensure_patches(&ctx.paths) {
+        eprintln!("error: {error}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+    // Container only, matching `cage create`: a vm cage's secrets live
+    // in the GUEST podman store, and the host store is the wrong target.
+    let host = agentcage_cli::secrets::SecretHost::detect(
+        ctx.runner.as_ref(),
+        &agentcage_cli::secrets::SystemEnv,
+    );
+    if let Err(error) = host.resolve_and_populate(
+        &podman,
+        &config,
+        name,
+        &ctx.paths.deployment_dir(name),
+        &std::collections::BTreeSet::new(),
+        true,
+    ) {
+        eprintln!("error: {}", error.message());
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    if let Err(error) = ctx.paths.save_proxy_config(name, &ctx.version) {
+        eprintln!("error: {error}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+    if let Err(error) = ctx
+        .paths
+        .save_dns_allowlist(name, &agentcage_cli::hostenv::RealHost)
+    {
+        eprintln!("error: {error}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    let backend = ctx.ensure_backend_ready(&config)?;
+    backend.start(name, false).map_err(|error| {
+        eprintln!("error: {error}");
+        ExitCode::from(EXIT_FAILURE)
+    })?;
+    println!("Started cage '{name}'");
+    Ok(())
+}
 
 /// `cage restart` — restart the services without rebuilding anything.
 ///

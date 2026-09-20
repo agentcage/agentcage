@@ -283,6 +283,30 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "secret rm" => secret::rm::main(&Ctx::system(), leaf),
         "secret rotate-placeholders" => secret::rotate::main(&Ctx::system(), leaf),
         "cage restart" => lifecycle::restart(&Ctx::system(), leaf),
+        // PR D10. The `domain` group, the `cage grants` group and the
+        // DNS live reload both ends of that pair run.
+        //
+        // `cage grants` is the one group that parses a positional of
+        // its own *before* its subcommand, so its `NAME` is on the
+        // group's matches and not on the leaf's -- see
+        // `cage::grants`. `group_of_leaf` is what reaches it.
+        "domain list" => domain::list(&Ctx::system(), leaf),
+        "domain add" => domain::add(&Ctx::system(), leaf),
+        "domain rm" => domain::rm(&Ctx::system(), leaf),
+        "cage grants list" => cage::grants::list(&Ctx::system(), group_of_leaf(sub)),
+        // `named` reads the one-level-down matches, which for this
+        // group is `grants` itself; DOMAIN is a level below that.
+        "cage grants promote" => cage::grants::promote(
+            &Ctx::system(),
+            group_of_leaf(sub),
+            &deep_named(sub, "domain"),
+        ),
+        "cage grants revoke" => cage::grants::revoke(
+            &Ctx::system(),
+            group_of_leaf(sub),
+            &deep_named(sub, "domain"),
+        ),
+        "cage grants sync" => cage::grants::sync(&Ctx::system(), group_of_leaf(sub)),
         // PR D14.
         "init" => init::main(&Ctx::system(), leaf),
         "cage run" => run::main(&Ctx::system(), leaf),
@@ -306,6 +330,31 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
 fn leaf(sub: &ArgMatches) -> &ArgMatches {
     let mut current = sub;
     while let Some((_, next)) = current.subcommand() {
+        current = next;
+    }
+    current
+}
+
+/// A string argument read from the deepest matches under `sub`.
+fn deep_named(sub: &ArgMatches, id: &str) -> String {
+    leaf(sub).get_one::<String>(id).cloned().unwrap_or_default()
+}
+
+/// The matches one level *above* the leaf — where a group that carries
+/// its own positional parsed it.
+///
+/// Only `cage grants` needs this: `@cage.group("grants")` declares
+/// `@click.argument("name")` on the group and its subcommands read it
+/// back through `click.get_current_context().parent`, so
+/// `cage grants myapp revoke foo.com` parses `myapp` at `grants` and
+/// `foo.com` at `revoke`. Two different `ArgMatches`, and
+/// [`leaf`] only reaches the second.
+fn group_of_leaf(sub: &ArgMatches) -> &ArgMatches {
+    let mut current = sub;
+    while let Some((_, next)) = current.subcommand() {
+        if next.subcommand().is_none() {
+            return current;
+        }
         current = next;
     }
     current
