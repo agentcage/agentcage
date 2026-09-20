@@ -112,6 +112,11 @@ hashes the *parsed* cage.yaml, not its text.
 
 ### apple-container: units and a plist, not quadlets
 
+The rest of what this backend derives — the volume and tmpfs
+resolutions, and the three egress-config files it renders for the
+microVM to bind-mount — is recorded separately in
+`tests/fixtures/apple-container/` (PR E2), keyed `corpus:<case>`.
+
 Cases with `isolation: apple-container` used to carry a
 `quadlets/NOT-APPLICABLE.txt` where the units would be. They no longer do (PR
 E3). That backend has no quadlets, but it does have units: `generate_units`
