@@ -417,19 +417,24 @@ rather than fixed there, because a port that quietly diverges is worse than one
 that carries a known wart. Each needs a product decision, and a fix has to land
 on the Python, the corpus and the port together — as the audit one did.
 
+Four of these have since been fixed on both sides at once, which is what
+the paragraph above asks for — the anchor sweep (C2, C3) and the relay
+coercion gaps (C3) landed with the Python, the corpus, the contract
+fixture and the port moving together. The rest stand.
+
 | Found by | Bug | Status |
 | :-- | :-- | :-- |
 | C5 | The coloured `cage audit` table padded DIRECTION to 4 where the header and the plain branch used 10, shifting every column from METHOD onward by a different amount per row. Colour is the default. | **Fixed**, with the invariant "colour only adds escapes" now asserted on both sides |
-| C3 | `agents.decider.host` is matched with `$`, not `\Z`. Python's `$` matches before one trailing newline, so `host: "agentcage.local\n"` validates — while `valid_domain` uses `\Z` specifically to refuse that shape. Verified end to end. | Open; reproduced and pinned |
-| C3 | `_validate.py` coercion gaps in front of its branches: `port: true` becomes port 1; `host: [1]` becomes the string `"[1]"` and so looks present; a non-mapping `policy:` **silently skips the whole policy block**, `write_mode` included, because the guard is `isinstance(policy, dict)` rather than a refusal | Open; reproduced and pinned |
+| C3 | `agents.decider.host` is matched with `$`, not `\Z`. Python's `$` matches before one trailing newline, so `host: "agentcage.local\n"` validates — while `valid_domain` uses `\Z` specifically to refuse that shape. Verified end to end. | **Fixed** in the anchor sweep, together with the other eleven `$` sites |
+| C3 | `_validate.py` coercion gaps in front of its branches: `port: true` becomes port 1; `host: [1]` becomes the string `"[1]"` and so looks present; a non-mapping `policy:` **silently skips the whole policy block**, `write_mode` included, because the guard is `isinstance(policy, dict)` rather than a refusal | **Fixed**, both sides at once; falsy still means "absent" (truthiness before type, as `ca_file` already did). Fixture 107 → 114 cases |
 | C1 | `container.timeout_start_sec` defaults to 600 in the dataclass and 120 in `load_config`. Since `load_config` is the only way a `Config` is built from a file, **600 is unreachable** | Open; both reproduced, each pinned |
 | C4 | The corpus recipe writes `resolved-config.json` pre-placeholder-fill and fingerprints post-fill, so three cases cannot rebuild one component | Open; corpus gap, not a product bug |
 | C7 | The corpus recorded only the keys of the mask-mountpoint map, leaving the paths the cleanup chain consumes unverified | **Fixed** in C7 |
-| C2 | `name` and `container.image` are matched with `$`, not `\Z` — the same anchor bug as the decider host. `name: "my-cage\n"` validates, and that name becomes a systemd unit name, a podman object name and a state directory. Verified end to end | Open; reproduced and pinned |
+| C2 | `name` and `container.image` are matched with `$`, not `\Z` — the same anchor bug as the decider host. `name: "my-cage\n"` validates, and that name becomes a systemd unit name, a podman object name and a state directory. Verified end to end | **Fixed** in the anchor sweep. Reachable from a config, not just argv: a *clipped* block scalar — `|` **or** `>` — produces exactly that value |
 | **D1** | **`secret_store.py:226` puts a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Open — see below** |
 | E2b | **The Rust port built the System-keychain argv scrambled** — the keychain path landed *before* the value and `-U`, so the path would be stored as the password. The Python appends it last. Only reachable on a headless Mac, the one configuration nobody could test | **Fixed** in E2b |
 | E2b | `_security_interaction_blocked` is **dead code**: defined at `secret_store.py:136` and never called. The fall-through treats every non-zero exit alike, so the stderr text is never consulted | Open; pinned, deliberately not wired in — doing so would *narrow* the fall-through and turn a headless Mac failing for any other reason into a hard failure |
-| D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; a policy call, see below |
+| D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; **documented** in `docs/reference/configuration.md`, which had called the field "static" and mentioned no expansion. Still a policy call: it is deliberate (the apple backend mirrors it on purpose) and has shipped since 0.1.0 |
 
 **The Keychain finding is the most serious thing this port has turned up**, because
 it is a live exposure in shipped code rather than a porting concern. Every other
@@ -804,6 +809,25 @@ Mac and can run in parallel with Track D as soon as Track C lands.
 | F3 | `install.sh` rewrite; release binaries; Homebrew tap; AUR | Fresh-VM install test on Arch, Ubuntu, and macOS |
 | F4 | Reduce `pyproject.toml` to dev/test-only; add the §2.4 CI invariant guards; delete `Containerfile.helper`; final PyPI shim release | Proxy pytest green without installing the package; guards fail on a deliberate violation |
 | F5 | Docs pass over `docs/**`, `README.md`, `CONTRIBUTING.md` | Link check; manual read |
+
+**F2's first acceptance clause is met.** The full e2e suite is green on the
+Rust binary — 111 assertions across all eight phases, one skipped (`8.10
+nested podman`, which the host cannot provide), phase 7 included at 33/33
+against real Lima and KVM. The same suite is green on the Python CLI at the
+same commit, so the two agree phase for phase. What F2 still needs is the
+in-place upgrade check and `phase_apple.sh`, and the parts of it that are
+release engineering rather than verification.
+
+**F4's CI half is done ahead of the rest.** The §2.4 invariant guards that
+were missing are wired: the contract, state-compat, output and vm fixture
+`--check` modes now run in `rust.yml` alongside the six that already did,
+and both e2e jobs gained a `cli: [python, rust]` matrix so the port is
+checked against podman on every PR rather than only from a terminal. Phase 7
+runs nightly. `Containerfile.helper` is **not** deleted: it is unreferenced
+as a deliverable but `scripts/update-deps.py` tracks its base image and
+`tests/test_egress_hash.py` names it as the real instance of "a file in the
+build context the egress does not COPY". Deleting it belongs with the
+`pyproject.toml` reduction, not before it.
 
 F1 is first in this track and should be attempted during Phase 0 as a throwaway
 spike — Apple Developer enrollment has lead time, and discovering that in the
