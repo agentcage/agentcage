@@ -37,6 +37,12 @@
 //! | volume-mount parsing | `volume_mounts.py` | C7 |
 //! | quadlet rendering (minijinja over the existing `.j2`) | `quadlets.py` | C8 |
 //!
+//! Track E adds one more, for the backend that has no quadlets at
+//! all: [`apple`] holds `apple_container.py`'s unit metadata, its
+//! launchd plist and its three argv builders (PR E3). It obeys the
+//! same three rules — the resolved `container` binary, the expanded
+//! volume list and the current placeholders all arrive as arguments.
+//!
 //! Three of those are cross-language contracts rather than ordinary
 //! ports — the relay validator, `encoded_private_ip` and `_is_never_grant`
 //! exist on both sides of the trust boundary and must agree exactly
@@ -55,6 +61,7 @@
 //! [`config.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/config.py
 //! [`services.py`]: https://github.com/agentcage/agentcage/blob/master/src/agentcage/services.py
 
+pub mod apple;
 pub mod audit;
 pub mod config;
 pub mod fingerprint;

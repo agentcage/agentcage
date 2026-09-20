@@ -138,7 +138,7 @@ fn every_valid_case_reproduces_resolved_config() {
         wrong.join("\n")
     );
     assert_eq!(
-        checked, 125,
+        checked, 128,
         "the corpus grew or shrank; if that is intended, update this number"
     );
     println!("{checked} valid corpus configs reproduced resolved-config.json");
@@ -176,7 +176,7 @@ fn every_stored_config_parses() {
         refused.len(),
         refused.join("\n")
     );
-    assert!(checked >= 125, "expected one stored config per valid case");
+    assert!(checked >= 128, "expected one stored config per valid case");
     println!("{checked} stored configs parsed");
 }
 

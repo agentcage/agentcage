@@ -13,6 +13,9 @@ it builds `container run` argv and a launchd plist inside itself, and
 renders three config files onto disk for the egress microVM to
 bind-mount. PR C8 flagged that those artifacts were recorded nowhere and
 handed the gap to Track E. This is the generation-half-A part of it.
+Half B (PR E3) closed the rest: the corpus now records the real
+`container run` argv beside that note as `quadlets/<case>.json`, and
+the launchd job under `launchd/`.
 
 ## Why it does not need a Mac
 
@@ -77,3 +80,88 @@ uv run python scripts/gen-apple-container-fixtures.py
 (`.github/workflows/rust.yml`). Review the diff before committing: this
 backend has no CI on real hardware, so the fixture is the only thing
 watching it.
+
+---
+
+# apple-container argv fixture
+
+`argv.json` is **generated**. Do not hand-edit it.
+
+```sh
+uv run python scripts/gen-apple-argv-fixture.py          # write
+uv run python scripts/gen-apple-argv-fixture.py --check  # fail if stale
+```
+
+## What it is
+
+38 calls into the real `AppleContainerBackend.exec_argv`, `logs_argv`
+and `audit_argv`, with the argv each one returned — or, for the two
+refusal paths, the `BackendUnsupported` message it raised.
+
+These three methods are what `cage exec` / `cage shell`, `cage logs` and
+`cage audit` dispatch through on macOS, and they are the part of that
+backend nothing else records: the golden corpus captures what a
+`cage.yaml` turns into (units, plist, proxy-config, warnings), and this
+captures what a *command invocation* turns into.
+
+## Why it can be generated on Linux
+
+`tests/test_apple_container.py` patches `platform.system()` to `"Darwin"`
+(line 44) and asserts on generated argv, units and plists. There is no
+macOS runner in CI and there never has been — that patch is how this
+backend has always been tested. This generator does the same thing and
+writes the answers down.
+
+None of the three methods actually branches on the platform; the patch
+is there so the recording is honest about where the code runs, not to
+make it work.
+
+## The three host facts, pinned
+
+| Fact | Pinned to | Why |
+| :-- | :-- | :-- |
+| `apple_container.cli.container_binary()` | `/usr/local/bin/container`, or `None` | It is a `shutil.which`, so on a Linux runner it answers `None` for every case and the interesting argv would never be produced. `None` is kept as its own case. |
+| `services.current_placeholders(name)` | declared per case | The real function reads the *stored* cage.yaml at call time — that is the point, so a secret declared after the cage started works in a new session without a restart — and it is already ported and tested on its own (PR D9/D12). Declaring the pairs keeps this fixture about argv, not about state layout. |
+| `HOME` | a throwaway directory, scrubbed to `{{HOME}}` | `audit_argv` resolves a real path. |
+
+`XDG_CONFIG_HOME` is set too, and **deliberately somewhere other than
+`$HOME/.config`**. The apple state root is
+`Path(os.path.expanduser("~/.config/agentcage/apple-container"))` — an
+`expanduser` with no XDG lookup anywhere near it — so the recorded audit
+path comes out under `{{HOME}}/.config` regardless. That is a testing
+hazard as much as a portability wart (an XDG sandbox does not redirect
+this root), and the fixture says so by construction rather than in a
+comment.
+
+## `audit_argv` is the odd one
+
+There is **no host-side `audit.jsonl` for a `container` or `vm` cage**.
+The egress addon writes its audit trail to stderr and the host reads it
+back out of `journalctl`; only apple-container bind-mounts the file out
+of its microVM. So this is agentcage's only file-reading audit path, and
+nothing else in the port covers it.
+
+Two things follow, and both are recorded:
+
+* `since` is **ignored**. A JSONL file has no journalctl-style time
+  index and `tail` cannot seek by time, so `cage audit --since` is
+  applied after parsing, as `AuditFilter.since`.
+* `follow` changes the whole shape rather than adding a flag:
+  `tail -n 0 -F` — capital F, so a rotated or replaced file is reopened
+  — against a `tail -n 10000` over-read, because not every line in the
+  file is an audit record.
+
+## Comparison
+
+Byte-for-byte, element by element. `rust/agentcage-cli/tests/apple_argv.rs`
+replays every case; it lives in that crate rather than in
+`agentcage-core` because the audit path is derived through
+`agentcage_state::Paths::apple_audit_file` and compared against the
+recording, which needs both crates.
+
+## No real secrets
+
+The placeholders are decoy tokens in the shape `fill_placeholders`
+generates, and the relay/agent credential names are all `FAKE_*`. Keep
+it that way: a placeholder is what the cage's environment actually gets,
+and the value never appears on a command line at all.

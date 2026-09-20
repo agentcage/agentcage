@@ -1,0 +1,31 @@
+{
+  "allow_icmp": false,
+  "allow_udp_ports": [],
+  "autostart": false,
+  "cpus": "",
+  "decider_api_key_source": "",
+  "decider_enabled": false,
+  "dns_servers": [
+    "192.0.2.53"
+  ],
+  "env": {},
+  "has_expiring_domains": false,
+  "inspected_tcp_ports": [
+    80,
+    443
+  ],
+  "lifecycle": "service",
+  "memory": "",
+  "name": "backend-apple-container-no-resource-caps",
+  "passthrough_tcp_ports": [],
+  "relay_secret_envs": [],
+  "secret_env_placeholders": {},
+  "secret_envs": [],
+  "secrets_allow_plaintext": false,
+  "secrets_backend": "auto",
+  "tmpfs": [],
+  "user_image": "docker.io/library/node:22-slim",
+  "volumes": [],
+  "watcher_api_key_source": "",
+  "watcher_enabled": false
+}

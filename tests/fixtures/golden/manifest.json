@@ -129,7 +129,7 @@
         "Darwin",
         "arm64"
       ],
-      "unit_count": 0,
+      "unit_count": 1,
       "warning_count": 1
     },
     {
@@ -141,7 +141,7 @@
         "Darwin",
         "arm64"
       ],
-      "unit_count": 0,
+      "unit_count": 1,
       "warning_count": 1
     },
     {
@@ -153,7 +153,7 @@
         "Darwin",
         "arm64"
       ],
-      "unit_count": 0,
+      "unit_count": 1,
       "warning_count": 4
     },
     {
@@ -165,7 +165,7 @@
         "Darwin",
         "arm64"
       ],
-      "unit_count": 0,
+      "unit_count": 1,
       "warning_count": 8
     },
     {
@@ -177,7 +177,43 @@
         "Darwin",
         "arm64"
       ],
-      "unit_count": 0,
+      "unit_count": 1,
+      "warning_count": 3
+    },
+    {
+      "cage_name": "backend-apple-container-no-resource-caps",
+      "case": "backend-apple-container-no-resource-caps",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 1,
+      "warning_count": 1
+    },
+    {
+      "cage_name": "backend-apple-container-resources",
+      "case": "backend-apple-container-resources",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 1,
+      "warning_count": 2
+    },
+    {
+      "cage_name": "backend-apple-container-secrets-agents",
+      "case": "backend-apple-container-secrets-agents",
+      "isolation": "apple-container",
+      "kind": "valid",
+      "platform": [
+        "Darwin",
+        "arm64"
+      ],
+      "unit_count": 1,
       "warning_count": 3
     },
     {
@@ -2655,7 +2691,7 @@
   "stats": {
     "distinct_error_messages": 122,
     "invalid": 127,
-    "total": 252,
-    "valid": 125
+    "total": 255,
+    "valid": 128
   }
 }

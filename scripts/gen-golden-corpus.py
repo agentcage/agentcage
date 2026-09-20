@@ -54,6 +54,13 @@ FROZEN_VERSION = "0.0.0-golden"
 FROZEN_CLI_PATH = "/usr/bin/agentcage"
 FROZEN_DNS_SERVERS = ["192.0.2.53", "192.0.2.54"]
 FROZEN_CREDS_SCOPE = "user"
+# The resolved Apple `container` path. `container_binary()` is a
+# `shutil.which` over PATH and two install locations, so on any machine
+# that is not a Mac with the .pkg installed it is None -- and the plist
+# would never be rendered at all. Pinning it makes the apple-container
+# cases produce the same plist everywhere, which is the same trick
+# FROZEN_CLI_PATH plays for `shutil.which("agentcage")`.
+FROZEN_CONTAINER_BINARY = "/usr/local/bin/container"
 
 # ``generate_placeholder`` mints 16 random bytes per rule.  Replaced with a
 # deterministic counter so the same corpus case always gets the same token.
@@ -201,6 +208,26 @@ def _install_determinism_patches() -> None:
     platform.system = lambda: _PLATFORM["system"]
     platform.machine = lambda: _PLATFORM["machine"]
     platform.mac_ver = lambda: (_PLATFORM["mac_ver"], ("", "", ""), "")
+
+    # 7. The Apple `container` CLI, for the apple-container cases' units
+    #    and launchd plist. Two patches, and the second one is a safety
+    #    interlock rather than a determinism one:
+    #
+    #    * ``container_binary()`` is a ``shutil.which``; pin it so the
+    #      plist's ProgramArguments is the same on every machine.
+    #    * ``_gui_domain_reachable()`` shells out to ``launchctl print
+    #      gui/<uid>``. On Linux that is a FileNotFoundError and the real
+    #      code already answers False -- but on a CONTRIBUTOR'S MAC it
+    #      would answer True, and ``_install_launchd_plist`` would then
+    #      run ``launchctl bootstrap`` against their live session. A
+    #      corpus generator must not install a launch agent on the
+    #      machine that runs it. Pinned to False, which is also the
+    #      branch whose only side effect is the file write this corpus
+    #      wants.
+    import agentcage.apple_container.cli as _ac_cli
+    import agentcage.backends.apple_container as _ac_backend
+    _ac_cli.container_binary = lambda: FROZEN_CONTAINER_BINARY
+    _ac_backend._gui_domain_reachable = lambda uid: False
 
 
 _PLATFORM = {"system": "Linux", "machine": "x86_64", "mac_ver": "0"}
@@ -567,6 +594,78 @@ def _matrix_cases() -> list[tuple[str, str, dict]]:
             {"name": "not-a-real-inspector"},
             {"name": "custom", "path": "/etc/agentcage/inspectors/x.py"},
         ],
+    ), **darwin)
+    # The fields `generate_units` persists that no other apple case
+    # reaches (PR E3). Split three ways because two of them are about a
+    # precedence rule, and a single case cannot show both sides of one.
+    #
+    # 1. Everything that has to reach the EGRESS and must never reach the
+    #    cage workload's `-e` env: relay credentials, both agents'
+    #    api_keys, and the expiring-domain flag that makes the addon
+    #    sweep. Plus the placeholder map, which is the `-e KEY={{PH}}`
+    #    half of the same story.
+    add("backend-apple-container-secrets-agents", _base(
+        "backend-apple-container-secrets-agents", isolation="apple-container",
+        secrets={"backend": "plaintext", "allow_plaintext": True},
+        secret_injection=[
+            {"env": "ANTHROPIC_API_KEY", "source": "env:GOLDEN_SET_VAR",
+             "placeholder": "sk-ant-FAKE-0001",
+             "inject_to": ["api.example.com"]},
+            # Both placeholders are written out rather than left to
+            # `fill_placeholders`: a generated `agentcage:secret:NAME:<hex>`
+            # would put this case on golden_fingerprint.rs's
+            # PLACEHOLDER_FILLED exemption list, which would stop the
+            # `resolved_config` component being checked for the one
+            # apple case that has agents and relays in it. The
+            # skip-an-unfilled-placeholder branch is unreachable from a
+            # corpus case anyway -- the harness fills them before
+            # generate_units runs -- and is covered by a unit test.
+            {"env": "OPENAI_API_KEY", "source": "env:GOLDEN_SET_VAR",
+             "placeholder": "sk-openai-FAKE-0002",
+             "inject_to": ["api.example.com"]},
+        ],
+        protocol_relays=[
+            {"name": "mail", "type": "imap", "listen": "0.0.0.0:1143",
+             "upstream": {"host": "imap.example.com", "port": 993},
+             "auth": {"user_source": "env:FAKE_IMAP_USER",
+                      "password_source": "env:FAKE_IMAP_PASS"}},
+        ],
+        agents={
+            "decider": {"enable": True, "provider": "anthropic",
+                        "model": "claude-x", "api_key": "env:FAKE_DECIDER_KEY"},
+            "watcher": {"enable": True, "provider": "openai",
+                        "model": "gpt-x",
+                        "api_key": "systemd-creds:FAKE_WATCHER_KEY"},
+        },
+        domains={"allow": ["api.example.com", "cdn.example.com"],
+                 "expires": {"cdn.example.com": "2030-01-01T00:00:00Z"}},
+    ), **darwin)
+    # 2. `container.cpus` / `container.memory` win over `vm.*` -- the
+    #    footgun the Python's comment describes, where a per-cage cap
+    #    written in cage.yaml used to be silently dropped on Mac. Both
+    #    halves are set so the precedence is visible, and the port
+    #    policy and `container.env` ride along.
+    add("backend-apple-container-resources", _base(
+        "backend-apple-container-resources", isolation="apple-container",
+        lifecycle="ephemeral",
+        container={"cpus": "2.5", "memory": "3g",
+                   "env": {"AGENT_HOME": "${GOLDEN_AGENT_DIR}",
+                           "PLAIN": "literal"}},
+        vm={"vcpus": 8, "mem_mb": 16384},
+        ports={"tcp": {"allow": [443, 8080], "passthrough": [8080, 22]},
+               "udp": {"allow": [53, 123]},
+               "icmp": {"allow": True}},
+    ), **darwin)
+    # 3. Neither side set, which is the ONLY way to reach the "no
+    #    --cpus / --memory flag at all, let Apple's defaults apply"
+    #    branch: `VmConfig.vcpus` defaults to 4 and `mem_mb` to 4096, so
+    #    every other case -- including the plain `backend-apple-container`
+    #    one -- takes the vm fallback and renders "4" / "4096m". The
+    #    `vcpus >= 1` guard is gated on `isolation: vm`, so zeros are
+    #    valid here and nowhere else.
+    add("backend-apple-container-no-resource-caps", _base(
+        "backend-apple-container-no-resource-caps", isolation="apple-container",
+        vm={"vcpus": 0, "mem_mb": 0},
     ), **darwin)
     add("backend-firecracker-migration", _base(
         "backend-firecracker-migration", isolation="firecracker",
@@ -1826,14 +1925,54 @@ def _run_case(case_id: str, yaml_text: str, opts: dict, out_root: Path,
             dns_conf = Path(state.save_dns_allowlist(deploy_name)).read_text()
             placeholders = state.placeholders_env_path(deploy_name).read_text()
 
+            patches = work / "patches"
+            patches.mkdir(parents=True, exist_ok=True)
             if cfg.isolation == "apple-container":
-                # quadlets.py is not the apple-container renderer; that backend
-                # builds `container run` argv + a launchd plist instead. Dump
-                # the cage.yaml-derived artifacts that DO apply and say so.
-                units = None
+                # quadlets.py is not the apple-container renderer: that
+                # backend has no quadlets at all. `generate_units` returns
+                # one `<cage>.json` metadata blob that `start()` rebuilds
+                # the `container run` argv from, and `_install_launchd_plist`
+                # writes a launchd job when the cage opts into autostart.
+                #
+                # Both are recorded here (PR E3). Before it they were not,
+                # and the gap was not only "no units": `cli.py`'s
+                # `_update_fingerprint` feeds `backend.generate_units` to
+                # `compute_fingerprint` on EVERY backend, so recording no
+                # units meant recording a fingerprint no real deploy would
+                # ever produce.
+                from agentcage.backends.apple_container import (
+                    AppleContainerBackend,
+                )
+                backend = AppleContainerBackend()
+                with contextlib.redirect_stderr(stderr):
+                    units = backend.generate_units(
+                        cfg,
+                        config_host_path=stored,
+                        patches_host_dir=str(patches),
+                        deploy_name=deploy_name,
+                        used_octets=None,
+                        network_octet=None,
+                    )
+                # A SECOND redirect, not the same one: the installer's
+                # note goes to a scratch buffer so it cannot land in
+                # render-warnings.txt, while `generate_units`'s own
+                # warnings -- the skipped-volume ones `_user_volume_argv`
+                # emits -- stay in `stderr` where the rest of the corpus
+                # expects them.
+                with contextlib.redirect_stderr(io.StringIO()):
+                    # The REAL installer, not a re-typed copy of its
+                    # f-string. On Linux -- and, thanks to the pinned
+                    # `_gui_domain_reachable`, on a contributor's Mac too --
+                    # it writes the file and returns before touching
+                    # launchctl. The note it prints about the deferred
+                    # load is a property of the sandbox, not of the cage,
+                    # so it is
+                    # swallowed rather than recorded.
+                    backend._install_launchd_plist(deploy_name)
+                plist_path = backend._launchd_plist_path(deploy_name)
+                launchd = {plist_path.name: plist_path.read_text()}
             else:
-                patches = work / "patches"
-                patches.mkdir(parents=True, exist_ok=True)
+                launchd = {}
                 with contextlib.redirect_stderr(stderr):
                     units = quadlets.generate_quadlets(
                         cfg,
@@ -1863,25 +2002,35 @@ def _run_case(case_id: str, yaml_text: str, opts: dict, out_root: Path,
         w.write("render-warnings.txt", stderr.getvalue())
 
         if units is None:
+            # E3 records the real `container run` argv below, so this is no
+            # longer a placeholder for missing coverage -- it explains why
+            # there are no `.container` files here, and points at the two
+            # places the rest of this backend's derivations live.
             w.write(
                 "quadlets/NOT-APPLICABLE.txt",
                 "isolation: apple-container renders `container run` argv and a\n"
                 "launchd plist through backends/apple_container.py, not the\n"
-                "quadlet templates. The cage.yaml-derived artifacts in this\n"
-                "directory (warnings, resolved config, proxy-config,\n"
-                "dns-allowlist, placeholders) still apply.\n"
+                "quadlet templates -- so there are no .container files here.\n"
+                "The argv itself is recorded beside this note as <case>.json\n"
+                "(PR E3), and the launchd job under ../launchd/.\n"
                 "\n"
-                "What that backend renders INSTEAD is recorded separately, in\n"
-                "tests/fixtures/apple-container/ (generated by\n"
-                "scripts/gen-apple-container-fixtures.py, which drives the same\n"
-                "Python with platform.system() patched to Darwin). Every case in\n"
-                "this directory appears there: the three egress-config files\n"
-                "under egress-config/<case>/, and the volume/tmpfs derivations\n"
-                "in volumes.json under the id `corpus:<case>`.\n",
+                "The volume/tmpfs derivations and the three egress-config\n"
+                "files are recorded separately in tests/fixtures/apple-container/\n"
+                "(PR E2, scripts/gen-apple-container-fixtures.py), under the id\n"
+                "`corpus:<case>`.\n",
             )
-        else:
-            for filename, content in sorted(units.items()):
-                w.write(f"quadlets/{filename}", content)
+        for filename, content in sorted((units or {}).items()):
+            w.write(f"quadlets/{filename}", content)
+        # The launchd job, for the apple-container cases only. It is NOT a
+        # unit: nothing hashes it, `start()` does not read it, and it is
+        # written only when `apple_container_autostart` is set. The corpus
+        # records what `_install_launchd_plist` produces for every
+        # apple-container case regardless, because the document is a pure
+        # function of the cage name, the resolved `container` path and the
+        # state dir -- autostart decides whether it is INSTALLED, not what
+        # it says. `autostart` in the unit JSON is the flag itself.
+        for filename, content in sorted(launchd.items()):
+            w.write(f"launchd/{filename}", content)
 
         # The fingerprint hashes the unit TEXT, which embeds absolute host
         # paths. Hash the scrubbed text instead, so the recorded digest is a
