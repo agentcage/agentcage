@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use agentcage_core::fingerprint::{CageYaml, Components, Fingerprint, Inputs, compute_fingerprint};
+use agentcage_core::fingerprint::{CageYaml, Fingerprint, Inputs, compute_fingerprint};
 use agentcage_core::har::json::{self, DumpOptions, Json};
 
 /// How many `valid/` cases the corpus carries. Asserted rather than
@@ -45,23 +45,22 @@ use agentcage_core::har::json::{self, DumpOptions, Json};
 /// instead of quietly shrinking the coverage.
 const GOLDEN_CASES: usize = 128;
 
-/// Cases whose `resolved-config.json` is *not* the object the recorded
-/// fingerprint was computed over.
+/// How many cases carry a post-fill `resolved-config-filled.json`.
 ///
 /// `scripts/gen-golden-corpus.py` writes `resolved-config.json` from the
-/// config as first loaded, then calls `state.fill_placeholders`, reloads
+/// config as FIRST loaded, then calls `state.fill_placeholders`, reloads
 /// the config, and feeds *that* to `compute_fingerprint`. For a cage
 /// with a generated `agentcage:secret:NAME:<hex>` placeholder the two
-/// differ, so the committed file cannot rebuild that one component.
-/// This is a gap in the corpus recipe, not a disagreement about the
-/// fingerprint: the other four components and the layout are still
-/// checked for these cases, and the input the recipe *does* name —
-/// `stored-cage.yaml`, which is post-fill — reproduces exactly.
-const PLACEHOLDER_FILLED: &[&str] = &[
-    "misc-kitchen-sink",
-    "secrets-placeholder-generated",
-    "seed-e2e-secrets",
-];
+/// objects differ, and the recipe used to name the pre-fill file — so
+/// one of five components could not be rebuilt and this test carried a
+/// skip list for three cases.
+///
+/// The generator now writes the post-fill object as a second file
+/// *where it differs*, and `fingerprint-inputs.json` names whichever
+/// one the fingerprint was actually computed over. All 128 cases are
+/// byte-exact; this constant only guards against the second file
+/// silently disappearing.
+const POST_FILL_CASES: usize = 3;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -137,7 +136,18 @@ fn files_in(directory: &Path) -> BTreeMap<String, String> {
 /// Build the fingerprint for one `valid/<case>` from its recipe.
 fn corpus_fingerprint(case: &Path) -> Fingerprint {
     let recipe = read_json(&case.join("fingerprint-inputs.json"));
-    let resolved_config = read_json(&case.join("resolved-config.json"));
+    // The recipe names the file, because for a cage with generated
+    // placeholders it is not the pre-fill one. Named rather than
+    // guessed: a corpus that silently fed the wrong object would still
+    // produce *a* fingerprint.
+    let resolved_config = read_json(
+        &case.join(
+            recipe
+                .get("resolved_config")
+                .and_then(Json::as_str)
+                .expect("the recipe names a resolved config"),
+        ),
+    );
     let units = files_in(&case.join("quadlets"));
     let image_digests = string_map(recipe.get("image_digests"));
     let scaffold_version = recipe
@@ -156,35 +166,6 @@ fn corpus_fingerprint(case: &Path) -> Fingerprint {
     .unwrap_or_else(|error| panic!("{}: {error}", case.display()))
 }
 
-/// Every component but `resolved_config`, for the cases whose recipe
-/// cannot rebuild that one.
-fn without_resolved_config(components: &Components) -> [&str; 4] {
-    [
-        &components.cage_yaml,
-        &components.units,
-        &components.image_digests,
-        &components.scaffold_version,
-    ]
-}
-
-fn expected_components(document: &Json) -> Components {
-    let components = document.get("components").expect("components");
-    let field = |name: &str| {
-        components
-            .get(name)
-            .and_then(Json::as_str)
-            .unwrap_or_else(|| panic!("component {name}"))
-            .to_string()
-    };
-    Components {
-        cage_yaml: field("cage_yaml"),
-        resolved_config: field("resolved_config"),
-        units: field("units"),
-        image_digests: field("image_digests"),
-        scaffold_version: field("scaffold_version"),
-    }
-}
-
 #[test]
 fn every_golden_corpus_fingerprint_is_reproduced() {
     let root = repo_root().join("tests/fixtures/golden/valid");
@@ -195,22 +176,15 @@ fn every_golden_corpus_fingerprint_is_reproduced() {
     cases.sort();
 
     let mut exact = 0_usize;
-    let mut partial = 0_usize;
+    let mut post_fill = 0_usize;
     for case in &cases {
         let name = case.file_name().and_then(std::ffi::OsStr::to_str).unwrap();
         let expected_path = case.join("fingerprint.json");
         let expected_text = read(&expected_path);
         let produced = corpus_fingerprint(case);
 
-        if PLACEHOLDER_FILLED.contains(&name) {
-            let expected = expected_components(&read_json(&expected_path));
-            assert_eq!(
-                without_resolved_config(&produced.components),
-                without_resolved_config(&expected),
-                "{name}: components other than resolved_config differ",
-            );
-            partial += 1;
-            continue;
+        if case.join("resolved-config-filled.json").is_file() {
+            post_fill += 1;
         }
 
         assert_eq!(
@@ -222,16 +196,13 @@ fn every_golden_corpus_fingerprint_is_reproduced() {
     }
 
     assert_eq!(
-        exact + partial,
-        GOLDEN_CASES,
+        exact, GOLDEN_CASES,
         "the corpus changed size; update GOLDEN_CASES deliberately",
     );
     assert_eq!(
-        partial,
-        PLACEHOLDER_FILLED.len(),
-        "unexpected partial cases"
+        post_fill, POST_FILL_CASES,
+        "the number of cases carrying a post-fill resolved config changed",
     );
-    assert_eq!(exact, 125, "expected 125 byte-exact corpus fingerprints");
 }
 
 /// The deployed-cage fingerprint, from a different generator.

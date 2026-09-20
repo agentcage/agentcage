@@ -1911,7 +1911,8 @@ def _run_case(case_id: str, yaml_text: str, opts: dict, out_root: Path,
         w = CorpusWriter(out_root / "valid" / case_id, scrubber)
         w.write("input/cage.yaml", yaml_text)
         w.write("warnings.txt", "".join(line + "\n" for line in warnings))
-        w.write("resolved-config.json", _json_text(_dataclass_to_jsonable(cfg)))
+        pre_fill_config_text = _json_text(_dataclass_to_jsonable(cfg))
+        w.write("resolved-config.json", pre_fill_config_text)
 
         deploy_name = cfg.name or case_id
         stderr = io.StringIO()
@@ -1920,6 +1921,24 @@ def _run_case(case_id: str, yaml_text: str, opts: dict, out_root: Path,
             state.fill_placeholders(deploy_name)
             cfg = state.load_deployment_config(deploy_name)
             stored = state.stored_config_path(deploy_name)
+
+            # `resolved-config.json` above is the config as FIRST loaded.
+            # `fill_placeholders` then generates an
+            # `agentcage:secret:NAME:<hex>` for every declared injection
+            # rule that has not got one, and the reload picks those up —
+            # so for a cage with generated placeholders the object the
+            # fingerprint is computed over is not the one in that file.
+            #
+            # Written only when the two differ, which is three cases out
+            # of 128. Writing it unconditionally would put 125
+            # byte-identical duplicates in the corpus; leaving it out
+            # entirely is what made one of five fingerprint components
+            # unverifiable for those three, which the Rust side had to
+            # carry as a skip list.
+            post_fill_config_text = _json_text(_dataclass_to_jsonable(cfg))
+            filled_differs = post_fill_config_text != pre_fill_config_text
+            if filled_differs:
+                w.write("resolved-config-filled.json", post_fill_config_text)
 
             proxy_yaml = Path(state.save_proxy_config(deploy_name)).read_text()
             dns_conf = Path(state.save_dns_allowlist(deploy_name)).read_text()
@@ -2037,7 +2056,10 @@ def _run_case(case_id: str, yaml_text: str, opts: dict, out_root: Path,
         w.write("stored-cage.yaml", stored_yaml)
         w.write("fingerprint-inputs.json", _json_text({
             "cage_yaml": "stored-cage.yaml",
-            "resolved_config": "resolved-config.json",
+            "resolved_config": (
+                "resolved-config-filled.json" if filled_differs
+                else "resolved-config.json"
+            ),
             "units": "quadlets/* (filename -> file contents; {} when absent)",
             "image_digests": image_digests,
             "scaffold_version": cfg.scaffold,
