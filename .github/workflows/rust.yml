@@ -145,6 +145,20 @@ jobs:
         run: |
           uv run python scripts/gen-cage-har-fixture.py --check
 
+      # The apple-container fixtures (PR E2) record what the largest
+      # backend derives from a cage.yaml, with platform.system() patched
+      # to Darwin -- the same trick tests/test_apple_container.py has
+      # always used, because there is no macOS runner here and never has
+      # been. `cargo test` replays them, so a Rust-side drift already
+      # fails; what this adds is noticing when apple_container.py itself
+      # changes a warning, a path or the egress build argv and the
+      # committed recording goes stale. That matters more here than
+      # elsewhere: this backend has no CI on real hardware at all, so
+      # the fixture is the only thing watching it.
+      - name: apple-container fixtures are current
+        run: |
+          uv run python scripts/gen-apple-container-fixtures.py --check
+
       # The CLI surface fixture (PR D5) is generated from the live click
       # tree in cli.py. `cargo test` asserts the clap tree against it, so
       # a Rust-side drift already fails -- what this adds is noticing

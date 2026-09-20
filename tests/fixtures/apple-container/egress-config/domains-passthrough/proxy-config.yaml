@@ -1,0 +1,6 @@
+domains:
+  allow:
+  - api.example.com
+  passthrough:
+  - tunnel.example.net
+agentcage_version: {{VERSION}}

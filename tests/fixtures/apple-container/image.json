@@ -1,0 +1,61 @@
+{
+  "_comment": "Image naming and the egress build argv, as `backends/apple_container.py` produces them. The content hash is NOT scrubbed: it is the frozen cross-language contract pinned by tests/fixtures/egress_hash.json.",
+  "repo": "localhost/agentcage-egress",
+  "containerfile_rel": "containers/Containerfile.egress",
+  "build_context": "{{CONTEXT}}",
+  "version": "{{VERSION}}",
+  "content_hash": "25cff145d1e6",
+  "image_name": "localhost/agentcage-egress:{{VERSION}}-25cff145d1e6",
+  "synthetic_context": {
+    "why": "one Containerfile, one COPY source, one byte changed — the tag moves. A version-only tag would not, which is how the #186 proxy-log fix failed to reach hosts that already held `agentcage-egress:0.32.0`.",
+    "containerfile": "FROM scratch\nCOPY containers/seed.sh /seed.sh\nRUN echo not-a-copy-source\n",
+    "copy_source_path": "containers/seed.sh",
+    "before": {
+      "body": "#!/bin/sh\nexit 0\n",
+      "image_name": "localhost/agentcage-egress:{{VERSION}}-7233d59f6615"
+    },
+    "after": {
+      "body": "#!/bin/sh\nexit 1\n",
+      "image_name": "localhost/agentcage-egress:{{VERSION}}-6f1a368f4196"
+    }
+  },
+  "build_argv": {
+    "plain": [
+      "build",
+      "-t",
+      "localhost/agentcage-egress:{{VERSION}}-25cff145d1e6",
+      "-f",
+      "{{CONTEXT}}/containers/Containerfile.egress",
+      "{{CONTEXT}}"
+    ],
+    "no_cache": [
+      "build",
+      "-t",
+      "localhost/agentcage-egress:{{VERSION}}-25cff145d1e6",
+      "-f",
+      "{{CONTEXT}}/containers/Containerfile.egress",
+      "--no-cache",
+      "{{CONTEXT}}"
+    ],
+    "pull": [
+      "build",
+      "-t",
+      "localhost/agentcage-egress:{{VERSION}}-25cff145d1e6",
+      "-f",
+      "{{CONTEXT}}/containers/Containerfile.egress",
+      "--pull",
+      "{{CONTEXT}}"
+    ],
+    "no_cache_and_pull": [
+      "build",
+      "-t",
+      "localhost/agentcage-egress:{{VERSION}}-25cff145d1e6",
+      "-f",
+      "{{CONTEXT}}/containers/Containerfile.egress",
+      "--no-cache",
+      "--pull",
+      "{{CONTEXT}}"
+    ]
+  },
+  "data_dir_is_the_package": "src/agentcage/data"
+}

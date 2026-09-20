@@ -1,0 +1,31 @@
+name: backend-apple-container-drops
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  named_volumes:
+    ac-data: /data:rw
+  podman_secrets:
+  - FAKE_STORE_KEY
+  nested_containers: false
+  ports:
+  - 127.0.0.1:3000:3000
+  userns: private
+  drop_capabilities:
+  - CAP_NET_RAW
+  read_only: true
+  security_label_disable: false
+  tmpfs:
+  - /tmp:rw,noexec,nosuid,size=64M
+  - /workspace/.git/hooks:rw,noexec,tmpcopyup
+  - /workspace/.claude:rw,nosuid
+  volumes:
+  - ${HOME}/workspace:/workspace:rw
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+isolation: apple-container
