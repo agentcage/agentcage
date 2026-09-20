@@ -56,3 +56,59 @@ class TestWriteResolvFiles:
         )
         assert Path(cage_path).parent == tmp_path
         assert Path(egress_path).parent == tmp_path
+
+
+class TestEnsurePatchesIsConcurrencySafe:
+    """``patches_work_dir`` is ONE directory shared by every cage.
+
+    Not one per cage — and ``tests/e2e/run.sh`` deploys three at once.
+    ``ensure_patches`` refreshes it by deleting the ``nested`` tree and
+    copying it back, which is destructive in the middle: two concurrent
+    creates interleave that into a copy landing in a directory the other
+    has just removed, and whichever one loses dies with ENOENT on a path
+    nobody wrote.
+
+    The Rust port hit exactly this on a CI runner (phases 3, 5 and 6 run
+    in parallel; 3 and 5 passed and 6 did not), and this side has always
+    had the same window — it simply had not lost the race yet. Both are
+    now guarded by an exclusive ``flock`` over the shared directory.
+    """
+
+    def test_parallel_refreshes_all_succeed(self, tmp_path, monkeypatch):
+        """Eight processes, twelve refreshes each, zero failures.
+
+        Processes rather than threads: ``flock`` is advisory and
+        per-descriptor, and the thing being defended against is separate
+        `agentcage` invocations. Without the guard this fails within the
+        first round or two — measured, not assumed.
+        """
+        import multiprocessing
+
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        context = multiprocessing.get_context("spawn")
+        with context.Pool(8, initializer=_seed_xdg, initargs=(str(tmp_path),)) as pool:
+            failures = [f for f in pool.map(_hammer_ensure_patches, range(8)) if f]
+        assert failures == [], failures
+
+
+def _seed_xdg(root: str) -> None:
+    """`spawn` starts a fresh interpreter, so re-export the override."""
+    import os
+
+    os.environ["XDG_DATA_HOME"] = root
+
+
+def _hammer_ensure_patches(_: int) -> str | None:
+    """Refresh repeatedly; return the first failure's text, or None.
+
+    Module level, and argument-free apart from the index, because
+    ``spawn`` pickles by qualified name.
+    """
+    from agentcage.services import ensure_patches
+
+    try:
+        for _ in range(12):
+            ensure_patches(None)
+    except Exception as exc:  # noqa: BLE001 — any failure is the finding
+        return f"{type(exc).__name__}: {exc}"
+    return None

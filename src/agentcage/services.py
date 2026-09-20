@@ -7,6 +7,7 @@ on Click or any CLI framework.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import shutil
 import socket
@@ -171,12 +172,33 @@ def ensure_patches(podman: Podman) -> str:
     nested_src = str(_DATA_DIR / "nested")
     nested_dst = os.path.join(patches_work, "nested")
     if os.path.isdir(nested_src):
-        if os.path.isdir(nested_dst):
-            shutil.rmtree(nested_dst)
-        shutil.copytree(nested_src, nested_dst)
-        docker_shim = os.path.join(nested_dst, "docker")
-        if os.path.isfile(docker_shim):
-            os.chmod(docker_shim, 0o755)
+        # One exclusive lock for the whole refresh, because
+        # ``patches_work_dir`` is ONE directory shared by every cage --
+        # not one per cage -- and ``tests/e2e/run.sh`` deploys three at
+        # once. The rmtree/copytree pair below is destructive in the
+        # middle: two concurrent creates interleave it into a copy
+        # landing in a directory the other has just removed, and
+        # whichever one loses dies with ENOENT on a path it never named.
+        #
+        # ``flock`` rather than a rename dance: ``os.rename`` cannot
+        # replace a non-empty directory, so publishing atomically would
+        # need a swap through a third name, which is not atomic across
+        # processes either. The lock releases on close, including if the
+        # process dies.
+        #
+        # The lock file lives inside the directory it guards and is
+        # never removed -- unlinking it would let the next process
+        # create a *new* inode and lock that while an older process
+        # still holds the old one, which is how a lock stops locking.
+        lock_path = os.path.join(patches_work, ".refresh.lock")
+        with open(lock_path, "a") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            if os.path.isdir(nested_dst):
+                shutil.rmtree(nested_dst)
+            shutil.copytree(nested_src, nested_dst)
+            docker_shim = os.path.join(nested_dst, "docker")
+            if os.path.isfile(docker_shim):
+                os.chmod(docker_shim, 0o755)
 
     return patches_work
 

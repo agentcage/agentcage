@@ -317,6 +317,25 @@ pub fn ensure_patches(paths: &Paths) -> io::Result<PathBuf> {
     let context = agentcage_assets::extract::build_context()?;
     let source = context.join("nested");
     if source.is_dir() {
+        // One exclusive lock for the whole refresh, because
+        // `patches_work_dir` is ONE directory shared by every cage —
+        // not one per cage — and `run.sh` deploys three at once.
+        //
+        // The sequence below deletes the tree and copies it back. Two
+        // concurrent creates interleave that into a `fs::copy` landing
+        // in a directory the other process has just removed, which
+        // surfaces as `could not materialize the build context: No such
+        // file or directory` on whichever create lost. Seen on a CI
+        // runner in the phase 3/5/6 parallel block, where phases 5 and
+        // 6 passed and 3 did not.
+        //
+        // `flock` rather than a rename dance: `rename(2)` cannot replace
+        // a non-empty directory, so publishing atomically would need a
+        // swap through a third name, which is itself not atomic across
+        // processes. An advisory lock is what the sequence actually
+        // wants, and it is released by the close on drop — including on
+        // a panic, and including if the process is killed.
+        let _guard = lock_patches(&patches)?;
         let dest = patches.join("nested");
         if dest.is_dir() {
             fs::remove_dir_all(&dest)?;
@@ -329,6 +348,26 @@ pub fn ensure_patches(paths: &Paths) -> io::Result<PathBuf> {
         }
     }
     Ok(patches)
+}
+
+/// An exclusive advisory lock over the shared patches directory.
+///
+/// Held for the duration of one refresh and released when the file
+/// descriptor closes, which `nix::fcntl::Flock` does on drop — so a
+/// panicking or killed process cannot leave it held.
+///
+/// The lock file lives inside the directory it guards and is never
+/// removed: unlinking it would let the next process create a *new*
+/// inode and lock that instead while an older process still holds the
+/// old one, which is the classic way to make a lock stop locking.
+fn lock_patches(patches: &Path) -> io::Result<nix::fcntl::Flock<fs::File>> {
+    let handle = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(patches.join(".refresh.lock"))?;
+    nix::fcntl::Flock::lock(handle, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, errno)| io::Error::from(errno))
 }
 
 /// `shutil.copytree` — files, subdirectories and modes.
