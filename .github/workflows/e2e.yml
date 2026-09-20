@@ -33,7 +33,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only the python leg. The rust leg runs no uv at all now that the
+      # package installs no console script, and `setup-uv` fails its own
+      # post-job cache save when nothing ever populated the cache. The
+      # phase scripts' `python3 -c` one-liners are stdlib and use the
+      # runner's interpreter.
       - uses: astral-sh/setup-uv@v5
+        if: matrix.cli == 'python'
         with:
           python-version: "3.13"
 
@@ -114,7 +120,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only the python leg. The rust leg runs no uv at all now that the
+      # package installs no console script, and `setup-uv` fails its own
+      # post-job cache save when nothing ever populated the cache. The
+      # phase scripts' `python3 -c` one-liners are stdlib and use the
+      # runner's interpreter.
       - uses: astral-sh/setup-uv@v5
+        if: matrix.cli == 'python'
         with:
           python-version: "3.13"
 
@@ -212,7 +224,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Only the python leg. The rust leg runs no uv at all now that the
+      # package installs no console script, and `setup-uv` fails its own
+      # post-job cache save when nothing ever populated the cache. The
+      # phase scripts' `python3 -c` one-liners are stdlib and use the
+      # runner's interpreter.
       - uses: astral-sh/setup-uv@v5
+        if: matrix.cli == 'python'
         with:
           python-version: "3.13"
 
