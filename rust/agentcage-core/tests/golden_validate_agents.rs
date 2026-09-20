@@ -218,7 +218,7 @@ fn every_valid_case_validates_with_the_warnings_it_recorded() {
         wrong.len(),
         wrong.join("\n")
     );
-    assert!(checked >= 125, "the corpus shrank");
+    assert!(checked >= 128, "the corpus shrank");
     assert_eq!(
         with_warnings, 3,
         "three corpus cases carry a C3-owned warning; if that changed, read the diff"

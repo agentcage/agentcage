@@ -159,6 +159,20 @@ jobs:
         run: |
           uv run python scripts/gen-apple-container-fixtures.py --check
 
+      # The apple-container argv fixture (PR E3) is 38 calls into the
+      # real `AppleContainerBackend.exec_argv` / `logs_argv` /
+      # `audit_argv`, recorded with `platform.system()` patched to
+      # "Darwin" -- the same technique `tests/test_apple_container.py`
+      # has used since that backend was written, because there is no
+      # macOS runner in CI and never has been. `cargo test` replays
+      # every case, so a Rust-side drift already fails; what this adds
+      # is noticing when `backends/apple_container.py` changes a flag,
+      # a target name or a refusal message and the committed recording
+      # goes stale.
+      - name: apple-container argv fixture is current
+        run: |
+          uv run python scripts/gen-apple-argv-fixture.py --check
+
       # The CLI surface fixture (PR D5) is generated from the live click
       # tree in cli.py. `cargo test` asserts the clap tree against it, so
       # a Rust-side drift already fails -- what this adds is noticing

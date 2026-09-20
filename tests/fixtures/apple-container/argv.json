@@ -1,0 +1,821 @@
+{
+  "fixture": "apple-container-argv",
+  "module": "agentcage.backends.apple_container",
+  "generator": "scripts/gen-apple-argv-fixture.py",
+  "summary": "21 exec_argv, 12 logs_argv and 5 audit_argv calls, recorded by running the real AppleContainerBackend methods with platform.system() patched to Darwin, container_binary() pinned and current_placeholders declared per case. Host paths are scrubbed to {{HOME}}.",
+  "frozen_container_binary": "/usr/local/bin/container",
+  "exec_argv": [
+    {
+      "id": "cage-default",
+      "why": "the shape a bare `cage exec` produces",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "cage-explicit",
+      "why": "`--service cage` is the same as no flag",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "cage-empty-service",
+      "why": "the CLI's 'no --service given'",
+      "name": "demo",
+      "service": "",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "egress",
+      "why": "the sibling microVM, addressed as <cage>-egress",
+      "name": "demo",
+      "service": "egress",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-u",
+        "1000:1000",
+        "demo-egress",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "egress-as-root",
+      "why": "uid 0 on the egress: NET_ADMIN is left alone because iptables debugging there may need it",
+      "name": "demo",
+      "service": "egress",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": true,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-u",
+        "0:0",
+        "demo-egress",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "unknown-service",
+      "why": "`--service proxy` is a name from the legacy single-VM model and no longer exists",
+      "name": "demo",
+      "service": "proxy",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "error": "BackendUnsupported: 'cage exec --service proxy' is not supported on the apple-container backend; valid services are cage / egress"
+    },
+    {
+      "id": "cage-as-root",
+      "why": "the operator debug path: uid 0:0 with NET_ADMIN dropped, so F2's route-bypass chain stays closed",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": true,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-u",
+        "0:0",
+        "demo",
+        "setpriv",
+        "--bounding-set=-net_admin",
+        "--inh-caps=-net_admin",
+        "--",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "cage-interactive",
+      "why": "-it, between the -u spec and the target",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": true,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-it",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "cage-as-root-interactive",
+      "why": "both at once",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": true,
+      "as_root": true,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-u",
+        "0:0",
+        "-it",
+        "demo",
+        "setpriv",
+        "--bounding-set=-net_admin",
+        "--inh-caps=-net_admin",
+        "--",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "egress-interactive",
+      "why": "-it with an explicit -u spec",
+      "name": "demo",
+      "service": "egress",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": true,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-u",
+        "1000:1000",
+        "-it",
+        "demo-egress",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "cage-placeholders",
+      "why": "a cage session carries the current decoy tokens, chained through env(1) because Apple's `container exec` has no --env",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [
+        [
+          "ANTHROPIC_API_KEY",
+          "agentcage:secret:ANTHROPIC_API_KEY:0001"
+        ],
+        [
+          "OPENAI_API_KEY",
+          "agentcage:secret:OPENAI_API_KEY:0002"
+        ]
+      ],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "env",
+        "ANTHROPIC_API_KEY=agentcage:secret:ANTHROPIC_API_KEY:0001",
+        "OPENAI_API_KEY=agentcage:secret:OPENAI_API_KEY:0002",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "cage-placeholders-as-root",
+      "why": "the env prefix lands after the setpriv wrap in both wrap shapes",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": true,
+      "placeholders": [
+        [
+          "ANTHROPIC_API_KEY",
+          "agentcage:secret:ANTHROPIC_API_KEY:0001"
+        ],
+        [
+          "OPENAI_API_KEY",
+          "agentcage:secret:OPENAI_API_KEY:0002"
+        ]
+      ],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-u",
+        "0:0",
+        "demo",
+        "setpriv",
+        "--bounding-set=-net_admin",
+        "--inh-caps=-net_admin",
+        "--",
+        "env",
+        "ANTHROPIC_API_KEY=agentcage:secret:ANTHROPIC_API_KEY:0001",
+        "OPENAI_API_KEY=agentcage:secret:OPENAI_API_KEY:0002",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "egress-placeholders",
+      "why": "the egress gets NONE of them: it reads the real values off its own bind mount",
+      "name": "demo",
+      "service": "egress",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [
+        [
+          "ANTHROPIC_API_KEY",
+          "agentcage:secret:ANTHROPIC_API_KEY:0001"
+        ],
+        [
+          "OPENAI_API_KEY",
+          "agentcage:secret:OPENAI_API_KEY:0002"
+        ]
+      ],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-u",
+        "1000:1000",
+        "demo-egress",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "cage-one-placeholder",
+      "why": "a single pair, so the `env` prefix is not only exercised at length 2",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [
+        [
+          "ANTHROPIC_API_KEY",
+          "agentcage:secret:ANTHROPIC_API_KEY:0001"
+        ]
+      ],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "env",
+        "ANTHROPIC_API_KEY=agentcage:secret:ANTHROPIC_API_KEY:0001",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "command-separator-form",
+      "why": "what `cage exec demo -- ls -la` parses to (PR D12): the separator is consumed by the parser and never reaches the backend",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "command-no-separator-form",
+      "why": "what `cage exec demo ls -la` parses to -- the same list, so the same argv",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "ls",
+        "-la"
+      ]
+    },
+    {
+      "id": "command-inner-separator",
+      "why": "a `--` the operator meant as an argument is forwarded verbatim",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "git",
+        "log",
+        "--",
+        "src"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "git",
+        "log",
+        "--",
+        "src"
+      ]
+    },
+    {
+      "id": "command-shell-c",
+      "why": "an argument with spaces and a $ stays one argv element",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "sh",
+        "-c",
+        "echo $HOME && ls"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "sh",
+        "-c",
+        "echo $HOME && ls"
+      ]
+    },
+    {
+      "id": "command-single-word",
+      "why": "the `cage shell` shape",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "bash"
+      ],
+      "interactive": true,
+      "as_root": false,
+      "placeholders": [],
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "exec",
+        "-it",
+        "demo",
+        "sh",
+        "-c",
+        "CU=$(getent passwd 1000 | cut -d: -f1) && CH=$(getent passwd 1000 | cut -d: -f6) && exec env HOME=\"$CH\" USER=\"$CU\" LOGNAME=\"$CU\" setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs --bounding-set=-all --inh-caps=-all -- \"$@\"",
+        "agentcage-exec-wrap",
+        "bash"
+      ]
+    },
+    {
+      "id": "no-container-cli",
+      "why": "the Apple `container` .pkg is not installed",
+      "name": "demo",
+      "service": "cage",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": null,
+      "error": "BackendUnsupported: Apple `container` CLI not found; install from https://github.com/apple/container/releases"
+    },
+    {
+      "id": "unknown-service-and-no-cli",
+      "why": "the service is checked FIRST, so this reports the service and not the missing binary",
+      "name": "demo",
+      "service": "proxy",
+      "command": [
+        "ls",
+        "-la"
+      ],
+      "interactive": false,
+      "as_root": false,
+      "placeholders": [],
+      "binary": null,
+      "error": "BackendUnsupported: 'cage exec --service proxy' is not supported on the apple-container backend; valid services are cage / egress"
+    }
+  ],
+  "logs_argv": [
+    {
+      "id": "no-services",
+      "why": "an empty list tails the cage VM",
+      "name": "demo",
+      "services": [],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo"
+      ]
+    },
+    {
+      "id": "cage",
+      "why": "explicitly",
+      "name": "demo",
+      "services": [
+        "cage"
+      ],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo"
+      ]
+    },
+    {
+      "id": "egress",
+      "why": "the sibling",
+      "name": "demo",
+      "services": [
+        "egress"
+      ],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo-egress"
+      ]
+    },
+    {
+      "id": "cage-then-egress",
+      "why": "first recognized entry wins",
+      "name": "demo",
+      "services": [
+        "cage",
+        "egress"
+      ],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo"
+      ]
+    },
+    {
+      "id": "egress-then-cage",
+      "why": "and order is the list's, not a preference",
+      "name": "demo",
+      "services": [
+        "egress",
+        "cage"
+      ],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo-egress"
+      ]
+    },
+    {
+      "id": "unknown-service",
+      "why": "an unrecognized name is skipped, not refused -- `proxy` quietly tails the cage",
+      "name": "demo",
+      "services": [
+        "proxy"
+      ],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo"
+      ]
+    },
+    {
+      "id": "unknown-then-egress",
+      "why": "the loop keeps going past one it does not know",
+      "name": "demo",
+      "services": [
+        "proxy",
+        "egress"
+      ],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo-egress"
+      ]
+    },
+    {
+      "id": "follow",
+      "why": "-f, between `logs` and the target",
+      "name": "demo",
+      "services": [],
+      "follow": true,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "-f",
+        "demo"
+      ]
+    },
+    {
+      "id": "follow-egress",
+      "why": "both",
+      "name": "demo",
+      "services": [
+        "egress"
+      ],
+      "follow": true,
+      "lines": 0,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "-f",
+        "demo-egress"
+      ]
+    },
+    {
+      "id": "lines-ignored",
+      "why": "Apple's `container logs` has no -n; the parameter exists for protocol parity and is dropped",
+      "name": "demo",
+      "services": [],
+      "follow": false,
+      "lines": 500,
+      "min_level": null,
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo"
+      ]
+    },
+    {
+      "id": "min-level-ignored",
+      "why": "and it cannot filter by level either",
+      "name": "demo",
+      "services": [],
+      "follow": false,
+      "lines": 0,
+      "min_level": "warning",
+      "binary": "/usr/local/bin/container",
+      "argv": [
+        "/usr/local/bin/container",
+        "logs",
+        "demo"
+      ]
+    },
+    {
+      "id": "no-container-cli",
+      "why": "the .pkg is not installed",
+      "name": "demo",
+      "services": [],
+      "follow": false,
+      "lines": 0,
+      "min_level": null,
+      "binary": null,
+      "error": "BackendUnsupported: Apple `container` CLI not found; install from https://github.com/apple/container/releases"
+    }
+  ],
+  "audit_argv": [
+    {
+      "id": "tail",
+      "why": "the default over-read: 10000 lines, because not every line in the file is an audit record",
+      "name": "demo",
+      "since": null,
+      "follow": false,
+      "audit_path": "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl",
+      "argv": [
+        "tail",
+        "-n",
+        "10000",
+        "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl"
+      ]
+    },
+    {
+      "id": "follow",
+      "why": "-F, not -f: the supervisor can rotate or replace the file under us and tail has to reopen it",
+      "name": "demo",
+      "since": null,
+      "follow": true,
+      "audit_path": "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl",
+      "argv": [
+        "tail",
+        "-n",
+        "0",
+        "-F",
+        "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl"
+      ]
+    },
+    {
+      "id": "since-ignored",
+      "why": "a JSONL file has no journalctl-style time index, so `cage audit --since` is applied after parsing, as AuditFilter.since",
+      "name": "demo",
+      "since": "10 minutes ago",
+      "follow": false,
+      "audit_path": "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl",
+      "argv": [
+        "tail",
+        "-n",
+        "10000",
+        "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl"
+      ]
+    },
+    {
+      "id": "since-ignored-following",
+      "why": "same, while following",
+      "name": "demo",
+      "since": "2026-01-01",
+      "follow": true,
+      "audit_path": "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl",
+      "argv": [
+        "tail",
+        "-n",
+        "0",
+        "-F",
+        "{{HOME}}/.config/agentcage/apple-container/demo/logs/audit.jsonl"
+      ]
+    },
+    {
+      "id": "other-cage",
+      "why": "the path is per-cage, under the apple state root",
+      "name": "other-cage",
+      "since": null,
+      "follow": false,
+      "audit_path": "{{HOME}}/.config/agentcage/apple-container/other-cage/logs/audit.jsonl",
+      "argv": [
+        "tail",
+        "-n",
+        "10000",
+        "{{HOME}}/.config/agentcage/apple-container/other-cage/logs/audit.jsonl"
+      ]
+    }
+  ]
+}

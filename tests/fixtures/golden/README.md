@@ -19,6 +19,8 @@ produces* from each one:
 | Artifact | Produced by |
 | :-- | :-- |
 | `quadlets/*.container`, `*.network`, `*.volume` | `quadlets.generate_quadlets` + `templates/*.j2` |
+| `quadlets/<cage>.json` (apple-container only) | `AppleContainerBackend.generate_units` |
+| `launchd/io.agentcage.<cage>.plist` (apple-container only) | `AppleContainerBackend._install_launchd_plist` |
 | `proxy-config.yaml` | `state.save_proxy_config` (the 12 keys in `state._PROXY_KEYS`) |
 | `dns-allowlist.conf` | `state.save_dns_allowlist` |
 | `placeholders.env` | `state.save_placeholders_env` |
@@ -90,12 +92,49 @@ process. No pickle, no Python module.
   either feed a byte-sensitive consumer (systemd, dnsmasq, sha256) or are UX
   that users read.
 
+**The launchd plist is XML, and it is on the byte-exact side.** That looks
+like it should need the same argument YAML got, and it does not, for one
+reason: `_install_launchd_plist` **never calls `plistlib`**. It builds the
+document with an f-string, so the indentation, the key order, the `<true/>`
+spelling and the trailing newline are agentcage's own source text rather than
+a serializer's opinion. There is no emitter to reimplement and no
+cross-version drift to absorb — reproducing these bytes is reproducing a
+format string. The port keeps the f-string for the same reason: a plist crate
+would produce *valid* output that differs byte for byte, which would turn a
+settled comparison into a semantic one for no gain.
+
 One exception inside the YAML rule: a case whose input is *deliberately
 malformed* YAML falls back to a byte comparison, because unparseable text has
 no value to compare.
 
 The fingerprint sits safely on either side of this line: `fingerprint.py`
 hashes the *parsed* cage.yaml, not its text.
+
+### apple-container: units and a plist, not quadlets
+
+Cases with `isolation: apple-container` used to carry a
+`quadlets/NOT-APPLICABLE.txt` where the units would be. They no longer do (PR
+E3). That backend has no quadlets, but it does have units: `generate_units`
+returns one `<cage>.json` metadata blob that `start()` rebuilds the
+`container run` argv from, and it is recorded in the same `quadlets/`
+directory because that is the directory `fingerprint-inputs.json` names as
+"the units".
+
+Which matters more than it sounds. `cli.py::_update_fingerprint` feeds
+`backend.generate_units` to `compute_fingerprint` on **every** backend, so
+recording no units for those cases meant recording a fingerprint no real
+deploy could produce. Filling them in moved five `fingerprint.json` files and
+nothing else.
+
+The `launchd/` directory holds what `_install_launchd_plist` writes. The
+harness calls the **real** installer — with `_gui_domain_reachable` pinned to
+`False`, so it writes the file and returns before touching `launchctl`; a
+corpus generator must not install a launch agent on the machine that runs it.
+It is recorded for every apple-container case, not only the autostart one:
+the document is a pure function of the cage name, the resolved `container`
+path and the state dir, so `apple_container_autostart` decides whether it is
+*installed*, not what it says. The flag itself is `autostart` in the unit
+JSON.
 
 ## Determinism
 
@@ -115,7 +154,17 @@ that by pinning, before `agentcage` is imported:
   stable (and restarted for each case, so inserting a case does not renumber
   every later one);
 * `secret_resolver.detect_default_scope()`, which otherwise shells out to
-  `systemd-creds`.
+  `systemd-creds`;
+* `apple_container.cli.container_binary()` to `/usr/local/bin/container` — it
+  is a `shutil.which`, so without the pin it is `None` on every machine that
+  is not a Mac with the `.pkg` installed and no plist would be rendered at
+  all;
+* `backends.apple_container._gui_domain_reachable()` to `False`. That one is
+  a safety interlock rather than a determinism pin: it shells out to
+  `launchctl print gui/<uid>`, which is a `FileNotFoundError` on Linux but
+  would answer `True` on a contributor's Mac — and `_install_launchd_plist`
+  would then run `launchctl bootstrap` against their live session. A corpus
+  generator must not install a launch agent on the machine that runs it.
 
 Whatever absolute paths survive that are scrubbed on the way out to `{{HOME}}`,
 `{{XDG_CONFIG_HOME}}`, `{{XDG_DATA_HOME}}`, `{{XDG_RUNTIME_DIR}}`, `{{WORK}}`
@@ -213,13 +262,18 @@ both import paths, which is the same value PR A5 measured independently.
 
 ## Known gaps
 
-* **apple-container units are not captured.** Cases with
-  `isolation: apple-container` record their cage.yaml-derived artifacts
-  (warnings — which is where most of that backend's config logic lives —
-  resolved config, proxy-config, DNS allowlist, placeholders), but not units:
-  that backend builds `container run` argv and a launchd plist in
-  `backends/apple_container.py`, not quadlets. Those directories carry a
-  `quadlets/NOT-APPLICABLE.txt` saying so.
+* **The apple-container plist cannot distinguish the state root from an XDG
+  one.** The harness's sandbox sets `XDG_CONFIG_HOME` to `$HOME/.config`, and
+  the scrubber prefers the longer rule, so the recorded plist says
+  `{{XDG_CONFIG_HOME}}/agentcage/apple-container/<cage>` where the code in
+  fact wrote `expanduser("~/.config/agentcage/apple-container/<cage>")` with
+  no XDG lookup anywhere near it. The distinction is real — an
+  `XDG_CONFIG_HOME` sandbox does **not** redirect this root — and it is
+  pinned where it can be: in `agentcage-state`'s `Paths` tests, and in
+  `tests/fixtures/apple-container/argv.json`, whose generator deliberately
+  points `XDG_CONFIG_HOME` somewhere else. Same shape as
+  `_stage_vm_file_volume`'s literal `~/.local/share`, and the same reason the
+  corpus cannot see it.
 * **11 of `config.py`'s 91 raise sites are unreachable** from any cage.yaml —
   see `RAISE-COVERAGE.md` for the list. They fall into three groups, and the
   middle one matters for the port:

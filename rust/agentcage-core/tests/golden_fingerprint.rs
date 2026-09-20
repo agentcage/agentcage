@@ -43,7 +43,7 @@ use agentcage_core::har::json::{self, DumpOptions, Json};
 /// How many `valid/` cases the corpus carries. Asserted rather than
 /// inferred, so a case that silently stops being visited fails here
 /// instead of quietly shrinking the coverage.
-const GOLDEN_CASES: usize = 125;
+const GOLDEN_CASES: usize = 128;
 
 /// Cases whose `resolved-config.json` is *not* the object the recorded
 /// fingerprint was computed over.
@@ -122,13 +122,13 @@ fn files_in(directory: &Path) -> BTreeMap<String, String> {
             .to_str()
             .expect("a UTF-8 filename")
             .to_string();
-        // The corpus drops this marker into `quadlets/` for
-        // `apple-container` cages, which render `container run` argv and
-        // a launchd plist instead. `compute_fingerprint` was handed no
-        // units at all for those.
-        if name == "NOT-APPLICABLE.txt" {
-            return BTreeMap::new();
-        }
+        // Every file here is a unit, including an apple-container
+        // cage's `<cage>.json`: `cli.py::_update_fingerprint` feeds
+        // `backend.generate_units` to `compute_fingerprint` whatever
+        // the backend is. Before PR E3 the corpus wrote a
+        // `NOT-APPLICABLE.txt` marker here instead and this function
+        // special-cased it into an empty map — which recorded, for
+        // those five cases, a fingerprint no real deploy could produce.
         units.insert(name, read(&path));
     }
     units
@@ -231,7 +231,7 @@ fn every_golden_corpus_fingerprint_is_reproduced() {
         PLACEHOLDER_FILLED.len(),
         "unexpected partial cases"
     );
-    assert_eq!(exact, 122, "expected 122 byte-exact corpus fingerprints");
+    assert_eq!(exact, 125, "expected 125 byte-exact corpus fingerprints");
 }
 
 /// The deployed-cage fingerprint, from a different generator.

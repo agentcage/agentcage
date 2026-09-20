@@ -75,6 +75,9 @@ struct Case {
     kind: String,
     platform: Vec<String>,
     stage: Option<String>,
+    /// The backend this case deploys on. `apple-container` has no
+    /// quadlets at all — see [`every_valid_case_reproduces_its_quadlets`].
+    isolation: String,
 }
 
 fn manifest() -> Vec<Case> {
@@ -97,6 +100,7 @@ fn manifest() -> Vec<Case> {
                 })
                 .unwrap_or_default(),
             stage: case["stage"].as_str().map(str::to_owned),
+            isolation: case["isolation"].as_str().unwrap_or_default().to_owned(),
         })
         .collect()
 }
@@ -495,10 +499,15 @@ fn every_valid_case_reproduces_its_quadlets() {
         }
         let directory = root.join("valid").join(&case.name);
         let quadlets_dir = directory.join("quadlets");
-        if quadlets_dir.join("NOT-APPLICABLE.txt").is_file() {
-            // apple-container: `backends/apple_container.py` builds
-            // `container run` argv and a launchd plist instead, and
-            // never calls this module. Track E's, not C8's.
+        if case.isolation == "apple-container" {
+            // `backends/apple_container.py` has no quadlets: it writes
+            // one `<cage>.json` metadata blob and a launchd plist, and
+            // never calls this module. Those bytes are recorded in the
+            // same `quadlets/` directory and checked by
+            // `golden_apple.rs` (PR E3) — which is why the skip is keyed
+            // on the manifest's isolation rather than on the
+            // `NOT-APPLICABLE.txt` marker that used to stand in for
+            // them.
             not_applicable += 1;
             continue;
         }
@@ -573,7 +582,7 @@ fn every_valid_case_reproduces_its_quadlets() {
         wrong.join("\n\n")
     );
     assert_eq!(
-        not_applicable, 5,
+        not_applicable, 8,
         "the corpus's apple-container case count moved; check whether the new ones are really \
          outside quadlets.py"
     );
@@ -668,7 +677,7 @@ fn every_valid_case_reproduces_its_dns_allowlist() {
     }
 
     assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
-    assert_eq!(checked, 125);
+    assert_eq!(checked, 128);
 }
 
 /// Every `.j2` under `src/agentcage/templates/` is byte-identical to
