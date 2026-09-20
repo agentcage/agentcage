@@ -222,7 +222,9 @@ run_and_tally() {
 # that simply leaves the row out reads as "everything ran and 1 assertion
 # failed", when in fact a whole phase never started.
 note_skipped_phase() {
-  PHASE_RESULTS+=("Phase $1: SKIPPED (an earlier phase failed)")
+  # Kept short: the summary box pads to 36 columns and does not truncate,
+  # so a longer string pushes the right border out of alignment.
+  PHASE_RESULTS+=("Phase $1: SKIPPED (earlier failure)")
 }
 
 # Tally results from a background phase's temp file
