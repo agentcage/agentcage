@@ -543,52 +543,6 @@ pub fn collect_used_octets(paths: &Paths, exclude: &str) -> BTreeSet<u32> {
 // below are that path; `cli::secret::live` is the policy that sequences
 // them.
 
-/// `services.current_placeholders` — (env, placeholder) pairs from a
-/// cage's stored config, read *now*.
-///
-/// Read at call time, not from the cage container's frozen environment:
-/// a rule declared after the container started is usable in a new
-/// `cage exec` session without a restart, which is what makes
-/// `secret set --declare` a one-command operation.
-///
-/// Rules with no `env:` or no `placeholder:` are skipped — a
-/// half-written rule must not put an empty `--env NAME=` on the exec
-/// argv.
-///
-/// A config that cannot be read at all yields no pairs. Python narrows
-/// that to `FileNotFoundError`; the difference is only visible for a
-/// `cage.yaml` that is present and malformed, where Python would abort
-/// the exec with a YAML traceback and this drops the placeholder
-/// environment instead. Neither is better and the config was validated
-/// on the way in.
-#[must_use]
-pub fn current_placeholders(paths: &Paths, name: &str) -> Vec<(String, String)> {
-    // `Skip`, not `Check`: this feeds `cage exec`'s placeholder
-    // environment, and an agents-schema quibble is no reason to drop it.
-    let Ok(raw) = paths.load_raw_config(name, agentcage_state::AgentSchema::Skip) else {
-        return Vec::new();
-    };
-    let mut pairs = Vec::new();
-    for rule in agentcage_core::config::injection_rules(&raw) {
-        let Some(rule) = rule.as_mapping() else {
-            continue;
-        };
-        let (Some(env), Some(placeholder)) = (rule.get("env"), rule.get("placeholder")) else {
-            continue;
-        };
-        if !agentcage_core::yaml::python_bool(env)
-            || !agentcage_core::yaml::python_bool(placeholder)
-        {
-            continue;
-        }
-        pairs.push((
-            agentcage_core::python::str_of(env),
-            agentcage_core::python::str_of(placeholder),
-        ));
-    }
-    pairs
-}
-
 /// The staged-secrets mount point inside the egress container.
 const STAGED_SECRETS_MOUNT: &str = "/home/acproxy/secrets";
 
