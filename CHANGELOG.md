@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING: twelve validators stopped accepting a trailing newline.** Every one of them anchored its regex on `$`, and Python's `$` matches at the end of the string **or immediately before one trailing newline** — so `name`, `container.image`, `agents.decider.host`, the scaffold-name path guard, the `cage restore`/`cage clone` target name, the `--since` duration shorthand in both `cage audit` and `cage har`, the registry tag filters and the `container.memory` suffix all accepted a value ending in `\n`. `valid_domain` had anchored on `\Z` since it was written and its docstring says exactly why; nothing else got the same treatment. This is reachable from a config file and not only from argv: a YAML literal block (`name: |`) produces precisely such a scalar, and `name` then becomes a systemd unit name, a podman object name and a directory under the state dir, while `agents.decider.host` rides into the generated `proxy-config.yaml`. The two copies in `cli.py` read `cage_name` out of a **restored backup manifest**, which is attacker-controlled if you restore an archive you did not make. All twelve now anchor on `\Z`. **Migration:** a config whose `name:` or `container.image:` is written as a *clipped* block scalar — `|` or `>`, both of which keep one trailing newline — now fails validation with the message it already had for a malformed value. Add the strip indicator (`|-`, `>-`), quote the value, or write it plain; those styles and every flow scalar carry no trailing newline and are unaffected. Nothing else in a normally written `cage.yaml` changes.
+
+- **BREAKING: `cage har --since` rejects a value it cannot parse instead of exporting everything.** An unparseable `--since` fell through to `since_dt = None`, which is not "no offset" but "no time filter at all" — so a narrowing flag that was wrong silently widened the export to the entire capture. `cage audit` had always refused the same input explicitly, with the message `error: could not parse --since '<value>' (use 1h, 30m, 7d, or an ISO date)`; `cage har` now prints it too and exits non-zero. **Migration:** a script that passed a malformed `--since` and relied on getting a full export must drop the flag to keep that behaviour.
+
+### Fixed
+
+- **e2e assertion 7.21 asserted a path inside the guest that agentcage never creates there.** `limactl shell "$VM" -- ls ~/.config/containers/systemd/` looks like it asks the guest about its own home, but `~` is expanded by the *host* shell before `limactl` is called, so it was asking for `/home/<you>/.config/containers/systemd` — a host path that `lima.yaml.j2` does not mount and should not, since the template deliberately mounts two named directories rather than the whole home. It had been red since that narrowing. The quadlets live in the *guest's* home (`/home/<you>.guest`), which `backends/vm.py` creates through a guest-side shell. Rewriting the surrounding block to use the guest home would have been worse: 7.17 ("SSH keys NOT accessible") would then find Lima's own `authorized_keys` and fail. The isolation assertions keep asking about host paths — which is the property they actually mean — and 7.21 now asks the guest about `$HOME`, single-quoted so the host shell leaves it alone. Phase 7 is 33/33.
+
+- **`gen-apple-container-fixtures.py --check` reported drift that could not be resolved, and its own fix-it command destroyed a fixture.** Its orphan sweep treats every file under `tests/fixtures/apple-container/` that it did not itself render as stale, and `gen-apple-argv-fixture.py` writes `argv.json` into that same directory. `--check` therefore printed `EXTRA argv.json` forever, and the regenerate command the failure message prints would have **deleted** the recording that the apple-container argv tests replay. The sweep now knows what it does not own.
+
+- **`tests/e2e/run.sh` dropped fail-fast-skipped phases from its summary.** A run where the sequential chain failed simply omitted the later phases' rows, so a suite that never started phase 8 at all read as `Total: 98 passed, 1 failed`. Skipped phases now get a `SKIPPED (an earlier phase failed)` row.
+
+### Documentation
+
+- **`container.env` values are expanded against the host's environment, and now say so.** `os.path.expandvars` has been applied to every value since 0.1.0 and the apple-container backend mirrors it deliberately, but the configuration reference described the field as "Static environment variables" and mentioned none of it. Two consequences are now written down: a value containing `$NAME` for a name the host exports is rewritten and there is no escape (`$$` stays `$$`), and a `cage.yaml` you did not author can read your shell's environment — `env: { X: "${OPENAI_API_KEY}" }` copies that key into the cage and into the generated unit file on disk. Behaviour is unchanged; whether to keep it is a separate question from documenting it.
+
 ## [0.40.1] - 2026-09-07
 
 ### Fixed

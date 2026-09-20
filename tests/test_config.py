@@ -815,7 +815,7 @@ class TestValidateConfig:
     def test_rejects_a_trailing_newline_in_name_and_image(self, tmp_path):
         """``\\Z``, not ``$``.
 
-        A YAML literal block (``name: |``) produces a scalar with a
+        A clipped block scalar (``name: |`` or ``name: >``) keeps one
         trailing newline. Python's ``$`` matches immediately before one,
         so such a name used to validate and was then rendered into a
         systemd unit name, a podman object name and a state directory.

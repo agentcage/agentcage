@@ -432,7 +432,7 @@ pub fn parse_since(since: &str) -> Option<DateTime> {
 
 /// `re.match(r"^(\d+)([hHmMdD])\Z", since)`, lowercased unit.
 ///
-/// Anchored on `$` until 0.41.0, so `"1h\n"` was a valid relative
+/// Anchored on `$` until the anchor sweep, so `"1h\n"` was a valid relative
 /// offset. The reason that hole stayed open was that failing to parse
 /// meant `cage har` silently exported everything — a worse outcome than
 /// accepting the newline. Both were fixed together: the anchor is `\Z`

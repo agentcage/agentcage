@@ -461,7 +461,7 @@ fn validate_context(context: &str, path: &str) -> Checked<()> {
 /// Hand-written rather than a regex crate, because the *anchor* is the
 /// whole subtlety and a crate would hide it. Python's `$` matches at
 /// end of string **or immediately before one trailing newline**, so
-/// `agentcage.local\n` satisfied this pattern until 0.41.0.
+/// `agentcage.local\n` satisfied this pattern until the anchor sweep.
 ///
 /// That was a real hole — the control host rides into
 /// `proxy-config.yaml`, and a host carrying a newline is the same shape
@@ -568,7 +568,7 @@ mod tests {
     ///
     /// `valid_domain` has always used `\Z` for exactly this reason and
     /// the A4 fixture has a case for it. `agents.decider.host` used `$`
-    /// until 0.41.0, so `agentcage.local\n` passed; both sides now
+    /// until the anchor sweep, so `agentcage.local\n` passed; both sides now
     /// refuse it, and the A4 fixture was regenerated to match.
     #[test]
     fn the_control_host_pattern_refuses_a_trailing_newline() {
@@ -596,7 +596,7 @@ mod tests {
     ///
     /// The document parses; only validation refuses it. That split
     /// matters: `load` still carries the newline through, so a config
-    /// written before 0.41.0 is readable, and it is the validator that
+    /// written before the sweep is readable, and it is the validator that
     /// reports why it will not deploy.
     #[test]
     fn a_control_host_with_a_trailing_newline_is_refused_exactly_as_python_refuses_it() {

@@ -913,7 +913,7 @@ fn python_tuple(values: &[&str]) -> String {
 ///
 /// # The anchor
 ///
-/// This pattern anchored on `$` until 0.41.0. Python's `$` matches at
+/// This pattern anchored on `$` until the anchor sweep. Python's `$` matches at
 /// the end of the string **or immediately before one trailing newline**,
 /// so `"my-cage\n"` used to pass — and the name goes on to become a
 /// systemd unit name, a podman object name and a directory under the
@@ -933,7 +933,8 @@ fn matches_name(name: &str) -> bool {
 
 /// `re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._/:-]*(@sha256:[a-f0-9]{64})?\Z', image)`.
 ///
-/// Anchored on `\Z` since 0.41.0, for the reason [`matches_name`] gives.
+/// Anchored on `\Z` since the anchor sweep, for the reason
+/// [`matches_name`] gives.
 ///
 /// No backtracking is needed: `@` is not in the body charset, so the
 /// optional digest can only begin at the first `@`, and the split point
