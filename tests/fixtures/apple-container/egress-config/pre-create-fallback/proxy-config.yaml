@@ -1,0 +1,5 @@
+name: unsaved-cage
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com

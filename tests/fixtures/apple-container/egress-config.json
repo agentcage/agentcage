@@ -1,0 +1,135 @@
+{
+  "_comment": "`_render_egress_config` output for every apple-container case in the golden corpus, plus three configs the corpus does not carry and the two pre-create fallback shapes. The bytes are in egress-config/<case>/.",
+  "cases": [
+    {
+      "case": "backend-apple-container",
+      "cage": "backend-apple-container",
+      "stored": true,
+      "why": "golden corpus case `backend-apple-container` — the one that carries a quadlets/NOT-APPLICABLE.txt, now with the artifacts this backend actually renders in its place.",
+      "input": "egress-config/backend-apple-container/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "backend-apple-container-autostart",
+      "cage": "backend-apple-container-autostart",
+      "stored": true,
+      "why": "golden corpus case `backend-apple-container-autostart` — the one that carries a quadlets/NOT-APPLICABLE.txt, now with the artifacts this backend actually renders in its place.",
+      "input": "egress-config/backend-apple-container-autostart/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "backend-apple-container-copyup-unseedable",
+      "cage": "backend-apple-container-copyup-unseedable",
+      "stored": true,
+      "why": "golden corpus case `backend-apple-container-copyup-unseedable` — the one that carries a quadlets/NOT-APPLICABLE.txt, now with the artifacts this backend actually renders in its place.",
+      "input": "egress-config/backend-apple-container-copyup-unseedable/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "backend-apple-container-drops",
+      "cage": "backend-apple-container-drops",
+      "stored": true,
+      "why": "golden corpus case `backend-apple-container-drops` — the one that carries a quadlets/NOT-APPLICABLE.txt, now with the artifacts this backend actually renders in its place.",
+      "input": "egress-config/backend-apple-container-drops/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "backend-apple-container-inspectors",
+      "cage": "backend-apple-container-inspectors",
+      "stored": true,
+      "why": "golden corpus case `backend-apple-container-inspectors` — the one that carries a quadlets/NOT-APPLICABLE.txt, now with the artifacts this backend actually renders in its place.",
+      "input": "egress-config/backend-apple-container-inspectors/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "domains-none",
+      "cage": "apple-domains-none",
+      "stored": true,
+      "why": "not in the golden corpus: widens the effective DNS allowlist past `domains.allow`, or empties it entirely so the dnsmasq template takes its no-upstreams branch.",
+      "input": "egress-config/domains-none/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "domains-passthrough",
+      "cage": "apple-passthrough",
+      "stored": true,
+      "why": "not in the golden corpus: widens the effective DNS allowlist past `domains.allow`, or empties it entirely so the dnsmasq template takes its no-upstreams branch.",
+      "input": "egress-config/domains-passthrough/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "agents-decider",
+      "cage": "apple-agents-decider",
+      "stored": true,
+      "why": "not in the golden corpus: widens the effective DNS allowlist past `domains.allow`, or empties it entirely so the dnsmasq template takes its no-upstreams branch.",
+      "input": "egress-config/agents-decider/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "pre-create-fallback",
+      "cage": "unsaved-cage",
+      "stored": false,
+      "why": "no cage.yaml on disk yet: `save_proxy_config` and `save_dns_allowlist` both raise FileNotFoundError and the in-line fallbacks render a minimal proxy-config plus an allowlist derived from the effective DNS list. Note what the minimal proxy-config does NOT carry: no `agentcage_version`, and only `domains.allow` — not the passthrough list, not the inspectors, not the secret injection rules.",
+      "input": "egress-config/pre-create-fallback/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    },
+    {
+      "case": "pre-create-fallback-empty-dns-servers",
+      "cage": "empty-dns-servers",
+      "stored": false,
+      "why": "the in-line allowlist fallback's own 1.1.1.1/8.8.8.8 default, which needs BOTH no stored cage.yaml and an empty `dns_servers`. `load_config` cannot produce the latter (an explicit `[]` is falsy and auto-detection wins), so this is reachable only from a hand-built Config — recorded so a port knows the branch exists and what it does, rather than dropping it as dead. The two files agree on 1.1.1.1/8.8.8.8 by coincidence rather than by construction: dns-allowlist.conf gets the backend's literal pair, dnsmasq.conf gets `wrapper._DEFAULT_DNS_SERVERS`. A port that changes one and not the other would split them. The recorded input is the stored case's cage.yaml; `dns_servers` is emptied on the loaded Config afterwards, since no cage.yaml can express it.",
+      "input": "egress-config/pre-create-fallback-empty-dns-servers/input/cage.yaml",
+      "warnings": [],
+      "files": [
+        "dns-allowlist.conf",
+        "dnsmasq.conf",
+        "proxy-config.yaml"
+      ]
+    }
+  ]
+}

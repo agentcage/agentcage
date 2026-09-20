@@ -1,0 +1,5 @@
+name: empty-dns-servers
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
