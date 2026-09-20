@@ -143,8 +143,12 @@ class TestSyntheticContext:
         """Stability half of #312: a file sitting in the build context that
         the egress Containerfile never COPYs must not force a rebuild.
 
-        ``Containerfile.helper`` is the real instance — it ships in
-        ``data/containers/`` and no egress COPY names it.
+        ``Containerfile.helper`` used to be the real instance — shipped
+        in ``data/containers/`` and named by no egress ``COPY``. It was
+        deleted at the cutover (RUST-PORT-PLAN.md §2.4: it was an alpine
+        image whose only content was ``python3`` and ``py3-yaml``, built
+        by nothing), so the case is now synthetic. The property it pins
+        is not: ``Containerfile.nested`` is in the same position today.
         """
         root = _fake_data_dir(tmp_path)
         before = egress_hash.egress_content_hash(root)
