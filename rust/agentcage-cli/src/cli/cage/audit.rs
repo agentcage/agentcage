@@ -72,17 +72,16 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         eprintln!("error: cage '{name}' does not exist or has invalid config");
         return Err(ExitCode::from(EXIT_FAILURE));
     };
-    if config.isolation != "container" {
-        // Where `cli.py` would have gone to `limactl shell` or to
-        // apple-container's `audit.jsonl` — §2.7's first trap is that
-        // that file is the *only* backend with one, and nothing below
-        // knows how to read it.
-        eprintln!(
-            "error: `cage audit` on the '{}' backend is not ported yet \
-             (RUST-PORT-PLAN.md Track E); run the Python \
-             `agentcage cage audit {name}` for now",
-            config.isolation
-        );
+    if let Some(refusal) =
+        agentcage_cli::backends::AnyBackend::refusal(&config.isolation, "cage audit")
+    {
+        // apple-container reads its audit trail from a host file —
+        // §2.7's first trap is that it is the *only* backend with one,
+        // and nothing below knows how to read it. `container` and `vm`
+        // both answer out of a journal, which is what makes them one
+        // code path with two argv builders.
+        eprintln!("{refusal}");
+        eprintln!("  run the Python `agentcage cage audit {name}` for now");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
@@ -112,7 +111,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         since: since_dt.and_then(|dt| agentcage_core::audit::Timestamp::parse_iso(&dt.isoformat())),
     };
 
-    let backend = ctx.backend();
+    let backend = ctx.backend_for(&config.isolation);
     let argv = backend.audit_argv(
         &name,
         since.as_deref().map(normalize_since).as_deref(),

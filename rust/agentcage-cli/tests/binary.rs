@@ -600,29 +600,67 @@ container:
 }
 
 /// `cage logs` and `cage audit` both read their source through a
-/// backend, and only the container one is ported. A `vm` cage answered
+/// backend, and `apple-container`'s is not ported. Its cage answered
 /// out of the *host* journal would print nothing and exit 0 — a wrong
 /// answer that looks exactly like a quiet cage — so both refuse
 /// instead, the way `cage verify` reports its unported probes.
 ///
 /// §2.7's first trap is why this cannot be papered over with a file
 /// reader: `audit.jsonl` exists host-side only for apple-container.
+///
+/// `vm` is **not** in this list any more (PR E4). Its reader is the
+/// guest's journal over `limactl shell`, which is ported; what a vm
+/// cage must never do is answer out of the host's journal, and
+/// [`a_vm_cage_is_read_through_its_guest`] is the assertion for that.
 #[test]
 fn the_unported_backends_are_refused_rather_than_read_wrongly() {
     let dir = agentcage_state::TestDir::new("binary-tracke");
-    for isolation in ["vm", "apple-container"] {
-        let name = format!("cage-{isolation}");
-        stage_cage(dir.path(), &name, isolation);
-        for command in ["logs", "audit"] {
-            let out = agentcage_sandboxed(dir.path(), &["cage", command, &name]);
-            assert_eq!(code(&out), 1, "{command} {isolation}: {}", stderr(&out));
-            assert!(
-                stderr(&out).contains("not ported yet") && stderr(&out).contains(isolation),
-                "{command} {isolation}: {}",
-                stderr(&out)
-            );
-        }
+    let isolation = "apple-container";
+    let name = format!("cage-{isolation}");
+    stage_cage(dir.path(), &name, isolation);
+    for command in ["logs", "audit"] {
+        let out = agentcage_sandboxed(dir.path(), &["cage", command, &name]);
+        assert_eq!(code(&out), 1, "{command} {isolation}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("not ported yet") && stderr(&out).contains(isolation),
+            "{command} {isolation}: {}",
+            stderr(&out)
+        );
     }
+}
+
+/// A `vm` cage's logs and audit go to its guest, not to the host.
+///
+/// There is no guest here, so `cage logs` ends in `limactl`'s own
+/// "instance does not exist" — which is the point: it reached `limactl`
+/// rather than printing an empty host journal. `cage audit` parses a
+/// stream and a reader that produced none is an empty table and exit 0
+/// on every backend, so all that can be asserted of it is that it no
+/// longer refuses.
+///
+/// Skipped where `limactl` is not installed, which is every CI runner
+/// the rest of this file runs on.
+#[test]
+fn a_vm_cage_is_read_through_its_guest() {
+    if Command::new("limactl").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = agentcage_state::TestDir::new("binary-vm-read");
+    stage_cage(dir.path(), "cage-vm", "vm");
+    for command in ["logs", "audit"] {
+        let out = agentcage_sandboxed(dir.path(), &["cage", command, "cage-vm"]);
+        let complaint = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(
+            !complaint.contains("not ported yet"),
+            "{command} vm still refuses: {complaint}"
+        );
+    }
+    let out = agentcage_sandboxed(dir.path(), &["cage", "logs", "cage-vm"]);
+    let complaint = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        complaint.contains("agentcage-cage-vm"),
+        "logs vm did not reach limactl: {complaint}"
+    );
 }
 
 /// A container cage reaches journalctl and `cage logs` forwards *its*

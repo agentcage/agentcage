@@ -17,7 +17,8 @@ use agentcage_core::config::Config;
 use agentcage_core::quadlets::{Quadlets, cage_network_addrs};
 use agentcage_state::Paths;
 
-use crate::backend::{BackendError, ContainerBackend, patches_work_dir};
+use crate::backend::{BackendError, patches_work_dir};
+use crate::backends::AnyBackend;
 
 /// `services._BUILD_CAPS` — the capabilities a *cage* image build gets.
 ///
@@ -452,7 +453,7 @@ pub struct DeployPlan<'a> {
 /// [`BackendError`] from any step. Nothing is rolled back — the caller
 /// prints the Python's "state preserved for debugging" hint.
 pub fn build_and_deploy(
-    backend: &ContainerBackend<'_>,
+    backend: &AnyBackend<'_>,
     paths: &Paths,
     plan: &DeployPlan<'_>,
 ) -> Result<Deployed, BackendError> {
@@ -477,7 +478,7 @@ pub fn build_and_deploy(
     )
     .map_err(BackendError::Assets)?;
 
-    backend.build_artifacts(no_cache, pull, quiet)?;
+    backend.build_artifacts(Some(config), deploy_name, no_cache, pull, quiet)?;
 
     let units = backend.generate_units(
         config,
@@ -665,8 +666,10 @@ const RESTART_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30)
 /// Returns silently either way: a cage still not active at the deadline
 /// may simply be slow, and `backend.restart` has already surfaced any
 /// failure of its own.
-pub fn restart_cage(backend: &ContainerBackend<'_>, name: &str) {
-    backend.restart(name);
+pub fn restart_cage(backend: &AnyBackend<'_>, name: &str) {
+    if let Err(error) = backend.restart(name) {
+        eprintln!("warning: failed to restart {name}: {error}");
+    }
     let deadline = std::time::Instant::now() + RESTART_DEADLINE;
     while std::time::Instant::now() < deadline {
         if backend.is_running(name, "cage") {

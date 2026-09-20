@@ -73,7 +73,7 @@ fn run(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     };
     ensure_v022_cage(&ctx.paths, name)?;
 
-    let backend = ctx.backend();
+    let backend = ctx.backend_for(&config.isolation);
     let mut results = Results::default();
 
     println!("=== agentcage verify: {name} ({}) ===", config.isolation);
@@ -282,7 +282,7 @@ fn non_empty(text: &str) -> Option<String> {
 /// to live here rather than to wait for their backends.
 fn service_status(
     ctx: &Ctx,
-    backend: &agentcage_cli::backend::ContainerBackend<'_>,
+    backend: &agentcage_cli::backends::AnyBackend<'_>,
     name: &str,
     isolation: &str,
 ) -> Vec<(String, bool)> {

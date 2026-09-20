@@ -463,7 +463,7 @@ fn execute(ctx: &Ctx, options: &Options) -> i32 {
     output::separator();
     {
         let _spinner = output::Spinner::start("Stopping cage...");
-        ctx.backend().stop(&config.name);
+        ctx.backend_for(&config.isolation).stop(&config.name);
     }
     println!("  {}", output::dim(&format!("{cage_name} stopped")));
     println!(
@@ -550,7 +550,7 @@ fn deploy(
         .save_dns_allowlist(cage_name, &agentcage_cli::hostenv::RealHost)
         .map_err(|error| format!("Failed to write the DNS allowlist: {error}"))?;
 
-    let backend = ctx.backend();
+    let backend = ctx.backend_for(&config.isolation);
     backend.ensure_ready();
     let issues = backend.check_prerequisites();
     if !issues.is_empty() {
@@ -695,7 +695,7 @@ fn session(ctx: &Ctx, config: &Config, cage_name: &str, options: &Options) -> i3
     // pass `-u` to `podman exec` because the cage quadlet's `User=` may
     // be empty (the `ubuntu` scaffold), in which case `podman exec`
     // would otherwise inherit the image's USER — root.
-    let argv = ctx.backend().exec_argv(
+    let argv = ctx.backend_for(&config.isolation).exec_argv(
         &config.name,
         "cage",
         &exec_cmd,

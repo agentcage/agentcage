@@ -33,7 +33,8 @@ use agentcage_core::har::json::Json;
 use clap::ArgMatches;
 
 use crate::cli::context::{Ctx, EXIT_FAILURE, ensure_v022_cage, parse_version};
-use agentcage_cli::backend::{ContainerBackend, SERVICE_NAMES};
+use agentcage_cli::backend::SERVICE_NAMES;
+use agentcage_cli::backends::AnyBackend;
 
 /// `cage list` — one row per cage, with live status.
 pub(crate) fn list(ctx: &Ctx) -> ExitCode {
@@ -47,7 +48,6 @@ pub(crate) fn list(ctx: &Ctx) -> ExitCode {
         "{:<25} {:<14} {:<12} {:<15} STATUS",
         "NAME", "LIFECYCLE", "ISOLATION", "SCAFFOLD"
     );
-    let backend = ctx.backend();
     for name in names {
         let Ok(config) = ctx
             .paths
@@ -91,7 +91,7 @@ pub(crate) fn list(ctx: &Ctx) -> ExitCode {
             continue;
         }
 
-        let (running, total) = backend.running_count(&name);
+        let (running, total) = ctx.backend_for(&config.isolation).running_count(&name);
         let status = if running == total {
             format!("running ({running}/{total})")
         } else if running == 0 {
@@ -145,7 +145,7 @@ fn show_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
         .paths
         .load_metadata(name)
         .unwrap_or_else(|_| Json::Object(Vec::new()));
-    let backend = ctx.backend();
+    let backend = ctx.backend_for(&config.isolation);
 
     let (running, total) = backend.running_count(name);
     let status = if running == total {
@@ -239,8 +239,8 @@ fn stop_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     // A legacy cage is refused here and *not* in `destroy` — stopping
     // one would address units that no longer exist under these names,
     // while destroy is the documented way out.
-    let _config = addressable(ctx, name, "stop")?;
-    ctx.backend().stop(name);
+    let config = addressable(ctx, name, "cage stop")?;
+    ctx.backend_for(&config.isolation).stop(name);
     println!("Stopped cage '{name}'");
     Ok(())
 }
@@ -280,7 +280,7 @@ pub(crate) fn start(ctx: &Ctx, name: &str) -> ExitCode {
 }
 
 fn start_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
-    let config = addressable(ctx, name, "start")?;
+    let config = addressable(ctx, name, "cage start")?;
 
     if let Err(error) = agentcage_cli::services::ensure_patches(&ctx.paths) {
         eprintln!("error: {error}");
@@ -330,8 +330,8 @@ fn start_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
 /// wants next anyway.
 ///
 /// `verb` names the command in the Track E refusal, so `cage start` on
-/// a `vm` cage says `cage start` and not the name of whichever helper
-/// happened to notice.
+/// an `apple-container` cage says `cage start` and not the name of
+/// whichever helper happened to notice.
 fn addressable(
     ctx: &Ctx,
     name: &str,
@@ -349,12 +349,8 @@ fn addressable(
             eprintln!("error: {error}");
             ExitCode::from(EXIT_FAILURE)
         })?;
-    if config.isolation != "container" {
-        eprintln!(
-            "error: `cage {verb}` on the '{}' backend is not ported yet \
-             (RUST-PORT-PLAN.md Track E)",
-            config.isolation
-        );
+    if let Some(refusal) = AnyBackend::refusal(&config.isolation, verb) {
+        eprintln!("{refusal}");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
     Ok(config)
@@ -381,7 +377,7 @@ pub(crate) fn restart(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 }
 
 fn restart_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
-    let _config = addressable(ctx, name, "restart")?;
+    let _config = addressable(ctx, name, "cage restart")?;
     if let Err(error) = agentcage_cli::services::ensure_patches(&ctx.paths) {
         eprintln!("error: {error}");
         return Err(ExitCode::from(EXIT_FAILURE));
@@ -453,7 +449,7 @@ pub(crate) fn destroy(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 /// is a filesystem check and its podman calls already tolerate a podman
 /// that cannot be run.
 fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<String> {
-    let backend = ctx.backend();
+    let backend = ctx.backend_of(name);
     let known = ctx.paths.deployment_exists(name);
     if !known && !backend.has_resources(name) {
         if echo {
@@ -514,7 +510,6 @@ fn destroy_cage(ctx: &Ctx, name: &str, keep_secrets: bool, echo: bool) -> Vec<St
 /// stuck cage leaves the rest of the list uncollected.
 pub(crate) fn prune(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
     let yes = matches.get_flag("yes");
-    let backend = ctx.backend();
     let mut candidates: Vec<String> = Vec::new();
 
     for name in ctx.paths.list_deployments().unwrap_or_default() {
@@ -524,9 +519,10 @@ pub(crate) fn prune(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         else {
             continue;
         };
-        // Track E. The container backend's probe would report a
-        // running `vm` cage as exited, and prune acts on that answer.
-        if config.isolation != "container" {
+        // Track E. Only a backend this port can probe: an
+        // apple-container cage answered by the container backend would
+        // read as exited while it is up, and prune acts on that answer.
+        if AnyBackend::refusal(&config.isolation, "cage prune").is_some() {
             continue;
         }
         let metadata = ctx
@@ -546,7 +542,7 @@ pub(crate) fn prune(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
         if parse_version(&version) < (0, 22) {
             continue;
         }
-        if backend.running_count(&name).0 == 0 {
+        if ctx.backend_for(&config.isolation).running_count(&name).0 == 0 {
             candidates.push(name);
         }
     }
@@ -630,7 +626,7 @@ fn string_or(metadata: &Json, key: &str, fallback: &str) -> String {
 /// The count `cage list` and `cage show` both print, exposed so
 /// `cage verify` can agree with them.
 #[must_use]
-pub(crate) fn service_status(backend: &ContainerBackend<'_>, name: &str) -> Vec<(String, bool)> {
+pub(crate) fn service_status(backend: &AnyBackend<'_>, name: &str) -> Vec<(String, bool)> {
     SERVICE_NAMES
         .iter()
         .map(|service| ((*service).to_owned(), backend.is_running(name, service)))

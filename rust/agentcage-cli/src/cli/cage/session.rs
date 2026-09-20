@@ -53,8 +53,8 @@ fn exec_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         .unwrap_or_default();
 
     let config = resolve(ctx, &name)?;
-    if config.isolation != "container" {
-        return Err(unsupported_backend(&config.isolation, "exec"));
+    if let Some(refusal) = unsupported_backend(&config.isolation, "exec") {
+        return Err(refusal);
     }
 
     // clap makes `COMMAND...` required, so an empty argv cannot reach
@@ -66,7 +66,7 @@ fn exec_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
-    running_or_refuse(ctx, &name)?;
+    running_or_refuse(ctx, &name, &config.isolation)?;
 
     // Alias expansion, first word only. `exec_aliases: {sh: [/bin/bash,
     // -l]}` turns `cage exec app sh -c ...` into `/bin/bash -l -c ...`.
@@ -77,7 +77,7 @@ fn exec_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         command = expanded;
     }
 
-    let argv = ctx.backend().exec_argv(
+    let argv = ctx.backend_for(&config.isolation).exec_argv(
         &name,
         &service,
         &command,
@@ -90,6 +90,15 @@ fn exec_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
     // child here is what leaves this process alive to restore the
     // terminal after a full-screen program inside the cage dies with
     // it.
+    //
+    // On vm the Python hands the process over: a non-interactive
+    // `cage exec` becomes the `limactl shell`, so its exit status and
+    // its signal disposition are the ssh client's rather than
+    // agentcage's. With a terminal `run_interactive` falls back to the
+    // guarded child, which is what puts the termios back.
+    if config.isolation == "vm" {
+        return Ok(status(terminal::run_interactive(&argv)));
+    }
     Ok(status(terminal::run_guarded(
         terminal::session_tty(),
         &argv,
@@ -107,8 +116,11 @@ fn shell_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
     let as_root = matches.get_flag("as_root");
 
     let config = resolve(ctx, &name)?;
-    if config.isolation != "container" {
-        return Err(unsupported_backend(&config.isolation, "shell"));
+    if let Some(refusal) = unsupported_backend(&config.isolation, "shell") {
+        return Err(refusal);
+    }
+    if config.isolation == "vm" {
+        return Ok(shell_vm(ctx, &name, &service, as_root));
     }
 
     // `cage shell` has no stopped-cage pre-flight in `cli.py` — only
@@ -135,6 +147,62 @@ fn shell_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
     // restore. `cli.py:2726` does the same, and a non-interactive
     // `cage shell` is a scripted `podman exec` either way.
     Ok(status(terminal::run_interactive(&argv)))
+}
+
+/// `cage shell` on the vm backend — the same probe, wrapped.
+///
+/// `cli.py:2626`. Two things differ from the container path and both
+/// are the Python's. The probe and the session are both `limactl shell
+/// --workdir / <instance> -- podman exec …`, because the containers
+/// live in the guest; and `--workdir /` is spelled out here rather than
+/// coming from [`LimaInstance::shell_command`], since the session argv
+/// is handed to `execvp` and bypasses that helper. Without it the guest
+/// shell tries to `cd` into a host path it cannot see and prints a
+/// spurious `No such file or directory` before the command runs.
+///
+/// Note the absence of `--tty=false`: this is the one path that may
+/// want a PTY.
+fn shell_vm(ctx: &Ctx, name: &str, service: &str, as_root: bool) -> ExitCode {
+    let instance = agentcage_exec::tools::limactl::LimaInstance::new(ctx.runner.as_ref(), name);
+    let container = format!("{name}-{service}");
+    let spec = uid_spec(as_root);
+    let prefix: Vec<String> = [
+        "limactl",
+        "shell",
+        "--workdir",
+        "/",
+        instance.name(),
+        "--",
+        "podman",
+        "exec",
+        "-u",
+        spec,
+    ]
+    .map(str::to_string)
+    .to_vec();
+
+    let mut shell = "/bin/sh";
+    for candidate in ["/bin/bash", "/bin/sh"] {
+        let mut argv = prefix.clone();
+        argv.extend([container.clone(), "test".to_owned(), "-x".to_owned()]);
+        argv.push((*candidate).to_owned());
+        let (program, rest) = argv.split_first().expect("argv is never empty");
+        let probe = agentcage_exec::Command::new(program.clone())
+            .args(rest.iter().cloned())
+            .captured();
+        if ctx.runner.run(&probe).is_ok_and(|out| out.success()) {
+            shell = candidate;
+            break;
+        }
+    }
+
+    let mut argv = prefix;
+    if terminal::is_interactive() {
+        argv.push("-it".to_owned());
+    }
+    argv.push(container);
+    argv.push(shell.to_owned());
+    status(terminal::run_interactive(&argv))
 }
 
 /// `/bin/bash` if the container has it, `/bin/sh` otherwise.
@@ -194,8 +262,8 @@ fn resolve(ctx: &Ctx, name: &str) -> Result<agentcage_core::config::Config, Exit
 /// Without this the operator got the raw downstream error — `no
 /// container with name or ID "<name>-cage" found` from podman, exit 125
 /// — which buries the actual problem.
-fn running_or_refuse(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
-    if ctx.backend().is_running(name, "cage") {
+fn running_or_refuse(ctx: &Ctx, name: &str, isolation: &str) -> Result<(), ExitCode> {
+    if ctx.backend_for(isolation).is_running(name, "cage") {
         return Ok(());
     }
     eprintln!(
@@ -205,13 +273,14 @@ fn running_or_refuse(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     Err(ExitCode::from(EXIT_FAILURE))
 }
 
-/// `BackendUnsupported`, for the two backends Track E still owns.
-fn unsupported_backend(isolation: &str, verb: &str) -> ExitCode {
-    eprintln!(
-        "error: `cage {verb}` on the '{isolation}' backend is not ported yet \
-         (RUST-PORT-PLAN.md Track E)"
-    );
-    ExitCode::from(EXIT_FAILURE)
+/// `BackendUnsupported`, for the one backend Track E still owns.
+fn unsupported_backend(isolation: &str, verb: &str) -> Option<ExitCode> {
+    agentcage_cli::backends::AnyBackend::refusal(isolation, &format!("cage {verb}")).map(
+        |refusal| {
+            eprintln!("{refusal}");
+            ExitCode::from(EXIT_FAILURE)
+        },
+    )
 }
 
 fn string(matches: &ArgMatches, id: &str) -> String {

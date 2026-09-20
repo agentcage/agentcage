@@ -463,13 +463,13 @@ pub(crate) fn update_dns_quadlet(
     config: &agentcage_core::config::Config,
 ) -> Result<(), ExitCode> {
     let name = config.name.as_str();
-    if config.isolation != "container" {
-        // The vm backend's VM-local allowlist copy and apple-container's
-        // `reload_domains` are Track E. The caller has already written
-        // `cage.yaml` and `proxy-config.yaml` by the time this is
-        // reached, so the refusal is what tells the operator the change
-        // is durable but not yet live — which is better than silently
-        // writing only the host file and reporting success.
+    if config.isolation != "container" && config.isolation != "vm" {
+        // apple-container's `reload_domains` is Track E (PR E5). The
+        // caller has already written `cage.yaml` and
+        // `proxy-config.yaml` by the time this is reached, so the
+        // refusal is what tells the operator the change is durable but
+        // not yet live — better than silently writing only the host
+        // file and reporting success.
         eprintln!(
             "error: the DNS live reload on the '{}' backend is not ported yet \
              (RUST-PORT-PLAN.md Track E)",
@@ -477,7 +477,6 @@ pub(crate) fn update_dns_quadlet(
         );
         return Err(ExitCode::from(EXIT_FAILURE));
     }
-
     let allow_path = ctx.paths.dns_allowlist_path(name);
     let previous = std::fs::read_to_string(&allow_path).unwrap_or_default();
     if let Err(error) = ctx
@@ -488,7 +487,27 @@ pub(crate) fn update_dns_quadlet(
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
-    let backend = ctx.backend();
+    let backend = ctx.backend_for(&config.isolation);
+    let vm_backend = backend.as_vm();
+
+    // The guest reads a VM-LOCAL copy of the allowlist, not the host
+    // file the quadlets would otherwise bind-mount: Lima's reverse-sshfs
+    // mount caches host writes, so dnsmasq's SIGHUP and mitmproxy's
+    // mtime poll would re-read the same stale bytes forever after a
+    // `domain add`. The host file above stays authoritative; this is the
+    // copy the running egress actually sees, and it has to be pushed
+    // BEFORE the validation below, which reads the mounted path.
+    if let Some(vm_backend) = vm_backend {
+        // A guest that is down needs nothing: the next start pushes it.
+        if !vm_backend.instance(name).is_running().unwrap_or(false) {
+            return Ok(());
+        }
+        if let Err(error) = vm_backend.push_config_files(name) {
+            eprintln!("error: {error}");
+            return Err(ExitCode::from(EXIT_FAILURE));
+        }
+    }
+
     if !backend.is_running(name, "egress") {
         // The file rewrite is enough — the next start picks it up.
         return Ok(());
@@ -496,19 +515,30 @@ pub(crate) fn update_dns_quadlet(
 
     let container = format!("{name}-egress");
     let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-    let test = podman.base().args([
-        "exec".to_owned(),
-        container.clone(),
-        "dnsmasq".to_owned(),
-        "--test".to_owned(),
-        "--servers-file=/etc/agentcage/dns-allowlist.conf".to_owned(),
-    ]);
+    // `_runtime_exec` — `podman exec` on the host, or the same argv
+    // wrapped in a `limactl shell` for a vm cage.
+    let runtime_exec =
+        |argv: &[String]| -> Result<agentcage_exec::Output, agentcage_exec::ExecError> {
+            let mut command = vec!["podman".to_owned(), "exec".to_owned(), container.clone()];
+            command.extend(argv.iter().cloned());
+            if let Some(vm_backend) = vm_backend {
+                return vm_backend.instance(name).exec(&command, false);
+            }
+            let mut podman_argv = podman.base().arg("exec").arg(container.clone());
+            podman_argv = podman_argv.args(argv.iter().cloned());
+            ctx.runner.run(&podman_argv.captured())
+        };
+
     // A podman that cannot be run at all is the Python's
     // `subprocess.run` raising, which propagates. Here it is the same
     // refusal the non-zero exit takes, because the allowlist has
     // already been rewritten and leaving it unvalidated is the one
     // outcome this check exists to prevent.
-    let outcome = ctx.runner.run(&test.captured());
+    let outcome = runtime_exec(&[
+        "dnsmasq".to_owned(),
+        "--test".to_owned(),
+        "--servers-file=/etc/agentcage/dns-allowlist.conf".to_owned(),
+    ]);
     let (ok, complaint) = match &outcome {
         Ok(output) => (
             output.success(),
@@ -523,6 +553,11 @@ pub(crate) fn update_dns_quadlet(
     if !ok {
         // Revert and surface the parse error.
         let _ = std::fs::write(&allow_path, &previous);
+        if let Some(vm_backend) = vm_backend {
+            // The guest-local copy is pushed from the host file, so
+            // re-pushing is what aligns it with the reverted contents.
+            let _ = vm_backend.push_config_files(name);
+        }
         eprintln!(
             "error: dnsmasq rejected the updated allowlist for cage \
              '{name}'; the previous configuration has been restored:"
@@ -534,10 +569,7 @@ pub(crate) fn update_dns_quadlet(
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
-    let _ = podman.container_exec(
-        &container,
-        &["sh".to_owned(), "-c".to_owned(), RELOAD_SCRIPT.to_owned()],
-    );
+    let _ = runtime_exec(&["sh".to_owned(), "-c".to_owned(), RELOAD_SCRIPT.to_owned()]);
     Ok(())
 }
 
@@ -754,7 +786,7 @@ fn add_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         // Nothing to schedule: an expired entry is blocked by the L7
         // inspector immediately and unconditionally, and the baseline is
         // tidied by the next reconcile.
-        if ctx.backend().is_running(&name, "cage") {
+        if ctx.backend_of(&name).is_running(&name, "cage") {
             messages.push("DNS and proxy updated.".to_owned());
         }
     }
@@ -844,7 +876,7 @@ fn rm_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     );
 
     let mut message = format!("Removed '{domain}' from cage '{name}'.");
-    if ctx.backend().is_running(&name, "cage") {
+    if ctx.backend_of(&name).is_running(&name, "cage") {
         message.push_str(" DNS and proxy updated.");
     }
     println!("{message}");

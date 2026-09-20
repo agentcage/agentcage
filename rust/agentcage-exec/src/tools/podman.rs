@@ -587,6 +587,48 @@ pub fn parse_secret_list(output: &Output, prefix: &str) -> Vec<String> {
     filter_secrets_by_prefix(&output.stdout_lines(), prefix)
 }
 
+/// Anything that can pull and inspect an image.
+///
+/// `cli._update_image_digests` picks its `inspector` at run time: host
+/// podman for a container cage, the Lima-routed `VmPodman` for a vm
+/// cage whose guest is up — because a vm cage's images live in the
+/// guest's store and inspecting the host's would report every one of
+/// them `unavailable`, and a fingerprint over `unavailable` never
+/// matches twice. This is that choice written down.
+pub trait ImageInspector {
+    /// `podman pull <reference>`, reporting whether it worked.
+    ///
+    /// # Errors
+    ///
+    /// Only if the underlying command could not be run.
+    fn pull(&self, reference: &str) -> Result<bool, ExecError>;
+
+    /// `podman image inspect <reference>`, first element.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] when the image is unknown.
+    fn image_inspect(&self, reference: &str) -> Result<serde_json::Value, ExecError>;
+
+    /// Whether a refresh is possible at all.
+    ///
+    /// `can_refresh` in the Python: false for a vm cage whose guest is
+    /// not running, where there is nothing to pull *into*.
+    fn can_refresh(&self) -> bool {
+        true
+    }
+}
+
+impl ImageInspector for Podman<'_> {
+    fn pull(&self, reference: &str) -> Result<bool, ExecError> {
+        Self::pull(self, reference)
+    }
+
+    fn image_inspect(&self, reference: &str) -> Result<serde_json::Value, ExecError> {
+        Self::image_inspect(self, reference)
+    }
+}
+
 /// Anything that can list a cage's podman secrets.
 ///
 /// The host [`Podman`] here, and the Lima-routed `VmPodman` that E1

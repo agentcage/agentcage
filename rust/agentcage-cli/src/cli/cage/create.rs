@@ -211,7 +211,16 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     if let Err(error) = deployed {
         // Stop partially-started services but preserve state for
         // debugging: `cage update` is the documented retry.
-        backend.stop(&name);
+        //
+        // Not on the vm backend, where `stop` powers the Lima guest
+        // off. The guest *is* the preserved state: all four recovery
+        // commands printed below shell into it, and the units the
+        // teardown would stop live inside it and go down with it
+        // anyway. Powering it off is the opposite of what this branch
+        // says it does.
+        if config.isolation != "vm" {
+            backend.stop(&name);
+        }
         eprintln!("{error}");
         println!();
         eprintln!("Create failed. State preserved for debugging:");

@@ -1053,10 +1053,21 @@ def cage_create(config_pos: str | None, config_path: str | None, secrets: tuple,
         _build_and_deploy(cfg, config_host_path, name, podman, used_octets=used_octets,
                            no_cache=no_cache, pull=pull)
     except Exception:
-        # Stop partially-started services but preserve state for debugging
+        # Stop partially-started services but preserve state for debugging.
+        #
+        # Not on the vm backend. ``VmBackend.stop`` stops the cage's two
+        # units and then powers the Lima guest off — which is what ``cage
+        # stop`` means for a vm cage, but it is the opposite of
+        # "preserve state for debugging" here: the guest IS the state.
+        # Every one of the four recovery commands printed below needs it
+        # up (``cage logs`` and ``cage update`` shell into it; even
+        # ``cage destroy`` has to boot it again to remove the instance),
+        # and the units the teardown would stop are inside it and go
+        # down with it anyway.
         backend = get_backend(cfg)
         try:
-            backend.stop(name)
+            if cfg.isolation != "vm":
+                backend.stop(name)
         except Exception:
             pass
         click.echo()

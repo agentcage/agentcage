@@ -92,14 +92,24 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         selected
     };
 
-    if config.isolation != "container" {
-        eprintln!(
-            "error: `cage logs` on the '{}' backend is not ported yet \
-             (RUST-PORT-PLAN.md Track E); run the Python \
-             `agentcage cage logs {name}` for now",
-            config.isolation
-        );
+    if let Some(refusal) =
+        agentcage_cli::backends::AnyBackend::refusal(&config.isolation, "cage logs")
+    {
+        eprintln!("{refusal}");
+        eprintln!("  run the Python `agentcage cage logs {name}` for now");
         return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    if config.isolation == "vm" {
+        return logs_vm(
+            ctx,
+            &name,
+            &selected,
+            lines,
+            follow,
+            since.as_deref(),
+            min_level.as_deref(),
+        );
     }
 
     logs_container(
@@ -151,6 +161,81 @@ fn logs_container(
         return Ok(exec_journalctl(&argv));
     };
     filtered_stream(ctx, &argv, name, services, min_level)
+}
+
+/// `_logs_vm` — the guest's journal, read over `limactl shell`.
+///
+/// Not [`agentcage_cli::vm::VmBackend::logs_argv`]. The backend's
+/// builder is the protocol one `cage logs` uses on *apple-container*;
+/// `cli.py` keeps a separate one for vm, and the two disagree about
+/// argument order (`-n N -o cat` here, `-o cat … -f -n N` there) and
+/// about `--since`, which only this one forwards. Reproduced as two
+/// builders because they are two builders.
+///
+/// `sg systemd-journal -c` is not decoration: Lima's persistent SSH
+/// `ControlMaster` establishes the session before provisioning runs
+/// `usermod -aG systemd-journal`, so the session's groups are stale for
+/// the life of the guest and the journal is unreadable without
+/// re-entering the group. `--user-unit`, not `--user -u`, because
+/// conmon routes a container's output to the *system* journal even when
+/// the unit that started it is a `--user` one.
+fn logs_vm(
+    ctx: &Ctx,
+    name: &str,
+    services: &[String],
+    lines: i64,
+    follow: bool,
+    since: Option<&str>,
+    min_level: Option<&str>,
+) -> Result<ExitCode, ExitCode> {
+    let mut journal = vec!["journalctl".to_owned()];
+    for service in services {
+        journal.push("--user-unit".to_owned());
+        journal.push(format!("{name}-{service}"));
+    }
+    journal.extend([
+        "-n".to_owned(),
+        lines.to_string(),
+        "-o".to_owned(),
+        "cat".to_owned(),
+    ]);
+    if let Some(since) = since {
+        journal.push("--since".to_owned());
+        journal.push(since.to_owned());
+    }
+    if follow {
+        journal.push("-f".to_owned());
+    }
+
+    let instance = agentcage_exec::tools::limactl::LimaInstance::new(ctx.runner.as_ref(), name);
+    let mut argv: Vec<String> = [
+        "limactl",
+        "shell",
+        "--workdir",
+        "/",
+        instance.name(),
+        "--",
+        "sg",
+        "systemd-journal",
+        "-c",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    argv.push(shlex_join(&journal));
+
+    let Some(min_level) = min_level else {
+        return Ok(exec_journalctl(&argv));
+    };
+    filtered_stream(ctx, &argv, name, services, min_level)
+}
+
+/// `shlex.join` — the inner journalctl command, as one argument.
+fn shlex_join(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|part| agentcage_core::quadlets::shlex_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The exact argv `cli.py` hands to `os.execvp`.

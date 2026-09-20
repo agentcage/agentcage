@@ -397,6 +397,25 @@ const SECRET_LS: [&str; 6] = [
     "{{.Name}}",
 ];
 
+impl crate::tools::podman::ImageInspector for VmPodman<'_> {
+    fn pull(&self, reference: &str) -> Result<bool, ExecError> {
+        Self::pull(self, reference)
+    }
+
+    fn image_inspect(&self, reference: &str) -> Result<Value, ExecError> {
+        Self::image_inspect(self, reference)
+    }
+
+    /// Only while the guest runs.
+    ///
+    /// `can_refresh = inst.is_running()`. A stopped guest has no store
+    /// to pull into, and asking anyway would print a `limactl` fatal
+    /// once per upstream reference.
+    fn can_refresh(&self) -> bool {
+        self.instance.is_running().unwrap_or(false)
+    }
+}
+
 impl crate::tools::podman::SecretLister for VmPodman<'_> {
     fn secret_list(&self, prefix: &str) -> Result<Vec<String>, ExecError> {
         Self::secret_list(self, prefix)

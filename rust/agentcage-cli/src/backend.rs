@@ -62,6 +62,15 @@ pub enum BackendError {
     State(agentcage_state::StateError),
     /// The embedded asset tree could not be materialized.
     Assets(std::io::Error),
+    /// A deploy step failed and said why itself.
+    ///
+    /// The vm backend's `RuntimeError`s — an egress that never became
+    /// active, a cage service that would not start, an in-guest build
+    /// that exited non-zero. Each has already printed its diagnostic
+    /// (`systemctl status`, the unit's journal, podman's own build
+    /// output); this carries the one-line summary the CLI turns into
+    /// `error: …`.
+    Failed(String),
 }
 
 impl std::fmt::Display for BackendError {
@@ -71,6 +80,7 @@ impl std::fmt::Display for BackendError {
             Self::Config(e) => write!(f, "{e}"),
             Self::State(e) => write!(f, "{e}"),
             Self::Assets(e) => write!(f, "could not materialize the build context: {e}"),
+            Self::Failed(message) => f.write_str(message),
         }
     }
 }

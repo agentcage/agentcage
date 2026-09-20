@@ -247,13 +247,14 @@ fn name_of(matches: &ArgMatches) -> String {
 /// `cli._load_grants_overlay`. The `None` is the vm backend's
 /// "`limactl` round-trip failed", which callers must not confuse with
 /// an empty overlay — merging against a fabricated `[]` would push an
-/// EMPTY overlay and wipe every grant decided in the window. The vm
-/// path itself is Track E; until it lands, a vm cage answers `None` and
-/// the manual commands refuse rather than writing the host-side file
-/// that the guest does not read.
+/// EMPTY overlay and wipe every grant decided in the window.
+///
+/// A vm cage's overlay is guest-side — the host file is not what the
+/// in-guest addon reads — so it is pulled over `limactl shell`, and an
+/// unreachable guest is exactly the `None` this contract is about.
 fn load_overlay(ctx: &Ctx, name: &str, isolation: &str) -> Option<Vec<Mapping>> {
     if isolation == "vm" {
-        return None;
+        return ctx.backend_for(isolation).as_vm()?.pull_grants(name);
     }
     Some(ctx.paths.load_grants(name))
 }
@@ -261,7 +262,11 @@ fn load_overlay(ctx: &Ctx, name: &str, isolation: &str) -> Option<Vec<Mapping>> 
 /// `cli._save_grants_overlay`.
 fn save_overlay(ctx: &Ctx, name: &str, isolation: &str, entries: &[Mapping]) -> Result<(), String> {
     if isolation == "vm" {
-        return Err("the vm backend's guest-local overlay is not ported yet".to_owned());
+        let backend = ctx.backend_for(isolation);
+        let Some(vm) = backend.as_vm() else {
+            return Err("the vm backend is unavailable".to_owned());
+        };
+        return vm.push_grants(name, entries).map_err(|e| e.to_string());
     }
     ctx.paths
         .save_grants(name, entries)
@@ -467,7 +472,7 @@ fn promote_inner(ctx: &Ctx, name: &str, domain: &str) -> Result<(), ExitCode> {
                 ("action".to_owned(), Json::string("added_to_baseline")),
             ]),
         );
-        if ctx.backend().is_running(name, "cage") {
+        if ctx.backend_of(name).is_running(name, "cage") {
             println!("DNS and proxy updated.");
         }
     }

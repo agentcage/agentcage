@@ -1,6 +1,25 @@
 # Lima VM config for agentcage cage: vm-defaults
 vmType: qemu
 
+# Pin the mount type instead of inheriting Lima's default.
+#
+# Lima's QEMU default was ``reverse-sshfs`` for years and became ``9p`` in
+# Lima 1.0. The guest image pinned below is a Debian *genericcloud* build,
+# whose ``linux-image-cloud-amd64`` kernel is compiled without CONFIG_9P_FS
+# — so on Lima >= 1.0 every mount in this file fails at boot with
+# ``unknown filesystem type '9p'``, ``~/.config/agentcage`` and
+# ``~/.local/share/agentcage`` are absent inside the guest, and the egress
+# unit's ExecStartPre dies on the missing capture directory. The cage never
+# starts and nothing in the error names the mount.
+#
+# ``reverse-sshfs`` is what this backend was written against — see
+# ``vm.push_config_files``, which exists precisely because reverse-sshfs
+# caches host writes — and Lima installs the guest-side ``sshfs`` itself, so
+# it needs nothing on the host. ``virtiofs`` also works on a Linux/QEMU host
+# but requires ``virtiofsd``, which ``install.sh`` does not install and
+# ``agentcage doctor`` does not check for.
+mountType: reverse-sshfs
+
 
 images:
   # Debian 13 "trixie" genericcloud. Trixie's apt repos ship podman 5.x with

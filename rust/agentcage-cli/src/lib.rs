@@ -18,6 +18,9 @@ pub mod apple;
 pub mod archive;
 /// The container backend: podman, quadlets, systemd (PR D6).
 pub mod backend;
+/// `get_backend(config)` — which backend a cage's `isolation:` names
+/// (PR E4).
+pub mod backends;
 /// Fingerprint gathering — what makes `cage update` a no-op (PR D6).
 pub mod deploy;
 /// `agentcage doctor` — the host diagnostics (PR D15).

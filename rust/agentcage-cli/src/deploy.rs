@@ -23,10 +23,11 @@ use agentcage_core::fingerprint::{
 };
 use agentcage_core::har::json::Json;
 use agentcage_core::quadlets::Quadlets;
-use agentcage_exec::tools::podman::Podman;
+use agentcage_exec::tools::podman::ImageInspector;
 use agentcage_state::{AgentSchema, Paths};
 
-use crate::backend::{BackendError, ContainerBackend};
+use crate::backend::BackendError;
+use crate::backends::AnyBackend;
 
 // ── image identities ─────────────────────────────────────────
 
@@ -248,7 +249,7 @@ fn is_identifier(name: &str) -> bool {
 pub fn update_image_digests(
     config: &Config,
     paths: &Paths,
-    podman: &Podman<'_>,
+    inspector: &dyn ImageInspector,
     egress_image: &str,
     resolved_args: &[(String, String)],
     refresh: bool,
@@ -272,10 +273,14 @@ pub fn update_image_digests(
         if reference.is_empty() {
             continue;
         }
-        if refresh && upstream.contains(&reference) && !reference.starts_with("localhost/") {
-            let _ = podman.pull(&reference);
+        if refresh
+            && inspector.can_refresh()
+            && upstream.contains(&reference)
+            && !reference.starts_with("localhost/")
+        {
+            let _ = inspector.pull(&reference);
         }
-        let identity = podman
+        let identity = inspector
             .image_inspect(&reference)
             .map_or_else(|_| "unavailable".to_owned(), |v| image_identity(Some(&v)));
         identities.insert(reference, identity);
@@ -391,7 +396,7 @@ pub struct FingerprintRequest<'a> {
 ///
 /// [`BackendError`] if the render or a state read fails.
 pub fn update_fingerprint(
-    backend: &ContainerBackend<'_>,
+    backend: &AnyBackend<'_>,
     paths: &Paths,
     request: FingerprintRequest<'_>,
 ) -> Result<Computed, BackendError> {
@@ -445,10 +450,23 @@ pub fn update_fingerprint(
         rendered
     };
 
+    // The store the images actually live in. A vm cage's are inside
+    // the guest, and a host-podman inspect of them answers
+    // `unavailable` for every reference — a digest set that never
+    // matches the previous one, so `cage update` would rebuild on every
+    // invocation and `cage update` is defined by *not* doing that.
+    let guest_podman;
+    let inspector: &dyn ImageInspector = match backend {
+        AnyBackend::Container(backend) => backend.podman(),
+        AnyBackend::Vm(backend) => {
+            guest_podman = backend.podman(name);
+            &guest_podman
+        }
+    };
     let image_digests = update_image_digests(
         config,
         paths,
-        backend.podman(),
+        inspector,
         &backend.egress_image(),
         &resolved_args,
         refresh_images,

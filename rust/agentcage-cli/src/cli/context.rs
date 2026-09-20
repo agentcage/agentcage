@@ -14,6 +14,7 @@ use agentcage_exec::{CommandRunner, SystemRunner};
 use agentcage_state::Paths;
 
 use agentcage_cli::backend::ContainerBackend;
+use agentcage_cli::backends::AnyBackend;
 
 /// `EX_SOFTWARE`-free: this is click's `sys.exit(1)`, the status every
 /// operator-facing refusal in `cli.py` uses.
@@ -40,10 +41,41 @@ impl Ctx {
         }
     }
 
-    /// A backend bound to this context.
+    /// The container backend, bound to this context.
+    ///
+    /// For the call sites that are about host podman specifically — the
+    /// live secret channel, the log-driver probe — rather than about
+    /// "whatever backend this cage uses". Everything cage-shaped goes
+    /// through [`Self::backend_for`].
     #[must_use]
     pub(crate) fn backend(&self) -> ContainerBackend<'_> {
         ContainerBackend::new(&self.paths, self.runner.as_ref(), &self.version)
+    }
+
+    /// `get_backend(config)` — the backend this cage's `isolation:`
+    /// names.
+    ///
+    /// Taking the isolation rather than the whole config because half
+    /// the call sites have only a name and a stored document, and
+    /// because it is the only field `get_backend` reads.
+    #[must_use]
+    pub(crate) fn backend_for(&self, isolation: &str) -> AnyBackend<'_> {
+        AnyBackend::new(isolation, &self.paths, self.runner.as_ref(), &self.version)
+    }
+
+    /// The backend for a cage whose stored config is on disk.
+    ///
+    /// A config that cannot be loaded falls back to the container
+    /// backend, which is `get_backend`'s own default and is what
+    /// `cage destroy` needs to keep working on a cage whose `cage.yaml`
+    /// no longer parses.
+    #[must_use]
+    pub(crate) fn backend_of(&self, name: &str) -> AnyBackend<'_> {
+        let isolation = self
+            .paths
+            .load_deployment_config(name, &agentcage_cli::hostenv::RealHost)
+            .map_or_else(|_| "container".to_owned(), |config| config.isolation);
+        self.backend_for(&isolation)
     }
 
     /// `_ensure_backend_ready` — recover what can be recovered, then
@@ -57,11 +89,8 @@ impl Ctx {
     /// # Errors
     ///
     /// [`EXIT_FAILURE`] when a prerequisite is unmet.
-    pub(crate) fn ensure_backend_ready(
-        &self,
-        config: &Config,
-    ) -> Result<ContainerBackend<'_>, ExitCode> {
-        let backend = self.backend();
+    pub(crate) fn ensure_backend_ready(&self, config: &Config) -> Result<AnyBackend<'_>, ExitCode> {
+        let backend = self.backend_for(&config.isolation);
         backend.ensure_ready();
         let issues = backend.check_prerequisites();
         if !issues.is_empty() {

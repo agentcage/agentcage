@@ -309,9 +309,21 @@ impl Command {
     /// far as the workspace's `unsafe_code = "forbid"` allows without a
     /// `pre_exec` closure. It achieves the stated purpose -- the child is
     /// out of agentcage's process group, so terminal signals and group
-    /// waits do not reach it -- but the daemon keeps the controlling tty.
-    /// If E4 finds Lima needs a full session, that is the PR to revisit
-    /// it in, with a real Lima host to check against.
+    /// waits do not reach it -- but the child keeps the controlling tty.
+    ///
+    /// **E4 settled this against a real Lima host and the two are
+    /// equivalent here.** Lima daemonizes the hostagent itself, so it
+    /// ends up at `ppid=1` in its own process group with no controlling
+    /// terminal under either flag, and `limactl start` returns and the
+    /// instance survives the terminal closing in both cases. The one
+    /// measured difference is what happens to a child that *reads* the
+    /// controlling terminal: from a background process group the kernel
+    /// stops it with SIGTTIN, where a sessionless child fails at once
+    /// with `ENXIO`. Nothing on this path reads the terminal -- Lima's
+    /// only prompt is `create`'s survey, which agentcage suppresses with
+    /// `--yes` -- so the hazard is unreachable today. It would surface
+    /// as a silent hang rather than an error if that ever changed, which
+    /// is the reason to keep this paragraph.
     #[must_use]
     pub fn new_process_group(mut self) -> Self {
         self.new_process_group = true;

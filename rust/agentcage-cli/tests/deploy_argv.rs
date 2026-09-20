@@ -24,6 +24,7 @@
 use std::collections::BTreeSet;
 
 use agentcage_cli::backend::ContainerBackend;
+use agentcage_cli::backends::AnyBackend;
 use agentcage_cli::services::{self, DeployPlan};
 use agentcage_core::config::{Config, FixedHost, load};
 use agentcage_exec::{Elevation, FakeRunner, Reply};
@@ -73,7 +74,12 @@ fn stub_deploy(fake: &FakeRunner) {
 }
 
 fn deploy(paths: &Paths, fake: &FakeRunner, config: &Config, network_octet: Option<u32>) {
-    let backend = ContainerBackend::with_elevation(paths, fake, "9.9.9", Elevation::none());
+    let backend = AnyBackend::Container(ContainerBackend::with_elevation(
+        paths,
+        fake,
+        "9.9.9",
+        Elevation::none(),
+    ));
     let used: BTreeSet<u32> = BTreeSet::new();
     services::build_and_deploy(
         &backend,

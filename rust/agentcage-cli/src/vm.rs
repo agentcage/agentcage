@@ -1,42 +1,52 @@
 //! `backends/vm.py` — a Lima guest with podman and quadlets inside it.
 //!
-//! The **generation half** (RUST-PORT-PLAN.md Track E, PR E1): the
-//! units, the Lima YAML, the argv every `limactl` invocation is built
-//! from, the guest-side file pushes, and the secret bridging. Nothing
-//! here needs a Lima host to be checked — every command goes through
-//! [`CommandRunner`], so a recording fake on a Linux CI runner sees the
-//! same argv a real `limactl` would.
+//! Both halves (RUST-PORT-PLAN.md Track E). **E1** is the generation
+//! half: the units, the Lima YAML, the argv every `limactl` invocation
+//! is built from, the guest-side file pushes and the secret bridging,
+//! none of which needs a Lima host to be checked — every command goes
+//! through [`CommandRunner`], so a recording fake on a Linux CI runner
+//! sees the same argv a real `limactl` would. **E4** is the execution
+//! half below the `── execution ──` rule: [`VmBackend::deploy_cage`],
+//! [`VmBackend::start`], [`VmBackend::stop`],
+//! [`VmBackend::restart`], [`VmBackend::build_artifacts`] and the
+//! readiness waits, each of them a loop whose exit condition is a live
+//! guest's answer. Their acceptance check is e2e phase 7.
 //!
-//! # What is E4's, and why the line is where it is
+//! # `setsid` vs `setpgid` on `limactl start` — settled
 //!
-//! `_deploy_cage`, `start`, `stop`, `restart`, `build_artifacts` and
-//! the three readiness waits (`_wait_infra_active`,
-//! `_wait_user_session_ready`, `_probe_user_session`) are **not here**.
-//! They are not withheld for size: each one is a loop whose exit
-//! condition is a live guest's answer, and the acceptance check the
-//! plan sets for them is e2e phase 7 against a real Lima host.
-//! `limactl` is not installed on the machine this was written on, so
-//! porting them here would mean writing a poll loop nobody could run.
-//! Each is named at the seam it would attach to, with the pieces it
-//! needs already built:
+//! D1 built [`agentcage_exec::Command::new_process_group`] as the safe
+//! stand-in for the Python's `start_new_session=True`: `setpgid(0, 0)`
+//! rather than `setsid()`, because a real `setsid` needs a `pre_exec`
+//! closure and this workspace forbids `unsafe_code`. It left the
+//! difference for E4 to settle on a real Lima host. Measured here, and
+//! the answer is that **the two are equivalent on this path**:
 //!
-//! | E4 needs | E1 built |
-//! | :-- | :-- |
-//! | `_deploy_cage`'s quadlet push | [`VmBackend::push_quadlets`] |
-//! | its config mirror | [`VmBackend::push_config_files`] |
-//! | its grants-dir precreate | [`VmBackend::ensure_grants_dir`] |
-//! | its secret bridging | [`VmBackend::bridge_secrets`], [`VmBackend::create_pending_secrets`], [`VmBackend::resolve_source_secrets`] |
-//! | `build_artifacts`' build context copy | [`VmBackend::copy_build_context_argv`] |
-//! | the in-guest builds | [`VmBackend::egress_build_argv`], [`VmBackend::cage_build_argv`] |
-//! | the service starts | [`VmBackend::systemctl_argv`], [`VmBackend::infra_services`] |
+//! * The difference is real and is the controlling terminal. Under a
+//!   pty, a `setpgid` child keeps the ctty and a `setsid` child does
+//!   not — and a child that *reads* `/dev/tty` from a background
+//!   process group is **stopped by SIGTTIN**, where the sessionless one
+//!   fails immediately with `ENXIO`. So `setpgid` converts a would-be
+//!   prompt into a hang.
+//! * `limactl start` never reads the terminal. The one prompt Lima has
+//!   is `create`'s configuration survey, and
+//!   [`LimaInstance::create`] passes `--yes` precisely to suppress it.
+//! * Run live with both binaries under `script(1)`: `cage start`
+//!   returned in 30s (Rust) and 33s (Python), and in both cases the
+//!   hostagent was left at `ppid=1`, in its own process group, with
+//!   **no controlling terminal** — Lima daemonizes it itself, so the
+//!   flag on the parent does not decide the daemon's fate. The instance
+//!   stayed `Running` after the pty closed either way.
 //!
-//! One thing D1 left for E4 to settle and this PR does not touch:
-//! [`agentcage_exec::Command::new_process_group`] on `limactl start`.
-//! The Python's `start_new_session=True` is `setsid()`; the safe
-//! equivalent here is `setpgid`, which detaches the daemon from this
-//! process group but keeps the controlling terminal. Whether that
-//! difference matters can only be answered by watching a real
-//! `limactl start` return, which is E4's job on a real host.
+//! The residual risk is narrow and worth knowing: if a future Lima ever
+//! prompted on `start`, this would stop rather than fail, and the
+//! operator would see agentcage hang with no output. That is the thing
+//! to re-check if `limactl start` ever grows an interactive path.
+//!
+//! Note what this question does **not** touch: the streaming readers.
+//! `cage logs --severity` and `cage audit --follow` run their child
+//! through [`CommandRunner::stream`] with no process-group flag at all,
+//! and their `terminate()` sends SIGTERM to the local `limactl shell`;
+//! the guest-side `journalctl -f` goes away with the ssh channel.
 //!
 //! # Why the guest paths are absolute here and `%h` in the units
 //!
@@ -52,6 +62,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use agentcage_core::config::Config;
 use agentcage_core::lima::{LimaFacts, generate_lima_config};
@@ -93,6 +104,63 @@ const GUEST_QUADLET_DIR: &str = "~/.config/containers/systemd";
 
 /// Where the in-guest build context is unpacked.
 const VM_BUILD_DIR: &str = "/tmp/agentcage-build";
+
+/// `VM_SERVICE_STARTUP_DELAY_S` — the infrastructure units' deadline.
+///
+/// It replaced an unconditional `sleep(5)`, and it is still 5s: the
+/// polling below only removes the idle time from the common case, it
+/// does not shorten the ceiling a cold start is allowed.
+const VM_SERVICE_STARTUP_DELAY: Duration = Duration::from_secs(5);
+
+/// `VM_SERVICE_STARTUP_POLL_INTERVAL_S`.
+const VM_SERVICE_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// `VM_USER_SESSION_TIMEOUT_S` — issue #319's safety net.
+///
+/// Deliberately short: see [`VmBackend::wait_user_session_ready`].
+const VM_USER_SESSION_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// `VM_USER_SESSION_POLL_INTERVAL_S`.
+const VM_USER_SESSION_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// `PROXY_READINESS_TIMEOUT_S` — how long the egress gets to become
+/// active before the cage is refused.
+///
+/// A deadline rather than an iteration count, so the interval below can
+/// be tightened without shrinking the ceiling: mitmproxy is usually
+/// ready in 2–6s, and a sub-second poll takes that off the median.
+const PROXY_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `PROXY_READINESS_POLL_INTERVAL_S`.
+const PROXY_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// `_USER_SESSION_PROBE`, verbatim — one round-trip for "can rootless
+/// podman run a container yet?".
+///
+/// Answers `no-user-bus` when the socket is absent, and otherwise
+/// whatever `is-system-running` says. It matches on **stdout**, not the
+/// exit code: `degraded` is a ready state and exits non-zero.
+const USER_SESSION_PROBE: &str = "uid=$(id -u); \
+     if [ ! -S \"/run/user/$uid/bus\" ]; then echo no-user-bus; exit 0; fi; \
+     systemctl --user is-system-running 2>/dev/null || true";
+
+/// The process environment [`VmBackend::stage_secrets`] resolves
+/// `env:` sources against.
+///
+/// A `static` rather than a local because [`crate::secrets::SecretHost`]
+/// borrows it. Tests that want a different environment call
+/// [`VmBackend::resolve_source_secrets`] and
+/// [`VmBackend::bridge_store_secrets`] directly, which is how E1's
+/// reach them.
+static SYSTEM_ENVIRONMENT: crate::secrets::SystemEnv = crate::secrets::SystemEnv;
+
+/// `_USER_SESSION_READY_STATES`.
+///
+/// `degraded` counts: it says only that some user unit failed, while the
+/// bus and the cgroup delegation are live — which is all podman's
+/// sd-bus call needs. Everything else (`initializing`, `starting`,
+/// `offline`, `unknown`, or no socket at all) keeps waiting.
+const USER_SESSION_READY_STATES: [&str; 2] = ["running", "degraded"];
 
 /// The `vm` backend.
 ///
@@ -185,6 +253,12 @@ impl<'a> VmBackend<'a> {
     #[must_use]
     pub fn service_names(&self) -> [&'static str; 2] {
         SERVICE_NAMES
+    }
+
+    /// The version this backend tags images and stamps units with.
+    #[must_use]
+    pub fn version(&self) -> &'a str {
+        self.version
     }
 
     // ── prerequisites ────────────────────────────────────────
@@ -526,8 +600,9 @@ impl<'a> VmBackend<'a> {
     /// without a guest is checkable without a guest: this builds the
     /// same base64 pipeline `push_config_files` uses, one command per
     /// unit file, after resolving the guest's quadlet directory. What
-    /// stays in E4 is what comes after — `daemon-reload`, the ordered
-    /// service starts, and the waits.
+    /// comes after it — `daemon-reload`, the ordered service starts and
+    /// the waits — is [`VmBackend::deploy_cage`], below the execution
+    /// rule.
     ///
     /// Files are pushed in sorted order. The Python iterates
     /// `Path.iterdir()`, which is `readdir` order and therefore
@@ -1104,7 +1179,8 @@ impl<'a> VmBackend<'a> {
 
     /// `limactl copy -r <src>/. <instance>:<dst>/`.
     ///
-    /// E4's, and built here because it is argv. The guest's home is not
+    /// Built up here with the other argv rather than beside its caller
+    /// in the execution half, because it is argv. The guest's home is not
     /// a Lima mount — only `~/.config/agentcage` and
     /// `~/.local/share/agentcage` are shared — so the podman build
     /// context cannot be read from the host filesystem and has to be
@@ -1258,6 +1334,725 @@ impl<'a> VmBackend<'a> {
         }
         Ok(removed)
     }
+
+    // ── execution (PR E4) ────────────────────────────────────
+
+    /// `VmBackend.ensure_ready` — nothing to bring up ahead of time.
+    ///
+    /// The guest is created and started on demand inside [`Self::start`];
+    /// a missing `limactl` or QEMU is [`Self::check_prerequisites`]'s to
+    /// report.
+    pub const fn ensure_ready(&self) {}
+
+    /// `VmBackend.start` — create the guest if it is absent, boot it if
+    /// it is down, then deploy into it.
+    ///
+    /// `quiet` is accepted and ignored, as the Python's is: none of the
+    /// progress lines below are guarded by it, and a `cage update` that
+    /// printed nothing for four minutes of guest provisioning would be
+    /// indistinguishable from a hang.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Exec`] if `limactl create` or `limactl start`
+    /// failed, and whatever [`Self::deploy_cage`] returns.
+    pub fn start(&self, name: &str, _quiet: bool) -> Result<(), BackendError> {
+        let instance = self.instance(name);
+        let config_path = self.lima_config_path();
+
+        if !instance.exists()? {
+            println!("Creating Lima VM instance...");
+            let phase = crate::timing::Phase::start("lima.create", Some(name));
+            let created = instance.create(&config_path.display().to_string());
+            drop(phase);
+            created?;
+            println!("VM created. Starting...");
+        }
+
+        if !instance.is_running()? {
+            println!("Starting Lima VM...");
+            let phase = crate::timing::Phase::start("lima.start", Some(name));
+            let started = instance.start();
+            drop(phase);
+            started?;
+            println!("VM started and provisioned.");
+        }
+
+        // `try: ... except Exception: pass` — a cage whose stored config
+        // will not load still deploys; `deploy_cage` simply has nothing
+        // to resolve `source:` secrets from.
+        let config = self
+            .paths
+            .load_deployment_config(name, &crate::hostenv::RealHost)
+            .ok();
+        self.deploy_cage(name, config.as_ref())?;
+        println!("Started {name} (Lima VM)");
+        Ok(())
+    }
+
+    /// `VmBackend.stop` — stop the cage's units, then the guest itself.
+    ///
+    /// The in-guest stops are unchecked and their failures swallowed:
+    /// the guest is about to be powered off, so a unit that would not
+    /// stop cleanly is about to stop uncleanly anyway. Stopping them
+    /// first is what gives podman a chance to write the containers'
+    /// final journal lines.
+    pub fn stop(&self, name: &str) {
+        let instance = self.instance(name);
+        if !instance.is_running().unwrap_or(false) {
+            return;
+        }
+        for service in SERVICE_NAMES {
+            let _ = instance.exec(
+                &Self::systemctl_argv("stop", &format!("{name}-{service}")),
+                false,
+            );
+        }
+        if let Err(error) = instance.stop() {
+            eprintln!("warning: failed to stop the Lima VM for {name}: {error}");
+        }
+    }
+
+    /// `VmBackend.restart` — stop, then start.
+    ///
+    /// A full guest power cycle, not a `systemctl restart`. It is the
+    /// Python's, and it is what makes `cage restart` on this backend
+    /// adopt a regenerated `lima.yaml`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Self::start`] returns.
+    pub fn restart(&self, name: &str) -> Result<(), BackendError> {
+        self.stop(name);
+        self.start(name, false)
+    }
+
+    /// `VmBackend.build_artifacts` — the egress and cage images, built
+    /// **inside** the guest.
+    ///
+    /// A guest that is not running is not an error: on a first
+    /// `cage create` the instance does not exist yet, and
+    /// [`Self::start`] builds from [`Self::deploy_cage`] a moment later.
+    /// Saying so out loud matters — the alternative is a `cage create`
+    /// that appears to skip the build entirely.
+    ///
+    /// The build context is copied in with `limactl copy` rather than
+    /// read through a mount: only `~/.config/agentcage` and
+    /// `~/.local/share/agentcage` are shared with the guest, and the
+    /// context is neither. On a single binary it does not exist on disk
+    /// at all until [`agentcage_assets::extract::build_context`]
+    /// materializes it, which is §2.1 of the plan and the one structural
+    /// difference from the Python here.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Assets`] if the embedded tree cannot be
+    /// extracted, [`BackendError::Exec`] if a guest command could not be
+    /// run, [`BackendError::Failed`] if a build exited non-zero.
+    pub fn build_artifacts(
+        &self,
+        config: Option<&Config>,
+        deploy_name: &str,
+        no_cache: bool,
+        pull: bool,
+        _quiet: bool,
+    ) -> Result<(), BackendError> {
+        let instance = self.instance(deploy_name);
+        if !instance.is_running()? {
+            println!("VM is not running — skipping image build (will build on start)");
+            return Ok(());
+        }
+
+        let context = agentcage_assets::extract::build_context().map_err(BackendError::Assets)?;
+
+        println!("Copying build context into VM...");
+        let _ = instance.exec(&["rm", "-rf", VM_BUILD_DIR].map(str::to_string), false);
+        instance.exec(&["mkdir", "-p", VM_BUILD_DIR].map(str::to_string), true)?;
+        let phase = crate::timing::Phase::start("copy.build_context", Some(deploy_name));
+        let copied =
+            self.run_checked(&self.copy_build_context_argv(deploy_name, &context, VM_BUILD_DIR));
+        drop(phase);
+        copied?;
+
+        let mut flags: Vec<String> = Vec::new();
+        if no_cache {
+            flags.push("--no-cache".to_owned());
+        }
+        if pull {
+            flags.push("--pull=always".to_owned());
+        }
+
+        // Issue #319's safety net, in front of the FIRST in-guest podman
+        // invocation. Provisioning is what guarantees the user D-Bus;
+        // this only catches a guest that slipped through, and turns
+        // "podman build failed" into a message that names the
+        // precondition. Normally one probe and no sleep.
+        let phase = crate::timing::Phase::start("wait.user_session", Some(deploy_name));
+        Self::wait_user_session_ready(&instance);
+        drop(phase);
+
+        let tag = format!("agentcage-egress:{}", self.version);
+        println!(
+            "Building egress image inside VM (agentcage-egress:{})...",
+            self.version
+        );
+        let phase = crate::timing::Phase::start("build.egress", Some(deploy_name));
+        let built = Self::exec_build(
+            &instance,
+            &self.egress_build_argv(&flags),
+            &format!("build of {tag}"),
+        );
+        drop(phase);
+        built?;
+
+        if let Some(config) = config {
+            if !config.container.image.is_empty() {
+                if config.container.build.containerfile.is_empty() {
+                    println!("Pulling {} inside VM...", config.container.image);
+                    let phase = crate::timing::Phase::start("pull.cage", Some(deploy_name));
+                    let _ = instance.exec(
+                        &["podman", "pull", &config.container.image].map(str::to_string),
+                        false,
+                    );
+                    drop(phase);
+                } else {
+                    let phase = crate::timing::Phase::start("build.cage", Some(deploy_name));
+                    let built = self.build_cage_image_in_vm(&instance, config, deploy_name, &flags);
+                    drop(phase);
+                    built?;
+                }
+            }
+        }
+
+        let _ = instance.exec(&["rm", "-rf", VM_BUILD_DIR].map(str::to_string), false);
+        Ok(())
+    }
+
+    /// `_build_cage_image_in_vm` — copy a scaffold's context in and
+    /// build it.
+    ///
+    /// The Containerfile is the **staged** copy in the cage's state
+    /// directory, which is what `cage create` and `cage update` froze;
+    /// the scaffold source is the fallback for a cage whose staging did
+    /// not happen. A Containerfile found at neither is a warning rather
+    /// than a failure, because the cage image may simply already be in
+    /// the guest — the Python's shape, and the cage unit's own start
+    /// will say otherwise if it is not.
+    fn build_cage_image_in_vm(
+        &self,
+        instance: &LimaInstance<'_>,
+        config: &Config,
+        deploy_name: &str,
+        flags: &[String],
+    ) -> Result<(), BackendError> {
+        let declared = &config.container.build.containerfile;
+        let basename = Path::new(declared)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let state_dir = self.paths.deployment_dir(deploy_name);
+
+        let mut containerfile = state_dir.join(&basename);
+        if !containerfile.exists() {
+            let scaffold = self
+                .paths
+                .load_metadata(deploy_name)
+                .ok()
+                .and_then(|meta| {
+                    meta.get("scaffold")
+                        .and_then(agentcage_core::har::json::Json::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default();
+            if !scaffold.is_empty() {
+                let root =
+                    agentcage_assets::extract::ensure_extracted().map_err(BackendError::Assets)?;
+                containerfile = root.join("scaffolds").join(&scaffold).join(declared);
+            }
+        }
+        if !containerfile.exists() {
+            eprintln!(
+                "warning: Containerfile not found for {}",
+                config.container.image
+            );
+            return Ok(());
+        }
+
+        let source = containerfile.parent().unwrap_or(Path::new("."));
+        let guest_scaffold = format!("{VM_BUILD_DIR}/scaffold");
+        instance.exec(&["mkdir", "-p", &guest_scaffold].map(str::to_string), true)?;
+        self.run_checked(&self.copy_build_context_argv(deploy_name, source, &guest_scaffold))?;
+
+        println!("Building {} inside VM...", config.container.image);
+        let name = containerfile
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Self::exec_build(
+            instance,
+            &self.cage_build_argv(&config.container.image, &name, flags),
+            &format!("build of {}", config.container.image),
+        )
+    }
+
+    /// `VmBackend._deploy_cage` — everything between a booted guest and
+    /// a running cage.
+    ///
+    /// The order is the Python's and every step of it is load-bearing:
+    ///
+    /// 1. Quadlets into the guest's `~/.config/containers/systemd`.
+    /// 2. The guest-local mirrors of `proxy-config.yaml`,
+    ///    `dns-allowlist.conf` and `placeholders.env`, plus the grants
+    ///    overlay directory — which must exist *before* the egress
+    ///    unit's `ExecStartPre` chgrps it.
+    /// 3. Secrets: the host's bridged in, the pending ones created, the
+    ///    `source:`-schemed ones resolved straight into the guest store.
+    /// 4. The in-guest image builds.
+    /// 5. `daemon-reload`, then the infrastructure units, then — only
+    ///    once the egress is **active** — the cage.
+    ///
+    /// Step 5's ordering is the one a reader is most likely to tidy
+    /// away. The cage unit's `ExecStartPre` is a 30-attempt poll for
+    /// mitmproxy's CA certificate, which the egress generates on its
+    /// first run; starting the two together turns a first `cage create`
+    /// into a near-certain spurious failure that the operator reads as a
+    /// real one.
+    ///
+    /// # Errors
+    ///
+    /// [`BackendError::Failed`] when the egress never becomes active or
+    /// the cage service will not start — after the unit's own
+    /// diagnostics have been printed. [`BackendError::Exec`] from a
+    /// guest command that could not be run.
+    pub fn deploy_cage(&self, name: &str, config: Option<&Config>) -> Result<(), BackendError> {
+        if !self.host_quadlet_dir().is_dir() {
+            return Ok(());
+        }
+        let instance = self.instance(name);
+
+        let phase = crate::timing::Phase::start("deploy.quadlets", Some(name));
+        let pushed = self.push_quadlets(name);
+        drop(phase);
+        pushed?;
+
+        let phase = crate::timing::Phase::start("deploy.vm_local_config", Some(name));
+        let mirrored = self
+            .push_config_files(name)
+            .and_then(|()| self.ensure_grants_dir(name));
+        drop(phase);
+        mirrored?;
+
+        let phase = crate::timing::Phase::start("deploy.bridge_secrets", Some(name));
+        let bridged = self.bridge_secrets(name);
+        drop(phase);
+        bridged?.report();
+
+        let phase = crate::timing::Phase::start("deploy.pending_secrets", Some(name));
+        let pending = self.create_pending_secrets(name);
+        drop(phase);
+        for message in pending? {
+            println!("{message}");
+        }
+
+        let phase = crate::timing::Phase::start("deploy.source_secrets", Some(name));
+        let resolved = self.stage_secrets(name, config);
+        drop(phase);
+        resolved?.report();
+
+        self.build_artifacts(config, name, false, false, false)?;
+
+        instance.exec(
+            &["systemctl", "--user", "daemon-reload"].map(str::to_string),
+            true,
+        )?;
+
+        let infra = Self::infra_services(name);
+        let phase = crate::timing::Phase::start("systemd.start", Some(name));
+        for service in &infra {
+            Self::systemctl_start(&instance, service, false);
+        }
+        let pending = Self::wait_infra_active(&instance, &infra);
+        let _ = instance.exec(
+            &["systemctl", "--user", "reset-failed"].map(str::to_string),
+            false,
+        );
+        for service in &pending {
+            println!("Retrying {service}...");
+            Self::systemctl_start(&instance, service, true);
+        }
+        drop(phase);
+
+        println!("Waiting for egress to be ready...");
+        let egress = format!("{name}-egress");
+        let phase = crate::timing::Phase::start("systemd.wait_egress", Some(name));
+        let active = Self::wait_active(
+            &instance,
+            &egress,
+            PROXY_READINESS_TIMEOUT,
+            PROXY_READINESS_POLL_INTERVAL,
+        );
+        drop(phase);
+        if !active {
+            // Not "start the cage anyway": its `ExecStartPre` would
+            // spin for 30s and fail on the same root cause, with the
+            // egress's actual reason lost behind it.
+            Self::dump_service_failure(&instance, &egress);
+            return Err(BackendError::Failed(format!(
+                "egress {egress} did not become active within {}s; cage not started",
+                PROXY_READINESS_TIMEOUT.as_secs()
+            )));
+        }
+
+        let cage = format!("{name}-cage");
+        let phase = crate::timing::Phase::start("systemd.start_cage", Some(name));
+        let outcome = Self::start_cage_service(&instance, &cage);
+        drop(phase);
+        outcome
+    }
+
+    /// The last step of [`Self::deploy_cage`]: start the cage, and
+    /// insist that it came up.
+    ///
+    /// [`Self::systemctl_start`] surfaces a failure but does not raise —
+    /// the infrastructure loop above needs to continue past one dead
+    /// unit. The cage is different: a deploy without it is meaningless,
+    /// and before this check `cage create` printed "Updated cage X" over
+    /// a cage whose status was `failed`.
+    fn start_cage_service(instance: &LimaInstance<'_>, cage: &str) -> Result<(), BackendError> {
+        if Self::is_active(instance, cage) {
+            return Ok(());
+        }
+        let _ = instance.exec(
+            &["systemctl", "--user", "reset-failed"].map(str::to_string),
+            false,
+        );
+        Self::systemctl_start(instance, cage, false);
+        let state = Self::unit_state(instance, cage);
+        if state == "active" {
+            return Ok(());
+        }
+        Err(BackendError::Failed(format!(
+            "cage {cage} failed to start (state={}); see diagnostic output above",
+            if state.is_empty() { "unknown" } else { &state }
+        )))
+    }
+
+    /// `_resolve_source_secrets` — both halves of it.
+    ///
+    /// E1 split the Python's one function in two so the store half could
+    /// take a caller-chosen [`crate::secrets::SecretStore`]; this is the
+    /// seam that puts them back together, with the `seen` set the
+    /// Python shares between them.
+    ///
+    /// A store that cannot be resolved at all is the Python's bare
+    /// `except: return` — it means no encrypting backend is usable
+    /// here, and the source pass has already done what it could.
+    fn stage_secrets(&self, name: &str, config: Option<&Config>) -> Result<Bridged, ExecError> {
+        let Some(config) = config else {
+            return Ok(Bridged::default());
+        };
+        let host = crate::secrets::SecretHost::detect(self.runner, &SYSTEM_ENVIRONMENT);
+
+        let mut out = self.resolve_source_secrets(name, Some(config), &host)?;
+        let skip = source_secret_env_names(config);
+
+        let podman = agentcage_exec::tools::podman::Podman::new(self.runner);
+        let Ok(store) = crate::secrets::resolve_store(
+            config,
+            &host,
+            Some(&podman),
+            "",
+            crate::secrets::Platform::host(),
+        ) else {
+            return Ok(out);
+        };
+        let stored = self.bridge_store_secrets(name, config, store.as_ref(), &skip)?;
+        out.messages.extend(stored.messages);
+        out.warnings.extend(stored.warnings);
+        Ok(out)
+    }
+
+    // ── the waits ────────────────────────────────────────────
+
+    /// `_wait_infra_active` — poll until every unit is active, or the
+    /// deadline.
+    ///
+    /// Returns the units still not active, which the caller retries.
+    /// This replaced a blanket `sleep(5)`: on a warm restart the units
+    /// are up in a few hundred milliseconds, and the deadline is
+    /// unchanged so a cold run is not affected.
+    fn wait_infra_active(instance: &LimaInstance<'_>, services: &[String]) -> Vec<String> {
+        let deadline = Instant::now() + VM_SERVICE_STARTUP_DELAY;
+        let mut pending: Vec<String> = services.to_vec();
+        while !pending.is_empty() {
+            pending.retain(|service| !Self::is_active(instance, service));
+            if pending.is_empty() || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(VM_SERVICE_STARTUP_POLL_INTERVAL);
+        }
+        pending
+    }
+
+    /// Poll one unit until it is `active`, or the deadline.
+    fn wait_active(
+        instance: &LimaInstance<'_>,
+        unit: &str,
+        timeout: Duration,
+        interval: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if Self::is_active(instance, unit) {
+                return true;
+            }
+            std::thread::sleep(interval);
+        }
+        false
+    }
+
+    /// `systemctl --user is-active <unit>.service`, as a bool.
+    fn is_active(instance: &LimaInstance<'_>, unit: &str) -> bool {
+        Self::unit_state(instance, unit) == "active"
+    }
+
+    /// The unit's state token, or `""` when the guest could not answer.
+    fn unit_state(instance: &LimaInstance<'_>, unit: &str) -> String {
+        instance
+            .exec(&Self::systemctl_argv("is-active", unit), false)
+            .map(|out| out.stdout_trimmed())
+            .unwrap_or_default()
+    }
+
+    /// `_wait_user_session_ready` — can rootless podman run a container
+    /// yet?
+    ///
+    /// Rootless podman defaults to the systemd cgroup manager, which
+    /// needs the guest user's D-Bus at `/run/user/<uid>/bus`. Without it
+    /// every container creation dies at its first `RUN` step with
+    /// `sd-bus call: Interactive authentication required` — issue #319.
+    ///
+    /// The **cause** is fixed in provisioning, not here: apt installs
+    /// `dbus-user-session` underneath a `user@<uid>.service` that Lima's
+    /// own SSH bring-up already started, and a running user manager never
+    /// loads a socket unit that appears beneath it, so the bus stays
+    /// absent for the whole boot. `provision.sh.j2` restarts that
+    /// manager. This is defense in depth and should resolve on its first
+    /// probe; the ceiling is short precisely because a guest that needs
+    /// to wait is in a state waiting cannot repair.
+    ///
+    /// The caller proceeds either way. A timeout is a hint, not a
+    /// verdict, and failing here would throw away the real podman
+    /// diagnostic [`Self::exec_build`] surfaces (#322).
+    ///
+    /// Deliberately **not** probed: `loginctl show-user … Linger`. It is
+    /// a logind D-Bus round-trip, and the provisioning script documents
+    /// logind wedging during bring-up with its calls blocking for 25s —
+    /// a poll loop over that turns a hiccup into a multi-minute stall.
+    fn wait_user_session_ready(instance: &LimaInstance<'_>) -> bool {
+        let deadline = Instant::now() + VM_USER_SESSION_TIMEOUT;
+        let mut announced = false;
+        loop {
+            let state = Self::probe_user_session(instance);
+            if USER_SESSION_READY_STATES.contains(&state.as_str()) {
+                if announced {
+                    println!("Guest systemd user session ready ({state}).");
+                }
+                return true;
+            }
+            if Instant::now() >= deadline {
+                crate::output::pause_active_spinner(|| {
+                    eprintln!(
+                        "warning: the guest's systemd user D-Bus \
+                         (/run/user/<uid>/bus) is still absent after {}s; last \
+                         probe reported '{state}'. Rootless podman needs it for \
+                         its systemd cgroup manager. This usually means the \
+                         guest's user dbus.socket never came up (a provisioning \
+                         fault, not a slow start — see #319), so recreating the \
+                         VM is more likely to help than retrying. Building \
+                         anyway — if the build fails, podman's own error is \
+                         printed below.",
+                        VM_USER_SESSION_TIMEOUT.as_secs()
+                    );
+                });
+                return false;
+            }
+            if !announced {
+                announced = true;
+                println!(
+                    "Waiting for the guest systemd user session \
+                     (rootless podman needs its user D-Bus; state: {state})..."
+                );
+            }
+            std::thread::sleep(VM_USER_SESSION_POLL_INTERVAL);
+        }
+    }
+
+    /// One round-trip of [`USER_SESSION_PROBE`].
+    ///
+    /// Never fails: this runs on the happy path in front of a build, so
+    /// a flaky `limactl shell` must degrade to "not ready yet" rather
+    /// than pre-empting the build it exists to protect.
+    fn probe_user_session(instance: &LimaInstance<'_>) -> String {
+        let Ok(out) = instance.exec(&bash_c(USER_SESSION_PROBE), false) else {
+            return "probe failed".to_owned();
+        };
+        let state = out.stdout_trimmed();
+        if state.is_empty() {
+            "unknown".to_owned()
+        } else {
+            state
+        }
+    }
+
+    // ── the diagnostics ──────────────────────────────────────
+
+    /// `_systemctl_start` — start (or restart) a unit, and say why if it
+    /// would not.
+    ///
+    /// Does not fail the deploy. The predecessor of this printed the
+    /// `CalledProcessError` repr, which named the command and the exit
+    /// code and told the operator nothing about the unit.
+    fn systemctl_start(instance: &LimaInstance<'_>, unit: &str, restart: bool) {
+        let action = if restart { "restart" } else { "start" };
+        match instance.exec(&Self::systemctl_argv(action, unit), false) {
+            Ok(out) if out.success() => {}
+            Ok(out) => {
+                eprintln!("warning: failed to {action} {unit}");
+                let stderr = out.stderr_text();
+                if !stderr.is_empty() {
+                    eprintln!("{}", stderr.trim_end());
+                }
+                Self::dump_service_failure(instance, unit);
+            }
+            Err(error) => eprintln!("warning: failed to {action} {unit}: {error}"),
+        }
+    }
+
+    /// `_dump_service_failure` — `systemctl status` plus the unit's last
+    /// 40 journal lines.
+    ///
+    /// Best-effort throughout: this runs on an error path and the
+    /// original failure is what matters, so a diagnostic that fails is
+    /// swallowed rather than replacing it.
+    ///
+    /// The journal filter here is `--user -u`, **not** the `--user-unit`
+    /// that [`Self::logs_argv`] uses. That is the Python's, and the
+    /// difference is real: `--user -u` reads the unit's own systemd
+    /// records — "control process exited", "failed with result" — which
+    /// is what a unit that never started has to show. `--user-unit`
+    /// would reach the container's output, of which there is none.
+    fn dump_service_failure(instance: &LimaInstance<'_>, unit: &str) {
+        if let Ok(out) = instance.exec(
+            &[
+                "systemctl",
+                "--user",
+                "status",
+                &format!("{unit}.service"),
+                "--no-pager",
+                "-l",
+            ]
+            .map(str::to_string),
+            false,
+        ) {
+            let text = out.stdout_text();
+            if !text.is_empty() {
+                eprintln!("{}", text.trim_end());
+            }
+        }
+        if let Ok(out) = instance.exec(
+            &[
+                "journalctl",
+                "--user",
+                "-u",
+                &format!("{unit}.service"),
+                "--no-pager",
+                "-n",
+                "40",
+            ]
+            .map(str::to_string),
+            false,
+        ) {
+            let text = out.stdout_text();
+            if !text.is_empty() {
+                eprintln!("{}", text.trim_end());
+            }
+        }
+    }
+
+    /// `_exec_build` — run an in-guest build, surfacing its output when
+    /// it fails.
+    ///
+    /// `LimaInstance::exec` captures, so a failed in-guest `podman
+    /// build` used to reach the operator as a bare non-zero exit whose
+    /// only content was the (very long) `limactl shell …` command line —
+    /// podman's actual error was stranded on the exception and never
+    /// printed. Issue #319: a first `cage create` on a fresh host failed
+    /// here and the reason could not be determined from agentcage's
+    /// output at all.
+    ///
+    /// A build log is many lines and fights the spinner for the same
+    /// terminal line, so the spinner is paused while it is dumped.
+    fn exec_build(
+        instance: &LimaInstance<'_>,
+        command: &[String],
+        what: &str,
+    ) -> Result<(), BackendError> {
+        let out = instance.exec(command, false)?;
+        if out.success() {
+            return Ok(());
+        }
+        let stdout = out.stdout_text();
+        let stderr = out.stderr_text();
+        crate::output::pause_active_spinner(|| {
+            eprintln!(
+                "error: {what} failed inside the VM (exit status {})",
+                out.status.code_or(1)
+            );
+            let stdout = stdout.trim_end();
+            let stderr = stderr.trim_end();
+            if !stdout.is_empty() {
+                eprintln!("{stdout}");
+            }
+            if !stderr.is_empty() {
+                eprintln!("{stderr}");
+            }
+            if stdout.is_empty() && stderr.is_empty() {
+                eprintln!("(the build produced no output)");
+            }
+        });
+        Err(BackendError::Failed(format!("{what} failed inside the VM")))
+    }
+
+    /// One host-side command, checked.
+    ///
+    /// The two `limactl copy` invocations are the only commands this
+    /// module runs on the *host* rather than through
+    /// [`LimaInstance::exec`], because a directory copy has no in-guest
+    /// equivalent.
+    fn run_checked(&self, argv: &[String]) -> Result<(), ExecError> {
+        let (program, rest) = argv.split_first().expect("argv is never empty");
+        let command = agentcage_exec::Command::new(program.clone()).args(rest.iter().cloned());
+        self.runner.run(&command)?.check(program)?;
+        Ok(())
+    }
+}
+
+/// The env names [`VmBackend::resolve_source_secrets`] will have taken.
+///
+/// The Python's `_resolve_source_secrets` is one function with one
+/// `seen` set spanning both halves, and the split into
+/// [`VmBackend::resolve_source_secrets`] and
+/// [`VmBackend::bridge_store_secrets`] would lose that. It adds a name
+/// to `seen` **before** resolving it, so a source that fails to resolve
+/// still shadows the store — this returns the same names, which is what
+/// the caller passes as the store pass's `skip`.
+#[must_use]
+pub fn source_secret_env_names(config: &Config) -> BTreeSet<String> {
+    source_secrets(config)
+        .into_iter()
+        .map(|(env_name, _)| env_name)
+        .collect()
 }
 
 /// What a secret-bridging pass wants to say.
@@ -1272,6 +2067,23 @@ pub struct Bridged {
     pub messages: Vec<String>,
     /// `click.echo(..., err=True)` — one per secret that did not make it.
     pub warnings: Vec<String>,
+}
+
+impl Bridged {
+    /// Print what the Python printed, where it printed it.
+    ///
+    /// Successes to stdout and failures to stderr, in that order rather
+    /// than interleaved: the two streams are separate pipes by the time
+    /// anything reads them, so the original interleaving is not
+    /// recoverable and pretending otherwise would only look precise.
+    pub fn report(&self) {
+        for message in &self.messages {
+            println!("{message}");
+        }
+        for warning in &self.warnings {
+            eprintln!("{warning}");
+        }
+    }
 }
 
 /// `podman secret rm` then `podman secret create <name> -`, in the guest.

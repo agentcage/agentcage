@@ -53,7 +53,7 @@ pub(crate) fn apply_or_restart(ctx: &Ctx, name: &str, key: &str, value: &str) {
         eprintln!("warning: quadlet refresh failed: {error}");
     }
 
-    let backend = ctx.backend();
+    let backend = ctx.backend_for(&config.isolation);
     if !backend.is_running(&cage, "cage") {
         // A stopped cage needs nothing beyond the convergence above:
         // the next start re-stages every value from the store.
@@ -120,7 +120,7 @@ pub(crate) fn restart(ctx: &Ctx, cage: &str) {
     {
         eprintln!("warning: {error}");
     }
-    services::restart_cage(&ctx.backend(), cage);
+    services::restart_cage(&ctx.backend_of(cage), cage);
 }
 
 /// `cli._refresh_units` — converge the quadlets with stored state, with
