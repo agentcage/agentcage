@@ -58,6 +58,64 @@ pub fn resolve_build_args(
     (resolved, changes)
 }
 
+/// `registry.resolve_build_args(declared, declared)` — the scaffold case.
+///
+/// `run_scaffold_setup` passes the scaffold's own `build_args` as *both*
+/// arguments, so every value is its own scaffold declaration and
+/// `_resolve_one` reduces to its first branch:
+///
+/// * the scaffold author pinned a tag → use it verbatim, which is how a
+///   scaffold freezes a base image it knows it needs;
+/// * the scaffold declared it untagged → re-resolve against the
+///   registry now, which is how `ghcr.io/openclaw/openclaw` becomes a
+///   concrete version at build time;
+/// * the registry cannot answer → keep what the scaffold said, rather
+///   than breaking a build over a network failure.
+///
+/// The difference from [`resolve_build_args`] is the last case in the
+/// untagged branch: there, an unresolvable ref is left bare; here it
+/// falls back to the stored value. They coincide when the two maps are
+/// the same, but the Python spells them separately and so does this.
+#[must_use]
+pub fn resolve_scaffold_build_args(
+    runner: &dyn CommandRunner,
+    declared: &OrderedMap<String>,
+) -> (Vec<(String, String)>, Vec<Change>) {
+    let mut resolved = Vec::with_capacity(declared.len());
+    let mut changes = Vec::new();
+    for (key, current) in declared {
+        let new = resolve_one_declared(runner, current);
+        if &new != current {
+            changes.push(Change {
+                key: key.clone(),
+                old: current.clone(),
+                new: new.clone(),
+            });
+        }
+        resolved.push((key.clone(), new));
+    }
+    (resolved, changes)
+}
+
+/// `registry._resolve_one(current, current, resolver)`.
+fn resolve_one_declared(runner: &dyn CommandRunner, current: &str) -> String {
+    // `if ":" in scaffold_val and scaffold_tag` — the author's pin.
+    if let Some((_, tag)) = current.rsplit_once(':') {
+        if !tag.is_empty() {
+            return current.to_owned();
+        }
+    }
+    // `scaffold_val.split(":", 1)[0]` — everything before the first
+    // colon, which for a trailing-colon value drops the colon too.
+    let base = current.split_once(':').map_or(current, |(base, _)| base);
+    match resolve_latest_tag(runner, base) {
+        Some(tag) => format!("{base}:{tag}"),
+        // The resolver failed — keep the existing value so a registry
+        // outage does not break the build.
+        None => current.to_owned(),
+    }
+}
+
 /// `registry._resolve_one(current, None, resolver)`.
 fn resolve_one(runner: &dyn CommandRunner, current: &str) -> String {
     // `_, _, tag = current.rpartition(":")` then `if ":" in current and
@@ -183,7 +241,7 @@ pub fn embedded_scaffolds() -> Vec<String> {
 mod tests {
     use super::{
         Change, embedded_scaffolds, infer_scaffold_from_image, is_version_tag, resolve_build_args,
-        resolve_latest_tag, version_key,
+        resolve_latest_tag, resolve_scaffold_build_args, version_key,
     };
     use agentcage_core::config::types::OrderedMap;
     use agentcage_exec::{FakeRunner, Reply};
@@ -250,6 +308,53 @@ mod tests {
         let fake = FakeRunner::new();
         fake.push(Reply::ok(r#"{"Tags": ["latest", "edge"]}"#));
         assert_eq!(resolve_latest_tag(&fake, "ghcr.io/x/y"), None);
+    }
+
+    /// The scaffold branch: a pinned declaration never reaches the
+    /// registry, an untagged one is bumped, and a registry that cannot
+    /// answer leaves the declaration alone rather than emitting a bare
+    /// ref the build would then resolve to `:latest`.
+    #[test]
+    fn a_scaffolds_own_declaration_decides_whether_to_re_resolve() {
+        let fake = FakeRunner::new();
+        let mut args = OrderedMap::new();
+        args.insert("PINNED".to_owned(), "ghcr.io/x/y:1.2.3".to_owned());
+        let (resolved, changes) = resolve_scaffold_build_args(&fake, &args);
+        assert_eq!(
+            resolved,
+            [("PINNED".to_owned(), "ghcr.io/x/y:1.2.3".to_owned())]
+        );
+        assert!(changes.is_empty());
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+
+        let fake = FakeRunner::new();
+        fake.push(Reply::ok(r#"{"Tags": ["2026.2.24", "2026.2.3"]}"#));
+        let mut args = OrderedMap::new();
+        args.insert(
+            "BASE_IMAGE".to_owned(),
+            "ghcr.io/openclaw/openclaw".to_owned(),
+        );
+        let (resolved, changes) = resolve_scaffold_build_args(&fake, &args);
+        assert_eq!(
+            resolved,
+            [(
+                "BASE_IMAGE".to_owned(),
+                "ghcr.io/openclaw/openclaw:2026.2.24".to_owned()
+            )]
+        );
+        assert_eq!(changes.len(), 1);
+
+        let fake = FakeRunner::new();
+        fake.push(Reply::ok(r#"{"Tags": ["latest"]}"#));
+        let (resolved, changes) = resolve_scaffold_build_args(&fake, &args);
+        assert_eq!(
+            resolved,
+            [(
+                "BASE_IMAGE".to_owned(),
+                "ghcr.io/openclaw/openclaw".to_owned()
+            )]
+        );
+        assert!(changes.is_empty());
     }
 
     #[test]

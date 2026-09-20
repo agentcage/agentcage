@@ -78,6 +78,49 @@ fn host_dns_servers() -> Result<Vec<String>, ConfigError> {
     )))
 }
 
+/// Variables this process publishes to the config layer without
+/// putting them in its own environment.
+///
+/// `run.py` does `os.environ["PROJECT_DIR"] = project_dir` so that a
+/// scaffold's `${PROJECT_DIR}:/workspace:rw` expands when the quadlets
+/// are rendered. `std::env::set_var` is `unsafe` in Rust 2024 — it races
+/// every other thread's `getenv`, and this crate forbids `unsafe` — and
+/// the value is only ever read back by this process, through
+/// [`RealQuadletHost::env_var`] and [`RealHost::env_var_is_set`]. So it
+/// is published here instead, the same trade
+/// [`crate::timing::enable_echo`] makes for `AGENTCAGE_TIMING`.
+///
+/// An overlay entry wins over the real environment: `agentcage run
+/// --project X` has to mean `X` even on a shell that exports
+/// `PROJECT_DIR`.
+static OVERLAY: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+fn overlay() -> &'static std::sync::Mutex<BTreeMap<String, String>> {
+    OVERLAY.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
+/// Publish `name=value` to every host probe in this process.
+///
+/// See [`OVERLAY`]. Called once, by the `run` flow, before the config is
+/// loaded.
+pub fn publish_env(name: &str, value: &str) {
+    if let Ok(mut map) = overlay().lock() {
+        map.insert(name.to_owned(), value.to_owned());
+    }
+}
+
+/// `os.environ.get(name)`, overlay first.
+#[must_use]
+pub fn env_var(name: &str) -> Option<String> {
+    if let Ok(map) = overlay().lock() {
+        if let Some(value) = map.get(name) {
+            return Some(value.clone());
+        }
+    }
+    std::env::var(name).ok()
+}
+
 /// `platform.system()` for this build.
 ///
 /// A compile-time constant rather than a runtime probe: a binary built
@@ -142,7 +185,7 @@ impl agentcage_core::config::ValidationHost for RealHost {
     }
 
     fn env_var_is_set(&self, name: &str) -> bool {
-        std::env::var_os(name).is_some()
+        env_var(name).is_some()
     }
 }
 
@@ -208,7 +251,7 @@ pub fn realpath(path: &str) -> String {
 
 impl QuadletHost for RealQuadletHost {
     fn env_var(&self, name: &str) -> Option<String> {
-        std::env::var(name).ok()
+        env_var(name)
     }
 
     fn realpath(&self, path: &str) -> String {

@@ -56,7 +56,9 @@
 pub mod render;
 pub mod templates;
 
-pub use render::{GenerateOptions, QuadletHost, Quadlets, StatePaths, generate_quadlets};
+pub use render::{
+    GenerateOptions, QuadletHost, Quadlets, StatePaths, expanduser, expandvars, generate_quadlets,
+};
 
 use crate::config::Config;
 
