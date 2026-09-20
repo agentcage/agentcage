@@ -110,6 +110,47 @@ impl<'a> SystemdCreds<'a> {
             .timeout(ENCRYPT_TIMEOUT)
     }
 
+    /// `systemd-creds decrypt <path> -`.
+    ///
+    /// The one *read* direction, and it exists for one caller: the
+    /// `vm` backend bridges a cage's `.cred` blobs into the guest's
+    /// podman store, which means decrypting them on the host and
+    /// piping the plaintext through `limactl shell`
+    /// (`vm.py::_bridge_secrets`). Nothing on the container backend
+    /// decrypts host-side — there the Quadlet's
+    /// `LoadCredentialEncrypted` does it at unit start, which is why
+    /// this is not the mirror of [`SystemdCreds::encrypt`].
+    ///
+    /// No scope flag. `systemd-creds decrypt` picks the key from the
+    /// blob's own header, so passing `--user` here would only be able
+    /// to make a decryptable blob undecryptable.
+    ///
+    /// The trailing `-` writes to stdout, which is where the caller
+    /// takes the plaintext from. It is never an argument and never a
+    /// file.
+    #[must_use]
+    pub fn decrypt_command(path: &str) -> Command {
+        Command::new("systemd-creds")
+            .args(["decrypt", path, "-"])
+            .captured()
+            .timeout(ENCRYPT_TIMEOUT)
+    }
+
+    /// Decrypt the blob at `path` and return its plaintext.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Timeout`] after [`ENCRYPT_TIMEOUT`],
+    /// [`ExecError::Failed`] on a non-zero exit — which is what a blob
+    /// encrypted with a key this host no longer has looks like.
+    pub fn decrypt(&self, path: &str) -> Result<String, ExecError> {
+        let out = self
+            .runner
+            .run(&Self::decrypt_command(path))?
+            .check("systemd-creds")?;
+        Ok(out.stdout_text())
+    }
+
     /// `systemd-creds [--user] encrypt --name _probe - -`.
     ///
     /// Encrypts a literal to stdout and throws the result away; the only

@@ -49,3 +49,6 @@ pub mod staging;
 pub mod terminal;
 /// Per-phase wall times, behind the hidden `--timings` flags.
 pub mod timing;
+
+/// `backends/vm.py`, generation half.
+pub mod vm;

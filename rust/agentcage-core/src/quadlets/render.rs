@@ -1325,7 +1325,15 @@ fn dirname(path: &str) -> &str {
 /// Returns the text unchanged when every character is in Python's
 /// `_find_unsafe` safe set, and otherwise wraps it in single quotes with
 /// any embedded `'` spliced out as `'"'"'`.
-fn shlex_quote(text: &str) -> String {
+///
+/// Public because the `vm` backend needs the same function for a
+/// different consumer: it composes `sh -c` scripts that run *inside the
+/// Lima guest* (`vm.py`'s `push_config_files`, `pull_grants`,
+/// `push_grants`) and quotes every guest path with it. One
+/// implementation, because two would diverge on exactly the character
+/// that mattered.
+#[must_use]
+pub fn shlex_quote(text: &str) -> String {
     if text.is_empty() {
         return "''".to_owned();
     }

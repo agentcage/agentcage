@@ -131,6 +131,9 @@ pub fn environment() -> Result<Environment<'static>, Error> {
         }
     });
     environment.add_filter("systemd_exec", systemd_exec);
+    // Jinja2's `indent` keeps a trailing newline as a blank line;
+    // minijinja's drops it. See [`jinja_indent`].
+    environment.add_filter("indent", jinja_indent);
     // Jinja2's `default` takes three arguments; minijinja's takes two.
     // `openclaw/cage.yaml.j2` uses the third — see [`jinja_default`].
     environment.add_filter("default", jinja_default);
@@ -158,6 +161,49 @@ pub fn environment() -> Result<Environment<'static>, Error> {
 /// fails.
 pub(crate) fn render(name: &str, context: Value) -> Result<String, Error> {
     shared().get_template(name)?.render(context)
+}
+
+/// The environment `lima/provisioning.py` builds, which is **not** the
+/// one above.
+///
+/// ```python
+/// SandboxedEnvironment(
+///     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
+///     keep_trailing_newline=True,
+/// )
+/// ```
+///
+/// No `trim_blocks`, no `lstrip_blocks`. That is not an oversight in
+/// the Python to be tidied away here: `lima.yaml.j2` wraps its `vz`
+/// block and its `portForwards` block in `{% if %}` tags on their own
+/// lines, and without `trim_blocks` each of those tags leaves its
+/// newline behind. A QEMU cage's Lima YAML therefore has *two* blank
+/// lines after `vmType: qemu` where a trimmed render has one. YAML does
+/// not care and a human would not notice, but the fixture is a byte
+/// comparison against the Python's output, and "close enough" is not a
+/// category the port works in.
+///
+/// Built once and cached, like [`shared`].
+fn lima() -> &'static Environment<'static> {
+    static ENVIRONMENT: OnceLock<Environment<'static>> = OnceLock::new();
+    ENVIRONMENT.get_or_init(|| {
+        let mut environment = Environment::new();
+        environment.set_keep_trailing_newline(true);
+        environment.add_filter("indent", jinja_indent);
+        register_templates(&mut environment).expect("embedded templates parse");
+        environment
+    })
+}
+
+/// Render one of the embedded templates with Jinja2's *default*
+/// whitespace handling. See [`lima`].
+///
+/// # Errors
+///
+/// [`minijinja::Error`] when the template is unknown or rendering it
+/// fails.
+pub(crate) fn render_untrimmed(name: &str, context: Value) -> Result<String, Error> {
+    lima().get_template(name)?.render(context)
 }
 
 /// Render a template that is not one of the embedded ones, with a live
@@ -210,6 +256,87 @@ fn systemd_exec(args: &Value) -> Result<String, Error> {
         items.push(text.to_owned());
     }
     Ok(super::systemd_exec_join(&items))
+}
+
+/// Jinja2's `indent(s, width=4, first=False, blank=False)`.
+///
+/// minijinja ships an `indent` filter, and it is not the same function.
+/// Jinja2's opens with a comment-worthy quirk:
+///
+/// ```python
+/// s += newline  # this quirk is necessary for splitlines method
+/// ```
+///
+/// which turns a trailing newline into a final empty line that survives
+/// the join — so `indent("a\nb\n", 6, first=True)` ends with a newline
+/// and the next template line starts after a **blank** line. minijinja's
+/// builtin strips it instead.
+///
+/// One filter, one blank line, and it is load-bearing: `lima.yaml.j2`
+/// ends with
+///
+/// ```jinja
+/// {{ provision_script | indent(6, first=true) }}
+/// ```
+///
+/// so the difference is a missing blank line between the provisioning
+/// script and `portForwards:` in every Lima config the port generates.
+/// YAML does not care; the fixture comparison against the Python's
+/// bytes does, and a renderer that is "equivalent" rather than equal is
+/// how a port stops being checkable.
+///
+/// Registered on both environments rather than only the Lima one: the
+/// quadlet templates do not use `indent` today, and if one starts to,
+/// it should get Jinja2's.
+///
+/// `blank` is accepted and honoured; `width` must be an integer, which
+/// is all any template here passes (Jinja2 also accepts a string).
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "minijinja's `Filter` impls are over owned argument types"
+)]
+fn jinja_indent(value: Value, rest: minijinja::value::Rest<Value>) -> Result<String, Error> {
+    let text = value.to_string();
+    let width = rest.first().map_or(Ok(4_usize), |v| {
+        usize::try_from(v.as_i64().unwrap_or(4))
+            .map_err(|_| Error::new(ErrorKind::InvalidOperation, "indent width must be positive"))
+    })?;
+    let first = rest.get(1).is_some_and(minijinja::value::Value::is_true);
+    let blank = rest.get(2).is_some_and(minijinja::value::Value::is_true);
+    let indention = " ".repeat(width);
+
+    // `s += newline` then `splitlines()`: the appended newline is what
+    // makes a string that already ended in one produce a final empty
+    // element. Reproduced literally rather than reasoned about.
+    let padded = format!("{text}\n");
+    let mut lines: Vec<&str> = padded.split('\n').collect();
+    // `str::split` leaves a trailing "" that `splitlines` does not.
+    lines.pop();
+
+    let mut out = if blank {
+        lines.join(&format!("\n{indention}"))
+    } else {
+        let mut iter = lines.into_iter();
+        let mut joined = iter.next().unwrap_or_default().to_owned();
+        let rest: Vec<String> = iter
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("{indention}{line}")
+                }
+            })
+            .collect();
+        if !rest.is_empty() {
+            joined.push('\n');
+            joined.push_str(&rest.join("\n"));
+        }
+        joined
+    };
+    if first {
+        out.insert_str(0, &indention);
+    }
+    Ok(out)
 }
 
 /// Jinja2's `default(value, default_value='', boolean=False)`.

@@ -200,6 +200,18 @@ impl Paths {
         &self.quadlet_dir
     }
 
+    /// `~/.config/agentcage/lima` — where the `vm` backend keeps its
+    /// `lima.yaml` and the quadlets it pushes into the guest.
+    ///
+    /// `backends/vm.py::unit_dir`, and like [`Paths::quadlet_dir`] and
+    /// [`Paths::apple_root`] it is an `expanduser` with **no** XDG
+    /// lookup — so a cage the Python deployed has its Lima config
+    /// there whatever `XDG_CONFIG_HOME` says.
+    #[must_use]
+    pub fn lima_dir(&self) -> PathBuf {
+        self.home.join(".config/agentcage/lima")
+    }
+
     /// `~/.config/systemd/user` — where *native* `.service` units go.
     ///
     /// `backends/container.py::user_unit_dir`. A quadlet is transpiled

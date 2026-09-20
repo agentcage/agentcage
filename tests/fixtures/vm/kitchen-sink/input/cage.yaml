@@ -1,0 +1,43 @@
+name: vm-full
+isolation: vm
+container:
+  image: docker.io/library/node:22-slim
+  command: ["node", "/app/agent.js"]
+  timeout_start_sec: 90
+  env:
+    NODE_ENV: production
+vm:
+  vcpus: 8
+  mem_mb: 8192
+domains:
+  allow:
+  - api.anthropic.com
+  - registry.npmjs.org
+capture:
+  enable: true
+secret_injection:
+- env: ANTHROPIC_API_KEY
+  source: "env:ANTHROPIC_API_KEY"
+  placeholder: generate
+- env: GITHUB_TOKEN
+  source: "podman:"
+agents:
+  decider:
+    enable: true
+    api_key: "env:OPENROUTER_API_KEY"
+protocol_relays:
+- name: mail
+  type: smtp
+  listen: 0.0.0.0:1587
+  upstream:
+    host: smtp.example.com
+    port: 587
+    tls: true
+  auth:
+    type: plain
+    user_source: "env:GOLDEN_SET_VAR"
+    password_source: "cmd:printf fake-smtp-password"
+ports:
+  tcp:
+    passthrough:
+    - 1587

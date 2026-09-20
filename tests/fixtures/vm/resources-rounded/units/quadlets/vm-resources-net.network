@@ -1,0 +1,4 @@
+[Network]
+NetworkName=vm-resources-net
+Internal=true
+Subnet=10.89.182.0/24

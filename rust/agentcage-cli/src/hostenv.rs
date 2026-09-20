@@ -136,6 +136,28 @@ pub fn system() -> &'static str {
     }
 }
 
+/// `pwd.getpwuid(os.getuid()).pw_name` — the invoking user's login name.
+///
+/// Lima names the guest user after the host user, deriving it from the
+/// invoking uid's passwd entry, and `lima/provisioning.py` resolves it
+/// the same way so the provisioning script targets the right account.
+/// The comment there is explicit about why it is not
+/// `getpass.getuser()`: that one trusts `$USER` / `$LOGNAME` and can
+/// disagree with the uid under `sudo` or an overridden environment,
+/// which would produce a script that chowns and lingers the wrong user.
+///
+/// The environment is only the *fallback*, for a uid with no passwd
+/// entry. Python raises `KeyError` there; a container-ish host with no
+/// passwd database is not something to crash a cage create over, and
+/// the resulting script is wrong in the same way either way.
+#[must_use]
+pub fn login_name() -> String {
+    if let Ok(Some(user)) = nix::unistd::User::from_uid(nix::unistd::Uid::current()) {
+        return user.name;
+    }
+    env_var("USER").unwrap_or_default()
+}
+
 /// `platform.machine()`.
 #[must_use]
 pub fn machine() -> &'static str {

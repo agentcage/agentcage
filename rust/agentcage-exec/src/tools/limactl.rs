@@ -211,3 +211,198 @@ impl<'a> LimaInstance<'a> {
         Ok(())
     }
 }
+
+/// Podman inside the guest — `lima/podman.py`'s `VmPodman`.
+///
+/// The `vm` backend has no host podman to talk to: the store, the
+/// images and the containers all live inside the Lima guest, so every
+/// operation the CLI would run against `podman` is the same argv
+/// wrapped in a `limactl shell`. The Python spells that by holding a
+/// `LimaInstance` and calling `exec`, and this does the same, so the
+/// two flags [`LimaInstance::shell_command`] documents — `--workdir /`
+/// and `--tty=false` — cover these calls as well. The second one is not
+/// optional here: [`VmPodman::secret_create`] pipes a credential
+/// through ssh, and a PTY's line discipline would rewrite it.
+///
+/// Mirrors the subset of [`super::podman::Podman`] the CLI's secret
+/// paths use, which is what lets `secret_store.py` take either object.
+#[derive(Debug)]
+pub struct VmPodman<'a> {
+    instance: LimaInstance<'a>,
+}
+
+impl<'a> VmPodman<'a> {
+    /// Podman in the guest that runs `cage_name`.
+    #[must_use]
+    pub fn new(runner: &'a dyn CommandRunner, cage_name: &str) -> Self {
+        Self {
+            instance: LimaInstance::new(runner, cage_name),
+        }
+    }
+
+    /// The Lima instance this routes through.
+    #[must_use]
+    pub fn instance(&self) -> &LimaInstance<'a> {
+        &self.instance
+    }
+
+    /// `podman pull <image>` in the guest, as a bool.
+    ///
+    /// # Errors
+    ///
+    /// Only if `limactl` itself could not be run.
+    pub fn pull(&self, image: &str) -> Result<bool, ExecError> {
+        Ok(self.exec(&["podman", "pull", image], false)?.success())
+    }
+
+    /// `podman image inspect <image>` in the guest, first element.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] when the image is unknown,
+    /// [`ExecError::Parse`] when the answer is not a non-empty JSON
+    /// array — the Python's `json.loads(...)[0]`, whose `IndexError`
+    /// this variant stands in for.
+    pub fn image_inspect(&self, image: &str) -> Result<Value, ExecError> {
+        let out = self.exec(&["podman", "image", "inspect", image], true)?;
+        let value: Value =
+            serde_json::from_str(out.stdout_text().trim()).map_err(|e| ExecError::Parse {
+                program: "podman".to_string(),
+                detail: e.to_string(),
+            })?;
+        value
+            .as_array()
+            .and_then(|a| a.first())
+            .cloned()
+            .ok_or_else(|| ExecError::Parse {
+                program: "podman".to_string(),
+                detail: "expected a non-empty JSON array".to_string(),
+            })
+    }
+
+    /// `podman secret ls` in the guest, leniently.
+    ///
+    /// # Errors
+    ///
+    /// Only if `limactl` itself could not be run.
+    pub fn secret_list(&self, prefix: &str) -> Result<Vec<String>, ExecError> {
+        let out = self.exec(&SECRET_LS, false)?;
+        Ok(crate::tools::podman::parse_secret_list(&out, prefix))
+    }
+
+    /// `podman secret ls` in the guest, failing on a listing failure.
+    ///
+    /// The distinction is issue #262's, and on this backend it is the
+    /// one that matters most: the guest's store can only be read while
+    /// the guest runs, so "the listing failed" and "the store is empty"
+    /// are states the `Secret=` gate has to tell apart. A failure here
+    /// sends the caller back to emit-everything; an empty list would
+    /// drop every directive.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] on a non-zero exit. The Python raises a
+    /// `RuntimeError` reading `podman secret ls failed in VM: <stderr
+    /// or stdout>`; the text is carried in the error's `stderr` field
+    /// rather than the message, because every caller in the port
+    /// swallows this error rather than printing it.
+    pub fn secret_list_strict(&self, prefix: &str) -> Result<Vec<String>, ExecError> {
+        let out = self.exec(&SECRET_LS, false)?;
+        if !out.success() {
+            let stderr = out.stderr_text();
+            let detail = if stderr.trim().is_empty() {
+                out.stdout_text()
+            } else {
+                stderr
+            };
+            return Err(ExecError::Failed {
+                program: "podman secret ls in VM".to_string(),
+                status: out.status,
+                stderr: detail.trim().to_string(),
+            });
+        }
+        Ok(crate::tools::podman::parse_secret_list(&out, prefix))
+    }
+
+    /// `podman secret inspect <name>` in the guest, as a bool.
+    ///
+    /// # Errors
+    ///
+    /// Only if `limactl` itself could not be run.
+    pub fn secret_exists(&self, name: &str) -> Result<bool, ExecError> {
+        Ok(self
+            .exec(&["podman", "secret", "inspect", name], false)?
+            .success())
+    }
+
+    /// `podman secret create <name> -` in the guest, value on stdin.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] on a non-zero exit.
+    pub fn secret_create(&self, name: &str, value: &str) -> Result<(), ExecError> {
+        self.instance.exec_with_secret(
+            &["podman", "secret", "create", name, "-"].map(str::to_string),
+            value,
+        )?;
+        Ok(())
+    }
+
+    /// `podman secret inspect --showsecret --format {{.SecretData}}`.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] when there is no such secret.
+    pub fn secret_read(&self, name: &str) -> Result<String, ExecError> {
+        let out = self.exec(
+            &[
+                "podman",
+                "secret",
+                "inspect",
+                "--showsecret",
+                "--format",
+                "{{.SecretData}}",
+                name,
+            ],
+            true,
+        )?;
+        Ok(out.stdout_trimmed())
+    }
+
+    /// `podman secret rm <name>` in the guest, reporting success.
+    ///
+    /// # Errors
+    ///
+    /// Only if `limactl` itself could not be run.
+    pub fn secret_remove(&self, name: &str) -> Result<bool, ExecError> {
+        Ok(self
+            .exec(&["podman", "secret", "rm", name], false)?
+            .success())
+    }
+
+    /// One guest command, from borrowed parts.
+    fn exec(&self, command: &[&str], check: bool) -> Result<Output, ExecError> {
+        let owned: Vec<String> = command.iter().map(|part| (*part).to_string()).collect();
+        self.instance.exec(&owned, check)
+    }
+}
+
+/// The listing argv, shared by the lenient and strict listers.
+const SECRET_LS: [&str; 6] = [
+    "podman",
+    "secret",
+    "ls",
+    "--noheading",
+    "--format",
+    "{{.Name}}",
+];
+
+impl crate::tools::podman::SecretLister for VmPodman<'_> {
+    fn secret_list(&self, prefix: &str) -> Result<Vec<String>, ExecError> {
+        Self::secret_list(self, prefix)
+    }
+
+    fn secret_list_strict(&self, prefix: &str) -> Result<Vec<String>, ExecError> {
+        Self::secret_list_strict(self, prefix)
+    }
+}

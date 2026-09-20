@@ -1,0 +1,195 @@
+# Lima VM config for agentcage cage: vm-ports
+vmType: qemu
+
+
+images:
+  # Debian 13 "trixie" genericcloud. Trixie's apt repos ship podman 5.x with
+  # netavark as a hard dependency (and aardvark-dns alongside), so the vm
+  # backend gets the netavark/aardvark stack that agentcage's transparent
+  # host-tracking DNS requires — Ubuntu 24.04 only had podman 4.9 + CNI.
+  #
+  # Pinned to an immutable dated build dir. The .../latest/ symlink and the
+  # .../daily/ tree are mutable — Debian rotates/prunes dated dirs (≈weekly)
+  # and republishes 'latest' in place, which changes the image bytes and
+  # makes the digest check below fail fatally. Bump the YYYYMMDD-NNNN path and
+  # BOTH digests together to update. Debian publishes ONLY SHA512SUMS per
+  # dated dir (no SHA256SUMS), so these are sha512 digests (Lima supports it).
+  - location: "https://cloud.debian.org/images/cloud/trixie/20260601-2496/debian-13-genericcloud-amd64-20260601-2496.qcow2"
+    arch: "x86_64"
+    digest: "sha512:61264ae6968d765e61cf5607a664ba63099ddfb66b8404aa737d06f89b39c8e0fbaa1517b13705909ff01686d32015a0147436662672b4dacc10b4a171d7993d"
+  - location: "https://cloud.debian.org/images/cloud/trixie/20260601-2496/debian-13-genericcloud-arm64-20260601-2496.qcow2"
+    arch: "aarch64"
+    digest: "sha512:d49b15db1d53aab1cb1ba36af119e6851933fdf33e64124bc3aae0677b7219658f237019bfe9db61a95b11d99e068e8554c6c3df08d46540e8e263f72dc5d1ab"
+
+cpus: 4
+memory: "4GiB"
+disk: "20GiB"
+
+mounts:
+  # Security: only mount the specific directories the VM needs, instead of
+  # the entire home directory.  This prevents the VM from accessing ~/.ssh,
+  # ~/.gnupg, ~/.aws, and other sensitive host files.
+  - location: "~/.config/agentcage"
+    writable: false
+  - location: "~/.local/share/agentcage"
+    writable: true
+
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+
+      # Lima names the guest user after the *host* user (not a fixed "lima"
+      # account). agentcage invokes limactl as that same user, so the host
+      # username is the guest username and is templated in here at config
+      # generation — Lima 2.x warns against reading its cidata env vars from
+      # provisioning scripts.
+      lima_user="cageuser"
+
+      # Install Podman 5 + the netavark/aardvark network stack.
+      # --no-install-recommends keeps the image lean, but on Debian trixie
+      # `netavark` is the only network backend podman *Depends* on — aardvark-dns
+      # (in-container name resolution, REQUIRED for agentcage's transparent
+      # host-tracking DNS), passt/pasta (podman 5's default rootless network
+      # backend), dbus-user-session (user-service lingering) and catatonit (the init
+      # shim podman runs as pid 1 inside containers) are merely *Recommends*, so they
+      # MUST be named explicitly or they're silently dropped. nftables provides the
+      # `nft` binary that netavark 1.14's default firewall driver shells out to (an
+      # `iptables`-only host fails rootless `podman run` with "netavark: nftables
+      # error: unable to execute nft"); iptables is kept for compatibility. uidmap
+      # provides the newuidmap/newgidmap setuid helpers rootless podman needs.
+      # slirp4netns and
+      # fuse-overlayfs are intentionally omitted: pasta replaces slirp4netns, and the
+      # trixie 6.12 guest kernel supports native rootless overlay (the fuse-overlayfs
+      # mount_program forces a slow userspace path and stamps a sticky
+      # .has-mount-program flag in the graphroot).
+      # Use http apt mirrors instead of https. apt verifies every package via GPG
+      # signatures on the Release file, so TLS adds nothing for integrity — but the
+      # Debian genericcloud image defaults to https://deb.debian.org, and behind a
+      # corporate TLS-inspection proxy (Netskope/Zscaler/etc.) the fresh VM doesn't
+      # trust the proxy's MITM CA, so https apt dies with "certificate verify failed:
+      # self-signed certificate in certificate chain" and NOTHING installs. http apt
+      # passes straight through. (The previous Ubuntu base worked for exactly this
+      # reason — its cloud image used http mirrors.) Rewrite the mirror lists and any
+      # direct https sources before the first apt call.
+      sed -i 's,https://,http://,g' \
+          /etc/apt/mirrors/*.list /etc/apt/sources.list.d/*.sources \
+          /etc/apt/sources.list 2>/dev/null || true
+
+      apt-get update -qq
+      apt-get install -y -qq --no-install-recommends \
+          podman netavark aardvark-dns passt uidmap nftables iptables dbus-user-session catatonit
+
+      # Stamp the network backend to netavark BEFORE any podman command runs. podman
+      # 5 already defaults to netavark when the binary is present, but the choice is
+      # sticky (recorded in the graphroot on first use) and can't be changed later
+      # without `podman system reset`. agentcage's transparent host-tracking DNS
+      # requires netavark + aardvark-dns, so pin it deterministically.
+      mkdir -p /etc/containers
+      cat > /etc/containers/containers.conf <<'CONF'
+      [network]
+      network_backend = "netavark"
+      CONF
+
+      # Guarantee a rootless subuid/subgid delegation for the cage user. Debian's
+      # adduser normally auto-allocates one, but Lima provisions the guest user via
+      # cloud-init and the range isn't guaranteed; without it rootless podman fails
+      # with "newuidmap: write to uid_map failed". Idempotent — only adds if missing.
+      if ! grep -q "^${lima_user}:" /etc/subuid 2>/dev/null; then
+          usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$lima_user"
+      fi
+
+      # Allow unprivileged processes to bind ports >= 80 (needed for proxy reverse mode).
+      # Setting to 80 instead of 0 blocks binding sensitive low ports (1-79, incl. SSH 22, DNS 53).
+      sysctl -w net.ipv4.ip_unprivileged_port_start=80
+      echo "net.ipv4.ip_unprivileged_port_start=80" > /etc/sysctl.d/99-agentcage.conf
+
+      # Allow the cage user to read journald logs (needed for podman logs + agentcage cage logs)
+      usermod -aG systemd-journal "$lima_user" || true
+      usermod -aG adm "$lima_user" || true
+
+      # Ensure journal files are group-readable for systemd-journal members (least privilege)
+      mkdir -p /var/log/journal
+      systemd-tmpfiles --create --prefix /var/log/journal
+      chmod -R g+rX /var/log/journal
+
+      # Enable lingering for the cage user so systemd user services persist.
+      # Touch the sentinel file directly rather than running
+      # `loginctl enable-linger`: the latter goes through systemd-logind over
+      # D-Bus, and during cloud-init that call has been observed to deadlock
+      # (the preceding `usermod -aG` on the user who already has an active
+      # SSH session leaves logind unresponsive — its dbus calls then time out
+      # at 25 s). Once wedged, every subsequent ssh login fails with
+      # `pam_systemd: Failed to create session: Connection timed out`, which
+      # wedges the entire agentcage flow. The sentinel file is logind's own
+      # state, so writing it has the same effect without round-tripping dbus.
+      mkdir -p /var/lib/systemd/linger
+      touch "/var/lib/systemd/linger/$lima_user"
+
+      # Restart the cage user's systemd manager so it picks up dbus.socket.
+      #
+      # MUST come after BOTH the apt install above and the linger sentinel touch.
+      #
+      # Lima SSHes into the guest before running this provisioning script, and
+      # that login has already started `user@<uid>.service`. A *running* user
+      # manager does not notice a socket unit that apt drops underneath it, so
+      # even though `dbus-user-session` is installed above, the user manager
+      # keeps running without dbus.socket loaded and `/run/user/<uid>/bus` never
+      # appears for the life of that boot. Observed live on a fresh host:
+      #
+      #   user@503.service:  active            <- manager running
+      #   systemd-logind:    active, rc=0      <- NOT wedged
+      #   linger sentinel:   present
+      #   dbus-user-session: ii 1.16.2-2       <- installed
+      #   user dbus.socket:  inactive          <- the cause
+      #   /run/user/503/bus: ABSENT
+      #
+      # Rootless podman defaults to the systemd cgroup manager, which needs that
+      # bus, so the first in-VM `podman build` dies at its first RUN step with
+      # "sd-bus call: Interactive authentication required." — issue #319. Only a
+      # reboot or manager restart fixed it, because a *fresh* manager starts with
+      # the package already present. That is why retrying `cage create` worked
+      # and why waiting never could: the socket was never going to appear.
+      #
+      # `systemctl restart user@<uid>.service` (verified in-guest: dbus.socket
+      # inactive -> active, bus socket ABSENT -> PRESENT) is preferred over
+      # `systemctl --user daemon-reload && systemctl --user start dbus.socket`:
+      # this script runs as root, so `systemctl --user` would target root's own
+      # manager, and reaching the cage user's manager instead needs XDG_RUNTIME_DIR
+      # plumbing that is exactly what is half-initialised here. Running as root
+      # during provisioning also means no polkit prompt — unlike `loginctl
+      # enable-linger`, which is avoided for the reason documented above.
+      #
+      # Only the manager unit is restarted; the live SSH session lives in its own
+      # session scope under user-<uid>.slice and is not torn down. Non-fatal: a
+      # warning is better than aborting the whole provisioning run.
+      lima_uid="$(id -u "$lima_user" 2>/dev/null || true)"
+      if [ -n "$lima_uid" ]; then
+          systemctl restart "user@${lima_uid}.service" \
+              || echo "warning: failed to restart user@${lima_uid}.service; rootless podman may lack its user D-Bus" >&2
+      else
+          echo "warning: could not resolve uid for $lima_user; skipping user manager restart" >&2
+      fi
+
+      echo "agentcage provisioning complete"
+
+
+
+portForwards:
+
+  - guestPort: 80
+    hostPort: 8080
+    hostIP: "127.0.0.1"
+
+  - guestPort: 443
+    hostPort: 8443
+    hostIP: "0.0.0.0"
+
+
