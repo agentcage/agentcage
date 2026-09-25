@@ -58,6 +58,7 @@ from agentcage.apple_container import cli as ac_cli
 from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
 from agentcage.apple_container import wrapper as ac_wrapper
+from agentcage.backend import OperatorError
 from agentcage.config import Config
 from agentcage.quadlets import _effective_port_policy
 from agentcage.volume_mounts import (
@@ -1511,7 +1512,7 @@ class AppleContainerBackend:
         """
         unit_path = self.unit_dir() / f"{name}.json"
         if not unit_path.exists():
-            raise RuntimeError(
+            raise OperatorError(
                 f"apple-container unit metadata missing at {unit_path}; "
                 f"run `agentcage cage update {name}` to regenerate it "
                 f"from the stored cage.yaml"
@@ -1526,22 +1527,30 @@ class AppleContainerBackend:
         # "wrapped image not found" the image probe below would produce.
         self.ensure_ready(quiet=quiet)
         if not ac_cli.system_running():
-            raise RuntimeError(
+            raise OperatorError(
                 "Apple container apiserver is not running and could not be "
                 "started automatically — run "
                 "'container system start --enable-kernel-install' manually "
                 f"and retry (`agentcage cage start {name}`)"
             )
 
+        # Name the cage and the remedy, not the internal call. The wrapper
+        # tag is derived (agentcage-apple-<cage>) and appears nowhere in
+        # the user's cage.yaml, so quoting it alone sends people grepping
+        # their config for a string that isn't there.
         wrapper_image = ac_wrapper.wrapped_image_name(name)
         if not ac_cli.image_inspect(wrapper_image):
-            raise RuntimeError(
-                f"wrapped image {wrapper_image!r} not found — was build_artifacts() called?"
+            raise OperatorError(
+                f"cage {name!r} has no built image — run "
+                f"'agentcage cage update {name}' to build it "
+                f"(expected {wrapper_image!r} in the local image store)"
             )
         egress_image = _egress_image_name()
         if not ac_cli.image_inspect(egress_image):
-            raise RuntimeError(
-                f"egress image {egress_image!r} not found — was build_artifacts() called?"
+            raise OperatorError(
+                f"cage {name!r} is missing the shared egress image — run "
+                f"'agentcage cage update {name}' to rebuild it "
+                f"(expected {egress_image!r} in the local image store)"
             )
 
         # Stop+delete any prior incarnations of either container (start
@@ -1578,7 +1587,7 @@ class AppleContainerBackend:
 
         egress_cfg_dir = self.egress_config_dir(name)
         if not egress_cfg_dir.is_dir():
-            raise RuntimeError(
+            raise OperatorError(
                 f"egress config dir {egress_cfg_dir} missing — run `cage update`"
             )
 
@@ -1667,8 +1676,29 @@ class AppleContainerBackend:
         # keeps parity with the container/vm path and survives a future
         # cap-default tightening.
         secrets_dir = self.secrets_dir(name)
+        # net.ipv4.ip_forward=1 must come from the kernel command line
+        # here. The egress is a router between the cage and the host
+        # bridge, so supervisor-egress.sh step A hard-fails without it —
+        # but neither route that works elsewhere is available on Apple's
+        # runtime: it mounts /proc/sys read-only (so the supervisor's
+        # ``sysctl -w`` fails even as uid 0 with CAP_SYS_ADMIN, and
+        # adding that cap does not help), and ``container run`` has no
+        # ``--sysctl`` flag, so there is no create-time equivalent of
+        # the Quadlet ``Sysctl=`` in templates/egress.container.j2.
+        # Linux >= 5.8 accepts ``sysctl.<name>=<value>`` on the cmdline,
+        # which --kernel-arg can set.
+        #
+        # The other sysctl that egress.container.j2 sets,
+        # ``net.ipv4.ip_unprivileged_port_start=80``, is deliberately
+        # NOT ported. On the Quadlet path it only exists for the
+        # reverse-mode inbound forwards (``AGENTCAGE_INBOUND_PORTS``),
+        # which this backend never stages — here mitmproxy binds only
+        # :8080 and :8443, both already unprivileged, and dnsmasq gets
+        # :53 from its ``cap_net_bind_service=+ep`` file cap plus the
+        # CAP_NET_BIND_SERVICE bounding-set entry added just below.
         egress_argv = [
             "run", "-d", "--name", f"{name}-egress",
+            "--kernel-arg", "sysctl.net.ipv4.ip_forward=1",
             "--cap-add", "CAP_NET_ADMIN",
             "--cap-add", "CAP_NET_BIND_SERVICE",
             "--cap-add", "CAP_SETUID",
