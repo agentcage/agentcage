@@ -800,6 +800,18 @@ Mac and can run in parallel with Track D as soon as Track C lands.
 | E4 | `vm` backend, execution half: `_deploy_cage`, readiness waits, in-guest build | **e2e phase 7** | Lima host |
 | E5 | `apple-container`, execution half: `start`/`stop`, `_stage_secrets`, mask mountpoint record/cleanup, `_wait_supervisor_ready` | **`phase_apple.sh`**, manual — the same gate this code has today | Apple Silicon, macOS 26+ |
 
+**Fixes that landed on the Python after this table was written, and that E5
+must carry.** Both live in `AppleContainerBackend.start()`, so neither has a
+Rust counterpart to patch today — `AnyBackend::refusal` keeps `apple-container`
+off the Rust execution path until E5 lands, which is why they are recorded here
+rather than ported. Both shipped in v0.40.2.
+
+| Origin | What E5 must include |
+| :-- | :-- |
+| #407 | The egress `container run` argv must carry `--kernel-arg sysctl.net.ipv4.ip_forward=1`. Apple's runtime mounts `/proc/sys` read-only and there is no Quadlet, so the kernel command line is the only create-time lever; without it `supervisor-egress.sh` dies at its `ip_forward` gate (exit 16). Because the egress IP is both the cage's default gateway and its dnsmasq upstream, the symptom is total loss of connectivity inside the cage, not a proxy error. `tests/test_apple_container.py` asserts the flag is present — mirror that assertion, since no CI runner exercises this backend. |
+| #409 | The "no built image" and egress-image preconditions in `start()` must name the cage and `agentcage cage update <name>` rather than the internal `build_artifacts()`, and must raise the operator-error type the CLI renders as a single `error: …` line. Rust cannot reproduce Python's traceback problem, but it can reproduce the unhelpful message. |
+
+
 ### Track F — Cutover
 
 | # | PR | Acceptance check |
