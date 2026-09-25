@@ -6,7 +6,7 @@ This guide provides diagnostic workflows and remediation steps for common operat
 
 ## 1. Quick Diagnostic Checklist
 
-When encountering any issue with agentcage, run through this three-step triage:
+When encountering any issue with agentcage, run through this four-step triage:
 
 ### Step 1: Run System Diagnostics
 ```bash
@@ -28,6 +28,12 @@ agentcage logs <name> -f
 # Egress proxy and DNS logs:
 agentcage logs <name> -s egress -f
 ```
+
+### Step 4: Get the Full Traceback
+```bash
+AGENTCAGE_TRACEBACK=1 agentcage <command>
+```
+agentcage renders expected failures as a single `error: ...` line; set `AGENTCAGE_TRACEBACK=1` to get the underlying traceback when filing a bug.
 
 ---
 

@@ -29,6 +29,7 @@ from agentcage.audit import (
     format_table_header,
     format_table_row,
 )
+from agentcage.backend import OperatorError
 from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
@@ -602,13 +603,20 @@ class _BannerGroup(click.Group):
         return super().get_command(ctx, cmd_name)
 
     def invoke(self, ctx):
-        """Render operator-facing RuntimeErrors as an error line.
+        """Render OperatorError as a single `error: ...` line.
 
-        Backends raise RuntimeError for conditions the operator is meant
-        to act on — a cage that was never built, an apiserver that won't
-        start. Letting those escape prints ~20 lines of click internals
-        around one line of signal. Set AGENTCAGE_TRACEBACK=1 to get the
-        traceback back when debugging agentcage itself.
+        Backends raise :class:`~agentcage.backend.OperatorError` for
+        conditions the operator is meant to act on — a cage that was
+        never built, an apiserver that won't start. Letting those escape
+        prints ~20 lines of click internals around one line of signal.
+        Set AGENTCAGE_TRACEBACK=1 to get the traceback back when
+        debugging agentcage itself.
+
+        Only OperatorError, never bare RuntimeError: NotImplementedError
+        (the abstract SecretStore methods), RecursionError and internal
+        invariant failures all subclass RuntimeError, and those are
+        agentcage bugs whose traceback is the useful output — swallowing
+        them would print `error: ` with an empty message and exit 1.
         """
         try:
             return super().invoke(ctx)
@@ -617,7 +625,7 @@ class _BannerGroup(click.Group):
             # (--help, ctrl-c). Swallowing them turns `--help` into
             # "error: 0" and an exit code of 1.
             raise
-        except RuntimeError as exc:
+        except OperatorError as exc:
             if os.environ.get("AGENTCAGE_TRACEBACK"):
                 raise
             click.echo(f"error: {exc}", err=True)
