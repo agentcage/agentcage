@@ -480,6 +480,99 @@ _BUILD_CONTEXT_IGNORE = shutil.ignore_patterns(
 )
 
 
+# Entries in a cage's state dir that must never travel in a backup
+# tarball. ``creds`` holds credential material and ``pending_secrets.json``
+# is the transient plaintext hand-off consumed at start; a backup taken
+# without --include-secrets must not carry either. The rest is generated
+# noise that restore recreates.
+_BACKUP_EXCLUDE = frozenset({
+    "creds", "pending_secrets.json", "cage-env",
+    "cage.yaml.bak", "cage.yaml.rejected",
+})
+
+# The config files restore has always known how to reinstall. Anything
+# else in the dir is build context (Containerfile + what it COPYs).
+_BACKUP_MANAGED_CONFIG = frozenset({
+    "cage.yaml", "metadata.json", "proxy-config.yaml",
+})
+
+
+def _copy_cage_state_dir(src_dir: Path, dest_dir: Path) -> bool:
+    """Copy a cage's state dir into a backup staging dir.
+
+    Copies the whole directory rather than a fixed filename allowlist, so
+    a cage that builds from a staged ``Containerfile`` carries its build
+    context in the tarball and can be rebuilt on a clean host. Secret
+    material (``_BACKUP_EXCLUDE``) is never copied.
+
+    Returns True if anything beyond ``_BACKUP_MANAGED_CONFIG`` was copied,
+    for the manifest's ``build_context_included``.
+    """
+    has_context = False
+    for entry in sorted(src_dir.iterdir()):
+        if entry.name in _BACKUP_EXCLUDE:
+            continue
+        dest = dest_dir / entry.name
+        if entry.is_dir():
+            shutil.copytree(
+                entry, dest, ignore=_BUILD_CONTEXT_IGNORE, dirs_exist_ok=True,
+            )
+        elif entry.is_file():
+            shutil.copy2(str(entry), str(dest))
+        else:
+            continue
+        if entry.name not in _BACKUP_MANAGED_CONFIG:
+            has_context = True
+    return has_context
+
+
+def _restore_build_context(config_src: Path, deploy_dir: Path) -> None:
+    """Reinstall a backup's build context into a cage's state dir."""
+    for entry in sorted(config_src.iterdir()):
+        if entry.name in _BACKUP_MANAGED_CONFIG:
+            continue
+        dest = deploy_dir / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, dest, dirs_exist_ok=True)
+        elif entry.is_file():
+            shutil.copy2(str(entry), str(dest))
+
+
+def _check_restore_build_context(manifest: dict, config_src: Path) -> None:
+    """Fail before any build work if the tarball cannot rebuild the cage.
+
+    A cage.yaml with ``container.build.containerfile`` pointing at a file
+    the tarball does not carry cannot be rebuilt on a clean host. Without
+    this the failure surfaces much later, as an opaque "local-only image
+    is not present in the local image store" from the backend.
+    """
+    import yaml
+
+    cage_yaml = config_src / "cage.yaml"
+    if not cage_yaml.is_file():
+        return
+    try:
+        raw = yaml.safe_load(cage_yaml.read_text()) or {}
+    except Exception:
+        return
+    build = ((raw.get("container") or {}).get("build") or {})
+    cf = build.get("containerfile")
+    if not cf or (config_src / cf).is_file():
+        return
+    click.echo(
+        f"error: this backup cannot rebuild the cage — its cage.yaml builds "
+        f"from {cf!r}, which the tarball does not contain "
+        f"(build_context_included="
+        f"{manifest.get('build_context_included', False)}).\n"
+        f"  Backups taken before the build context was included omit it. "
+        f"Either re-take the backup with a newer agentcage, or restore with "
+        f"--no-start, stage the build context into the cage's config dir, "
+        f"and run 'agentcage cage update <name>'.",
+        err=True,
+    )
+    sys.exit(1)
+
+
 def _stage_build_context(src_dir: Path, dest_dir: Path,
                          *, clobber: bool = True) -> None:
     """Copy a Containerfile's sibling build inputs into a cage's state dir.
@@ -3156,10 +3249,7 @@ def _cage_backup_apple_container(
         config_dir = staging_path / "config"
         config_dir.mkdir()
         src_dir = Path(state.stored_config_path(name)).parent
-        for fname in ("cage.yaml", "metadata.json", "proxy-config.yaml"):
-            src = src_dir / fname
-            if src.is_file():
-                shutil.copy2(str(src), str(config_dir / fname))
+        has_build_context = _copy_cage_state_dir(src_dir, config_dir)
 
         # ── Secret env names (no values) ──
         secret_envs = [r.env for r in (cfg.secret_injection or [])]
@@ -3201,6 +3291,7 @@ def _cage_backup_apple_container(
             "named_volumes": [],  # not supported on apple-container
             "secret_keys": secret_envs,
             "secrets_included": False,
+            "build_context_included": has_build_context,
         }
         (staging_path / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n"
@@ -3284,6 +3375,7 @@ def _cage_restore_apple_container(
         # Restore config
         config_src = backup_dir / "config"
         cage_yaml_src = config_src / "cage.yaml"
+        _check_restore_build_context(manifest, config_src)
         if not cage_yaml_src.is_file():
             click.echo(
                 "error: invalid backup — missing config/cage.yaml",
@@ -3300,9 +3392,14 @@ def _cage_restore_apple_container(
         state.save_deployment(target_name, str(cage_yaml_src))
 
         meta_src = config_src / "metadata.json"
+        deploy_dir = Path(state.stored_config_path(target_name)).parent
         if meta_src.is_file():
-            deploy_dir = Path(state.stored_config_path(target_name)).parent
             shutil.copy2(str(meta_src), str(deploy_dir / "metadata.json"))
+
+        # Reinstall the build context. --force clears the state dir via
+        # state.remove_deployment(), so anything an operator staged there
+        # by hand is already gone by now; the tarball is the only source.
+        _restore_build_context(config_src, deploy_dir)
 
         # Regenerate derived files
         state.save_proxy_config(target_name)
@@ -3371,10 +3468,7 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         config_dir = staging_path / "config"
         config_dir.mkdir()
         src_dir = Path(state.stored_config_path(name)).parent
-        for fname in ("cage.yaml", "metadata.json", "proxy-config.yaml"):
-            src = src_dir / fname
-            if src.is_file():
-                shutil.copy2(str(src), str(config_dir / fname))
+        has_build_context = _copy_cage_state_dir(src_dir, config_dir)
 
         # ── Secrets ──
         expected = _expected_secrets(cfg)
@@ -3440,6 +3534,7 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
             "named_volumes": vol_names,
             "secret_keys": expected,
             "secrets_included": include_secrets and bool(secret_keys),
+            "build_context_included": has_build_context,
         }
         (staging_path / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n"
@@ -3574,6 +3669,7 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
         # ── Restore config ──
         config_src = backup_dir / "config"
         cage_yaml_src = config_src / "cage.yaml"
+        _check_restore_build_context(manifest, config_src)
         if not cage_yaml_src.is_file():
             click.echo(
                 "error: invalid backup — missing config/cage.yaml",
@@ -3594,9 +3690,14 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
 
         # Copy metadata.json if present
         meta_src = config_src / "metadata.json"
+        deploy_dir = Path(state.stored_config_path(target_name)).parent
         if meta_src.is_file():
-            deploy_dir = Path(state.stored_config_path(target_name)).parent
             shutil.copy2(str(meta_src), str(deploy_dir / "metadata.json"))
+
+        # Reinstall the build context. --force clears the state dir via
+        # state.remove_deployment(), so anything an operator staged there
+        # by hand is already gone by now; the tarball is the only source.
+        _restore_build_context(config_src, deploy_dir)
 
         # Regenerate derived files (proxy + dns allowlist)
         state.save_proxy_config(target_name)
