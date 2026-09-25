@@ -140,7 +140,10 @@ assert_output_contains() {
   shift 3
   local output
   output=$("$@" 2>&1) || true
-  if echo "$output" | grep -q "$pattern"; then
+  # Herestring, not `echo ... | grep -q`: grep's early exit on a match
+  # would SIGPIPE `echo`, and `pipefail` would then report the match as a
+  # failure. A herestring keeps grep's pattern semantics with no pipe.
+  if grep -q "$pattern" <<<"$output"; then
     e2e_pass "$id" "$desc"
   else
     e2e_fail "$id" "$desc" "output missing '$pattern'"
