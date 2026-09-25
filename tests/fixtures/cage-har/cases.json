@@ -1,7 +1,7 @@
 {
   "generator": "scripts/gen-cage-har-fixture.py",
   "state_fixture": "tests/fixtures/state-compat/0.40.1",
-  "version": "0.40.1",
+  "version": "0.40.2",
   "cases": [
     {
       "name": "inbound-default",
