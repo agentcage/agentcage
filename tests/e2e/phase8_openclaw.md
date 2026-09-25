@@ -25,8 +25,8 @@ test shape *cannot* catch.
 |---|---|---|
 | **8.1** Gateway serves OpenClaw Control UI | GET `/` contains the literal string `OpenClaw Control` in the response body — rules out reverse-proxy error pages and other servers on the port | Doesn't load the JS bundle, doesn't follow any API route, doesn't test authenticated paths. If openclaw ships a redesign that renames the app title, 8.1 false-fails. If openclaw ships a UI that loads but the backend is broken, 8.1 false-passes. |
 | **8.2** `openclaw health` via exec_alias | Exec_aliases config wires `openclaw` → `node openclaw.mjs`; the CLI runs inside the cage (as root — the 2.0 CLI reads openclaw.json + the SQLite state directly, which are owned by the gateway's root user, so uid-1000 exec sessions EACCES); at least one agent is configured (`Agents:` appears in output) | "Agents:" is a loose match — the health command could fail its internal checks and still print the agent list. Doesn't verify heartbeat, session store, or any downstream dependency. Root-only CLI access is itself unasserted: a regression that breaks plain uid-1000 `cage exec` for non-openclaw commands wouldn't show here. |
-| **8.3** tini is PID 1 | Scaffold's `ENTRYPOINT ["tini", "--"]` was applied and the container started under tini (`/proc/1/comm == tini`) | Doesn't prove tini is correctly forwarding signals — only that it's present. If tini were compiled with bad defaults (e.g., ignoring SIGUSR1), this passes. That's what 8.4 is for. |
-| **8.4** Self-restart on SIGUSR1 | SIGUSR1 sent to the lone `openclaw` process (2026.5+ collapses the older supervisor + `openclaw-gateway` worker pair into one) causes: (a) openclaw logs `received SIGUSR1; restarting` (proves the signal landed AND `isRestartEnabled` returned true), (b) openclaw performs an in-process restart — server tears down, reinitializes, listens again — without exiting (in containers, openclaw deliberately keeps PID 1 alive), (c) the gateway responds 200 again within 60s | Only tests ONE restart cycle. Won't catch file-descriptor leaks, growing memory, or zombie-process accumulation across many restarts. PID stays the same by design, so this no longer doubles as a "tini stayed alive" canary — 8.3 is the only PID-1 witness. The log-line witness depends on openclaw's exact wording; if upstream renames it, 8.4 will false-fail loudly (which is the correct behavior). Doesn't verify state preservation across the restart (e.g. devices still paired). |
+| **8.3** tini is PID 1 | Scaffold's `ENTRYPOINT ["tini", "--"]` was applied and the container started under tini (`/proc/1/comm == tini`) | Doesn't prove tini is correctly forwarding signals — only that it's present. If tini were compiled with bad defaults (e.g., ignoring SIGUSR2), this passes. That's what 8.4 is for. |
+| **8.4** Self-restart on SIGUSR2 | SIGUSR2 sent to the lone `openclaw` process (2026.5+ collapses the older supervisor + `openclaw-gateway` worker pair into one) causes: (a) openclaw logs `received SIGUSR2; restarting` (proves the signal landed AND `isRestartEnabled` returned true), (b) openclaw performs an in-process restart — server tears down, reinitializes, listens again — without exiting (in containers, openclaw deliberately keeps PID 1 alive), (c) the gateway responds 200 again within 60s | Only tests ONE restart cycle. Won't catch file-descriptor leaks, growing memory, or zombie-process accumulation across many restarts. PID stays the same by design, so this no longer doubles as a "tini stayed alive" canary — 8.3 is the only PID-1 witness. The log-line witness depends on openclaw's exact wording AND on the signal number; if upstream renames either, 8.4 will false-fail loudly (which is the correct behavior — it is how the SIGUSR1→SIGUSR2 move in openclaw 2026.9.6 was caught). Doesn't verify state preservation across the restart (e.g. devices still paired). |
 | **8.5** `openclaw.json` has SSRF opt-out | Entrypoint wrote the config file with `.browser.ssrfPolicy.dangerouslyAllowPrivateNetwork == true` (jq-parsed, so key renames fail loudly) | Only verifies the config FILE, not the RUNTIME. If openclaw ≥ a future version renames `ssrfPolicy` → `ssrf` or ignores the key, 8.5 passes while the browser tool is still broken. Doesn't launch an actual browser. |
 | **8.6** `controlUi.allowedOrigins` includes gateway URL | Entrypoint templated the port correctly into both `http://localhost:$PORT` and `http://127.0.0.1:$PORT` | Doesn't prove device pairing actually succeeds with those origins. If the allowedOrigins key is renamed upstream, 8.6 fails loudly — which is the correct behaviour. |
 | **8.6b** `gateway.trustedProxies` absent | The entrypoint did NOT declare the egress as a trusted proxy. openclaw 2.0 (v2026.8+) rejects flows from a declared trusted proxy whose forwarded chain doesn't resolve to a real non-loopback client — the egress reverse relay can never produce one (pasta rewrites the source, and the addon strips forwarded headers on inbound flows for exactly this reason), so declaring it 403s every host→UI request with `proxy_attribution_required` | Config-file check only. Doesn't prove the addon actually strips forwarded headers on inbound flows — a reintroduced synthetic `X-Forwarded-For` naming the egress itself would 403 the UI (8.1 catches the symptom) without flipping 8.6b. |
@@ -95,7 +95,7 @@ regression that this phase is blind to.
     and `Host`/`Origin` rewriting — isn't asserted on the wire — device
     pairing could still fail even with 8.6/8.6b passing.
 
-11. **Cage stop/start cycle from the host.** SIGUSR1 is an *internal*
+11. **Cage stop/start cycle from the host.** SIGUSR2 is an *internal*
     restart. `agentcage cage stop` + `cage start` exercises the
     systemd/quadlet lifecycle instead and isn't covered by phase 8.
 
@@ -123,15 +123,27 @@ these stop holding, assertions could pass for the wrong reason.
   `node openclaw.mjs gateway`, the pgrep returns empty and 8.4 bails
   with "could not find openclaw process" — a *correct* failure, but the
   message will mislead.
-- **commands.restart defaults to true.** 8.4 sends an external SIGUSR1
+- **The restart signal is SIGUSR2, not SIGUSR1.** Upstream commit
+  fe318b3 (2026-09-20, shipped in the 2026.9.6 image) moved gateway
+  restarts to SIGUSR2 and reserved SIGUSR1 for Node's V8 inspector:
+  `process.on("SIGUSR2", onRestartSignal)` is now the only restart
+  listener, and there is no SIGUSR1 listener at all. A SIGUSR1 sent to
+  the gateway therefore attaches the debugger instead of restarting —
+  silently, from the test's point of view. If upstream moves the signal
+  again, 8.4 fails loudly with the same "did not log" message; check
+  `process.on("SIGUSR" ...)` in the image's `dist/run-*.mjs` first.
+- **commands.restart defaults to true.** 8.4 sends an external SIGUSR2
   via `pkill`. openclaw's handler (see `isRestartEnabled` in
-  `dist/commands.flags-*.js`) authorizes the restart unless config sets
-  `commands.restart: false`. If a future scaffold change writes that
-  flag (or upstream flips the default), the signal is logged as
-  `received SIGUSR1` but `received SIGUSR1; restarting` never appears,
-  and 8.4 fails with "signal lost or commands.restart=false".
+  `dist/commands.flags-*.mjs`, wired through `setGatewayRestartPolicy`)
+  authorizes the restart unless config sets `commands.restart: false`.
+  If a future scaffold change writes that flag (or upstream flips the
+  default), openclaw instead logs `SIGUSR2 restart ignored (not
+  authorized; commands.restart=false)`, `received SIGUSR2; restarting`
+  never appears, and 8.4 fails. That would be a *product* bug, not a
+  test bug: the scaffold's restart config would no longer be taking
+  effect for real users.
 - **Single-process layout.** 8.4 assumes one `openclaw` process owns
-  the SIGUSR1 handler (true since 2026.5). If upstream re-introduces a
+  the SIGUSR2 handler (true since 2026.5). If upstream re-introduces a
   worker split, the signal may need to target the worker instead — the
   regex `^openclaw$` would then miss the handler and the restart log
   never appears.

@@ -174,3 +174,21 @@ class BackendUnsupported(Exception):
     so each backend can produce a helpful, context-specific error (e.g.
     ``--service proxy on apple-container``).
     """
+
+
+class OperatorError(RuntimeError):
+    """A failure the operator caused and can fix, with the remedy named.
+
+    Raised for conditions like "this cage was never built" where the
+    message is the whole point: the CLI renders it as a single
+    ``error: <message>`` line and exits 1 (see
+    ``agentcage.cli._BannerGroup.invoke``) instead of dumping a traceback
+    through click's internals.
+
+    Deliberately narrower than ``RuntimeError``. The CLI cannot catch
+    bare ``RuntimeError`` because ``NotImplementedError`` (an abstract
+    ``SecretStore`` method), ``RecursionError`` and internal invariant
+    failures all subclass it — those are agentcage bugs, and a traceback
+    is the correct output for them. Subclassing ``RuntimeError`` keeps
+    existing ``except RuntimeError`` callers working.
+    """
