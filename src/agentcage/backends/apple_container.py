@@ -1678,6 +1678,15 @@ class AppleContainerBackend:
         # the Quadlet ``Sysctl=`` in templates/egress.container.j2.
         # Linux >= 5.8 accepts ``sysctl.<name>=<value>`` on the cmdline,
         # which --kernel-arg can set.
+        #
+        # The other sysctl that egress.container.j2 sets,
+        # ``net.ipv4.ip_unprivileged_port_start=80``, is deliberately
+        # NOT ported. On the Quadlet path it only exists for the
+        # reverse-mode inbound forwards (``AGENTCAGE_INBOUND_PORTS``),
+        # which this backend never stages — here mitmproxy binds only
+        # :8080 and :8443, both already unprivileged, and dnsmasq gets
+        # :53 from its ``cap_net_bind_service=+ep`` file cap plus the
+        # CAP_NET_BIND_SERVICE bounding-set entry added just below.
         egress_argv = [
             "run", "-d", "--name", f"{name}-egress",
             "--kernel-arg", "sysctl.net.ipv4.ip_forward=1",

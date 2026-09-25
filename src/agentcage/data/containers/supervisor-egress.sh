@@ -314,17 +314,21 @@ ip6tables -P FORWARD DROP 2>/dev/null || log "warn: ip6tables FORWARD DROP unava
 # the Quadlet's `Sysctl=` directive (the container/vm backends do this
 # because rootless podman doesn't grant CAP_SYS_ADMIN even with
 # `--cap-add net_admin`, so `sysctl -w` from inside fails). We attempt
-# them anyway so apple-container (which doesn't have a Quadlet
-# pre-stage) gets them, but tolerate EPERM/etc. — at runtime we verify
-# the values via /proc/sys/ reads instead.
+# them anyway for runtimes that do allow it, but tolerate EPERM/etc. —
+# at runtime we verify the values via /proc/sys/ reads instead. Note
+# apple-container is NOT such a runtime: it has no Quadlet pre-stage
+# AND mounts /proc/sys read-only, so both writes below always fail
+# there and ip_forward arrives on the kernel command line instead (see
+# the --kernel-arg in backends/apple_container.py).
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
 sysctl -w net.ipv4.ip_unprivileged_port_start=80 >/dev/null 2>&1 || true
 
-# Verify ip_forward is on — if neither Quadlet nor in-container sysctl
-# succeeded, this is fatal because the FORWARD chain becomes
-# unreachable (packets blackhole at the IP layer before reaching it).
+# Verify ip_forward is on — if no route (Quadlet, in-container sysctl,
+# or kernel cmdline) supplied it, this is fatal because the FORWARD
+# chain becomes unreachable (packets blackhole at the IP layer before
+# reaching it).
 if [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)" != "1" ]; then
-  die "net.ipv4.ip_forward=1 not set; the Quadlet must set Sysctl=net.ipv4.ip_forward=1 OR the container must have CAP_SYS_ADMIN" 16
+  die "net.ipv4.ip_forward=1 not set; the Quadlet must set Sysctl=net.ipv4.ip_forward=1, OR the container must have CAP_SYS_ADMIN, OR — on apple-container, where /proc/sys is read-only and there is no Quadlet — container run must pass --kernel-arg sysctl.net.ipv4.ip_forward=1" 16
 fi
 
 #-- Step B. Start dnsmasq (uid 201, CapBnd=cap_net_bind_service only) -----
