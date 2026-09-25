@@ -150,17 +150,22 @@ fi
 # timed out). The recovery idiom mirrors 8.4 below, which already waits
 # for the gateway after a SIGUSR2 restart.
 e2e_timer_start
+# Match with a pure-bash substring test rather than `echo ... | grep -q`:
+# under `pipefail` (set in lib.sh) `grep -q` exits the instant it matches,
+# closing the pipe while `echo` is still writing the page. `echo` then
+# takes EPIPE/SIGPIPE, the pipeline reports 141, and a SUCCESSFUL match
+# is reported as a failure.
 body=""
 for _ in $(seq 1 15); do
   body=$(curl -sS --max-time 5 "$BASE/" 2>&1 || true)
-  echo "$body" | grep -q "OpenClaw Control" && break
+  [[ "$body" == *"OpenClaw Control"* ]] && break
   sleep 2
 done
-if echo "$body" | grep -q "OpenClaw Control"; then
+if [[ "$body" == *"OpenClaw Control"* ]]; then
   e2e_pass "8.1" "gateway serves OpenClaw Control UI"
 else
   e2e_fail "8.1" "gateway serves OpenClaw Control UI" \
-    "expected 'OpenClaw Control' in response within 30s; last got: $(echo "$body" | head -3)"
+    "expected 'OpenClaw Control' in response within 30s; last got: $(head -3 <<<"$body")"
 fi
 
 # 8.2: openclaw health OK via exec alias. Proves exec_aliases wiring
@@ -225,8 +230,11 @@ else
   # window only — absence of the line is still a hard failure.
   for _ in $(seq 1 60); do
     sleep 1
-    if podman logs "${CAGE}-cage" 2>&1 | tail -n "+$((LOG_BEFORE + 1))" \
-         | grep -q 'received SIGUSR2; restarting'; then
+    # Capture first, then match: piping straight into `grep -q` lets grep
+    # exit on the first match and SIGPIPE `tail`/`podman logs`, which
+    # `pipefail` would turn into a spurious miss on a large log.
+    LOG_SINCE=$(podman logs "${CAGE}-cage" 2>&1 | tail -n "+$((LOG_BEFORE + 1))" || true)
+    if [[ "$LOG_SINCE" == *"received SIGUSR2; restarting"* ]]; then
       RESTART_LOGGED=yes
       break
     fi

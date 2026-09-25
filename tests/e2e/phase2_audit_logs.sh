@@ -102,7 +102,10 @@ if wait_ready "$HAR_BASE" 120; then
 
   e2e_timer_start
   OUTPUT=$(agentcage cage har "$HAR_CAGE" --json-lines -n 5 2>&1) || true
-  if echo "$OUTPUT" | grep -q '"flow_id"'; then
+  # Herestring rather than a pipe: HAR records carry bodies, so `grep -q`
+  # can exit before `echo` finishes and `pipefail` would report the match
+  # as a failure.
+  if grep -q '"flow_id"' <<<"$OUTPUT"; then
     e2e_pass "2.9" "HAR export (JSONL)"
   else
     e2e_fail "2.9" "HAR export (JSONL)" "missing flow_id in output"
