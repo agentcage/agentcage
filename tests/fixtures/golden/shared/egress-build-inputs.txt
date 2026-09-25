@@ -1,6 +1,6 @@
 containers/Containerfile.egress 6084
 containers/dns-audit.sh 3730
-containers/supervisor-egress.sh 39836
+containers/supervisor-egress.sh 40233
 proxy/addon.py 76929
 proxy/capture.py 9036
 proxy/inspectors/__init__.py 213
