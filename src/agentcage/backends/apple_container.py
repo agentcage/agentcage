@@ -1667,8 +1667,29 @@ class AppleContainerBackend:
         # keeps parity with the container/vm path and survives a future
         # cap-default tightening.
         secrets_dir = self.secrets_dir(name)
+        # net.ipv4.ip_forward=1 must come from the kernel command line
+        # here. The egress is a router between the cage and the host
+        # bridge, so supervisor-egress.sh step A hard-fails without it —
+        # but neither route that works elsewhere is available on Apple's
+        # runtime: it mounts /proc/sys read-only (so the supervisor's
+        # ``sysctl -w`` fails even as uid 0 with CAP_SYS_ADMIN, and
+        # adding that cap does not help), and ``container run`` has no
+        # ``--sysctl`` flag, so there is no create-time equivalent of
+        # the Quadlet ``Sysctl=`` in templates/egress.container.j2.
+        # Linux >= 5.8 accepts ``sysctl.<name>=<value>`` on the cmdline,
+        # which --kernel-arg can set.
+        #
+        # The other sysctl that egress.container.j2 sets,
+        # ``net.ipv4.ip_unprivileged_port_start=80``, is deliberately
+        # NOT ported. On the Quadlet path it only exists for the
+        # reverse-mode inbound forwards (``AGENTCAGE_INBOUND_PORTS``),
+        # which this backend never stages — here mitmproxy binds only
+        # :8080 and :8443, both already unprivileged, and dnsmasq gets
+        # :53 from its ``cap_net_bind_service=+ep`` file cap plus the
+        # CAP_NET_BIND_SERVICE bounding-set entry added just below.
         egress_argv = [
             "run", "-d", "--name", f"{name}-egress",
+            "--kernel-arg", "sysctl.net.ipv4.ip_forward=1",
             "--cap-add", "CAP_NET_ADMIN",
             "--cap-add", "CAP_NET_BIND_SERVICE",
             "--cap-add", "CAP_SETUID",

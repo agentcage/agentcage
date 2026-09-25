@@ -1687,6 +1687,34 @@ def test_start_creates_logs_dir_and_bind_mounts_it(tmp_path, monkeypatch):
     assert f"{logs_dir}:/var/log/agentcage" in egress_argv
 
 
+def test_start_egress_argv_sets_ip_forward_kernel_arg(tmp_path, monkeypatch):
+    """The egress sibling must be started with
+    ``--kernel-arg sysctl.net.ipv4.ip_forward=1``. supervisor-egress.sh
+    step A hard-fails (exit 16) unless net.ipv4.ip_forward=1, and on
+    Apple's runtime neither route that supplies it elsewhere works:
+    /proc/sys is mounted read-only (so ``sysctl -w`` fails even as uid 0
+    with CAP_SYS_ADMIN) and ``container run`` has no ``--sysctl``, so
+    there is no equivalent of the Quadlet ``Sysctl=`` in
+    templates/egress.container.j2. The kernel command line is the only
+    remaining route. Regression guard: every CI runner is Linux, so this
+    backend is never exercised end-to-end and a refactor could silently
+    drop the flag, leaving the egress dead on arrival on macOS."""
+    backend, captured = _setup_start_test(
+        tmp_path, monkeypatch,
+        unit_meta={
+            "name": "demo", "user_image": "x",
+            "cpus": "", "memory": "", "lifecycle": "interactive",
+        },
+    )
+    backend.start("demo", quiet=True)
+    egress_argv = _egress_run_argv(captured)
+    assert "sysctl.net.ipv4.ip_forward=1" in egress_argv
+    assert (
+        egress_argv[egress_argv.index("sysctl.net.ipv4.ip_forward=1") - 1]
+        == "--kernel-arg"
+    )
+
+
 def test_logs_dir_lives_under_per_cage_state_dir():
     """logs_dir(name) is `<state-dir>/<name>/logs/` so destroy_resources's
     recursive rmtree of _state_dir(name) sweeps it up automatically."""
