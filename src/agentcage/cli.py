@@ -601,6 +601,28 @@ class _BannerGroup(click.Group):
             return globals().get(func_name)
         return super().get_command(ctx, cmd_name)
 
+    def invoke(self, ctx):
+        """Render operator-facing RuntimeErrors as an error line.
+
+        Backends raise RuntimeError for conditions the operator is meant
+        to act on — a cage that was never built, an apiserver that won't
+        start. Letting those escape prints ~20 lines of click internals
+        around one line of signal. Set AGENTCAGE_TRACEBACK=1 to get the
+        traceback back when debugging agentcage itself.
+        """
+        try:
+            return super().invoke(ctx)
+        except (click.exceptions.Exit, click.Abort):
+            # Both subclass RuntimeError and are click's own control flow
+            # (--help, ctrl-c). Swallowing them turns `--help` into
+            # "error: 0" and an exit code of 1.
+            raise
+        except RuntimeError as exc:
+            if os.environ.get("AGENTCAGE_TRACEBACK"):
+                raise
+            click.echo(f"error: {exc}", err=True)
+            sys.exit(1)
+
     def get_help(self, ctx: click.Context) -> str:
         from agentcage.output import banner_text
         return banner_text(version("agentcage")) + "\n" + super().get_help(ctx)

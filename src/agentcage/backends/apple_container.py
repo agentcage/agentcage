@@ -1533,15 +1533,23 @@ class AppleContainerBackend:
                 f"and retry (`agentcage cage start {name}`)"
             )
 
+        # Name the cage and the remedy, not the internal call. The wrapper
+        # tag is derived (agentcage-apple-<cage>) and appears nowhere in
+        # the user's cage.yaml, so quoting it alone sends people grepping
+        # their config for a string that isn't there.
         wrapper_image = ac_wrapper.wrapped_image_name(name)
         if not ac_cli.image_inspect(wrapper_image):
             raise RuntimeError(
-                f"wrapped image {wrapper_image!r} not found — was build_artifacts() called?"
+                f"cage {name!r} has no built image — run "
+                f"'agentcage cage update {name}' to build it "
+                f"(expected {wrapper_image!r} in the local image store)"
             )
         egress_image = _egress_image_name()
         if not ac_cli.image_inspect(egress_image):
             raise RuntimeError(
-                f"egress image {egress_image!r} not found — was build_artifacts() called?"
+                f"cage {name!r} is missing the shared egress image — run "
+                f"'agentcage cage update {name}' to rebuild it "
+                f"(expected {egress_image!r} in the local image store)"
             )
 
         # Stop+delete any prior incarnations of either container (start
