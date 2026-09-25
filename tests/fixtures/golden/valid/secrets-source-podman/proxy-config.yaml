@@ -1,0 +1,11 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+secret_injection:
+- env: FAKE_API_KEY
+  placeholder: agentcage:secret:FAKE_API_KEY:00000000000000000000000000000000
+  inject_to:
+  - api.example.com
+  source: podman:FAKE_PODMAN_SECRET
+agentcage_version: 0.0.0-golden

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=domains-allowlist-net
+Internal=true
+Subnet=10.89.130.0/24

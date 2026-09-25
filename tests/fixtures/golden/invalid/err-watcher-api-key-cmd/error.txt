@@ -1,0 +1,1 @@
+ValueError: agents.watcher.api_key does not support cmd: sources (the egress container has no shell); use env:NAME or systemd-creds:NAME

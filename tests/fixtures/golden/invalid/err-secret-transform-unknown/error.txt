@@ -1,0 +1,1 @@
+ValueError: unknown secret_injection transform: 'nope'. Valid: google-jwt-bearer

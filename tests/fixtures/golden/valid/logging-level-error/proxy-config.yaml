@@ -1,0 +1,7 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+logging:
+  level: error
+agentcage_version: 0.0.0-golden

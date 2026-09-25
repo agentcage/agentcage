@@ -1,0 +1,22 @@
+name: secrets-placeholder-generated
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+secret_injection:
+- env: GEN_ONE
+  inject_to:
+  - api.example.com
+  placeholder: agentcage:secret:GEN_ONE:00000000000000000000000000000001
+- env: GEN_TWO
+  inject_to:
+  - cdn.example.com
+  source: env:GOLDEN_SET_VAR
+  placeholder: agentcage:secret:GEN_TWO:00000000000000000000000000000002

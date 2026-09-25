@@ -1,0 +1,1 @@
+ValueError: protocol_relays[mail].policy sets readonly=True and write_mode='full', which contradict. Use write_mode alone.

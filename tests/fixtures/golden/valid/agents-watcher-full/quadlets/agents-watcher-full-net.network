@@ -1,0 +1,4 @@
+[Network]
+NetworkName=agents-watcher-full-net
+Internal=true
+Subnet=10.89.135.0/24

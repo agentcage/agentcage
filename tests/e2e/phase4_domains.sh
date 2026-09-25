@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 4: Container Mode — Domain Management & Hot-Reload
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl
+preflight_check "$AGENTCAGE" podman curl
 phase_header 4 "Container Mode — Domain Management & Hot-Reload"
 
 CAGE="basic"
@@ -25,11 +25,11 @@ fi
 
 # 4.1: List domains
 assert_output_contains "4.1" "List domains" "httpbin.org" \
-  agentcage domain list "$CAGE"
+  "$AGENTCAGE" domain list "$CAGE"
 
 # 4.2: Add domain
 e2e_timer_start
-if agentcage domain add "$CAGE" example.com >/dev/null 2>&1; then
+if "$AGENTCAGE" domain add "$CAGE" example.com >/dev/null 2>&1; then
   wait_ready "$BASE" 60 || true
   repatch_mock "$CAGE" httpbin.org example.com || true
   e2e_pass "4.2" "Add domain"
@@ -51,7 +51,7 @@ fi
 
 # 4.4: Remove domain
 e2e_timer_start
-if agentcage domain rm "$CAGE" example.com >/dev/null 2>&1; then
+if "$AGENTCAGE" domain rm "$CAGE" example.com >/dev/null 2>&1; then
   wait_ready "$BASE" 60 || true
   repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.4" "Remove domain"
@@ -71,7 +71,7 @@ fi
 
 # 4.6: Stop cage
 e2e_timer_start
-if agentcage cage stop "$CAGE" >/dev/null 2>&1; then
+if "$AGENTCAGE" cage stop "$CAGE" >/dev/null 2>&1; then
   e2e_pass "4.6" "Stop cage"
 else
   e2e_fail "4.6" "Stop cage" "command failed"
@@ -79,7 +79,7 @@ fi
 
 # 4.7: Start cage
 e2e_timer_start
-agentcage cage start "$CAGE" >/dev/null 2>&1
+"$AGENTCAGE" cage start "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
   repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.7" "Start cage"
@@ -89,7 +89,7 @@ fi
 
 # 4.8: Restart cage
 e2e_timer_start
-agentcage cage restart "$CAGE" >/dev/null 2>&1
+"$AGENTCAGE" cage restart "$CAGE" >/dev/null 2>&1
 if wait_ready "$BASE" 60; then
   repatch_mock "$CAGE" httpbin.org || true
   e2e_pass "4.8" "Restart cage"

@@ -1,0 +1,11 @@
+domains:
+  allow:
+  - api.example.com
+agents:
+  decider:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: systemd-creds:FAKE_DECIDER_KEY
+    base_url: ''
+agentcage_version: {{VERSION}}

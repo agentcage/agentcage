@@ -1,0 +1,26 @@
+name: agents-watcher-full
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+agents:
+  watcher:
+    enable: true
+    provider: openai
+    model: gpt-fake-1
+    api_key: systemd-creds:FAKE_WATCHER_KEY
+    interval_seconds: 600
+    window_seconds: 7200
+    max_flows: 500
+    max_digest_tokens: 16000
+    auto_revoke: false
+    dedup_samples: false
+    context: Read-only documentation cage.
+    timeout_seconds: 45

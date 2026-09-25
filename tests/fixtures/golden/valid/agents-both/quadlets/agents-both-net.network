@@ -1,0 +1,4 @@
+[Network]
+NetworkName=agents-both-net
+Internal=true
+Subnet=10.89.128.0/24

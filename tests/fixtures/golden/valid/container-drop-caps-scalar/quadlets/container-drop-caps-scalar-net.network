@@ -1,0 +1,4 @@
+[Network]
+NetworkName=container-drop-caps-scalar-net
+Internal=true
+Subnet=10.89.9.0/24

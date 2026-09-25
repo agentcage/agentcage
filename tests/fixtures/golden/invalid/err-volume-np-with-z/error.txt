@@ -1,0 +1,1 @@
+ValueError: volume '${HOME}/workspace:/workspace:np,z': the np option cannot be combined with z; only rw,np is supported

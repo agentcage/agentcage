@@ -1,0 +1,4 @@
+[Network]
+NetworkName=lifecycle-ephemeral-net
+Internal=true
+Subnet=10.89.109.0/24

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=domains-single-label-net
+Internal=true
+Subnet=10.89.117.0/24

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=container-build-net
+Internal=true
+Subnet=10.89.22.0/24

@@ -1,0 +1,1 @@
+ValueError: ports.tcp.allow entry 8443 is reserved by mitmdump (8080 = HTTP-proxy listener, 8443 = transparent listener); redirecting it would loop or break the L7 proxy path. Move it to ports.tcp.passthrough if the cage needs to reach an upstream service on this port without inspection

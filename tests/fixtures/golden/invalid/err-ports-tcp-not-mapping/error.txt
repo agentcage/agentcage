@@ -1,0 +1,1 @@
+ValueError: ports.tcp must be a mapping with 'allow' and/or 'passthrough' keys (got: [80, 443]). If you meant to list TCP ports, use 'ports.tcp.allow: [...]'

@@ -1,0 +1,1 @@
+ValueError: container.image is required in config

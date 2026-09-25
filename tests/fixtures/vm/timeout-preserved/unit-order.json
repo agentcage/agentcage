@@ -1,0 +1,8 @@
+[
+  "lima.yaml",
+  "quadlets/vm-timeout-high-net.network",
+  "quadlets/vm-timeout-high-certs.volume",
+  "quadlets/vm-timeout-high-public-certs.volume",
+  "quadlets/vm-timeout-high-egress.container",
+  "quadlets/vm-timeout-high-cage.container"
+]

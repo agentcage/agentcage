@@ -1,0 +1,9 @@
+name: domains-legacy-blocklist
+container:
+  image: docker.io/library/node:22-slim
+dns_servers:
+- 192.0.2.53
+domains:
+  mode: blocklist
+  list:
+  - bad.example.com

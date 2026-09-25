@@ -1,0 +1,4 @@
+[Network]
+NetworkName=logging-level-critical-net
+Internal=true
+Subnet=10.89.243.0/24

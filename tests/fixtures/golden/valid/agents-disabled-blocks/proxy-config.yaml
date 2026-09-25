@@ -1,0 +1,10 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+agents:
+  decider:
+    enable: false
+  watcher:
+    enable: false
+agentcage_version: 0.0.0-golden

@@ -1,0 +1,60 @@
+[Unit]
+Description=agentcage cage
+Requires=tmpfs-mask-trailing-slash-egress.service
+After=tmpfs-mask-trailing-slash-egress.service
+
+[Container]
+ContainerName=tmpfs-mask-trailing-slash-cage
+Image=docker.io/library/node:22-slim
+Network=tmpfs-mask-trailing-slash-net.network:ip=10.89.73.2
+Environment="HTTP_PROXY=http://10.89.73.10:8080"
+Environment="HTTPS_PROXY=http://10.89.73.10:8080"
+Environment="http_proxy=http://10.89.73.10:8080"
+Environment="https_proxy=http://10.89.73.10:8080"
+Environment="NODE_EXTRA_CA_CERTS=/certs/mitmproxy-ca-cert.pem"
+Environment="SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem"
+Environment="AGENTCAGE_VERSION=0.0.0-golden"
+Volume=tmpfs-mask-trailing-slash-public-certs.volume:/certs:ro,Z
+Volume={{WORK}}/patches/resolv-tmpfs-mask-trailing-slash.conf:/etc/resolv.conf:ro,Z
+Volume={{HOME}}/project:/workspace:rw
+Tmpfs=/workspace/.git/hooks/:rw,noexec,notmpcopyup,mode=1777
+User=1000:1000
+ReadOnly=true
+SecurityLabelDisable=true
+NoNewPrivileges=true
+DropCapability=ALL
+Exec=node /app/agent.js
+
+[Service]
+# tmpfs masks (#170/#173) whose target lives under a host bind-mount force the
+# OCI runtime to create the mount point, and a bind shares inodes with its
+# source, so the mkdir lands in the operator's project directory on the host —
+# a non-git project gains a stray `.git/hooks/` that `test -d .git` misreads as
+# a repository (#320). The masks stay unconditional; instead, record here which
+# of those paths were absent immediately before start, then remove exactly
+# those on teardown and only while they are still empty. Host paths are
+# base64-encoded because a systemd Exec line applies its own quoting before
+# bash does, and no single escaping of `~/My Project` survives both layers.
+ExecStartPre=/bin/bash -c 'mkdir -p %t/agentcage/tmpfs-mask-trailing-slash/masks && : > %t/agentcage/tmpfs-mask-trailing-slash/masks/root-0 && echo e3tIT01FfX0vcHJvamVjdC8uZ2l0L2hvb2tzCnt7SE9NRX19L3Byb2plY3QvLmdpdAo= | base64 -d | while IFS= read -r d; do [ -n "$d" ] || continue; [ -e "$d" ] && continue; [ -L "$d" ] && continue; echo "$d" >> %t/agentcage/tmpfs-mask-trailing-slash/masks/root-0; done'
+# Deepest path first, so `<project>/.git/hooks` is retired before the
+# `<project>/.git` parent the same mask created. `rmdir` is the whole safety
+# story for "only if empty"; the realpath containment check keeps a symlink
+# swapped in after start from redirecting a removal outside the bind root, and
+# never-recorded (pre-existing) directories are simply not in the list.
+ExecStopPost=-/bin/bash -c 'f=%t/agentcage/tmpfs-mask-trailing-slash/masks/root-0; [ -f "$f" ] || exit 0; root=$(echo e3tIT01FfX0vcHJvamVjdA== | base64 -d) && root=$(realpath -m -- "$root") || exit 0; while IFS= read -r d; do [ -n "$d" ] || continue; case "$(realpath -m -- "$d")" in "$root"/*) ;; *) continue ;; esac; [ -L "$d" ] && continue; [ -d "$d" ] || continue; rmdir "$d" 2>/dev/null || echo "agentcage: keeping $d (created as a tmpfs mask mount point, but not empty)" >&2; done < "$f"; rm -f "$f"; exit 0'
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do podman exec tmpfs-mask-trailing-slash-egress test -f /home/acproxy/.mitmproxy/mitmproxy-ca-cert.pem && exit 0; sleep 1; done; echo "Timed out waiting for CA cert"; exit 1'
+# Add the cage's default route via the egress container. Retries because
+# the container PID is briefly invalid (0/empty) right after `podman start`
+# returns and before the container's init has fully populated state.
+# Without the retry, the route is silently skipped on a restart, the
+# cage has no outbound network, and every fetch from inside the cage
+# fails fast with ECONNREFUSED — surfacing as 502s in tests that
+# exercise the data path after a domain add or secret set restart.
+ExecStartPost=/bin/sh -c 'LAST_ERR=""; for i in $(seq 1 30); do PID=$(podman inspect --format "{{.State.Pid}}" tmpfs-mask-trailing-slash-cage 2>/dev/null); if [ -n "$PID" ] && [ "$PID" != "0" ]; then LAST_ERR=$(nsenter -t "$PID" -U -n -- ip route replace default via 10.89.73.10 2>&1) && { echo "added default route via 10.89.73.10 (attempt $i)"; exit 0; }; fi; sleep 0.5; done; echo "WARNING: failed to add cage default route via 10.89.73.10 after 30 attempts: $LAST_ERR" >&2; exit 1'
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

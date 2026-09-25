@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 5: Container Mode — Backup/Restore & Multi-Cage Isolation
 source "$(dirname "$0")/lib.sh"
-preflight_check agentcage podman curl
+preflight_check "$AGENTCAGE" podman curl
 phase_header 5 "Container Mode — Backup/Restore & Multi-Cage Isolation"
 
 CAGE="basic"
@@ -54,7 +54,7 @@ fi
 
 # 5.1: Both cages running
 e2e_timer_start
-OUTPUT=$(agentcage cage list 2>&1)
+OUTPUT=$("$AGENTCAGE" cage list 2>&1)
 if echo "$OUTPUT" | grep -q "$CAGE" && echo "$OUTPUT" | grep -q "$CAGE2"; then
   e2e_pass "5.1" "Both cages running"
 else
@@ -94,7 +94,7 @@ fi
 
 # 5.3: Backup cage
 e2e_timer_start
-if agentcage cage backup "$CAGE" -o "$BACKUP_FILE" >/dev/null 2>&1 && [ -f "$BACKUP_FILE" ]; then
+if "$AGENTCAGE" cage backup "$CAGE" -o "$BACKUP_FILE" >/dev/null 2>&1 && [ -f "$BACKUP_FILE" ]; then
   e2e_pass "5.3" "Backup cage"
 else
   e2e_fail "5.3" "Backup cage" "backup file not created"
@@ -103,7 +103,7 @@ fi
 # 5.4: Destroy original
 e2e_timer_start
 stop_mock "$CAGE"
-if agentcage cage destroy "$CAGE" -y >/dev/null 2>&1; then
+if "$AGENTCAGE" cage destroy "$CAGE" -y >/dev/null 2>&1; then
   e2e_pass "5.4" "Destroy original"
 else
   e2e_fail "5.4" "Destroy original"
@@ -114,7 +114,7 @@ e2e_timer_start
 # Note: restore may fail if the original config used env vars like ${AGENT_DIR}
 # that aren't set at restore time. This is a known limitation.
 _restore_ok=false
-if AGENT_DIR="$AGENT_DIR" agentcage cage restore "$BACKUP_FILE" >/dev/null 2>&1; then
+if AGENT_DIR="$AGENT_DIR" "$AGENTCAGE" cage restore "$BACKUP_FILE" >/dev/null 2>&1; then
   if wait_ready "$BASE" 90; then
     start_mock "$CAGE" httpbin.org 2>/dev/null || true
     _restore_ok=true

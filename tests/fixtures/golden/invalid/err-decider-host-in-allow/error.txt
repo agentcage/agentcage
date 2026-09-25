@@ -1,0 +1,1 @@
+ValueError: agents.decider.host 'agentcage.local' must not appear in domains.allow/block/passthrough — the control host is a synthetic, non-forwardable endpoint

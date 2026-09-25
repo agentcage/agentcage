@@ -1,0 +1,12 @@
+name: domains-allowlist
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - a.example.com
+  - b.example.org
+dns_servers:
+- 192.0.2.53

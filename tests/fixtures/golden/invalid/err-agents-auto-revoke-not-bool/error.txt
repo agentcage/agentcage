@@ -1,0 +1,1 @@
+ValueError: agents.watcher.auto_revoke must be a boolean (true/false)

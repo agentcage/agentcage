@@ -1,0 +1,4 @@
+[Network]
+NetworkName=agents-decider-full-net
+Internal=true
+Subnet=10.89.51.0/24

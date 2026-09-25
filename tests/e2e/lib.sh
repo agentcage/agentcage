@@ -20,6 +20,19 @@ E2E_PORT_BASE="${E2E_PORT_BASE:-19080}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 export AGENT_DIR="$REPO_ROOT/tests/e2e/fixtures/agent"
 
+# The CLI under test. Every phase invokes "$AGENTCAGE" rather than a bare
+# `agentcage` off PATH so the whole suite can be pointed at a different
+# build — the e2e suite is the conformance oracle a rewritten (Rust) binary
+# has to satisfy, and swapping the binary must not mean editing 100+ call
+# sites. Exported so subshells, `env`-spawned phase scripts, and background
+# jobs all inherit the same choice:
+#
+#   AGENTCAGE=/path/to/target/release/agentcage bash tests/e2e/run.sh container
+#
+# Defined with `:-` so an inherited value always wins. run.sh carries the
+# same definition because it does not source this file.
+export AGENTCAGE="${AGENTCAGE:-agentcage}"
+
 # ── output ───────────────────────────────────────────────────────────
 
 _test_id() { printf "%d.%d" "$E2E_PHASE" "$1"; }
@@ -321,7 +334,7 @@ register_cage() {
 # phase under `set -e`.
 destroy_cage() {
   stop_mock "$1"
-  agentcage cage destroy "$1" -y >/dev/null 2>&1 || true
+  "$AGENTCAGE" cage destroy "$1" -y >/dev/null 2>&1 || true
 }
 
 # destroy_cage_with_volumes CAGE VOL...
@@ -372,10 +385,21 @@ create_cage() {
   tmpconfig=$(mktemp /tmp/e2e-config-XXXXXX.yaml)
   envsubst < "$config" > "$tmpconfig"
   local rc=0 output
-  output=$(AGENT_DIR="$AGENT_DIR" agentcage cage create -c "$tmpconfig" "$@" 2>&1) || rc=$?
+  output=$(AGENT_DIR="$AGENT_DIR" "$AGENTCAGE" cage create -c "$tmpconfig" "$@" 2>&1) || rc=$?
   rm -f "$tmpconfig"
   if [ "$rc" -ne 0 ]; then
     _dump_captured "cage create FAILED (exit $rc): $(basename "$config")" "$output"
+    # `systemctl start` reports a failed Requires= dependency as the
+    # single line "A dependency job for <cage>-cage.service failed",
+    # naming neither the dependency nor the reason — and on a CI runner
+    # there is no second chance to go and look. `dump_cage_diagnostics`
+    # answers what that line leaves open: unit states, podman container
+    # states, the egress container log and its journal.
+    local cage_name
+    cage_name=$(sed -n 's/^name:[[:space:]]*//p' "$config" | head -1)
+    if [ -n "$cage_name" ]; then
+      dump_cage_diagnostics "$cage_name" "create failure"
+    fi
   fi
   return $rc
 }

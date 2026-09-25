@@ -53,9 +53,9 @@ def resolve_latest_tag(image: str) -> str | None:
 
     tags = data.get("Tags", [])
     # Match version-like tags: bare dotted numbers or v-prefixed
-    version_re = re.compile(r"^v?\d[\d.]*$")
+    version_re = re.compile(r"^v?\d[\d.]*\Z")
     # Exclude arch suffixes
-    arch_re = re.compile(r"-(amd64|arm64|x86_64|aarch64)$")
+    arch_re = re.compile(r"-(amd64|arm64|x86_64|aarch64)\Z")
     matching = [
         t for t in tags
         if version_re.match(t) and not arch_re.search(t)

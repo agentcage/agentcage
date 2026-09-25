@@ -1,0 +1,68 @@
+{
+  "contract": "shared_constants",
+  "summary": "Values duplicated across the trust boundary because the addon cannot import the CLI package. Not behaviour \u2014 just numbers and sets that must be identical on both sides.",
+  "implementations": {
+    "host": "src/agentcage/config.py (and the shared relays module)",
+    "proxy": "src/agentcage/data/proxy/{addon,capture}.py (and the shared relays module)"
+  },
+  "fields": {
+    "value": "the value both sides must produce",
+    "host": "where the host side gets it",
+    "proxy": "where the proxy side gets it"
+  },
+  "cases": [
+    {
+      "id": "max_capture_file_bytes",
+      "why": "the default cap on capture.jsonl. The host documents and validates against its constant; the proxy's CaptureWriter falls back to a literal of its own when max_file_size is unset. An operator who never sets the key must still get a bound, and the same one.",
+      "value": 134217728,
+      "host": "agentcage.config.MAX_CAPTURE_FILE_BYTES",
+      "proxy": "capture.CaptureWriter default for cfg['max_file_size']"
+    },
+    {
+      "id": "auto_never_grant",
+      "why": "the built-in never-grant floor. Duplicated because the addon cannot import agentcage; if the host's copy gains an entry the addon lacks, the reconcile refuses to promote a domain the addon will happily grant at runtime.",
+      "value": [
+        "internal",
+        "local",
+        "localhost",
+        "metadata.goog"
+      ],
+      "host": "agentcage.config._AUTO_NEVER_GRANT",
+      "proxy": "the literal in PolicyApi._effective_never_grant, minus the control host it adds"
+    },
+    {
+      "id": "builtin_inspector_names",
+      "why": "the built-in inspector names. config.py mirrors the addon's _BUILTIN_INSPECTORS so the apple-container validator can flag a typo at parse time instead of letting it silently no-op at runtime \u2014 which means a name present on one side and not the other is a config that validates and then does nothing.",
+      "value": [
+        "body-size",
+        "content-type",
+        "domain",
+        "entropy",
+        "secrets"
+      ],
+      "host": "agentcage.config._BUILTIN_INSPECTOR_NAMES",
+      "proxy": "addon._BUILTIN_INSPECTORS keys"
+    },
+    {
+      "id": "known_relay_types",
+      "why": "the protocol_relays types. Lives in the shared _validate module today, so it is one value; after the port it is two.",
+      "value": [
+        "imap",
+        "smtp"
+      ],
+      "host": "relays._validate.KNOWN_RELAY_TYPES (via agentcage.config)",
+      "proxy": "relays._validate.KNOWN_RELAY_TYPES (bare import)"
+    },
+    {
+      "id": "relay_write_modes",
+      "why": "the IMAP write-policy modes, same situation. These strings appear in the validator's error message, so the set and its SORTED order are both user-visible.",
+      "value": [
+        "full",
+        "none",
+        "organise"
+      ],
+      "host": "relays._validate._WRITE_MODES (via agentcage.config)",
+      "proxy": "relays._validate._WRITE_MODES (bare import)"
+    }
+  ]
+}

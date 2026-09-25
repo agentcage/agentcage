@@ -1,0 +1,15 @@
+name: e2e-har
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${HOME}/agent:/app:ro"
+  ports:
+    - "127.0.0.1:3102:3000"
+  env:
+    AGENT_DEMO: "false"
+domains:
+  allow:
+    - httpbin.org
+capture:
+  enable_har: true

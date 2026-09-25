@@ -1,0 +1,5 @@
+domains:
+  mode: blocklist
+  list:
+  - bad.example.com
+agentcage_version: 0.0.0-golden

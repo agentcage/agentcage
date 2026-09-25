@@ -1,0 +1,4 @@
+[Network]
+NetworkName=relay-imap-ca-file-net
+Internal=true
+Subnet=10.89.120.0/24

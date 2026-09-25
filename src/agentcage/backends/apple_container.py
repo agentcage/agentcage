@@ -40,20 +40,19 @@ wrap is defense-in-depth on top of that.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import time
 from importlib.metadata import version as _pkg_version
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import click
 
+from agentcage import egress_hash
 from agentcage.apple_container import cli as ac_cli
 from agentcage.apple_container import prerequisites as ac_prereq
 from agentcage.apple_container import scaffold as ac_scaffold
@@ -87,150 +86,25 @@ from agentcage.volume_mounts import (
 # present?" probe misses and therefore rebuilds — no flag required.
 _EGRESS_IMAGE_REPO = "localhost/agentcage-egress"
 
-# Truncated sha256 length for the tag suffix. 12 hex chars = 48 bits;
-# collisions across the handful of egress builds a host ever sees are not
-# a practical concern, and a short tag keeps `container images` readable.
-_EGRESS_TAG_HASH_LEN = 12
+# The content hash and its Containerfile parsing live in
+# `agentcage.egress_hash`, a stdlib-only module with no agentcage imports.
+# They are a cross-language contract: the Rust port (RUST-PORT-PLAN §2.1)
+# must reproduce this digest byte-exactly or every Mac rebuilds its egress
+# image once on upgrade and then drifts from the Python-computed tag. The
+# module keeps the format, the rationale, and the pinned-fixture test; the
+# aliases below preserve the private names this backend (and its tests)
+# have always used.
+_EGRESS_TAG_HASH_LEN = egress_hash.TAG_HASH_LEN
+_EGRESS_CONTAINERFILE_REL = egress_hash.CONTAINERFILE_REL
+_EGRESS_COPY_RE = egress_hash.COPY_RE
+_EGRESS_HASH_EXCLUDE_DIRS = egress_hash.HASH_EXCLUDE_DIRS
+_EGRESS_HASH_EXCLUDE_SUFFIXES = egress_hash.HASH_EXCLUDE_SUFFIXES
 
-# Containerfile path relative to the build context (src/agentcage/data).
-_EGRESS_CONTAINERFILE_REL = "containers/Containerfile.egress"
-
-# `COPY [--flag=…] <src>… <dest>`. Only the shell form is matched; the
-# egress Containerfile does not use the JSON-array form (a JSON COPY would
-# simply contribute no sources, and the Containerfile's own bytes are
-# always hashed, so the tag still changes whenever it is edited).
-_EGRESS_COPY_RE = re.compile(r"^COPY\s+(?P<rest>.+)$", re.IGNORECASE)
-
-# Build-context noise that must never reach the hash: bytecode caches are
-# interpreter-dependent, so hashing them would make the tag unstable
-# across Python versions for byte-identical sources.
-_EGRESS_HASH_EXCLUDE_DIRS = frozenset({"__pycache__"})
-_EGRESS_HASH_EXCLUDE_SUFFIXES = (".pyc", ".pyo")
-
-
-def _egress_data_dir() -> Path:
-    """Build context for the egress image (``src/agentcage/data``).
-
-    Resolved relative to this file so the build works regardless of cwd
-    (tests, agentcage invoked from a sub-dir, etc.).
-    """
-    return Path(__file__).resolve().parent.parent / "data"
-
-
-def _containerfile_logical_lines(text: str):
-    """Yield Containerfile instructions with backslash continuations joined.
-
-    Comment-only lines are dropped. Good enough to find COPY sources; this
-    is deliberately not a general Containerfile parser.
-    """
-    buf = ""
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not buf and (not stripped or stripped.startswith("#")):
-            continue
-        if stripped.endswith("\\"):
-            buf += stripped[:-1] + " "
-            continue
-        buf += stripped
-        if buf:
-            yield buf
-        buf = ""
-    if buf:
-        yield buf
-
-
-def _egress_copy_sources(containerfile_text: str) -> list[str]:
-    """Source paths named by the COPY directives of the egress Containerfile.
-
-    Deriving the list from the Containerfile (rather than hardcoding it)
-    means a new `COPY proxy/<something-new>` joins the content hash
-    automatically, instead of silently falling out of the rebuild decision
-    the way a hand-maintained list eventually would.
-    """
-    sources: list[str] = []
-    for line in _containerfile_logical_lines(containerfile_text):
-        match = _EGRESS_COPY_RE.match(line)
-        if match is None:
-            continue
-        try:
-            parts = shlex.split(match.group("rest"))
-        except ValueError:
-            continue
-        # Drop `--chown=`/`--from=`-style flags; the final token is the
-        # destination inside the image, everything before it is a source.
-        parts = [p for p in parts if not p.startswith("--")]
-        if len(parts) < 2:
-            continue
-        sources.extend(parts[:-1])
-    return sources
-
-
-def _egress_build_inputs(data_dir: Path | None = None) -> list[tuple[str, Path]]:
-    """Every file baked into the egress image, as sorted (relpath, path) pairs.
-
-    The Containerfile itself plus the transitive contents of each COPY
-    source (directories are walked). Returns ``[]`` when the Containerfile
-    is missing — the build path reports that with an actionable error.
-    """
-    root = (data_dir or _egress_data_dir()).resolve()
-    containerfile = root / _EGRESS_CONTAINERFILE_REL
-    if not containerfile.is_file():
-        return []
-
-    inputs: dict[str, Path] = {_EGRESS_CONTAINERFILE_REL: containerfile}
-
-    def _add(path: Path) -> None:
-        if not path.is_file():
-            return
-        if path.suffix in _EGRESS_HASH_EXCLUDE_SUFFIXES:
-            return
-        try:
-            rel = path.relative_to(root)
-        except ValueError:
-            return  # outside the build context; `container build` can't COPY it
-        if _EGRESS_HASH_EXCLUDE_DIRS.intersection(rel.parts):
-            return
-        inputs[rel.as_posix()] = path
-
-    for src in _egress_copy_sources(containerfile.read_text(errors="replace")):
-        parts = PurePosixPath(src.strip("/")).parts
-        if not parts or ".." in parts:
-            continue
-        target = root.joinpath(*parts)
-        if target.is_dir():
-            for child in target.rglob("*"):
-                _add(child)
-        else:
-            # A missing source contributes nothing on purpose: the build
-            # itself fails loudly on it and there are no bytes to hash.
-            _add(target)
-
-    return sorted(inputs.items())
-
-
-def _egress_content_hash(data_dir: Path | None = None) -> str:
-    """Short stable digest over the egress image's build inputs.
-
-    Hashes the sorted (relative path, content) pairs so a rename changes
-    the digest even when the bytes do not, and so the result does not
-    depend on filesystem iteration order.
-    """
-    inputs = _egress_build_inputs(data_dir)
-    if not inputs:
-        return "unknown"
-    digest = hashlib.sha256()
-    for rel, path in inputs:
-        try:
-            body = path.read_bytes()
-        except OSError:
-            body = b""
-        digest.update(rel.encode())
-        digest.update(b"\0")
-        # Length-prefix the body so no path+content concatenation can be
-        # re-partitioned into a different input set with the same hash.
-        digest.update(len(body).to_bytes(8, "big"))
-        digest.update(body)
-    return digest.hexdigest()[:_EGRESS_TAG_HASH_LEN]
+_egress_data_dir = egress_hash.egress_data_dir
+_containerfile_logical_lines = egress_hash.containerfile_logical_lines
+_egress_copy_sources = egress_hash.egress_copy_sources
+_egress_build_inputs = egress_hash.egress_build_inputs
+_egress_content_hash = egress_hash.egress_content_hash
 
 
 def _agentcage_version() -> str:
@@ -255,9 +129,13 @@ def _egress_image_name(data_dir: Path | None = None) -> str:
     rebuilds on the next `cage create` / `cage update` without needing
     `--no-cache` / `--pull`.
     """
+    # Resolve the default here rather than letting `egress_hash` do it:
+    # `_egress_data_dir` is the seam the backend's tests monkeypatch to
+    # point the whole rebuild decision at a throwaway build context.
+    root = data_dir if data_dir is not None else _egress_data_dir()
     return (
         f"{_EGRESS_IMAGE_REPO}:{_agentcage_version()}"
-        f"-{_egress_content_hash(data_dir)}"
+        f"-{_egress_content_hash(root)}"
     )
 
 
@@ -275,7 +153,7 @@ def _normalize_cpus(value: str) -> str:
     return str(math.ceil(f)) if f != int(f) else str(int(f))
 
 
-_MEMORY_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?$")
+_MEMORY_SUFFIX_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kKmMgGtTpP][iI]?[bB]?)?\Z")
 
 
 def _normalize_memory(value: str) -> str:

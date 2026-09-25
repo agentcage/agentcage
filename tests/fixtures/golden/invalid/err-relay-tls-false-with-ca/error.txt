@@ -1,0 +1,1 @@
+ValueError: protocol_relays[mail].upstream.ca_file requires upstream.tls: true (got tls: false, which connects in plaintext and verifies nothing)

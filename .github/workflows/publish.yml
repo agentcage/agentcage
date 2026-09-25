@@ -12,24 +12,185 @@ on:
   # via `gh workflow run publish.yml --ref v0.21.6`.
   workflow_dispatch:
 
+# agentcage ships as a binary.
+#
+# There is no PyPI step any more: `pyproject.toml` is dev/test-only and
+# carries `Private :: Do Not Upload`, so an upload would be refused even
+# if one were attempted (RUST-PORT-PLAN.md §2.4). What a release
+# produces is four binaries and their checksums, attached to the GitHub
+# release that `install.sh`, the Homebrew formula and the AUR PKGBUILD
+# all read.
+
+permissions:
+  contents: read
+
 jobs:
-  publish:
+  # Before anything is built: the tag, the root VERSION file and the
+  # CHANGELOG heading all have to name the same release. A mismatch used
+  # to mean artifacts published under one number with release notes from
+  # another. Runs first and alone, because a release cannot be taken
+  # back.
+  check:
+    name: Version agreement
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write  # PyPI trusted publishing
-      contents: write  # gh release create
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - run: ./scripts/check-version.sh
 
-      - name: Build wheel + sdist
-        run: uv build
+  build:
+    name: ${{ matrix.target }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is built against musl and linked statically. The
+          # workspace has no C dependencies at all — no `cc`, no
+          # `libz-sys`, no `openssl-sys` in Cargo.lock — so this costs
+          # nothing and buys a binary with no glibc version coupling,
+          # which is the difference between "works on the distro CI
+          # used" and "works on the distro the operator has".
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          # Cross-linked with `rust-lld`; with no C code there is no
+          # cross C toolchain to install.
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            linker: rust-lld
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Install the pinned toolchain and target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - name: Build
+        env:
+          # Only set for the cross target; harmless elsewhere.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin agentcage
+
+      # The version the binary reports has to be the tag being built.
+      # Skipped for the cross target, which this runner cannot execute.
+      - name: Binary reports the released version
+        if: matrix.target != 'aarch64-unknown-linux-musl'
+        run: |
+          set -eu
+          expected="agentcage, version $(cat VERSION)"
+          actual=$(./target/${{ matrix.target }}/release/agentcage --version)
+          echo "expected: $expected"
+          echo "actual:   $actual"
+          [ "$actual" = "$expected" ]
+
+      # Sign and notarize on macOS, if the credentials exist.
+      #
+      # Gated rather than required: a fork, or this repository before
+      # Apple Developer enrollment completes, still produces a working
+      # unsigned binary instead of a failed release. The log says which
+      # happened, so an unsigned release cannot be mistaken for a signed
+      # one.
+      #
+      # A bare executable cannot be stapled — `xcrun stapler` writes the
+      # ticket into a bundle or an installer package, and there is
+      # nowhere to put it in a Mach-O. Notarizing the zip is what
+      # registers the binary with Apple; Gatekeeper then resolves the
+      # ticket online. `curl | sh` does not set the quarantine attribute
+      # in the first place, so the common install path never prompts
+      # either way.
+      - name: Sign and notarize (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -eu
+          binary="target/${{ matrix.target }}/release/agentcage"
+          if [ -z "${CERT_P12:-}" ] || [ -z "${SIGN_IDENTITY:-}" ]; then
+            echo "::warning::No Developer ID credentials — shipping ${{ matrix.target }} UNSIGNED."
+            exit 0
+          fi
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 900 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          # `--options runtime` is what makes the binary notarizable;
+          # `--timestamp` is what keeps the signature valid after the
+          # certificate expires.
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime \
+            --timestamp "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+
+          if [ -z "${NOTARY_KEY:-}" ]; then
+            echo "::warning::Signed but NOT notarized — no App Store Connect key."
+            exit 0
+          fi
+          printf '%s' "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent "$binary" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER" \
+            --wait
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/notarize.zip"
+
+      # One tarball per target, named the way install.sh, the Homebrew
+      # formula and the PKGBUILD all expect:
+      #   agentcage-<version>-<target>.tar.gz
+      - name: Package
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          stage="$RUNNER_TEMP/agentcage-$version-${{ matrix.target }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/agentcage" "$stage/"
+          cp README.md LICENSE CHANGELOG.md "$stage/"
+          tar -C "$RUNNER_TEMP" -czf "$stage.tar.gz" "$(basename "$stage")"
+          # shasum is on both runners; sha256sum is not on macOS.
+          ( cd "$RUNNER_TEMP" && shasum -a 256 "$(basename "$stage").tar.gz" \
+              > "$(basename "$stage").tar.gz.sha256" )
+          echo "ARTIFACT_DIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=$(basename "$stage")" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
         with:
-          skip-existing: true
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.ARTIFACT_DIR }}/${{ env.ARTIFACT_NAME }}.tar.gz
+            ${{ env.ARTIFACT_DIR }}/${{ env.ARTIFACT_NAME }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       # Extract the CHANGELOG section for this tag. Format expected:
       #
@@ -77,11 +238,15 @@ jobs:
         run: |
           set -eu
           tag="${GITHUB_REF_NAME}"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists — skipping create"
-            exit 0
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" \
+              --notes "$NOTES"
+          else
+            echo "Release $tag already exists — attaching assets to it"
           fi
-          gh release create "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$tag" \
-            --notes "$NOTES"
+          # `--clobber` so a re-run of a dispatched release replaces the
+          # assets instead of failing on the ones already there.
+          gh release upload "$tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" --clobber

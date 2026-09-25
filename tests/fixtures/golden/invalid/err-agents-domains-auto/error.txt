@@ -1,0 +1,1 @@
+ValueError: domains.auto is no longer supported; use agents.decider with flat LLM fields

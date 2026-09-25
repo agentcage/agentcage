@@ -129,38 +129,38 @@ EOF
 
 echo "Creating apple-container cage (builds egress + wrapper images)..."
 # `cage create` takes the cage name from cage.yaml — no positional arg.
-agentcage cage create --config "/tmp/${CAGE}.yaml" \
+"$AGENTCAGE" cage create --config "/tmp/${CAGE}.yaml" \
     -s "API_KEY=test-secret-value" \
     || { echo "FAIL: cage create"; exit 1; }
 
-agentcage cage start "$CAGE" || { echo "FAIL: cage start"; exit 1; }
+"$AGENTCAGE" cage start "$CAGE" || { echo "FAIL: cage start"; exit 1; }
 
 echo "--- Both microVMs running ---"
 container list | grep "^$CAGE\\b" || { echo "FAIL: cage VM not running"; exit 1; }
 container list | grep "^${CAGE}-egress\\b" || { echo "FAIL: egress VM not running"; exit 1; }
 
 echo "--- cage exec default uid is 1000 ---"
-out=$(agentcage cage exec "$CAGE" -- id)
+out=$("$AGENTCAGE" cage exec "$CAGE" -- id)
 echo "$out" | grep -q "uid=1000" || { echo "FAIL: expected uid=1000, got: $out"; exit 1; }
 
 echo "--- cage exec --as-root is uid 0 ---"
-out=$(agentcage cage exec "$CAGE" --as-root -- id)
+out=$("$AGENTCAGE" cage exec "$CAGE" --as-root -- id)
 echo "$out" | grep -q "uid=0" || { echo "FAIL: expected uid=0, got: $out"; exit 1; }
 
 echo "--- THREAT MODEL: secrets NOT in cage VM (uid 1000) ---"
-if agentcage cage exec "$CAGE" -- ls /home/acproxy/secrets 2>/dev/null; then
+if "$AGENTCAGE" cage exec "$CAGE" -- ls /home/acproxy/secrets 2>/dev/null; then
     echo "FAIL: /home/acproxy/secrets is reachable from cage VM!"
     exit 1
 fi
 
 echo "--- THREAT MODEL: secrets NOT in cage VM (--as-root) ---"
-if agentcage cage exec "$CAGE" --as-root -- ls /home/acproxy/secrets 2>/dev/null; then
+if "$AGENTCAGE" cage exec "$CAGE" --as-root -- ls /home/acproxy/secrets 2>/dev/null; then
     echo "FAIL: --as-root can read /home/acproxy/secrets in cage VM!"
     exit 1
 fi
 
 echo "--- THREAT MODEL: secrets ARE in egress VM ---"
-agentcage cage exec "$CAGE" -s egress --as-root -- ls /home/acproxy/secrets \
+"$AGENTCAGE" cage exec "$CAGE" -s egress --as-root -- ls /home/acproxy/secrets \
     || { echo "FAIL: egress can't read its own secrets"; exit 1; }
 
 echo "--- THREAT MODEL: root in cage VM cannot modify the firewall ---"
@@ -187,7 +187,7 @@ echo "--- THREAT MODEL: root in cage VM cannot modify the firewall ---"
 # pass vacuously (a command that isn't there also "fails"). It is also a
 # real defect in its own right — without iptables, cage-init.sh stage B'
 # logs "cage->host lockdown skipped" and the #210 DROP rules never land.
-if ! agentcage cage exec "$CAGE" --as-root -- sh -c 'command -v iptables >/dev/null 2>&1'; then
+if ! "$AGENTCAGE" cage exec "$CAGE" --as-root -- sh -c 'command -v iptables >/dev/null 2>&1'; then
     echo "FAIL: no iptables in cage VM — cage-init.sh stage B' cannot install"
     echo "      the #210 cage->host-gateway / DNS-owner DROP rules, and the"
     echo "      capability assertions below would pass vacuously."
@@ -196,7 +196,7 @@ fi
 
 # (a) A mutating iptables operation must FAIL as root in the cage VM.
 fw_rc=0
-fw_out=$(agentcage cage exec "$CAGE" --as-root -- iptables -F OUTPUT 2>&1) || fw_rc=$?
+fw_out=$("$AGENTCAGE" cage exec "$CAGE" --as-root -- iptables -F OUTPUT 2>&1) || fw_rc=$?
 if [ "$fw_rc" -eq 0 ]; then
     echo "FAIL: --as-root flushed the cage's OUTPUT chain — CAP_NET_ADMIN is"
     echo "      NOT being dropped, so the #210 egress lockdown is bypassable!"
@@ -206,7 +206,7 @@ echo "    iptables -F OUTPUT rejected (rc=$fw_rc): $fw_out"
 
 # (b) Same for appending a rule, so we're not just observing a quirk of -F.
 fw_rc=0
-fw_out=$(agentcage cage exec "$CAGE" --as-root -- \
+fw_out=$("$AGENTCAGE" cage exec "$CAGE" --as-root -- \
     iptables -A OUTPUT -p tcp -j ACCEPT 2>&1) || fw_rc=$?
 if [ "$fw_rc" -eq 0 ]; then
     echo "FAIL: --as-root appended an OUTPUT ACCEPT rule in the cage VM!"
@@ -220,7 +220,7 @@ echo "    iptables -A OUTPUT ... rejected (rc=$fw_rc): $fw_out"
 #   CapEff 00000000a80425fb  <- --as-root session, bit 12 CLEAR (0x...2...)
 #   CapBnd 00000000a80435fb  <- container's full --cap-add set, bit 12 SET
 # The two differ by exactly 0x1000, which is the masking logic below.
-capeff=$(agentcage cage exec "$CAGE" --as-root -- \
+capeff=$("$AGENTCAGE" cage exec "$CAGE" --as-root -- \
     sh -c 'grep -m1 "^CapEff:" /proc/self/status' 2>/dev/null \
     | awk '{print $2}' | tr -dc '0-9a-fA-F' || true)
 if [ -z "$capeff" ]; then
@@ -239,10 +239,10 @@ echo "--- cage exec proxied curl works (allowlisted) ---"
 # subsequent egress-proxied request has a client to make. The HTTPS
 # fetch goes through mitmproxy in the egress sibling thanks to
 # cage-init.sh's default-route handoff + trust-store install.
-agentcage cage exec "$CAGE" --as-root -- bash -c \
+"$AGENTCAGE" cage exec "$CAGE" --as-root -- bash -c \
     'command -v curl >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq curl) >/dev/null 2>&1' \
     || { echo "FAIL: could not install curl in cage VM"; exit 1; }
-if ! agentcage cage exec "$CAGE" -- curl -s -o /dev/null -w "%{http_code}" \
+if ! "$AGENTCAGE" cage exec "$CAGE" -- curl -s -o /dev/null -w "%{http_code}" \
         https://api.github.com/zen | grep -q "200"; then
     echo "FAIL: curl through egress to allowlisted domain"
     exit 1
@@ -262,7 +262,7 @@ echo "--- domain add live-reloads dnsmasq (no cage restart) ---"
 # 1's start time from inside the VM is schema-independent, and an empty
 # read is now an explicit FAIL rather than a silent pass.
 cage_boot_marker() {
-    agentcage cage exec "$CAGE" --as-root -- stat -c %Y /proc/1 2>/dev/null \
+    "$AGENTCAGE" cage exec "$CAGE" --as-root -- stat -c %Y /proc/1 2>/dev/null \
         | tr -dc '0-9' || true
 }
 cage_boot_before=$(cage_boot_marker)
@@ -270,7 +270,7 @@ if [ -z "$cage_boot_before" ]; then
     echo "FAIL: cannot read the cage VM's PID-1 start time — restart probe unusable"
     exit 1
 fi
-agentcage domain add "$CAGE" api.anthropic.com || { echo "FAIL: domain add"; exit 1; }
+"$AGENTCAGE" domain add "$CAGE" api.anthropic.com || { echo "FAIL: domain add"; exit 1; }
 cage_boot_after=$(cage_boot_marker)
 if [ -z "$cage_boot_after" ] || [ "$cage_boot_before" != "$cage_boot_after" ]; then
     echo "FAIL: cage VM restarted on domain add (PID-1 start was $cage_boot_before, now $cage_boot_after)"
@@ -279,7 +279,7 @@ fi
 
 echo "--- cage destroy cleans both microVMs + network ---"
 # `cage destroy` flag is `-y / --yes`, not `--force`.
-agentcage cage destroy "$CAGE" -y || { echo "FAIL: cage destroy"; exit 1; }
+"$AGENTCAGE" cage destroy "$CAGE" -y || { echo "FAIL: cage destroy"; exit 1; }
 if container list -a | grep -q "^$CAGE\\b"; then
     echo "FAIL: cage VM not deleted"
     exit 1

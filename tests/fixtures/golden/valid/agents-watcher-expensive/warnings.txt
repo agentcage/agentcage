@@ -1,0 +1,1 @@
+agents.watcher may send up to 166M input tokens/day (100,000 tokens x 1440 scans). Raise interval_seconds or lower max_digest_tokens if that is more than intended.

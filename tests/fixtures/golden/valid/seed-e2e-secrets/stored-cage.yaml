@@ -1,0 +1,27 @@
+name: e2e-secrets
+secrets:
+  allow_plaintext: true
+container:
+  image: node:22-slim
+  command:
+  - node
+  - /app/agent.js
+  volumes:
+  - ${HOME}/agent:/app:ro
+  ports:
+  - 127.0.0.1:3104:3000
+  env:
+    AGENT_DEMO: 'false'
+domains:
+  allow:
+  - httpbin.org
+secret_injection:
+- env: MY_AUTO_KEY
+  inject_to:
+  - httpbin.org
+  placeholder: agentcage:secret:MY_AUTO_KEY:00000000000000000000000000000001
+- env: MY_API_KEY
+  placeholder: '{{MY_API_KEY}}'
+  inject_to:
+  - httpbin.org
+  inject_body: true

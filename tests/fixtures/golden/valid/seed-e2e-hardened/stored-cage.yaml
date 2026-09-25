@@ -1,0 +1,24 @@
+name: e2e-hardened
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${HOME}/agent:/app:ro"
+  ports:
+    - "127.0.0.1:3101:3000"
+  read_only: true
+  drop_capabilities:
+    - ALL
+  no_new_privileges: true
+  user: "1000:1000"
+  memory: "256m"
+  cpus: "1"
+  env:
+    AGENT_DEMO: "false"
+domains:
+  allow:
+    - httpbin.org
+logging:
+  dns_queries: true
+  proxy_connections: true
+  level: debug

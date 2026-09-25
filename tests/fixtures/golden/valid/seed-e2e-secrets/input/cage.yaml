@@ -1,0 +1,40 @@
+name: e2e-secrets
+# CI runners have no usable systemd-creds (no TPM2/host-key/user session),
+# so opt this test cage into the unencrypted podman secret store. On a real
+# host with systemd-creds this is unnecessary (and secrets are encrypted).
+secrets:
+  allow_plaintext: true
+container:
+  image: "node:22-slim"
+  command: ["node", "/app/agent.js"]
+  volumes:
+    - "${HOME}/agent:/app:ro"
+  ports:
+    - "127.0.0.1:3104:3000"
+  env:
+    AGENT_DEMO: "false"
+domains:
+  allow:
+    - httpbin.org
+secret_injection:
+  # No `placeholder:` — exercises declare-time generation: cage create must
+  # persist an entropic agentcage:secret:MY_AUTO_KEY:<32hex> token into the
+  # stored config and expose it as the cage's MY_AUTO_KEY env var (phase 3.2b).
+  - env: MY_AUTO_KEY
+    inject_to:
+      - httpbin.org
+  # Explicit, deliberately non-conforming placeholder — exercises that an
+  # explicit value is preserved verbatim (phase 3.2) and that the placeholder
+  # edit-then-restart path applies it (3.3b). validate_config warns about it.
+  - env: MY_API_KEY
+    placeholder: "{{MY_API_KEY}}"
+    inject_to:
+      - httpbin.org
+    # Phase 3.3 drives injection by POSTing the placeholder in the request
+    # BODY (the in-cage agent's /check-secret forwards the body to
+    # httpbin.org/post, with no auth header). Injection is strict by default
+    # — only known credential-bearing headers (Authorization, x-api-key, …)
+    # are injected — so opt this rule into body injection to exercise (and
+    # keep covering) the loose path on the wire. The strict default's
+    # auth-header path is covered by phase 8 (Authorization: Bearer).
+    inject_body: true

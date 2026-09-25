@@ -1,0 +1,11 @@
+name: agents-watcher-no-domains
+container:
+  image: docker.io/library/node:22-slim
+dns_servers:
+- 192.0.2.53
+agents:
+  watcher:
+    enable: true
+    provider: anthropic
+    model: claude-fake-1
+    api_key: env:GOLDEN_SET_VAR

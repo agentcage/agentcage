@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.agentcage.backend-apple-container-autostart</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/container</string>
+        <string>start</string>
+        <string>backend-apple-container-autostart</string>
+    </array>
+    <key>StandardOutPath</key>
+    <string>{{XDG_CONFIG_HOME}}/agentcage/apple-container/backend-apple-container-autostart/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{XDG_CONFIG_HOME}}/agentcage/apple-container/backend-apple-container-autostart/launchd.err.log</string>
+</dict>
+</plist>

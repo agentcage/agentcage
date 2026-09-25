@@ -1,0 +1,23 @@
+{
+  "mask_copyup_entries": [],
+  "mask_mountpoint_dirs": [],
+  "mount_targets": [],
+  "tmpfs": [
+    {
+      "enclosing_mount": [
+        "",
+        ""
+      ],
+      "options": [
+        "rw",
+        "noexec",
+        "nosuid",
+        "size=64M"
+      ],
+      "spec": "/tmp:rw,noexec,nosuid,size=64M",
+      "target": "/tmp",
+      "wants_copyup": false
+    }
+  ],
+  "volumes": []
+}

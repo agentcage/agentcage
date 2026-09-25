@@ -1,0 +1,4 @@
+[Network]
+NetworkName=relay-ca-pem-inline-net
+Internal=true
+Subnet=10.89.229.0/24

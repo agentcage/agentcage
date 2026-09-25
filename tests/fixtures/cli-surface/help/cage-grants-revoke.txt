@@ -1,0 +1,9 @@
+Usage: agentcage cage grants revoke [OPTIONS] DOMAIN
+
+  Remove a runtime grant from the overlay (does not touch the baseline).
+
+  The addon hot-reloads the overlay on its mtime poll, so the grant stops being
+  effective on the next proxied request — no explicit signal needed.
+
+Options:
+  --help  Show this message and exit.

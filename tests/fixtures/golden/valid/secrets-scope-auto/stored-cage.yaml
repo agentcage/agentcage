@@ -1,0 +1,20 @@
+name: secrets-scope-auto
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+secrets:
+  scope: auto
+secret_injection:
+- env: SCOPED_KEY
+  placeholder: agentcage:secret:SCOPED_KEY:55555555555555555555555555555555
+  inject_to:
+  - api.example.com
+  source: systemd-creds:SCOPED_KEY

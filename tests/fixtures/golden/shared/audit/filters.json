@@ -1,0 +1,50 @@
+{
+  "all": [
+    "https://api.example.com/v1/data",
+    "https://upload.example.net/put",
+    "https://evil.example.org/exfil",
+    "https://evil.example.org/beacon",
+    "http://127.0.0.1:3000/hook",
+    "https://cdn.example.com/a.bin",
+    "https://legacy.example.com/",
+    "https://api.example.com/v1/item/9"
+  ],
+  "decision-blocked": [
+    "https://evil.example.org/exfil",
+    "https://evil.example.org/beacon"
+  ],
+  "direction-inbound": [
+    "http://127.0.0.1:3000/hook"
+  ],
+  "host-evil": [
+    "https://evil.example.org/exfil",
+    "https://evil.example.org/beacon"
+  ],
+  "inspector-domain": [
+    "https://evil.example.org/exfil",
+    "https://evil.example.org/beacon"
+  ],
+  "method-post-lowercase": [
+    "https://upload.example.net/put",
+    "https://evil.example.org/exfil"
+  ],
+  "severity-critical": [
+    "https://evil.example.org/exfil"
+  ],
+  "severity-high-watcher": [
+    "https://evil.example.org/exfil",
+    "https://evil.example.org/beacon",
+    "https://cdn.example.com/a.bin"
+  ],
+  "severity-warning": [
+    "https://upload.example.net/put",
+    "https://evil.example.org/exfil",
+    "https://evil.example.org/beacon",
+    "https://cdn.example.com/a.bin",
+    "https://api.example.com/v1/item/9"
+  ],
+  "since-2024-03": [
+    "https://cdn.example.com/a.bin",
+    "https://legacy.example.com/"
+  ]
+}

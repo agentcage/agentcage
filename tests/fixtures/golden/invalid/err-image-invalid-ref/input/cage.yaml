@@ -1,0 +1,12 @@
+name: err-image-invalid-ref
+container:
+  image: '!!not a ref!!'
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53

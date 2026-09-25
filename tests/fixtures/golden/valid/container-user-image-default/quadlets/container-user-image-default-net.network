@@ -1,0 +1,4 @@
+[Network]
+NetworkName=container-user-image-default-net
+Internal=true
+Subnet=10.89.72.0/24

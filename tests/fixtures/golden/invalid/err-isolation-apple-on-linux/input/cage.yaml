@@ -1,0 +1,13 @@
+name: err-isolation-apple-on-linux
+container:
+  image: docker.io/library/node:22-slim
+  command:
+  - node
+  - /app/agent.js
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+dns_servers:
+- 192.0.2.53
+isolation: apple-container

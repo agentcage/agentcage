@@ -1,0 +1,12 @@
+Usage: agentcage scaffold create [OPTIONS] NAME
+
+  Create a new user scaffold.
+
+  Examples:
+    agentcage scaffold create my-agent
+    agentcage scaffold create my-claude --from claude-code
+
+Options:
+  --from TEXT  Fork an existing scaffold as starting point.
+  --force      Overwrite existing scaffold.
+  --help       Show this message and exit.

@@ -1,4 +1,4 @@
-"""Structural guard against IP-encoded hostnames (wildcard-DNS SSRF).
+"""Structural guard against IP-encoded hostnames (wildcard-DNS SSRF) — proxy side.
 
 Found by red-teaming the decider against a live cage: `169-254-169-254.nip.io`
 resolves to 169.254.169.254 (the cloud metadata endpoint) but is a
@@ -12,6 +12,11 @@ the reference threat model claimed the *structural* layer covered it.
 
 These tests pin the structural behaviour so it cannot regress to
 "the decider will probably catch it".
+
+Boundary note (RUST-PORT-PLAN.md §2.4): this file holds the egress half only —
+``policy_api`` stays Python. The host half lives in ``tests/test_ssrf_guard_host.py``
+and the "the two implementations agree" assertions, which belong to neither
+side, live in ``tests/cross_language/test_ssrf_guard_conformance.py``.
 """
 
 from __future__ import annotations
@@ -21,8 +26,7 @@ import types
 
 import pytest
 
-from agentcage.cli import _is_never_grant as host_is_never_grant
-from agentcage.config import encoded_private_ip
+from tests.cross_language.vectors import ALLOWED, BYPASS
 
 
 def _addon():
@@ -33,29 +37,6 @@ def _addon():
     api = pa.PolicyApi.__new__(pa.PolicyApi)
     api._never_grant = {"internal", "local", "localhost", "agentcage.local"}
     return api, pa
-
-
-# Every one of these reaches a non-global address through a public name.
-BYPASS = [
-    "169-254-169-254.nip.io",      # AWS/GCP/Azure metadata (link-local)
-    "169.254.169.254.nip.io",      # dotted form
-    "127-0-0-1.nip.io",            # loopback
-    "10-0-0-1.sslip.io",           # RFC1918
-    "192-168-1-1.traefik.me",      # RFC1918, different service
-    "172.17.0.1.xip.io",           # docker bridge
-    "100-64-0-1.example.com",      # CGNAT — service-independent
-]
-
-# These must NOT be blocked: over-blocking a legitimate host is its own bug.
-ALLOWED = [
-    "registry.npmjs.org",
-    "raw.githubusercontent.com",
-    "codecov.io",
-    "93-184-216-34.nip.io",   # encodes a PUBLIC ip — no worse than naming it
-    "10-years.example.com",   # starts with digits, encodes nothing
-    "1-2-3.example.com",      # too few octets
-    "999-999-999-999.nip.io",  # not a valid address at all
-]
 
 
 @pytest.mark.parametrize("domain", BYPASS)
@@ -71,58 +52,6 @@ def test_addon_blocks_encoded_private_ip(domain):
 def test_addon_does_not_overblock(domain):
     api, _ = _addon()
     assert not api._is_never_grant(domain)
-
-
-@pytest.mark.parametrize("domain", BYPASS)
-def test_host_side_mirror_agrees(domain):
-    """The reconcile step must refuse what the addon refuses.
-
-    Otherwise an overlay entry written by an older addon (or edited by hand)
-    could still be promoted into the operator's baseline.
-    """
-    assert host_is_never_grant(domain, {"internal", "local", "localhost"})
-
-
-@pytest.mark.parametrize("domain", ALLOWED)
-def test_host_side_mirror_does_not_overblock(domain):
-    assert not host_is_never_grant(domain, {"internal", "local", "localhost"})
-
-
-class TestEncodedPrivateIp:
-    def test_returns_the_decoded_address(self):
-        assert encoded_private_ip("169-254-169-254.nip.io") == "169.254.169.254"
-        assert encoded_private_ip("10-0-0-1.sslip.io") == "10.0.0.1"
-
-    def test_public_addresses_are_not_flagged(self):
-        # Naming a public host the long way round is no more dangerous than
-        # naming it directly, and flagging it would block real nip.io use.
-        assert encoded_private_ip("93-184-216-34.nip.io") is None
-
-    def test_only_leftmost_labels_are_read(self):
-        # The address has to be where these services put it. Otherwise a
-        # legitimate host whose name merely contains a dotted-quad-looking
-        # run would be misread.
-        assert encoded_private_ip("cdn.10-0-0-1.example.com") is None
-
-    def test_zero_padded_octets_are_ignored(self):
-        # Not how the services encode, and octal ambiguity is a footgun.
-        assert encoded_private_ip("010-0-0-1.nip.io") is None
-
-    def test_host_and_addon_implementations_agree(self):
-        _, pa = _addon()
-        for d in BYPASS + ALLOWED:
-            assert encoded_private_ip(d) == pa._encoded_private_ip(d), d
-
-
-class TestMetadataGoogIsNeverGranted:
-    """GCP's public metadata alias does not end in `.internal`."""
-
-    def test_metadata_goog_blocked(self):
-        from agentcage.config import _AUTO_NEVER_GRANT
-        assert "metadata.goog" in _AUTO_NEVER_GRANT
-        assert host_is_never_grant(
-            "metadata.goog", {"internal", "local", "localhost", "metadata.goog"}
-        )
 
 
 class TestDeciderPromptHardening:
@@ -264,13 +193,3 @@ class TestDeciderPromptHardening:
                 pass
         assert bodies, "decider never built a request body"
         assert bodies[0].get("max_tokens") == 8192, sorted(bodies[0])
-
-    def test_addon_and_config_never_grant_sets_agree(self):
-        """The two copies are duplicated by necessity; they must not drift."""
-        from agentcage.config import _AUTO_NEVER_GRANT
-        api, _ = _addon()
-        api.host = "agentcage.local"
-        addon_set = api._effective_never_grant([])
-        assert set(_AUTO_NEVER_GRANT) <= addon_set, (
-            f"config has {set(_AUTO_NEVER_GRANT) - addon_set} that the addon lacks"
-        )

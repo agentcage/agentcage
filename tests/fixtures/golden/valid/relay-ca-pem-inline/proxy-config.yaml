@@ -1,0 +1,20 @@
+domains:
+  allow:
+  - api.example.com
+  - cdn.example.com
+protocol_relays:
+- name: mail
+  type: imap
+  listen: 0.0.0.0:1143
+  upstream:
+    host: imap.example.com
+    port: 993
+    ca_pem: '-----BEGIN CERTIFICATE-----
+
+      RkFLRQ==
+
+      -----END CERTIFICATE-----
+
+      '
+  auth: {}
+agentcage_version: 0.0.0-golden
