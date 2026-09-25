@@ -481,12 +481,26 @@ _BUILD_CONTEXT_IGNORE = shutil.ignore_patterns(
 
 
 # Entries in a cage's state dir that must never travel in a backup
-# tarball. ``creds`` holds credential material and ``pending_secrets.json``
-# is the transient plaintext hand-off consumed at start; a backup taken
-# without --include-secrets must not carry either. The rest is generated
-# noise that restore recreates.
+# tarball, in either direction — they are skipped on the way in *and*
+# on the way out, so a tarball written by another build cannot smuggle
+# one back into a restored cage.
+#
+#   - ``creds`` / ``pending_secrets.json``: credential material and the
+#     transient plaintext hand-off consumed at start. A backup taken
+#     without --include-secrets must not carry either.
+#   - ``secret_keys.json``: the keychain store's *name index*. The secret
+#     values live in the host keychain and never travel, so restoring the
+#     index onto a clean host would advertise every key as stored while
+#     none is — turning `cage update`'s fail-closed "missing secrets"
+#     check (and `secret list`/`get`/`rm`) into a lie and starting the
+#     cage with no secrets at all.
+#   - ``fingerprint.json``: describes the *source* host's build. Restored
+#     verbatim it makes `cage update` short-circuit with "already up to
+#     date" and skip the rebuild the restored cage still needs.
+#   - the rest is generated noise that restore recreates.
 _BACKUP_EXCLUDE = frozenset({
     "creds", "pending_secrets.json", "cage-env",
+    "secret_keys.json", "fingerprint.json",
     "cage.yaml.bak", "cage.yaml.rejected",
 })
 
@@ -497,68 +511,133 @@ _BACKUP_MANAGED_CONFIG = frozenset({
 })
 
 
-def _copy_cage_state_dir(src_dir: Path, dest_dir: Path) -> bool:
+def _copy_backup_entry(entry: Path, dest: Path, *, ignore=None) -> None:
+    """Copy one state-dir entry, preserving symlinks as symlinks.
+
+    ``shutil.copytree``/``copy2`` dereference by default, which makes a
+    dangling link abort the whole backup with ``shutil.Error`` and —
+    worse — copies the *contents* of whatever a link points at (a link
+    to ``~/.ssh`` would be dereferenced straight into the tarball). Cages
+    really do contain symlinks, so the link is recreated as a link.
+    """
+    if entry.is_symlink():
+        if dest.is_symlink() or dest.exists():
+            if dest.is_dir() and not dest.is_symlink():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        os.symlink(os.readlink(entry), dest)
+    elif entry.is_dir():
+        shutil.copytree(
+            entry, dest, symlinks=True, ignore=ignore, dirs_exist_ok=True,
+        )
+    elif entry.is_file():
+        shutil.copy2(str(entry), str(dest))
+
+
+def _copy_cage_state_dir(src_dir: Path, dest_dir: Path) -> None:
     """Copy a cage's state dir into a backup staging dir.
 
     Copies the whole directory rather than a fixed filename allowlist, so
     a cage that builds from a staged ``Containerfile`` carries its build
     context in the tarball and can be rebuilt on a clean host. Secret
     material (``_BACKUP_EXCLUDE``) is never copied.
-
-    Returns True if anything beyond ``_BACKUP_MANAGED_CONFIG`` was copied,
-    for the manifest's ``build_context_included``.
     """
-    has_context = False
-    for entry in sorted(src_dir.iterdir()):
-        if entry.name in _BACKUP_EXCLUDE:
+    entries = sorted(src_dir.iterdir())
+    # copytree only applies _BUILD_CONTEXT_IGNORE to the directories it
+    # walks, so a *top-level* ``__pycache__/`` or
+    # ``Containerfile.deleted.<ts>`` would be copied wholesale. Apply the
+    # same filter here.
+    ignored = _BUILD_CONTEXT_IGNORE(str(src_dir), [e.name for e in entries])
+    for entry in entries:
+        if entry.name in _BACKUP_EXCLUDE or entry.name in ignored:
             continue
-        dest = dest_dir / entry.name
-        if entry.is_dir():
-            shutil.copytree(
-                entry, dest, ignore=_BUILD_CONTEXT_IGNORE, dirs_exist_ok=True,
-            )
-        elif entry.is_file():
-            shutil.copy2(str(entry), str(dest))
-        else:
-            continue
-        if entry.name not in _BACKUP_MANAGED_CONFIG:
-            has_context = True
-    return has_context
+        _copy_backup_entry(
+            entry, dest_dir / entry.name, ignore=_BUILD_CONTEXT_IGNORE,
+        )
+
+
+def _backup_containerfile(config_dir: Path) -> str:
+    """``container.build.containerfile`` from a cage.yaml in *config_dir*."""
+    import yaml
+
+    cage_yaml = config_dir / "cage.yaml"
+    if not cage_yaml.is_file():
+        return ""
+    try:
+        raw = yaml.safe_load(cage_yaml.read_text()) or {}
+    except Exception:
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    container = raw.get("container") or {}
+    if not isinstance(container, dict):
+        return ""
+    build = container.get("build") or {}
+    cf = build.get("containerfile") if isinstance(build, dict) else None
+    return cf if isinstance(cf, str) else ""
+
+
+def _carried_containerfile(config_dir: Path, cf: str) -> Path | None:
+    """Resolve *cf* inside *config_dir*, or None if it isn't carried there.
+
+    ``Path.__truediv__`` silently discards *config_dir* when *cf* is
+    absolute, and ``..`` segments escape it, so a naive join can report a
+    file that exists only on the host as one the backup carries. Both
+    shapes are rejected.
+    """
+    if not cf or Path(cf).is_absolute():
+        return None
+    root = config_dir.resolve()
+    candidate = (root / cf).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _restore_build_context(config_src: Path, deploy_dir: Path) -> None:
     """Reinstall a backup's build context into a cage's state dir."""
     for entry in sorted(config_src.iterdir()):
-        if entry.name in _BACKUP_MANAGED_CONFIG:
+        if entry.name in _BACKUP_MANAGED_CONFIG \
+                or entry.name in _BACKUP_EXCLUDE:
             continue
-        dest = deploy_dir / entry.name
-        if entry.is_dir():
-            shutil.copytree(entry, dest, dirs_exist_ok=True)
-        elif entry.is_file():
-            shutil.copy2(str(entry), str(dest))
+        _copy_backup_entry(entry, deploy_dir / entry.name)
 
 
 def _check_restore_build_context(manifest: dict, config_src: Path) -> None:
-    """Fail before any build work if the tarball cannot rebuild the cage.
+    """Fail before any destructive or build work if the tarball cannot
+    rebuild the cage.
 
     A cage.yaml with ``container.build.containerfile`` pointing at a file
     the tarball does not carry cannot be rebuilt on a clean host. Without
     this the failure surfaces much later, as an opaque "local-only image
-    is not present in the local image store" from the backend.
+    is not present in the local image store" from the backend — and,
+    with --force, only *after* the existing cage has been destroyed. Call
+    it before anything destructive happens.
     """
-    import yaml
-
-    cage_yaml = config_src / "cage.yaml"
-    if not cage_yaml.is_file():
+    cf = _backup_containerfile(config_src)
+    if not cf:
         return
-    try:
-        raw = yaml.safe_load(cage_yaml.read_text()) or {}
-    except Exception:
+    if _carried_containerfile(config_src, cf) is not None:
         return
-    build = ((raw.get("container") or {}).get("build") or {})
-    cf = build.get("containerfile")
-    if not cf or (config_src / cf).is_file():
-        return
+    if Path(cf).is_absolute():
+        # An absolute containerfile lives outside the cage's state dir, so
+        # a backup never carries it; the build reads it straight off the
+        # host (see _containerfile_image_refs). Check the path the build
+        # will actually use rather than joining it onto config_src, which
+        # Path.__truediv__ would silently discard.
+        if Path(cf).is_file():
+            return
+        click.echo(
+            f"error: this backup cannot rebuild the cage — its cage.yaml "
+            f"builds from the absolute path {cf!r}, which is outside the "
+            f"backup and does not exist on this host.\n"
+            f"  Restore with --no-start, stage the build context into the "
+            f"cage's config dir, point container.build.containerfile at it, "
+            f"and run 'agentcage cage update <name>'.",
+            err=True,
+        )
+        sys.exit(1)
     click.echo(
         f"error: this backup cannot rebuild the cage — its cage.yaml builds "
         f"from {cf!r}, which the tarball does not contain "
@@ -3249,7 +3328,17 @@ def _cage_backup_apple_container(
         config_dir = staging_path / "config"
         config_dir.mkdir()
         src_dir = Path(state.stored_config_path(name)).parent
-        has_build_context = _copy_cage_state_dir(src_dir, config_dir)
+        _copy_cage_state_dir(src_dir, config_dir)
+        # True only when the tarball actually carries the Containerfile
+        # the cage builds from; a cage with no build step records False
+        # because there is no build context to carry. Derived from what
+        # landed in the staging dir rather than from "the state dir had
+        # entries beyond the managed config" — every state dir has
+        # generated siblings (dns-allowlist.conf, ...), so the latter
+        # could never be False.
+        has_build_context = _carried_containerfile(
+            config_dir, _backup_containerfile(config_dir),
+        ) is not None
 
         # ── Secret env names (no values) ──
         secret_envs = [r.env for r in (cfg.secret_injection or [])]
@@ -3334,32 +3423,45 @@ def _cage_restore_apple_container(
         )
         sys.exit(1)
 
-    # Handle existing cage
-    if state.deployment_exists(target_name):
-        if not force:
-            click.echo(
-                f"error: cage '{target_name}' already exists "
-                f"(use --force to overwrite)",
-                err=True,
-            )
-            sys.exit(1)
-        click.echo(f"Destroying existing cage '{target_name}'...")
-        try:
-            cfg = state.load_deployment_config(target_name)
-            backend = get_backend(cfg)
-            backend.stop(target_name)
-            backend.destroy_resources(target_name)
-        except Exception:
-            backend = AppleContainerBackend()
-            backend.stop(target_name)
-            backend.destroy_resources(target_name)
-        if state.deployment_exists(target_name):
-            state.remove_deployment(target_name)
-
     with tempfile.TemporaryDirectory() as tmpdir:
+        # Extract and validate the tarball BEFORE touching the existing
+        # cage. --force destroys it and clears its state dir, so any
+        # sys.exit() raised after that point would leave the host with
+        # neither the old cage nor a restored one.
         with tarfile.open(tarball, "r:gz") as tar:
             tar.extractall(tmpdir, filter="data")
         backup_dir = Path(tmpdir) / "agentcage-backup"
+        config_src = backup_dir / "config"
+        cage_yaml_src = config_src / "cage.yaml"
+        if not cage_yaml_src.is_file():
+            click.echo(
+                "error: invalid backup — missing config/cage.yaml",
+                err=True,
+            )
+            sys.exit(1)
+        _check_restore_build_context(manifest, config_src)
+
+        # Handle existing cage
+        if state.deployment_exists(target_name):
+            if not force:
+                click.echo(
+                    f"error: cage '{target_name}' already exists "
+                    f"(use --force to overwrite)",
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo(f"Destroying existing cage '{target_name}'...")
+            try:
+                cfg = state.load_deployment_config(target_name)
+                backend = get_backend(cfg)
+                backend.stop(target_name)
+                backend.destroy_resources(target_name)
+            except Exception:
+                backend = AppleContainerBackend()
+                backend.stop(target_name)
+                backend.destroy_resources(target_name)
+            if state.deployment_exists(target_name):
+                state.remove_deployment(target_name)
 
         # Warn about secrets the operator needs to re-set host-side.
         expected_keys = manifest.get("secret_keys", [])
@@ -3373,15 +3475,6 @@ def _cage_restore_apple_container(
                 click.echo(f"  export {k}=<value>", err=True)
 
         # Restore config
-        config_src = backup_dir / "config"
-        cage_yaml_src = config_src / "cage.yaml"
-        _check_restore_build_context(manifest, config_src)
-        if not cage_yaml_src.is_file():
-            click.echo(
-                "error: invalid backup — missing config/cage.yaml",
-                err=True,
-            )
-            sys.exit(1)
         if new_name:
             with open(cage_yaml_src) as f:
                 import yaml
@@ -3468,7 +3561,17 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         config_dir = staging_path / "config"
         config_dir.mkdir()
         src_dir = Path(state.stored_config_path(name)).parent
-        has_build_context = _copy_cage_state_dir(src_dir, config_dir)
+        _copy_cage_state_dir(src_dir, config_dir)
+        # True only when the tarball actually carries the Containerfile
+        # the cage builds from; a cage with no build step records False
+        # because there is no build context to carry. Derived from what
+        # landed in the staging dir rather than from "the state dir had
+        # entries beyond the managed config" — every state dir has
+        # generated siblings (dns-allowlist.conf, ...), so the latter
+        # could never be False.
+        has_build_context = _carried_containerfile(
+            config_dir, _backup_containerfile(config_dir),
+        ) is not None
 
         # ── Secrets ──
         expected = _expected_secrets(cfg)
@@ -3601,37 +3704,51 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
         )
         sys.exit(1)
 
-    # ── Handle existing cage ──
-    if state.deployment_exists(target_name):
-        if not force:
-            click.echo(
-                f"error: cage '{target_name}' already exists "
-                f"(use --force to overwrite)",
-                err=True,
-            )
-            sys.exit(1)
-        click.echo(f"Destroying existing cage '{target_name}'...")
-        try:
-            cfg = state.load_deployment_config(target_name)
-            backend = get_backend(cfg)
-            backend.stop(target_name)
-            backend.destroy_resources(target_name)
-        except Exception:
-            from agentcage.backends.container import ContainerBackend
-            backend = ContainerBackend()
-            backend.stop(target_name)
-            backend.destroy_resources(target_name)
-        if state.deployment_exists(target_name):
-            state.remove_deployment(target_name)
-
-    podman = _podman_for_cage(target_name)
-
     # ── Extract tarball ──
     with tempfile.TemporaryDirectory() as tmpdir:
+        # Extract and validate BEFORE touching the existing cage or
+        # creating any podman secret. --force destroys the cage and
+        # clears its state dir, so a sys.exit() raised after that point
+        # would leave the host with neither the old cage nor a restored
+        # one (and with orphaned `<target>.KEY` secrets).
         with tarfile.open(tarball, "r:gz") as tar:
             tar.extractall(tmpdir, filter="data")
 
         backup_dir = Path(tmpdir) / "agentcage-backup"
+        config_src = backup_dir / "config"
+        cage_yaml_src = config_src / "cage.yaml"
+        if not cage_yaml_src.is_file():
+            click.echo(
+                "error: invalid backup — missing config/cage.yaml",
+                err=True,
+            )
+            sys.exit(1)
+        _check_restore_build_context(manifest, config_src)
+
+        # ── Handle existing cage ──
+        if state.deployment_exists(target_name):
+            if not force:
+                click.echo(
+                    f"error: cage '{target_name}' already exists "
+                    f"(use --force to overwrite)",
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo(f"Destroying existing cage '{target_name}'...")
+            try:
+                cfg = state.load_deployment_config(target_name)
+                backend = get_backend(cfg)
+                backend.stop(target_name)
+                backend.destroy_resources(target_name)
+            except Exception:
+                from agentcage.backends.container import ContainerBackend
+                backend = ContainerBackend()
+                backend.stop(target_name)
+                backend.destroy_resources(target_name)
+            if state.deployment_exists(target_name):
+                state.remove_deployment(target_name)
+
+        podman = _podman_for_cage(target_name)
 
         # ── Restore secrets ──
         secrets_dir = backup_dir / "secrets"
@@ -3667,16 +3784,6 @@ def cage_restore(tarball: str, new_name: str | None, force: bool, no_start: bool
                     )
 
         # ── Restore config ──
-        config_src = backup_dir / "config"
-        cage_yaml_src = config_src / "cage.yaml"
-        _check_restore_build_context(manifest, config_src)
-        if not cage_yaml_src.is_file():
-            click.echo(
-                "error: invalid backup — missing config/cage.yaml",
-                err=True,
-            )
-            sys.exit(1)
-
         # If renaming, update the name field in cage.yaml
         if new_name:
             with open(cage_yaml_src) as f:
