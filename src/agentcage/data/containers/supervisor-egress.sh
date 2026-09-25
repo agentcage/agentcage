@@ -577,9 +577,13 @@ ss -lnup 2>/dev/null | grep -q ':53 ' \
 # (allowlist, secret_injection rules, capture settings) is at
 # /etc/agentcage/config.yaml via bind-mount.
 #
-# TODO(measurement): --as=2G for mitmproxy covers PyInstaller's ~700MB
-# mmap overhead plus runtime working set with headroom. Provisional —
-# tune after measurement in a follow-up PR.
+# TODO(measurement): --as=2G for mitmproxy covers the pip-installed
+# mitmproxy of the official image (Containerfile.egress abandoned the
+# PyInstaller bundle, so its ~700MB mmap overhead no longer applies)
+# plus the runtime working set from buffering whole response bodies,
+# with headroom. Provisional — tune after measurement in a follow-up
+# PR. The container-level --memory cgroup cap must stay above this plus
+# dnsmasq's --as=256M; it lives in backends/apple_container.py.
 # Pre-create the mitmproxy-owned log files at 0640 owned by acproxy so
 # the cage workload (uid 1000, via virtiofs identity-mapping) cannot
 # read or forge audit entries / capture bodies / the proxy log. mitmproxy
