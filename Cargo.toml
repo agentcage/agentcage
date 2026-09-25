@@ -32,7 +32,7 @@ members = [
 # drift for pyproject.toml and the CHANGELOG, and it now checks this
 # field too. Keep VERSION as the thing you edit; this follows.
 [workspace.package]
-version = "0.40.1"
+version = "0.40.2"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"

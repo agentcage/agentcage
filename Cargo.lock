@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentcage-assets"
-version = "0.40.1"
+version = "0.40.2"
 dependencies = [
  "serde_json",
  "sha2",
@@ -18,7 +18,7 @@ dependencies = [
 
 [[package]]
 name = "agentcage-cli"
-version = "0.40.1"
+version = "0.40.2"
 dependencies = [
  "agentcage-assets",
  "agentcage-core",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "agentcage-core"
-version = "0.40.1"
+version = "0.40.2"
 dependencies = [
  "agentcage-assets",
  "indexmap",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "agentcage-exec"
-version = "0.40.1"
+version = "0.40.2"
 dependencies = [
  "rustix",
  "serde_json",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "agentcage-state"
-version = "0.40.1"
+version = "0.40.2"
 dependencies = [
  "agentcage-core",
  "agentcage-exec",
