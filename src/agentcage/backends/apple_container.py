@@ -1788,9 +1788,34 @@ class AppleContainerBackend:
         egress_argv += [
             "-e", f"ALLOW_ICMP={1 if allow_icmp else 0}",
         ]
-        # Egress is small — 512M is plenty. We don't normalize here
-        # because the value is internal, not operator-supplied.
-        egress_argv += ["--memory", "512M"]
+        # Egress runs mitmproxy, which buffers whole response bodies in
+        # memory before the allowlist filter sees them. 512M was not
+        # enough: a single large artifact (npm's @types/node packument is
+        # ~11MB of JSON, and Python inflates that many times over while
+        # decoding) could push the proxy over the cap. The kernel then
+        # OOM-killed the mitmproxy child, the supervisor followed it out
+        # ("child died, exiting"), and the cage was left with a stopped
+        # egress sibling — no DNS upstream and no default gateway, which
+        # presents as a total loss of connectivity inside the cage.
+        #
+        # This cap is the cgroup ceiling for EVERYTHING in the egress
+        # container, so it has to exceed the sum of the per-child
+        # prlimits set in data/containers/supervisor-egress.sh —
+        # mitmproxy's `--as=2G` and dnsmasq's `--as=256M`, plus the
+        # supervisor shell, the dns-audit.sh wrapper, and the page cache
+        # the kernel charges to the cgroup for audit.jsonl/capture.jsonl.
+        # A 2G container cap would hand the whole container exactly what
+        # mitmproxy alone is budgeted, leaving the cgroup the binding
+        # constraint and merely moving the OOM-kill to a higher
+        # threshold. 3G clears that sum with room for large package
+        # metadata and registry tarballs, while staying small next to
+        # the cage VM itself (8G is a typical cage).
+        #
+        # Keep the two knobs in sync: if either prlimit in
+        # supervisor-egress.sh is re-tuned, revisit this number. We don't
+        # normalize here because the value is internal to the egress
+        # sibling, not operator-supplied.
+        egress_argv += ["--memory", "3G"]
         egress_argv.append(egress_image)
 
         result = ac_cli.run(egress_argv, check=False, capture_output=False)
