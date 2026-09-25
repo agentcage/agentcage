@@ -1,11 +1,19 @@
-"""Tests for CLI command aliases."""
+"""Tests for the top-level CLI group: command aliases and error rendering.
+
+Both live on ``_BannerGroup`` — aliases in ``get_command``, the
+``error: ...`` rendering in ``invoke``.
+"""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import patch
 
+import click
+import pytest
 from click.testing import CliRunner
 
+from agentcage.backend import OperatorError
 from agentcage.cli import main
 
 
@@ -182,3 +190,87 @@ class TestTopLevelAliases:
         # The alias override must not swallow genuinely unknown commands.
         result = _runner().invoke(main, ["definitely-not-a-command"])
         assert result.exit_code != 0
+
+
+@contextmanager
+def _temp_command(name, body):
+    """Register ``body`` as a top-level command for the duration of a test."""
+    main.add_command(click.command(name)(body), name)
+    try:
+        yield
+    finally:
+        main.commands.pop(name, None)
+
+
+class TestErrorRendering:
+    """_BannerGroup.invoke() turns OperatorError into one `error:` line.
+
+    Everything else must pass through untouched. click's own control
+    flow (``Exit`` from ``--help``, ``Abort`` from ctrl-c) and the other
+    ``RuntimeError`` subclasses — ``NotImplementedError`` from the
+    abstract ``SecretStore`` methods, ``RecursionError``, internal
+    invariant failures — are not operator errors, and rendering them as
+    ``error: <str(exc)>`` would print an empty message over a swallowed
+    traceback.
+    """
+
+    def test_help_exits_zero_with_clean_output(self):
+        # `--help` raises click.exceptions.Exit(0), which subclasses
+        # RuntimeError. Catching it would print "error: 0" and exit 1.
+        result = _runner().invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "error:" not in result.output
+        assert "Usage:" in result.output
+        assert "Aliases:" in result.output
+
+    def test_abort_still_prints_aborted(self):
+        def body():
+            raise click.Abort()
+
+        with _temp_command("boom-abort", body):
+            result = _runner().invoke(main, ["boom-abort"])
+        assert result.exit_code == 1
+        assert "Aborted!" in result.output
+        assert "error:" not in result.output
+
+    def test_operator_error_renders_as_single_error_line(self):
+        def body():
+            raise OperatorError("cage 'pi01' has no built image")
+
+        with _temp_command("boom-operator", body):
+            result = _runner().invoke(main, ["boom-operator"])
+        assert result.exit_code == 1
+        assert result.stderr == "error: cage 'pi01' has no built image\n"
+        assert result.stdout == ""
+        # Rendered, not propagated: the only exception left is the exit.
+        assert isinstance(result.exception, SystemExit)
+
+    @pytest.mark.parametrize("exc_type, message", [
+        # str(NotImplementedError()) is "" — as a bare `except RuntimeError`
+        # this printed `error: ` and exited 1. SecretStore's abstract
+        # methods raise exactly this.
+        (NotImplementedError, ""),
+        # Internal invariant failures (e.g. run.py's unique-name loop) and
+        # test stop-sentinels must reach the caller intact.
+        (RuntimeError, "internal invariant violated"),
+    ])
+    def test_non_operator_runtime_errors_propagate(self, exc_type, message):
+        def body():
+            raise exc_type(message) if message else exc_type()
+
+        with _temp_command("boom-internal", body):
+            result = _runner().invoke(main, ["boom-internal"])
+        assert type(result.exception) is exc_type
+        assert str(result.exception) == message
+        assert "error:" not in result.output
+
+    def test_traceback_env_var_reraises_operator_error(self, monkeypatch):
+        monkeypatch.setenv("AGENTCAGE_TRACEBACK", "1")
+
+        def body():
+            raise OperatorError("cage 'pi01' has no built image")
+
+        with _temp_command("boom-operator", body):
+            result = _runner().invoke(main, ["boom-operator"])
+        assert isinstance(result.exception, OperatorError)
+        assert "error:" not in result.output
