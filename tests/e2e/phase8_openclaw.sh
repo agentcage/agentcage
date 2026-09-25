@@ -3,7 +3,7 @@
 #
 # Catches breakage in ghcr.io/openclaw/openclaw:latest. The openclaw image
 # moves independently of agentcage; every recent minor has shipped at least
-# one change that silently broke our scaffold (SSRF/HTTP_PROXY, tini/SIGUSR1,
+# one change that silently broke our scaffold (SSRF/HTTP_PROXY, tini/SIGUSR2,
 # controlUi origins, matrix extension workspace deps, etc.). This phase runs
 # the real `agentcage init --scaffold openclaw` → `cage create` flow and
 # asserts each known regression class.
@@ -148,7 +148,7 @@ fi
 # restart its server one or more times during init before settling. A
 # single curl here can catch the gap and time out (curl: (28) Operation
 # timed out). The recovery idiom mirrors 8.4 below, which already waits
-# for the gateway after a SIGUSR1 restart.
+# for the gateway after a SIGUSR2 restart.
 e2e_timer_start
 body=""
 for _ in $(seq 1 15); do
@@ -164,7 +164,7 @@ else
 fi
 
 # 8.2: openclaw health OK via exec alias. Proves exec_aliases wiring
-# + openclaw internal health. If tini weren't PID 1, the SIGUSR1 restart
+# + openclaw internal health. If tini weren't PID 1, the SIGUSR2 restart
 # would have killed the container before 8.2 runs; reaching here at all
 # is a soft witness for tini working.
 # openclaw health's output is "Agents: main (default)\nHeartbeat..."
@@ -185,45 +185,59 @@ else
   e2e_fail "8.3" "tini is PID 1" "expected 'tini', got '$pid1_comm'"
 fi
 
-# 8.4: self-restart on SIGUSR1 (log-line witness + readiness probe).
+# 8.4: self-restart on SIGUSR2 (log-line witness + readiness probe).
 # Openclaw 2026.5+ runs as a single retitled process — "openclaw" until
-# the 2026-07 images, "openclaw-gateway" since — and handles SIGUSR1
-# with an in-process restart in containers (deliberate — keeps PID 1
-# alive). The PID never changes; the gateway tears down its server,
-# reinitializes, and starts listening again. We witness this via two
-# things that must both hold: openclaw logs "received SIGUSR1; restarting"
-# (proves the signal landed AND the restart was authorized — see
-# isRestartEnabled in commands.flags), and the gateway becomes ready
-# again on the same port. commands.restart defaults to true unless the
+# the 2026-07 images, "openclaw-gateway" since — and handles the restart
+# signal with an in-process restart in containers (deliberate — keeps
+# PID 1 alive). The PID never changes; the gateway tears down its server,
+# reinitializes, and starts listening again.
+#
+# The restart signal is SIGUSR2, NOT SIGUSR1. Upstream openclaw commit
+# fe318b3 "fix: preserve Node debugger attachment on SIGUSR1" (2026-09-20,
+# first shipped in the 2026.9.6 image) moved it: Node reserves SIGUSR1 for
+# its own inspector, so openclaw now restarts on SIGUSR2 and leaves
+# SIGUSR1 to the debugger. Sending SIGUSR1 is not merely ignored — Node
+# attaches the V8 inspector and the gateway never restarts, which is
+# exactly how this canary failed when 2026.9.6 shipped.
+#
+# We witness the restart via two things that must both hold: openclaw
+# logs "received SIGUSR2; restarting" (proves the signal landed AND the
+# restart was authorized — see isRestartEnabled in commands.flags), and
+# the gateway becomes ready again on the same port. commands.restart
+# still gates that authorization and still defaults to true unless the
 # config explicitly sets it false, so no scaffold change is needed.
 e2e_timer_start
 # `pgrep` exits 1 on no-match — wrap in `|| true` so `set -e` doesn't
 # kill the phase before we can report 8.4 as a failure.
 OPENCLAW_PID=$(podman exec "${CAGE}-cage" pgrep -f '^openclaw($|-gateway)' 2>/dev/null | head -1 || true)
 if [ -z "$OPENCLAW_PID" ]; then
-  e2e_fail "8.4" "self-restart SIGUSR1" "could not find openclaw process before signal"
+  e2e_fail "8.4" "self-restart SIGUSR2" "could not find openclaw process before signal"
 else
   # Capture the current log size so we only inspect lines emitted after
-  # the signal. Avoids matching a "received SIGUSR1" from an earlier
+  # the signal. Avoids matching a "received SIGUSR2" from an earlier
   # restart in the same container.
   LOG_BEFORE=$(podman logs "${CAGE}-cage" 2>&1 | wc -l | tr -d ' ')
-  podman exec "${CAGE}-cage" pkill -USR1 -f '^openclaw($|-gateway)' 2>/dev/null || true
+  podman exec "${CAGE}-cage" pkill -USR2 -f '^openclaw($|-gateway)' 2>/dev/null || true
   RESTART_LOGGED=""
-  for _ in $(seq 1 30); do
+  # 60s, not 30s: upstream RESTART_COOLDOWN_MS is 30_000ms. It is skipped
+  # for a process's first restart, but if anything during gateway boot
+  # already emitted one, ours is deferred by up to 30s. This widens the
+  # window only — absence of the line is still a hard failure.
+  for _ in $(seq 1 60); do
     sleep 1
     if podman logs "${CAGE}-cage" 2>&1 | tail -n "+$((LOG_BEFORE + 1))" \
-         | grep -q 'received SIGUSR1; restarting'; then
+         | grep -q 'received SIGUSR2; restarting'; then
       RESTART_LOGGED=yes
       break
     fi
   done
   if [ -z "$RESTART_LOGGED" ]; then
-    e2e_fail "8.4" "self-restart SIGUSR1" \
-      "openclaw did not log 'received SIGUSR1; restarting' within 30s (signal lost or commands.restart=false)"
+    e2e_fail "8.4" "self-restart SIGUSR2" \
+      "openclaw did not log 'received SIGUSR2; restarting' within 60s (signal lost, commands.restart=false, or upstream moved the restart signal again)"
   elif ! wait_ready "$BASE/" 60; then
-    e2e_fail "8.4" "self-restart SIGUSR1" "gateway did not recover after in-process restart"
+    e2e_fail "8.4" "self-restart SIGUSR2" "gateway did not recover after in-process restart"
   else
-    e2e_pass "8.4" "self-restart SIGUSR1 (in-process; PID $OPENCLAW_PID held)"
+    e2e_pass "8.4" "self-restart SIGUSR2 (in-process; PID $OPENCLAW_PID held)"
   fi
 fi
 
