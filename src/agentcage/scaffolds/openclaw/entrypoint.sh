@@ -49,8 +49,10 @@ fi
 chmod 600 /home/node/.openclaw/openclaw.json
 
 # ── Run OpenClaw ──
-# Loop so that OpenClaw's SIGUSR1-based self-restart (which exits the
-# current process and spawns a new one) doesn't kill the container.
+# Loop so that OpenClaw's signal-based self-restart (SIGUSR2 since
+# upstream fe318b3 / image 2026.9.6; SIGUSR1 before that) doesn't kill
+# the container on the paths where it exits and respawns instead of
+# restarting in-process.
 # tini is PID 1 and handles signal forwarding + zombie reaping.
 while true; do
   node openclaw.mjs gateway --allow-unconfigured --bind lan --auth password
