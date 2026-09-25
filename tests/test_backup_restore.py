@@ -686,17 +686,14 @@ class TestBackupBuildContext:
 
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
-    def test_backup_preserves_symlinks_without_dereferencing(
+    def test_backup_preserves_in_tree_symlinks(
         self, mock_state, MockPodman, tmp_path,
     ):
-        """A dangling link used to raise shutil.Error mid-backup, and a link
-        to a sensitive host path was dereferenced into the tarball."""
-        secret_host_file = tmp_path / "id_rsa"
-        secret_host_file.write_text("PRIVATE KEY")
+        """Dereferencing links used to raise shutil.Error on a dangling one
+        and copy the link target's contents for the rest."""
         src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
         (src / "skills" / "alias.py").symlink_to("tool.py")
         (src / "dangling").symlink_to("nowhere.txt")
-        (src / "host-link").symlink_to(secret_host_file)
 
         result, out = _backup(mock_state, MockPodman, tmp_path, src)
         assert result.exit_code == 0, result.output
@@ -705,9 +702,38 @@ class TestBackupBuildContext:
             members = {m.name: m for m in tar.getmembers()}
         assert members["agentcage-backup/config/skills/alias.py"].issym()
         assert members["agentcage-backup/config/dangling"].issym()
-        host_link = members["agentcage-backup/config/host-link"]
-        assert host_link.issym() and host_link.size == 0
-        assert host_link.linkname == str(secret_host_file)
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_drops_symlinks_pointing_outside_the_config_dir(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        """Such a link must be neither dereferenced (it would copy host
+        content into the tarball) nor carried (tarfile's `data` extraction
+        filter rejects it, making the whole tarball unrestorable)."""
+        secret_host_file = tmp_path / "id_rsa"
+        secret_host_file.write_text("PRIVATE KEY")
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        (src / "host-link").symlink_to(secret_host_file)
+        (src / "skills" / "escape").symlink_to("../../id_rsa")
+
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+        assert "skipped symlink host-link" in result.output
+        assert "skipped symlink skills/escape" in result.output
+
+        names = _tar_names(out)
+        assert "agentcage-backup/config/host-link" not in names
+        assert "agentcage-backup/config/skills/escape" not in names
+        with tarfile.open(out, "r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                assert b"PRIVATE KEY" not in tar.extractfile(member).read()
+        # ... and the tarball still extracts under the `data` filter.
+        dest = tmp_path / "extracted"
+        with tarfile.open(out, "r:gz") as tar:
+            tar.extractall(str(dest), filter="data")
 
 
 # ── TestRestoreBuildContext ───────────────────────────────

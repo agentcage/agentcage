@@ -557,6 +557,60 @@ def _copy_cage_state_dir(src_dir: Path, dest_dir: Path) -> None:
         )
 
 
+def _prune_unportable_symlinks(root: Path) -> list[tuple[str, str]]:
+    """Drop symlinks a restore could not re-create, and report them.
+
+    Restore extracts with tarfile's ``data`` filter, which refuses a link
+    to an absolute path or to anything outside the extraction root — one
+    such link makes the *whole* tarball unrestorable. Dereferencing it
+    instead (copytree's default) would pull host content into the backup.
+    Neither is acceptable, so the link is dropped and the caller warns.
+
+    Returns (path relative to *root*, link target) for each dropped link.
+    """
+    base = root.resolve()
+    dropped: list[tuple[str, str]] = []
+    # ``**`` does not descend through symlinked directories, so a pruned
+    # dir link never hides entries we should have seen.
+    for path in sorted(base.rglob("*")):
+        if not path.is_symlink():
+            continue
+        target = os.readlink(path)
+        if os.path.isabs(target):
+            inside = False
+        else:
+            dest = os.path.normpath(os.path.join(str(path.parent), target))
+            inside = dest == str(base) or dest.startswith(str(base) + os.sep)
+        if inside:
+            continue
+        path.unlink()
+        dropped.append((str(path.relative_to(base)), target))
+    return dropped
+
+
+def _stage_backup_config(src_dir: Path, config_dir: Path) -> bool:
+    """Stage a cage's state dir for backup; return build_context_included.
+
+    The flag is True only when the staged copy actually carries the
+    Containerfile the cage builds from. A cage with no build step records
+    False — there is no build context to carry. It is deliberately not
+    "the state dir held entries beyond the managed config": every state
+    dir has generated siblings (dns-allowlist.conf, a scaffold's
+    AGENTS.md, ...), so that test could never be False.
+    """
+    _copy_cage_state_dir(src_dir, config_dir)
+    for link, target in _prune_unportable_symlinks(config_dir):
+        click.echo(
+            f"warning: skipped symlink {link} -> {target} — it points "
+            f"outside the cage's config dir, which a backup cannot carry; "
+            f"re-create it on the restore host",
+            err=True,
+        )
+    return _carried_containerfile(
+        config_dir, _backup_containerfile(config_dir),
+    ) is not None
+
+
 def _backup_containerfile(config_dir: Path) -> str:
     """``container.build.containerfile`` from a cage.yaml in *config_dir*."""
     import yaml
@@ -3328,17 +3382,7 @@ def _cage_backup_apple_container(
         config_dir = staging_path / "config"
         config_dir.mkdir()
         src_dir = Path(state.stored_config_path(name)).parent
-        _copy_cage_state_dir(src_dir, config_dir)
-        # True only when the tarball actually carries the Containerfile
-        # the cage builds from; a cage with no build step records False
-        # because there is no build context to carry. Derived from what
-        # landed in the staging dir rather than from "the state dir had
-        # entries beyond the managed config" — every state dir has
-        # generated siblings (dns-allowlist.conf, ...), so the latter
-        # could never be False.
-        has_build_context = _carried_containerfile(
-            config_dir, _backup_containerfile(config_dir),
-        ) is not None
+        has_build_context = _stage_backup_config(src_dir, config_dir)
 
         # ── Secret env names (no values) ──
         secret_envs = [r.env for r in (cfg.secret_injection or [])]
@@ -3561,17 +3605,7 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         config_dir = staging_path / "config"
         config_dir.mkdir()
         src_dir = Path(state.stored_config_path(name)).parent
-        _copy_cage_state_dir(src_dir, config_dir)
-        # True only when the tarball actually carries the Containerfile
-        # the cage builds from; a cage with no build step records False
-        # because there is no build context to carry. Derived from what
-        # landed in the staging dir rather than from "the state dir had
-        # entries beyond the managed config" — every state dir has
-        # generated siblings (dns-allowlist.conf, ...), so the latter
-        # could never be False.
-        has_build_context = _carried_containerfile(
-            config_dir, _backup_containerfile(config_dir),
-        ) is not None
+        has_build_context = _stage_backup_config(src_dir, config_dir)
 
         # ── Secrets ──
         expected = _expected_secrets(cfg)
