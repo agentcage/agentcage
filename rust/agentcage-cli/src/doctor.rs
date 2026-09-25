@@ -1009,7 +1009,16 @@ impl DoctorHost for SystemDoctorHost {
     fn disk_free_bytes(&self) -> Result<u64, String> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_owned());
         let stat = nix::sys::statvfs::statvfs(home.as_str()).map_err(|e| e.to_string())?;
-        Ok(stat.blocks_available() * stat.fragment_size())
+        // `blocks_available()` is `u32` on Darwin and `u64` on Linux, so the
+        // bare multiplication only compiles on Linux — which is why CI never
+        // caught this. The conversion is what makes the expression portable;
+        // it is genuinely redundant on Linux, hence the allow, which is
+        // narrower than a `cfg` split for one arithmetic expression.
+        #[allow(clippy::useless_conversion)]
+        let available = u64::from(stat.blocks_available());
+        #[allow(clippy::useless_conversion)]
+        let fragment = u64::from(stat.fragment_size());
+        Ok(available * fragment)
     }
 
     /// `socket.getaddrinfo("example.com", 80)`.
