@@ -1667,8 +1667,20 @@ class AppleContainerBackend:
         # keeps parity with the container/vm path and survives a future
         # cap-default tightening.
         secrets_dir = self.secrets_dir(name)
+        # net.ipv4.ip_forward=1 must come from the kernel command line
+        # here. The egress is a router between the cage and the host
+        # bridge, so supervisor-egress.sh step A hard-fails without it —
+        # but neither route that works elsewhere is available on Apple's
+        # runtime: it mounts /proc/sys read-only (so the supervisor's
+        # ``sysctl -w`` fails even as uid 0 with CAP_SYS_ADMIN, and
+        # adding that cap does not help), and ``container run`` has no
+        # ``--sysctl`` flag, so there is no create-time equivalent of
+        # the Quadlet ``Sysctl=`` in templates/egress.container.j2.
+        # Linux >= 5.8 accepts ``sysctl.<name>=<value>`` on the cmdline,
+        # which --kernel-arg can set.
         egress_argv = [
             "run", "-d", "--name", f"{name}-egress",
+            "--kernel-arg", "sysctl.net.ipv4.ip_forward=1",
             "--cap-add", "CAP_NET_ADMIN",
             "--cap-add", "CAP_NET_BIND_SERVICE",
             "--cap-add", "CAP_SETUID",
