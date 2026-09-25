@@ -534,3 +534,403 @@ class TestCageRestore:
         result = _runner().invoke(main, ["cage", "restore", tarball])
         assert result.exit_code == 0, result.output
         assert "agentcage secret set" in result.output
+
+
+# ── TestBackupBuildContext ────────────────────────────────
+
+_CAGE_YAML_BUILD = textwrap.dedent("""\
+    name: test
+    container:
+      build:
+        containerfile: Containerfile
+""")
+
+_CAGE_YAML_NO_BUILD = textwrap.dedent("""\
+    name: test
+    container:
+      image: localhost/test:latest
+""")
+
+
+def _fake_state_dir(root: Path, *, cage_yaml: str, containerfile: bool = True):
+    """A cage state dir shaped like the real thing (generated files and all)."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "cage.yaml").write_text(cage_yaml)
+    (root / "metadata.json").write_text('{"scaffold": "test"}')
+    (root / "proxy-config.yaml").write_text("listen: 8080\n")
+    # Generated siblings every state dir has.
+    (root / "dns-allowlist.conf").write_text("server=/example.com/1.1.1.1\n")
+    (root / "fingerprint.json").write_text('{"version": 1, "fingerprint": "x"}')
+    (root / "secret_keys.json").write_text('["API_KEY"]')
+    if containerfile:
+        (root / "Containerfile").write_text("FROM scratch\nCOPY skills /skills\n")
+        skills = root / "skills"
+        skills.mkdir()
+        (skills / "tool.py").write_text("print('hi')\n")
+    return root
+
+
+def _tar_names(path):
+    with tarfile.open(path, "r:gz") as tar:
+        return set(tar.getnames())
+
+
+def _tar_manifest(path):
+    with tarfile.open(path, "r:gz") as tar:
+        return json.loads(tar.extractfile("agentcage-backup/manifest.json").read())
+
+
+def _backup(mock_state, MockPodman, tmp_path, src_dir, out_name="out.tar.gz"):
+    """Run `cage backup test` against *src_dir* as the cage's state dir."""
+    mock_state.deployment_exists.return_value = True
+    mock_state.load_deployment_config.return_value = _mock_config()
+    mock_state.stored_config_path.return_value = str(src_dir / "cage.yaml")
+    mock_state.capture_file.return_value = tmp_path / "no-capture.jsonl"
+    podman = MockPodman.return_value
+    podman.secret_list.return_value = []
+    out = str(tmp_path / out_name)
+    result = _runner().invoke(main, ["cage", "backup", "test", "-o", out])
+    return result, out
+
+
+class TestBackupBuildContext:
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_omits_secret_index_and_fingerprint(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        """secret_keys.json would make a clean host believe every keychain
+        secret is present; fingerprint.json would make `cage update` skip
+        the rebuild. Neither may travel."""
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+
+        names = _tar_names(out)
+        assert "agentcage-backup/config/secret_keys.json" not in names
+        assert "agentcage-backup/config/fingerprint.json" not in names
+        # ... while the build context itself is carried.
+        assert "agentcage-backup/config/Containerfile" in names
+        assert "agentcage-backup/config/skills/tool.py" in names
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_omits_credential_material(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        (src / "creds").mkdir()
+        (src / "creds" / "token").write_text("sekrit")
+        (src / "pending_secrets.json").write_text('{"API_KEY": "sk-1"}')
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+        names = _tar_names(out)
+        assert not any("creds" in n for n in names)
+        assert not any("pending_secrets" in n for n in names)
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_build_context_included_true_when_containerfile_carried(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+        assert _tar_manifest(out)["build_context_included"] is True
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_build_context_included_false_without_build_step(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        """A cage with no build step has no context to carry, even though
+        its state dir always holds extra generated files."""
+        src = _fake_state_dir(
+            tmp_path / "state", cage_yaml=_CAGE_YAML_NO_BUILD,
+            containerfile=False,
+        )
+        (src / "AGENTS.md").write_text("# agents\n")
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+        assert _tar_manifest(out)["build_context_included"] is False
+        # The extra files still travel — only the flag is about the build.
+        assert "agentcage-backup/config/AGENTS.md" in _tar_names(out)
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_build_context_included_false_when_containerfile_missing(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        src = _fake_state_dir(
+            tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD, containerfile=False,
+        )
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+        assert _tar_manifest(out)["build_context_included"] is False
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_ignores_top_level_noise(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        pycache = src / "__pycache__"
+        pycache.mkdir()
+        (pycache / "junk.pyc").write_text("x")
+        (src / "Containerfile.deleted.20260101-000000").write_text("old")
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+        names = _tar_names(out)
+        assert not any("__pycache__" in n for n in names)
+        assert not any(".deleted." in n for n in names)
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_preserves_in_tree_symlinks(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        """Dereferencing links used to raise shutil.Error on a dangling one
+        and copy the link target's contents for the rest."""
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        (src / "skills" / "alias.py").symlink_to("tool.py")
+        (src / "dangling").symlink_to("nowhere.txt")
+
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+
+        with tarfile.open(out, "r:gz") as tar:
+            members = {m.name: m for m in tar.getmembers()}
+        assert members["agentcage-backup/config/skills/alias.py"].issym()
+        assert members["agentcage-backup/config/dangling"].issym()
+
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_backup_drops_symlinks_pointing_outside_the_config_dir(
+        self, mock_state, MockPodman, tmp_path,
+    ):
+        """Such a link must be neither dereferenced (it would copy host
+        content into the tarball) nor carried (tarfile's `data` extraction
+        filter rejects it, making the whole tarball unrestorable)."""
+        secret_host_file = tmp_path / "id_rsa"
+        secret_host_file.write_text("PRIVATE KEY")
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        (src / "host-link").symlink_to(secret_host_file)
+        (src / "skills" / "escape").symlink_to("../../id_rsa")
+
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+        assert "skipped symlink host-link" in result.output
+        assert "skipped symlink skills/escape" in result.output
+
+        names = _tar_names(out)
+        assert "agentcage-backup/config/host-link" not in names
+        assert "agentcage-backup/config/skills/escape" not in names
+        with tarfile.open(out, "r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                assert b"PRIVATE KEY" not in tar.extractfile(member).read()
+        # ... and the tarball still extracts under the `data` filter.
+        dest = tmp_path / "extracted"
+        with tarfile.open(out, "r:gz") as tar:
+            tar.extractall(str(dest), filter="data")
+
+
+# ── TestRestoreBuildContext ───────────────────────────────
+
+
+class TestRestoreBuildContext:
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_build_context_round_trips(self, mock_state, MockPodman,
+                                       mock_build, tmp_path):
+        src = _fake_state_dir(tmp_path / "state", cage_yaml=_CAGE_YAML_BUILD)
+        (src / "skills" / "alias.py").symlink_to("tool.py")
+        result, out = _backup(mock_state, MockPodman, tmp_path, src)
+        assert result.exit_code == 0, result.output
+
+        deploy = tmp_path / "deploy"
+        deploy.mkdir()
+        mock_state.reset_mock()
+        mock_state.deployment_exists.return_value = False
+        mock_state.stored_config_path.return_value = str(deploy / "cage.yaml")
+        mock_state.load_deployment_config.return_value = _mock_config()
+        mock_state.capture_file.return_value = tmp_path / "capture.jsonl"
+
+        result = _runner().invoke(main, ["cage", "restore", out, "--no-start"])
+        assert result.exit_code == 0, result.output
+
+        assert (deploy / "Containerfile").is_file()
+        assert (deploy / "skills" / "tool.py").is_file()
+        assert (deploy / "skills" / "alias.py").is_symlink()
+        # Excluded state must not reappear via the build-context reinstall.
+        assert not (deploy / "secret_keys.json").exists()
+        assert not (deploy / "fingerprint.json").exists()
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_restore_drops_excluded_entries_from_old_tarball(
+        self, mock_state, MockPodman, mock_build, tmp_path,
+    ):
+        """Even if a tarball carries them, the secret name index and the
+        source host's fingerprint must not land in the restored cage."""
+        staging = tmp_path / "staging"
+        config_dir = staging / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "cage.yaml").write_text(_CAGE_YAML_NO_BUILD)
+        (config_dir / "secret_keys.json").write_text('["API_KEY"]')
+        (config_dir / "fingerprint.json").write_text('{"version": 1}')
+        (staging / "manifest.json").write_text(json.dumps({
+            "format_version": 1, "cage_name": "test", "isolation": "container",
+            "secret_keys": [], "secrets_included": False, "named_volumes": [],
+        }))
+        tarball = str(tmp_path / "old.tar.gz")
+        with tarfile.open(tarball, "w:gz") as tar:
+            for item in staging.iterdir():
+                tar.add(str(item), arcname=f"agentcage-backup/{item.name}")
+
+        deploy = tmp_path / "deploy"
+        deploy.mkdir()
+        mock_state.deployment_exists.return_value = False
+        mock_state.stored_config_path.return_value = str(deploy / "cage.yaml")
+        mock_state.load_deployment_config.return_value = _mock_config()
+        mock_state.capture_file.return_value = tmp_path / "capture.jsonl"
+
+        result = _runner().invoke(
+            main, ["cage", "restore", tarball, "--no-start"]
+        )
+        assert result.exit_code == 0, result.output
+        assert not (deploy / "secret_keys.json").exists()
+        assert not (deploy / "fingerprint.json").exists()
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_force_restore_of_contextless_tarball_keeps_existing_cage(
+        self, mock_state, MockPodman, mock_get_backend, tmp_path,
+    ):
+        """The preflight must run before anything destructive: a tarball
+        taken before build contexts were included cannot rebuild the cage,
+        and aborting after the destroy would leave nothing behind."""
+        tarball = _build_backup_tarball(
+            tmp_path,
+            cage_yaml=_CAGE_YAML_BUILD,
+            include_secrets=True,
+            manifest_overrides={
+                "secret_keys": ["API_KEY", "OTHER_KEY"],
+                "secrets_included": True,
+            },
+        )
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config()
+        podman = MockPodman.return_value
+        backend = mock_get_backend.return_value
+
+        result = _runner().invoke(main, ["cage", "restore", tarball, "--force"])
+        assert result.exit_code == 1, result.output
+        assert "cannot rebuild the cage" in result.output
+        assert "Destroying" not in result.output
+        backend.stop.assert_not_called()
+        backend.destroy_resources.assert_not_called()
+        mock_state.remove_deployment.assert_not_called()
+        mock_state.save_deployment.assert_not_called()
+        # ... and no orphaned `<cage>.KEY` podman secrets either.
+        podman.secret_create.assert_not_called()
+
+    @patch("agentcage.backends.apple_container.AppleContainerBackend")
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.state")
+    def test_force_restore_contextless_apple_keeps_existing_cage(
+        self, mock_state, mock_get_backend, mock_ac, tmp_path,
+    ):
+        tarball = _build_backup_tarball(
+            tmp_path,
+            cage_yaml=_CAGE_YAML_BUILD,
+            manifest_overrides={"isolation": "apple-container"},
+        )
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config(
+            isolation="apple-container"
+        )
+        backend = mock_get_backend.return_value
+
+        result = _runner().invoke(main, ["cage", "restore", tarball, "--force"])
+        assert result.exit_code == 1, result.output
+        assert "cannot rebuild the cage" in result.output
+        backend.destroy_resources.assert_not_called()
+        mock_ac.return_value.destroy_resources.assert_not_called()
+        mock_state.remove_deployment.assert_not_called()
+
+    @patch("agentcage.cli.get_backend")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_absolute_containerfile_does_not_pass_preflight(
+        self, mock_state, MockPodman, mock_get_backend, tmp_path,
+    ):
+        """An absolute path is resolved against the host, not joined onto the
+        backup dir — it must not be reported as carried by the tarball."""
+        missing = tmp_path / "elsewhere" / "Containerfile"
+        tarball = _build_backup_tarball(
+            tmp_path,
+            cage_yaml=textwrap.dedent(f"""\
+                name: test
+                container:
+                  build:
+                    containerfile: {missing}
+            """),
+        )
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = _mock_config()
+        backend = mock_get_backend.return_value
+
+        result = _runner().invoke(main, ["cage", "restore", tarball, "--force"])
+        assert result.exit_code == 1, result.output
+        assert "absolute path" in result.output
+        backend.destroy_resources.assert_not_called()
+
+    @patch("agentcage.cli._build_and_deploy")
+    @patch("agentcage.cli.Podman")
+    @patch("agentcage.cli.state")
+    def test_absolute_containerfile_present_on_host_is_accepted(
+        self, mock_state, MockPodman, mock_build, tmp_path,
+    ):
+        host_cf = tmp_path / "elsewhere" / "Containerfile"
+        host_cf.parent.mkdir()
+        host_cf.write_text("FROM scratch\n")
+        tarball = _build_backup_tarball(
+            tmp_path,
+            cage_yaml=textwrap.dedent(f"""\
+                name: test
+                container:
+                  build:
+                    containerfile: {host_cf}
+            """),
+        )
+        deploy = tmp_path / "deploy"
+        deploy.mkdir()
+        mock_state.deployment_exists.return_value = False
+        mock_state.stored_config_path.return_value = str(deploy / "cage.yaml")
+        mock_state.load_deployment_config.return_value = _mock_config()
+        mock_state.capture_file.return_value = tmp_path / "capture.jsonl"
+
+        result = _runner().invoke(
+            main, ["cage", "restore", tarball, "--no-start"]
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_carried_containerfile_rejects_escaping_paths(self, tmp_path):
+        from agentcage.cli import _carried_containerfile
+
+        config = tmp_path / "config"
+        config.mkdir()
+        (config / "Containerfile").write_text("FROM scratch\n")
+        outside = tmp_path / "Containerfile"
+        outside.write_text("FROM scratch\n")
+
+        assert _carried_containerfile(config, "Containerfile") is not None
+        assert _carried_containerfile(config, "../Containerfile") is None
+        assert _carried_containerfile(config, str(outside)) is None
+        assert _carried_containerfile(config, "") is None
+        assert _carried_containerfile(config, "nope") is None
