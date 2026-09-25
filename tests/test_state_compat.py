@@ -656,6 +656,17 @@ def test_apple_container_state_root_and_audit_jsonl(generation):
 # ── backup tarball ─────────────────────────────────────────
 
 
+def _at_least(version: str, floor: tuple[int, ...]) -> bool:
+    """Is this fixture generation at or past *floor*?
+
+    Fixture directories are named for the release that wrote them, so a
+    behaviour that changed in a given release is keyed off the directory
+    name rather than off the installed version.
+    """
+    parts = tuple(int(p) for p in version.split("."))
+    return parts >= floor
+
+
 def _tarball(generation: Path) -> Path:
     (path,) = (generation / "backup").iterdir()
     return path
@@ -668,7 +679,15 @@ def test_backup_tarball_structure(generation):
             tar.extractfile("agentcage-backup/manifest.json").read()
         )
 
-    assert names == [
+    # 0.40.2 (#408) changed what `cage backup` carries: the whole state
+    # dir minus an exclusion list, rather than three fixed filenames. So
+    # `dns-allowlist.conf` travels from that release on, and the manifest
+    # gained `build_context_included`. Older generations must keep
+    # asserting the shape their own release actually wrote — that is the
+    # entire point of a per-release fixture.
+    carries_state_dir = _at_least(generation.name, (0, 40, 2))
+
+    expected = [
         "agentcage-backup/capture",
         "agentcage-backup/capture/capture.jsonl",
         "agentcage-backup/config",
@@ -682,6 +701,15 @@ def test_backup_tarball_structure(generation):
         "agentcage-backup/secrets/IMAP_PASSWORD",
         "agentcage-backup/volumes",
     ]
+    if carries_state_dir:
+        expected.append("agentcage-backup/config/dns-allowlist.conf")
+    assert names == sorted(expected)
+
+    # The keychain name index and the source host's fingerprint must never
+    # travel, whatever else does (#408). Asserted explicitly rather than
+    # left to the list above, so a future addition to the exclusion list
+    # cannot quietly let one of these back in.
+    assert not [n for n in names if n.endswith(("secret_keys.json", "fingerprint.json"))]
     assert manifest == {
         "format_version": 1,
         "agentcage_version": generation.name,
@@ -698,6 +726,7 @@ def test_backup_tarball_structure(generation):
             "OPENROUTER_API_KEY",
         ],
         "secrets_included": True,
+        **({"build_context_included": False} if carries_state_dir else {}),
     }
 
 
