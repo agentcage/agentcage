@@ -28,8 +28,15 @@
 //!   destination and writes outside. Symlinks are the same bug with a
 //!   second step — a member `link -> /home/luca` followed by a member
 //!   `link/.bashrc` escapes even an extractor that checked the first
-//!   name. Both are refused here, by name and by entry type, before
+//!   name. Both are refused here, by name and by link target, before
 //!   anything is created.
+//!
+//!   Symlinks are *carried*, not banned outright, because a cage's
+//!   staged build context is an operator's directory and really does
+//!   contain them. What is banned is a link that leaves the tree
+//!   ([`link_stays_inside`]), which is the same line `tarfile`'s `data`
+//!   filter draws. Links are re-created, never followed, so a dangling
+//!   one is harmless.
 //!
 //! # What the Python does about traversal, and whether it is safe
 //!
@@ -85,6 +92,19 @@ pub enum Member {
     /// to hand it to [`Member::File`] would make a backup's peak memory
     /// the size of what it is backing up.
     FileFrom(String, PathBuf),
+    /// A symbolic link, and the target it points at verbatim.
+    ///
+    /// Only links that stay inside the archive are expressible: the
+    /// caller is expected to have dropped the rest ([`link_stays_inside`]
+    /// is the same judgement [`extract_into`] applies on the way back),
+    /// because a link to an absolute path is host content a backup must
+    /// not carry and is refused by every safe extractor there is.
+    ///
+    /// A cage's state dir really does contain links — a staged build
+    /// context is an operator's directory — and the alternative to
+    /// carrying them is dereferencing them, which copies whatever they
+    /// point at into the tarball.
+    Symlink(String, String),
 }
 
 impl Member {
@@ -92,7 +112,10 @@ impl Member {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
-            Self::Dir(name) | Self::File(name, _) | Self::FileFrom(name, _) => name,
+            Self::Dir(name)
+            | Self::File(name, _)
+            | Self::FileFrom(name, _)
+            | Self::Symlink(name, _) => name,
         }
     }
 }
@@ -105,7 +128,16 @@ pub enum ArchiveError {
     Io(io::Error),
     /// A member's name would have escaped the destination directory.
     UnsafePath(String),
-    /// A member is not a regular file or a directory — a symlink, a
+    /// A symlink member whose *target* escapes the destination
+    /// directory — absolute, or climbing out with `..`. The name is
+    /// innocent; following the link is what writes outside.
+    UnsafeLink {
+        /// The member's name, as the archive spells it.
+        name: String,
+        /// Where it pointed.
+        target: String,
+    },
+    /// A member is not a regular file, a directory or a symlink — a
     /// hard link, a device node or a FIFO.
     UnsupportedEntry {
         /// The member's name, as the archive spells it.
@@ -123,9 +155,15 @@ impl std::fmt::Display for ArchiveError {
                 f,
                 "archive member {name:?} would extract outside the destination directory"
             ),
+            Self::UnsafeLink { name, target } => write!(
+                f,
+                "archive member {name:?} is a symbolic link to {target:?}, \
+                 which is outside the destination directory"
+            ),
             Self::UnsupportedEntry { name, kind } => write!(
                 f,
-                "archive member {name:?} is a {kind}; only regular files and directories are restored"
+                "archive member {name:?} is a {kind}; only regular files, \
+                 directories and symbolic links are restored"
             ),
         }
     }
@@ -152,6 +190,11 @@ const FILE_MODE: u32 = 0o644;
 
 /// The mode every archived directory gets. See [`FILE_MODE`].
 const DIR_MODE: u32 = 0o755;
+
+/// The mode every archived symlink gets. See [`FILE_MODE`]; this one is
+/// `0o777` because that is what a symlink's inode carries everywhere
+/// and what `tarfile` writes.
+const LINK_MODE: u32 = 0o777;
 
 /// Extracted files are the operator's alone: a backup made with
 /// `--include-secrets` has bare credentials in it, and it is unpacked
@@ -206,6 +249,15 @@ pub fn write_targz(dest: &Path, members: &[Member]) -> io::Result<()> {
                 header.set_mode(FILE_MODE);
                 header.set_size(file.metadata()?.len());
                 tar.append_data(&mut header, name, &mut file)?;
+            }
+            Member::Symlink(name, target) => {
+                header.set_entry_type(tar::EntryType::Symlink);
+                // A link's own mode is not a thing any filesystem this
+                // runs on honours, but the field is in the header and
+                // an unset one would be whatever `new_gnu` left there.
+                header.set_mode(LINK_MODE);
+                header.set_size(0);
+                tar.append_link(&mut header, name, target)?;
             }
         }
     }
@@ -276,8 +328,16 @@ pub fn member_names(tarball: &Path) -> Result<Vec<String>, ArchiveError> {
 /// which the `tar` crate applies on its own:
 ///
 /// * a member name must be relative, with no `..` and no root;
-/// * a member must be a regular file or a directory — never a symlink,
+/// * a member must be a regular file, a directory or a symlink — never
 ///   a hard link, a device node or a FIFO;
+/// * a symlink's *target* must be relative and must still land under
+///   `dest` when resolved from the link's own directory. This is the
+///   one rule that is about where a member *points* rather than where
+///   it is written, and it is the second half of the traversal attack:
+///   a member `link -> /home/luca` followed by a member `link/.bashrc`
+///   escapes an extractor that only checked names. Links that pass are
+///   re-created as links, never followed — so a *dangling* one is
+///   fine, and a backup's staged build context keeps its shape;
 /// * the resolved path must still be under `dest` after joining, which
 ///   catches anything the name check did not think of.
 ///
@@ -300,13 +360,24 @@ pub fn extract_into(tarball: &Path, dest: &Path) -> Result<(), ArchiveError> {
         let mut entry = entry?;
         let name = entry_name(&entry);
         let kind = entry.header().entry_type();
-        if !(kind.is_file() || kind.is_dir()) {
+        if !(kind.is_file() || kind.is_dir() || kind.is_symlink()) {
             return Err(ArchiveError::UnsupportedEntry {
                 name,
                 kind: describe(kind),
             });
         }
         let relative = safe_relative_path(&name)?;
+        let link_to = if kind.is_symlink() {
+            let raw = entry
+                .link_name_bytes()
+                .ok_or_else(|| ArchiveError::UnsafeLink {
+                    name: name.clone(),
+                    target: String::new(),
+                })?;
+            Some(String::from_utf8_lossy(&raw).into_owned())
+        } else {
+            None
+        };
         let target = dest.join(&relative);
         // Belt and braces. `safe_relative_path` has already rejected
         // every component that could climb, so this can only fire if
@@ -322,6 +393,22 @@ pub fn extract_into(tarball: &Path, dest: &Path) -> Result<(), ArchiveError> {
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
             fs::set_permissions(parent, fs::Permissions::from_mode(EXTRACT_DIR_MODE))?;
+        }
+        if let Some(link_to) = link_to {
+            if !link_stays_inside(&relative, &link_to) {
+                return Err(ArchiveError::UnsafeLink {
+                    name,
+                    target: link_to,
+                });
+            }
+            // An archive may name the same path twice; the last one
+            // wins, as it does for a regular file, and `symlink` will
+            // not overwrite.
+            if fs::symlink_metadata(&target).is_ok() {
+                fs::remove_file(&target)?;
+            }
+            std::os::unix::fs::symlink(&link_to, &target)?;
+            continue;
         }
         let mut file = fs::File::create(&target)?;
         fs::set_permissions(&target, fs::Permissions::from_mode(EXTRACT_FILE_MODE))?;
@@ -378,6 +465,48 @@ fn safe_relative_path(name: &str) -> Result<PathBuf, ArchiveError> {
         return Err(ArchiveError::UnsafePath(name.to_owned()));
     }
     Ok(out)
+}
+
+/// Does a symlink at `name` pointing at `target` stay inside the tree
+/// `name` is relative to?
+///
+/// `name` is the link's path *relative to the root* — the extraction
+/// destination when reading, the cage's state dir when writing — and
+/// `target` is the link's contents verbatim. Both halves of a backup
+/// ask this same question, which is why it lives here and is public:
+/// `cage backup` drops the links that fail so the archive it writes is
+/// one [`extract_into`] will accept, and `extract_into` asks again
+/// because an archive it did not write may say anything.
+///
+/// The walk is lexical, not `canonicalize`: the answer must not depend
+/// on what happens to exist on this host, and when writing, the file
+/// the link points at need not exist at all — a dangling link inside
+/// the tree is portable and is carried.
+#[must_use]
+pub fn link_stays_inside(name: &Path, target: &str) -> bool {
+    if target.is_empty() || Path::new(target).is_absolute() {
+        return false;
+    }
+    // Start from the link's own directory, as the kernel would.
+    let mut depth: usize = name.parent().map_or(0, |parent| {
+        parent
+            .components()
+            .filter(|c| matches!(c, Component::Normal(_)))
+            .count()
+    });
+    for component in Path::new(target).components() {
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                // Climbed past the root: the link points outside.
+                None => return false,
+            },
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 /// A human name for an entry type, for the refusal message.
@@ -568,39 +697,139 @@ mod tests {
         );
     }
 
-    /// A symlink member is the second step of the traversal attack: the
-    /// link name itself is innocent, and the member after it walks
-    /// through the link.
-    #[test]
-    fn a_symlink_member_is_refused() {
-        let dir = TestDir::new("archive-symlink");
-        let path = dir.join("evil.tar.gz");
+    /// Write an archive holding one symlink member, target and all.
+    fn plant_link(path: &std::path::Path, name: &str, target: &str) {
         let mut builder = tar::Builder::new(Vec::new());
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Symlink);
         header.set_mode(0o777);
         header.set_mtime(0);
         header.set_size(0);
-        builder
-            .append_link(&mut header, "agentcage-backup/escape", "/tmp")
-            .unwrap();
+        builder.append_link(&mut header, name, target).unwrap();
         let raw = builder.into_inner().unwrap();
         let mut gz = flate2::GzBuilder::new().mtime(0).write(
-            fs::File::create(&path).unwrap(),
+            fs::File::create(path).unwrap(),
             flate2::Compression::default(),
         );
         gz.write_all(&raw).unwrap();
         gz.finish().unwrap();
+    }
+
+    /// A symlink member is the second step of the traversal attack: the
+    /// link name itself is innocent, and the member after it walks
+    /// through the link. An absolute target is the blunt version.
+    #[test]
+    fn a_symlink_member_pointing_outside_is_refused() {
+        let dir = TestDir::new("archive-symlink");
+        let path = dir.join("evil.tar.gz");
+        plant_link(&path, "agentcage-backup/escape", "/tmp");
 
         let error = extract_into(&path, &dir.join("out")).unwrap_err();
         assert!(
             matches!(
                 &error,
-                ArchiveError::UnsupportedEntry { name, kind }
-                    if name == "agentcage-backup/escape" && kind == "symbolic link"
+                ArchiveError::UnsafeLink { name, target }
+                    if name == "agentcage-backup/escape" && target == "/tmp"
             ),
             "{error:?}"
         );
+        assert!(!dir.join("out/agentcage-backup/escape").exists());
+    }
+
+    /// The same escape spelled relatively, which no check on the
+    /// member's *name* would ever see.
+    #[test]
+    fn a_symlink_member_that_climbs_out_is_refused() {
+        let dir = TestDir::new("archive-symlink-climb");
+        let path = dir.join("evil.tar.gz");
+        plant_link(&path, "agentcage-backup/config/escape", "../../../../etc");
+
+        let error = extract_into(&path, &dir.join("out")).unwrap_err();
+        assert!(
+            matches!(&error, ArchiveError::UnsafeLink { target, .. } if target == "../../../../etc"),
+            "{error:?}"
+        );
+    }
+
+    /// The other half: a link that stays inside is carried and restored
+    /// *as a link*, not as a copy of what it points at. A cage's staged
+    /// build context really does contain these, and a backup that
+    /// flattened them would change what the rebuild sees.
+    #[test]
+    fn an_in_tree_symlink_round_trips_as_a_link() {
+        let dir = TestDir::new("archive-symlink-ok");
+        let path = dir.join("x.tar.gz");
+        write_targz(
+            &path,
+            &[
+                Member::Dir("agentcage-backup/config".into()),
+                Member::Dir("agentcage-backup/config/skills".into()),
+                Member::File(
+                    "agentcage-backup/config/skills/tool.py".into(),
+                    b"print('hi')\n".to_vec(),
+                ),
+                // A sibling, and one that climbs but lands inside.
+                Member::Symlink(
+                    "agentcage-backup/config/skills/alias.py".into(),
+                    "tool.py".into(),
+                ),
+                Member::Symlink(
+                    "agentcage-backup/config/skills/up.py".into(),
+                    "../skills/tool.py".into(),
+                ),
+                // Dangling, and therefore fine: nothing is followed.
+                Member::Symlink(
+                    "agentcage-backup/config/dangling".into(),
+                    "nowhere.txt".into(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let out = dir.join("out");
+        extract_into(&path, &out).unwrap();
+        let config = out.join("agentcage-backup/config");
+        for link in ["skills/alias.py", "skills/up.py", "dangling"] {
+            assert!(
+                fs::symlink_metadata(config.join(link))
+                    .unwrap()
+                    .is_symlink(),
+                "{link} must come back as a link"
+            );
+        }
+        assert_eq!(
+            fs::read_link(config.join("skills/alias.py")).unwrap(),
+            std::path::Path::new("tool.py")
+        );
+        // Following it lands on the real file, which is the point.
+        assert_eq!(
+            fs::read_to_string(config.join("skills/alias.py")).unwrap(),
+            "print('hi')\n"
+        );
+        assert!(!config.join("dangling").exists(), "still dangling");
+    }
+
+    /// The containment rule both halves of a backup ask, on its own.
+    #[test]
+    fn link_containment_is_judged_from_the_links_own_directory() {
+        use super::link_stays_inside;
+        use std::path::Path;
+
+        assert!(link_stays_inside(Path::new("skills/alias.py"), "tool.py"));
+        assert!(link_stays_inside(Path::new("dangling"), "nowhere.txt"));
+        assert!(link_stays_inside(Path::new("a/b/link"), "../c/d"));
+        assert!(link_stays_inside(Path::new("a/link"), "./x"));
+        // Climbs exactly to the root, then back in.
+        assert!(link_stays_inside(Path::new("a/link"), "../a/x"));
+
+        assert!(!link_stays_inside(Path::new("host-link"), "/etc/passwd"));
+        assert!(!link_stays_inside(Path::new("link"), "../x"));
+        assert!(!link_stays_inside(
+            Path::new("skills/escape"),
+            "../../id_rsa"
+        ));
+        assert!(!link_stays_inside(Path::new("a/b/link"), "../../../x"));
+        assert!(!link_stays_inside(Path::new("link"), ""));
     }
 
     /// A half-copied backup: the gzip stream ends inside a member. It

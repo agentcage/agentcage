@@ -22,7 +22,14 @@
 //!
 //! The order is the Python's, and it is observable:
 //!
-//! 1. **Secrets first**, into the podman store, because the build that
+//! 0. **Extraction and the build-context preflight**, before anything
+//!    destructive. `--force` destroys the existing cage and clears its
+//!    state dir, so every refusal that could happen after that point
+//!    has to happen before it — otherwise a tarball that cannot rebuild
+//!    the cage leaves the host with neither the old cage nor a restored
+//!    one, and with orphaned `<target>.KEY` secrets. This is the
+//!    ordering `cli.py:3535` calls out in a comment of its own.
+//! 1. **Secrets**, into the podman store, because the build that
 //!    follows resolves `Secret=` directives against it.
 //! 2. **Config**, through `save_deployment` — which validates the
 //!    document rather than trusting the archive, so a hand-edited
@@ -68,6 +75,60 @@ const ROOT: &str = "agentcage-backup";
 /// reads. `cli.py:3491` refuses anything greater and accepts anything
 /// less, including the `0` a manifest with no such key reads as.
 const FORMAT_VERSION: i64 = 1;
+
+/// Entries in a cage's state dir that must never travel in a backup,
+/// in *either* direction — skipped on the way in and on the way out, so
+/// a tarball written by another build cannot smuggle one back into a
+/// restored cage. `cli.py:502`.
+///
+/// * `creds` / `pending_secrets.json` — credential material and the
+///   transient plaintext hand-off consumed at start. A backup taken
+///   without `--include-secrets` must not carry either.
+/// * `secret_keys.json` — the keychain store's *name index*. The values
+///   live in the host keychain and never travel, so restoring the index
+///   onto a clean host advertises every key as stored while none is,
+///   which turns `cage update`'s fail-closed missing-secrets check into
+///   a lie and starts the cage with no secrets at all. This is the one
+///   entry here whose absence is a security property rather than tidiness.
+/// * `fingerprint.json` — describes the *source* host's build. Restored
+///   verbatim it makes `cage update` short-circuit with "already up to
+///   date" and skip the rebuild the restored cage still needs.
+/// * the rest is generated noise that restore recreates.
+const BACKUP_EXCLUDE: &[&str] = &[
+    "creds",
+    "pending_secrets.json",
+    "cage-env",
+    "secret_keys.json",
+    "fingerprint.json",
+    "cage.yaml.bak",
+    "cage.yaml.rejected",
+];
+
+/// The config files restore has always known how to reinstall by name.
+/// Anything else in the dir is build context — the Containerfile and
+/// what it `COPY`s. `cli.py:510`.
+const BACKUP_MANAGED_CONFIG: &[&str] = &["cage.yaml", "metadata.json", "proxy-config.yaml"];
+
+/// Build noise that must never be copied into a backup: caches, VCS
+/// metadata, dependency trees, soft-deleted leftovers.
+/// `shutil.ignore_patterns` at `cli.py:479`, spelled out.
+///
+/// Applied at the top level of the state dir as well as inside it. The
+/// Python's `copytree` only reaches the directories it walks, so a
+/// *top-level* `__pycache__/` or `Containerfile.deleted.<ts>` would be
+/// copied wholesale; `_copy_cage_state_dir` applies the same filter to
+/// the first level by hand and so does [`stage_backup_config`].
+fn is_build_noise(name: &str) -> bool {
+    name == "__pycache__"
+        || name == ".git"
+        || name == "node_modules"
+        // Case-sensitively, as `fnmatch` is on the hosts this runs on:
+        // a file genuinely named `.PYC` is not bytecode.
+        || Path::new(name).extension() == Some(std::ffi::OsStr::new("pyc"))
+        // `*.deleted.*` — what `cage edit` renames a removed
+        // Containerfile to, timestamp and all.
+        || name.contains(".deleted.")
+}
 
 // ─────────────────────────────────────────────────────────
 // cage backup
@@ -122,19 +183,14 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
     // ── Config ──────────────────────────────────────────
     //
-    // Three files, and only the ones that exist: a cage created before
-    // `save_proxy_config` ran has no `proxy-config.yaml`, and
-    // `metadata.json` is missing on a cage whose create failed partway.
-    for (file, source) in [
-        ("cage.yaml", ctx.paths.stored_config_path(&name)),
-        ("metadata.json", ctx.paths.metadata_path(&name)),
-        ("proxy-config.yaml", ctx.paths.proxy_config_path(&name)),
-    ] {
-        if source.is_file() {
-            members.push(Member::FileFrom(format!("{ROOT}/config/{file}"), source));
-        }
-    }
-    members.push(Member::Dir(format!("{ROOT}/config")));
+    // The *whole* state dir minus [`BACKUP_EXCLUDE`], not a fixed
+    // filename allowlist: a cage that builds from a staged
+    // `Containerfile` has to carry that Containerfile and everything it
+    // `COPY`s, or the tarball cannot rebuild it on a clean host.
+    let state_dir = ctx.paths.deployment_dir(&name);
+    let config_members = stage_backup_config(&state_dir);
+    let has_build_context = build_context_included(&state_dir, &config_members);
+    members.extend(config_members);
 
     // ── Secrets ─────────────────────────────────────────
     //
@@ -263,6 +319,10 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             "secrets_included".to_owned(),
             Json::Bool(include_secrets && !stored.is_empty()),
         ),
+        (
+            "build_context_included".to_owned(),
+            Json::Bool(has_build_context),
+        ),
     ]);
     members.push(Member::File(
         format!("{ROOT}/manifest.json"),
@@ -289,6 +349,184 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     Ok(())
 }
 
+/// The archive members for a cage's state dir. `cli.py:539`.
+///
+/// Walks the whole directory rather than naming three files, so a cage
+/// that builds from a staged `Containerfile` carries its build context.
+/// [`BACKUP_EXCLUDE`] is applied at the top level only — that is where
+/// the generated state lives, and a `creds/` *inside* someone's build
+/// context is their file, not ours — while [`is_build_noise`] applies
+/// at every level.
+///
+/// Unreadable entries are skipped rather than fatal: a backup of most
+/// of a cage is worth more than no backup, and the summary the command
+/// prints is not a promise of completeness.
+fn stage_backup_config(state_dir: &Path) -> Vec<Member> {
+    let mut members = vec![Member::Dir(format!("{ROOT}/config"))];
+    for (name, path) in read_sorted(state_dir) {
+        if BACKUP_EXCLUDE.contains(&name.as_str()) || is_build_noise(&name) {
+            continue;
+        }
+        collect_backup_entry(&path, &name, &mut members);
+    }
+    members
+}
+
+/// One state-dir entry and, for a directory, everything under it.
+///
+/// `relative` is the path inside `config/`, which is both the member
+/// name and what [`archive::link_stays_inside`] judges a link against.
+fn collect_backup_entry(path: &Path, relative: &str, members: &mut Vec<Member>) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    let name = format!("{ROOT}/config/{relative}");
+
+    // Checked first, and never followed: `is_dir()`/`is_file()` both
+    // resolve the link, so a link to a directory would be recursed into
+    // and a link to a file would be copied by value — which is how a
+    // link to `~/.ssh` ends up inside a backup.
+    if meta.is_symlink() {
+        let Ok(target) = std::fs::read_link(path) else {
+            return;
+        };
+        let target = target.to_string_lossy().into_owned();
+        if archive::link_stays_inside(Path::new(relative), &target) {
+            members.push(Member::Symlink(name, target));
+        } else {
+            // Neither carried nor dereferenced. Carrying it makes the
+            // whole tarball unrestorable — `extract_into` refuses it,
+            // as does `tarfile`'s `data` filter — and dereferencing it
+            // copies host content into the backup.
+            eprintln!(
+                "warning: skipped symlink {relative} -> {target} — it points \
+                 outside the cage's config dir, which a backup cannot carry; \
+                 re-create it on the restore host"
+            );
+        }
+        return;
+    }
+
+    if meta.is_dir() {
+        members.push(Member::Dir(name));
+        for (child, child_path) in read_sorted(path) {
+            if is_build_noise(&child) {
+                continue;
+            }
+            collect_backup_entry(&child_path, &format!("{relative}/{child}"), members);
+        }
+        return;
+    }
+
+    if meta.is_file() {
+        members.push(Member::FileFrom(name, path.to_owned()));
+    }
+}
+
+/// A directory's entries as `(file name, path)`, sorted by name.
+///
+/// Sorted because `write_targz` sorts anyway and a stable walk makes
+/// the warnings a backup prints reproducible; empty when the directory
+/// cannot be read, which is the "skip rather than fail" above.
+fn read_sorted(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut entries: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| {
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                entry.path(),
+            )
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// Is the Containerfile the restored `cage.yaml` will build from
+/// actually in this archive? `cli.py:593`.
+///
+/// Deliberately *not* "the state dir held entries beyond the managed
+/// config": every state dir has generated siblings — `dns-allowlist.conf`,
+/// a scaffold's `AGENTS.md` — so that test could never be false, and a
+/// manifest field that is always true tells a restore nothing. A cage
+/// with no build step records false, because there is no build context
+/// to carry.
+///
+/// Both halves have to hold: the file has to be *resolvable* inside the
+/// state dir, and it has to have been *emitted* as a member. The second
+/// is what makes a Containerfile that [`is_build_noise`] filtered out,
+/// or one reached through a pruned symlink, report false rather than
+/// promising a rebuild the tarball cannot do.
+fn build_context_included(state_dir: &Path, members: &[Member]) -> bool {
+    let containerfile = backup_containerfile(state_dir);
+    let Some(relative) = carried_containerfile(state_dir, &containerfile) else {
+        return false;
+    };
+    let name = format!("{ROOT}/config/{}", relative.display());
+    members.iter().any(|member| member.name() == name)
+}
+
+/// `container.build.containerfile` from the `cage.yaml` in `dir`, or
+/// `""`. `cli.py:616`.
+///
+/// Reads the document rather than taking the field off a parsed
+/// [`Config`]: restore asks this of a directory unpacked from an
+/// archive, where there is no loaded config and the document may be one
+/// the loader would reject. Every failure is `""`, which means "no
+/// build step" and so "nothing to check" — the config loader is what
+/// reports a malformed document, a page later and with a better message.
+fn backup_containerfile(dir: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(dir.join("cage.yaml")) else {
+        return String::new();
+    };
+    let Ok(raw) = agentcage_core::yaml::load(&text) else {
+        return String::new();
+    };
+    raw.get("container")
+        .and_then(|container| container.get("build"))
+        .and_then(|build| build.get("containerfile"))
+        .and_then(agentcage_core::yaml::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Resolve `containerfile` inside `dir`, or `None` if it is not carried
+/// there. `cli.py:636`. Returns the path *relative to `dir`*.
+///
+/// Both escaping shapes are refused rather than joined. Rust's
+/// `Path::join` discards `dir` entirely when the argument is absolute —
+/// the same trap as Python's `Path.__truediv__` — and `..` segments
+/// climb out, so a naive join reports a file that exists only on the
+/// host as one the backup carries. That is the difference between
+/// `build_context_included: true` and a restore that can actually build.
+fn carried_containerfile(dir: &Path, containerfile: &str) -> Option<PathBuf> {
+    if containerfile.is_empty() || Path::new(containerfile).is_absolute() {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in Path::new(containerfile).components() {
+        match component {
+            std::path::Component::Normal(part) => relative.push(part),
+            std::path::Component::CurDir => {}
+            // `a/../Containerfile` is accepted by the Python, which
+            // resolves before it checks; only a climb that actually
+            // leaves `dir` is refused.
+            std::path::Component::ParentDir => {
+                if !relative.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    dir.join(&relative).is_file().then_some(relative)
+}
+
 // ─────────────────────────────────────────────────────────
 // cage restore
 // ─────────────────────────────────────────────────────────
@@ -307,6 +545,10 @@ struct Manifest {
     secret_keys: Vec<String>,
     secrets_included: bool,
     named_volumes: Vec<String>,
+    /// Only ever reported back to the operator, never trusted: the
+    /// preflight looks at what the archive *holds*, because a manifest
+    /// is the part of a backup a person can edit.
+    build_context_included: bool,
 }
 
 impl Manifest {
@@ -335,6 +577,9 @@ impl Manifest {
             secret_keys: strings("secret_keys"),
             secrets_included: value.get("secrets_included").is_some_and(Json::is_truthy),
             named_volumes: strings("named_volumes"),
+            build_context_included: value
+                .get("build_context_included")
+                .is_some_and(Json::is_truthy),
         })
     }
 }
@@ -411,6 +656,36 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
+    // ── Extract ─────────────────────────────────────────
+    //
+    // Into a 0700 directory: a `--include-secrets` backup holds bare
+    // credentials, and `$TMPDIR` is usually world-traversable.
+    //
+    // Before the `--force` destroy below, and before any secret is
+    // created, because every refusal from here to the end of the
+    // preflight is a `return Err` — and `--force` destroys the cage and
+    // clears its state dir. An abort after that point leaves the host
+    // with neither the old cage nor a restored one, and with orphaned
+    // `<target>.KEY` podman secrets. That was the bug: the destroy was
+    // first and the archive was never even opened until after it.
+    let staging = TempDir::new("agentcage-restore-").map_err(|error| {
+        eprintln!("error: could not create a staging directory: {error}");
+        ExitCode::from(EXIT_FAILURE)
+    })?;
+    if let Err(error) = archive::extract_into(&tarball, staging.path()) {
+        eprintln!("error: invalid backup — {error}");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+    let backup_dir = staging.path().join(ROOT);
+
+    // ── Preflight ───────────────────────────────────────
+    let config_src = backup_dir.join("config");
+    if !config_src.join("cage.yaml").is_file() {
+        eprintln!("error: invalid backup — missing config/cage.yaml");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+    check_restore_build_context(&manifest, &config_src)?;
+
     // ── Handle an existing cage ─────────────────────────
     if ctx.paths.deployment_exists(&target) {
         if !force {
@@ -431,20 +706,6 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     }
 
     let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-
-    // ── Extract ─────────────────────────────────────────
-    //
-    // Into a 0700 directory: a `--include-secrets` backup holds bare
-    // credentials, and `$TMPDIR` is usually world-traversable.
-    let staging = TempDir::new("agentcage-restore-").map_err(|error| {
-        eprintln!("error: could not create a staging directory: {error}");
-        ExitCode::from(EXIT_FAILURE)
-    })?;
-    if let Err(error) = archive::extract_into(&tarball, staging.path()) {
-        eprintln!("error: invalid backup — {error}");
-        return Err(ExitCode::from(EXIT_FAILURE));
-    }
-    let backup_dir = staging.path().join(ROOT);
 
     restore_secrets(&podman, &manifest, &target, &backup_dir);
     restore_config(ctx, &target, &backup_dir, new_name)?;
@@ -679,6 +940,11 @@ fn restore_config(
         }
     }
 
+    // Reinstall the build context. `--force` cleared the state dir via
+    // `remove_deployment`, so anything an operator staged there by hand
+    // is already gone; the tarball is the only source.
+    restore_build_context(&config_src, &ctx.paths.deployment_dir(target));
+
     // Regenerated, not restored. See the module docs.
     ctx.paths
         .save_proxy_config(target, &ctx.version)
@@ -693,6 +959,134 @@ fn restore_config(
             ExitCode::from(EXIT_FAILURE)
         })?;
     Ok(())
+}
+
+/// Refuse, before anything destructive or expensive happens, a backup
+/// that cannot rebuild the cage. `cli.py:662`.
+///
+/// A `cage.yaml` whose `container.build.containerfile` names a file the
+/// archive does not carry cannot be rebuilt on a clean host. Without
+/// this the failure surfaces much later as an opaque "local-only image
+/// is not present in the local image store" from the backend — and,
+/// with `--force`, only *after* the existing cage has been destroyed.
+fn check_restore_build_context(manifest: &Manifest, config_src: &Path) -> Result<(), ExitCode> {
+    let containerfile = backup_containerfile(config_src);
+    if containerfile.is_empty() {
+        // No build step: nothing to rebuild and nothing to carry.
+        return Ok(());
+    }
+    if carried_containerfile(config_src, &containerfile).is_some() {
+        return Ok(());
+    }
+    if Path::new(&containerfile).is_absolute() {
+        // An absolute containerfile lives outside the cage's state dir,
+        // so a backup never carries it; the build reads it straight off
+        // the host. Check the path the build will actually use rather
+        // than joining it onto `config_src`, which `Path::join` would
+        // silently discard.
+        if Path::new(&containerfile).is_file() {
+            return Ok(());
+        }
+        eprintln!(
+            "error: this backup cannot rebuild the cage — its cage.yaml builds \
+             from the absolute path '{containerfile}', which is outside the \
+             backup and does not exist on this host.\n  \
+             Restore with --no-start, stage the build context into the cage's \
+             config dir, point container.build.containerfile at it, and run \
+             'agentcage cage update <name>'."
+        );
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+    // `True`/`False`, not Rust's `false`: the operator reading this is
+    // being told what to look for in `manifest.json`, which is JSON
+    // written by a Python `json.dumps` in every backup taken so far.
+    let flag = if manifest.build_context_included {
+        "True"
+    } else {
+        "False"
+    };
+    eprintln!(
+        "error: this backup cannot rebuild the cage — its cage.yaml builds from \
+         '{containerfile}', which the tarball does not contain \
+         (build_context_included={flag}).\n  \
+         Backups taken before the build context was included omit it. Either \
+         re-take the backup with a newer agentcage, or restore with --no-start, \
+         stage the build context into the cage's config dir, and run \
+         'agentcage cage update <name>'."
+    );
+    Err(ExitCode::from(EXIT_FAILURE))
+}
+
+/// Reinstall a backup's build context into a cage's state dir.
+/// `cli.py:653`.
+///
+/// [`BACKUP_MANAGED_CONFIG`] is skipped because restore installs those
+/// three by name — through `save_deployment`, which validates. And
+/// [`BACKUP_EXCLUDE`] is skipped *again* here, on the way out: the
+/// archive this reads may not be one agentcage wrote, and a hand-made
+/// tarball carrying `secret_keys.json` must not be able to plant the
+/// keychain index in a restored cage. That is the whole reason the
+/// exclusion is applied in both directions rather than only at backup.
+fn restore_build_context(config_src: &Path, deploy_dir: &Path) {
+    for (name, path) in read_sorted(config_src) {
+        if BACKUP_MANAGED_CONFIG.contains(&name.as_str()) || BACKUP_EXCLUDE.contains(&name.as_str())
+        {
+            continue;
+        }
+        copy_restored_entry(&path, &deploy_dir.join(&name));
+    }
+}
+
+/// Copy one extracted entry into the state dir, links as links.
+///
+/// Best-effort per entry, as the rest of restore is: a build context
+/// that is missing a file fails the rebuild with a message about that
+/// file, which is better than a restore that refuses at the last step.
+fn copy_restored_entry(source: &Path, dest: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(source) else {
+        return;
+    };
+
+    if meta.is_symlink() {
+        let Ok(target) = std::fs::read_link(source) else {
+            return;
+        };
+        // Whatever is in the way, including a directory.
+        if std::fs::symlink_metadata(dest).is_ok() {
+            let removed = if dest.is_dir() && !dest.is_symlink() {
+                std::fs::remove_dir_all(dest)
+            } else {
+                std::fs::remove_file(dest)
+            };
+            if removed.is_err() {
+                return;
+            }
+        }
+        if let Err(error) = std::os::unix::fs::symlink(&target, dest) {
+            eprintln!(
+                "warning: could not restore symlink {}: {error}",
+                dest.display()
+            );
+        }
+        return;
+    }
+
+    if meta.is_dir() {
+        if let Err(error) = std::fs::create_dir_all(dest) {
+            eprintln!("warning: could not restore {}: {error}", dest.display());
+            return;
+        }
+        for (name, child) in read_sorted(source) {
+            copy_restored_entry(&child, &dest.join(&name));
+        }
+        return;
+    }
+
+    if meta.is_file() {
+        if let Err(error) = std::fs::copy(source, dest) {
+            eprintln!("warning: could not restore {}: {error}", dest.display());
+        }
+    }
 }
 
 /// Copy the archived `capture.jsonl` back into the cage's data dir.
@@ -779,11 +1173,12 @@ fn file_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Manifest, backup_inner, file_timestamp, is_valid_cage_name, restore_capture,
-        restore_config, restore_secrets,
+        Manifest, ROOT, backup_inner, build_context_included, carried_containerfile,
+        check_restore_build_context, file_timestamp, is_valid_cage_name, restore_build_context,
+        restore_capture, restore_config, restore_inner, restore_secrets, stage_backup_config,
     };
     use crate::cli::context::Ctx;
-    use agentcage_cli::archive;
+    use agentcage_cli::archive::{self, Member};
     use agentcage_core::yaml;
     use agentcage_exec::{FakeRunner, Reply};
     use agentcage_state::{Paths, TestDir};
@@ -1105,6 +1500,579 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    // ─────────────────────────────────────────────────────
+    // the build context
+    // ─────────────────────────────────────────────────────
+
+    /// A cage that builds from a Containerfile staged in its state dir.
+    const CAGE_YAML_BUILD: &str = "\
+name: acme-agent
+container:
+  image: docker.io/library/node:22-slim
+  build:
+    containerfile: Containerfile
+";
+
+    /// The same cage with no build step, which is the common case and
+    /// the one whose `build_context_included` must be false.
+    const CAGE_YAML_NO_BUILD: &str = "\
+name: acme-agent
+container:
+  image: docker.io/library/node:22-slim
+";
+
+    /// A cage's state dir as it looks on disk, generated siblings and
+    /// all. The two that matter are `fingerprint.json` and
+    /// `secret_keys.json`: every real state dir has them, so every test
+    /// here starts with the two entries that must not travel.
+    fn fake_state_dir(root: &Path, cage_yaml: &str, containerfile: bool) -> PathBuf {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join("cage.yaml"), cage_yaml).unwrap();
+        fs::write(root.join("metadata.json"), "{\"network_octet\": 42}\n").unwrap();
+        fs::write(root.join("proxy-config.yaml"), "listen: 8080\n").unwrap();
+        fs::write(
+            root.join("dns-allowlist.conf"),
+            "server=/example.com/1.1.1.1\n",
+        )
+        .unwrap();
+        fs::write(root.join("fingerprint.json"), "{\"fingerprint\": \"x\"}").unwrap();
+        fs::write(root.join("secret_keys.json"), "[\"API_KEY\"]").unwrap();
+        if containerfile {
+            fs::write(
+                root.join("Containerfile"),
+                "FROM scratch\nCOPY skills /skills\n",
+            )
+            .unwrap();
+            fs::create_dir_all(root.join("skills")).unwrap();
+            fs::write(root.join("skills/tool.py"), "print('hi')\n").unwrap();
+        }
+        root.to_owned()
+    }
+
+    /// The member names [`stage_backup_config`] produces, with the
+    /// `agentcage-backup/config/` prefix stripped for legibility.
+    fn staged_names(state_dir: &Path) -> Vec<String> {
+        stage_backup_config(state_dir)
+            .iter()
+            .filter_map(|member| {
+                member
+                    .name()
+                    .strip_prefix(&format!("{ROOT}/config/"))
+                    .map(ToOwned::to_owned)
+            })
+            .collect()
+    }
+
+    /// **The security-critical one.** `secret_keys.json` is the keychain
+    /// store's *name index*, and the values it names live in the host
+    /// keychain and never travel. Restoring the index onto a clean host
+    /// would advertise every key as stored while none is, which makes
+    /// `cage update`'s fail-closed missing-secrets check pass vacuously
+    /// and starts the cage with no secrets at all.
+    ///
+    /// `fingerprint.json` is the same shape of bug one step down: it
+    /// describes the *source* host's build, so a restored cage looks
+    /// already up to date and skips the rebuild it needs.
+    #[test]
+    fn the_secret_index_and_the_fingerprint_never_travel() {
+        let dir = TestDir::new("backup-exclude");
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_BUILD, true);
+        let names = staged_names(&state);
+
+        assert!(!names.iter().any(|n| n == "secret_keys.json"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "fingerprint.json"), "{names:?}");
+        // ... while the build context itself is carried, which is the
+        // whole reason the allowlist became an exclusion list.
+        assert!(names.iter().any(|n| n == "Containerfile"), "{names:?}");
+        assert!(names.iter().any(|n| n == "skills/tool.py"), "{names:?}");
+        // ... and so are the generated siblings a restore wants.
+        assert!(names.iter().any(|n| n == "dns-allowlist.conf"), "{names:?}");
+    }
+
+    /// Credential material, in a backup taken without
+    /// `--include-secrets` and in one taken with it: `creds/` and the
+    /// plaintext hand-off are excluded unconditionally, because the
+    /// `secrets/` member is the only sanctioned way a value travels.
+    #[test]
+    fn credential_material_never_travels() {
+        let dir = TestDir::new("backup-creds");
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_BUILD, true);
+        fs::create_dir_all(state.join("creds")).unwrap();
+        fs::write(state.join("creds/token"), "sekrit").unwrap();
+        fs::write(
+            state.join("pending_secrets.json"),
+            "{\"API_KEY\": \"sk-1\"}",
+        )
+        .unwrap();
+        fs::create_dir_all(state.join("cage-env")).unwrap();
+        fs::write(state.join("cage-env/placeholders.env"), "A=1\n").unwrap();
+
+        let names = staged_names(&state);
+        assert!(!names.iter().any(|n| n.contains("creds")), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n.contains("pending_secrets")),
+            "{names:?}"
+        );
+        assert!(!names.iter().any(|n| n.contains("cage-env")), "{names:?}");
+    }
+
+    /// Outcome one of three: the cage builds, and the Containerfile it
+    /// builds from is in the archive.
+    #[test]
+    fn build_context_included_is_true_when_the_containerfile_is_carried() {
+        let dir = TestDir::new("backup-ctx-true");
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_BUILD, true);
+        assert!(build_context_included(&state, &stage_backup_config(&state)));
+    }
+
+    /// Outcome two: no build step, so there is no context to carry.
+    ///
+    /// This is the case that makes the flag worth having. It is
+    /// deliberately *not* "the state dir held entries beyond the three
+    /// managed config files" — every state dir has generated siblings,
+    /// so that test could never be false and the flag would be a
+    /// constant.
+    #[test]
+    fn build_context_included_is_false_without_a_build_step() {
+        let dir = TestDir::new("backup-ctx-nobuild");
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_NO_BUILD, false);
+        fs::write(state.join("AGENTS.md"), "# agents\n").unwrap();
+
+        let members = stage_backup_config(&state);
+        assert!(!build_context_included(&state, &members));
+        // The extra files still travel; only the flag is about the build.
+        assert!(staged_names(&state).iter().any(|n| n == "AGENTS.md"));
+    }
+
+    /// Outcome three: the cage builds, but the Containerfile is not
+    /// there. This is the old contextless tarball, and reporting it as
+    /// true is what sends a restore into an opaque backend failure.
+    #[test]
+    fn build_context_included_is_false_when_the_containerfile_is_missing() {
+        let dir = TestDir::new("backup-ctx-missing");
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_BUILD, false);
+        assert!(!build_context_included(
+            &state,
+            &stage_backup_config(&state)
+        ));
+    }
+
+    /// The ignore list applies to the *top level* of the state dir too,
+    /// not only inside the directories a recursive copy walks — which
+    /// is where a `__pycache__/` or a soft-deleted
+    /// `Containerfile.deleted.<ts>` actually lives.
+    #[test]
+    fn top_level_build_noise_is_ignored() {
+        let dir = TestDir::new("backup-noise");
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_BUILD, true);
+        fs::create_dir_all(state.join("__pycache__")).unwrap();
+        fs::write(state.join("__pycache__/junk.pyc"), "x").unwrap();
+        fs::write(state.join("Containerfile.deleted.20260101-000000"), "old").unwrap();
+        // ... and inside a directory, which is the case that already
+        // worked and must keep working.
+        fs::create_dir_all(state.join("skills/__pycache__")).unwrap();
+        fs::write(state.join("skills/__pycache__/t.pyc"), "x").unwrap();
+
+        let names = staged_names(&state);
+        assert!(
+            !names.iter().any(|n| n.contains("__pycache__")),
+            "{names:?}"
+        );
+        assert!(!names.iter().any(|n| n.contains(".deleted.")), "{names:?}");
+        assert!(names.iter().any(|n| n == "Containerfile"), "{names:?}");
+    }
+
+    /// A link that stays inside the config dir is carried as a link; one
+    /// that points out of it is dropped with a warning.
+    ///
+    /// Neither alternative is acceptable. Carrying the escaping link
+    /// makes the *whole* tarball unrestorable — `extract_into` refuses
+    /// it and so does `tarfile`'s `data` filter — and dereferencing it
+    /// copies whatever it points at, which here is a private key, into
+    /// the backup.
+    #[test]
+    fn escaping_symlinks_are_pruned_and_in_tree_ones_are_kept() {
+        let dir = TestDir::new("backup-symlinks");
+        fs::write(dir.join("id_rsa"), "PRIVATE KEY").unwrap();
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_BUILD, true);
+        std::os::unix::fs::symlink("tool.py", state.join("skills/alias.py")).unwrap();
+        std::os::unix::fs::symlink("nowhere.txt", state.join("dangling")).unwrap();
+        std::os::unix::fs::symlink(dir.join("id_rsa"), state.join("host-link")).unwrap();
+        std::os::unix::fs::symlink("../../id_rsa", state.join("skills/escape")).unwrap();
+
+        let members = stage_backup_config(&state);
+        let names = staged_names(&state);
+
+        assert!(names.iter().any(|n| n == "skills/alias.py"), "{names:?}");
+        // Dangling is fine: nothing is ever followed.
+        assert!(names.iter().any(|n| n == "dangling"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "host-link"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "skills/escape"), "{names:?}");
+
+        // The kept ones are links, not copies — a dereferenced
+        // `alias.py` would be a `FileFrom` holding `tool.py`'s bytes.
+        assert!(members.iter().any(|m| matches!(
+            m,
+            Member::Symlink(name, target)
+                if name.ends_with("config/skills/alias.py") && target == "tool.py"
+        )));
+
+        // And the archive they produce is one the reader accepts, with
+        // no trace of the file the escaping links pointed at.
+        let out = dir.join("out.tar.gz");
+        archive::write_targz(&out, &members).unwrap();
+        let extracted = dir.join("extracted");
+        archive::extract_into(&out, &extracted).unwrap();
+        let config = extracted.join("agentcage-backup/config");
+        assert!(
+            fs::symlink_metadata(config.join("skills/alias.py"))
+                .unwrap()
+                .is_symlink()
+        );
+        assert!(!config.join("host-link").exists());
+        for name in archive::member_names(&out).unwrap() {
+            if let Ok(Some(bytes)) = archive::read_member(&out, &name) {
+                assert!(
+                    !bytes.windows(11).any(|w| w == b"PRIVATE KEY"),
+                    "{name} carries host content"
+                );
+            }
+        }
+    }
+
+    /// `Path::join` silently discards its left side when the right side
+    /// is absolute, and `..` segments climb out of it — so a naive join
+    /// reports a file that exists only on the host as one the backup
+    /// carries. Both shapes are refused.
+    #[test]
+    fn carried_containerfile_rejects_absolute_and_escaping_paths() {
+        let dir = TestDir::new("backup-cf-paths");
+        let config = dir.join("config");
+        fs::create_dir_all(&config).unwrap();
+        fs::write(config.join("Containerfile"), "FROM scratch\n").unwrap();
+        let outside = dir.join("Containerfile");
+        fs::write(&outside, "FROM scratch\n").unwrap();
+
+        assert_eq!(
+            carried_containerfile(&config, "Containerfile"),
+            Some(PathBuf::from("Containerfile"))
+        );
+        assert_eq!(
+            carried_containerfile(&config, "./Containerfile"),
+            Some(PathBuf::from("Containerfile"))
+        );
+        // Climbs out and lands on a file that really exists — which is
+        // exactly the case a join would have reported as carried.
+        assert_eq!(carried_containerfile(&config, "../Containerfile"), None);
+        assert_eq!(
+            carried_containerfile(&config, &outside.display().to_string()),
+            None
+        );
+        assert_eq!(carried_containerfile(&config, "/etc/passwd"), None);
+        assert_eq!(carried_containerfile(&config, ""), None);
+        assert_eq!(carried_containerfile(&config, "nope"), None);
+    }
+
+    /// The preflight's three answers, on the extracted `config/` a
+    /// restore actually sees.
+    #[test]
+    fn the_preflight_refuses_only_a_tarball_that_cannot_rebuild() {
+        let dir = TestDir::new("restore-preflight");
+
+        let carried = fake_state_dir(&dir.join("carried"), CAGE_YAML_BUILD, true);
+        assert!(check_restore_build_context(&manifest_with(false), &carried).is_ok());
+
+        let no_build = fake_state_dir(&dir.join("nobuild"), CAGE_YAML_NO_BUILD, false);
+        assert!(check_restore_build_context(&manifest_with(false), &no_build).is_ok());
+
+        let contextless = fake_state_dir(&dir.join("contextless"), CAGE_YAML_BUILD, false);
+        assert!(check_restore_build_context(&manifest_with(false), &contextless).is_err());
+
+        // An absolute containerfile is resolved against the *host*, not
+        // joined onto the backup dir: present it passes, missing it is
+        // refused with a different message.
+        let host_cf = dir.join("elsewhere/Containerfile");
+        fs::create_dir_all(host_cf.parent().unwrap()).unwrap();
+        fs::write(&host_cf, "FROM scratch\n").unwrap();
+        let absolute = fake_state_dir(
+            &dir.join("absolute"),
+            &format!(
+                "name: acme-agent\ncontainer:\n  build:\n    containerfile: {}\n",
+                host_cf.display()
+            ),
+            false,
+        );
+        assert!(check_restore_build_context(&manifest_with(false), &absolute).is_ok());
+
+        let gone = fake_state_dir(
+            &dir.join("gone"),
+            &format!(
+                "name: acme-agent\ncontainer:\n  build:\n    containerfile: {}\n",
+                dir.join("missing/Containerfile").display()
+            ),
+            false,
+        );
+        assert!(check_restore_build_context(&manifest_with(false), &gone).is_err());
+    }
+
+    /// A manifest carrying nothing but the fields the preflight reports.
+    fn manifest_with(build_context_included: bool) -> Manifest {
+        Manifest {
+            format_version: 1,
+            cage_name: RICH.to_owned(),
+            isolation: "container".to_owned(),
+            secret_keys: Vec::new(),
+            secrets_included: false,
+            named_volumes: Vec::new(),
+            build_context_included,
+        }
+    }
+
+    /// The exclusion is applied on the way *out* as well as on the way
+    /// in, so a hand-crafted tarball cannot plant the keychain name
+    /// index or a foreign fingerprint in a restored cage. A tarball is
+    /// the one artifact in this program that arrives from outside it.
+    #[test]
+    fn a_hand_crafted_tarball_cannot_reinstall_the_excluded_entries() {
+        let dir = TestDir::new("restore-smuggle");
+        let config_src = fake_state_dir(&dir.join("config"), CAGE_YAML_NO_BUILD, false);
+        fs::create_dir_all(config_src.join("creds")).unwrap();
+        fs::write(config_src.join("creds/token"), "sekrit").unwrap();
+
+        let deploy = dir.join("deploy");
+        fs::create_dir_all(&deploy).unwrap();
+        restore_build_context(&config_src, &deploy);
+
+        assert!(!deploy.join("secret_keys.json").exists());
+        assert!(!deploy.join("fingerprint.json").exists());
+        assert!(!deploy.join("creds").exists());
+        // The three managed config files are installed by name, through
+        // `save_deployment`, not by this.
+        assert!(!deploy.join("cage.yaml").exists());
+        assert!(!deploy.join("metadata.json").exists());
+        assert!(!deploy.join("proxy-config.yaml").exists());
+        // Everything else does come through.
+        assert!(deploy.join("dns-allowlist.conf").is_file());
+    }
+
+    /// A build context survives the round trip: backed up from a state
+    /// dir, restored into one, with its directory tree and its in-tree
+    /// links intact and none of the excluded state along for the ride.
+    #[test]
+    fn a_build_context_round_trips() {
+        let dir = TestDir::new("backup-ctx-roundtrip");
+        let state = fake_state_dir(&dir.join("state"), CAGE_YAML_BUILD, true);
+        std::os::unix::fs::symlink("tool.py", state.join("skills/alias.py")).unwrap();
+
+        let out = dir.join("out.tar.gz");
+        archive::write_targz(&out, &stage_backup_config(&state)).unwrap();
+
+        let staging = dir.join("staging");
+        archive::extract_into(&out, &staging).unwrap();
+        let config_src = staging.join("agentcage-backup/config");
+        let deploy = dir.join("deploy");
+        fs::create_dir_all(&deploy).unwrap();
+        restore_build_context(&config_src, &deploy);
+
+        assert_eq!(
+            fs::read_to_string(deploy.join("Containerfile")).unwrap(),
+            "FROM scratch\nCOPY skills /skills\n"
+        );
+        assert_eq!(
+            fs::read_to_string(deploy.join("skills/tool.py")).unwrap(),
+            "print('hi')\n"
+        );
+        assert!(
+            fs::symlink_metadata(deploy.join("skills/alias.py"))
+                .unwrap()
+                .is_symlink()
+        );
+        assert!(!deploy.join("secret_keys.json").exists());
+        assert!(!deploy.join("fingerprint.json").exists());
+    }
+
+    /// **The ordering fix.** `--force` destroys the existing cage and
+    /// clears its state dir; the preflight refuses a tarball that
+    /// cannot rebuild. Run in the wrong order that leaves the host with
+    /// neither the old cage nor a restored one — and with orphaned
+    /// `<target>.KEY` podman secrets. So extraction and the preflight
+    /// come first, and a refusal costs nothing.
+    #[test]
+    fn a_forced_restore_of_a_contextless_tarball_keeps_the_existing_cage() {
+        let dir = TestDir::new("restore-force-contextless");
+        plant_ca(&dir);
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = ctx(&dir, fake.clone());
+
+        // An existing cage, which must still be here afterwards.
+        let source = dir.join("cage.yaml");
+        fs::write(
+            &source,
+            fixture_state(&format!("xdg-config/agentcage/cages/{RICH}/cage.yaml")),
+        )
+        .unwrap();
+        ctx.paths.save_deployment(RICH, &source).unwrap();
+        let before = fs::read_to_string(ctx.paths.stored_config_path(RICH)).unwrap();
+
+        // A backup from before build contexts were carried: its
+        // cage.yaml builds from a Containerfile the tarball omits.
+        let tarball = dir.join("old.tar.gz");
+        archive::write_targz(
+            &tarball,
+            &[
+                Member::Dir(format!("{ROOT}/config")),
+                Member::File(
+                    format!("{ROOT}/config/cage.yaml"),
+                    CAGE_YAML_BUILD.as_bytes().to_vec(),
+                ),
+                Member::File(
+                    format!("{ROOT}/manifest.json"),
+                    format!(
+                        "{{\"format_version\": 1, \"cage_name\": \"{RICH}\", \
+                          \"isolation\": \"container\", \
+                          \"secret_keys\": [\"API_KEY\"], \
+                          \"secrets_included\": true}}\n"
+                    )
+                    .into_bytes(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let matches = crate::cli::command(false)
+            .try_get_matches_from([
+                "agentcage",
+                "cage",
+                "restore",
+                &tarball.display().to_string(),
+                "--force",
+            ])
+            .unwrap();
+        let leaf = matches
+            .subcommand()
+            .and_then(|(_, sub)| sub.subcommand())
+            .map(|(_, leaf)| leaf)
+            .unwrap();
+        assert!(restore_inner(&ctx, leaf).is_err());
+
+        // The cage is untouched: still deployed, same document.
+        assert!(ctx.paths.deployment_exists(RICH));
+        assert_eq!(
+            fs::read_to_string(ctx.paths.stored_config_path(RICH)).unwrap(),
+            before
+        );
+        // Nothing was stopped, destroyed, or written to the secret
+        // store — the refusal happened before any of it could run.
+        let calls = fake.calls();
+        let verbs: Vec<String> = calls
+            .iter()
+            .map(|call| call.argv().join(" "))
+            .filter(|argv| {
+                argv.contains("secret create") || argv.contains("stop") || argv.contains("rm")
+            })
+            .collect();
+        assert!(verbs.is_empty(), "{verbs:?}");
+    }
+
+    /// The same ordering, exercised through the whole command: a real
+    /// backup of a real cage, restored over itself with `--force`.
+    /// Here the preflight passes, so the destroy *does* run — which is
+    /// what makes the test above about ordering rather than about the
+    /// preflight refusing everything.
+    #[test]
+    fn a_backup_taken_by_the_command_excludes_the_index_and_the_fingerprint() {
+        let dir = TestDir::new("backup-cmd-exclude");
+        plant_ca(&dir);
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = ctx(&dir, fake);
+
+        let source = dir.join("cage.yaml");
+        fs::write(
+            &source,
+            fixture_state(&format!("xdg-config/agentcage/cages/{RICH}/cage.yaml")),
+        )
+        .unwrap();
+        ctx.paths.save_deployment(RICH, &source).unwrap();
+        // `ensure_v022_cage` reads this; a cage without one is legacy.
+        fs::write(
+            ctx.paths.metadata_path(RICH),
+            fixture_state(&format!("xdg-config/agentcage/cages/{RICH}/metadata.json")),
+        )
+        .unwrap();
+        ctx.paths.save_proxy_config(RICH, GENERATION).unwrap();
+        let state = ctx.paths.deployment_dir(RICH);
+        fs::write(state.join("secret_keys.json"), "[\"ANTHROPIC_API_KEY\"]").unwrap();
+        fs::write(state.join("fingerprint.json"), "{\"fingerprint\": \"x\"}").unwrap();
+        fs::create_dir_all(state.join("creds")).unwrap();
+        fs::write(state.join("creds/token"), "sekrit").unwrap();
+        fs::write(state.join("AGENTS.md"), "# agents\n").unwrap();
+
+        let out = dir.join("out.tar.gz");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        // `podman secret ls`, then `volume exists` for the cage's one
+        // named volume.
+        fake.push(Reply::ok(""));
+        fake.push(Reply::status(1));
+        let ctx = Ctx {
+            paths: ctx.paths,
+            runner: Box::new(fake),
+            version: GENERATION.to_owned(),
+        };
+        let matches = crate::cli::command(false)
+            .try_get_matches_from([
+                "agentcage",
+                "cage",
+                "backup",
+                RICH,
+                "-o",
+                &out.display().to_string(),
+            ])
+            .unwrap();
+        let leaf = matches
+            .subcommand()
+            .and_then(|(_, sub)| sub.subcommand())
+            .map(|(_, leaf)| leaf)
+            .unwrap();
+        assert!(backup_inner(&ctx, leaf).is_ok());
+
+        let names = archive::member_names(&out).unwrap();
+        for forbidden in [
+            "agentcage-backup/config/secret_keys.json",
+            "agentcage-backup/config/fingerprint.json",
+            "agentcage-backup/config/creds",
+            "agentcage-backup/config/creds/token",
+        ] {
+            assert!(!names.iter().any(|n| n == forbidden), "{forbidden}");
+        }
+        // The rest of the state dir is there, which is the change.
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "agentcage-backup/config/AGENTS.md")
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "agentcage-backup/config/cage.yaml")
+        );
+
+        // The fixture cage has no build step, so the flag is false —
+        // and it is present, which older manifests have no key for.
+        let manifest = String::from_utf8(
+            archive::read_member(&out, "agentcage-backup/manifest.json")
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            manifest.contains("\"build_context_included\": false"),
+            "{manifest}"
+        );
     }
 
     #[test]
