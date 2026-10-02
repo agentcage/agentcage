@@ -619,6 +619,65 @@ def _record_image(scrub: Scrubber, work: Path) -> dict:
     }
 
 
+# The argv shapes the wrapper's `cage-cmd.sh` has to survive. Each one
+# is a real thing a cage.yaml can say, and each one breaks a different
+# naive quoting: a bare word needs none, a flag-looking element must not
+# be re-split, and the last three carry metacharacters that an unquoted
+# `exec` line would hand to the shell.
+_WRAPPER_ARGV_CASES: list[dict] = [
+    {"name": "bare", "image": "docker.io/library/ubuntu:24.04",
+     "argv": ["sleep", "infinity"]},
+    {"name": "shell-metacharacters", "image": "docker.io/library/ubuntu:24.04",
+     "argv": ["sh", "-c", "echo $HOME && id"]},
+    {"name": "embedded-quote", "image": "localhost/agentcage-scaffold-pi:latest",
+     "argv": ["/bin/sh", "-c", "echo it's fine"]},
+    {"name": "empty-element", "image": "docker.io/library/alpine:3.20",
+     "argv": ["/entrypoint.sh", ""]},
+    {"name": "newline", "image": "docker.io/library/ubuntu:24.04",
+     "argv": ["sh", "-c", "line one\nline two"]},
+]
+
+
+def _record_wrapper(scrub: Scrubber) -> dict:
+    """The per-cage wrapper Containerfile, rendered.
+
+    The only two dynamic inputs are the user image reference and the
+    `shlex.quote`d argv, and the second is the one that matters: it lands
+    inside a `RUN cat > … <<'CAGECMD'` heredoc as an `exec` line, so a
+    quoting difference between the two implementations is an
+    argv-injection difference, not a formatting one.
+
+    Recorded as the whole rendered text rather than a hash so a diff is
+    readable. Note the leading blank line in every case: the template
+    opens with a `{# … #}` comment and the Python's environment sets
+    neither `trim_blocks` nor `lstrip_blocks`, so the newline after `#}`
+    survives into the Containerfile `container build` is handed.
+    """
+    from agentcage.apple_container import wrapper
+
+    cases = []
+    for case in _WRAPPER_ARGV_CASES:
+        cases.append({
+            "name": case["name"],
+            "user_image": case["image"],
+            "user_cmd": case["argv"],
+            "shlex_join": wrapper._shlex_join_argv(case["argv"]),
+            "containerfile": wrapper.render_wrapper_containerfile(
+                case["image"], user_cmd=case["argv"],
+            ),
+        })
+    return scrub.value({
+        "why": "the wrapper image is the cage's PID 1 and its argv is baked "
+               "into it at build time. `_shlex_join_argv` is the whole "
+               "defence against a `container.command` metacharacter reaching "
+               "a shell, so both implementations have to agree on it "
+               "byte for byte.",
+        "image_name": wrapper.wrapped_image_name("demo"),
+        "staged_context_files": ["cage-init.sh"],
+        "cases": cases,
+    })
+
+
 def _record_state_paths(scrub: Scrubber) -> dict:
     """The per-cage state layout, and the XDG wart it is built on.
 
@@ -904,6 +963,12 @@ def _generate(work: Path) -> dict[str, str]:
             **_record_image(scrub, work),
         },
         "state-paths.json": _record_state_paths(scrub),
+        "wrapper.json": {
+            "_comment": "The per-cage wrapper Containerfile and the argv "
+                        "quoting baked into it, as "
+                        "`apple_container/wrapper.py` produces them.",
+            **_record_wrapper(scrub),
+        },
         "volumes.json": {
             "_comment": "Everything the apple backend derives from a cage's "
                         "`container.volumes` and `container.tmpfs`. Inputs are "

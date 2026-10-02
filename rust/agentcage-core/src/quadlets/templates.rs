@@ -236,6 +236,45 @@ pub fn render_source<S: serde::Serialize>(
         .render(Value::from_serialize(context))
 }
 
+/// [`render_source`] with Jinja2's *default* whitespace handling.
+///
+/// The environment `apple_container/wrapper.py` builds for
+/// `Containerfile.wrapper.j2`:
+///
+/// ```python
+/// SandboxedEnvironment(
+///     loader=FileSystemLoader(str(_DATA_DIR)),
+///     keep_trailing_newline=True,
+/// )
+/// ```
+///
+/// No `trim_blocks` and no `lstrip_blocks`, which is load-bearing
+/// rather than incidental: the template opens with a 35-line `{# … #}`
+/// comment on its own lines, and without `trim_blocks` the newline
+/// after `#}` survives. The rendered Containerfile therefore starts
+/// with a blank line, and `container build` is handed those bytes.
+///
+/// No `placeholder` global and no filters beyond `indent` — the
+/// template uses neither, and the narrower environment is the honest
+/// mirror of the Python's.
+///
+/// # Errors
+///
+/// [`Error`] when the source fails to parse or the render raises.
+pub fn render_source_untrimmed<S: serde::Serialize>(
+    name: &str,
+    source: &str,
+    context: &S,
+) -> Result<String, Error> {
+    let mut environment = Environment::new();
+    environment.set_keep_trailing_newline(true);
+    environment.add_filter("indent", jinja_indent);
+    environment.add_template_owned(name.to_owned(), source.to_owned())?;
+    environment
+        .get_template(name)?
+        .render(Value::from_serialize(context))
+}
+
 /// The `systemd_exec` filter — `quadlets._systemd_exec_join`.
 ///
 /// Takes the command list the way Jinja2 hands a Python `list[str]` to

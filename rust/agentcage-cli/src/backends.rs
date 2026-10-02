@@ -7,13 +7,12 @@
 //! argv shape its own tests assert, and a trait over them would have
 //! had to be invented before two of them existed.
 //!
-//! So this is the dispatch, spelled as an enum. Two arms, because two
-//! backends can execute: `container` (PR D6) and `vm` (PRs E1 + E4).
-//! `apple-container`'s execution half is E5, and until it lands an
-//! `apple-container` cage takes the [`AnyBackend::refusal`] path rather
-//! than being addressed by the wrong runtime — the failure mode that
-//! makes this enum worth having, since a container-backend probe of a
-//! `vm` cage does not error, it answers *"not running"*.
+//! So this is the dispatch, spelled as an enum. Three arms, one per
+//! backend that can execute: `container` (PR D6), `vm` (PRs E1 + E4)
+//! and `apple-container` (PRs E2/E2b/E3 + E5). Addressing a cage with
+//! the wrong runtime is the failure mode that makes this enum worth
+//! having, since a container-backend probe of a `vm` cage does not
+//! error — it answers *"not running"*.
 //!
 //! # What the arms do and do not share
 //!
@@ -31,6 +30,7 @@ use agentcage_core::quadlets::Quadlets;
 use agentcage_exec::CommandRunner;
 use agentcage_state::Paths;
 
+use crate::apple::backend::AppleBackend;
 use crate::backend::{BackendError, ContainerBackend, SERVICE_NAMES};
 use crate::vm::VmBackend;
 
@@ -41,15 +41,18 @@ pub enum AnyBackend<'a> {
     Container(ContainerBackend<'a>),
     /// `isolation: vm` — a Lima guest with podman and quadlets inside.
     Vm(VmBackend<'a>),
+    /// `isolation: apple-container` — two sibling Apple microVMs.
+    Apple(AppleBackend<'a>),
 }
 
 impl<'a> AnyBackend<'a> {
     /// `get_backend(config)`.
     ///
     /// An unrecognized isolation resolves to the container backend,
-    /// which is the Python's fall-through — `apple-container` reaches
-    /// that arm here too, and every command that could act on one gates
-    /// on [`Self::refusal`] first.
+    /// which is the Python's fall-through. Note that the fall-through
+    /// is reached only by a spelling `validate_config` has already
+    /// refused, so in practice the three named arms are the three that
+    /// happen.
     #[must_use]
     pub fn new(
         isolation: &str,
@@ -57,22 +60,29 @@ impl<'a> AnyBackend<'a> {
         runner: &'a dyn CommandRunner,
         version: &'a str,
     ) -> Self {
-        if isolation == "vm" {
-            Self::Vm(VmBackend::new(paths, runner, version))
-        } else {
-            Self::Container(ContainerBackend::new(paths, runner, version))
+        match isolation {
+            "vm" => Self::Vm(VmBackend::new(paths, runner, version)),
+            "apple-container" => Self::Apple(AppleBackend::new(paths, runner, version)),
+            _ => Self::Container(ContainerBackend::new(paths, runner, version)),
         }
     }
 
-    /// The Track E refusal for a backend that cannot be executed yet,
-    /// or `None` when this one can.
+    /// The Track E refusal for a backend that cannot be executed, or
+    /// `None` when this one can.
     ///
-    /// `verb` names the command, so `cage start` on an
-    /// `apple-container` cage says `cage start` and not the name of
-    /// whichever helper happened to notice.
+    /// Every backend can execute now that E5 has landed, so this
+    /// always answers `None` and is kept for one reason: an isolation
+    /// spelling that reaches [`Self::new`]'s fall-through would
+    /// otherwise be driven by the container backend silently. It is
+    /// the guard that turns "a future backend was added and a command
+    /// forgot about it" into a refusal instead of a wrong runtime.
+    ///
+    /// `verb` names the command, so the message says `cage start`
+    /// rather than the name of whichever helper noticed.
     #[must_use]
     pub fn refusal(isolation: &str, verb: &str) -> Option<String> {
-        (isolation != "container" && isolation != "vm").then(|| {
+        const EXECUTABLE: [&str; 3] = ["container", "vm", "apple-container"];
+        (!EXECUTABLE.contains(&isolation)).then(|| {
             format!(
                 "error: `{verb}` on the '{isolation}' backend is not ported yet \
                  (RUST-PORT-PLAN.md Track E)"
@@ -89,7 +99,7 @@ impl<'a> AnyBackend<'a> {
     pub fn as_container(&self) -> Option<&ContainerBackend<'a>> {
         match self {
             Self::Container(backend) => Some(backend),
-            Self::Vm(_) => None,
+            _ => None,
         }
     }
 
@@ -98,7 +108,20 @@ impl<'a> AnyBackend<'a> {
     pub fn as_vm(&self) -> Option<&VmBackend<'a>> {
         match self {
             Self::Vm(backend) => Some(backend),
-            Self::Container(_) => None,
+            _ => None,
+        }
+    }
+
+    /// The apple backend, when this is one.
+    ///
+    /// For the two commands that have to reach past the protocol:
+    /// `domain add`/`rm`, whose live reload is this backend's own, and
+    /// `cage exec`, whose argv needs the placeholder map.
+    #[must_use]
+    pub fn as_apple(&self) -> Option<&AppleBackend<'a>> {
+        match self {
+            Self::Apple(backend) => Some(backend),
+            _ => None,
         }
     }
 
@@ -110,6 +133,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.check_prerequisites(),
             Self::Vm(backend) => backend.check_prerequisites(),
+            Self::Apple(backend) => backend.check_prerequisites(),
         }
     }
 
@@ -118,6 +142,10 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.ensure_ready(),
             Self::Vm(backend) => backend.ensure_ready(),
+            // The only arm whose recovery prints: bringing the Apple
+            // apiserver up is slow enough to be worth narrating, and
+            // `quiet` is how the Python decides.
+            Self::Apple(backend) => backend.ensure_ready(false),
         }
     }
 
@@ -146,6 +174,18 @@ impl<'a> AnyBackend<'a> {
             Self::Vm(backend) => {
                 backend.build_artifacts(config, deploy_name, no_cache, pull, quiet)
             }
+            Self::Apple(backend) => match config {
+                Some(config) => backend.build_artifacts(config, deploy_name, no_cache, pull, quiet),
+                // Like the vm arm, this backend builds the cage's own
+                // image as well as the shared egress one, so it cannot
+                // work from nothing. The container arm can, which is
+                // why the parameter is an `Option` at all.
+                None => Err(BackendError::Failed(
+                    "apple-container needs the cage's config to build its \
+                     images; this is a `cage create`/`cage update` path only"
+                        .to_owned(),
+                )),
+            },
         }
     }
 
@@ -180,6 +220,12 @@ impl<'a> AnyBackend<'a> {
                 used_octets,
                 network_octet,
             ),
+            // The other four arguments are the quadlet path's. Apple
+            // networks are per-cage with an auto-allocated subnet, so
+            // there is no shared `10.89.x` pool to coordinate against,
+            // and the cage's config is bind-mounted rather than named
+            // in a unit. The Python ignores them here too.
+            Self::Apple(backend) => backend.generate_units(config, deploy_name),
         }
     }
 
@@ -192,6 +238,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.install_units(units, quiet),
             Self::Vm(backend) => backend.install_units(units, quiet),
+            Self::Apple(backend) => backend.install_units(units, quiet),
         }
     }
 
@@ -204,6 +251,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.start(name, quiet),
             Self::Vm(backend) => backend.start(name, quiet),
+            Self::Apple(backend) => backend.start(name, quiet),
         }
     }
 
@@ -212,6 +260,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.stop(name),
             Self::Vm(backend) => backend.stop(name),
+            Self::Apple(backend) => backend.stop(name),
         }
     }
 
@@ -232,6 +281,7 @@ impl<'a> AnyBackend<'a> {
                 Ok(())
             }
             Self::Vm(backend) => backend.restart(name),
+            Self::Apple(backend) => backend.restart(name),
         }
     }
 
@@ -241,6 +291,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.is_running(name, service),
             Self::Vm(backend) => backend.is_running(name, service),
+            Self::Apple(backend) => backend.is_running(name, service),
         }
     }
 
@@ -260,6 +311,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.has_resources(name),
             Self::Vm(backend) => backend.has_resources(name),
+            Self::Apple(backend) => backend.has_resources(name),
         }
     }
 
@@ -277,11 +329,26 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.destroy_resources(name, keep_secrets),
             Self::Vm(backend) => backend.destroy_resources(name, keep_secrets),
+            // `keep_secrets` has no arm here: this backend's secrets
+            // live in the keychain and in the per-cage state tree, and
+            // the tree goes with the cage either way. The Python's
+            // signature carries the flag and marks it unused.
+            Self::Apple(backend) => backend.destroy_resources(name),
         }
     }
 
     /// `exec_argv` — the argv that runs a command inside a service.
-    #[must_use]
+    ///
+    /// Fallible for the apple arm alone, which is why the protocol
+    /// returns a `Result` at all: that backend refuses a service name
+    /// it does not have (`BackendUnsupported` in the Python) and
+    /// refuses again when `container(1)` is not installed. The other
+    /// two compose an argv for any service name and let podman
+    /// complain.
+    ///
+    /// # Errors
+    ///
+    /// A message ready to print, already phrased for the operator.
     pub fn exec_argv(
         &self,
         name: &str,
@@ -289,12 +356,27 @@ impl<'a> AnyBackend<'a> {
         command: &[String],
         interactive: bool,
         as_root: bool,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>, String> {
         match self {
             Self::Container(backend) => {
-                backend.exec_argv(name, service, command, interactive, as_root)
+                Ok(backend.exec_argv(name, service, command, interactive, as_root))
             }
-            Self::Vm(backend) => backend.exec_argv(name, service, command, interactive, as_root),
+            Self::Vm(backend) => {
+                Ok(backend.exec_argv(name, service, command, interactive, as_root))
+            }
+            // The placeholders are read here rather than passed in
+            // because the Python reads them here: a cage session gets
+            // the decoy tokens that are in the stored config *at exec
+            // time*, so a `secret set` since the last start is
+            // reflected without a restart. Apple's `container exec`
+            // has no `--env`, so they arrive as an `env(1)` prefix
+            // inside the VM.
+            Self::Apple(backend) => {
+                let placeholders = crate::services::current_placeholders(backend.paths(), name);
+                backend
+                    .exec_argv(name, service, command, interactive, as_root, &placeholders)
+                    .map_err(|error| error.to_string())
+            }
         }
     }
 
@@ -304,6 +386,9 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.audit_argv(name, since, follow),
             Self::Vm(backend) => backend.audit_argv(name, since, follow),
+            // `since` is dropped, as the Python drops it: this is a
+            // `tail` over a bind-mounted file, not a journal query.
+            Self::Apple(backend) => backend.audit_argv(name, follow),
         }
     }
 
@@ -314,6 +399,7 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.unit_dir().to_path_buf(),
             Self::Vm(backend) => backend.unit_dir(),
+            Self::Apple(backend) => backend.unit_dir(),
         }
     }
 
@@ -323,6 +409,10 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.egress_image(),
             Self::Vm(backend) => format!("agentcage-egress:{}", backend.version()),
+            // The only arm whose tag carries a content hash as well as
+            // the version, which is what makes its "already built"
+            // short-circuit safe. See `apple::image`.
+            Self::Apple(backend) => backend.egress_image(),
         }
     }
 }
@@ -331,12 +421,26 @@ impl<'a> AnyBackend<'a> {
 mod tests {
     use super::AnyBackend;
 
+    /// Every backend that exists executes; the guard is for one that
+    /// does not yet.
     #[test]
-    fn only_apple_container_is_refused() {
-        assert!(AnyBackend::refusal("container", "cage start").is_none());
-        assert!(AnyBackend::refusal("vm", "cage start").is_none());
-        let refusal = AnyBackend::refusal("apple-container", "cage start").expect("refused");
+    fn the_three_real_backends_are_not_refused() {
+        for isolation in ["container", "vm", "apple-container"] {
+            assert!(
+                AnyBackend::refusal(isolation, "cage start").is_none(),
+                "{isolation} is refused but is ported"
+            );
+        }
+    }
+
+    /// An isolation nobody implemented refuses, and names itself and
+    /// the verb while doing it. This is what stops `new`'s
+    /// container-backend fall-through from silently driving a future
+    /// backend with podman.
+    #[test]
+    fn an_unknown_backend_is_refused_by_name() {
+        let refusal = AnyBackend::refusal("gvisor", "cage start").expect("refused");
         assert!(refusal.contains("`cage start`"), "{refusal}");
-        assert!(refusal.contains("apple-container"), "{refusal}");
+        assert!(refusal.contains("gvisor"), "{refusal}");
     }
 }

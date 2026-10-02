@@ -599,32 +599,37 @@ container:
     );
 }
 
-/// `cage logs` and `cage audit` both read their source through a
-/// backend, and `apple-container`'s is not ported. Its cage answered
-/// out of the *host* journal would print nothing and exit 0 — a wrong
-/// answer that looks exactly like a quiet cage — so both refuse
-/// instead, the way `cage verify` reports its unported probes.
+/// An `apple-container` cage's logs and audit are read through its own
+/// backend, not out of the host.
 ///
-/// §2.7's first trap is why this cannot be papered over with a file
-/// reader: `audit.jsonl` exists host-side only for apple-container.
+/// Both used to refuse (Track E), and the refusal was the right answer
+/// while the reader was missing: a cage answered out of the *host*
+/// journal prints nothing and exits 0, which looks exactly like a quiet
+/// cage. E5 ported both readers, so what has to be asserted now is that
+/// neither refuses and neither reaches podman.
 ///
-/// `vm` is **not** in this list any more (PR E4). Its reader is the
-/// guest's journal over `limactl shell`, which is ported; what a vm
-/// cage must never do is answer out of the host's journal, and
-/// [`a_vm_cage_is_read_through_its_guest`] is the assertion for that.
+/// `cage logs` ends in Apple's own complaint about a container that
+/// does not exist — which is the point, it reached `container`. `cage
+/// audit` is a `tail` over a host file that is not there, and an empty
+/// stream is an empty table on every backend, so all that can be said
+/// of it is that it stopped refusing.
 #[test]
-fn the_unported_backends_are_refused_rather_than_read_wrongly() {
-    let dir = agentcage_state::TestDir::new("binary-tracke");
-    let isolation = "apple-container";
-    let name = format!("cage-{isolation}");
-    stage_cage(dir.path(), &name, isolation);
+fn an_apple_cage_is_read_through_its_own_backend() {
+    if Command::new("container").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = agentcage_state::TestDir::new("binary-apple-read");
+    stage_cage(dir.path(), "cage-apple", "apple-container");
     for command in ["logs", "audit"] {
-        let out = agentcage_sandboxed(dir.path(), &["cage", command, &name]);
-        assert_eq!(code(&out), 1, "{command} {isolation}: {}", stderr(&out));
+        let out = agentcage_sandboxed(dir.path(), &["cage", command, "cage-apple"]);
+        let complaint = format!("{}{}", stdout(&out), stderr(&out));
         assert!(
-            stderr(&out).contains("not ported yet") && stderr(&out).contains(isolation),
-            "{command} {isolation}: {}",
-            stderr(&out)
+            !complaint.contains("not ported yet"),
+            "{command} apple-container still refuses: {complaint}"
+        );
+        assert!(
+            !complaint.contains("podman"),
+            "{command} apple-container reached podman: {complaint}"
         );
     }
 }

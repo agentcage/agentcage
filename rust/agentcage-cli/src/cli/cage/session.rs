@@ -77,13 +77,22 @@ fn exec_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         command = expanded;
     }
 
-    let argv = ctx.backend_for(&config.isolation).exec_argv(
-        &name,
-        &service,
-        &command,
-        terminal::is_interactive(),
-        as_root,
-    );
+    let argv = ctx
+        .backend_for(&config.isolation)
+        .exec_argv(
+            &name,
+            &service,
+            &command,
+            terminal::is_interactive(),
+            as_root,
+        )
+        .map_err(|error| {
+            // `BackendUnsupported` in the Python: an unknown
+            // `--service` on the apple backend, or a `container` CLI
+            // that is not installed. Both already say what to do.
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        })?;
     // The container backend runs the session as a *child* whether or
     // not there is a terminal — `cli.py:2604` reaches `run_interactive`
     // (and its `execvp`) only for vm and apple-container. Keeping the

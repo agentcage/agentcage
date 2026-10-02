@@ -75,15 +75,16 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     if let Some(refusal) =
         agentcage_cli::backends::AnyBackend::refusal(&config.isolation, "cage audit")
     {
-        // apple-container reads its audit trail from a host file —
-        // §2.7's first trap is that it is the *only* backend with one,
-        // and nothing below knows how to read it. `container` and `vm`
-        // both answer out of a journal, which is what makes them one
-        // code path with two argv builders.
         eprintln!("{refusal}");
         eprintln!("  run the Python `agentcage cage audit {name}` for now");
         return Err(ExitCode::from(EXIT_FAILURE));
     }
+    // Note what is *not* a branch below: apple-container reads its
+    // audit trail from a host file rather than a journal — §2.7's first
+    // trap is that it is the only backend with one — and that
+    // difference lives entirely in `audit_argv`. Everything after it
+    // consumes lines from a command's stdout, so one `tail` and two
+    // `journalctl`s are the same code path from here on.
 
     // Post-parse time filtering, applied on every backend rather than
     // only where the reader lacks a native time index: `podman logs` has

@@ -104,16 +104,32 @@ fn staging_puts_the_value_on_stdin_and_the_path_in_argv() {
 
 // ── 2. `secret set`, as a process ───────────────────────────────────
 
-/// The refusal path, end to end.
+/// A store that cannot exist on *this* host, whichever host that is.
 ///
-/// `secrets.backend: keychain` on a Linux host is a store that cannot
-/// exist, so `resolve_store` refuses *after* the value has been read
-/// from stdin. What is asserted is everything observable afterwards:
-/// both streams, and every byte under the sandboxed home.
+/// `keychain` off macOS and `systemd-creds` on it: each is refused by
+/// `resolve_store` for a reason that needs no probe, so the refusal
+/// happens *after* the value has been read from stdin and before
+/// anything is stored. What this test asserts is everything observable
+/// afterwards — both streams, and every byte under the sandboxed home.
+///
+/// Picking per platform is not fussiness. `keychain` on macOS resolves
+/// a *real* store, and `KeychainStore::target`'s writability probe
+/// works by adding a generic password to the operator's **real login
+/// keychain** and deleting it again — which raises a keychain-access
+/// dialog on a machine with a GUI session, once per run, and would go
+/// on to store the canary for real if the probe succeeded. A redaction
+/// test has no business doing either.
+const UNAVAILABLE_BACKEND: &str = if cfg!(target_os = "macos") {
+    "systemd-creds"
+} else {
+    "keychain"
+};
+
+/// The refusal path, end to end.
 #[test]
 fn secret_set_refusing_a_store_prints_and_writes_nothing_of_the_value() {
     let home = temp_dir("set-refusal");
-    write_cage(&home, "canary", "keychain");
+    write_cage(&home, "canary", UNAVAILABLE_BACKEND);
 
     let out = secret_set(&home, "canary", "API_KEY", CANARY);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -198,7 +214,16 @@ fn write_cage(home: &Path, name: &str, backend: &str) {
     std::fs::write(
         dir.join("cage.yaml"),
         format!(
+            // `isolation:` is explicit, and has to be: without it the
+            // config loader asks the *host* which backend to default
+            // to, so this cage would be a `container` one on Linux CI
+            // and an `apple-container` one on an Apple Silicon Mac
+            // with Apple's CLI installed — where the `secret` group
+            // refuses outright and every assertion below is about a
+            // refusal instead of about redaction. What is under test
+            // is the container backend's secret output; say so.
             "name: {name}\n\
+             isolation: container\n\
              container:\n  \
                image: \"docker.io/library/alpine:3\"\n  \
                command: [\"true\"]\n\

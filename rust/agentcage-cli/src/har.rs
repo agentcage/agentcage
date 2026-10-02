@@ -317,37 +317,8 @@ fn is_apple_container(
         .filter(|value| yaml::python_bool(value));
     Ok(match declared {
         Some(value) => value.as_str() == Some("apple-container"),
-        None => default_isolation(runner) == "apple-container",
+        None => crate::hostenv::default_isolation(runner) == "apple-container",
     })
-}
-
-/// `config.default_isolation()` — the best backend for *this* host.
-///
-/// Linux and every other non-Mac answer `container` without asking
-/// anything, which is the only branch a Linux host or a CI runner
-/// reaches. The Darwin branch reproduces the arch, version and
-/// binary tests, and reads the macOS major version from `sw_vers` where
-/// the Python reads `platform.mac_ver()` — the same stand-in, and for
-/// the same reason, as [`crate::doctor`]'s.
-fn default_isolation(runner: &dyn CommandRunner) -> &'static str {
-    const MIN_MACOS_MAJOR: u32 = 26;
-
-    if !cfg!(target_os = "macos") {
-        return "container";
-    }
-    if std::env::consts::ARCH != "aarch64" {
-        return "vm";
-    }
-    if crate::doctor::macos_major(runner).is_none_or(|major| major < MIN_MACOS_MAJOR) {
-        return "vm";
-    }
-    if agentcage_exec::tools::apple::AppleContainer::new(runner)
-        .binary()
-        .is_none()
-    {
-        return "vm";
-    }
-    "apple-container"
 }
 
 /// Read the rotated generation and then the live file, keeping the
@@ -404,7 +375,9 @@ mod tests {
     use agentcage_core::har::json::{self as json, DumpOptions};
     use agentcage_exec::FakeRunner;
 
-    use super::{HarArgs, default_isolation, rotated_path};
+    use crate::hostenv::default_isolation;
+
+    use super::{HarArgs, rotated_path};
 
     fn args(name: &str) -> HarArgs {
         HarArgs {

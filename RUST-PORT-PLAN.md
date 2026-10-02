@@ -800,17 +800,38 @@ Mac and can run in parallel with Track D as soon as Track C lands.
 | E4 | `vm` backend, execution half: `_deploy_cage`, readiness waits, in-guest build | **e2e phase 7** | Lima host |
 | E5 | `apple-container`, execution half: `start`/`stop`, `_stage_secrets`, mask mountpoint record/cleanup, `_wait_supervisor_ready` | **`phase_apple.sh`**, manual — the same gate this code has today | Apple Silicon, macOS 26+ |
 
+**Track E is done.** E5 landed and `phase_apple.sh` is green on the Rust
+binary on real hardware (Apple Silicon, macOS 26.5, `container` 1.5.0),
+with the same 2-microVM threat-model assertions the Python passes.
+What the two fixes below said E5 *must* carry, it carries.
+
 **Fixes that landed on the Python after this table was written, and that E5
-must carry.** Both live in `AppleContainerBackend.start()`, so neither has a
-Rust counterpart to patch today — `AnyBackend::refusal` keeps `apple-container`
-off the Rust execution path until E5 lands, which is why they are recorded here
-rather than ported. Both shipped in v0.40.2.
+had to carry.** Both live in `AppleContainerBackend.start()`, and both shipped
+in v0.40.2. **Both are now ported** — the first is asserted by
+`apple::run_argv`'s own tests *and* by the argv differential below, the second
+by the five preconditions at the top of `AppleBackend::start`.
 
 | Origin | What E5 must include |
 | :-- | :-- |
 | #407 | The egress `container run` argv must carry `--kernel-arg sysctl.net.ipv4.ip_forward=1`. Apple's runtime mounts `/proc/sys` read-only and there is no Quadlet, so the kernel command line is the only create-time lever; without it `supervisor-egress.sh` dies at its `ip_forward` gate (exit 16). Because the egress IP is both the cage's default gateway and its dnsmasq upstream, the symptom is total loss of connectivity inside the cage, not a proxy error. `tests/test_apple_container.py` asserts the flag is present — mirror that assertion, since no CI runner exercises this backend. |
 | #409 | The "no built image" and egress-image preconditions in `start()` must name the cage and `agentcage cage update <name>` rather than the internal `build_artifacts()`, and must raise the operator-error type the CLI renders as a single `error: …` line. Rust cannot reproduce Python's traceback problem, but it can reproduce the unhelpful message. |
 
+
+### Track E — what E5 deliberately left
+
+Two `apple-container` command surfaces are still refused by name. Neither
+is in E5's scope above and neither is exercised by `phase_apple.sh`, but
+both are reachable, so they are written down rather than left to be
+discovered.
+
+| # | Surface | Why it is refused rather than ported |
+| :-- | :-- | :-- |
+| E6 | `cage backup` / `cage restore` | A *different shape* on this backend, not a variant of the container one: `_cage_backup_apple_container` plus an `apple-container` branch in `cage_restore`. No podman named volumes to export, no host podman secret store, and `audit.jsonl`/`capture.jsonl` come from the per-cage logs directory instead of a journal. The Rust refuses `vm` here too, so this is a Track-E-wide gap and not an apple one. |
+| E7 | the `secret` group (`set` / `list` / `rm` / `rotate-placeholders`) | The *store* is ported — `resolve_store` builds `KeychainStore` or `ApplePlaintextStore`, and `AppleBackend::stage_secrets` uses it, which is why `cage create --set-secret` works. What is not ported is `secret set`'s **live-apply** path, which probes host podman for the running proxy's secret channel. Opening the gate without it would make `secret set` on an apple cage ask podman about a container podman has never heard of — wrong rather than merely unimplemented, which is the distinction that comment in `cli/secret/mod.rs` is about. |
+
+Both are small and neither blocks F2. E7 is the one an operator is
+likelier to hit, because `secret set` on a cage that already exists is
+the natural way to rotate a credential.
 
 ### Track F — Cutover
 
@@ -853,11 +874,9 @@ were missing are wired: the contract, state-compat, output and vm fixture
 `--check` modes now run in `rust.yml` alongside the six that already did,
 and both e2e jobs gained a `cli: [python, rust]` matrix so the port is
 checked against podman on every PR rather than only from a terminal. Phase 7
-runs nightly. `Containerfile.helper` is **not** deleted: it is unreferenced
-as a deliverable but `scripts/update-deps.py` tracks its base image and
-`tests/test_egress_hash.py` names it as the real instance of "a file in the
-build context the egress does not COPY". Deleting it belongs with the
-`pyproject.toml` reduction, not before it.
+runs nightly. (An earlier revision of this paragraph said
+`Containerfile.helper` was *not* deleted. It is — see the F4 row above. The
+claim was stale, not a disagreement.)
 
 F1 is first in this track and should be attempted during Phase 0 as a throwaway
 spike — Apple Developer enrollment has lead time, and discovering that in the

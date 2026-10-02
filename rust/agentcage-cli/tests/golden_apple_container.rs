@@ -12,7 +12,10 @@
 //! What it covers is Track E's generation half A — image naming, the
 //! egress content-hash wiring, `_render_egress_config`,
 //! `_user_volume_argv`, `_tmpfs_targets` and `_tmpfs_copyup_seeds`.
-//! `start`/`stop`/`_stage_secrets` are E5 and need a Mac.
+//! `start`/`stop`/`_stage_secrets` are E5 and need a Mac, with one
+//! exception: `wrapper.json` is E5's work and is still recorded and
+//! replayed here, because rendering a Containerfile needs no hardware.
+//! What E5 cannot check this way is the `container build` it is handed to.
 //!
 //! The fixture is the specification. Every expectation in it was
 //! computed by running the Python, never typed, so a divergence here is
@@ -30,6 +33,7 @@ use agentcage_cli::apple::image::{BuildFlags, egress_build_argv, egress_image_na
 use agentcage_cli::apple::volumes::{
     mask_mount_targets, tmpfs_copyup_seeds, tmpfs_targets, user_volume_argv,
 };
+use agentcage_cli::apple::wrapper::{render_wrapper_containerfile, shlex_join, wrapped_image_name};
 use agentcage_core::config::FixedHost;
 use agentcage_core::quadlets::QuadletHost;
 use agentcage_state::{Paths, TestDir};
@@ -595,5 +599,49 @@ fn dnsmasq_scopes_recursion_per_zone() {
     assert_eq!(forwarders.len(), 4);
     for line in forwarders {
         assert!(line.starts_with("server=/"), "unscoped forwarder: {line}");
+    }
+}
+
+// ── wrapper.json ─────────────────────────────────────────────
+
+/// Every recorded argv, through `_shlex_join_argv` and the template.
+///
+/// The join is asserted separately from the render even though the
+/// render contains it, because a failure in the join alone is an
+/// argv-injection bug and a failure in the render alone is a
+/// whitespace one. Reading which assertion fired is the difference.
+#[test]
+fn the_wrapper_containerfile_matches_the_python() {
+    let fixture = document("wrapper.json");
+    assert_eq!(
+        wrapped_image_name("demo"),
+        text_of(&fixture["image_name"]),
+        "the per-cage tag is a 0.21 compatibility promise"
+    );
+
+    let cases = fixture["cases"].as_array().expect("cases");
+    assert!(!cases.is_empty(), "the fixture records no cases");
+    for case in cases {
+        let name = text_of(&case["name"]);
+        let image = text_of(&case["user_image"]);
+        let argv: Vec<String> = case["user_cmd"]
+            .as_array()
+            .expect("user_cmd")
+            .iter()
+            .map(|value| text_of(value).to_owned())
+            .collect();
+
+        assert_eq!(
+            shlex_join(&argv),
+            text_of(&case["shlex_join"]),
+            "case {name}: the quoted argv diverged"
+        );
+        let rendered = render_wrapper_containerfile(image, &argv)
+            .unwrap_or_else(|error| panic!("case {name}: {error}"));
+        assert_eq!(
+            rendered,
+            text_of(&case["containerfile"]),
+            "case {name}: the rendered Containerfile diverged"
+        );
     }
 }

@@ -463,19 +463,22 @@ pub(crate) fn update_dns_quadlet(
     config: &agentcage_core::config::Config,
 ) -> Result<(), ExitCode> {
     let name = config.name.as_str();
-    if config.isolation != "container" && config.isolation != "vm" {
-        // apple-container's `reload_domains` is Track E (PR E5). The
-        // caller has already written `cage.yaml` and
-        // `proxy-config.yaml` by the time this is reached, so the
-        // refusal is what tells the operator the change is durable but
-        // not yet live — better than silently writing only the host
-        // file and reporting success.
-        eprintln!(
-            "error: the DNS live reload on the '{}' backend is not ported yet \
-             (RUST-PORT-PLAN.md Track E)",
-            config.isolation
-        );
-        return Err(ExitCode::from(EXIT_FAILURE));
+    // apple-container has a reload of its own and takes none of the
+    // three steps below. It re-renders the bind-mounted config rather
+    // than rewriting a quadlet's allowlist, validates inside the egress
+    // the same way, and then has *two* daemons to signal — the egress's
+    // and the cage's own, the second being the load-bearing one. So it
+    // is a different method rather than a branch in this one.
+    if config.isolation == "apple-container" {
+        let backend = ctx.backend_for(&config.isolation);
+        let Some(apple) = backend.as_apple() else {
+            eprintln!("error: internal: apple isolation resolved to another backend");
+            return Err(ExitCode::from(EXIT_FAILURE));
+        };
+        return apple.reload_domains(config, name).map_err(|error| {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        });
     }
     let allow_path = ctx.paths.dns_allowlist_path(name);
     let previous = std::fs::read_to_string(&allow_path).unwrap_or_default();

@@ -100,6 +100,10 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<ExitCode, ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
 
+    if config.isolation == "apple-container" {
+        return logs_apple(ctx, &config.isolation, &name, &selected, follow);
+    }
+
     if config.isolation == "vm" {
         return logs_vm(
             ctx,
@@ -227,6 +231,42 @@ fn logs_vm(
         return Ok(exec_journalctl(&argv));
     };
     filtered_stream(ctx, &argv, name, services, min_level)
+}
+
+/// `container logs [-f] <target>` — the apple backend's reader.
+///
+/// Three things it does not do, all of them because Apple's
+/// `container logs` cannot:
+///
+/// * **no `-n`.** The flag does not exist, so `--lines` is accepted and
+///   ignored. The Python marks the parameter unused for the same
+///   reason.
+/// * **no `--since`.** Same.
+/// * **no `--level` filtering, and no multi-service interleave.** One
+///   target per invocation: the first recognized service in the list
+///   wins, defaulting to the cage VM. `cage logs --service` filtering
+///   across both microVMs is a CLI-layer job nobody has needed yet.
+///
+/// So this is the one reader that hands the process over rather than
+/// parsing: there is nothing to filter and `exec` keeps the signal
+/// disposition the operator expects from a `-f`.
+fn logs_apple(
+    ctx: &Ctx,
+    isolation: &str,
+    name: &str,
+    services: &[String],
+    follow: bool,
+) -> Result<ExitCode, ExitCode> {
+    let backend = ctx.backend_for(isolation);
+    let Some(apple) = backend.as_apple() else {
+        eprintln!("error: internal: apple isolation resolved to another backend");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    };
+    let argv = apple.logs_argv(name, services, follow).map_err(|error| {
+        eprintln!("error: {error}");
+        ExitCode::from(EXIT_FAILURE)
+    })?;
+    Ok(exec_journalctl(&argv))
 }
 
 /// `shlex.join` — the inner journalctl command, as one argument.

@@ -136,6 +136,19 @@ pub fn system() -> &'static str {
     }
 }
 
+/// `os.getuid()` — the **real** uid.
+///
+/// Not the effective one, and the difference is load-bearing for the
+/// one caller that has it: launchd's `gui/<uid>` domain is keyed on the
+/// real uid, so a plist bootstrapped by the operator lives in the
+/// operator's GUI domain even when agentcage is re-entered under
+/// `sudo`. [`crate::legacy_watcher`] makes the same choice for the same
+/// reason.
+#[must_use]
+pub fn uid() -> u32 {
+    nix::unistd::getuid().as_raw()
+}
+
 /// `pwd.getpwuid(os.getuid()).pw_name` — the invoking user's login name.
 ///
 /// Lima names the guest user after the host user, deriving it from the
@@ -177,19 +190,57 @@ pub fn machine() -> &'static str {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RealHost;
 
+/// The macOS major version `default_isolation` compares against.
+const MIN_MACOS_MAJOR: u32 = 26;
+
+/// `config.default_isolation()` — the best isolation backend for this
+/// host.
+///
+/// Resolution order, the Python's own:
+///
+/// * Linux (and anything else) → `container`;
+/// * macOS on Apple Silicon, 26+, with the `container` CLI installed →
+///   `apple-container`;
+/// * every other Mac → `vm`.
+///
+/// The macOS major version comes from `sw_vers -productVersion` where
+/// the Python reads `platform.mac_ver()` — the same stand-in, and for
+/// the same reason, as [`crate::doctor`]'s. The binary probe is
+/// `shutil.which`-shaped and goes through the runner, which is what
+/// makes this testable from Linux CI.
+///
+/// Note what it does **not** do: probe whether the apiserver is
+/// running. The Python does not either — validation catches "installed
+/// but stopped" with a clear hint, and a probe here would run a
+/// subprocess on every config load.
+#[must_use]
+pub fn default_isolation(runner: &dyn agentcage_exec::CommandRunner) -> &'static str {
+    if system() != "Darwin" {
+        return "container";
+    }
+    if machine() != "arm64" {
+        return "vm";
+    }
+    if crate::doctor::macos_major(runner).is_none_or(|major| major < MIN_MACOS_MAJOR) {
+        return "vm";
+    }
+    if agentcage_exec::tools::apple::AppleContainer::new(runner)
+        .binary()
+        .is_none()
+    {
+        return "vm";
+    }
+    "apple-container"
+}
+
 impl HostProbe for RealHost {
     fn default_isolation(&self) -> String {
-        // `config.default_isolation()`, minus its apple-container
-        // branch. That branch needs `platform.mac_ver()` and a probe
-        // for the `container` binary, both of which belong to the PR
-        // that ports the backend it selects (Track E, E2/E3/E5).
-        // Until then a Mac gets `vm`, which is what the Python answers
-        // on every Mac without the CLI installed.
-        if system() == "Darwin" {
-            "vm".to_owned()
-        } else {
-            "container".to_owned()
-        }
+        // The trait has no runner — it is `config.default_isolation()`,
+        // which the Python calls with no arguments and which reaches
+        // the host directly. This is the real host, so the real runner
+        // is the honest answer; every test that wants a different one
+        // uses `FixedHost` or calls the free function above.
+        default_isolation(&agentcage_exec::SystemRunner).to_owned()
     }
 
     fn dns_servers(&self) -> Result<Vec<String>, ConfigError> {

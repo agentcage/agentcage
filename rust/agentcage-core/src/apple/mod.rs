@@ -42,10 +42,13 @@
 
 pub mod argv;
 pub mod launchd;
+/// `--cpus` / `--memory` normalization for Apple's stricter parser.
+pub mod resources;
 pub mod units;
 
 pub use argv::{AppleArgvError, Service, audit_argv, exec_argv, logs_argv};
 pub use launchd::{plist_label, plist_text};
+pub use resources::{normalize_cpus, normalize_memory};
 pub use units::{generate_units, unit_json};
 
 /// `AppleContainerBackend.service_names` — the 2-microVM model's two

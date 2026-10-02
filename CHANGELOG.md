@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The `apple-container` backend executes on the Rust binary.** Track E5:
+  `cage create`, `start`, `stop`, `restart`, `destroy`, `exec`, `logs`,
+  `audit` and `domain add`/`rm` all drive Apple's `container` CLI directly
+  instead of refusing. Verified on real hardware — `tests/e2e/phase_apple.sh`
+  is green on Apple Silicon / macOS 26.5 / `container` 1.5.0, including every
+  2-microVM threat-model assertion (injected secrets unreachable from the cage
+  VM at uid 1000 *and* under `--as-root`; `CAP_NET_ADMIN` cleared from an exec
+  session's `CapEff`), and the `container run` argv it emits for both microVMs
+  is byte-identical to the Python's on the same config.
+
+  Carried from v0.40.2, both of which this backend needs and neither of which
+  had a Rust counterpart before now: the egress `--kernel-arg
+  sysctl.net.ipv4.ip_forward=1` (without it `supervisor-egress.sh` dies at its
+  `ip_forward` gate and the cage loses all connectivity, not just its proxy),
+  and `start`'s preconditions naming the cage and `agentcage cage update
+  <name>` rather than an internal call.
+
+  Two surfaces still refuse by name and are recorded in `RUST-PORT-PLAN.md`:
+  `cage backup`/`restore` (a different shape on this backend, and `vm` refuses
+  there too) and the `secret` group (the store is ported and
+  `cage create --set-secret` works; `secret set`'s live-apply path still probes
+  host podman).
+
+### Fixed
+
+- **A Mac no longer resolves every cage to the `vm` backend.**
+  `hostenv::RealHost::default_isolation` omitted the `apple-container` branch,
+  so a cage with no explicit `isolation:` — the common case — was reported and
+  driven as a `vm` cage on macOS. `cage list` showed the wrong backend and a
+  wrong status, and because `AnyBackend::refusal` only fires for isolation
+  values outside `container`/`vm`, nothing refused: a mutating command would
+  have taken the Lima path against an Apple cage. The full probe already
+  existed in `cli/har.rs`; both call sites now share it.
+
+- **`cargo test` on a Mac.** Four tests failed on macOS only, for host reasons
+  rather than product ones: two staged a cage with no `isolation:` and so
+  tested a different backend depending on the host, and two handed a
+  panic-on-unstubbed-call fake runner to a code path that reads `sw_vers`.
+  Both are pinned now. (Two macOS failures remain, both pre-existing and both
+  the same shape — committed fixtures record `/etc` and `/tmp` where macOS
+  resolves `/private/etc` and `/private/tmp`.)
+
+- **`cargo test` no longer raises a keychain dialog on macOS.** The
+  `secret set` refusal test asked for `secrets.backend: keychain`, which is
+  unavailable on Linux and therefore refused there without a probe — but on
+  macOS it resolves a real store, and the writability probe works by adding a
+  generic password to the operator's **real login keychain** and deleting it.
+  That raised an access dialog once per run and cost about 6.7 of the test's 7
+  seconds; had the probe succeeded, the test's canary value would have been
+  written to the operator's keychain for real. It now asks for whichever
+  backend is unavailable on the host it is running on. The suite makes no
+  `security(1)` calls at all, on either platform.
+
 ### Changed
 
 - **BREAKING: agentcage is a binary, and the Python package is no longer an install path.** The host CLI is Rust. `pip install agentcage`, `pipx install agentcage` and `uv tool install agentcage` installed a command named `agentcage`; they do not any more. `pyproject.toml` declares no `[project.scripts]`, carries `Private :: Do Not Upload` so PyPI would refuse an upload, and the release workflow no longer publishes one — what a release produces is four binaries and their checksums, attached to the GitHub release. **Migration:** re-run `install.sh`, `brew install`, or download the tarball for your platform and verify it against the `.sha256` published beside it; then remove any old Python install (`uv tool uninstall agentcage`, `pipx uninstall agentcage`) so it cannot shadow the binary on your `PATH`. The Python package remains in the repository as a **dev/test** package — it is the oracle the Rust is asserted against, invoked as `python -m agentcage` or through `tests/e2e/python-cli`, and it is what generates every fixture under `tests/fixtures/`.

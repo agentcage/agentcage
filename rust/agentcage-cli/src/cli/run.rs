@@ -695,13 +695,22 @@ fn session(ctx: &Ctx, config: &Config, cage_name: &str, options: &Options) -> i3
     // pass `-u` to `podman exec` because the cage quadlet's `User=` may
     // be empty (the `ubuntu` scaffold), in which case `podman exec`
     // would otherwise inherit the image's USER — root.
-    let argv = ctx.backend_for(&config.isolation).exec_argv(
+    let argv = match ctx.backend_for(&config.isolation).exec_argv(
         &config.name,
         "cage",
         &exec_cmd,
         interactive,
         options.as_root,
-    );
+    ) {
+        Ok(argv) => argv,
+        // Only the apple backend refuses here, and only for a missing
+        // `container` CLI: the service is the literal `"cage"`. The
+        // stop below is skipped deliberately — nothing was started.
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
 
     let exit_code = {
         let _guard = agentcage_cli::terminal::restored_terminal();

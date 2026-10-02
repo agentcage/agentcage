@@ -202,6 +202,30 @@ fn expand(recorded: &str, home: &Path, version: &str) -> String {
 }
 
 /// Every recorded run, replayed.
+/// A runner for the one thing `cage har` shells out for.
+///
+/// It resolves a Mac's default isolation backend, to decide whether a
+/// cage with no explicit `isolation:` is an apple-container one — which
+/// changes where the capture file lives. On Linux that answer needs no
+/// subprocess at all, so a bare [`FakeRunner`] was enough while CI was
+/// the only place this ran; on an Apple Silicon Mac the same code path
+/// reads `sw_vers` and probes for Apple's CLI, and a runner that panics
+/// on an unstubbed call fails every case.
+///
+/// Stubbing `sw_vers` to a pre-26 release is what makes the test
+/// host-independent: every host now answers "not apple-container" for
+/// these cases, which is what the fixture was recorded against. A case
+/// that *wants* the apple layout says `isolation: apple-container` in
+/// its own `cage.yaml` and never reaches the probe.
+fn host_probe_runner() -> FakeRunner {
+    let runner = FakeRunner::new();
+    runner.on(
+        ["sw_vers", "-productVersion"],
+        agentcage_exec::Reply::ok("15.6.1\n"),
+    );
+    runner
+}
+
 #[test]
 fn every_recorded_run_is_reproduced_byte_for_byte() {
     let (version, cases) = fixture();
@@ -219,11 +243,7 @@ fn every_recorded_run_is_reproduced_byte_for_byte() {
         apply_setup(&home, &case.setup);
 
         let paths = Paths::under(&home);
-        // `cage har` shells out for exactly one thing — resolving a
-        // Mac's default isolation backend — and no case reaches it, so
-        // a runner that would panic on an unstubbed call is the right
-        // one to hand it.
-        let runner = FakeRunner::new();
+        let runner = host_probe_runner();
         let args = parse(&case.argv, &home);
 
         let mut stdout = Vec::new();
@@ -326,7 +346,7 @@ fn a_missing_capture_creates_no_directory() {
     let dir = TestDir::new("cage-har-no-mkdir");
     let home = build_home(&dir);
     let paths = Paths::under(&home);
-    let runner = FakeRunner::new();
+    let runner = host_probe_runner();
 
     let args = HarArgs {
         name: "plain-cage".to_owned(),
@@ -394,7 +414,13 @@ fn an_unreadable_capture_file_reports_cleanly() {
     };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let code = har::run(&paths, &FakeRunner::new(), &args, &mut stdout, &mut stderr);
+    let code = har::run(
+        &paths,
+        &host_probe_runner(),
+        &args,
+        &mut stdout,
+        &mut stderr,
+    );
     let stderr = String::from_utf8(stderr).expect("utf-8");
 
     assert_eq!(code, 1, "{stderr}");
@@ -428,7 +454,13 @@ fn an_unwritable_output_path_reports_cleanly() {
     };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let code = har::run(&paths, &FakeRunner::new(), &args, &mut stdout, &mut stderr);
+    let code = har::run(
+        &paths,
+        &host_probe_runner(),
+        &args,
+        &mut stdout,
+        &mut stderr,
+    );
     let stderr = String::from_utf8(stderr).expect("utf-8");
 
     assert_eq!(code, 1, "{stderr}");

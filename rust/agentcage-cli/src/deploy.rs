@@ -456,11 +456,18 @@ pub fn update_fingerprint(
     // matches the previous one, so `cage update` would rebuild on every
     // invocation and `cage update` is defined by *not* doing that.
     let guest_podman;
+    let apple_images;
     let inspector: &dyn ImageInspector = match backend {
         AnyBackend::Container(backend) => backend.podman(),
         AnyBackend::Vm(backend) => {
             guest_podman = backend.podman(name);
             &guest_podman
+        }
+        // Same reasoning, different store: an apple cage's images are
+        // in Apple's, and podman has never heard of them.
+        AnyBackend::Apple(backend) => {
+            apple_images = crate::apple::backend::AppleImages::new(backend.runner());
+            &apple_images
         }
     };
     let image_digests = update_image_digests(
