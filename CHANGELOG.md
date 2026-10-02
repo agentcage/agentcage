@@ -41,13 +41,27 @@ have not changed, only its name.
   and `start`'s preconditions naming the cage and `agentcage cage update
   <name>` rather than an internal call.
 
-  Two surfaces still refuse by name and are recorded in `RUST-PORT-PLAN.md`:
-  `cage backup`/`restore` (a different shape on this backend, and `vm` refuses
-  there too) and the `secret` group (the store is ported and
-  `cage create --set-secret` works; `secret set`'s live-apply path still probes
-  host podman).
+- **`cage backup` / `cage restore` and the `secret` group work on
+  `apple-container`** (Tracks E6 and E7). Backup is a second archive *shape*
+  rather than a second format — same root and manifest, one more member —
+  with `--include-secrets` refused because secrets are env-passed at start
+  rather than stored, `named_volumes` always empty, and the capture and audit
+  streams taken from the per-cage logs directory. Restore prints the
+  `export K=<value>` hints for the env names the manifest recorded. The
+  `secret` group gets no live-apply path, by design: the staged secrets
+  directory is wiped as soon as the egress has read it, so the apple path
+  restarts the cage, as the Python does. `vm` is still refused on both — it
+  has never been ported there either.
 
 ### Fixed
+
+- **`cage create --set-secret` could store an apple cage's secret where nothing
+  would find it.** `SecretWriter` chose the store from the rule's `source:`
+  scheme even on `apple-container`, so a rule carrying `source: systemd-creds:`
+  selected `SystemdCredsStore` *by name*, skipping the availability probe — a
+  store whose binary does not exist on macOS, and one `stage_secrets` would
+  never read back, because that resolves with no scheme. Both call sites now
+  derive the store from `config.isolation`, matching the Python.
 
 - **A Mac no longer resolves every cage to the `vm` backend.**
   `hostenv::RealHost::default_isolation` omitted the `apple-container` branch,
@@ -114,6 +128,21 @@ have not changed, only its name.
 
   No committed fixture byte changed: every fix makes macOS reproduce the bytes
   Linux already produced.
+
+- **`pytest` wrote to the real macOS login keychain, and to the operator's real
+  cage directory.** `tests/test_phase_apple_skip.py` runs `phase_apple.sh` with
+  `AGENTCAGE_APPLE_E2E_FORCE=1` and passed `**os.environ`, inheriting the real
+  `HOME`. Its docstring justified that on the grounds that the phase "then
+  fails for unrelated reasons (no real backend on the test host)" — true on the
+  Linux CI it was written against, false on Apple Silicon, where it got as far
+  as creating and destroying an `e2e-apple` cage under `~/.config/agentcage/`
+  and running `security add-generic-password -s agentcage -a e2e-apple.API_KEY
+  -w test-secret-value -U` against the login keychain, leaving that entry
+  behind. `HOME` and both XDG roots are sandboxed now, and `security` is shimmed
+  alongside the `uname`/`container`/`sysctl` shims the module already had — the
+  keychain is not `HOME`-scoped, so the sandbox alone could not contain it.
+  Measured with a logging shim: both suites now make zero `security(1)` calls on
+  macOS.
 
 - **`cargo test` no longer raises a keychain dialog on macOS.** The
   `secret set` refusal test asked for `secrets.backend: keychain`, which is

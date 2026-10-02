@@ -817,21 +817,32 @@ by the five preconditions at the top of `AppleBackend::start`.
 | #409 | The "no built image" and egress-image preconditions in `start()` must name the cage and `agentcage cage update <name>` rather than the internal `build_artifacts()`, and must raise the operator-error type the CLI renders as a single `error: …` line. Rust cannot reproduce Python's traceback problem, but it can reproduce the unhelpful message. |
 
 
-### Track E — what E5 deliberately left
+### Track E — E6 and E7, the two surfaces E5 left
 
-Two `apple-container` command surfaces are still refused by name. Neither
-is in E5's scope above and neither is exercised by `phase_apple.sh`, but
-both are reachable, so they are written down rather than left to be
-discovered.
+Both are **done**. They were not in E5's scope and neither is exercised
+by `phase_apple.sh`, so each carries its own tests plus a manual
+end-to-end smoke on real hardware.
 
-| # | Surface | Why it is refused rather than ported |
+| # | Surface | What landed |
 | :-- | :-- | :-- |
-| E6 | `cage backup` / `cage restore` | A *different shape* on this backend, not a variant of the container one: `_cage_backup_apple_container` plus an `apple-container` branch in `cage_restore`. No podman named volumes to export, no host podman secret store, and `audit.jsonl`/`capture.jsonl` come from the per-cage logs directory instead of a journal. The Rust refuses `vm` here too, so this is a Track-E-wide gap and not an apple one. |
-| E7 | the `secret` group (`set` / `list` / `rm` / `rotate-placeholders`) | The *store* is ported — `resolve_store` builds `KeychainStore` or `ApplePlaintextStore`, and `AppleBackend::stage_secrets` uses it, which is why `cage create --set-secret` works. What is not ported is `secret set`'s **live-apply** path, which probes host podman for the running proxy's secret channel. Opening the gate without it would make `secret set` on an apple cage ask podman about a container podman has never heard of — wrong rather than merely unimplemented, which is the distinction that comment in `cli/secret/mod.rs` is about. |
+| E6 | `cage backup` / `cage restore` | A second archive *shape*, not a second format: same `agentcage-backup/` root and `manifest.json`, one more member. `--include-secrets` is refused (secrets are env-passed at start, not stored), `named_volumes` is always empty, and `capture.jsonl`/`audit.jsonl` come from the per-cage logs directory rather than a podman volume. Restore prints `export K=<value>` hints for the env names the manifest recorded. |
+| E7 | the `secret` group | `set` / `list` / `rm` / `rotate-placeholders`. The store was already ported; what was missing was that `secret set`'s live-apply path probes host podman, which *answers* about an apple cage rather than failing. There is no live apply on this backend by design — the staged secrets directory is wiped as soon as the egress has read it — so the apple path restarts the cage instead, as the Python does. |
 
-Both are small and neither blocks F2. E7 is the one an operator is
-likelier to hit, because `secret set` on a cage that already exists is
-the natural way to rotate a credential.
+**`vm` is still refused on both**, and that is deliberate rather than
+an oversight: `cage backup`/`restore` and the `secret` group have never
+been ported for the vm backend either, and a change that quietly
+un-refused them would be worse than the refusal. The refusal message in
+`require_store_backend` still cites Track E, and `vm` is now its only
+reader.
+
+**A bug E7 found on the way.** `SecretWriter` selected the store from
+the rule's `source:` scheme even on an apple cage, so a rule carrying
+`source: systemd-creds:` picked `SystemdCredsStore` *by name* — a store
+whose binary does not exist on macOS, and one `stage_secrets` would
+never read back, because that resolves with no scheme. `cage create -s`
+would have stored a secret where nothing could find it. Both call sites
+now derive it from `config.isolation`, matching the Python's
+`_store_secret(None, cfg, …)`.
 
 ### Track F — Cutover
 
