@@ -1,7 +1,12 @@
 //! `security`(1) -- the argv half of `KeychainStore` in
 //! `src/agentcage/secret_store.py`.
 //!
-//! # The one place agentcage puts a secret in argv
+//! # The one place agentcage used to put a secret in argv
+//!
+//! Fixed on 2026-10-02; kept written down because the reasoning is
+//! what makes the fix reviewable, and because the losing candidate is
+//! the one a reader would otherwise reach for. See
+//! [`SHIPPED_PASSWORD_CHANNEL`].
 //!
 //! The project's rule is that secret material travels on stdin.
 //! `podman secret create <name> -` honours it. `systemd-creds encrypt
@@ -11,23 +16,24 @@
 //! journey. The placeholder scheme exists so that even the cage's own
 //! `-e` environment carries a placeholder rather than a value.
 //!
-//! `secret_store.py:226` does not:
+//! `KeychainStore.set` did not:
 //!
 //! ```text
 //! security add-generic-password -s agentcage -a <cage>.<KEY> -w <CLEARTEXT> -U
 //! ```
 //!
-//! For as long as that child runs, the credential is in `ps -axww`
+//! For as long as that child ran, the credential was in `ps -axww`
 //! output. On macOS that is `KERN_PROCARGS2`, which XNU's
 //! `sysctl_procargsx` refuses to a *different* uid -- so, unlike
 //! Linux's world-readable `/proc/<pid>/cmdline`, this is a same-user
 //! and root exposure rather than a world-readable one. On the laptop
 //! this runs on, "same user" is every other agent session, every MCP
 //! server, every `npm` postinstall and anything that samples the
-//! process table. That is a real disclosure. `KeychainStore.get` is
-//! fine: its `-w` takes no value and asks for the password rather than
-//! supplying one. Only `set` is affected, and so is the write probe,
-//! which passes the harmless literal `x`.
+//! process table. That was a real disclosure. `KeychainStore.get` was
+//! always fine: its `-w` takes no value and asks for the password
+//! rather than supplying one. Only `set` was affected -- and the write
+//! probe, which passes the harmless literal `x` but now shares `set`'s
+//! channel so that "writable" means what it says.
 //!
 //! # What this module does about it
 //!
@@ -37,9 +43,14 @@
 //! to `ps` is unchanged, because that is a property of `execve`, not of
 //! how this crate prints things.
 //!
-//! It does not unilaterally switch channels. [`PasswordChannel`] is the
-//! seam: [`SHIPPED_PASSWORD_CHANNEL`] is `Argv` and stays `Argv` until
-//! someone with a Mac has run `tests/keychain_stdin_probe.rs`.
+//! **This is now historical for the write path.** [`PasswordChannel`]
+//! was the seam and [`SHIPPED_PASSWORD_CHANNEL`] is
+//! [`PasswordChannel::Interactive`] as of 2026-10-02, settled by
+//! `tests/keychain_stdin_probe.rs` on a real keychain — see that
+//! constant for what the probe printed. The argv reproduction below is
+//! kept because [`PasswordChannel::Argv`] is still reachable, asserted,
+//! and the thing the fix is defined against; the `secret_arg`
+//! redaction is kept for the same reason.
 //!
 //! # What PR E2b established about the fix
 //!
@@ -82,15 +93,17 @@
 //! its `security>` prompt when `!isatty(0)`, so the piped case is
 //! designed for.
 //!
-//! That is [`PasswordChannel::Interactive`], and it is written here,
-//! reachable, and asserted as far as a Linux box can assert it. It is
-//! **not shipped**, because "the argv is right" is not "the keychain
-//! got the bytes": the quoting is ours (`split_line` treats `\` as an
-//! escape *inside* single quotes, unlike a POSIX shell), and only a
-//! round trip against a real keychain settles it. Its two hazards --
-//! a 4096-byte line buffer whose overflow is parsed as the next
-//! command, and a reader that breaks on `\n` -- are refusals here, not
-//! truncations; see [`InteractiveRefusal`].
+//! That is [`PasswordChannel::Interactive`], and since 2026-10-02 it
+//! is what ships. The last mile was never the argv -- "the argv is
+//! right" is not "the keychain got the bytes", because the quoting is
+//! ours (`split_line` treats `\` as an escape *inside* single quotes,
+//! unlike a POSIX shell) and only a round trip against a real keychain
+//! settles it. `tests/keychain_stdin_probe.rs` ran that round trip on
+//! an Apple Silicon Mac, including a value carrying both quote
+//! characters and backslashes, and it was exact both times. Its two
+//! hazards -- a 4096-byte line buffer whose overflow is parsed as the
+//! next command, and a reader that breaks on `\n` -- are refusals
+//! here, not truncations; see [`InteractiveRefusal`].
 //!
 //! # The better fix, and why it is not this PR
 //!
@@ -99,7 +112,7 @@
 //! line buffer, no quoting surface, real `OSStatus` errors. That is a
 //! new dependency and a new platform-specific code path -- a bigger
 //! decision than a port PR should make on its own, and it is written
-//! down in [`AddPassword::how_to_settle_it`] so it is on the table when
+//! down in [`AddPassword::how_it_was_settled`] so it is on the table when
 //! someone makes it.
 //!
 //! # Sources
@@ -240,40 +253,58 @@ impl KeychainTarget {
 /// Which channel `add-generic-password` carries the cleartext on.
 ///
 /// **This enum is the seam.** [`SHIPPED_PASSWORD_CHANNEL`] is what
-/// agentcage actually runs and it is [`PasswordChannel::Argv`]: the
-/// Python's behaviour, the known exposure, deliberately unchanged.
-/// [`PasswordChannel::Interactive`] is the prepared fix -- written,
-/// reachable and asserted -- but not shipped, because the last mile is
-/// a round trip against a real keychain and there is no Mac here.
+/// agentcage actually runs, and since 2026-10-02 it is
+/// [`PasswordChannel::Interactive`]. [`PasswordChannel::Argv`] is the
+/// Python's original behaviour and the exposure PR D1 found; it is
+/// kept reachable, and asserted, because it is what the fix is defined
+/// against -- a test that only pins the new shape cannot tell you the
+/// old one is gone.
 ///
 /// There is no bare-`-w`-on-stdin variant. That was the obvious
-/// candidate and PR E2b's research **refuted** it; see the module docs.
+/// candidate and PR E2b's research refuted it; the probe then watched
+/// it fail for real. See the module docs.
 ///
-/// Settling it is **one line**: change [`SHIPPED_PASSWORD_CHANNEL`].
 /// Every consumer -- [`Security::add`], [`Security::writable`] and the
-/// CLI's `KeychainStore` -- already reads the channel from there rather
-/// than hard-coding a shape.
+/// CLI's `KeychainStore` -- reads the channel from
+/// [`SHIPPED_PASSWORD_CHANNEL`] rather than hard-coding a shape, which
+/// is why settling it was one line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PasswordChannel {
     /// `-w <cleartext>`. The value is an argv element, and therefore in
-    /// `ps` for the life of the child. **This is what ships.**
-    #[default]
+    /// `ps` for the life of the child. **No longer shipped**; see
+    /// [`AddPassword::how_it_was_settled`].
     Argv,
     /// `security -i`, with the whole `add-generic-password` command
     /// line -- value included -- written to the child's stdin.
     ///
     /// `security(1)`'s interactive mode reads command lines from stdin
     /// and splits them **in process**. The kernel's argv, the one `ps`
-    /// reads, stays `security -i`. **Not shipped**; see
-    /// [`PasswordChannel`] and [`AddPassword::how_to_settle_it`].
+    /// reads, stays `security -i`. **This is what ships.**
+    #[default]
     Interactive,
 }
 
 /// The channel agentcage actually uses today.
 ///
-/// One `const`, one decision. A Mac owner who has run the probe in
-/// `tests/keychain_stdin_probe.rs` flips this and nothing else.
-pub const SHIPPED_PASSWORD_CHANNEL: PasswordChannel = PasswordChannel::Argv;
+/// One `const`, one decision. **Settled on 2026-10-02**, on an Apple
+/// Silicon Mac with an unlocked login keychain, by
+/// `tests/keychain_stdin_probe.rs`:
+///
+/// * `-i` round-tripped the plain value byte for byte;
+/// * `-i` round-tripped `TEST-NOT-A-REAL-SECRET a'b"c\d\\e 'f' "g"` —
+///   both quote characters, a backslash, a doubled backslash and
+///   spaces — byte for byte, which is the only thing a Linux box could
+///   not check, because the quoting is ours and `split_line` treats
+///   `\` as an escape inside single quotes where a shell would not;
+/// * the refuted bare-`-w` arm did exactly what the research predicted
+///   and worse than hoped: it exited **0** and the keychain came back
+///   holding the literal string `-U`. It read the next flag as the
+///   password. A silent failure, in the unsafe direction, with a
+///   success exit code.
+///
+/// So the cleartext no longer reaches `execve`, and the `ps -axww`
+/// exposure that PR D1 found is closed.
+pub const SHIPPED_PASSWORD_CHANNEL: PasswordChannel = PasswordChannel::Interactive;
 
 /// `security(1)`'s interactive line buffer, from `SecurityTool/macOS/security.c`:
 /// `#define MAX_LINE_LEN 4096`.
@@ -394,34 +425,40 @@ impl AddPassword {
     pub const fn stdin_note() -> &'static str {
         "security add-generic-password takes the cleartext in argv (-w <value>), \
          which is visible in `ps` to any process of the same user and to root \
-         for the life of the child. Every other secret path in agentcage uses \
-         stdin. Piping to a bare -w does NOT fix it -- that path is getpass(3), \
-         which reads /dev/tty -- so the fix is PasswordChannel::Interactive, \
-         which is written and reachable but not shipped: it still needs one \
-         round trip against a real keychain. See AddPassword::how_to_settle_it."
+         for the life of the child. agentcage does not use that channel: \
+         SHIPPED_PASSWORD_CHANNEL is PasswordChannel::Interactive, which puts \
+         the whole command line on security -i's stdin and leaves the kernel's \
+         argv as `security -i`. Piping to a bare -w is NOT the fix -- that path \
+         is getpass(3), which reads /dev/tty, prompts twice, and on EOF stores \
+         an empty password and exits 0. The Argv shape is kept reachable and \
+         asserted because it is what the fix is defined against."
     }
 
-    /// What a Mac owner has to do to settle it, in order.
+    /// How it was settled, and how to re-check it on any Mac.
     ///
-    /// Written down here so the procedure travels with the code rather
-    /// than with a PR description nobody will find again.
+    /// Written down here so the evidence travels with the code rather
+    /// than with a PR description nobody will find again. The probe
+    /// prints this, so whoever re-runs it reads what the last run
+    /// concluded before comparing it to their own.
     #[must_use]
-    pub const fn how_to_settle_it() -> &'static str {
-        "On a Mac with an unlocked login keychain:\n\
+    pub const fn how_it_was_settled() -> &'static str {
+        "Settled on 2026-10-02, on an Apple Silicon Mac with an unlocked login \
+         keychain, by:\n\
          1. cargo test -p agentcage-exec --test keychain_stdin_probe -- --ignored --nocapture\n\
-         2. Read what it prints. It writes through PasswordChannel::Interactive \
-            (`security -i`, the command line on stdin), reads the value back with \
+         2. It writes through PasswordChannel::Interactive (`security -i`, the \
+            command line on stdin), reads the value back with \
             `security find-generic-password -w`, and compares -- including a value \
-            full of quotes and backslashes, which is where the quoting is decided. \
-            It also demonstrates, in the same run, that piping to a bare `-w` is \
-            NOT a fix.\n\
-         3. If every round trip is exact, change SHIPPED_PASSWORD_CHANNEL to \
-            PasswordChannel::Interactive. That is the whole fix.\n\
-         4. If a round trip is not exact, leave SHIPPED_PASSWORD_CHANNEL alone and \
-            record what it printed here. The exposure is known and bounded; a \
-            guess that corrupts `cage secret set` on macOS is worse.\n\
-         5. Either way, mirror the decision onto secret_store.py:226, which is the \
-            code that is actually shipping today.\n\
+            full of quotes and backslashes, which is where the quoting is decided, \
+            and which is the one thing a Linux box could not check.\n\
+         3. Both round trips were byte for byte exact, so SHIPPED_PASSWORD_CHANNEL \
+            became PasswordChannel::Interactive and secret_store.py's KeychainStore.set \
+            was changed to match. That was the whole fix.\n\
+         4. The same run demonstrated that piping to a bare `-w` is NOT a fix: it \
+            exited 0 and stored the literal string `-U`, having read the next flag \
+            as the password. Silent, successful, wrong.\n\
+         Re-running the probe on another Mac is the regression check; it cleans up \
+         after itself and touches only a `__agentcage_probe__` account. If a round \
+         trip there is ever inexact, that is a real finding -- record it here.\n\
          The better fix, and a bigger decision than this PR: stop shelling out. \
          SecItemAdd/SecItemUpdate through the Security framework is what \
          git-credential-osxkeychain does, and it has no argv, no 4096-byte line, \
@@ -744,11 +781,23 @@ mod tests {
         );
     }
 
-    /// The finding, pinned: the cleartext really is in argv, and this
-    /// crate really does keep it out of anything it prints.
+    /// The finding, pinned on the channel that has it.
+    ///
+    /// `Argv` is no longer what ships, but it is still reachable and it
+    /// is what the fix is defined against — so the shape stays
+    /// asserted, including that this crate keeps the value out of
+    /// everything it prints. `the_shipped_channel_is_interactive`
+    /// asserts the complement: that no cleartext reaches argv on the
+    /// channel that does ship.
     #[test]
     fn the_add_command_carries_the_cleartext_but_never_prints_it() {
-        let cmd = Security::add_command(&KeychainTarget::login(), "cage.KEY", "hunter2").unwrap();
+        let cmd = Security::add_command_via(
+            PasswordChannel::Argv,
+            &KeychainTarget::login(),
+            "cage.KEY",
+            "hunter2",
+        )
+        .unwrap();
         assert_eq!(
             cmd.argv(),
             [
@@ -826,10 +875,17 @@ mod tests {
              '/Library/Keychains/System.keychain'\n"
         );
 
+        // Forced onto `Argv`: that shape no longer ships, but it is the
+        // one the ordering bug lived in, so it stays pinned.
         assert_eq!(
-            Security::add_command(&KeychainTarget::system(), "acme.K", "hunter2")
-                .unwrap()
-                .argv(),
+            Security::add_command_via(
+                PasswordChannel::Argv,
+                &KeychainTarget::system(),
+                "acme.K",
+                "hunter2"
+            )
+            .unwrap()
+            .argv(),
             [
                 "sudo",
                 "-n",
@@ -847,25 +903,44 @@ mod tests {
         );
     }
 
-    /// The decision is still unmade, and this is what says so.
+    /// The decision, made.
     ///
-    /// If it is ever made, this test is the thing that fails -- which
-    /// is the point. Flipping `SHIPPED_PASSWORD_CHANNEL` without
-    /// having run the probe on a Mac should not be quiet.
+    /// This replaces `the_shipped_channel_is_still_argv`, whose whole
+    /// job was to fail the moment someone flipped the constant without
+    /// having run the probe. It did exactly that. What is asserted now
+    /// is the property that matters and the one the finding was about:
+    /// **no cleartext reaches argv on the channel that ships.**
+    ///
+    /// Settled 2026-10-02 against a real login keychain; see
+    /// [`SHIPPED_PASSWORD_CHANNEL`] for what the probe printed.
     #[test]
-    fn the_shipped_channel_is_still_argv() {
-        assert_eq!(SHIPPED_PASSWORD_CHANNEL, PasswordChannel::Argv);
+    fn the_shipped_channel_is_interactive() {
+        assert_eq!(SHIPPED_PASSWORD_CHANNEL, PasswordChannel::Interactive);
         assert_eq!(
             Security::new(&crate::FakeRunner::new()).password_channel(),
-            PasswordChannel::Argv
+            PasswordChannel::Interactive
         );
-        assert!(AddPassword::stdin_note().contains("not shipped"));
-        assert!(AddPassword::how_to_settle_it().contains("keychain_stdin_probe"));
+
+        // The finding, inverted: build what ships and look for the
+        // secret in argv. `ps` reads argv and nothing else, so this is
+        // the assertion that the exposure is closed.
+        let cmd = Security::add_command(&KeychainTarget::login(), "cage.KEY", "hunter2").unwrap();
+        assert_eq!(cmd.argv(), ["security", "-i"]);
+        assert!(
+            !cmd.argv().iter().any(|arg| arg.contains("hunter2")),
+            "the cleartext is back in argv: {:?}",
+            cmd.argv()
+        );
+        // And it is still redacted from everything this crate prints,
+        // which is a separate property from where it travels.
+        assert!(!format!("{cmd:?}").contains("hunter2"));
+        assert!(!cmd.display().contains("hunter2"));
     }
 
-    /// The prepared fix, asserted on Linux so that the only thing a Mac
-    /// has to establish is what the keychain does with it -- not
-    /// whether the command this crate would build is the right one.
+    /// The shipped channel, asserted here as well as through
+    /// [`Security::add_command`], because this is the one that names
+    /// the variant: if the `const` is ever flipped back, the test above
+    /// changes meaning but this one still says what `Interactive` is.
     #[test]
     fn the_interactive_channel_moves_the_value_off_argv() {
         let cmd = Security::add_command_via(

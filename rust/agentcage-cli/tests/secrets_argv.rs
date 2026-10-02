@@ -7,10 +7,11 @@
 //! is most able to make.
 //!
 //! Every test that involves a credential asserts two things about it:
-//! the argv it is *not* in, and the stdin it *is* in. The one exception
-//! is [`the_keychain_add_puts_the_cleartext_in_argv`], which asserts the
-//! opposite because that is what the code being ported does; see its
-//! doc comment.
+//! the argv it is *not* in, and the stdin it *is* in -- including the
+//! keychain, which was the one exception until PR D1 and is now
+//! [`the_keychain_add_puts_the_cleartext_on_stdin`]. The shape it used
+//! to have is still pinned, on purpose, by
+//! [`the_argv_channel_is_reachable_and_is_what_the_fix_is_defined_against`].
 
 mod common;
 
@@ -256,17 +257,7 @@ fn the_login_keychain_is_probed_by_writing_and_deleting() {
 
     assert!(store.available());
     fake.assert_argv(&[
-        &[
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "__agentcage_probe__",
-            "-w",
-            "x",
-            "-U",
-        ],
+        &["security", "-i"],
         &[
             "security",
             "delete-generic-password",
@@ -276,6 +267,11 @@ fn the_login_keychain_is_probed_by_writing_and_deleting() {
             "__agentcage_probe__",
         ],
     ]);
+    assert_eq!(
+        fake.call(0).stdin_text().as_deref(),
+        Some("add-generic-password -s agentcage -a '__agentcage_probe__' -w 'x' -U\n"),
+        "the probe writes on the channel `set` writes on"
+    );
 
     // The answer is cached, so a second question costs nothing.
     assert!(store.available());
@@ -294,22 +290,13 @@ fn a_locked_login_keychain_falls_through_to_sudo_n() {
     let store = KeychainStore::new(&fake, Platform::MacOs);
 
     assert!(store.available());
+    assert_eq!(fake.argv(1), ["sudo", "-n", "security", "-i"]);
     assert_eq!(
-        fake.argv(1),
-        [
-            "sudo",
-            "-n",
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "__agentcage_probe__",
-            "-w",
-            "x",
-            "-U",
-            "/Library/Keychains/System.keychain",
-        ]
+        fake.call(1).stdin_text().as_deref(),
+        Some(
+            "add-generic-password -s agentcage -a '__agentcage_probe__' -w 'x' -U \
+             '/Library/Keychains/System.keychain'\n"
+        )
     );
 }
 
@@ -323,7 +310,7 @@ fn a_keychain_that_cannot_be_written_fails_closed() {
     // a keychain unlocked between two calls is picked up -- and so the
     // probes run again on the second question.
     fake.on(
-        ["security", "add-generic-password"],
+        ["security", "-i"],
         Reply::failed(1, "User interaction is not allowed."),
     );
     fake.on(["sudo"], Reply::failed(1, "sudo: a password is required"));
@@ -353,26 +340,21 @@ fn the_keychain_is_refused_outright_off_macos() {
     assert_eq!(fake.call_count(), 0, "no probe off the platform");
 }
 
-/// **The finding, pinned.**
+/// **The finding, fixed, pinned through the whole store.**
 ///
-/// `secret_store.py:226` passes the cleartext as `-w <value>`, where it
-/// is readable from the process table by any process of the same user
-/// and by root for the life of the child. It is the only such path in
-/// the code being ported; every other one uses stdin. PR D1 found it,
-/// reproduced it, and marked the argument with `Command::secret_arg` so
-/// it is redacted from every `Debug`, `Display` and recorded-call dump
-/// in the workspace. **This test asserts the exposure is still exactly
-/// where it was.**
+/// `KeychainStore.set` used to pass the cleartext as `-w <value>`,
+/// where it was readable from the process table by any process of the
+/// same user and by root for the life of the child. It was the only
+/// such path in the code being ported; every other one uses stdin. PR
+/// D1 found it, PR E2b established which fix was real, and D1 shipped
+/// it after a round trip against an actual keychain:
+/// `security -i`, the command line on the child's stdin.
 ///
-/// It is not fixed here. The obvious fix -- a bare `-w` with the value
-/// on stdin -- depends on what `security(1)` does with a non-tty stdin,
-/// which is undocumented and can only be settled on a Mac. PR E2b owns
-/// the keychain and the hardware; changing the argv on a Linux box
-/// against no test that can run it would be a guess dressed as a fix.
-/// If this test ever fails, either someone fixed it (delete the test,
-/// and say so in the PR) or someone moved the value by accident.
+/// This asserts the value is on stdin and nowhere else -- not in this
+/// call's argv, and not in any argv in the whole sequence, which is
+/// what catches it reappearing in the *probe* rather than in `set`.
 #[test]
-fn the_keychain_add_puts_the_cleartext_in_argv() {
+fn the_keychain_add_puts_the_cleartext_on_stdin() {
     let temp = TempDir::new("keychain-set");
     let fake = FakeRunner::new();
     fake.push(Reply::success()); // probe add
@@ -383,22 +365,15 @@ fn the_keychain_add_puts_the_cleartext_in_argv() {
     store.set("acme", "API_KEY", VALUE, temp.path()).unwrap();
 
     let add = fake.call(2);
+    assert_eq!(add.raw_argv(), ["security", "-i"]);
     assert_eq!(
-        add.raw_argv(),
-        [
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "acme.API_KEY",
-            "-w",
-            VALUE,
-            "-U",
-        ]
+        add.stdin_text().as_deref(),
+        Some(
+            format!("add-generic-password -s agentcage -a 'acme.API_KEY' -w '{VALUE}' -U\n")
+                .as_str()
+        )
     );
-    // ...and nothing that prints a command prints it.
-    assert_eq!(add.argv()[7], "<redacted>");
+    // Nothing that prints a command prints it.
     assert!(!format!("{add:?}").contains(VALUE));
     assert!(!add.command.display().contains(VALUE));
     assert!(
@@ -408,8 +383,9 @@ fn the_keychain_add_puts_the_cleartext_in_argv() {
             .flatten()
             .any(|a| a.contains(VALUE))
     );
-    // The value is not on stdin either: this is the argv path, whole.
-    assert_eq!(add.stdin_bytes(), None);
+    // The probe followed the channel, so `available()` cannot pass on a
+    // shape `set` would not use.
+    assert_eq!(fake.call(0).raw_argv(), ["security", "-i"]);
 
     // The index gained the key, and it is not a value store.
     assert_eq!(store.names("acme", temp.path()).unwrap(), ["API_KEY"]);
@@ -455,22 +431,14 @@ fn the_system_keychain_carries_the_path_last_in_every_command() {
     );
     store.delete("acme", "API_KEY", temp.path()).unwrap();
 
+    assert_eq!(fake.call(3).raw_argv(), ["sudo", "-n", "security", "-i"]);
     assert_eq!(
-        fake.call(3).raw_argv(),
-        [
-            "sudo",
-            "-n",
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "acme.API_KEY",
-            "-w",
-            VALUE,
-            "-U",
-            KC,
-        ]
+        fake.call(3).stdin_text().as_deref(),
+        Some(
+            format!("add-generic-password -s agentcage -a 'acme.API_KEY' -w '{VALUE}' -U '{KC}'\n")
+                .as_str()
+        ),
+        "the keychain path is still last -- on stdin now, same parser"
     );
     assert_eq!(
         fake.argv(4),
@@ -501,16 +469,24 @@ fn the_system_keychain_carries_the_path_last_in_every_command() {
             KC,
         ]
     );
-    // Every invocation, including the two probes, ends at the keychain.
+    // Every invocation, including the two probes, ends at the keychain
+    // -- in argv for the three that have arguments, and at the end of
+    // the command line for the two adds, which now carry theirs on
+    // stdin. Same requirement, two places to check it.
     for n in 1..fake.call_count() {
-        assert_eq!(
-            fake.argv(n).last().map(String::as_str),
-            Some(KC),
-            "call {n} lost the keychain path"
+        let argv = fake.argv(n);
+        let ends_argv = argv.last().map(String::as_str) == Some(KC);
+        let ends_stdin = argv == ["sudo", "-n", "security", "-i"]
+            && fake
+                .call(n)
+                .stdin_text()
+                .is_some_and(|line| line.trim_end().ends_with(&format!("'{KC}'")));
+        assert!(
+            ends_argv || ends_stdin,
+            "call {n} lost the keychain path: {argv:?}"
         );
     }
-    // The value is still redacted from everything that prints.
-    assert_eq!(fake.argv(3)[9], "<redacted>");
+    // The value is still absent from everything that prints.
     assert!(!format!("{:?}", fake.calls()).contains(VALUE));
 }
 
@@ -558,60 +534,56 @@ fn the_fall_through_ignores_what_the_stderr_actually_says() {
     }
 }
 
-/// **The prepared fix, driven through the whole store.**
+/// **The shape PR D1 removed, driven through the whole store.**
 ///
-/// Not shipped -- [`the_keychain_add_puts_the_cleartext_in_argv`] pins
-/// that it is not -- but reachable, and this asserts that switching the
-/// channel changes exactly one thing: the value leaves argv for the
-/// child's stdin. Target selection, the argument order, the index write
-/// and the read-back path are untouched.
+/// Kept reachable, and asserted, because a test that only pins the new
+/// shape cannot tell you the old one is gone. Flipping the channel
+/// changes exactly one thing: the value moves from the child's stdin
+/// back into argv. Target selection, the argument order, the index
+/// write and the read-back path are untouched -- which is what made
+/// the fix one `const`.
 ///
-/// `security -i` reads command lines from stdin and splits them in
-/// process, so the kernel's argv -- what `ps` reads -- is `security -i`
-/// and nothing more. The seam exists so that a Mac owner has one thing
-/// left to establish, a round trip against a real keychain, rather than
-/// a patch to write. See
-/// `agentcage-exec/tests/keychain_stdin_probe.rs` and
-/// [`agentcage_exec::tools::security::AddPassword::how_to_settle_it`].
+/// See `agentcage-exec/tests/keychain_stdin_probe.rs` and
+/// [`agentcage_exec::tools::security::AddPassword::how_it_was_settled`].
 #[test]
-fn the_unshipped_interactive_channel_changes_the_value_and_nothing_else() {
-    let temp = TempDir::new("keychain-stdin-seam");
+fn the_argv_channel_is_reachable_and_is_what_the_fix_is_defined_against() {
+    let temp = TempDir::new("keychain-argv-seam");
     let fake = FakeRunner::new();
     fake.push(Reply::success()); // probe add
     fake.push(Reply::success()); // probe delete
     fake.push(Reply::success()); // the real add
-    let store = KeychainStore::new(&fake, Platform::MacOs)
-        .with_password_channel(PasswordChannel::Interactive);
+    let store =
+        KeychainStore::new(&fake, Platform::MacOs).with_password_channel(PasswordChannel::Argv);
 
     store.set("acme", "API_KEY", VALUE, temp.path()).unwrap();
 
     let add = fake.call(2);
-    assert_eq!(add.raw_argv(), ["security", "-i"]);
     assert_eq!(
-        add.stdin_text().as_deref(),
-        Some(
-            format!("add-generic-password -s agentcage -a 'acme.API_KEY' -w '{VALUE}' -U\n")
-                .as_str()
-        )
+        add.raw_argv(),
+        [
+            "security",
+            "add-generic-password",
+            "-s",
+            "agentcage",
+            "-a",
+            "acme.API_KEY",
+            "-w",
+            VALUE,
+            "-U",
+        ]
     );
+    // Nothing on stdin, which was the problem...
+    assert_eq!(add.stdin_bytes(), None);
+    // ...and the redaction was never the gap: it always held.
+    assert_eq!(add.argv()[7], "<redacted>");
     assert!(!format!("{add:?}").contains(VALUE));
-    assert!(
-        !fake
-            .argv_sequence()
-            .iter()
-            .flatten()
-            .any(|a| a.contains(VALUE))
-    );
-    // The rest of the store does not notice.
+    // The rest of the store does not notice either way.
     assert_eq!(store.names("acme", temp.path()).unwrap(), ["API_KEY"]);
-    // And the probe followed the channel, so `available()` cannot pass
-    // on a shape `set` would not use.
-    assert_eq!(fake.call(0).raw_argv(), ["security", "-i"]);
 
-    assert_eq!(
+    assert_ne!(
         SHIPPED_PASSWORD_CHANNEL,
         PasswordChannel::Argv,
-        "the decision is still unmade -- see keychain_stdin_probe.rs"
+        "this is the shape the fix removed -- it must not be the shipped one"
     );
 }
 

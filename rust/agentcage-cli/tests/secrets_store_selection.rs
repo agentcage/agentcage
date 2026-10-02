@@ -202,7 +202,9 @@ fn apple_container_gets_the_file_backed_plaintext_store() {
 fn a_vm_cage_on_a_mac_uses_the_host_keychain() {
     let cfg = common::config("vm", "auto", "auto", false);
     let fake = creds_missing();
-    fake.on(["security", "add-generic-password"], Reply::success());
+    // The probe add is `security -i` now; only the delete still
+    // carries its arguments in argv.
+    fake.on(["security", "-i"], Reply::success());
     fake.on(["security", "delete-generic-password"], Reply::success());
     assert_eq!(choose(&fake, &cfg, "", Platform::MacOs), Ok(KEYCHAIN));
 
@@ -239,7 +241,7 @@ fn auto_on_a_mac_with_no_keychain_gives_the_generic_refusal() {
     let cfg = common::config("apple-container", "auto", "auto", false);
     let fake = creds_missing();
     fake.on(
-        ["security", "add-generic-password"],
+        ["security", "-i"],
         Reply::failed(1, "User interaction is not allowed."),
     );
     fake.on(["sudo"], Reply::failed(1, "sudo: a password is required"));

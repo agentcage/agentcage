@@ -55,6 +55,40 @@ have not changed, only its name.
 
 ### Fixed
 
+- **Security: `cage secret set` no longer puts the secret in argv on macOS.**
+  `KeychainStore.set` ran `security add-generic-password … -w <CLEARTEXT> -U`,
+  so for the life of that child the credential was readable from the process
+  table — by any process of the same user, and by root. On a laptop "same user"
+  is every other agent session, every MCP server and every package
+  postinstall. It was the only place in agentcage where secret material
+  travelled in argv; every other path already used stdin. It now runs
+  `security -i` with the whole command line on the child's stdin, which
+  `security(1)` splits in process and dispatches to the same handler, so the
+  kernel's argv is `security -i` and nothing more.
+
+  Not a guess: the obvious candidate — piping the value to a bare `-w` — is
+  *refuted*. That routes to `getpass(3)`, which opens `/dev/tty` and falls back
+  to stdin only when the process has no controlling terminal at all, prompts
+  twice, and on EOF returns an empty string that passes its own confirmation,
+  so `security` stores an **empty password and exits 0**. Measured on real
+  hardware, it was worse still: the keychain came back holding the literal
+  string `-U`, having read the next flag as the password, with exit status 0.
+  The shipped channel was round-tripped on the same Mac, including a value
+  carrying both quote characters, a backslash, a doubled backslash and a
+  trailing backslash, because the quoting is ours rather than the shell's —
+  `security`'s splitter treats a backslash as an escape *inside* single quotes.
+
+  Two consequences worth knowing. The write probe behind `available()` moved
+  onto the same channel, so "the keychain is writable" now means the channel
+  `secret set` actually uses is writable. And a secret containing a newline or
+  carriage return, or one long enough to push the command line past 4096 bytes,
+  is now **refused** with a clear message instead of stored: `security -i`'s
+  reader is line-oriented with a 4096-byte buffer, and in both cases the
+  remainder would be parsed as the next command — storing the wrong bytes and
+  echoing a fragment of the secret to stderr. Existing stored secrets are
+  unaffected; reads never had the problem (`find-generic-password -w` asks for
+  the password rather than supplying one).
+
 - **`watcher findings` and `watcher status` work**, and with them **every
   command in the tree has a body** — 41 leaf commands, zero stubs, verified by
   walking clap's tree and running each one rather than by reading a list. Both

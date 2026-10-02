@@ -389,6 +389,11 @@ fn a_registry_timeout_is_its_own_error() {
 
 /// The write probe: an add followed by a delete, because a read probe
 /// passes over headless SSH where a write does not.
+///
+/// The add goes through [`SHIPPED_PASSWORD_CHANNEL`], not a shape of
+/// its own. That is the point of a probe: `cage doctor` saying "the
+/// keychain is writable" has to mean *the channel `cage secret set`
+/// will use* is writable.
 #[test]
 fn the_keychain_write_probe_adds_and_deletes() {
     let fake = FakeRunner::new();
@@ -399,17 +404,7 @@ fn the_keychain_write_probe_adds_and_deletes() {
             .unwrap()
     );
     fake.assert_argv(&[
-        &[
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "__agentcage_probe__",
-            "-w",
-            "x",
-            "-U",
-        ],
+        &["security", "-i"],
         &[
             "security",
             "delete-generic-password",
@@ -419,6 +414,10 @@ fn the_keychain_write_probe_adds_and_deletes() {
             "__agentcage_probe__",
         ],
     ]);
+    assert_eq!(
+        fake.call(0).stdin_text().as_deref(),
+        Some("add-generic-password -s agentcage -a '__agentcage_probe__' -w 'x' -U\n")
+    );
 }
 
 /// A failed add means not writable, and nothing is deleted.
@@ -438,7 +437,8 @@ fn a_failed_probe_add_does_not_delete() {
 }
 
 /// The System-keychain target: `sudo -n` in front, the keychain path at
-/// the end.
+/// the end -- the elevation stays in argv and only the command line
+/// moves to stdin, so `sudo` still sees `security -i` to exec.
 #[test]
 fn the_system_keychain_probe_uses_sudo_n() {
     let fake = FakeRunner::new();
@@ -446,40 +446,63 @@ fn the_system_keychain_probe_uses_sudo_n() {
     Security::new(&fake)
         .writable(&KeychainTarget::system())
         .unwrap();
-    fake.assert_call(
-        0,
-        &[
-            "sudo",
-            "-n",
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "__agentcage_probe__",
-            "-w",
-            "x",
-            "-U",
-            "/Library/Keychains/System.keychain",
-        ],
+    fake.assert_call(0, &["sudo", "-n", "security", "-i"]);
+    assert_eq!(
+        fake.call(0).stdin_text().as_deref(),
+        Some(
+            "add-generic-password -s agentcage -a '__agentcage_probe__' -w 'x' -U \
+             '/Library/Keychains/System.keychain'\n"
+        )
     );
 }
 
-/// **The finding.** `KeychainStore.set` is the only place in agentcage
-/// where secret material travels in argv, where `ps` can read it. This
-/// pins the argv the Python produces -- so E2b's port is a port and not
-/// a rewrite -- and pins that nothing this crate prints reveals it.
+/// **The finding, and its fix.** `KeychainStore.set` was the only
+/// place in agentcage where secret material travelled in argv, where
+/// `ps` can read it. PR D1 moved it onto `security -i`'s stdin.
+///
+/// Both shapes are pinned, in one test, on purpose: a test that only
+/// asserts the new shape cannot tell you the old one is gone.
 #[test]
-fn keychain_set_puts_the_cleartext_in_argv_and_that_is_the_bug() {
+fn keychain_set_puts_the_cleartext_on_stdin_and_not_in_argv() {
     let fake = FakeRunner::new();
     fake.push(Reply::status(0));
     Security::new(&fake)
         .add(&KeychainTarget::login(), "myapp.API_KEY", "hunter2")
         .unwrap();
 
-    // Byte-for-byte what secret_store.py:224-230 builds.
+    // What the kernel sees, and therefore what `ps -axww` prints.
+    assert_eq!(fake.call(0).raw_argv(), ["security", "-i"]);
+    // The cleartext is on stdin, as one command line, newline-terminated,
+    // and flagged secret so that this type's `Debug` withholds it.
+    let line = "add-generic-password -s agentcage -a 'myapp.API_KEY' -w 'hunter2' -U\n";
     assert_eq!(
-        fake.call(0).raw_argv(),
+        fake.call(0).command.stdin_spec(),
+        &Stdin::Bytes {
+            data: line.as_bytes().to_vec(),
+            secret: true,
+        }
+    );
+    // So nothing this crate prints reveals it -- not the argv, and not
+    // the whole recorded call, which is what error paths format.
+    assert!(!format!("{:?}", fake.argv(0)).contains("hunter2"));
+    assert!(!format!("{:?}", fake.calls()).contains("hunter2"));
+}
+
+/// The shape PR D1 removed, kept reachable so the diff stays legible:
+/// byte for byte what `secret_store.py` built before the fix, with the
+/// value at argv[7] where `ps` could read it.
+#[test]
+fn the_argv_channel_is_still_what_the_fix_is_defined_against() {
+    let cmd = Security::add_command_via(
+        PasswordChannel::Argv,
+        &KeychainTarget::login(),
+        "myapp.API_KEY",
+        "hunter2",
+    )
+    .unwrap();
+
+    assert_eq!(
+        cmd.argv(),
         [
             "security",
             "add-generic-password",
@@ -492,11 +515,12 @@ fn keychain_set_puts_the_cleartext_in_argv_and_that_is_the_bug() {
             "-U",
         ]
     );
-    // Nothing went on stdin, which is the problem.
-    assert_eq!(fake.call(0).command.stdin_spec(), &Stdin::Inherit);
-    // The redacted view is what every message in this crate uses.
-    assert_eq!(fake.argv(0)[7], "<redacted>");
-    assert!(!format!("{:?}", fake.calls()).contains("hunter2"));
+    // Nothing on stdin, which was the problem.
+    assert_eq!(cmd.stdin_spec(), &Stdin::Inherit);
+    // Even then the redacted view hid it; that was never the gap.
+    assert_eq!(cmd.argv_redacted()[7], "<redacted>");
+    // This is not what ships.
+    assert_ne!(SHIPPED_PASSWORD_CHANNEL, PasswordChannel::Argv);
 }
 
 /// `find-generic-password -w` asks for the password to be printed, so
@@ -531,6 +555,11 @@ fn keychain_get_has_no_secret_in_argv() {
 /// headless Mac -- the *only* host that reaches the System keychain --
 /// that is every `cage secret set`. PR E2b found it and fixed it; this
 /// is the argv that says so.
+///
+/// PR D1 then moved the add's command line onto stdin, where the same
+/// ordering has to hold: `security -i` splits the line and hands it to
+/// the very same `keychain_add_generic_password`, so getting the order
+/// wrong there is the identical bug with a quieter crime scene.
 #[test]
 fn every_system_keychain_command_puts_the_path_last() {
     let fake = FakeRunner::new();
@@ -544,22 +573,14 @@ fn every_system_keychain_command_puts_the_path_last() {
     security.find(&system, "myapp.API_KEY").unwrap();
     security.delete(&system, "myapp.API_KEY").unwrap();
 
+    assert_eq!(fake.call(0).raw_argv(), ["sudo", "-n", "security", "-i"]);
     assert_eq!(
-        fake.call(0).raw_argv(),
-        [
-            "sudo",
-            "-n",
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "myapp.API_KEY",
-            "-w",
-            "hunter2",
-            "-U",
-            "/Library/Keychains/System.keychain",
-        ]
+        fake.call(0).stdin_text().as_deref(),
+        Some(
+            "add-generic-password -s agentcage -a 'myapp.API_KEY' -w 'hunter2' -U \
+             '/Library/Keychains/System.keychain'\n"
+        ),
+        "the same arguments, the same order, the keychain still last"
     );
     fake.assert_call(
         1,
@@ -590,42 +611,8 @@ fn every_system_keychain_command_puts_the_path_last() {
             "/Library/Keychains/System.keychain",
         ],
     );
-    // And the redaction survives the fix: index 9 is the value.
-    assert_eq!(fake.argv(0)[9], "<redacted>");
+    // And the value is nowhere in anything this crate can print.
     assert!(!format!("{:?}", fake.calls()).contains("hunter2"));
-}
-
-/// The prepared fix, driven through the real `add` path so that the
-/// only unknown left is what the keychain does with the bytes.
-///
-/// `PasswordChannel::Interactive` is **not shipped** --
-/// `keychain_set_puts_the_cleartext_in_argv_and_that_is_the_bug` pins
-/// that -- but it is reachable, and this is the argv and the stdin it
-/// would produce. `security -i` reads command lines from stdin and
-/// splits them in process, so the kernel's argv, the one `ps` reads,
-/// is `security -i` and nothing more. See
-/// `tests/keychain_stdin_probe.rs`.
-#[test]
-fn the_unshipped_interactive_channel_carries_nothing_in_argv() {
-    let fake = FakeRunner::new();
-    fake.push(Reply::status(0));
-    Security::new(&fake)
-        .with_password_channel(PasswordChannel::Interactive)
-        .add(&KeychainTarget::system(), "myapp.API_KEY", "hunter2")
-        .unwrap();
-
-    let call = fake.call(0);
-    assert_eq!(call.raw_argv(), ["sudo", "-n", "security", "-i"]);
-    assert_eq!(
-        call.stdin_text().as_deref(),
-        Some(
-            "add-generic-password -s agentcage -a 'myapp.API_KEY' -w 'hunter2' -U \
-             '/Library/Keychains/System.keychain'\n"
-        ),
-        "the same arguments, the same order, the keychain still last"
-    );
-    assert!(!format!("{call:?}").contains("hunter2"));
-    assert_eq!(SHIPPED_PASSWORD_CHANNEL, PasswordChannel::Argv);
 }
 
 /// An absent item is `None`, not an error.

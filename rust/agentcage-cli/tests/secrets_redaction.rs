@@ -111,9 +111,15 @@ fn no_type_in_this_module_prints_a_value() {
     let keychain_add = fake
         .calls()
         .into_iter()
-        .find(|c| c.raw_argv().contains(&"acme.K".to_string()) && c.command.program() == "security")
+        .find(|c| {
+            c.command.program() == "security"
+                && c.stdin_text()
+                    .is_some_and(|line| line.contains("acme.K") && line.contains(CANARY))
+        })
         .expect("the keychain add");
-    assert!(keychain_add.raw_argv().contains(&CANARY.to_string()));
+    // The value travels on stdin, so that is where it has to be found
+    // -- and the argv it is *not* in is the point of the fix.
+    assert_eq!(keychain_add.raw_argv(), ["security", "-i"]);
 }
 
 /// Every error a secret-carrying call can produce, rendered both ways.
@@ -150,26 +156,20 @@ fn no_error_message_carries_a_value() {
         .unwrap_err();
     no_canary("podman error", &err.to_string());
 
-    // A `security add-generic-password` that fails. This is the one
-    // path where the value really is in argv, so the error `security`
-    // produced is the likeliest place for it to come back out.
+    // A keychain add that fails. The value travels on this call's
+    // stdin, so the error `security` produced is the likeliest place
+    // for it to come back out.
+    //
+    // A queue rather than rules: the write probe and the real add are
+    // now the same argv -- `security -i` -- and only their stdin
+    // differs, so there is nothing for a rule to key on. The order is
+    // probe add, probe delete, the add under test.
     let fake = FakeRunner::new();
-    fake.on(["security", "delete-generic-password"], Reply::success());
-    fake.on(
-        [
-            "security",
-            "add-generic-password",
-            "-s",
-            "agentcage",
-            "-a",
-            "acme.K",
-        ],
-        Reply::failed(
-            45,
-            "SecKeychainItemCreateFromContent: write permissions error",
-        ),
-    );
-    fake.on(["security", "add-generic-password"], Reply::success());
+    fake.push_all([Reply::success(), Reply::success()]);
+    fake.push(Reply::failed(
+        45,
+        "SecKeychainItemCreateFromContent: write permissions error",
+    ));
     let err = KeychainStore::new(&fake, Platform::MacOs)
         .set("acme", "K", CANARY, temp.path())
         .unwrap_err();

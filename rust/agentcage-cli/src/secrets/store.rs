@@ -412,28 +412,25 @@ impl SecretStore for PlaintextStore<'_> {
 ///
 /// [`SecretStore::set`] below reaches
 /// [`agentcage_exec::tools::security::Security::add`], which builds
-/// `security add-generic-password -s agentcage -a <cage>.<KEY> -w
-/// <CLEARTEXT> -U`. The cleartext is in argv and therefore in `ps` for
-/// the life of the child -- readable by any process of the same user,
-/// and by root. It is the only such path in the code being ported, it
-/// is marked with [`agentcage_exec::Command::secret_arg`] so it is
-/// redacted from everything this workspace prints, and it is **not
-/// changed here**.
+/// `security -i`, with `add-generic-password -s agentcage -a
+/// <cage>.<KEY> -w <CLEARTEXT> -U` on the child's stdin. The kernel's
+/// argv is `security -i` and nothing more.
 ///
-/// PR E2b settled half the question and left the other half where it
-/// belongs. The obvious fix -- a bare `-w` with the value piped in --
-/// is *refuted*: that path is `getpass(3)`, which reads `/dev/tty`,
-/// prompts twice, and on EOF stores an empty password and exits 0. The
-/// fix that does work is `security -i`, which is written and reachable
-/// here as
-/// [`agentcage_exec::tools::security::PasswordChannel::Interactive`]
-/// and switched on by [`KeychainStore::with_password_channel`] -- but
-/// it is not shipped, because whether the keychain ends up holding the
-/// exact bytes depends on quoting that only a round trip against a real
-/// keychain can check. See the module docs in
+/// It did not used to be. Until 2026-10-02 the cleartext was an argv
+/// element, and therefore in `ps` for the life of the child -- readable
+/// by any process of the same user, and by root. It was the only such
+/// path in the code being ported. PR E2b established what the fix had
+/// to be: the obvious candidate -- a bare `-w` with the value piped in
+/// -- is *refuted*, because that path is `getpass(3)`, which reads
+/// `/dev/tty`, prompts twice, and on EOF stores an empty password and
+/// exits 0. PR D1 then ran the round trip against a real keychain,
+/// which is the only thing that can settle the quoting, and switched
+/// [`agentcage_exec::tools::security::SHIPPED_PASSWORD_CHANNEL`] over.
+/// The old shape stays reachable through
+/// [`KeychainStore::with_password_channel`] because it is what the fix
+/// is defined against. See the module docs in
 /// [`agentcage_exec::tools::security`] for the sources, and
-/// `agentcage-exec/tests/keychain_stdin_probe.rs` for the one test that
-/// settles it.
+/// `agentcage-exec/tests/keychain_stdin_probe.rs` for the probe.
 ///
 /// # Target selection
 ///

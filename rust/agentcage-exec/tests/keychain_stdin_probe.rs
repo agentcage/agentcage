@@ -1,41 +1,50 @@
-//! The one test that can settle `secret_store.py:226`, and the Mac it
+//! The test that settled the keychain argv exposure, and the Mac it
 //! needs.
+//!
+//! It ran on 2026-10-02 and PR D1 shipped its answer. It stays here as
+//! the regression check: it is the only test in the workspace that can
+//! tell you the *keychain* received the exact bytes, as opposed to that
+//! the command was built correctly.
 //!
 //! # The finding
 //!
-//! `KeychainStore.set` is the only place in agentcage where secret
-//! material travels in argv:
+//! `KeychainStore.set` used to be the only place in agentcage where
+//! secret material travelled in argv:
 //!
 //! ```text
 //! security add-generic-password -s agentcage -a <cage>.<KEY> -w <CLEARTEXT> -U
 //! ```
 //!
-//! For the life of that child the credential is in `ps -axww` output,
+//! For the life of that child the credential was in `ps -axww` output,
 //! readable by any process of the same user and by root. Every other
 //! secret path in the project uses stdin. PR D1 found it, reproduced it
 //! and marked the argument so it is redacted from everything the
-//! workspace prints; PR D3 preserved that; PR E2b -- this one -- built
-//! the fix behind a seam and did **not** ship it.
+//! workspace prints; PR D3 preserved that; PR E2b built the fix behind
+//! a seam without shipping it; PR D1 ran this probe and flipped the
+//! seam.
 //!
-//! # What is already settled, and what is not
+//! # What the two arms establish
 //!
-//! **Settled, from Apple's shipping source.** The obvious candidate --
-//! a bare `-w` with the value piped to stdin -- does not work.
-//! `keychain_add.c` routes a missing `-w` argument to `getpass(3)`,
-//! which is `readpassphrase(..., RPP_ECHO_OFF)`, which opens
-//! `/dev/tty` and only falls back to stdin when the process has no
-//! controlling terminal at all. It prompts *twice*. And on EOF it
+//! **The refuted candidate**, asserted from Apple's shipping source
+//! first and then watched: a bare `-w` with the value piped to stdin
+//! does not work. `keychain_add.c` routes a missing `-w` argument to
+//! `getpass(3)`, which is `readpassphrase(..., RPP_ECHO_OFF)`, which
+//! opens `/dev/tty` and only falls back to stdin when the process has
+//! no controlling terminal at all. It prompts *twice*. And on EOF it
 //! returns an empty string that passes its own confirmation check, so
-//! `security` stores an empty password and exits 0. The module docs in
-//! [`agentcage_exec::tools::security`] carry the citations.
+//! `security` stores an empty password and exits 0. On the run that
+//! settled this it did something worse than that: it exited 0 having
+//! stored the literal string `-U`, read from the next flag. The module
+//! docs in [`agentcage_exec::tools::security`] carry the citations.
 //!
-//! **Not settled.** `security -i` -- command lines on stdin, split in
-//! process, dispatched to the same handler, with the kernel's argv left
-//! as `security -i`. The argv is right by construction. What a Linux
-//! box cannot check is whether the *keychain* ends up holding the exact
-//! bytes: the quoting is ours, and `split_line` treats `\` as an escape
-//! inside single quotes where a POSIX shell would not. One round trip
-//! against a real keychain settles it. That is this file.
+//! **The shipped channel**: `security -i` -- command lines on stdin,
+//! split in process, dispatched to the same handler, with the kernel's
+//! argv left as `security -i`. The argv is right by construction. What
+//! a Linux box cannot check is whether the *keychain* ends up holding
+//! the exact bytes: the quoting is ours, and `split_line` treats `\` as
+//! an escape inside single quotes where a POSIX shell would not. Both
+//! round trips were exact, including a value carrying both quote
+//! characters, a backslash and a doubled backslash.
 //!
 //! # Running it
 //!
@@ -45,21 +54,22 @@
 //!
 //! on a Mac with an unlocked login keychain. It is `#[ignore]`d rather
 //! than `#[cfg(target_os = "macos")]`d on purpose: a `cfg` would make
-//! it invisible on the machines where the decision is pending, whereas
-//! an `#[ignore]` with a reason prints on **every** `cargo test` run in
-//! this workspace, including CI's. The decision announces itself.
+//! it invisible on the machines that can actually run it, whereas an
+//! `#[ignore]` with a reason prints on **every** `cargo test` run in
+//! this workspace, including CI's.
 //!
 //! It writes to throwaway accounts in the login keychain's `agentcage`
 //! service and deletes them again, on every path including the failures.
 //! It never touches a real cage's items and it never runs `sudo`.
 //!
-//! # What to do with the answer
+//! # If it ever disagrees
 //!
-//! [`agentcage_exec::tools::security::AddPassword::how_to_settle_it`]
-//! spells it out. In short: if every round trip is exact, change
-//! `SHIPPED_PASSWORD_CHANNEL` to `PasswordChannel::Interactive` and
-//! mirror it onto `secret_store.py:226`. If it is not, leave the
-//! exposure alone and write down what happened.
+//! That is a real finding, not a flake: it would mean the quoting and
+//! the keychain have diverged on some host or OS version. Record what
+//! it printed in
+//! [`agentcage_exec::tools::security::AddPassword::how_it_was_settled`],
+//! which is also what this probe prints, so the next person compares
+//! against the last run rather than against nothing.
 
 use std::time::Duration;
 
@@ -154,7 +164,7 @@ fn round_trip(value: &str) -> String {
                  the pipe.\n\
                  VERDICT: leave SHIPPED_PASSWORD_CHANNEL on Argv and record this. \
                  Next thing to try: SecItemAdd through the Security framework.\n\n{}",
-                AddPassword::how_to_settle_it()
+                AddPassword::how_it_was_settled()
             );
         }
         Err(other) => {
@@ -177,7 +187,7 @@ fn round_trip(value: &str) -> String {
                  again -- that is not an answer to the question. Anything else \
                  means the interactive channel does not work as written; leave \
                  SHIPPED_PASSWORD_CHANNEL on Argv.\n\n{}",
-                AddPassword::how_to_settle_it()
+                AddPassword::how_it_was_settled()
             );
         }
     }
@@ -226,10 +236,10 @@ fn bare_w_piped() -> (Result<Output, ExecError>, Option<String>) {
 }
 
 #[test]
-#[ignore = "PENDING DECISION: needs macOS and a real security(1) -- \
-            settles whether `security -i` can carry the password on stdin \
-            and close the one cleartext argv in the project \
-            (secret_store.py:226); run with --ignored on a Mac"]
+#[ignore = "REGRESSION CHECK, needs macOS and a real security(1) -- \
+            re-verifies that the shipped `security -i` channel carries the \
+            password on stdin exactly, quoting included; settled 2026-10-02, \
+            run with --ignored on a Mac"]
 fn the_interactive_channel_round_trips_through_a_real_keychain() {
     // Not a `cfg` on the function: the test has to *exist* on Linux so
     // the `#[ignore]` reason prints there. Run it with `--ignored` off
@@ -240,7 +250,7 @@ fn the_interactive_channel_round_trips_through_a_real_keychain() {
         "this probe needs a real macOS `security(1)`; there is nothing \
          useful it can learn anywhere else, and a fake runner cannot \
          answer the question it exists to ask.\n\n{}",
-        AddPassword::how_to_settle_it()
+        AddPassword::how_it_was_settled()
     );
 
     cleanup();
@@ -279,26 +289,24 @@ fn the_interactive_channel_round_trips_through_a_real_keychain() {
     assert_eq!(
         plain,
         VALUE,
-        "the plain round trip did not come back.\n\
-         VERDICT: leave SHIPPED_PASSWORD_CHANNEL on Argv.\n\n{}",
-        AddPassword::how_to_settle_it()
+        "the plain round trip did not come back -- the shipped channel does \
+         not work on this host.\n\
+         VERDICT: a real regression. Do not reach for a bare `-w`; see below.\n\n{}",
+        AddPassword::how_it_was_settled()
     );
     assert_eq!(
         awkward, AWKWARD,
         "the quoting is wrong: a value with quotes and backslashes did not \
          survive `security -i`'s split_line.\n\
-         VERDICT: fix AddPassword::quote and run this again. Do not flip \
-         SHIPPED_PASSWORD_CHANNEL until this passes -- a quoting bug here \
+         VERDICT: fix AddPassword::quote and `KeychainStore._quote` in \
+         secret_store.py together, and run this again -- a quoting bug here \
          stores the wrong secret silently."
     );
 
     println!(
         "VERDICT: `security -i` carries the password on stdin exactly, quoting \
-         included. Change SHIPPED_PASSWORD_CHANNEL in \
-         rust/agentcage-exec/src/tools/security.rs to \
-         PasswordChannel::Interactive, delete the \
-         `the_shipped_channel_is_still_argv` and \
-         `the_keychain_add_puts_the_cleartext_in_argv` pins, and mirror the \
-         change onto secret_store.py:226."
+         included -- same as the run that settled this on 2026-10-02. The \
+         shipped channel (SHIPPED_PASSWORD_CHANNEL, and KeychainStore.set in \
+         secret_store.py) is confirmed on this host."
     );
 }

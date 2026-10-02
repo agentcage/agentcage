@@ -171,10 +171,12 @@ class KeychainStore(SecretStore):
         """
         acct = "__agentcage_probe__"
         kc_arg = [kc] if kc else []
+        # The probe writes on the same channel `set` writes on. If it
+        # used the old argv shape, "the keychain is writable" could be
+        # true of a channel `set` never uses.
         add = subprocess.run(
-            prefix + ["security", "add-generic-password",
-                      "-s", _KEYCHAIN_SERVICE, "-a", acct, "-w", "x", "-U"]
-            + kc_arg,
+            prefix + ["security", "-i"],
+            input=KeychainStore._add_line(acct, "x", kc),
             capture_output=True, text=True,
         )
         if add.returncode != 0:
@@ -218,16 +220,106 @@ class KeychainStore(SecretStore):
         except SecretStoreError:
             return False
 
-    def set(self, cage: str, key: str, value: str, *, state_dir: Path) -> None:
-        prefix, kc = self._target()
-        argv = prefix + [
-            "security", "add-generic-password",
-            "-s", _KEYCHAIN_SERVICE, "-a", self._account(cage, key),
-            "-w", value, "-U",
-        ]
+    # `security -i`'s reader is line-oriented, with a 4096-byte limit
+    # (`MAX_LINE_LEN` in SecurityTool/macOS/security.c). Both limits are
+    # silent corruption if they are not caught here rather than at the
+    # keychain: a value with an embedded newline would have its tail
+    # read as the *next* command, and an over-long line is split and the
+    # remainder parsed the same way — either of which can echo part of
+    # the secret to stderr.
+    _MAX_INTERACTIVE_LINE = 4096
+
+    @staticmethod
+    def _quote(value: str) -> str:
+        """Quote one token for ``security -i``'s own splitter.
+
+        Not ``shlex.quote``. ``split_line`` in SecurityTool treats a
+        backslash as an escape *inside* single quotes, where a POSIX
+        shell does not — so the escaping has to match its rules, not the
+        shell's. Both ``\\`` and ``'`` are escaped; nothing else needs to
+        be, because the whole token is single-quoted.
+
+        Verified by round trip against a real login keychain
+        (``rust/agentcage-exec/tests/keychain_stdin_probe.rs``), including
+        a value carrying both quote characters, a backslash, a doubled
+        backslash and spaces.
+        """
+        out = ["'"]
+        for ch in value:
+            if ch in ("\\", "'"):
+                out.append("\\")
+            out.append(ch)
+        out.append("'")
+        return "".join(out)
+
+    @classmethod
+    def _add_line(cls, account: str, value: str, kc: Optional[str]) -> str:
+        """The command line a ``security -i`` add writes to stdin.
+
+        The same arguments as the old argv form, in the same order, with
+        the keychain path still last — ``security -i`` hands the split
+        line to the very same ``keychain_add_generic_password``, so
+        getting the order wrong here is the ordering bug PR E2b fixed,
+        just harder to see.
+
+        Raises ``SecretStoreError`` for a value this channel cannot
+        carry without corrupting it, rather than letting the keychain
+        store the wrong bytes.
+        """
+        if "\n" in value or "\r" in value:
+            raise SecretStoreError(
+                "secret value contains a line terminator, which "
+                "`security -i` cannot carry: its reader is line-oriented, "
+                "so the tail would be parsed as a separate command"
+            )
+        line = (
+            f"add-generic-password -s {_KEYCHAIN_SERVICE} "
+            f"-a {cls._quote(account)} -w {cls._quote(value)} -U"
+        )
         if kc:
-            argv.append(kc)
-        r = subprocess.run(argv, capture_output=True, text=True)
+            line += f" {cls._quote(kc)}"
+        line += "\n"
+        if len(line.encode()) > cls._MAX_INTERACTIVE_LINE:
+            raise SecretStoreError(
+                f"secret value is too long for `security -i` "
+                f"({len(line.encode())} bytes of command line, limit "
+                f"{cls._MAX_INTERACTIVE_LINE})"
+            )
+        return line
+
+    def set(self, cage: str, key: str, value: str, *, state_dir: Path) -> None:
+        """Store one secret, with the cleartext on stdin rather than argv.
+
+        **This used to put the value in argv** —
+        ``security add-generic-password … -w <CLEARTEXT> -U`` — where
+        ``ps -axww`` could read it for the life of the child. On macOS
+        that is a same-user and root exposure rather than a
+        world-readable one (XNU's ``sysctl_procargsx`` refuses the
+        process-arguments sysctl across uids), but on a laptop "same
+        user" is every other agent session, every MCP server and every
+        package postinstall. It was the only place in agentcage where
+        secret material travelled in argv.
+
+        ``security -i`` reads whole command lines from stdin and splits
+        them in-process, dispatching to the same handler, so the
+        kernel's argv stays ``security -i``.
+
+        Note what is *not* the fix: piping the value to a bare ``-w``.
+        That routes to ``getpass(3)``, which opens ``/dev/tty`` and
+        falls back to stdin only when the process has no controlling
+        terminal at all; it prompts twice; and on EOF it returns an empty
+        string that passes its own confirmation, so ``security`` stores
+        an empty password and exits 0. Measured, not assumed: the probe
+        run that settled this found the keychain holding the literal
+        string ``-U`` — it had read the next flag as the password — with
+        exit status 0.
+        """
+        prefix, kc = self._target()
+        line = self._add_line(self._account(cage, key), value, kc)
+        r = subprocess.run(
+            prefix + ["security", "-i"],
+            input=line, capture_output=True, text=True,
+        )
         if r.returncode != 0:
             raise SecretStoreError(f"keychain add failed: {r.stderr.strip()}")
         self._index_add(state_dir, key)

@@ -431,13 +431,13 @@ fixture and the port moving together. The rest stand.
 | C4 | The corpus recipe writes `resolved-config.json` pre-placeholder-fill and fingerprints post-fill, so three cases cannot rebuild one component | Open; corpus gap, not a product bug |
 | C7 | The corpus recorded only the keys of the mask-mountpoint map, leaving the paths the cleanup chain consumes unverified | **Fixed** in C7 |
 | C2 | `name` and `container.image` are matched with `$`, not `\Z` — the same anchor bug as the decider host. `name: "my-cage\n"` validates, and that name becomes a systemd unit name, a podman object name and a state directory. Verified end to end | **Fixed** in the anchor sweep. Reachable from a config, not just argv: a *clipped* block scalar — `|` **or** `>` — produces exactly that value |
-| **D1** | **`secret_store.py:226` puts a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Open — see below** |
+| **D1** | **`KeychainStore.set` put a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Fixed** on both sides — the command line now travels on `security -i`'s stdin and the kernel's argv is `security -i`. Settled by round trip against a real keychain; see below |
 | E2b | **The Rust port built the System-keychain argv scrambled** — the keychain path landed *before* the value and `-U`, so the path would be stored as the password. The Python appends it last. Only reachable on a headless Mac, the one configuration nobody could test | **Fixed** in E2b |
 | E2b | `_security_interaction_blocked` is **dead code**: defined at `secret_store.py:136` and never called. The fall-through treats every non-zero exit alike, so the stderr text is never consulted | Open; pinned, deliberately not wired in — doing so would *narrow* the fall-through and turn a headless Mac failing for any other reason into a hard failure |
 | D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; **documented** in `docs/reference/configuration.md`, which had called the field "static" and mentioned no expansion. Still a policy call: it is deliberate (the apple backend mirrors it on purpose) and has shipped since 0.1.0 |
 
-**The Keychain finding is the most serious thing this port has turned up**, because
-it is a live exposure in shipped code rather than a porting concern. Every other
+**The Keychain finding was the most serious thing this port turned up**, because
+it was a live exposure in shipped code rather than a porting concern. Every other
 secret path in the codebase honours the stdin rule: `podman secret create <name> -`,
 `systemd-creds encrypt --name K - <out>` (where `--name` is the *variable* name,
 not its value), the VM bridge through `limactl shell --tty=false`, and the
@@ -468,14 +468,45 @@ across uids, so this is a **same-user and root** exposure rather than the
 world-readable one the Linux intuition suggests. On a laptop that still means
 every other agent session and every package postinstall.
 
-It is **not** fixed in the port. E2b prepared the change behind a single
+**Settled on 2026-10-02, and fixed.** E2b prepared the change behind a single
 constant, with the refuted variant deliberately **absent** so it cannot be
 flipped on by mistake, and wrote the Mac-only test that settles it — `#[ignore]`d
-with a reason rather than `cfg`-gated, so it stays visible on the machines
-where the decision is pending. D1 reproduces the argv as-is, marks the argument so it is redacted
-from every debug dump and fake-runner trace, and pins the behaviour in a test
-named after the bug. The `execve` exposure is unchanged and deliberate until it
-can be fixed against a real `security(1)`.
+with a reason rather than `cfg`-gated, so it stayed visible on the machines
+where the decision was pending. That probe then ran on an Apple Silicon Mac
+with an unlocked login keychain, and the result was unambiguous:
+
+- `security -i` round-tripped the plain value byte for byte;
+- it round-tripped `TEST-NOT-A-REAL-SECRET a'b"c\d\\e 'f' "g"` — both quote
+  characters, a backslash, a doubled backslash, spaces — byte for byte, which
+  is the only part no Linux box could check, because the quoting is ours;
+- the refuted bare-`-w` arm did worse than predicted: it exited **0** and the
+  keychain came back holding the literal string `-U`. It had read the next flag
+  as the password. A silent failure, in the unsafe direction, with a success
+  exit code.
+
+So `SHIPPED_PASSWORD_CHANNEL` is `PasswordChannel::Interactive`, and
+`secret_store.py` — the code actually shipping — was changed to match. The two
+implementations' stdin lines are asserted byte-identical for three values
+across both keychain targets, and the Python's own round trip through a real
+keychain was re-run after the change, including a value ending in a backslash.
+
+Two things that came with the fix rather than after it. The **write probe**
+moved onto the same channel as the real write, on both sides: `available()`
+reporting "the keychain is writable" has to mean *the channel `cage secret set`
+will use* is writable, and a probe with a shape of its own cannot say that. And
+the `Argv` channel stays reachable and asserted, because a test that only pins
+the new shape cannot tell you the old one is gone.
+
+Two hazards of the new channel are refusals rather than truncations: a value
+carrying `\n` or `\r`, and a command line over 4096 bytes. Both would
+otherwise have their remainder parsed as the *next* command — storing wrong
+bytes and echoing a fragment of the secret to stderr.
+
+Still true, and still the better fix: this shells out. `SecItemAdd` through the
+Security framework is what `git-credential-osxkeychain` does, and it has no
+argv, no 4096-byte line, no quoting surface and real `OSStatus` errors. That is
+a bigger change than closing the exposure, and closing the exposure did not
+need to wait for it.
 
 **The `container.env` expansion is a different kind of finding** and deserves
 less alarm than the Keychain one. `expandvars` on `container.env` is a feature,
