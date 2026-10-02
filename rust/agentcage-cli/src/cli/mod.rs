@@ -382,8 +382,12 @@ pub(crate) fn canonical_path(name: &str, sub: &ArgMatches) -> String {
 fn not_implemented(path: &str) -> ExitCode {
     eprintln!(
         "{PROG}: `{path}` is not implemented in the Rust port yet.\n\
-         The command tree is complete (PR D5); the bodies land in D6-D16.\n\
-         Run the Python `agentcage {path}` until PR F2 flips the default."
+         Edit the stored config directly instead:\n\
+         \x20 $EDITOR ~/.config/agentcage/cages/<name>/cage.yaml\n\
+         then `agentcage cage update <name>` to validate and apply it.\n\
+         Note what you lose by doing that: `cage edit` validates before\n\
+         saving and keeps the rejected text, so a bad edit cannot leave\n\
+         the cage unloadable."
     );
     ExitCode::from(EXIT_NOT_IMPLEMENTED)
 }

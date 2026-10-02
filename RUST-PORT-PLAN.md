@@ -817,6 +817,25 @@ by the five preconditions at the top of `AppleBackend::start`.
 | #409 | The "no built image" and egress-image preconditions in `start()` must name the cage and `agentcage cage update <name>` rather than the internal `build_artifacts()`, and must raise the operator-error type the CLI renders as a single `error: …` line. Rust cannot reproduce Python's traceback problem, but it can reproduce the unhelpful message. |
 
 
+### `cage edit` — the one unported command body
+
+Every other command in the tree has a body; `cage edit` falls through to
+`not_implemented` and exits 70. Found by running it, not by reading: it
+is in no track's remaining list, because D-track's own accounting
+treated the command tree as the deliverable.
+
+Its stub message was also stale in a way that mattered. It said "Run
+the Python `agentcage cage edit` until PR F2 flips the default", and F2
+has flipped — `pyproject.toml` installs no console script, so the
+remedy named does not exist for anyone who installed from a release.
+The message now points at the stored `cage.yaml` plus `cage update`,
+and says what that loses: `cage edit` validates before saving and keeps
+the rejected text, so a bad edit cannot leave a cage unloadable.
+
+Porting it is small — `$EDITOR` round trip, validate, atomic save,
+retain the rejected text — and it is the last thing standing between
+the binary and a complete command surface.
+
 ### Track E — E6 and E7, the two surfaces E5 left
 
 Both are **done**. They were not in E5's scope and neither is exercised

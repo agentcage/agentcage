@@ -55,6 +55,15 @@ have not changed, only its name.
 
 ### Fixed
 
+- **The `cage edit` stub told operators to run a command that no longer
+  exists.** It is the one command body still unported, and its message said
+  "Run the Python `agentcage cage edit` until PR F2 flips the default" — but F2
+  *has* flipped: `pyproject.toml` installs no `agentcage` console script, so
+  that instruction cannot be followed by anyone who installed from a release.
+  It now points at editing the stored `cage.yaml` and running `cage update`,
+  and says what that loses (`cage edit` validates before saving and keeps the
+  rejected text, so a bad edit cannot leave the cage unloadable).
+
 - **A cage would not start at all from a git worktree or submodule.** Every
   shipped scaffold masks `/workspace/.git/hooks` (issue #170, so a caged agent
   cannot plant a git hook the host later runs). The runtime makes a nested
