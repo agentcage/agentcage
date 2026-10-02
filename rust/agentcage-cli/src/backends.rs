@@ -329,11 +329,12 @@ impl<'a> AnyBackend<'a> {
         match self {
             Self::Container(backend) => backend.destroy_resources(name, keep_secrets),
             Self::Vm(backend) => backend.destroy_resources(name, keep_secrets),
-            // `keep_secrets` has no arm here: this backend's secrets
-            // live in the keychain and in the per-cage state tree, and
-            // the tree goes with the cage either way. The Python's
-            // signature carries the flag and marks it unused.
-            Self::Apple(backend) => backend.destroy_resources(name),
+            // This arm used to drop `keep_secrets`, on the reasoning
+            // that the state tree goes with the cage anyway. It does
+            // not: the keychain is not under the state tree, so a
+            // destroyed cage left its values there forever while
+            // `cage destroy` said it had removed them.
+            Self::Apple(backend) => backend.destroy_resources(name, keep_secrets),
         }
     }
 

@@ -55,6 +55,21 @@ have not changed, only its name.
 
 ### Fixed
 
+- **`cage destroy` left an `apple-container` cage's secrets in the macOS
+  keychain** while telling the operator it had removed them. The confirmation
+  prompt says "Scoped secrets will also be removed." and the container backend
+  does exactly that with its `<name>.*` podman secrets — but this backend's
+  `destroy_resources` accepted `keep_secrets` and ignored it, so a destroyed
+  cage's values stayed under `agentcage / <cage>.<KEY>` indefinitely, with
+  nothing left on disk to say they were ever there. Observed on a real destroy.
+  Both implementations now delete through the cage's own store, before the unit
+  JSON and the state tree go (the first names the store; under
+  `backend: plaintext` the second *is* the store), and report each removal as
+  `secret:<cage>.<KEY>` so `cage destroy`'s output means the same thing on every
+  backend. `--keep-secrets` is honoured. Failure to resolve a store, or to
+  delete one key, no longer fails the destroy: a cage that cannot be removed
+  because its secrets cannot be is worse than a leftover the operator can find.
+
 - **`cage show` and `cage status` reported every `apple-container` cage's
   secrets as missing.** They counted present keys by asking host podman, which
   does not *error* for a cage it has never heard of — it answers nothing found.

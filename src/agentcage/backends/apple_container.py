@@ -2193,7 +2193,65 @@ class AppleContainerBackend:
         self.stop(name)
         self.start(name)
 
-    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:  # noqa: ARG002
+    def _forget_secrets(self, name: str) -> list[str]:
+        """Delete this cage's secrets from whichever store holds them.
+
+        The container backend removes its ``<name>.*`` podman secrets in
+        ``destroy_resources``, and ``cage_destroy`` tells the operator so
+        ("Scoped secrets will also be removed."). This backend used to
+        accept ``keep_secrets`` and ignore it, so that promise was false
+        here: a destroyed cage left its values in the macOS keychain
+        indefinitely, under ``agentcage / <cage>.<KEY>``, with nothing
+        left on disk to say they were there. Observed on a real destroy.
+
+        ``destroy_resources`` has no ``Config`` — it is name-only, like
+        the rest of the protocol — so the four fields ``resolve_store``
+        reads are rebuilt from the unit JSON, exactly as ``_stage_secrets``
+        rebuilds them. A cage whose unit JSON is already gone resolves the
+        default store, which is the same one ``secret set`` would have
+        used, so the common case still cleans up.
+
+        Best-effort throughout: a store that cannot be resolved, or a key
+        that will not delete, must not fail a destroy. The alternative is
+        a cage that cannot be removed because its secrets cannot be,
+        which is worse than a leftover the operator can see with
+        ``security find-generic-password``.
+        """
+        from types import SimpleNamespace
+
+        from agentcage import state as _state
+        from agentcage.secret_store import SecretStoreError, resolve_store
+
+        meta: dict = {}
+        unit_path = self.unit_dir() / f"{name}.json"
+        try:
+            meta = json.loads(unit_path.read_text())
+        except (OSError, ValueError):
+            pass
+        cfg_shim = SimpleNamespace(
+            isolation="apple-container",
+            secrets=SimpleNamespace(
+                backend=meta.get("secrets_backend", "auto"),
+                allow_plaintext=bool(meta.get("secrets_allow_plaintext", False)),
+                scope="auto",
+            ),
+        )
+        sd = _state.deployment_dir(name)
+        removed: list[str] = []
+        try:
+            store = resolve_store(cfg_shim)
+            names = sorted(store.names(name, state_dir=sd))
+        except (SecretStoreError, OSError, ValueError):
+            return removed
+        for key in names:
+            try:
+                store.delete(name, key, state_dir=sd)
+            except (SecretStoreError, OSError):
+                continue
+            removed.append(f"secret:{name}.{key}")
+        return removed
+
+    def destroy_resources(self, name: str, keep_secrets: bool = False) -> list[str]:
         """Stop+delete both microVMs, delete the per-cage network + wrapper
         image + state dir.
 
@@ -2233,6 +2291,12 @@ class AppleContainerBackend:
             r = ac_cli.run(["image", "delete", wrapper_image], check=False)
             if r.returncode == 0:
                 removed.append(f"image:{wrapper_image}")
+        # Scoped secrets, before the unit JSON and the state tree go: the
+        # unit JSON is where the store is named, and under
+        # ``secrets.backend: plaintext`` the store *is* a file in the
+        # deployment dir. Reading them afterwards would find neither.
+        if not keep_secrets:
+            removed.extend(self._forget_secrets(name))
         # State dir + unit JSON.
         unit_path = self.unit_dir() / f"{name}.json"
         if unit_path.exists():

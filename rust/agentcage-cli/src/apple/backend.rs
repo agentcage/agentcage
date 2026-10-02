@@ -313,7 +313,11 @@ impl<'a> AppleBackend<'a> {
     /// [`BackendError::Failed`] when the state directory cannot be
     /// removed. Every other step is best-effort and reports only what
     /// actually went.
-    pub fn destroy_resources(&self, name: &str) -> Result<Vec<String>, BackendError> {
+    pub fn destroy_resources(
+        &self,
+        name: &str,
+        keep_secrets: bool,
+    ) -> Result<Vec<String>, BackendError> {
         let cli = self.cli();
         let mut removed = Vec::new();
 
@@ -359,6 +363,14 @@ impl<'a> AppleBackend<'a> {
                 .is_ok_and(|out| out.success())
         {
             removed.push(format!("image:{wrapper}"));
+        }
+
+        // Scoped secrets, before the unit JSON and the state tree go:
+        // the unit JSON is where the store is named, and under
+        // `secrets.backend: plaintext` the store *is* a file in the
+        // deployment directory. Reading them afterwards finds neither.
+        if !keep_secrets {
+            removed.extend(self.forget_secrets(name));
         }
 
         let unit = self.unit_path(name);
@@ -872,6 +884,65 @@ impl AppleBackend<'_> {
              inspect` returned no address. Check `container logs {target}`.",
             IP_TIMEOUT.as_secs()
         )))
+    }
+
+    /// Delete this cage's secrets from whichever store holds them.
+    ///
+    /// The container backend removes its `<name>.*` podman secrets in
+    /// `destroy_resources`, and `cage destroy` tells the operator so —
+    /// "Scoped secrets will also be removed." On this backend that was
+    /// a false promise: the Python takes `keep_secrets` and marks it
+    /// unused, so a destroyed cage left its values in the macOS
+    /// keychain under `agentcage / <cage>.<KEY>`, with nothing left on
+    /// disk to say they were ever there. Observed on a real destroy.
+    ///
+    /// The protocol is name-only, so the four fields `resolve_store`
+    /// reads are rebuilt from the unit JSON exactly as
+    /// [`Self::stage_secrets`] rebuilds them. A cage whose unit JSON
+    /// has already gone resolves the default store, which is the one
+    /// `secret set` would have used, so the common case still cleans
+    /// up.
+    ///
+    /// Best-effort throughout. A store that will not resolve, or a key
+    /// that will not delete, must not fail the destroy: a cage that
+    /// cannot be removed because its secrets cannot be is worse than a
+    /// leftover the operator can find with `security
+    /// find-generic-password`.
+    fn forget_secrets(&self, name: &str) -> Vec<String> {
+        let meta = std::fs::read_to_string(self.unit_path(name))
+            .ok()
+            .and_then(|text| Meta::parse(&text).ok());
+        let backend = match meta.as_ref().map(|m| m.string("secrets_backend")) {
+            Some(backend) if !backend.is_empty() => backend,
+            _ => "auto".to_owned(),
+        };
+        let shim = Config {
+            isolation: "apple-container".to_owned(),
+            secrets: agentcage_core::config::SecretsConfig {
+                backend,
+                scope: "auto".to_owned(),
+                allow_plaintext: meta
+                    .as_ref()
+                    .is_some_and(|m| m.truthy("secrets_allow_plaintext")),
+            },
+            ..Config::default()
+        };
+
+        let state_dir = self.paths.deployment_dir(name);
+        let host = crate::secrets::SecretHost::detect(self.runner, &SYSTEM_ENVIRONMENT);
+        let Ok(store) =
+            crate::secrets::resolve_store(&shim, &host, None, "", crate::secrets::Platform::host())
+        else {
+            return Vec::new();
+        };
+        let Ok(mut keys) = store.names(name, &state_dir) else {
+            return Vec::new();
+        };
+        keys.sort();
+        keys.into_iter()
+            .filter(|key| store.delete(name, key, &state_dir).is_ok())
+            .map(|key| format!("secret:{name}.{key}"))
+            .collect()
     }
 
     /// `_wipe_staged_secrets` — remove the cleartext once the egress
@@ -1736,5 +1807,118 @@ impl agentcage_exec::tools::podman::ImageInspector for AppleImages<'_> {
         AppleContainer::new(self.runner)
             .image_inspect(reference)?
             .ok_or_else(|| ExecError::not_found(reference))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agentcage_exec::FakeRunner;
+    use agentcage_state::{Paths, TestDir};
+
+    use super::AppleBackend;
+
+    /// A deployed apple cage whose store is the plaintext file store.
+    ///
+    /// `plaintext` keeps the values in the deployment directory rather
+    /// than the macOS keychain, so this exercises the real store code
+    /// without touching the operator's login keychain — and so it runs
+    /// on Linux CI, where that keychain does not exist at all.
+    fn staged(dir: &TestDir, name: &str) -> Paths {
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(paths.apple_root()).expect("apple root");
+        std::fs::write(
+            paths.apple_root().join(format!("{name}.json")),
+            r#"{"name":"x","secrets_backend":"plaintext","secrets_allow_plaintext":true}"#,
+        )
+        .expect("unit json");
+        std::fs::create_dir_all(paths.deployment_dir(name)).expect("deployment dir");
+        std::fs::write(
+            paths.deployment_dir(name).join("pending_secrets.json"),
+            r#"[["API_KEY","a-value"],["OTHER_KEY","b-value"]]"#,
+        )
+        .expect("store");
+        paths
+    }
+
+    fn stored(paths: &Paths, name: &str) -> String {
+        std::fs::read_to_string(paths.deployment_dir(name).join("pending_secrets.json"))
+            .unwrap_or_default()
+    }
+
+    /// `cage destroy` promises "Scoped secrets will also be removed".
+    ///
+    /// It was a false promise here: the flag was accepted and dropped,
+    /// so a destroyed cage left its values in the store — in the
+    /// keychain, where nothing on disk was left to say they existed.
+    #[test]
+    fn destroy_forgets_the_cages_secrets() {
+        let dir = TestDir::new("apple-destroy-secrets");
+        let paths = staged(&dir, "demo");
+        let runner = FakeRunner::new();
+        // No `container` binary anywhere, so every runtime call is a
+        // no-op and what is left under test is the store half alone.
+        runner.assume_missing();
+        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+
+        let removed = backend.forget_secrets("demo");
+
+        assert!(
+            !stored(&paths, "demo").contains("a-value"),
+            "the value survived: {}",
+            stored(&paths, "demo")
+        );
+        assert_eq!(
+            removed,
+            vec![
+                "secret:demo.API_KEY".to_owned(),
+                "secret:demo.OTHER_KEY".to_owned()
+            ],
+            "reported the way the container backend reports its podman secrets"
+        );
+    }
+
+    /// `--keep-secrets` has to mean it, or the flag is a lie in the
+    /// other direction.
+    #[test]
+    fn destroy_keeps_secrets_when_asked() {
+        let dir = TestDir::new("apple-destroy-keep");
+        let paths = staged(&dir, "demo");
+        let runner = FakeRunner::new();
+        runner.assume_missing();
+        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+
+        let removed = backend
+            .destroy_resources("demo", true)
+            .expect("destroy succeeds");
+
+        assert!(
+            stored(&paths, "demo").contains("a-value"),
+            "the value was removed despite --keep-secrets"
+        );
+        assert!(
+            !removed.iter().any(|r| r.starts_with("secret:")),
+            "{removed:?}"
+        );
+    }
+
+    /// A store that cannot be resolved must not fail the destroy: a
+    /// cage that cannot be removed because its secrets cannot be is
+    /// worse than a leftover the operator can see.
+    #[test]
+    fn an_unresolvable_store_does_not_fail_the_destroy() {
+        let dir = TestDir::new("apple-destroy-unresolvable");
+        let paths = Paths::under(dir.path());
+        std::fs::create_dir_all(paths.apple_root()).expect("apple root");
+        // systemd-creds is unavailable here, so `resolve_store` refuses.
+        std::fs::write(
+            paths.apple_root().join("demo.json"),
+            r#"{"name":"x","secrets_backend":"systemd-creds"}"#,
+        )
+        .expect("unit json");
+        let runner = FakeRunner::new();
+        runner.assume_missing();
+        let backend = AppleBackend::new(&paths, &runner, "0.0.0");
+
+        assert!(backend.forget_secrets("demo").is_empty());
     }
 }

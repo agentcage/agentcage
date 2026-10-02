@@ -4501,3 +4501,102 @@ class TestDeciderApiKeyStagingScheme:
         assert "503" in err
         # Must NOT be mislabeled as a relay credential.
         assert "protocol_relays env" not in err
+
+
+def _apple_cage_with_plaintext_secrets(tmp_path, monkeypatch, name="demo"):
+    """A deployed apple cage whose store is the plaintext file store.
+
+    `plaintext` keeps the values in the deployment dir rather than the
+    macOS keychain, so these tests exercise the real store code without
+    touching the operator's login keychain (and so they run on Linux CI,
+    where the keychain does not exist at all).
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".local" / "share"))
+    import importlib
+
+    from agentcage import state
+    importlib.reload(state)
+
+    from agentcage.backends.apple_container import AppleContainerBackend
+
+    backend = AppleContainerBackend()
+    unit_dir = backend.unit_dir()
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    (unit_dir / f"{name}.json").write_text(json.dumps({
+        "name": name,
+        "secrets_backend": "plaintext",
+        "secrets_allow_plaintext": True,
+    }))
+
+    sd = state.deployment_dir(name)
+    sd.mkdir(parents=True, exist_ok=True)
+    from types import SimpleNamespace
+
+    from agentcage.secret_store import resolve_store
+    store = resolve_store(SimpleNamespace(
+        isolation="apple-container",
+        secrets=SimpleNamespace(
+            backend="plaintext", allow_plaintext=True, scope="auto",
+        ),
+    ))
+    store.set(name, "API_KEY", "a-value", state_dir=sd)
+    store.set(name, "OTHER_KEY", "b-value", state_dir=sd)
+    return backend, store, sd
+
+
+def test_destroy_forgets_the_cages_secrets(tmp_path, monkeypatch):
+    """`cage destroy` promises "Scoped secrets will also be removed."
+
+    It was a false promise on this backend: `destroy_resources` took
+    `keep_secrets` and ignored it, so a destroyed cage left its values
+    in the store — in the keychain, where nothing on disk was left to
+    say they existed. Observed on a real destroy before the fix.
+    """
+    backend, store, sd = _apple_cage_with_plaintext_secrets(tmp_path, monkeypatch)
+    assert set(store.names("demo", state_dir=sd)) == {"API_KEY", "OTHER_KEY"}
+
+    monkeypatch.setattr(backend, "_launchd_plist_path", lambda _n: tmp_path / "nope")
+    removed = backend.destroy_resources("demo")
+
+    assert store.names("demo", state_dir=sd) == []
+    # Reported the way the container backend reports its podman secrets,
+    # so `cage destroy`'s output means the same thing on both.
+    assert "secret:demo.API_KEY" in removed, removed
+    assert "secret:demo.OTHER_KEY" in removed, removed
+
+
+def test_destroy_keeps_secrets_when_asked(tmp_path, monkeypatch):
+    """`--keep-secrets` has to mean it, or the flag is a lie in the other
+    direction."""
+    backend, store, sd = _apple_cage_with_plaintext_secrets(tmp_path, monkeypatch)
+    monkeypatch.setattr(backend, "_launchd_plist_path", lambda _n: tmp_path / "nope")
+
+    removed = backend.destroy_resources("demo", keep_secrets=True)
+
+    assert set(store.names("demo", state_dir=sd)) == {"API_KEY", "OTHER_KEY"}
+    assert not [r for r in removed if r.startswith("secret:")], removed
+
+
+def test_destroy_survives_an_unresolvable_store(tmp_path, monkeypatch):
+    """A store that cannot be resolved must not fail the destroy.
+
+    The alternative is a cage that cannot be removed because its secrets
+    cannot be, which is strictly worse than a leftover the operator can
+    find with `security find-generic-password`.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from agentcage.backends.apple_container import AppleContainerBackend
+
+    backend = AppleContainerBackend()
+    unit_dir = backend.unit_dir()
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    # `systemd-creds` is unavailable on macOS, so `resolve_store` refuses.
+    (unit_dir / "demo.json").write_text(json.dumps({
+        "name": "demo", "secrets_backend": "systemd-creds",
+    }))
+    monkeypatch.setattr(backend, "_launchd_plist_path", lambda _n: tmp_path / "nope")
+
+    removed = backend.destroy_resources("demo")
+    assert not [r for r in removed if r.startswith("secret:")], removed
