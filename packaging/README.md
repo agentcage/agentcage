@@ -25,10 +25,10 @@ them from a release's published checksums:
 
 ```sh
 # From the assets a release workflow just built:
-python3 scripts/gen-packaging.py --version 0.41.0 --dist ./dist
+python3 scripts/gen-packaging.py --version 0.50.0 --dist ./dist
 
 # Or straight from a published GitHub release:
-python3 scripts/gen-packaging.py --version 0.41.0 --from-release
+python3 scripts/gen-packaging.py --version 0.50.0 --from-release
 ```
 
 It writes `agentcage.rb` and `PKGBUILD` into the output directory, ready

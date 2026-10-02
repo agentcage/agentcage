@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.50.0] - 2026-10-02
+
+The version jumps from 0.40.x to 0.50.0 deliberately. 0.40.x is the Python
+CLI's line; 0.50.0 is the first number the Rust binary carries, so
+`agentcage --version` says unambiguously which implementation is answering.
+Nothing about the jump is a compatibility statement. The on-disk state format
+is unchanged, and the state-compatibility fixtures carry a 0.50.0 generation
+alongside 0.40.1 and 0.40.2 — every reader is asserted against all three, so a
+cage deployed by the Python is still readable. (The other half of that promise,
+`cage update` on a Python-deployed cage reporting no changes, is F2's remaining
+acceptance check and is not claimed here.)
+
+One consequence worth knowing: the shared egress image is tagged
+`agentcage-egress:<version>-<build-hash>`, so the version alone moves the tag.
+The next `cage update` on any cage rebuilds that image once — the build inputs
+have not changed, only its name.
 
 ### Added
 

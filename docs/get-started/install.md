@@ -55,7 +55,7 @@ beside it. Pick your target, verify it, and put the binary on your
 | macOS Intel | `agentcage-<version>-x86_64-apple-darwin.tar.gz` |
 
 ```bash
-VERSION=0.41.0
+VERSION=0.50.0
 TARGET=x86_64-unknown-linux-musl
 BASE="https://github.com/agentcage/agentcage/releases/download/v$VERSION"
 
