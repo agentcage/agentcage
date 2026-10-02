@@ -89,6 +89,7 @@ fn rotate_placeholders() -> Command {
 
 // ── the bodies ───────────────────────────────────────
 
+pub(crate) mod apple;
 pub(crate) mod live;
 pub(crate) mod rm;
 pub(crate) mod rotate;
@@ -139,16 +140,21 @@ fn open_cage(ctx: &Ctx, name: &str, hint: bool) -> Result<Config, ExitCode> {
     load_config(ctx, name)
 }
 
-/// The one backend these bodies drive.
+/// The backends whose secret store these bodies can drive.
 ///
-/// `vm` keeps its secrets inside the Lima guest and `apple-container`
-/// in the macOS keychain; both are Track E, and both would be *wrong*
-/// rather than merely unimplemented if this code drove host podman at
-/// them — `secret list` would report every key missing, and `secret rm`
-/// would report a secret that exists as absent. So they are refused by
-/// name.
-fn require_container(config: &Config, name: &str) -> Result<(), ExitCode> {
-    if config.isolation == "container" {
+/// Two of the three. `container` keeps its values in host podman's
+/// secret store, which is what the second half of every body below
+/// talks to; `apple-container` keeps them in the macOS keychain and is
+/// reached through [`agentcage_cli::secrets::resolve_store`], which is
+/// what [`apple`] is for.
+///
+/// `vm` is still refused, and refusing it **by name** is the point: its
+/// secrets live inside the Lima guest, so driving host podman at a vm
+/// cage does not fail — it answers, wrongly. `secret list` would report
+/// every key missing and `secret rm` would report a secret that exists
+/// as absent. Wrong, rather than merely unimplemented. Track E.
+fn require_store_backend(config: &Config, name: &str) -> Result<(), ExitCode> {
+    if config.isolation == "container" || apple::is_apple_container(config) {
         return Ok(());
     }
     eprintln!(
@@ -172,15 +178,24 @@ pub(crate) fn list(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 
 fn run_list(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     let config = open_cage(ctx, name, false)?;
-    require_container(&config, name)?;
-    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-    let prefix = format!("{name}.");
-    let present: Vec<String> = podman
-        .secret_list(&prefix)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|full| full[prefix.len()..].to_owned())
-        .collect();
+    require_store_backend(&config, name)?;
+    // `secret_list`'s apple branch (`cli.py:4050`). The *table* is the
+    // same one — same classifications, same `MISSING`, same exit 1 —
+    // and only where the present keys come from differs, which is the
+    // shape the Python has and the reason `render` takes a list of
+    // names rather than a podman handle.
+    let present: Vec<String> = if apple::is_apple_container(&config) {
+        apple::secret_names(ctx, &config, name)
+    } else {
+        let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+        let prefix = format!("{name}.");
+        podman
+            .secret_list(&prefix)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|full| full[prefix.len()..].to_owned())
+            .collect()
+    };
     if render(&config, &present) {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
@@ -318,9 +333,12 @@ fn render(config: &Config, present: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::{render, require_store_backend, run_list};
+    use crate::cli::context::Ctx;
     use agentcage_core::config::Config;
     use agentcage_core::config::types::SecretInjectionRule;
+    use agentcage_exec::FakeRunner;
+    use agentcage_state::{Paths, TestDir};
 
     fn rule(env: &str, placeholder: &str) -> SecretInjectionRule {
         SecretInjectionRule {
@@ -351,5 +369,98 @@ mod tests {
         // orphan list.
         assert!(!render(&config, &["WATCH_KEY".to_owned()]));
         assert!(render(&config, &[]));
+    }
+
+    /// Two backends in, one still out — and the one still out is the
+    /// one whose secrets this code cannot see.
+    #[test]
+    fn vm_is_still_refused_and_the_other_two_are_not() {
+        for isolation in ["container", "apple-container"] {
+            let config = Config {
+                isolation: isolation.to_owned(),
+                ..Config::default()
+            };
+            assert!(
+                require_store_backend(&config, "acme").is_ok(),
+                "{isolation} must be accepted"
+            );
+        }
+        // `vm` keeps its secrets inside the Lima guest. Host podman
+        // would answer every question about them wrongly rather than
+        // failing, which is why it is named rather than fallen through
+        // to. Track E, and out of scope for the apple port.
+        for isolation in ["vm", "gvisor"] {
+            let config = Config {
+                isolation: isolation.to_owned(),
+                ..Config::default()
+            };
+            assert!(
+                require_store_backend(&config, "acme").is_err(),
+                "{isolation} must be refused"
+            );
+        }
+    }
+
+    /// A cage on disk, with the `isolation` and `secrets.backend` the
+    /// caller names.
+    ///
+    /// `backend: plaintext` keeps the apple case away from
+    /// `security(1)`: on `auto` an apple cage resolves the keychain
+    /// store, whose writability probe writes to the operator's real
+    /// login keychain. The `call_count` assertions below prove it
+    /// stayed away.
+    fn write_cage(paths: &Paths, name: &str, isolation: &str) {
+        let dir = paths.deployment_dir(name);
+        std::fs::create_dir_all(&dir).expect("state dir");
+        std::fs::write(
+            dir.join("cage.yaml"),
+            format!(
+                "name: {name}\n\
+                 isolation: {isolation}\n\
+                 container:\n  image: \"docker.io/library/alpine:3\"\n\
+                 secrets:\n  backend: plaintext\n\
+                 secret_injection:\n  - env: API_KEY\n    placeholder: \"{{{{API_KEY}}}}\"\n"
+            ),
+        )
+        .expect("cage.yaml");
+        std::fs::write(
+            dir.join("metadata.json"),
+            format!("{{\"agentcage_version\": \"{}\"}}", agentcage_core::VERSION),
+        )
+        .expect("metadata.json");
+    }
+
+    /// `secret list` on an apple cage reads the cage's own store, and
+    /// asks host podman nothing.
+    ///
+    /// The exit code carries the answer — `MISSING` is what makes the
+    /// command exit 1 — and `call_count() == 0` is the mechanical half:
+    /// a `podman secret ls` here would succeed, list nothing, and
+    /// report a stored secret as missing. That wrong answer is the
+    /// whole reason this backend was refused before.
+    #[test]
+    fn list_on_an_apple_cage_asks_the_store_and_not_podman() {
+        let dir = TestDir::new("secret-list-apple");
+        let fake = FakeRunner::new();
+        let ctx = Ctx {
+            paths: Paths::under(dir.path()),
+            runner: Box::new(fake.clone()),
+            version: agentcage_core::VERSION.to_owned(),
+        };
+        write_cage(&ctx.paths, "acme", "apple-container");
+
+        // Nothing stored yet: the declared rule is MISSING, exit 1.
+        assert!(run_list(&ctx, "acme").is_err());
+
+        std::fs::write(
+            ctx.paths
+                .deployment_dir("acme")
+                .join("pending_secrets.json"),
+            r#"[["API_KEY", "v1"]]"#,
+        )
+        .expect("the store's file");
+        assert!(run_list(&ctx, "acme").is_ok());
+
+        assert_eq!(fake.call_count(), 0, "{:?}", fake.argv_sequence());
     }
 }

@@ -11,7 +11,7 @@ use agentcage_core::yaml::Value;
 use clap::ArgMatches;
 
 use crate::cli::context::{Ctx, EXIT_FAILURE};
-use crate::cli::secret::{check_cage, load_config, require_container};
+use crate::cli::secret::{apple, check_cage, load_config, require_store_backend};
 
 /// The body.
 pub(crate) fn main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
@@ -118,7 +118,22 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     }
 
     let config = load_config(ctx, &name)?;
-    require_container(&config, &name)?;
+    require_store_backend(&config, &name)?;
+    if apple::is_apple_container(&config) {
+        // `secret_rotate_placeholders`'s apple branch (`cli.py:4409`).
+        // The rotation above has already landed in the stored
+        // `cage.yaml`; what reaches the *cage* is the unit metadata
+        // snapshot, which `_restart_cage` regenerates from that file on
+        // this backend — so the restart is both the apply and the
+        // reconcile, and there is nothing else to do.
+        //
+        // Note what is not printed: the container path's "Cage is not
+        // running — the new placeholders apply on next start." has no
+        // counterpart here, because the helper is silent when the cage
+        // is down. The Python's shape, kept.
+        apple::restart_if_running(ctx, &config);
+        return Ok(());
+    }
     if ctx.backend().is_running(&config.name, "cage") {
         println!(
             "Restarting cage '{}' to apply — the old placeholder(s) stop \

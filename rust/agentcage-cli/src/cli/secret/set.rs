@@ -30,7 +30,7 @@ use agentcage_exec::tools::podman::Podman;
 use clap::ArgMatches;
 
 use crate::cli::context::{Ctx, EXIT_FAILURE};
-use crate::cli::secret::{check_cage, load_config, require_container};
+use crate::cli::secret::{apple, check_cage, load_config, require_store_backend};
 use agentcage_cli::secrets::{
     Environment, Platform, SecretHost, plaintext_store_for, resolve_store,
 };
@@ -44,7 +44,10 @@ use agentcage_cli::secrets::{
 /// are memoized per host, not per key.
 pub(crate) struct SecretWriter<'a> {
     host: SecretHost<'a>,
-    podman: Podman<'a>,
+    /// [`None`] on `isolation: apple-container`, which has no host
+    /// podman secret store — `_store_secret(None, cfg, …)` is how both
+    /// of the Python's apple call sites spell it.
+    podman: Option<Podman<'a>>,
     config: &'a Config,
     name: &'a str,
     state_dir: PathBuf,
@@ -52,6 +55,15 @@ pub(crate) struct SecretWriter<'a> {
 
 impl<'a> SecretWriter<'a> {
     /// A writer for one cage.
+    ///
+    /// The cage's `isolation:` decides the two arguments the Python
+    /// varies between its call sites, so neither is a parameter here:
+    /// an apple cage gets no podman handle and no `source:` scheme
+    /// (`cli.py:1251` and `cli.py:4152` both call
+    /// `_store_secret(None, cfg, …)` with the scheme defaulted),
+    /// everything else gets both. Deriving it rather than passing it
+    /// is what keeps `secret set` and `cage create -s` from disagreeing
+    /// about which store an apple cage's value goes to.
     pub(crate) fn new(
         runner: &'a dyn CommandRunner,
         env: &'a dyn Environment,
@@ -61,7 +73,7 @@ impl<'a> SecretWriter<'a> {
     ) -> Self {
         Self {
             host: SecretHost::detect(runner, env),
-            podman: Podman::new(runner),
+            podman: (!apple::is_apple_container(config)).then(|| Podman::new(runner)),
             config,
             name,
             state_dir,
@@ -74,12 +86,34 @@ impl<'a> SecretWriter<'a> {
     /// `source: systemd-creds:` gets the creds store *by name*, which —
     /// as PR D3 pinned — skips the availability probe that selecting
     /// the same store automatically would have run.
+    ///
+    /// Always empty on apple-container, and that is the load-bearing
+    /// half of this method rather than an optimization. The scheme is
+    /// decorative on that backend — what stands in for both a systemd
+    /// credential and a podman `Secret=` env is the staged file the
+    /// egress addon reads — so honouring `systemd-creds:` here would
+    /// select a store whose binary does not exist on a Mac, and break
+    /// `secret set` for exactly the cages that asked for the more
+    /// careful spelling. `AppleBackend::stage_secrets` resolves the
+    /// store with no scheme for the same reason; a `set` that wrote
+    /// somewhere `stage_secrets` does not read would store a value the
+    /// cage never sees.
     fn source_scheme(&self, key: &str) -> &str {
+        if self.podman.is_none() {
+            return "";
+        }
         self.config
             .secret_injection
             .iter()
             .find(|rule| rule.env == key)
             .map_or("", |rule| rule.source.split(':').next().unwrap_or_default())
+    }
+
+    /// The podman store as `resolve_store` wants it.
+    fn podman_secrets(&self) -> Option<&dyn agentcage_cli::secrets::PodmanSecrets> {
+        self.podman
+            .as_ref()
+            .map(|podman| podman as &dyn agentcage_cli::secrets::PodmanSecrets)
     }
 
     /// Store `value` for `key`, printing what `cli._store_secret`
@@ -95,7 +129,7 @@ impl<'a> SecretWriter<'a> {
         let store = resolve_store(
             self.config,
             &self.host,
-            Some(&self.podman),
+            self.podman_secrets(),
             self.source_scheme(key),
             Platform::host(),
         )
@@ -125,7 +159,7 @@ impl<'a> SecretWriter<'a> {
                     store.name(),
                     error.message()
                 );
-                store = plaintext_store_for(self.config, Some(&self.podman));
+                store = plaintext_store_for(self.config, self.podman_secrets());
                 if let Err(error) = store.set(self.name, key, value, &self.state_dir) {
                     eprintln!("error: failed to store secret '{key}': {}", error.message());
                     return Err(ExitCode::from(EXIT_FAILURE));
@@ -184,7 +218,7 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         declare_injection_rule(ctx, &name, &key, &placeholder_opt, &inject_to)?;
     }
     let config = load_config(ctx, &name)?;
-    require_container(&config, &name)?;
+    require_store_backend(&config, &name)?;
 
     let value = read_value(&key)?;
     if value.is_empty() {
@@ -201,6 +235,31 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ctx.paths.deployment_dir(&name),
     );
     writer.set(&key, &value)?;
+
+    if apple::is_apple_container(&config) {
+        // `secret_set`'s apple branch returns here (`cli.py:4149`), and
+        // what it skips is as deliberate as what it does.
+        //
+        // No live apply: there is nowhere to stage to. The egress reads
+        // the staged directory once at `start()` and the backend wipes
+        // it immediately after, so a write into it on a running cage
+        // would reach nothing — and asking
+        // `cage_has_live_secret_channel` would mean asking host podman
+        // about a microVM it has never heard of, which answers rather
+        // than failing. Cycling the cage is the apply here.
+        //
+        // No orphan note either, which is the one asymmetry worth
+        // naming: the "stored but never injected" hint below is
+        // unreachable on this backend, because the Python's branch
+        // returns before reaching it. Reproduced rather than evened
+        // out. The hint would be just as true here — an undeclared key
+        // is staged and never injected on this backend too — but
+        // printing it is a behaviour change dressed as a port, and the
+        // place to argue for it is the Python, which is still what the
+        // golden output is compared against.
+        apple::restart_if_running(ctx, &config);
+        return Ok(());
+    }
 
     if !declare
         && !config.secret_injection.iter().any(|rule| rule.env == key)
@@ -378,8 +437,76 @@ fn rules_for_append(raw: &mut Value) -> Option<&mut Vec<Value>> {
 
 #[cfg(test)]
 mod tests {
-    use super::rules_for_append;
+    use super::{SecretWriter, rules_for_append};
+    use agentcage_core::config::Config;
+    use agentcage_core::config::types::SecretInjectionRule;
     use agentcage_core::yaml;
+    use agentcage_exec::FakeRunner;
+    use agentcage_state::TestDir;
+
+    /// An apple cage's value goes to the apple store, whatever the
+    /// rule's `source:` says.
+    ///
+    /// The rule here asks for `systemd-creds:`, which on the container
+    /// path selects that store *by name* and skips its availability
+    /// probe. Honouring it on apple-container would pick a backend
+    /// whose binary does not exist on a Mac — and, worse, write
+    /// somewhere `AppleBackend::stage_secrets` does not read, since
+    /// that resolves the store with no scheme and would never find the
+    /// value again. So the value has to land in the plaintext store's
+    /// file and no subprocess may be run to put it there: a
+    /// `systemd-creds encrypt` or a `security add-generic-password`
+    /// would both show up as a call here.
+    #[test]
+    fn an_apple_cage_ignores_a_rules_source_scheme() {
+        let dir = TestDir::new("secret-set-apple-scheme");
+        let fake = FakeRunner::new();
+        let env = agentcage_cli::secrets::SystemEnv;
+        let mut config = Config {
+            name: "acme".to_owned(),
+            isolation: "apple-container".to_owned(),
+            ..Config::default()
+        };
+        config.secrets.backend = "plaintext".to_owned();
+        config.secret_injection.push(SecretInjectionRule {
+            env: "API_KEY".to_owned(),
+            source: "systemd-creds:API_KEY".to_owned(),
+            ..SecretInjectionRule::default()
+        });
+
+        let writer = SecretWriter::new(&fake, &env, &config, "acme", dir.path().to_path_buf());
+        assert_eq!(writer.source_scheme("API_KEY"), "");
+        writer
+            .set("API_KEY", "a-value")
+            .expect("the apple store takes it");
+
+        let stored = std::fs::read_to_string(dir.join("pending_secrets.json")).expect("the file");
+        assert!(stored.contains("API_KEY"), "{stored}");
+        assert_eq!(fake.call_count(), 0, "{:?}", fake.argv_sequence());
+    }
+
+    /// The same rule on a container cage still gets the scheme, which
+    /// is the behaviour the apple branch above must not have taken
+    /// away.
+    #[test]
+    fn a_container_cage_still_honours_a_rules_source_scheme() {
+        let dir = TestDir::new("secret-set-container-scheme");
+        let fake = FakeRunner::new();
+        let env = agentcage_cli::secrets::SystemEnv;
+        let mut config = Config {
+            name: "acme".to_owned(),
+            isolation: "container".to_owned(),
+            ..Config::default()
+        };
+        config.secret_injection.push(SecretInjectionRule {
+            env: "API_KEY".to_owned(),
+            source: "systemd-creds:API_KEY".to_owned(),
+            ..SecretInjectionRule::default()
+        });
+
+        let writer = SecretWriter::new(&fake, &env, &config, "acme", dir.path().to_path_buf());
+        assert_eq!(writer.source_scheme("API_KEY"), "systemd-creds");
+    }
 
     fn document(text: &str) -> yaml::Value {
         yaml::load(text).expect("valid YAML")

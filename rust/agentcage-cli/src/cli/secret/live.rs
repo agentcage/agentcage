@@ -110,6 +110,10 @@ fn stage(
 /// as `EnvironmentFile=` and podman re-reads at container creation —
 /// so a placeholder change applies on a plain restart, with no quadlet
 /// regeneration.
+///
+/// On apple-container neither of those two files drives anything; that
+/// backend's derived artifact is the unit metadata, and
+/// [`reinstall_apple_units`] is the step that regenerates it.
 pub(crate) fn restart(ctx: &Ctx, cage: &str) {
     if let Err(error) = ctx.paths.save_proxy_config(cage, &ctx.version) {
         eprintln!("warning: {error}");
@@ -120,7 +124,76 @@ pub(crate) fn restart(ctx: &Ctx, cage: &str) {
     {
         eprintln!("warning: {error}");
     }
-    services::restart_cage(&ctx.backend_of(cage), cage);
+    // `backend_of` loads the config and throws it away; the apple step
+    // below needs it, so it is loaded once here and the backend built
+    // from it. A config that will not load still falls back to the
+    // container backend, which is `get_backend`'s own default and what
+    // keeps `cage destroy` working on an unparseable `cage.yaml`.
+    let config = ctx
+        .paths
+        .load_deployment_config(cage, &agentcage_cli::hostenv::RealHost)
+        .ok();
+    let backend = ctx.backend_for(
+        config
+            .as_ref()
+            .map_or("container", |config| config.isolation.as_str()),
+    );
+    if let (Some(config), Some(_)) = (config.as_ref(), backend.as_apple()) {
+        reinstall_apple_units(&backend, config, cage);
+    }
+    services::restart_cage(&backend, cage);
+}
+
+/// `cli._reinstall_apple_units` — regenerate the apple-container unit
+/// metadata from the stored `cage.yaml`, before the cage comes back up.
+///
+/// That metadata (`~/.config/agentcage/apple-container/<name>.json`) is
+/// the argv recipe `AppleBackend::start` reads, and it is a *derived*
+/// artifact only create/update/import ever wrote — the restart path
+/// never regenerated it. Doing it here gives apple-container the same
+/// "edits made while stopped take effect on next start" reconcile the
+/// container path gets from `save_proxy_config` / `save_dns_allowlist`,
+/// and self-heals a missing metadata file (registry and image intact)
+/// instead of hard-failing in `start()`, which used to point the
+/// operator at `cage create` — a command that refuses on an existing
+/// cage.
+///
+/// It is what makes `secret set --declare` work on this backend at
+/// all. A declared rule's name and placeholder reach `stage_secrets`
+/// and the cage's `-e NAME={{NAME}}` *only* through this snapshot
+/// (`apple::units` builds `secret_envs` and
+/// `secret_env_placeholders` from `config.secret_injection`), so
+/// without the regeneration the rule would sit in `cage.yaml` and
+/// nowhere else. Same for a rotated placeholder.
+///
+/// `config_host_path` and `patches_host_dir` are the quadlet path's
+/// arguments and this backend ignores them — it bakes absolute paths
+/// at create time — so they are passed empty, as the Python passes
+/// `""`. The octet arguments are the container backend's shared
+/// `10.89.x` pool, which Apple's per-cage auto-allocated subnets have
+/// no equivalent of.
+///
+/// A failure is a warning, not a refusal: `restart` has no error
+/// channel and its two file writes above already report this way. The
+/// Python lets the exception propagate into a traceback.
+fn reinstall_apple_units(
+    backend: &agentcage_cli::backends::AnyBackend<'_>,
+    config: &Config,
+    cage: &str,
+) {
+    match backend.generate_units(config, "", "", cage, None, None) {
+        Ok(units) => {
+            for warning in &units.warnings {
+                eprint!("{warning}");
+            }
+            if let Err(error) = backend.install_units(&units, true) {
+                eprintln!("warning: apple-container unit metadata not reinstalled: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("warning: apple-container unit metadata not regenerated: {error}");
+        }
+    }
 }
 
 /// `cli._refresh_units` — converge the quadlets with stored state, with

@@ -129,7 +129,7 @@ const UNAVAILABLE_BACKEND: &str = if cfg!(target_os = "macos") {
 #[test]
 fn secret_set_refusing_a_store_prints_and_writes_nothing_of_the_value() {
     let home = temp_dir("set-refusal");
-    write_cage(&home, "canary", UNAVAILABLE_BACKEND);
+    write_cage(&home, "canary", "container", UNAVAILABLE_BACKEND);
 
     let out = secret_set(&home, "canary", "API_KEY", CANARY);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -176,7 +176,7 @@ fn secret_set_on_a_missing_cage_does_not_echo_stdin() {
 #[test]
 fn secret_list_prints_placeholders_and_never_values() {
     let home = temp_dir("list");
-    write_cage(&home, "canary", "plaintext");
+    write_cage(&home, "canary", "container", "plaintext");
     // Put the canary where a careless implementation might find it: in
     // the cage's own state directory, as the plaintext store's file.
     let creds = home
@@ -194,6 +194,78 @@ fn secret_list_prints_placeholders_and_never_values() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+// ── 3. the apple-container half ─────────────────────────────────────
+
+/// `secret list` on an apple cage *opens* the store, and still prints
+/// no value.
+///
+/// The same claim as the container case above, but no longer vacuous.
+/// There, `pending_secrets.json` is a file the command never reads —
+/// host podman holds a container cage's secrets — so "the canary did
+/// not print" was true by construction. Here that file **is** the
+/// store: the command loads it, pulls the key out of it, and has the
+/// value in memory while rendering the row. `ok` rather than `MISSING`
+/// in the output is the proof it really was read.
+#[test]
+fn secret_list_on_an_apple_cage_reads_the_store_and_prints_no_value() {
+    let home = temp_dir("list-apple");
+    // `plaintext`, so resolving the store never reaches
+    // `KeychainStore`, whose writability probe writes to the
+    // operator's real login keychain. See `UNAVAILABLE_BACKEND`.
+    write_cage(&home, "canary", "apple-container", "plaintext");
+    let store = home
+        .join(".config/agentcage/cages/canary")
+        .join("pending_secrets.json");
+    std::fs::write(&store, format!("[[\"API_KEY\", \"{CANARY}\"]]")).expect("write");
+
+    let out = agentcage(&home, &["secret", "list", "canary"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    // Present, so nothing is missing and the command succeeds.
+    assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
+    assert!(stdout.contains("API_KEY"), "{stdout}{stderr}");
+    assert!(stdout.contains("ok"), "{stdout}");
+    no_canary("stdout", &stdout);
+    no_canary("stderr", &stderr);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The refusal path on the apple backend, end to end.
+///
+/// Same claim as the container case: the value is read from stdin,
+/// carried through `resolve_store`, refused, and must appear in
+/// nothing printed and nothing written. It is repeated for this
+/// backend because the store it would have been offered to is a
+/// different one and the formatting on the way there is a different
+/// code path — and because the apple branch continues past the store
+/// into a restart, so a leak would have one more place to happen.
+#[test]
+fn secret_set_on_an_apple_cage_refusing_a_store_leaks_nothing() {
+    let home = temp_dir("set-refusal-apple");
+    write_cage(&home, "canary", "apple-container", UNAVAILABLE_BACKEND);
+
+    let out = secret_set(&home, "canary", "API_KEY", CANARY);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    // The refusal, not the Track E one: this backend is ported now.
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("refusing to store secret 'API_KEY'"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("not ported yet"), "{stderr}");
+    assert!(!stderr.contains("panicked at"), "{stderr}");
+
+    no_canary("stdout", &stdout);
+    no_canary("stderr", &stderr);
+    for (path, text) in read_tree(&home) {
+        no_canary(&format!("the file {}", path.display()), &text);
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 // ── plumbing ────────────────────────────────────────────────────────
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -206,9 +278,9 @@ fn temp_dir(label: &str) -> PathBuf {
     path
 }
 
-/// A minimal container cage in a sandboxed home, with `backend` chosen
-/// by the caller.
-fn write_cage(home: &Path, name: &str, backend: &str) {
+/// A minimal cage in a sandboxed home, with `isolation` and `backend`
+/// chosen by the caller.
+fn write_cage(home: &Path, name: &str, isolation: &str, backend: &str) {
     let dir = home.join(".config/agentcage/cages").join(name);
     std::fs::create_dir_all(&dir).expect("state dir");
     std::fs::write(
@@ -218,12 +290,11 @@ fn write_cage(home: &Path, name: &str, backend: &str) {
             // config loader asks the *host* which backend to default
             // to, so this cage would be a `container` one on Linux CI
             // and an `apple-container` one on an Apple Silicon Mac
-            // with Apple's CLI installed — where the `secret` group
-            // refuses outright and every assertion below is about a
-            // refusal instead of about redaction. What is under test
-            // is the container backend's secret output; say so.
+            // with Apple's CLI installed. Which backend a case is
+            // about decides which store the value is offered to and
+            // what the command does afterwards, so every case says.
             "name: {name}\n\
-             isolation: container\n\
+             isolation: {isolation}\n\
              container:\n  \
                image: \"docker.io/library/alpine:3\"\n  \
                command: [\"true\"]\n\
