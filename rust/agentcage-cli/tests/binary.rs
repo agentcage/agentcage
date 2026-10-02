@@ -634,6 +634,115 @@ fn an_apple_cage_is_read_through_its_own_backend() {
     }
 }
 
+/// An `apple-container` cage is backed up and restored through the
+/// apple *shape*, by the shipped binary, with no runtime installed and
+/// no subprocess run.
+///
+/// Unlike the two readers above this needs nothing on the host, which
+/// is why it is not skipped: `cage backup` on this backend reads files
+/// and writes a tarball, and `cage restore --no-start` stops before the
+/// first image build. So the whole decision — which members travel,
+/// which manifest keys are written, and which of the two capture
+/// layouts the logs come back into — is checkable as a process.
+///
+/// What it pins that `src/cli/cage/backup.rs`'s unit tests cannot: that
+/// the `audit/` member and the apple logs dir survive a real argv, a
+/// real `HOME`, and the `~`-rooted apple state root that ignores
+/// `XDG_CONFIG_HOME` entirely.
+#[test]
+fn an_apple_cage_is_backed_up_and_restored_in_its_own_shape() {
+    let dir = agentcage_state::TestDir::new("binary-apple-backup");
+    stage_cage(dir.path(), "cage-apple", "apple-container");
+
+    let paths = agentcage_state::Paths::under(dir.path());
+    let logs = paths.apple_logs_dir("cage-apple");
+    std::fs::create_dir_all(&logs).expect("the apple logs dir is writable");
+    std::fs::write(logs.join("capture.jsonl"), "{\"id\": 1}\n").expect("capture is writable");
+    std::fs::write(logs.join("audit.jsonl"), "{\"event\": \"allow\"}\n")
+        .expect("audit is writable");
+
+    // ── Backup ──
+    let tarball = dir.join("apple.tar.gz");
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "cage",
+            "backup",
+            "cage-apple",
+            "-o",
+            &tarball.display().to_string(),
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let names = agentcage_cli::archive::member_names(&tarball).expect("a readable tarball");
+    for member in [
+        "agentcage-backup/audit/audit.jsonl",
+        "agentcage-backup/capture/capture.jsonl",
+        "agentcage-backup/config/cage.yaml",
+        "agentcage-backup/manifest.json",
+    ] {
+        assert!(names.iter().any(|name| name == member), "{names:?}");
+    }
+    // No `volumes/` and no `secrets/`: neither exists on this backend.
+    assert!(
+        !names
+            .iter()
+            .any(|name| name.contains("volumes") || name.contains("secrets")),
+        "{names:?}"
+    );
+    assert!(stdout(&out).contains("Volumes: 0 (not supported on apple-container)"));
+
+    // ── `--include-secrets` is a refusal, not a quiet omission ──
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "cage",
+            "backup",
+            "cage-apple",
+            "--include-secrets",
+            "-o",
+            &dir.join("never.tar.gz").display().to_string(),
+        ],
+    );
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--include-secrets is not supported on apple-container"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!dir.join("never.tar.gz").exists());
+
+    // ── Restore, as a clone ──
+    let out = agentcage_sandboxed(
+        dir.path(),
+        &[
+            "cage",
+            "restore",
+            &tarball.display().to_string(),
+            "--name",
+            "cage-clone",
+            "--no-start",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let complaint = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !complaint.contains("not ported yet"),
+        "apple-container restore still refuses: {complaint}"
+    );
+    // The logs came back into the apple layout, not the container one.
+    let restored = paths.apple_logs_dir("cage-clone");
+    assert_eq!(
+        std::fs::read_to_string(restored.join("capture.jsonl")).expect("capture restored"),
+        "{\"id\": 1}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(restored.join("audit.jsonl")).expect("audit restored"),
+        "{\"event\": \"allow\"}\n"
+    );
+    assert!(!paths.capture_file("cage-clone").exists());
+}
+
 /// A `vm` cage's logs and audit go to its guest, not to the host.
 ///
 /// There is no guest here, so `cage logs` ends in `limactl`'s own

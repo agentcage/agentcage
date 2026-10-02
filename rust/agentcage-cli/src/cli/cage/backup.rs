@@ -45,15 +45,33 @@
 //!    import into a volume a running container holds.
 //! 6. **Capture**, last, because `build_and_deploy` does not touch it.
 //!
+//! # apple-container
+//!
+//! A second archive *shape*, not a second archive format: same
+//! `agentcage-backup/` root, same `manifest.json`, one more member.
+//! The three differences are all the backend's rather than this
+//! command's, and they are enumerated on [`backup_apple`] —
+//! `--include-secrets` is refused outright, `named_volumes` is always
+//! empty, and `capture.jsonl`/`audit.jsonl` both come out of the
+//! per-cage logs dir the egress microVM bind-mounts.
+//!
+//! [`backup_apple`] and [`restore_apple`] are
+//! `_cage_backup_apple_container` (`cli.py:3400`) and
+//! `_cage_restore_apple_container` (`cli.py:3505`). Everything the two
+//! shapes genuinely share — staging the config, the build-context
+//! preflight, reinstalling the build context, rewriting `name:` for a
+//! clone — is the same code here, where the Python duplicates it. That
+//! matters most for the step-0 ordering above: it is one place rather
+//! than two.
+//!
 //! # What is not here
 //!
-//! The `vm` and `apple-container` branches. `_podman_for_cage` routes a
-//! running vm cage's secret and volume calls through `VmPodman` inside
-//! the Lima guest, and `_cage_backup_apple_container` is a different
-//! archive shape entirely (no secret values, an `audit/` member,
-//! `named_volumes` always empty). Both are Track E, and both are
-//! refused here with the same message every other ported command uses
-//! rather than being half-served by the container path.
+//! The `vm` branch. `_podman_for_cage` routes a running vm cage's
+//! secret and volume calls through `VmPodman` *inside the Lima guest*,
+//! which is a different store from the host podman every line below
+//! talks to. It is refused here with the same message every other
+//! not-yet-ported command uses rather than being half-served by the
+//! container path.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -65,11 +83,20 @@ use clap::ArgMatches;
 
 use crate::cli::context::{Ctx, EXIT_FAILURE, ensure_v022_cage};
 use agentcage_cli::archive::{self, Member};
+use agentcage_cli::backend::BackendError;
 use agentcage_cli::scaffold::TempDir;
 use agentcage_cli::services;
 
 /// The top-level directory every member lives under.
 const ROOT: &str = "agentcage-backup";
+
+/// `isolation:` for the apple-container backend, spelled once.
+///
+/// Both halves of this command compare against it, and the restore
+/// half compares a string that came out of a *file* — a manifest's
+/// `isolation` — so the comparison has to be the same one the backup
+/// half writes.
+const APPLE_CONTAINER: &str = "apple-container";
 
 /// The one format version this agentcage writes and the highest it
 /// reads. `cli.py:3491` refuses anything greater and accepts anything
@@ -171,6 +198,18 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
             eprintln!("error: {error}");
             ExitCode::from(EXIT_FAILURE)
         })?;
+    // `_is_apple_container(cfg)` — `cli.py:3652`, which is a one-line
+    // read of `cfg.isolation` (`cli.py:68`) and not a backend probe.
+    // Dispatched on the string here for the same reason: the apple
+    // branch needs no backend handle at all. The only thing the Python
+    // constructs an `AppleContainerBackend` for in `_cage_backup_
+    // apple_container` is `logs_dir(name)`, which in the port is a
+    // pure [`Paths`] accessor. `domain.rs` and `cage/logs.rs` branch
+    // the same way and reach for `as_apple()` only where there is
+    // actually a backend call to make — which, for backup, there is not.
+    if config.isolation == APPLE_CONTAINER {
+        return backup_apple(ctx, &name, &config, matches);
+    }
     require_container_backend(&config, "cage backup")?;
 
     let output = matches.get_one::<String>("output").map_or_else(
@@ -347,6 +386,184 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     println!("  Volumes: {}", volume_names.len());
     println!("  Capture: {}", if has_capture { "yes" } else { "no" });
     Ok(())
+}
+
+/// `cage backup` on the apple-container backend —
+/// `_cage_backup_apple_container`, `cli.py:3400`.
+///
+/// Three things differ from the container path, and all three are
+/// facts about the backend rather than choices this command makes.
+/// The docstring at `cli.py:3403` enumerates them and this is that
+/// list:
+///
+/// * **No host secret store.** This backend's secrets are env-passed
+///   at start out of the invoking shell's environment, so after start
+///   there is nothing on the host to read a value back out of — the
+///   values were never agentcage's to keep. `--include-secrets` is
+///   therefore a *refusal* and not a silent no-op: writing a tarball
+///   with no secrets in it in response to a flag that asks for them is
+///   how a restore ends up quietly credential-less. What travels is
+///   the env *names*, so the restore host knows what to export.
+/// * **No named volumes.** apple-container has no podman volume
+///   equivalent; `container.named_volumes` is one of the knobs this
+///   backend silently drops, so the manifest's `named_volumes` is
+///   always `[]` and no `volumes/` member is emitted at all. (The
+///   container path emits an *empty* `volumes/` directory whenever the
+///   cage declares any, which is why the pinned fixture has one.)
+/// * **Two log members.** `capture.jsonl` *and* `audit.jsonl` both sit
+///   in the per-cage logs dir that the egress microVM bind-mounts
+///   ([`Paths::apple_logs_dir`]). On a container cage the capture is
+///   under `$XDG_DATA_HOME` and the audit stream is the journal, with
+///   no file to carry — hence the extra `audit/` member here, and the
+///   extra `has_audit` manifest key that goes with it.
+///
+/// [`Paths::apple_logs_dir`]: agentcage_state::Paths::apple_logs_dir
+fn backup_apple(
+    ctx: &Ctx,
+    name: &str,
+    config: &Config,
+    matches: &ArgMatches,
+) -> Result<(), ExitCode> {
+    if matches.get_flag("include_secrets") {
+        eprintln!(
+            "error: --include-secrets is not supported on apple-container \
+             (secrets are env-passed at start from the host environment, \
+             not stored in a secret store; the backup manifest records the \
+             expected env names so you can re-set them on the restore host)"
+        );
+        return Err(ExitCode::from(EXIT_FAILURE));
+    }
+
+    let output = matches.get_one::<String>("output").map_or_else(
+        || PathBuf::from(format!("{name}-backup-{}.tar.gz", file_timestamp())),
+        PathBuf::from,
+    );
+
+    // ── Config ──────────────────────────────────────────
+    //
+    // Shared with the container path, exclusions and build context and
+    // all: a cage's state dir is the state dir whatever runs it.
+    let state_dir = ctx.paths.deployment_dir(name);
+    let mut members = stage_backup_config(&state_dir);
+    let has_build_context = build_context_included(&state_dir, &members);
+
+    // ── Secret env names, no values ─────────────────────
+    //
+    // `cfg.secret_injection` alone, *not* `expected_secrets`. The
+    // container path records the wider list — injection rules plus
+    // podman secrets, relay credentials and the agents' shared
+    // `api_key` — because those are things its store can hold. Here
+    // the manifest is a note to the operator about what to `export`,
+    // and only an injection rule names an env var to export. The
+    // difference is observable in `secret_keys`, so it is reproduced
+    // rather than unified with the call above.
+    let secret_envs: Vec<&str> = config
+        .secret_injection
+        .iter()
+        .map(|rule| rule.env.as_str())
+        .collect();
+    if !secret_envs.is_empty() {
+        println!(
+            "Secrets not included (apple-container env-pass model). \
+             After restore, re-set these on the host environment: {}",
+            secret_envs.join(", ")
+        );
+    }
+
+    // ── Capture and audit ───────────────────────────────
+    let logs_dir = ctx.paths.apple_logs_dir(name);
+    let has_capture = carry_apple_log(&logs_dir, "capture", &mut members);
+    let has_audit = carry_apple_log(&logs_dir, "audit", &mut members);
+
+    // ── Manifest ────────────────────────────────────────
+    //
+    // Key order is the Python `dict` literal's at `cli.py:3476`, which
+    // is *not* the container manifest's: `has_audit` is wedged in after
+    // `has_capture`. A human diffing two backups sees this order, so it
+    // is kept rather than normalized against the other branch.
+    let manifest = Json::Object(vec![
+        ("format_version".to_owned(), Json::Int(FORMAT_VERSION)),
+        (
+            "agentcage_version".to_owned(),
+            Json::string(ctx.version.clone()),
+        ),
+        ("cage_name".to_owned(), Json::string(name)),
+        ("isolation".to_owned(), Json::string(APPLE_CONTAINER)),
+        (
+            "timestamp".to_owned(),
+            Json::string(DateTime::now_utc().isoformat()),
+        ),
+        (
+            "has_secrets".to_owned(),
+            Json::Bool(!secret_envs.is_empty()),
+        ),
+        ("has_capture".to_owned(), Json::Bool(has_capture)),
+        ("has_audit".to_owned(), Json::Bool(has_audit)),
+        // Not supported on apple-container, and so not a `Vec` that
+        // something upstream might have filled: the empty literal is
+        // the statement.
+        ("named_volumes".to_owned(), Json::Array(Vec::new())),
+        (
+            "secret_keys".to_owned(),
+            Json::Array(secret_envs.iter().map(|env| Json::string(*env)).collect()),
+        ),
+        // Never true on this backend — there is no store to read from,
+        // which is what the refusal above is about. `cage restore`
+        // reads this key to decide whether to look for a `secrets/`
+        // member, so a `false` here is what keeps it from reporting a
+        // missing one.
+        ("secrets_included".to_owned(), Json::Bool(false)),
+        (
+            "build_context_included".to_owned(),
+            Json::Bool(has_build_context),
+        ),
+    ]);
+    members.push(Member::File(
+        format!("{ROOT}/manifest.json"),
+        format!("{}\n", dumps(&manifest, DumpOptions::indented())).into_bytes(),
+    ));
+
+    archive::write_targz(&output, &members).map_err(|error| {
+        eprintln!("error: could not write {}: {error}", output.display());
+        ExitCode::from(EXIT_FAILURE)
+    })?;
+
+    println!("Backup saved to {}", output.display());
+    println!(
+        "  Secrets: {} env names (values not stored — re-set on restore host)",
+        secret_envs.len()
+    );
+    println!("  Volumes: 0 (not supported on apple-container)");
+    println!("  Capture: {}", if has_capture { "yes" } else { "no" });
+    // Two spaces of padding, as `cli.py:3502` writes it, so the four
+    // summary values line up in a terminal.
+    println!("  Audit:   {}", if has_audit { "yes" } else { "no" });
+    Ok(())
+}
+
+/// Add `<logs_dir>/<sub>.jsonl` to the archive as `<sub>/<sub>.jsonl`,
+/// and say whether it was there to add.
+///
+/// Zero length counts as absent, which is the `st_size > 0` at
+/// `cli.py:3460`. It is not pedantry: `start` creates the logs dir and
+/// the egress microVM's supervisor opens both files before it has
+/// written a line, so an empty one is "no stream yet" rather than "a
+/// stream of nothing" — and a member plus a `true` flag would promise
+/// a restore content the archive does not hold.
+fn carry_apple_log(logs_dir: &Path, sub: &str, members: &mut Vec<Member>) -> bool {
+    let source = logs_dir.join(format!("{sub}.jsonl"));
+    if !source
+        .metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+    {
+        return false;
+    }
+    members.push(Member::Dir(format!("{ROOT}/{sub}")));
+    members.push(Member::FileFrom(
+        format!("{ROOT}/{sub}/{sub}.jsonl"),
+        source,
+    ));
+    true
 }
 
 /// The archive members for a cage's state dir. `cli.py:539`.
@@ -639,14 +856,6 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         );
         return Err(ExitCode::from(EXIT_FAILURE));
     }
-    if manifest.isolation == "apple-container" {
-        eprintln!(
-            "error: restoring an 'apple-container' backup is not ported yet \
-             (RUST-PORT-PLAN.md Track E)"
-        );
-        return Err(ExitCode::from(EXIT_FAILURE));
-    }
-
     let target = new_name.unwrap_or(&manifest.cage_name).to_owned();
     if !is_valid_cage_name(&target) {
         eprintln!(
@@ -685,6 +894,30 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         return Err(ExitCode::from(EXIT_FAILURE));
     }
     check_restore_build_context(&manifest, &config_src)?;
+
+    // `cli.py:3786` branches on the *manifest's* `isolation`, not on
+    // the archived `cage.yaml`'s and not on anything installed on this
+    // host: a restore onto a clean machine has no stored config to
+    // read, and the manifest is what says which shape the tarball is.
+    //
+    // The branch is here, after extraction and the preflight, rather
+    // than at the top where the Python's is. `_cage_restore_apple_
+    // container` repeats all four of those steps verbatim
+    // (`cli.py:3531`-`3543`) — including the comment about why they
+    // come before the `--force` destroy — and the one thing that must
+    // not exist in two copies is that ordering.
+    if manifest.isolation == APPLE_CONTAINER {
+        return restore_apple(
+            ctx,
+            &tarball,
+            &manifest,
+            &target,
+            &backup_dir,
+            new_name,
+            force,
+            no_start,
+        );
+    }
 
     // ── Handle an existing cage ─────────────────────────
     if ctx.paths.deployment_exists(&target) {
@@ -808,6 +1041,183 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
 
     println!("Cage '{target}' restored from {}", tarball.display());
     Ok(())
+}
+
+/// `cage restore` on the apple-container backend —
+/// `_cage_restore_apple_container`, `cli.py:3505`.
+///
+/// The mirror of [`backup_apple`], and the mirror is what makes it
+/// short: every host-podman step the container path takes is one this
+/// backend does not have. There is no secret store to write into — the
+/// archive carries no values, so the operator is handed the `export`
+/// lines instead — and no volume to import. What is *extra* is the
+/// pair of log files, which go back before `start` rather than after,
+/// because this backend's `start` creates the logs dir and chmods it
+/// to 1777 while leaving whatever is already in it alone. On the
+/// container path the capture is restored last, since `build_and_deploy`
+/// never touches it.
+///
+/// Called with extraction and the build-context preflight already
+/// done; see the dispatch in [`restore_inner`] for why they are not
+/// repeated here.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the three flags and the three names `cage restore` was \
+              invoked with, which is what `_cage_restore_apple_container` \
+              takes too (`tarball`, `manifest`, `new_name`, `force`, \
+              `no_start`) plus the two things the shared prefix in \
+              `restore_inner` has already computed from them — the \
+              validated target name and the extracted archive's root. \
+              Re-deriving either here would be a second copy of a \
+              decision the caller has made."
+)]
+fn restore_apple(
+    ctx: &Ctx,
+    tarball: &Path,
+    manifest: &Manifest,
+    target: &str,
+    backup_dir: &Path,
+    new_name: Option<&str>,
+    force: bool,
+    no_start: bool,
+) -> Result<(), ExitCode> {
+    // ── Handle an existing cage ─────────────────────────
+    if ctx.paths.deployment_exists(target) {
+        if !force {
+            eprintln!("error: cage '{target}' already exists (use --force to overwrite)");
+            return Err(ExitCode::from(EXIT_FAILURE));
+        }
+        println!("Destroying existing cage '{target}'...");
+        // The backend of the cage that is *here*, not of the tarball:
+        // restoring an apple-container backup over a cage that is
+        // currently a container one has to stop and destroy it with
+        // podman, or its units and network outlive it. `cli.py:3550`
+        // loads the stored config for exactly that, and falls back to
+        // the **apple** backend when it cannot be loaded — not to the
+        // container one `Ctx::backend_of` defaults to, because in this
+        // branch the tarball is the only evidence of what the cage is.
+        //
+        // One divergence: the Python's `except Exception` also wraps
+        // the `stop`/`destroy_resources` calls, so a backend that
+        // *throws* gets retried against the apple one. Here a failed
+        // destroy is a warning and the restore continues, which is what
+        // the container path above does and what `cage destroy` itself
+        // does — a second attempt through a backend that was already
+        // ruled out cannot succeed where the first failed, and the
+        // state dir is removed either way on the next line.
+        let isolation = ctx
+            .paths
+            .load_deployment_config(target, &agentcage_cli::hostenv::RealHost)
+            .map_or_else(|_| APPLE_CONTAINER.to_owned(), |config| config.isolation);
+        let backend = ctx.backend_for(&isolation);
+        backend.stop(target);
+        if let Err(error) = backend.destroy_resources(target, false) {
+            eprintln!("warning: {error}");
+        }
+        if ctx.paths.deployment_exists(target) {
+            if let Err(error) = ctx.paths.remove_deployment(target) {
+                eprintln!("warning: {error}");
+            }
+        }
+    }
+
+    // ── Secrets, which are the operator's to re-set ─────
+    //
+    // The whole of this backend's secret restore. There is no store to
+    // check a key against, so unlike [`restore_secrets`] this cannot
+    // narrow the list to the ones that are actually missing — every
+    // recorded name is printed, because from the host's side they are
+    // all equally unknowable.
+    if !manifest.secret_keys.is_empty() {
+        eprintln!(
+            "Secrets are env-passed at start on apple-container — set \
+             these on the host environment before `cage start`:"
+        );
+        for key in &manifest.secret_keys {
+            eprintln!("  export {key}=<value>");
+        }
+    }
+
+    restore_config(ctx, target, backup_dir, new_name)?;
+
+    // ── capture.jsonl / audit.jsonl ─────────────────────
+    //
+    // Into the logs dir the egress microVM bind-mounts, and before the
+    // `start` below for the reason in this function's docs. A failure
+    // is a warning: the config is already installed, and losing a
+    // *log* must not turn a successful restore into a failed one.
+    let logs_dir = ctx.paths.apple_logs_dir(target);
+    if let Err(error) = std::fs::create_dir_all(&logs_dir) {
+        eprintln!("warning: could not create {}: {error}", logs_dir.display());
+    }
+    for sub in ["capture", "audit"] {
+        let source = backup_dir.join(format!("{sub}/{sub}.jsonl"));
+        if source.is_file() {
+            if let Err(error) = std::fs::copy(&source, logs_dir.join(format!("{sub}.jsonl"))) {
+                eprintln!("warning: could not restore {sub}.jsonl: {error}");
+            }
+        }
+    }
+
+    if no_start {
+        println!("Cage state restored. Run: agentcage cage update {target} to build and start.");
+        // No named-volume note, unlike the container path: this
+        // backend has none to import, and the manifest's list is empty
+        // by construction.
+        return Ok(());
+    }
+
+    let config = ctx
+        .paths
+        .load_deployment_config(target, &agentcage_cli::hostenv::RealHost)
+        .map_err(|error| {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        })?;
+
+    // Not `build_and_deploy`: that is the container/vm path, with host
+    // podman, quadlets and an octet allocator. `cli.py:3628` drives
+    // this backend's own build and start directly and says so in a
+    // comment, so this does too.
+    //
+    // The backend is the archive's, unconditionally, as the Python's
+    // `AppleContainerBackend()` is — not `backend_for(&config.isolation)`.
+    // A hand-edited tarball whose manifest says `apple-container` and
+    // whose `cage.yaml` says something else would otherwise dispatch
+    // on the document and land on a backend that cannot have produced
+    // this archive's shape.
+    let backend = ctx.backend_for(APPLE_CONTAINER);
+    let Some(apple) = backend.as_apple() else {
+        eprintln!("error: internal: apple isolation resolved to another backend");
+        return Err(ExitCode::from(EXIT_FAILURE));
+    };
+    apple
+        .build_artifacts(&config, target, false, false, false)
+        .map_err(|error| report_backend_error(&error))?;
+    // Called once. The Python calls `generate_units` twice and throws
+    // the first result away (`cli.py:3629`-`3632`), which is harmless
+    // but double-prints the `container.volumes` warnings the renderer
+    // emits. One call, one set of warnings.
+    let units = apple
+        .generate_units(&config, target)
+        .map_err(|error| report_backend_error(&error))?;
+    apple
+        .install_units(&units, false)
+        .map_err(|error| report_backend_error(&error))?;
+    apple
+        .start(target, false)
+        .map_err(|error| report_backend_error(&error))?;
+
+    println!("Cage '{target}' restored from {}", tarball.display());
+    Ok(())
+}
+
+/// A backend failure, reported the way every other command body
+/// reports one: the message the backend already phrased for the
+/// operator, and click's exit status.
+fn report_backend_error(error: &BackendError) -> ExitCode {
+    eprintln!("error: {error}");
+    ExitCode::from(EXIT_FAILURE)
 }
 
 /// Put the archived secret values back into the podman store, or tell
@@ -2073,6 +2483,500 @@ container:
             manifest.contains("\"build_context_included\": false"),
             "{manifest}"
         );
+    }
+
+    // ─────────────────────────────────────────────────────
+    // apple-container
+    // ─────────────────────────────────────────────────────
+
+    const APPLE: &str = "apple-cage";
+
+    /// An apple-container cage, as `cage create` leaves one, with two
+    /// injection rules so the manifest's `secret_keys` has something in
+    /// it. The shape is the golden corpus's `backend-apple-container`
+    /// case plus `secret_injection`, which is the one config section
+    /// this backend's backup actually reads.
+    const CAGE_YAML_APPLE: &str = "\
+name: apple-cage
+isolation: apple-container
+container:
+  image: docker.io/library/node:22-slim
+domains:
+  allow:
+  - api.example.com
+secret_injection:
+- env: ANTHROPIC_API_KEY
+  source: env:HOST_ANTHROPIC_KEY
+  placeholder: sk-ant-FAKE-0001
+  inject_to:
+  - api.example.com
+- env: GITHUB_TOKEN
+  source: env:HOST_GITHUB_TOKEN
+  placeholder: ghp-FAKE-0002
+  inject_to:
+  - api.example.com
+";
+
+    /// An apple-container cage on disk, with whichever of its two log
+    /// streams the caller asks for already in the per-cage logs dir.
+    ///
+    /// `metadata.json` is written because `ensure_v022_cage` reads it:
+    /// a cage without one is legacy, and `cage backup` refuses it
+    /// before any of this is reached.
+    fn apple_cage(dir: &TestDir, fake: FakeRunner, logs: &[(&str, &str)]) -> Ctx {
+        let ctx = ctx(dir, fake);
+        let source = dir.join("apple.yaml");
+        fs::write(&source, CAGE_YAML_APPLE).unwrap();
+        ctx.paths.save_deployment(APPLE, &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path(APPLE),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+        ctx.paths.save_proxy_config(APPLE, GENERATION).unwrap();
+
+        let logs_dir = ctx.paths.apple_logs_dir(APPLE);
+        fs::create_dir_all(&logs_dir).unwrap();
+        for (sub, body) in logs {
+            fs::write(logs_dir.join(format!("{sub}.jsonl")), body).unwrap();
+        }
+        ctx
+    }
+
+    /// The leaf `ArgMatches` for a `cage backup` / `cage restore`
+    /// invocation, parsed through the real command tree so the flags
+    /// under test are the ones `main` hands over.
+    fn leaf_matches(argv: &[&str]) -> clap::ArgMatches {
+        crate::cli::command(false)
+            .try_get_matches_from(argv)
+            .unwrap()
+            .subcommand()
+            .and_then(|(_, sub)| sub.subcommand())
+            .map(|(_, leaf)| leaf.clone())
+            .expect("a two-level subcommand")
+    }
+
+    fn manifest_text(tarball: &Path) -> String {
+        String::from_utf8(
+            archive::read_member(tarball, "agentcage-backup/manifest.json")
+                .unwrap()
+                .expect("every backup has a manifest"),
+        )
+        .unwrap()
+    }
+
+    /// **The refusal.** There is no host secret store on this backend —
+    /// values are env-passed at start out of the invoking shell and
+    /// agentcage never keeps them — so `--include-secrets` cannot be
+    /// honoured. It has to *fail* rather than quietly produce a tarball
+    /// with no secrets in it, which is how a restore ends up silently
+    /// credential-less.
+    #[test]
+    fn an_apple_backup_refuses_include_secrets() {
+        let dir = TestDir::new("apple-backup-include-secrets");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = apple_cage(&dir, fake.clone(), &[]);
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            APPLE,
+            "--include-secrets",
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_err());
+        // Nothing was written, and nothing was asked of a store that
+        // does not exist.
+        assert!(!out.exists());
+        assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
+    }
+
+    /// The shape, against the three differences the Python's docstring
+    /// enumerates: no `secrets/` and no `volumes/` member, an `audit/`
+    /// one the container path never emits, and a manifest whose
+    /// `named_volumes` is empty and whose `secret_keys` are the
+    /// injection rules' env names.
+    #[test]
+    fn an_apple_backup_carries_both_logs_and_no_secret_store() {
+        let dir = TestDir::new("apple-backup-shape");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = apple_cage(
+            &dir,
+            fake.clone(),
+            &[
+                ("capture", "{\"id\": 1}\n"),
+                ("audit", "{\"event\": \"allow\"}\n"),
+            ],
+        );
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            APPLE,
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        assert_eq!(
+            archive::member_names(&out).unwrap(),
+            [
+                "agentcage-backup/audit",
+                "agentcage-backup/audit/audit.jsonl",
+                "agentcage-backup/capture",
+                "agentcage-backup/capture/capture.jsonl",
+                "agentcage-backup/config",
+                "agentcage-backup/config/cage.yaml",
+                "agentcage-backup/config/metadata.json",
+                "agentcage-backup/config/proxy-config.yaml",
+                "agentcage-backup/manifest.json",
+            ]
+        );
+
+        let text = manifest_text(&out);
+        let manifest = Manifest::parse(&text).expect("the manifest parses");
+        assert_eq!(manifest.isolation, "apple-container");
+        assert_eq!(manifest.cage_name, APPLE);
+        assert_eq!(manifest.secret_keys, ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]);
+        assert!(!manifest.secrets_included);
+        assert!(manifest.named_volumes.is_empty());
+        // The keys the container manifest does not have the same way:
+        // `has_audit` exists at all, and `named_volumes` is the empty
+        // literal rather than a list this backend could ever fill.
+        assert!(text.contains("\"has_audit\": true"), "{text}");
+        assert!(text.contains("\"has_capture\": true"), "{text}");
+        assert!(text.contains("\"has_secrets\": true"), "{text}");
+        assert!(text.contains("\"named_volumes\": []"), "{text}");
+        assert!(text.contains("\"secrets_included\": false"), "{text}");
+        // Key order is the Python dict literal's, which puts `has_audit`
+        // between `has_capture` and `named_volumes`.
+        assert!(
+            text.find("\"has_capture\"") < text.find("\"has_audit\""),
+            "{text}"
+        );
+        assert!(
+            text.find("\"has_audit\"") < text.find("\"named_volumes\""),
+            "{text}"
+        );
+
+        // No store was consulted, and there is none to consult:
+        // `FakeRunner` panics on an unstubbed call, so a stray
+        // `podman secret ls` would fail this test before the assertion
+        // below did.
+        assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
+        assert!(
+            !archive::member_names(&out)
+                .unwrap()
+                .iter()
+                .any(|name| name.contains("secrets") || name.contains("volumes"))
+        );
+    }
+
+    /// Zero length is "no stream yet", not "a stream of nothing":
+    /// `start` creates the logs dir and the supervisor opens both files
+    /// before writing a line, so an empty one must not become a member
+    /// and must not set its manifest flag.
+    #[test]
+    fn empty_apple_log_streams_are_not_carried() {
+        let dir = TestDir::new("apple-backup-empty-logs");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = apple_cage(&dir, fake, &[("capture", ""), ("audit", "")]);
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            APPLE,
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        let names = archive::member_names(&out).unwrap();
+        assert!(!names.iter().any(|n| n.contains("/capture")), "{names:?}");
+        assert!(!names.iter().any(|n| n.contains("/audit")), "{names:?}");
+        let text = manifest_text(&out);
+        assert!(text.contains("\"has_capture\": false"), "{text}");
+        assert!(text.contains("\"has_audit\": false"), "{text}");
+    }
+
+    /// A cage with no injection rules records an empty `secret_keys`
+    /// and `has_secrets: false`. The field is `cfg.secret_injection`
+    /// alone on this backend, not the wider `expected_secrets` the
+    /// container manifest records — only an injection rule names an env
+    /// var an operator could `export`.
+    #[test]
+    fn an_apple_backup_of_a_cage_with_no_rules_records_no_secret_keys() {
+        let dir = TestDir::new("apple-backup-no-rules");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = ctx(&dir, fake);
+        let source = dir.join("apple.yaml");
+        fs::write(
+            &source,
+            "name: apple-cage\nisolation: apple-container\ncontainer:\n  \
+             image: docker.io/library/node:22-slim\n",
+        )
+        .unwrap();
+        ctx.paths.save_deployment(APPLE, &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path(APPLE),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            APPLE,
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+        let text = manifest_text(&out);
+        assert!(text.contains("\"secret_keys\": []"), "{text}");
+        assert!(text.contains("\"has_secrets\": false"), "{text}");
+    }
+
+    /// **The round trip.** An apple backup taken by the command, read
+    /// back by the command: the config lands under the new name with
+    /// its `name:` field rewritten, the derived files are regenerated,
+    /// and both log streams go back into the per-cage logs dir — the
+    /// apple one, which expands `~` directly and ignores
+    /// `XDG_DATA_HOME`.
+    ///
+    /// `--no-start` because everything past it is two image builds and
+    /// a microVM, which is what the e2e apple phase is for. What is
+    /// exercised here is everything that decides what lands on disk.
+    #[test]
+    fn an_apple_backup_round_trips_through_restore() {
+        let dir = TestDir::new("apple-roundtrip");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = apple_cage(
+            &dir,
+            fake.clone(),
+            &[
+                ("capture", "{\"id\": 1}\n"),
+                ("audit", "{\"event\": \"allow\"}\n"),
+            ],
+        );
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            APPLE,
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &out.display().to_string(),
+            "--name",
+            "apple-clone",
+            "--no-start",
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_ok());
+
+        // The document is installed under the new name, and its own
+        // `name:` agrees with the directory it is stored under.
+        let stored =
+            yaml::load(&fs::read_to_string(ctx.paths.stored_config_path("apple-clone")).unwrap())
+                .unwrap();
+        assert_eq!(
+            stored.get("name").and_then(yaml::Value::as_str),
+            Some("apple-clone")
+        );
+        assert_eq!(
+            stored.get("isolation").and_then(yaml::Value::as_str),
+            Some("apple-container")
+        );
+
+        // Regenerated, not restored.
+        assert!(ctx.paths.proxy_config_path("apple-clone").is_file());
+        assert!(ctx.paths.dns_allowlist_path("apple-clone").is_file());
+
+        // Both streams went back into the apple logs dir, which is the
+        // part of the state layout no other backend uses.
+        let logs = ctx.paths.apple_logs_dir("apple-clone");
+        assert_eq!(
+            fs::read_to_string(logs.join("capture.jsonl")).unwrap(),
+            "{\"id\": 1}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(logs.join("audit.jsonl")).unwrap(),
+            "{\"event\": \"allow\"}\n"
+        );
+        // ... and not into the container layout's capture file, which
+        // is where `restore_capture` would have put the first of them.
+        assert!(!ctx.paths.capture_file("apple-clone").exists());
+
+        // A clone leaves the source cage alone, and neither direction
+        // touched podman.
+        assert!(ctx.paths.deployment_exists(APPLE));
+        assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
+    }
+
+    /// Restoring onto a name that already exists is refused without
+    /// `--force`, before anything is written — the same contract as the
+    /// container path, reached through the apple branch.
+    #[test]
+    fn an_apple_restore_onto_an_existing_cage_needs_force() {
+        let dir = TestDir::new("apple-restore-exists");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = apple_cage(&dir, fake.clone(), &[("capture", "{\"id\": 1}\n")]);
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            APPLE,
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+
+        let before = fs::read_to_string(ctx.paths.stored_config_path(APPLE)).unwrap();
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &out.display().to_string(),
+            "--no-start",
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_err());
+        assert_eq!(
+            fs::read_to_string(ctx.paths.stored_config_path(APPLE)).unwrap(),
+            before
+        );
+        assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
+    }
+
+    /// **The ordering, on the apple branch.**
+    /// `test_force_restore_contextless_apple_keeps_existing_cage` in
+    /// `tests/test_backup_restore.py`, ported: a `--force` restore of
+    /// an apple tarball that cannot rebuild the cage has to be refused
+    /// *before* the destroy, or the host is left with neither the old
+    /// cage nor a restored one.
+    ///
+    /// This is also what pins the dispatch's position. The apple branch
+    /// sits after the shared extraction and preflight, so a tarball
+    /// that fails the preflight never reaches [`restore_apple`] and
+    /// never stops or destroys anything.
+    #[test]
+    fn a_forced_apple_restore_of_a_contextless_tarball_keeps_the_existing_cage() {
+        let dir = TestDir::new("apple-restore-force-contextless");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = apple_cage(&dir, fake.clone(), &[]);
+        let before = fs::read_to_string(ctx.paths.stored_config_path(APPLE)).unwrap();
+
+        // An apple backup whose cage.yaml builds from a Containerfile
+        // the tarball omits.
+        let tarball = dir.join("old.tar.gz");
+        archive::write_targz(
+            &tarball,
+            &[
+                Member::Dir(format!("{ROOT}/config")),
+                Member::File(
+                    format!("{ROOT}/config/cage.yaml"),
+                    "name: apple-cage\nisolation: apple-container\ncontainer:\n  \
+                     image: docker.io/library/node:22-slim\n  build:\n    \
+                     containerfile: Containerfile\n"
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                Member::File(
+                    format!("{ROOT}/manifest.json"),
+                    format!(
+                        "{{\"format_version\": 1, \"cage_name\": \"{APPLE}\", \
+                          \"isolation\": \"apple-container\", \
+                          \"secret_keys\": [\"ANTHROPIC_API_KEY\"], \
+                          \"secrets_included\": false}}\n"
+                    )
+                    .into_bytes(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "restore",
+            &tarball.display().to_string(),
+            "--force",
+        ]);
+        assert!(restore_inner(&ctx, &matches).is_err());
+
+        assert!(ctx.paths.deployment_exists(APPLE));
+        assert_eq!(
+            fs::read_to_string(ctx.paths.stored_config_path(APPLE)).unwrap(),
+            before
+        );
+        // Nothing was stopped or destroyed: no backend was reached at
+        // all, which `FakeRunner`'s panic-on-unstubbed-call enforces as
+        // firmly as this assertion does.
+        assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
+    }
+
+    /// The `vm` backend is **not** opened by any of the above. It
+    /// refuses for its own reasons — `_podman_for_cage` routes a
+    /// running vm cage's secret and volume calls through `VmPodman`
+    /// *inside the Lima guest*, a store nothing in this file talks to —
+    /// and the apple dispatch must not have become a general
+    /// "not container" branch on the way in.
+    #[test]
+    fn the_vm_backend_is_still_refused() {
+        let dir = TestDir::new("vm-backup-refused");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = ctx(&dir, fake);
+
+        let source = dir.join("vm.yaml");
+        fs::write(
+            &source,
+            "name: vm-cage\nisolation: vm\ncontainer:\n  \
+             image: docker.io/library/node:22-slim\n",
+        )
+        .unwrap();
+        ctx.paths.save_deployment("vm-cage", &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path("vm-cage"),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            "vm-cage",
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_err());
+        assert!(!out.exists());
     }
 
     #[test]
