@@ -55,6 +55,14 @@ have not changed, only its name.
 
 ### Fixed
 
+- **`cage show` and `cage status` reported every `apple-container` cage's
+  secrets as missing.** They counted present keys by asking host podman, which
+  does not *error* for a cage it has never heard of — it answers nothing found.
+  So a cage with all its secrets read as `Secrets: 0/3 (3 missing)` while
+  `secret list` said `ok` for the same cage, with the reassuring-looking summary
+  being the wrong one. They now read the same store `secret list` does, which is
+  what `cli.py:2473` branches on and for the same stated reason.
+
 - **`cage create --set-secret` could store an apple cage's secret where nothing
   would find it.** `SecretWriter` chose the store from the rule's `source:`
   scheme even on `apple-container`, so a rule carrying `source: systemd-creds:`

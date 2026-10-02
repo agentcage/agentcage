@@ -198,14 +198,31 @@ fn show_inner(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
 
     let expected = agentcage_cli::services::expected_secrets(&config);
     if !expected.is_empty() {
-        let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
-        let prefix = format!("{name}.");
-        let present: Vec<String> = podman
-            .secret_list(&prefix)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|full| full[prefix.len().min(full.len())..].to_owned())
-            .collect();
+        // Host podman is the secret store — except on apple-container,
+        // which has no host podman and keeps its secrets in the macOS
+        // keychain (or, under `backend: plaintext`, in the cage's own
+        // state directory). Asking podman about one of those cages is
+        // the failure mode this backend keeps producing: podman does
+        // not error, it answers *nothing found*, so every secret was
+        // reported missing on a cage that had all of them. Observed
+        // against a real cage — `Secrets: 0/3 (3 missing)` where the
+        // Python said `3/3`.
+        //
+        // The source here is the one `secret list` uses, which is what
+        // makes the two agree; `cli.py:2473` branches the same way and
+        // for the same stated reason.
+        let present: Vec<String> = if crate::cli::secret::apple::is_apple_container(&config) {
+            crate::cli::secret::apple::secret_names(ctx, &config, name)
+        } else {
+            let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+            let prefix = format!("{name}.");
+            podman
+                .secret_list(&prefix)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|full| full[prefix.len().min(full.len())..].to_owned())
+                .collect()
+        };
         let provided = expected.iter().filter(|key| present.contains(key)).count();
         let missing = expected.len() - provided;
         if missing > 0 {

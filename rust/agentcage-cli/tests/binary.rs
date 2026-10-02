@@ -802,3 +802,75 @@ fn logs_forwards_journalctls_own_status() {
     let out = agentcage_sandboxed(dir.path(), &["cage", "logs", "quiet", "-n", "5"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 }
+
+/// `cage show` counts an apple cage's secrets through its *own* store,
+/// not through host podman.
+///
+/// This is the shape of bug this backend keeps producing: podman does
+/// not error when asked about a cage it has never heard of, it answers
+/// *nothing found*. So `cage show` reported `Secrets: 0/1 (1 missing)`
+/// on a cage whose secret was present and whose `secret list` said
+/// `ok` — two commands disagreeing about the same cage, with the wrong
+/// one being the reassuring-looking summary. Observed against a real
+/// cage before the fix, where the Python answered `1/1`.
+///
+/// `backend: plaintext` keeps this to a file in the cage's own state
+/// directory, so the test never reaches the macOS keychain — and so it
+/// runs on Linux CI too, where the bug would otherwise be invisible
+/// because `default_isolation` there is `container`.
+#[test]
+fn an_apple_cage_counts_its_secrets_through_its_own_store() {
+    let dir = agentcage_state::TestDir::new("binary-apple-secret-count");
+    let home = dir.path();
+    let paths = agentcage_state::Paths::under(home);
+    let name = "counted";
+
+    std::fs::create_dir_all(paths.deployment_dir(name)).expect("deployment dir");
+    std::fs::write(
+        paths.deployment_dir(name).join("cage.yaml"),
+        format!(
+            "name: {name}\n\
+             isolation: apple-container\n\
+             container:\n  image: \"alpine\"\n\
+             secrets:\n  backend: plaintext\n  allow_plaintext: true\n\
+             secret_injection:\n  \
+               - env: COUNTED_KEY\n    placeholder: \"{{{{COUNTED_KEY}}}}\"\n"
+        ),
+    )
+    .expect("config");
+    paths
+        .save_metadata(
+            name,
+            &agentcage_core::har::json::Json::Object(vec![(
+                "agentcage_version".to_owned(),
+                agentcage_core::har::json::Json::string(agentcage_core::VERSION),
+            )]),
+        )
+        .expect("metadata");
+
+    // With no value stored, the summary must say so.
+    let out = agentcage_sandboxed(home, &["cage", "show", name]);
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        text.contains("Secrets:    0/1 (1 missing)"),
+        "an unset secret should read as missing: {text}"
+    );
+
+    // The plaintext store's file *is* the store on this backend.
+    std::fs::write(
+        paths.deployment_dir(name).join("pending_secrets.json"),
+        "[[\"COUNTED_KEY\", \"a-value\"]]",
+    )
+    .expect("store");
+
+    let out = agentcage_sandboxed(home, &["cage", "show", name]);
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        text.contains("Secrets:    1/1"),
+        "a stored secret must be counted through the cage's own store: {text}"
+    );
+    assert!(
+        !text.contains("missing"),
+        "nothing is missing once the store has it: {text}"
+    );
+}
