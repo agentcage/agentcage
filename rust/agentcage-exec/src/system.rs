@@ -425,6 +425,14 @@ mod tests {
 
     #[test]
     fn env_and_cwd_are_applied() {
+        // The expectation is the *resolved* directory, not the literal
+        // one asked for. `sh` fills `$PWD` from `getcwd(2)`, which
+        // answers with the real path — and on macOS `/tmp` is a
+        // firmlink to `/private/tmp`, so a literal comparison against
+        // "/tmp" fails there while asserting nothing extra on Linux.
+        // What is under test is that the cwd and the env reach the
+        // child at all.
+        let cwd = std::fs::canonicalize("/tmp").expect("/tmp exists");
         let out = SystemRunner
             .run(
                 &Command::new("sh")
@@ -434,7 +442,7 @@ mod tests {
                     .captured(),
             )
             .unwrap();
-        assert_eq!(out.stdout_text(), "set /tmp");
+        assert_eq!(out.stdout_text(), format!("set {}", cwd.display()));
     }
 
     #[test]

@@ -66,6 +66,55 @@ have not changed, only its name.
   the same shape — committed fixtures record `/etc` and `/tmp` where macOS
   resolves `/private/etc` and `/private/tmp`.)
 
+- **Both suites pass on macOS.** They were red for host reasons, not product
+  ones — 27 Python failures, 6 Python errors and 2 Rust failures on an Apple
+  Silicon host, against zero on Linux CI — which made a developer on a Mac
+  unable to tell a real regression from the noise. Four root causes, each fixed
+  where it was rather than by skipping the tests:
+
+  - **The platform decided which backend most of the suite tested.**
+    `validate_config` refuses `isolation: container` outright on macOS, and the
+    shared cross-language vector pins exactly that, so every test that
+    validated it raised; the backend-dispatch tests silently exercised the
+    apple-container path instead of the container one they mock. `conftest.py`
+    now pins `platform.system()` to Linux for the unit suite, the same way it
+    already pins the host resolver, so a local run reproduces the CI run.
+    Tests that want another platform still patch it themselves — that is how
+    the Darwin branches are driven — and the `LINUX_ONLY` markers are
+    collection-time, so genuinely Linux-only tests still skip. Fixed 23.
+
+  - **`REQUIRES_PODMAN` only checked that the binary existed.** Homebrew's
+    `podman` on macOS is a client for a Linux VM: `shutil.which` finds it while
+    every call fails to connect. The gate therefore did not fire, nine tests
+    ran anyway, and they failed on the connection rather than skipping — the
+    exact thing that module exists to prevent. It now probes `podman info`,
+    matching `REQUIRES_GNU_REALPATH` right below it.
+
+  - **The golden corpus was not reproducible on macOS.** Its scrubber meant to
+    register both the resolved and unresolved spelling of every sandbox path,
+    but computed the second as `str(Path(resolved))` — a no-op, so the list was
+    always empty. On Linux the two spellings usually coincide and this never
+    showed; on macOS a sandbox lives under `/var/folders`, `/var` is a firmlink
+    to `/private/var`, and so the rule for `<home>/.config` never matched the
+    unresolved path a quadlet carried. Seven artifacts recorded
+    `{{HOME}}/.config` where CI records `{{XDG_CONFIG_HOME}}`. Both spellings
+    are registered now, and the three macOS firmlinks (`/etc`, `/tmp`, `/var`)
+    normalize back to the name the operator wrote — in the Rust scrubber too,
+    since the two have to agree. This also fixed the `vm` fixture generator,
+    which shared the cause.
+
+  - **`gen-cage-har-fixture.py` recorded a different path per host.** Its
+    `plain-cage` input declares no `isolation:` — faithfully, since a real
+    0.40.1 `cage.yaml` does not — so the host picked the backend and the
+    recorded "no capture file found" message quoted a different directory on a
+    Mac. A developer there got a permanent `--check` failure and a regenerate
+    command that would have committed the wrong bytes. The child process now
+    pins the platform, mirroring what `gen-apple-container-fixtures.py` does
+    in the opposite direction.
+
+  No committed fixture byte changed: every fix makes macOS reproduce the bytes
+  Linux already produced.
+
 - **`cargo test` no longer raises a keychain dialog on macOS.** The
   `secret set` refusal test asked for `secrets.backend: keychain`, which is
   unavailable on Linux and therefore refused there without a probe — but on

@@ -353,6 +353,36 @@ def _apply(home: Path, setup: list[dict]) -> None:
             raise SystemExit(f"unknown setup op {op['op']!r}")
 
 
+# What the child runs, and why it is not just an import of the CLI.
+#
+# ``plain-cage`` in the A7 snapshot declares no ``isolation:`` — which is
+# faithful, because a real 0.40.1 cage.yaml on Linux does not — so
+# ``default_isolation()`` decides, and it decides from the *host*. On
+# Linux that is ``container`` and the capture file is looked for under
+# ``$XDG_DATA_HOME``; on an Apple Silicon Mac with Apple's CLI installed
+# it is ``apple-container`` and the path becomes
+# ``~/.config/agentcage/apple-container/<name>/logs/``. The recorded
+# "no capture file found" message quotes that path, so the fixture
+# changed depending on whose laptop ran the generator — and a developer
+# on a Mac got a permanent `--check` failure plus a regenerate command
+# that would have committed the wrong bytes.
+#
+# Pinning the platform in the child is the mirror of what
+# ``gen-apple-container-fixtures.py`` does in-process for the opposite
+# reason: that one makes itself look like a Mac so the apple backend is
+# reachable from Linux CI, this one makes itself look like Linux so the
+# container backend is the one being recorded. The docstring above
+# already says ``plain-cage`` is ``isolation: container``; this is what
+# makes that true anywhere.
+#
+# ``mac-agent`` is unaffected — it names ``apple-container`` explicitly,
+# so nothing is being hidden here, and the apple path stays covered.
+_CHILD_PREAMBLE = (
+    "import platform; platform.system = lambda: 'Linux'; "
+    "from agentcage.cli import main; main()"
+)
+
+
 def _run_case(case: dict, version: str) -> dict:
     """Run one case in its own sandbox and record everything it produced."""
     with tempfile.TemporaryDirectory(prefix="agentcage-har-fixture-") as tmp:
@@ -371,7 +401,7 @@ def _run_case(case: dict, version: str) -> dict:
         env.pop("AGENTCAGE_FORCE_COLOR", None)
 
         completed = subprocess.run(
-            [sys.executable, "-c", "from agentcage.cli import main; main()", *argv],
+            [sys.executable, "-c", _CHILD_PREAMBLE, *argv],
             env=env,
             capture_output=True,
             text=True,

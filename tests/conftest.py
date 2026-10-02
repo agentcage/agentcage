@@ -30,6 +30,51 @@ sys.modules.setdefault("mitmproxy.proxy.mode_specs", _mode_specs)
 
 
 @pytest.fixture(autouse=True)
+def _isolate_host_platform(monkeypatch):
+    """Pin ``platform.system()`` to Linux for the whole unit suite.
+
+    Same reasoning as :func:`_isolate_host_dns`, one layer up. A large
+    part of this suite loads a config and calls ``validate_config``, and
+    the platform decides two things there: ``default_isolation()`` picks
+    the backend for a config that does not name one, and
+    ``validate_config`` *refuses* ``isolation: container`` outright on
+    macOS. The shared cross-language vector
+    (``tests/cross_language/vectors.py``) pins ``isolation: container``,
+    so on a Mac every test that validates it raises for a reason that has
+    nothing to do with what the test asserts — and the backend-dispatch
+    tests silently exercised the apple-container path instead of the
+    container one they mock.
+
+    Pinning Linux makes a developer's run reproduce the Linux CI run,
+    which is the only run these assertions were written against.
+
+    Three things deliberately keep working:
+
+    * a test that wants a different platform patches ``platform.system``
+      itself, inside its own body or ``with`` block, which takes
+      precedence over this ``monkeypatch`` — that is how
+      ``test_apple_container.py`` and ``test_doctor.py`` already drive
+      the Darwin branches, and how the ``default_isolation`` tests pin
+      all four of theirs;
+    * the per-module ``LINUX_ONLY`` markers are evaluated at *collection*
+      time, before any fixture runs, so they still skip on a Mac. Those
+      tests assert on genuinely Linux-only behaviour (podman, systemd,
+      distro detection) and this does not resurrect them;
+    * ``platform.machine()`` is left alone. It only matters under Darwin,
+      which this turns off by default.
+
+    What this does **not** cover: anything that reads the platform
+    through a different door — ``sys.platform``, ``os.uname``, an
+    ``os.path.realpath`` that resolves macOS's ``/private`` firmlinks.
+    Those are host facts too, and the ones still outstanding are called
+    out in RUST-PORT-PLAN.md rather than papered over here.
+    """
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_host_dns(monkeypatch):
     """Stub host DNS auto-detection for the whole unit suite.
 

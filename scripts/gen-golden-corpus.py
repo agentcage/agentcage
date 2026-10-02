@@ -244,6 +244,26 @@ def _as_platform(system: str, machine: str, mac_ver: str = "26.0"):
         _PLATFORM.update(prev)
 
 
+# macOS resolves these three through firmlinks, so a ``realpath`` of an
+# absolute system path the operator wrote comes back with a ``/private``
+# prefix that does not exist on Linux. One corpus case mounts ``/etc``
+# specifically to record the "outside the home directory" refusal, and
+# that message quotes the *resolved* path — so without this the case
+# records ``/private/etc`` on a Mac and ``/etc`` on CI.
+#
+# Mapping them back to the spelling the operator used is the honest
+# normalization: the corpus records what the product says about a path,
+# and which of two names the kernel prefers for ``/etc`` is not part of
+# that. These sort last (they are the shortest rules), so a sandbox path
+# that happens to live under ``/private/var`` is still matched by its own
+# longer rule first.
+_FIRMLINK_RULES: list[tuple[str, str]] = [
+    ("/private/etc", "/etc"),
+    ("/private/tmp", "/tmp"),
+    ("/private/var", "/var"),
+]
+
+
 class Scrubber:
     """Replace host-specific absolute paths with stable ``{{TOKEN}}``s.
 
@@ -252,26 +272,44 @@ class Scrubber:
     """
 
     def __init__(self, work: Path) -> None:
-        real_work = os.path.realpath(work)
-        real_home = os.path.realpath(Path(real_work) / "home")
-        rules = [
-            (os.path.join(real_home, ".local", "share"), "{{XDG_DATA_HOME}}"),
-            (os.path.join(real_home, ".config"), "{{XDG_CONFIG_HOME}}"),
-            (real_home, "{{HOME}}"),
-            (os.path.join(real_work, "run"), "{{XDG_RUNTIME_DIR}}"),
-            (real_work, "{{WORK}}"),
-            (str(REPO_ROOT), "{{REPO}}"),
-        ]
-        # Also scrub the non-realpath spellings, which turn up wherever the
-        # code interpolates ``$HOME`` without resolving symlinks.
-        extra = []
-        for raw, token in list(rules):
-            plain = str(Path(raw))
-            if plain != raw:
-                extra.append((plain, token))
-        rules.extend(extra)
-        rules.append((str(work), "{{WORK}}"))
-        rules.append((str(work / "home"), "{{HOME}}"))
+        # Every sandbox rule is registered in BOTH spellings: as the
+        # sandbox root was handed to us, and as ``realpath`` resolves it.
+        # The code under test produces both — ``state.py`` reads
+        # ``XDG_CONFIG_HOME`` verbatim (unresolved), while the volume
+        # validator and the mask hooks call ``realpath`` — and which one
+        # a given artifact carries is not something the harness gets to
+        # choose.
+        #
+        # On Linux the two spellings are usually identical and the
+        # dedupe below collapses them, which is why registering only the
+        # resolved form worked for years. On macOS they never are: a
+        # pytest sandbox lives under ``/var/folders/...``, ``/var`` is a
+        # firmlink to ``/private/var``, and so the resolved and
+        # unresolved spellings differ in every single path. The rule for
+        # ``<home>/.config`` then failed to match the unresolved path the
+        # quadlet carried, the shorter ``<home>`` rule won instead, and
+        # seven corpus artifacts recorded ``{{HOME}}/.config`` where the
+        # Linux run records ``{{XDG_CONFIG_HOME}}``.
+        #
+        # (An earlier version of this did intend to cover both, but
+        # computed the second spelling as ``str(Path(resolved))`` — a
+        # no-op on an already-resolved path, so the list it built was
+        # always empty.)
+        def sandbox_rules(root: str) -> list[tuple[str, str]]:
+            home = os.path.join(root, "home")
+            return [
+                (os.path.join(home, ".local", "share"), "{{XDG_DATA_HOME}}"),
+                (os.path.join(home, ".config"), "{{XDG_CONFIG_HOME}}"),
+                (home, "{{HOME}}"),
+                (os.path.join(root, "run"), "{{XDG_RUNTIME_DIR}}"),
+                (root, "{{WORK}}"),
+            ]
+
+        rules: list[tuple[str, str]] = []
+        for root in (os.path.realpath(work), str(work)):
+            rules.extend(sandbox_rules(root))
+        rules.append((str(REPO_ROOT), "{{REPO}}"))
+        rules.extend(_FIRMLINK_RULES)
         # Deduplicate, longest first.
         seen: dict[str, str] = {}
         for raw, token in rules:

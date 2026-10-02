@@ -333,6 +333,24 @@ impl Scrubber {
             (format!("{work}/run"), "{{XDG_RUNTIME_DIR}}"),
             (work, "{{WORK}}"),
             (repo_root().display().to_string(), "{{REPO}}"),
+            // macOS resolves these three through firmlinks, so a
+            // `realpath` of an absolute system path the operator wrote
+            // comes back with a `/private` prefix that does not exist
+            // on Linux. The `err-volume-outside-home` case mounts
+            // `/etc` to record the refusal, and that message quotes the
+            // *resolved* path — so without these the case reproduces as
+            // `/private/etc` on a Mac against a fixture recorded as
+            // `/etc`.
+            //
+            // `scripts/gen-golden-corpus.py` carries the same three
+            // rules for the same reason; the two scrubbers have to
+            // agree or the fixture is only reproducible on one of them.
+            // They sort last, being the shortest, so a sandbox path
+            // under `/private/var` still matches its own longer rule
+            // first.
+            ("/private/etc".to_owned(), "/etc"),
+            ("/private/tmp".to_owned(), "/tmp"),
+            ("/private/var".to_owned(), "/var"),
         ];
         rules.sort_by_key(|(raw, _)| std::cmp::Reverse(raw.len()));
         Self { rules }
