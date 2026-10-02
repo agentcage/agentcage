@@ -214,7 +214,7 @@ fn reinstall_apple_units(
 /// which also avoids racing a concurrent `cage create`'s
 /// daemon-reload on the same user systemd instance. e2e phases 3, 5
 /// and 6 run in parallel and would otherwise collide.
-fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<(), String> {
+pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<(), String> {
     // apple-container is excluded in the Python because its
     // `generate_units` output is a metadata snapshot tied to the build
     // pipeline; `vm` is included there and excluded here only because

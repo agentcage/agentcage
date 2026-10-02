@@ -40,6 +40,27 @@ fn agentcage_sandboxed(dir: &std::path::Path, args: &[&str]) -> Output {
         .expect("the binary is built by `cargo test`")
 }
 
+/// [`agentcage_sandboxed`] with extra environment.
+///
+/// `cage edit` needs `$EDITOR`, and the sandbox has to stay otherwise
+/// identical — a second copy of the env block would drift from the
+/// first.
+fn agentcage_sandboxed_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agentcage"));
+    command
+        .args(args)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir.join(".config"))
+        .env("XDG_DATA_HOME", dir.join(".local/share"))
+        .env("XDG_RUNTIME_DIR", dir.join("run"));
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .expect("the binary is built by `cargo test`")
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -132,22 +153,19 @@ fn a_bare_group_prints_help_to_stderr_and_exits_two() {
 /// would look like it had destroyed something.
 #[test]
 fn a_parsed_command_fails_loudly_and_names_itself() {
-    for (args, expected) in [
-        (vec!["cage", "edit", "myapp"], "cage edit"),
-        // `cage grants … sync` and `domain list` used to be here. Both
-        // have bodies as of PR D10; `an_unknown_cage_is_refused_rather_
-        // than_stubbed` covers them instead. `cage backup` was a
-        // replacement row until PR D11 gave it a body too — it is now in
-        // `legacy_cage.rs`'s guarded list.
-        (vec!["watcher", "findings", "myapp"], "watcher findings"),
-    ] {
-        let out = agentcage(&args);
-        assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}");
-        assert!(stdout(&out).is_empty(), "{args:?}");
-        let text = stderr(&out);
-        assert!(text.contains(&format!("`{expected}`")), "{args:?}: {text}");
-        assert!(text.contains("not implemented"), "{args:?}: {text}");
-    }
+    // One row left. `cage grants … sync` and `domain list` used to be
+    // here and have bodies as of PR D10; `cage backup` was a
+    // replacement until PR D11, and `cage edit` until this PR — both
+    // are in `legacy_cage.rs`'s guarded list now. When `watcher
+    // findings` lands, this test has nothing to assert and should go
+    // rather than be emptied.
+    let args = ["watcher", "findings", "myapp"];
+    let out = agentcage(&args);
+    assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}");
+    assert!(stdout(&out).is_empty(), "{args:?}");
+    let text = stderr(&out);
+    assert!(text.contains("`watcher findings`"), "{args:?}: {text}");
+    assert!(text.contains("not implemented"), "{args:?}: {text}");
 }
 
 /// `doctor` is no longer a stub (PR D15).
@@ -197,23 +215,21 @@ fn doctor_runs_for_real() {
 /// An alias reports the command it resolves to, not the alias.
 #[test]
 fn aliases_report_their_canonical_command() {
-    for (alias, canonical) in [
-        (["config", "myapp"], "cage edit"),
-        (["edit", "myapp"], "cage edit"),
-        // `start`, `stop`, `shell` and `exec` used to be here. They
-        // have bodies as of PRs D12, D7 and D10, so they answer "does not
-        // exist" rather than naming themselves as unported — which
-        // `aliases_of_ported_commands_reach_the_body` asserts instead.
-    ] {
-        let args: Vec<&str> = alias.iter().copied().filter(|a| *a != "--").collect();
-        let out = agentcage(&args);
-        assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}: {}", stderr(&out));
-        assert!(
-            stderr(&out).contains(&format!("`{canonical}`")),
-            "{args:?} should resolve to {canonical}: {}",
-            stderr(&out)
-        );
-    }
+    // One row left. `start`, `stop`, `shell` and `exec` used to be
+    // here, and so did `config`/`edit` until `cage edit` gained a body;
+    // they answer "does not exist" rather than naming themselves as
+    // unported, which `aliases_of_ported_commands_reach_the_body`
+    // asserts instead. `watcher ls` is the last alias of a command that
+    // is still a stub — when `watcher findings` lands, this test has
+    // nothing to assert and should go rather than be emptied.
+    let args = ["watcher", "ls", "myapp"];
+    let out = agentcage(&args);
+    assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}: {}", stderr(&out));
+    assert!(
+        stderr(&out).contains("`watcher findings`"),
+        "{args:?} should resolve to `watcher findings`: {}",
+        stderr(&out)
+    );
 }
 
 /// Anything unrecognised is still a usage error, as B1's stub had it.
@@ -308,6 +324,11 @@ fn aliases_of_ported_commands_reach_the_body() {
         vec!["shell", "myapp"],
         vec!["stop", "myapp"],
         vec!["start", "myapp"],
+        // `config` and `edit` moved here from
+        // `aliases_report_their_canonical_command` when `cage edit`
+        // gained a body.
+        vec!["config", "myapp"],
+        vec!["edit", "myapp"],
     ] {
         let out = agentcage_sandboxed(dir.path(), &args);
         assert_eq!(code(&out), 1, "{args:?}: {}", stderr(&out));
@@ -872,5 +893,96 @@ fn an_apple_cage_counts_its_secrets_through_its_own_store() {
     assert!(
         !text.contains("missing"),
         "nothing is missing once the store has it: {text}"
+    );
+}
+
+/// `cage edit`'s refusals, driven through the shipped binary with a
+/// scripted `$EDITOR`.
+///
+/// The command's whole reason to exist is that a bad edit cannot leave
+/// the cage unloadable, so what is asserted is the *refusals*: each one
+/// exits 1, writes the operator's text to `cage.yaml.rejected` so it is
+/// not lost, and leaves `cage.yaml` byte-identical. None of these paths
+/// reaches a backend, which is what lets them run on a runner with no
+/// podman and no Apple CLI.
+#[test]
+fn cage_edit_refuses_a_bad_edit_without_touching_the_config() {
+    let dir = agentcage_state::TestDir::new("binary-cage-edit");
+    let home = dir.path();
+    let paths = agentcage_state::Paths::under(home);
+    let name = "edited";
+    stage_cage(home, name, "container");
+
+    let config_path = paths.stored_config_path(name);
+    let rejected = paths.deployment_dir(name).join("cage.yaml.rejected");
+    let original = std::fs::read_to_string(&config_path).expect("stored config");
+
+    // A scripted editor per case: the argument is the temp file click
+    // hands it, so each script edits that rather than the real config.
+    let script = |body: &str| -> std::path::PathBuf {
+        let path = home.join(format!("ed-{}.sh", body.len()));
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        path
+    };
+
+    let cases: [(&str, &str); 3] = [
+        // Unparseable YAML.
+        ("printf 'a: [b: c\\n' >> \"$1\"", "is not valid YAML"),
+        // A top-level list rather than a mapping.
+        (
+            "printf -- '- a\\n- b\\n' > \"$1\"",
+            "must be a YAML mapping",
+        ),
+        // A rename, which needs state moves this command does not do.
+        (
+            "sed -e 's/^name: .*/name: other/' \"$1\" > \"$1.t\" && mv \"$1.t\" \"$1\"",
+            "renaming a cage via 'cage edit' is not supported",
+        ),
+    ];
+
+    for (body, expected) in cases {
+        let _ = std::fs::remove_file(&rejected);
+        let editor = script(body);
+        let out = agentcage_sandboxed_env(
+            home,
+            &["cage", "edit", name],
+            &[("EDITOR", editor.to_str().expect("utf-8 path"))],
+        );
+        let text = format!("{}{}", stdout(&out), stderr(&out));
+        assert_eq!(code(&out), 1, "{body}: {text}");
+        assert!(text.contains(expected), "{body}: {text}");
+        assert!(
+            text.contains("is unchanged"),
+            "{body}: the refusal must say the original survived: {text}"
+        );
+        assert!(rejected.is_file(), "{body}: the edit was not kept");
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("stored config"),
+            original,
+            "{body}: the stored config was modified by a refused edit"
+        );
+    }
+
+    // An editor that saves nothing is "no changes", exit 0, and no
+    // rejected file — `require_save` in click's terms.
+    let _ = std::fs::remove_file(&rejected);
+    let editor = script("exit 0");
+    let out = agentcage_sandboxed_env(
+        home,
+        &["cage", "edit", name],
+        &[("EDITOR", editor.to_str().expect("utf-8 path"))],
+    );
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{text}");
+    assert!(text.contains("No changes to cage"), "{text}");
+    assert!(!rejected.exists(), "a no-op edit left a rejected file");
+    assert_eq!(
+        std::fs::read_to_string(&config_path).expect("stored config"),
+        original
     );
 }

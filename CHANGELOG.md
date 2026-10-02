@@ -55,8 +55,27 @@ have not changed, only its name.
 
 ### Fixed
 
-- **The `cage edit` stub told operators to run a command that no longer
-  exists.** It is the one command body still unported, and its message said
+- **`cage edit` works.** It was the one command in the tree with no body, so
+  the only way to change a cage's config was to edit the stored `cage.yaml` by
+  hand — which is precisely what the command exists to stop you doing. It now
+  validates the edited YAML before writing anything, keeps a refused edit in
+  `cage.yaml.rejected` so it is not lost, backs the good file up to
+  `cage.yaml.bak`, writes atomically, prints a unified diff, and then says
+  which of your changes applied live and which need a restart or a rebuild.
+  Refuses a rename (that needs state moves this command does not do) and a
+  top-level non-mapping. Verified against the Python on a live cage: the
+  stdout, the stderr and the resulting `cage.yaml` are byte-identical, as are
+  four of the five refusal paths — the fifth differs only in the YAML parser's
+  own problem text, which is the divergence the port already documents for
+  every other YAML error.
+
+  Two things are deliberately not byte-identical, both noted at the code: the
+  unified diff is a plain longest-common-subsequence diff rather than a
+  reimplementation of `difflib.SequenceMatcher` (same output for the edits this
+  command sees; nothing asserts or parses the text), and validation reads the
+  rendered config from memory instead of via a temporary file in the state
+  directory, so a parse-stage message now names the cage's own `cage.yaml`
+  rather than a temp file that has already been deleted. It was the one command body still unported when that message was written, and it said
   "Run the Python `agentcage cage edit` until PR F2 flips the default" — but F2
   *has* flipped: `pyproject.toml` installs no `agentcage` console script, so
   that instruction cannot be followed by anyone who installed from a release.

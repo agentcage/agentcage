@@ -47,10 +47,6 @@ use std::process::{Command, Output};
 
 use agentcage_core::har::json::Json;
 
-/// sysexits' `EX_SOFTWARE`, which every command without a body exits
-/// with.
-const NOT_IMPLEMENTED: i32 = 70;
-
 /// The detector's own status. Not 1: a script that treated "no such
 /// cage" and "this cage predates the layout" alike would retry a
 /// migration forever.
@@ -147,7 +143,10 @@ fn the_guarded_commands_refuse_a_v021_cage() {
         vec!["secret", "rm", "test", "KEY"],
         // PR D11 gave `cage backup` a body and PR D10 the three
         // `domain` commands, all correctly gated; these rows moved up
-        // from the stub list D7 left as a tripwire.
+        // from the stub list D7 left as a tripwire. `cage edit` was the
+        // last of them, and its arrival emptied that list — so the
+        // tripwire test is gone rather than left asserting nothing.
+        vec!["cage", "edit", "test"],
         vec!["cage", "backup", "test"],
         vec!["domain", "list", "test"],
         vec!["domain", "add", "test", "example.com"],
@@ -183,34 +182,6 @@ fn the_root_aliases_refuse_it_too() {
         let out = agentcage(dir.path(), &args);
         assert_eq!(code(&out), LEGACY, "{args:?}: {}", stderr(&out));
     }
-}
-
-/// The commands the Python file guards that this port has not reached.
-///
-/// They are asserted to be *stubs*, not to be guarded, which is the
-/// point: when `cage edit` lands,
-/// this test fails and whoever landed it has to move the row up into
-/// [`the_guarded_commands_refuse_a_v021_cage`]. A guarded command that
-/// quietly arrives ungated is exactly what that would otherwise look
-/// like.
-#[test]
-fn the_unported_guarded_commands_are_still_stubs() {
-    let dir = agentcage_state::TestDir::new("legacy-unported");
-    stage(dir.path(), "test", Some("0.21.5"));
-
-    // Down to one. `cage backup` (PR D11) and the three `domain`
-    // commands (PR D10) started here and moved up into the guarded list
-    // as they gained bodies, which is exactly what this tripwire is for.
-    // When `cage edit` lands, this test has nothing left to guard and
-    // should be deleted rather than emptied.
-    let args = ["cage", "edit", "test"];
-    let out = agentcage(dir.path(), &args);
-    assert_eq!(
-        code(&out),
-        NOT_IMPLEMENTED,
-        "`cage edit` has a body now — move it into the guarded list: {}",
-        stderr(&out)
-    );
 }
 
 // ── exempt ──────────────────────────────────────────────────────────

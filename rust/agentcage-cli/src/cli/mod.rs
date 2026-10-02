@@ -238,7 +238,7 @@ pub(crate) fn dispatch(argv: &[String]) -> ExitCode {
 /// `agentcage rm x` and `agentcage cage destroy x` reach the same body
 /// without the aliases being listed twice.
 fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode> {
-    use crate::cli::cage::{audit, backup, create, lifecycle, logs, session, update, verify};
+    use crate::cli::cage::{audit, backup, create, edit, lifecycle, logs, session, update, verify};
     use crate::cli::context::Ctx;
     use crate::cli::secret;
 
@@ -253,6 +253,7 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
     Some(match path {
         "cage create" => create::main(&Ctx::system(), leaf),
         "cage update" => update::main(&Ctx::system(), leaf),
+        "cage edit" => edit::main(&Ctx::system(), leaf),
         "cage list" => lifecycle::list(&Ctx::system()),
         "cage status" => lifecycle::status(&Ctx::system(), leaf),
         "cage show" => lifecycle::show(&Ctx::system(), &named("name")),

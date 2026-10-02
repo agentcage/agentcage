@@ -817,24 +817,27 @@ by the five preconditions at the top of `AppleBackend::start`.
 | #409 | The "no built image" and egress-image preconditions in `start()` must name the cage and `agentcage cage update <name>` rather than the internal `build_artifacts()`, and must raise the operator-error type the CLI renders as a single `error: …` line. Rust cannot reproduce Python's traceback problem, but it can reproduce the unhelpful message. |
 
 
-### `cage edit` — the one unported command body
+### The remaining unported command bodies
 
-Every other command in the tree has a body; `cage edit` falls through to
-`not_implemented` and exits 70. Found by running it, not by reading: it
-is in no track's remaining list, because D-track's own accounting
-treated the command tree as the deliverable.
+`cage edit` is **done**. Two are left, and both were missed by the same
+accounting error that hid `cage edit`: D-track treated the command
+*tree* as the deliverable, and the tree has been complete for a while,
+so nothing in any track's remaining list named them. Only running them
+finds them.
 
-Its stub message was also stale in a way that mattered. It said "Run
-the Python `agentcage cage edit` until PR F2 flips the default", and F2
-has flipped — `pyproject.toml` installs no console script, so the
-remedy named does not exist for anyone who installed from a release.
-The message now points at the stored `cage.yaml` plus `cage update`,
-and says what that loses: `cage edit` validates before saving and keeps
-the rejected text, so a bad edit cannot leave a cage unloadable.
+| Command | State |
+| :-- | :-- |
+| `watcher findings` (alias `watcher ls`) | stub, exits 70 |
+| `watcher status` | stub, exits 70 |
 
-Porting it is small — `$EDITOR` round trip, validate, atomic save,
-retain the rejected text — and it is the last thing standing between
-the binary and a complete command surface.
+Two tripwire tests exist specifically to force the issue when they
+land: `binary.rs`'s `a_parsed_command_fails_loudly_and_names_itself`
+and `aliases_report_their_canonical_command` each hold exactly one row
+now, and both say in a comment that the test should be **deleted**
+rather than emptied when that row gains a body. `cage edit`'s arrival
+emptied `legacy_cage.rs`'s `the_unported_guarded_commands_are_still_stubs`
+and that test is gone, with `cage edit` moved up into the guarded list —
+which is what the tripwire was for.
 
 ### Track E — E6 and E7, the two surfaces E5 left
 
