@@ -4503,6 +4503,26 @@ class TestDeciderApiKeyStagingScheme:
         assert "protocol_relays env" not in err
 
 
+def _stub_container_cli(monkeypatch):
+    """Make every `container`(1) call a no-op.
+
+    `destroy_resources` runs `container stop/delete/network delete/image
+    delete` before it reaches the part under test, and on a host without
+    Apple's CLI `ac_cli.run` raises `FileNotFoundError` rather than
+    returning non-zero. The CI runners are Linux, so a test that reaches
+    the real wrapper passes only on a Mac — which is how these three
+    went green locally and red on CI.
+    """
+    monkeypatch.setattr(
+        ac_cli, "run",
+        lambda _argv, **_kw: type(
+            "CP", (), {"returncode": 0, "stdout": "", "stderr": ""},
+        )(),
+    )
+    monkeypatch.setattr(ac_cli, "inspect", lambda _n: None)
+    monkeypatch.setattr(ac_cli, "image_inspect", lambda _i: None)
+
+
 def _apple_cage_with_plaintext_secrets(tmp_path, monkeypatch, name="demo"):
     """A deployed apple cage whose store is the plaintext file store.
 
@@ -4511,6 +4531,7 @@ def _apple_cage_with_plaintext_secrets(tmp_path, monkeypatch, name="demo"):
     touching the operator's login keychain (and so they run on Linux CI,
     where the keychain does not exist at all).
     """
+    _stub_container_cli(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".local" / "share"))
@@ -4586,6 +4607,7 @@ def test_destroy_survives_an_unresolvable_store(tmp_path, monkeypatch):
     cannot be, which is strictly worse than a leftover the operator can
     find with `security find-generic-password`.
     """
+    _stub_container_cli(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
     from agentcage.backends.apple_container import AppleContainerBackend
 
