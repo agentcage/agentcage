@@ -55,6 +55,21 @@ have not changed, only its name.
 
 ### Fixed
 
+- **A cage would not start at all from a git worktree or submodule.** Every
+  shipped scaffold masks `/workspace/.git/hooks` (issue #170, so a caged agent
+  cannot plant a git hook the host later runs). The runtime makes a nested
+  mask's mount point by `mkdir`ing through the bind, which works when the path
+  is absent — but in a worktree or submodule `.git` is a *file* holding a
+  `gitdir:` pointer, so it answers `ENOTDIR` and nothing starts:
+  `agentcage run <scaffold>` from a worktree died with `vmexec error: mount
+  failed with errno 20: failed to resolve '/workspace/.git/hooks' in rootfs`,
+  naming neither the mask nor the reason. Such masks are now skipped with a
+  warning that names the blocking path and says why. That relaxes #170 only
+  where it provably cannot apply: in a worktree the real hooks directory lives
+  in the main repository's gitdir, which is not under the bind, so there was
+  nothing reachable through `/workspace` for the mask to protect. Every other
+  mask on the same cage still applies — the skip is per target.
+
 - **`cage destroy` left an `apple-container` cage's secrets in the macOS
   keychain** while telling the operator it had removed them. The confirmation
   prompt says "Scoped secrets will also be removed." and the container backend

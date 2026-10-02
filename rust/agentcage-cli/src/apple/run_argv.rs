@@ -252,6 +252,12 @@ pub struct CageInputs<'a> {
     pub volume_entries: &'a [String],
     /// `_tmpfs_copyup_seeds(...)`.
     pub copyup_seeds: &'a [CopyupSeed],
+    /// Masks whose mount point cannot be made on this host.
+    ///
+    /// Resolved by the caller, which has the filesystem; this stays a
+    /// value so the argv remains a function of values and the
+    /// Mac-only condition is still assertable from Linux CI.
+    pub unmaskable: &'a [agentcage_core::volume_mounts::UnmaskableMask],
 }
 
 /// `start()` step 5 — the cage microVM's `container run` argv.
@@ -409,6 +415,14 @@ pub fn cage_argv(
         // seeded copy from being masked by an empty mount on a runtime
         // that decided to keep both.
         if np_tmpfs_targets.contains(&target) {
+            continue;
+        }
+        // A mask whose mount point cannot be created on this host — an
+        // ancestor exists and is not a directory, which is exactly what
+        // a git worktree's `.git` file is. Emitting it makes the runtime
+        // answer ENOTDIR and the cage never starts. Resolved by the
+        // caller, which has the filesystem; see `unmaskable_masks`.
+        if inputs.unmaskable.iter().any(|m| m.target == target) {
             continue;
         }
         argv.push("--tmpfs".to_owned());
@@ -657,6 +671,7 @@ mod tests {
                 placeholders: &placeholders,
                 volume_entries: &[],
                 copyup_seeds: &[],
+                unmaskable: &[],
             },
             &|_| true,
         );
@@ -702,6 +717,7 @@ mod tests {
                 placeholders: &placeholders,
                 volume_entries: &[],
                 copyup_seeds: &[],
+                unmaskable: &[],
             },
             &|_| true,
         );
@@ -737,6 +753,7 @@ mod tests {
                 placeholders: &placeholders,
                 volume_entries: &volumes,
                 copyup_seeds: &[],
+                unmaskable: &[],
             },
             &|_| true,
         );
@@ -781,6 +798,7 @@ mod tests {
                 placeholders: &placeholders,
                 volume_entries: &volumes,
                 copyup_seeds: &[],
+                unmaskable: &[],
             },
             &|_| false,
         );
@@ -808,6 +826,7 @@ mod tests {
                     placeholders: &placeholders,
                     volume_entries: &[],
                     copyup_seeds: &[],
+                    unmaskable: &[],
                 },
                 &|_| true,
             )
@@ -873,6 +892,52 @@ mod tests {
         );
     }
 
+    /// A mask the host cannot accommodate is not emitted.
+    ///
+    /// The git-worktree case: `.git` is a file, so the runtime cannot
+    /// `mkdir` `/workspace/.git/hooks` through the bind and answers
+    /// ENOTDIR — the cage never starts. The target is resolved by the
+    /// caller (which has the filesystem) and arrives here as a value,
+    /// which is what lets this be asserted from Linux CI.
+    #[test]
+    fn a_mask_the_host_cannot_make_is_skipped() {
+        use agentcage_core::volume_mounts::UnmaskableMask;
+
+        let staged = BTreeSet::new();
+        let placeholders = BTreeMap::new();
+        let volumes = vec!["/home/luca/wt:/workspace:rw".to_owned()];
+        let blocked = [UnmaskableMask {
+            target: "/workspace/.git/hooks".to_owned(),
+            blocker: "/home/luca/wt/.git".to_owned(),
+        }];
+        let argv = cage_argv(
+            "demo",
+            "demo-net",
+            "img",
+            "9.9.9",
+            &meta(r#"{"tmpfs": ["/workspace/.git/hooks", "/tmp/scratch"]}"#),
+            &CageInputs {
+                public_certs: Path::new("/s/public-certs"),
+                egress_config: Path::new("/s/egress-config"),
+                egress_ip: "10.0.0.2",
+                staged_envs: &staged,
+                placeholders: &placeholders,
+                volume_entries: &volumes,
+                copyup_seeds: &[],
+                unmaskable: &blocked,
+            },
+            &|_| true,
+        );
+        let masks = pairs(&argv, "--tmpfs");
+        assert!(
+            !masks.contains(&"/workspace/.git/hooks".to_owned()),
+            "the unmakeable mask was emitted and the cage will not start: {masks:?}"
+        );
+        // Every *other* mask still applies — skipping is per target, not
+        // a blanket retreat from masking.
+        assert!(masks.contains(&"/tmp/scratch".to_owned()), "{masks:?}");
+    }
+
     /// The image is the last element on both, because `container run`
     /// takes it positionally after the flags.
     #[test]
@@ -903,6 +968,7 @@ mod tests {
                 placeholders: &placeholders,
                 volume_entries: &[],
                 copyup_seeds: &[],
+                unmaskable: &[],
             },
             &|_| true,
         );

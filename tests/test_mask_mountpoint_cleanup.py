@@ -377,3 +377,82 @@ def test_teardown_handles_a_project_path_with_a_space_and_a_quote(tmp_path):
     _run(stop)
 
     assert list(project.iterdir()) == []
+
+
+
+class TestUnmaskableMasks:
+    """A mask whose mount point cannot be created *at all*.
+
+    The companion to everything above. That machinery assumes the runtime
+    can `mkdir` the mount point through the bind, which holds when the
+    path is absent. It does not hold when an ancestor exists and is **not
+    a directory**: the runtime answers ENOTDIR and the cage never starts.
+
+    A git **worktree** or **submodule** is exactly that case — `.git` is a
+    file holding a `gitdir:` pointer — so every shipped scaffold's
+    `/workspace/.git/hooks` mask made `agentcage run <scaffold>` fail
+    there, with a runtime error naming neither the mask nor the reason.
+    """
+
+    TMPFS = ["/workspace/.git/hooks:rw,size=64M"]
+    MOUNTS = [("/workspace", "/proj")]
+
+    def test_a_git_file_blocks_the_mask(self):
+        assert volume_mounts.unmaskable_masks(
+            self.TMPFS, self.MOUNTS,
+            lexists=lambda p: p == "/proj/.git", isdir=lambda _p: False,
+        ) == [("/workspace/.git/hooks", "/proj/.git")]
+
+    def test_an_absent_path_is_maskable(self):
+        """The common case, and the one that must not regress: the runtime
+        creates the whole chain, and #320's bookkeeping retires it."""
+        assert volume_mounts.unmaskable_masks(
+            self.TMPFS, self.MOUNTS,
+            lexists=lambda _p: False, isdir=lambda _p: False,
+        ) == []
+
+    def test_a_real_git_directory_is_maskable(self):
+        assert volume_mounts.unmaskable_masks(
+            self.TMPFS, self.MOUNTS,
+            lexists=lambda p: p == "/proj/.git",
+            isdir=lambda p: p == "/proj/.git",
+        ) == []
+
+    def test_a_dangling_symlink_blocks_it_too(self):
+        """`lexists`, not `exists`: the runtime cannot mkdir through a
+        dangling symlink either, and `exists` would call it absent."""
+        assert volume_mounts.unmaskable_masks(
+            self.TMPFS, self.MOUNTS,
+            lexists=lambda p: p == "/proj/.git", isdir=lambda _p: False,
+        ) == [("/workspace/.git/hooks", "/proj/.git")]
+
+    def test_the_outermost_blocker_is_named(self):
+        """Name the shallowest blocker: it is the one the operator has to
+        look at, and the deeper ones are consequences of it."""
+        assert volume_mounts.unmaskable_masks(
+            ["/workspace/a/b/c:rw"], [("/workspace", "/proj")],
+            lexists=lambda p: p in ("/proj/a", "/proj/a/b"),
+            isdir=lambda _p: False,
+        ) == [("/workspace/a/b/c", "/proj/a")]
+
+    def test_a_mask_with_no_host_bind_is_never_blocked(self):
+        """No enclosing mount, or one that does not write through to the
+        host, means the mount point lands in the container's own layer —
+        nothing on the host can block it. An `np` bind reports an empty
+        source for exactly that reason."""
+        assert volume_mounts.unmaskable_masks(
+            ["/tmp/scratch:rw"], self.MOUNTS,
+            lexists=lambda _p: True, isdir=lambda _p: False,
+        ) == []
+        assert volume_mounts.unmaskable_masks(
+            self.TMPFS, [("/workspace", "")],
+            lexists=lambda _p: True, isdir=lambda _p: False,
+        ) == []
+
+    def test_it_shares_one_mapping_with_the_bookkeeping(self):
+        """Both answer about the same host paths, via `mask_target_chains`.
+        If they drifted, a mask could be skipped at start while its
+        cleanup candidates were still recorded for teardown."""
+        assert volume_mounts.mask_mountpoint_dirs(self.TMPFS, self.MOUNTS) == {
+            "/proj": ["/proj/.git/hooks", "/proj/.git"],
+        }

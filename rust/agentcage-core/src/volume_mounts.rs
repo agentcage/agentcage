@@ -402,6 +402,86 @@ pub fn mask_mountpoint_dirs(
     result
 }
 
+/// A `tmpfs:` mask whose mount point cannot be created at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnmaskableMask {
+    /// The cage-side target the operator asked to mask.
+    pub target: String,
+    /// The host path that blocks it — exists, and is not a directory.
+    pub blocker: String,
+}
+
+/// `unmaskable_masks` — the masks that would fail at mount time.
+///
+/// A mask nested under a host bind needs its mount point to exist, and
+/// the runtime creates it by `mkdir`ing *through* the bind. That works
+/// when the path is absent. It cannot work when an ancestor already
+/// exists and is **not a directory**: the runtime answers `ENOTDIR` and
+/// the cage does not start at all.
+///
+/// The live case is a git **worktree** or **submodule**, where `.git` is
+/// a file holding a `gitdir:` pointer rather than a directory. Every
+/// shipped scaffold masks `/workspace/.git/hooks` (issue #170, to stop
+/// a caged agent planting a hook the host later runs), so `agentcage
+/// run <scaffold>` against a worktree died with
+///
+/// ```text
+/// vmexec error: mount failed with errno 20:
+/// failed to resolve '/workspace/.git/hooks' in rootfs
+/// ```
+///
+/// — an opaque runtime error naming neither the mask nor the reason.
+///
+/// Callers skip what this names and say so. That relaxes #170 only
+/// where it provably cannot apply: in a worktree the real hooks
+/// directory lives in the main repository's gitdir, which is not under
+/// the bind, so there is nothing reachable through `/workspace` for the
+/// mask to have protected.
+///
+/// `lexists` rather than `exists`, deliberately: a dangling symlink is
+/// not a directory either, and the runtime cannot `mkdir` through one.
+#[must_use]
+pub fn unmaskable_masks(
+    tmpfs: &[String],
+    mount_targets: &[MountTarget],
+    lexists: &dyn Fn(&str) -> bool,
+    is_dir: &dyn Fn(&str) -> bool,
+) -> Vec<UnmaskableMask> {
+    let mut blocked = Vec::new();
+    for spec in tmpfs {
+        let target = tmpfs_spec_target(spec).trim_end_matches('/');
+        if !target.starts_with('/') {
+            continue;
+        }
+        let Some(enclosing) = enclosing_mount(target, mount_targets) else {
+            continue;
+        };
+        if enclosing.source.is_empty() || target == enclosing.target {
+            continue;
+        }
+        let parts: Vec<&str> = target[enclosing.target.len()..]
+            .split('/')
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.is_empty() || parts.iter().any(|p| *p == "." || *p == "..") {
+            continue;
+        }
+        // Shallowest first: the outermost non-directory is the one to
+        // name, because it is the one the operator has to look at.
+        for depth in 1..=parts.len() {
+            let path = join_host_path(enclosing.source, &parts[..depth]);
+            if lexists(&path) && !is_dir(&path) {
+                blocked.push(UnmaskableMask {
+                    target: target.to_owned(),
+                    blocker: path,
+                });
+                break;
+            }
+        }
+    }
+    blocked
+}
+
 /// A `tmpfs:` mask that asked for copy-up, resolved against the mount table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaskCopyupEntry {

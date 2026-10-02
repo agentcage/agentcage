@@ -714,6 +714,31 @@ impl AppleBackend<'_> {
             output::echo_err(warning);
         }
 
+        // Masks the host cannot accommodate: an ancestor of the target
+        // exists and is not a directory, which is exactly what a git
+        // worktree's or submodule's `.git` file is. Emitting those makes
+        // the runtime answer ENOTDIR and the cage never starts — the
+        // failure `agentcage run <scaffold>` hit in a worktree, with an
+        // error naming neither the mask nor the reason. Skip them and
+        // say so; see `unmaskable_masks` for why that costs #170
+        // nothing here.
+        let unmaskable = agentcage_core::volume_mounts::unmaskable_masks(
+            &tmpfs,
+            &super::volumes::mask_mount_targets(&volumes.argv),
+            &|path| std::fs::symlink_metadata(path).is_ok(),
+            &|path| std::fs::metadata(path).is_ok_and(|m| m.is_dir()),
+        );
+        for mask in &unmaskable {
+            output::echo_err(&format!(
+                "warning: skipping tmpfs mask '{}' — '{}' is a file (this \
+                 project is a git worktree or submodule), so the mount point \
+                 cannot be created. The hooks directory it protects (#170) is \
+                 not reachable through this bind either; it lives in the main \
+                 repository.",
+                mask.target, mask.blocker
+            ));
+        }
+
         let placeholders = self.placeholders(name, &meta);
         let inputs = CageInputs {
             public_certs: &public_certs_dir,
@@ -723,6 +748,7 @@ impl AppleBackend<'_> {
             placeholders: &placeholders,
             volume_entries: &volumes.argv,
             copyup_seeds: &seeds.seeds,
+            unmaskable: &unmaskable,
         };
         let argv = cage_argv(
             name,

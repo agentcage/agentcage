@@ -65,6 +65,7 @@ from agentcage.volume_mounts import (
     mask_copyup_entries,
     mask_mountpoint_dirs,
     split_volume_spec,
+    unmaskable_masks,
     validate_non_persistent_volume,
 )
 
@@ -1874,6 +1875,26 @@ class AppleContainerBackend:
         # therefore always mounted before `/workspace/.git/hooks` (depth 3),
         # and the runtime creates the missing mountpoint. We still emit
         # after the volumes so the argv reads in mount order.
+        mount_targets_for_masks = self._mask_mount_targets(volume_entries)
+        # A mask whose host-side mount point cannot be created at all —
+        # an ancestor exists and is not a directory, which is what a git
+        # worktree's `.git` file is. The runtime answers ENOTDIR and the
+        # cage does not start; see `unmaskable_masks`. Skipping is the
+        # only option that leaves the cage usable, and it costs nothing
+        # #170 was buying: in a worktree the hooks directory is in the
+        # main repository's gitdir, not under this bind.
+        unmaskable = dict(unmaskable_masks(
+            meta.get("tmpfs") or [], mount_targets_for_masks,
+        ))
+        for tmpfs_target, blocker in unmaskable.items():
+            click.echo(
+                f"warning: skipping tmpfs mask {tmpfs_target!r} — "
+                f"{blocker!r} is a file (this project is a git worktree or "
+                f"submodule), so the mount point cannot be created. The "
+                f"hooks directory it protects (#170) is not reachable "
+                f"through this bind either; it lives in the main repository.",
+                err=True,
+            )
         for tmpfs_target in self._tmpfs_targets(meta.get("tmpfs") or []):
             # An `np` bind already owns this target with a tmpfs of its own
             # (seeded from the host lowerdir by cage-init stage C'); a second
@@ -1881,6 +1902,8 @@ class AppleContainerBackend:
             # anyway. Skip it so the seeded copy is not masked by an empty
             # mount on a runtime that keeps both.
             if tmpfs_target in np_tmpfs_targets:
+                continue
+            if tmpfs_target in unmaskable:
                 continue
             cage_argv += ["--tmpfs", tmpfs_target]
         # Emulated `tmpcopyup` (#328). Apple's `--tmpfs` has no option
