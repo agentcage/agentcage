@@ -34,7 +34,9 @@ from agentcage.config import load_config, validate_config, _LEVEL_ORDER
 from agentcage.podman import Podman
 from agentcage.backends import get_backend
 from agentcage import state, systemd, terminal
-from agentcage.scaffold_brief import stage_scaffold_assets
+from agentcage.scaffold_brief import (
+    stage_scaffold_assets, staged_asset_differs, staged_asset_sources,
+)
 from agentcage.lima.instance import LimaInstance
 from agentcage.services import (
     expected_secrets as _expected_secrets,
@@ -708,7 +710,8 @@ def _check_restore_build_context(manifest: dict, config_src: Path) -> None:
 
 
 def _stage_build_context(src_dir: Path, dest_dir: Path,
-                         *, clobber: bool = True) -> None:
+                         *, clobber: bool = True,
+                         clobber_names: frozenset[str] = frozenset()) -> None:
     """Copy a Containerfile's sibling build inputs into a cage's state dir.
 
     Stages both files *and* directories so a later ``cage update`` (without
@@ -720,13 +723,22 @@ def _stage_build_context(src_dir: Path, dest_dir: Path,
     cage.yaml-style configs and ``.j2`` templates are skipped; build noise
     (``__pycache__``, ``.git``, ``node_modules``, ...) is filtered out of
     copied directories. With *clobber* false, entries already present in
-    *dest_dir* are left untouched.
+    *dest_dir* are left untouched — except for any named in
+    *clobber_names*, which are overwritten either way.
+
+    That exemption exists for ``init --force``. ``init`` stages into the
+    operator's own directory, so it cannot clobber wholesale (a project's
+    ``README.md`` is not ours to replace), but the entries the image is
+    built from have to be the scaffold's or the config we wrote beside
+    them is a lie. ``init`` refuses on those unless forced, and when it is
+    forced they must actually be replaced — see
+    :func:`_scaffold_stage_conflicts`.
     """
     for f in src_dir.iterdir():
         if f.suffix in _BUILD_CONTEXT_SKIP_SUFFIXES:
             continue
         dest = dest_dir / f.name
-        if not clobber and dest.exists():
+        if not clobber and dest.exists() and f.name not in clobber_names:
             continue
         if f.is_dir():
             shutil.copytree(
@@ -734,6 +746,86 @@ def _stage_build_context(src_dir: Path, dest_dir: Path,
             )
         elif f.is_file():
             shutil.copy2(str(f), str(dest))
+
+
+def _scaffold_build_inputs(src_cf: Path) -> list[str]:
+    """Entries beside *src_cf* whose bytes decide what the image *is*.
+
+    The Containerfile itself, plus every sibling :func:`_stage_build_context`
+    would stage that the Containerfile actually ``COPY``s — reusing
+    ``scaffold_brief._copy_references`` so there is one definition of what
+    a build-context reference is, rather than a second, subtly different
+    parse of ``COPY``.
+
+    Everything else a scaffold dir holds is deliberately *not* here. A
+    scaffold's ``README.md`` is staged for the operator to read; the build
+    never opens it, so an operator's own README is theirs to keep and is
+    not a conflict.
+
+    Regular files only. A ``COPY``ed sibling *directory* is a build input
+    too, but :func:`_stage_build_context` copies directories through
+    ``_BUILD_CONTEXT_IGNORE``, so a staged copy legitimately lacks the
+    ``node_modules`` or ``__pycache__`` its source has and would compare
+    as different forever — a refusal with no way out but ``--force``.
+    Detecting that honestly needs the ignore filter replicated in the
+    comparison; no scaffold ships a ``COPY``ed directory (the canonical
+    ``skills/agentcage`` is staged from its own source, below), so the
+    narrower rule costs nothing real and cannot cry wolf.
+    """
+    from agentcage.scaffold_brief import _copy_references
+
+    names = [src_cf.name]
+    for entry in sorted(src_cf.parent.iterdir()):
+        if entry.name == src_cf.name or not entry.is_file():
+            continue
+        if entry.suffix in _BUILD_CONTEXT_SKIP_SUFFIXES:
+            continue
+        if _copy_references(src_cf, entry.name):
+            names.append(entry.name)
+    return names
+
+
+def _scaffold_stage_conflicts(src_cf: Path, dest_dir: Path,
+                              scaffold: str) -> list[str]:
+    """Paths in *dest_dir* that ``init`` must not quietly stage over.
+
+    ``init`` stages a scaffold's build context into the operator's working
+    directory, not into a cage's private state dir, and both of the
+    policies that are right for a state dir are wrong there:
+
+    * :func:`_stage_build_context` is called with ``clobber=False``, which
+      silently *keeps* what is already present. For the Containerfile that
+      is a trap. The config ``init`` writes says
+      ``image: localhost/agentcage-scaffold-<name>`` and
+      ``containerfile: Containerfile``, so ``cage create`` then builds the
+      operator's unrelated Containerfile and tags the result with the
+      scaffold's name. The wrapper's ``FROM`` picks that up and the first
+      symptom is a build failure deep inside the wrapper (``useradd: not
+      found`` for a scaffold that has ``useradd``) with nothing pointing
+      back at the cause — or, if the stale base happens to have the tools,
+      no symptom at all and a cage running an image its own name denies.
+    * :func:`stage_scaffold_assets` always refreshes a stale copy, which
+      silently *overwrites* a project's own ``AGENTS.md`` — a file many
+      repos keep at the root, this one included.
+
+    Both get the same answer: name the conflict and refuse, exactly as
+    ``init`` already treats an existing ``cage.yaml``, with the documented
+    ``--force`` as the single override. The scaffold owns its build
+    inputs; an operator must never be left holding a config and a
+    Containerfile that disagree.
+
+    Returns the conflicting build-context-relative paths, sorted.
+    """
+    conflicts: set[str] = set()
+    for name in _scaffold_build_inputs(src_cf):
+        dest = dest_dir / name
+        if dest.exists() and staged_asset_differs(src_cf.parent / name, dest):
+            conflicts.add(name)
+    for rel, source in staged_asset_sources(src_cf, scaffold):
+        dest = dest_dir / rel
+        if dest.exists() and staged_asset_differs(source, dest):
+            conflicts.add(rel.as_posix())
+    return sorted(conflicts)
 
 
 def _restart_cage(name: str, cfg=None):
@@ -960,27 +1052,62 @@ def init(name: str | None, output: str, image: str, isolation: str | None,
         click.echo(f"error: {dest} already exists (use --force to overwrite)", err=True)
         sys.exit(1)
 
+    from agentcage.init import load_scaffold_meta, run_scaffold_setup, resolve_scaffold
+
+    meta = load_scaffold_meta(scaffold) if scaffold else None
+    scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
+
+    # Every Containerfile this run would stage beside the config.
+    staged_cfs: list[Path] = []
+    if scaffold and meta and scaffold_dir is not None:
+        for entry in meta.get("build", []):
+            if "containerfile" in entry:
+                src_cf = scaffold_dir / entry["containerfile"]
+                if src_cf.is_file():
+                    staged_cfs.append(src_cf)
+
+    # The staging conflict check runs HERE, before the config is written
+    # and before run_scaffold_setup builds anything. Refusing after either
+    # would leave precisely the half-applied state this exists to prevent:
+    # a cage.yaml naming the scaffold's image next to a Containerfile that
+    # is not the scaffold's. See _scaffold_stage_conflicts.
+    if not force and scaffold:
+        conflicts = sorted({
+            path
+            for src_cf in staged_cfs
+            for path in _scaffold_stage_conflicts(src_cf, dest.parent, scaffold)
+        })
+        if conflicts:
+            click.echo(
+                f"error: {dest.parent} already has files that differ from "
+                f"scaffold {scaffold!r}: {', '.join(conflicts)}\n"
+                f"  cage.yaml names the scaffold's image, but `cage create` "
+                f"would build these instead — the cage would not be the "
+                f"image its name claims. Move them aside, or pass --force "
+                f"to overwrite them.",
+                err=True,
+            )
+            sys.exit(1)
+
     content = render_config(name, image=image, isolation=isolation, scaffold=scaffold, port=port)
     dest.write_text(content)
     click.echo(f"Created {dest}")
 
-    from agentcage.init import load_scaffold_meta, run_scaffold_setup, resolve_scaffold
-
-    meta = load_scaffold_meta(scaffold) if scaffold else None
     if scaffold and meta:
         run_scaffold_setup(scaffold, name, str(dest), isolation=isolation)
-        # Copy Containerfile and sibling build context files from scaffold
-        scaffold_dir_path = resolve_scaffold(scaffold)
-        if scaffold_dir_path is not None:
-            for entry in meta.get("build", []):
-                if "containerfile" in entry:
-                    src_cf = scaffold_dir_path / entry["containerfile"]
-                    if src_cf.is_file():
-                        _stage_build_context(
-                            src_cf.parent, dest.parent, clobber=False,
-                        )
-                        stage_scaffold_assets(src_cf, dest.parent, scaffold)
-    scaffold_dir = resolve_scaffold(scaffold) if scaffold else None
+        # Copy Containerfile and sibling build context files from scaffold.
+        # clobber stays False so an operator's unrelated files (a project
+        # README) survive, but --force must actually replace the build
+        # inputs it was given permission to replace — a refusal that then
+        # kept the stale file would be the original bug with a prompt.
+        for src_cf in staged_cfs:
+            _stage_build_context(
+                src_cf.parent, dest.parent, clobber=False,
+                clobber_names=frozenset(
+                    _scaffold_build_inputs(src_cf) if force else ()
+                ),
+            )
+            stage_scaffold_assets(src_cf, dest.parent, scaffold)
     if meta and meta.get("next_steps"):
         click.echo("\nNext steps:")
         for i, step in enumerate(meta["next_steps"], 1):

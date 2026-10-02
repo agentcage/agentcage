@@ -379,7 +379,7 @@ pub(crate) fn stage_context(config: &Config, config_path: &Path, state_dir: &Pat
         return;
     }
     let context = source.parent().unwrap_or(Path::new("."));
-    if let Err(error) = agentcage_cli::staging::stage_build_context(context, state_dir, true) {
+    if let Err(error) = agentcage_cli::staging::stage_build_context(context, state_dir, true, &[]) {
         eprintln!("warning: could not stage the build context: {error}");
     }
     // The return value says whether anything was written, which only

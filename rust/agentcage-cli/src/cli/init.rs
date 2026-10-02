@@ -75,8 +75,9 @@ pub(crate) fn main(ctx: &Ctx, matches: &ArgMatches) -> ExitCode {
 #[expect(
     clippy::too_many_lines,
     reason = "one body, matching `cli.py:663`. The order is observable: \
-              the config is written before the scaffold builds, and the \
-              build context is frozen after."
+              the staging conflicts are refused before anything is \
+              written, the config is written before the scaffold builds, \
+              and the build context is frozen after."
 )]
 fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     let scaffolds = scaffolds(ctx)?;
@@ -133,7 +134,8 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     let output = matches
         .get_one::<String>("output")
         .map_or_else(|| PathBuf::from("cage.yaml"), PathBuf::from);
-    if output.exists() && !matches.get_flag("force") {
+    let force = matches.get_flag("force");
+    if output.exists() && !force {
         eprintln!(
             "error: {} already exists (use --force to overwrite)",
             output.display()
@@ -167,17 +169,56 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ExitCode::from(EXIT_FAILURE)
     })?;
 
+    let meta = scaffold.and_then(|name| scaffolds.meta(name));
+    let dest_dir = output.parent().filter(|p| !p.as_os_str().is_empty());
+    let dest_dir = dest_dir.map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+
+    // Every Containerfile this run would stage beside the config.
+    let scaffold_dir = scaffold.and_then(|name| scaffolds.resolve(name));
+    let mut staged_cfs: Vec<PathBuf> = Vec::new();
+    if let (Some(meta), Some(dir)) = (meta.as_ref(), scaffold_dir.as_deref()) {
+        for entry in &meta.build {
+            if let Some(containerfile) = &entry.containerfile {
+                let source = dir.join(containerfile);
+                if source.is_file() {
+                    staged_cfs.push(source);
+                }
+            }
+        }
+    }
+
+    // The staging conflict check runs HERE, before the config is written
+    // and before `run_scaffold_setup` builds anything. Refusing after
+    // either would leave exactly the half-applied state this exists to
+    // prevent: a cage.yaml naming the scaffold's image next to a
+    // Containerfile that is not the scaffold's. See
+    // `staging::stage_conflicts`.
+    if let Some(scaffold) = scaffold.filter(|_| !force) {
+        let conflicts: std::collections::BTreeSet<String> = staged_cfs
+            .iter()
+            .flat_map(|source| agentcage_cli::staging::stage_conflicts(source, &dest_dir, scaffold))
+            .collect();
+        if !conflicts.is_empty() {
+            eprintln!(
+                "error: {} already has files that differ from scaffold {}: {}\n  \
+                 cage.yaml names the scaffold's image, but `cage create` would \
+                 build these instead — the cage would not be the image its name \
+                 claims. Move them aside, or pass --force to overwrite them.",
+                dest_dir.display(),
+                agentcage_core::python::repr_str(scaffold),
+                conflicts.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+            return Err(ExitCode::from(EXIT_FAILURE));
+        }
+    }
+
     if let Err(error) = std::fs::write(&output, &content) {
         eprintln!("error: {}: {error}", output.display());
         return Err(ExitCode::from(EXIT_FAILURE));
     }
     println!("Created {}", output.display());
 
-    let meta = scaffold.and_then(|name| scaffolds.meta(name));
-    let dest_dir = output.parent().filter(|p| !p.as_os_str().is_empty());
-    let dest_dir = dest_dir.map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-
-    if let (Some(scaffold), Some(meta)) = (scaffold, meta.as_ref()) {
+    if let Some(scaffold) = scaffold.filter(|_| meta.is_some()) {
         agentcage_cli::scaffold::run_scaffold_setup(
             &scaffolds,
             ctx.runner.as_ref(),
@@ -198,27 +239,31 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         // was just written, so `cage create -c <that config>` builds
         // from a tree the operator can see and edit — and so a
         // Containerfile that `COPY`s `AGENTS.md` resolves.
-        if let Some(dir) = scaffolds.resolve(scaffold) {
-            for entry in &meta.build {
-                let Some(containerfile) = &entry.containerfile else {
-                    continue;
-                };
-                let source = dir.join(containerfile);
-                if !source.is_file() {
-                    continue;
-                }
-                let build_context = source.parent().unwrap_or(Path::new("."));
-                if let Err(error) =
-                    agentcage_cli::staging::stage_build_context(build_context, &dest_dir, false)
-                {
-                    eprintln!("warning: could not stage the build context: {error}");
-                }
-                let _ = agentcage_cli::staging::stage_scaffold_assets(&source, &dest_dir, scaffold);
+        //
+        // `clobber` stays false so an operator's unrelated files (a
+        // project README) survive, but `--force` must actually replace
+        // the build inputs it was given permission to replace: a
+        // refusal that then kept the stale file would be the original
+        // bug with a prompt.
+        for source in &staged_cfs {
+            let build_context = source.parent().unwrap_or(Path::new("."));
+            let clobber_names = if force {
+                agentcage_cli::staging::build_inputs(source)
+            } else {
+                Vec::new()
+            };
+            if let Err(error) = agentcage_cli::staging::stage_build_context(
+                build_context,
+                &dest_dir,
+                false,
+                &clobber_names,
+            ) {
+                eprintln!("warning: could not stage the build context: {error}");
             }
+            let _ = agentcage_cli::staging::stage_scaffold_assets(source, &dest_dir, scaffold);
         }
     }
 
-    let scaffold_dir = scaffold.and_then(|name| scaffolds.resolve(name));
     match meta.as_ref().filter(|meta| !meta.next_steps.is_empty()) {
         Some(meta) => {
             println!();

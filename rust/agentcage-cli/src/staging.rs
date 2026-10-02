@@ -50,14 +50,26 @@ fn is_deleted_marker(name: &str) -> bool {
 /// rebuild with only its sibling *files* staged.
 ///
 /// With `clobber` false, entries already present in `dest` are left
-/// alone. Nothing in this PR passes false — `cage restore` does — but
-/// the flag is part of the function's contract and dropping it would
-/// mean a second, subtly different copier later.
+/// alone — except any named in `clobber_names`, which are overwritten
+/// either way.
+///
+/// That exemption is `init --force`. `init` stages into the operator's
+/// own directory, so it cannot clobber wholesale (a project's
+/// `README.md` is not ours to replace), but the entries the image is
+/// built from have to be the scaffold's or the config written beside
+/// them is a lie. `init` refuses on those unless forced, and a force
+/// that then kept the stale file would be the bug with a prompt. See
+/// [`stage_conflicts`].
 ///
 /// # Errors
 ///
 /// [`io::Error`] on a failed read or copy.
-pub fn stage_build_context(source: &Path, dest: &Path, clobber: bool) -> io::Result<()> {
+pub fn stage_build_context(
+    source: &Path,
+    dest: &Path,
+    clobber: bool,
+    clobber_names: &[String],
+) -> io::Result<()> {
     fs::create_dir_all(dest)?;
     let mut entries: Vec<_> = fs::read_dir(source)?.collect::<Result<_, _>>()?;
     // `Path.iterdir()` is directory order, which is arbitrary; sorting
@@ -77,7 +89,7 @@ pub fn stage_build_context(source: &Path, dest: &Path, clobber: bool) -> io::Res
             continue;
         }
         let target = dest.join(name.as_ref());
-        if !clobber && target.exists() {
+        if !clobber && target.exists() && !clobber_names.iter().any(|n| *n == *name) {
             continue;
         }
         let file_type = entry.file_type()?;
@@ -221,13 +233,213 @@ fn context_ships(containerfile: &Path, relative: &str) -> bool {
         .is_some_and(|dir| dir.join(relative).exists())
 }
 
-fn stage_brief(containerfile: &Path, dest: &Path, scaffold: &str) -> io::Result<bool> {
-    let Some(bytes) = canonical("AGENTS.md").filter(|_| !scaffold.is_empty()) else {
-        return Ok(false);
+/// A canonical asset's source: embedded bytes, or an embedded tree.
+enum Canonical {
+    File(&'static [u8]),
+    Tree(Vec<(String, &'static [u8])>),
+}
+
+/// `scaffold_brief.staged_asset_sources` — `(build-context-relative
+/// path, source)` for each canonical asset [`stage_scaffold_assets`]
+/// would write beside `containerfile`.
+///
+/// The three conditions that gate *every* canonical asset — a scaffold
+/// build, an asset agentcage actually ships, and a `COPY` of it in a
+/// context that does not ship its own — live here once. [`stage_brief`],
+/// [`stage_skill`] and [`stage_conflicts`] all consult it rather than
+/// re-deriving them.
+///
+/// Says nothing about whether the destination is already current: that
+/// is per-asset, and belongs to the caller.
+fn staged_asset_sources(containerfile: &Path, scaffold: &str) -> Vec<(String, Canonical)> {
+    let mut out = Vec::new();
+    if scaffold.is_empty() {
+        return out;
+    }
+    if let Some(bytes) = canonical("AGENTS.md") {
+        if copy_references(containerfile, "AGENTS.md") && !context_ships(containerfile, "AGENTS.md")
+        {
+            out.push(("AGENTS.md".to_owned(), Canonical::File(bytes)));
+        }
+    }
+    let files = canonical_skill();
+    if files.iter().any(|(path, _)| path == "SKILL.md")
+        && copy_references(containerfile, SKILL_CONTEXT_PATH)
+        && !context_ships(containerfile, SKILL_CONTEXT_PATH)
+    {
+        out.push((SKILL_CONTEXT_PATH.to_owned(), Canonical::Tree(files)));
+    }
+    out
+}
+
+/// `scaffold_brief._would_stage` — whether [`staged_asset_sources`]
+/// names `relative`.
+fn would_stage(containerfile: &Path, relative: &str, scaffold: &str) -> bool {
+    staged_asset_sources(containerfile, scaffold)
+        .iter()
+        .any(|(path, _)| path == relative)
+}
+
+/// `cli._scaffold_build_inputs` — entries beside `containerfile` whose
+/// bytes decide what the image *is*.
+///
+/// The Containerfile itself, plus every sibling [`stage_build_context`]
+/// would stage that the Containerfile actually `COPY`s, through the one
+/// definition of a build-context reference in [`copy_references`].
+///
+/// Everything else a scaffold dir holds is deliberately absent: a
+/// scaffold's `README.md` is staged for the operator to read and the
+/// build never opens it, so an operator's own README stays theirs.
+///
+/// Regular files only, for the reason on `_scaffold_build_inputs`: a
+/// `COPY`ed sibling *directory* is staged through [`is_ignored`], so a
+/// staged copy legitimately lacks the `node_modules` its source has and
+/// would compare as different forever. No scaffold ships one.
+#[must_use]
+pub fn build_inputs(containerfile: &Path) -> Vec<String> {
+    let Some(name) = containerfile
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+    else {
+        return Vec::new();
     };
-    if !copy_references(containerfile, "AGENTS.md") || context_ships(containerfile, "AGENTS.md") {
+    let mut names = vec![name.clone()];
+    let Some(dir) = containerfile.parent() else {
+        return names;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return names;
+    };
+    let mut siblings: Vec<_> = entries.flatten().collect();
+    siblings.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in siblings {
+        let sibling = entry.file_name().to_string_lossy().into_owned();
+        if sibling == name || !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        if entry
+            .path()
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| SKIP_SUFFIXES.contains(&e))
+        {
+            continue;
+        }
+        if copy_references(containerfile, &sibling) {
+            names.push(sibling);
+        }
+    }
+    names
+}
+
+/// `cli._scaffold_stage_conflicts` — paths in `dest` that `init` must
+/// not quietly stage over.
+///
+/// `init` stages a scaffold's build context into the operator's working
+/// directory, not into a cage's private state dir, and both of the
+/// policies that are right for a state dir are wrong there:
+///
+/// * [`stage_build_context`] is called with `clobber` false, which
+///   silently *keeps* what is already present. For the Containerfile
+///   that is a trap: the config `init` writes names
+///   `localhost/agentcage-scaffold-<name>` and
+///   `containerfile: Containerfile`, so `cage create` builds the
+///   operator's unrelated Containerfile and tags the result with the
+///   scaffold's name. The wrapper's `FROM` picks that up and the first
+///   symptom is a failure deep inside the wrapper build (`useradd: not
+///   found` for a scaffold that has `useradd`) with nothing pointing at
+///   the cause — or no symptom at all, and a cage running an image its
+///   own name denies.
+/// * [`stage_scaffold_assets`] always refreshes a stale copy, which
+///   silently *overwrites* a project's own `AGENTS.md`.
+///
+/// Both get the same answer: name the conflict and refuse, exactly as
+/// `init` already treats an existing `cage.yaml`, with the documented
+/// `--force` as the single override.
+///
+/// Returns the conflicting build-context-relative paths, sorted and
+/// deduplicated.
+#[must_use]
+pub fn stage_conflicts(containerfile: &Path, dest: &Path, scaffold: &str) -> Vec<String> {
+    let mut conflicts = std::collections::BTreeSet::new();
+    let dir = containerfile.parent().unwrap_or(Path::new("."));
+    for name in build_inputs(containerfile) {
+        let target = dest.join(&name);
+        if target.exists() && paths_differ(&dir.join(&name), &target) {
+            conflicts.insert(name);
+        }
+    }
+    for (relative, source) in staged_asset_sources(containerfile, scaffold) {
+        let target = dest.join(&relative);
+        if target.exists() && canonical_differs(&source, &target) {
+            conflicts.insert(relative);
+        }
+    }
+    conflicts.into_iter().collect()
+}
+
+/// `scaffold_brief.staged_asset_differs`, for an embedded source.
+fn canonical_differs(source: &Canonical, dest: &Path) -> bool {
+    if fs::symlink_metadata(dest).is_ok_and(|m| m.file_type().is_symlink()) {
+        return true;
+    }
+    match source {
+        Canonical::File(bytes) => !fs::read(dest).is_ok_and(|current| current == *bytes),
+        Canonical::Tree(files) => !dest.is_dir() || tree_differs(files, dest),
+    }
+}
+
+/// `scaffold_brief.staged_asset_differs`, for a source on disk.
+///
+/// True when `dest` is anything other than a current copy of `source`,
+/// including absent, so callers testing "exists and disagrees" check
+/// existence themselves. Byte-deep, and recursive for a directory.
+fn paths_differ(source: &Path, dest: &Path) -> bool {
+    let Ok(dest_meta) = fs::symlink_metadata(dest) else {
+        return true;
+    };
+    if dest_meta.file_type().is_symlink() {
+        return true;
+    }
+    let Ok(source_meta) = fs::symlink_metadata(source) else {
+        return true;
+    };
+    if source_meta.is_dir() != dest_meta.is_dir() {
+        return true;
+    }
+    if !source_meta.is_dir() {
+        return match (fs::read(source), fs::read(dest)) {
+            (Ok(a), Ok(b)) => a != b,
+            _ => true,
+        };
+    }
+    let mut here = Vec::new();
+    collect_relative(source, source, &mut here);
+    here.sort();
+    let mut there = Vec::new();
+    collect_relative(dest, dest, &mut there);
+    there.sort();
+    if here != there {
+        return true;
+    }
+    here.iter().any(|relative| {
+        match (
+            fs::read(source.join(relative)),
+            fs::read(dest.join(relative)),
+        ) {
+            (Ok(a), Ok(b)) => a != b,
+            _ => true,
+        }
+    })
+}
+
+fn stage_brief(containerfile: &Path, dest: &Path, scaffold: &str) -> io::Result<bool> {
+    if !would_stage(containerfile, "AGENTS.md", scaffold) {
         return Ok(false);
     }
+    let Some(bytes) = canonical("AGENTS.md") else {
+        return Ok(false);
+    };
     let target = dest.join("AGENTS.md");
     let metadata = fs::symlink_metadata(&target).ok();
     match metadata {
@@ -248,18 +460,10 @@ fn stage_brief(containerfile: &Path, dest: &Path, scaffold: &str) -> io::Result<
 }
 
 fn stage_skill(containerfile: &Path, dest: &Path, scaffold: &str) -> io::Result<bool> {
-    if scaffold.is_empty() {
+    if !would_stage(containerfile, SKILL_CONTEXT_PATH, scaffold) {
         return Ok(false);
     }
     let files = canonical_skill();
-    if !files.iter().any(|(path, _)| path == "SKILL.md") {
-        return Ok(false);
-    }
-    if !copy_references(containerfile, SKILL_CONTEXT_PATH)
-        || context_ships(containerfile, SKILL_CONTEXT_PATH)
-    {
-        return Ok(false);
-    }
     let target = dest.join(SKILL_CONTEXT_PATH);
     match fs::symlink_metadata(&target) {
         Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => remove_path(&target)?,
@@ -330,7 +534,9 @@ fn remove_path(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_ignored, line_copies, stage_build_context};
+    use super::{
+        build_inputs, canonical, is_ignored, line_copies, stage_build_context, stage_conflicts,
+    };
 
     #[test]
     fn the_ignore_patterns_are_the_pythons_five() {
@@ -380,7 +586,7 @@ mod tests {
         std::fs::write(src.join("skills/SKILL.md"), b"skill\n").unwrap();
         std::fs::write(src.join("skills/__pycache__/x.pyc"), b"junk").unwrap();
 
-        stage_build_context(src, dest.path(), true).unwrap();
+        stage_build_context(src, dest.path(), true, &[]).unwrap();
 
         assert!(dest.path().join("Containerfile").is_file());
         assert!(dest.path().join("entry.sh").is_file());
@@ -396,15 +602,105 @@ mod tests {
         let dest = agentcage_state::TestDir::new("stage-dst2");
         std::fs::write(source.path().join("f.txt"), b"new").unwrap();
         std::fs::write(dest.path().join("f.txt"), b"old").unwrap();
-        stage_build_context(source.path(), dest.path(), false).unwrap();
+        stage_build_context(source.path(), dest.path(), false, &[]).unwrap();
         assert_eq!(
             std::fs::read_to_string(dest.path().join("f.txt")).unwrap(),
             "old"
         );
-        stage_build_context(source.path(), dest.path(), true).unwrap();
+        // ...unless it is named: `init --force`'s exemption.
+        stage_build_context(source.path(), dest.path(), false, &["f.txt".to_owned()]).unwrap();
         assert_eq!(
             std::fs::read_to_string(dest.path().join("f.txt")).unwrap(),
             "new"
+        );
+        std::fs::write(dest.path().join("f.txt"), b"old").unwrap();
+        stage_build_context(source.path(), dest.path(), true, &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("f.txt")).unwrap(),
+            "new"
+        );
+    }
+
+    /// A scaffold dir whose Containerfile `COPY`s one sibling and the
+    /// canonical brief, next to a README and a config that are not build
+    /// input.
+    fn scaffold_dir(name: &str) -> agentcage_state::TestDir {
+        let dir = agentcage_state::TestDir::new(name);
+        let src = dir.path();
+        std::fs::write(
+            src.join("Containerfile"),
+            b"FROM scaffold\nCOPY AGENTS.md /x\nCOPY entry.sh /usr/bin/entry\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("entry.sh"), b"#!/bin/sh\nscaffold\n").unwrap();
+        std::fs::write(src.join("README.md"), b"scaffold docs\n").unwrap();
+        std::fs::write(src.join("cage.yaml"), b"name: x\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_build_inputs_are_the_containerfile_and_what_it_copies() {
+        let source = scaffold_dir("inputs-src");
+        let inputs = build_inputs(&source.path().join("Containerfile"));
+        // The README is staged for the operator but never built from,
+        // and cage.yaml is not staged at all.
+        assert_eq!(
+            inputs,
+            vec!["Containerfile".to_owned(), "entry.sh".to_owned()]
+        );
+    }
+
+    /// The bug `init` had: a foreign Containerfile survived `clobber`
+    /// false and `cage create` built it under the scaffold's tag, while
+    /// a project's own `AGENTS.md` was overwritten without a word.
+    #[test]
+    fn a_foreign_build_input_is_a_conflict_and_a_current_one_is_not() {
+        let source = scaffold_dir("conflict-src");
+        let dest = agentcage_state::TestDir::new("conflict-dst");
+        let containerfile = source.path().join("Containerfile");
+
+        // An empty destination has nothing to disagree with.
+        assert!(stage_conflicts(&containerfile, dest.path(), "demo").is_empty());
+
+        std::fs::write(dest.path().join("Containerfile"), b"FROM busybox\n").unwrap();
+        std::fs::write(dest.path().join("entry.sh"), b"#!/bin/sh\npwned\n").unwrap();
+        std::fs::write(dest.path().join("AGENTS.md"), b"my brief\n").unwrap();
+        std::fs::write(dest.path().join("README.md"), b"my readme\n").unwrap();
+        assert_eq!(
+            stage_conflicts(&containerfile, dest.path(), "demo"),
+            vec![
+                "AGENTS.md".to_owned(),
+                "Containerfile".to_owned(),
+                "entry.sh".to_owned(),
+            ],
+            "the README must not be here: the build never reads it"
+        );
+
+        // Make every one of them current, as a second `init` in the
+        // directory the first one staged would find them. Idempotence:
+        // the check must not make `init` a one-shot.
+        std::fs::copy(&containerfile, dest.path().join("Containerfile")).unwrap();
+        std::fs::copy(source.path().join("entry.sh"), dest.path().join("entry.sh")).unwrap();
+        std::fs::write(
+            dest.path().join("AGENTS.md"),
+            canonical("AGENTS.md").expect("the embedded brief"),
+        )
+        .unwrap();
+        assert!(stage_conflicts(&containerfile, dest.path(), "demo").is_empty());
+    }
+
+    /// `scaffold` empty means "not a scaffold build", so the canonical
+    /// assets are not staged and cannot conflict — but the Containerfile
+    /// still can.
+    #[test]
+    fn without_a_scaffold_only_the_context_can_conflict() {
+        let source = scaffold_dir("noscaffold-src");
+        let dest = agentcage_state::TestDir::new("noscaffold-dst");
+        std::fs::write(dest.path().join("AGENTS.md"), b"my brief\n").unwrap();
+        std::fs::write(dest.path().join("Containerfile"), b"FROM busybox\n").unwrap();
+        assert_eq!(
+            stage_conflicts(&source.path().join("Containerfile"), dest.path(), ""),
+            vec!["Containerfile".to_owned()]
         );
     }
 }

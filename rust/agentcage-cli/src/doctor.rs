@@ -387,8 +387,7 @@ pub fn check_podman(runner: &dyn CommandRunner, distro: Distro, is_macos: bool) 
     }
     if is_macos {
         return CheckResult::pass(
-            "Podman not installed (optional on macOS — only needed for \
-             'agentcage secret set')",
+            "Podman not installed (optional on macOS — containers run inside the VM)",
         );
     }
     CheckResult::new(Level::Error, "Podman not found", distro.install_podman())
@@ -556,19 +555,31 @@ pub fn check_disk_space(host: &dyn DoctorHost) -> CheckResult {
 #[must_use]
 pub fn check_secret_backend(runner: &dyn CommandRunner, host: &dyn DoctorHost) -> CheckResult {
     if host.is_macos() {
-        // systemd-creds does not exist here; secrets go to the host
-        // podman store and are bridged into the VM at start.
-        if runner.has("podman") {
-            return CheckResult::new(
-                Level::Pass,
-                "Podman secret store",
-                "Secrets are stored via host Podman and bridged into the VM.",
-            );
-        }
+        // systemd-creds does not exist here, so this branch answers the
+        // same question the Linux one does: which store would
+        // `secrets::store::resolve_store` pick for a default (`auto`)
+        // cage? On a Mac that is `KeychainStore` for every isolation an
+        // operator can run — `host_keychain` covers apple-container, and
+        // "fix(secret): use the host keychain for vm cages on macOS"
+        // extended it to vm. The podman-backed store this used to name is
+        // `PlaintextStore`, now reachable only by an explicit
+        // `backend: plaintext` / `source: podman:` opt-in to cleartext,
+        // so `runner.has("podman")` decides nothing here and the probe is
+        // gone.
+        //
+        // Reports the store without proving it usable, unlike the Linux
+        // branch: `KeychainStore::available` establishes write-ability by
+        // adding and deleting a real keychain item, which a read-only
+        // diagnostic must not do to the operator's login keychain.
+        // `systemd-creds encrypt` writes nothing, which is why Linux can
+        // probe. The ladder `KeychainStore::target` walks is in the hint.
         return CheckResult::new(
-            Level::Warn,
-            "Podman not installed — 'agentcage secret set' unavailable",
-            "brew install podman to store cage secrets (cages still run without it).",
+            Level::Pass,
+            "macOS keychain (secrets encrypted at rest)",
+            "Secrets go to the login keychain when a GUI session has it unlocked, \
+             else the System keychain when passwordless sudo for /usr/bin/security \
+             is configured. agentcage reads them back and materializes them at \
+             cage start.",
         );
     }
 
@@ -898,7 +909,12 @@ fn plural(word: &str, n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Distro, detect_distro, first_pid, plural};
+    use agentcage_exec::FakeRunner;
+
+    use super::{
+        Distro, DnsOutcome, DoctorHost, Level, check_secret_backend, detect_distro, first_pid,
+        plural,
+    };
 
     #[test]
     fn the_distro_parser_reads_id_and_id_like() {
@@ -941,6 +957,72 @@ mod tests {
         assert_eq!(plural("error", 1), "error");
         assert_eq!(plural("error", 0), "errors");
         assert_eq!(plural("warning", 3), "warnings");
+    }
+
+    /// A [`DoctorHost`] that is a Mac and answers everything else the
+    /// way the trait's cheapest total implementation can. The macOS arm
+    /// of `check_secret_backend` reads `is_macos` and nothing else,
+    /// which is the point.
+    #[derive(Debug)]
+    struct MacHost;
+
+    impl DoctorHost for MacHost {
+        fn is_macos(&self) -> bool {
+            true
+        }
+        fn os_release(&self) -> Option<String> {
+            None
+        }
+        fn path_exists(&self, _path: &str) -> Result<bool, String> {
+            Ok(false)
+        }
+        fn disk_free_bytes(&self) -> Result<u64, String> {
+            Ok(50 * 1024 * 1024 * 1024)
+        }
+        fn resolve_dns(&self) -> DnsOutcome {
+            DnsOutcome::Resolved
+        }
+        fn port_is_free(&self, _port: u16) -> bool {
+            true
+        }
+        fn env_var(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn non_root(&self) -> bool {
+            true
+        }
+        fn apple_container_issues(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    /// The bug: a Mac with host podman was told its secrets were in a
+    /// podman store, and a Mac without it was told `secret set` did not
+    /// work. Since #247 the store is the keychain either way, so podman
+    /// must not appear in the verdict and must not be probed for it.
+    #[test]
+    fn a_macs_secret_store_is_the_keychain_whatever_podman_does() {
+        let installed = FakeRunner::new();
+        installed.assume_installed();
+        let with_podman = check_secret_backend(&installed, &MacHost);
+
+        let missing = FakeRunner::new();
+        missing.assume_missing();
+        let without_podman = check_secret_backend(&missing, &MacHost);
+
+        assert_eq!(with_podman.level, Level::Pass);
+        assert!(with_podman.message.contains("keychain"));
+        assert!(!with_podman.message.to_lowercase().contains("podman"));
+        assert!(!with_podman.hint.to_lowercase().contains("podman"));
+        // Byte-identical: podman decides nothing here.
+        assert_eq!(with_podman.message, without_podman.message);
+        assert_eq!(with_podman.hint, without_podman.hint);
+        assert_eq!(with_podman.level, without_podman.level);
+        // And nothing at all is run or looked up -- the keychain is not
+        // probed, deliberately (see `check_secret_backend`).
+        assert_eq!(installed.call_count(), 0);
+        assert!(installed.which_lookups().is_empty());
+        assert!(missing.which_lookups().is_empty());
     }
 }
 

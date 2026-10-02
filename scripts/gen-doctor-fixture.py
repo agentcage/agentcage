@@ -799,9 +799,9 @@ def _environments() -> list[Env]:
     e(Env(
         id="macos-no-host-podman",
         why="podman is not installed on the Mac. That is a PASS, not an "
-            "error -- containers run inside the VM -- but the secret "
-            "check warns, because `agentcage secret set` is the one "
-            "thing that needs host podman",
+            "error -- containers run inside the VM -- and the secret "
+            "check is unmoved: since #247 a Mac's secrets live in the "
+            "keychain, so host podman is not what `secret set` needs",
         macos=True,
         os_release=None,
         existing_paths=[],

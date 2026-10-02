@@ -441,12 +441,19 @@ fn the_probed_ports_agree_with_the_fixture() {
 }
 
 /// The fake answers `which` for everything, so a real lookup never
-/// escapes into the test process — and the doctor does ask, on both
-/// platforms.
+/// escapes into the test process — and on Linux the doctor does ask.
+///
+/// macOS asks nothing, and that is asserted rather than excused. The
+/// only `shutil.which` left in `doctor.py` is the `systemd-creds` one in
+/// the Linux arm of `_check_secret_backend`; the macOS arm's
+/// `which("podman")` is gone, because the store it gated on has been the
+/// keychain since #247 and podman's presence no longer decides anything
+/// a Mac operator is told. An added lookup on the macOS path would fail
+/// this, which is the point: it would mean a probe came back.
 #[test]
 fn the_doctor_asks_which_rather_than_probing_the_real_path() {
     let doc = fixture();
-    for id in ["linux-healthy", "macos-healthy"] {
+    let run = |id: &str| {
         let case = cases(&doc)
             .iter()
             .find(|c| str_at(c, "id") == id)
@@ -454,10 +461,16 @@ fn the_doctor_asks_which_rather_than_probing_the_real_path() {
         let host = FakeHost::from_json(&case["env"]);
         let runner = runner_for(&doc, &case["env"]);
         let _ = doctor::run(&runner, &host);
-        assert!(
-            !runner.which_lookups().is_empty(),
-            "{id}: no `which` lookup, so the missing-binary branches are \
-             being decided somewhere the fake cannot reach"
-        );
-    }
+        runner.which_lookups()
+    };
+    assert!(
+        !run("linux-healthy").is_empty(),
+        "linux-healthy: no `which` lookup, so the missing-binary branches \
+         are being decided somewhere the fake cannot reach"
+    );
+    assert_eq!(
+        run("macos-healthy"),
+        Vec::<String>::new(),
+        "macos-healthy: the macOS path has no `which` lookup to make"
+    );
 }
