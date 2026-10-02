@@ -64,6 +64,7 @@ pub(crate) mod run;
 pub(crate) mod scaffold;
 pub(crate) mod secret;
 pub(crate) mod watcher;
+pub(crate) mod watcher_cmd;
 
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
@@ -254,6 +255,8 @@ fn dispatch_ported(path: &str, name: &str, sub: &ArgMatches) -> Option<ExitCode>
         "cage create" => create::main(&Ctx::system(), leaf),
         "cage update" => update::main(&Ctx::system(), leaf),
         "cage edit" => edit::main(&Ctx::system(), leaf),
+        "watcher findings" => watcher_cmd::findings(&Ctx::system(), leaf),
+        "watcher status" => watcher_cmd::status(&Ctx::system(), leaf),
         "cage list" => lifecycle::list(&Ctx::system()),
         "cage status" => lifecycle::status(&Ctx::system(), leaf),
         "cage show" => lifecycle::show(&Ctx::system(), &named("name")),

@@ -73,9 +73,6 @@ fn code(out: &Output) -> i32 {
     out.status.code().expect("no signal")
 }
 
-/// sysexits' `EX_SOFTWARE`, which every unported command exits with.
-const NOT_IMPLEMENTED: i32 = 70;
-
 // ── the version string ──────────────────────────────────────────────
 
 /// `install.sh` and the e2e harness parse this line. It is click's
@@ -145,29 +142,6 @@ fn a_bare_group_prints_help_to_stderr_and_exits_two() {
     }
 }
 
-// ── the stub ────────────────────────────────────────────────────────
-
-/// A command that parses cleanly says so, and still fails.
-///
-/// The failure is the point. A skeleton that exited 0 on `cage destroy`
-/// would look like it had destroyed something.
-#[test]
-fn a_parsed_command_fails_loudly_and_names_itself() {
-    // One row left. `cage grants … sync` and `domain list` used to be
-    // here and have bodies as of PR D10; `cage backup` was a
-    // replacement until PR D11, and `cage edit` until this PR — both
-    // are in `legacy_cage.rs`'s guarded list now. When `watcher
-    // findings` lands, this test has nothing to assert and should go
-    // rather than be emptied.
-    let args = ["watcher", "findings", "myapp"];
-    let out = agentcage(&args);
-    assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}");
-    assert!(stdout(&out).is_empty(), "{args:?}");
-    let text = stderr(&out);
-    assert!(text.contains("`watcher findings`"), "{args:?}: {text}");
-    assert!(text.contains("not implemented"), "{args:?}: {text}");
-}
-
 /// `doctor` is no longer a stub (PR D15).
 ///
 /// Run against the real machine, so nothing here asserts *what* it found
@@ -209,26 +183,6 @@ fn doctor_runs_for_real() {
     assert!(
         !text.contains("Python"),
         "doctor still reports a host Python version:\n{text}"
-    );
-}
-
-/// An alias reports the command it resolves to, not the alias.
-#[test]
-fn aliases_report_their_canonical_command() {
-    // One row left. `start`, `stop`, `shell` and `exec` used to be
-    // here, and so did `config`/`edit` until `cage edit` gained a body;
-    // they answer "does not exist" rather than naming themselves as
-    // unported, which `aliases_of_ported_commands_reach_the_body`
-    // asserts instead. `watcher ls` is the last alias of a command that
-    // is still a stub — when `watcher findings` lands, this test has
-    // nothing to assert and should go rather than be emptied.
-    let args = ["watcher", "ls", "myapp"];
-    let out = agentcage(&args);
-    assert_eq!(code(&out), NOT_IMPLEMENTED, "{args:?}: {}", stderr(&out));
-    assert!(
-        stderr(&out).contains("`watcher findings`"),
-        "{args:?} should resolve to `watcher findings`: {}",
-        stderr(&out)
     );
 }
 
@@ -618,6 +572,50 @@ container:
         "prune consulted the gate instead of skipping: {}",
         stderr(&out)
     );
+}
+
+/// Every command in the tree has a body.
+///
+/// Two tests used to live here: one asserting an unported command
+/// failed loudly and named itself, and one asserting an *alias* of such
+/// a command named its canonical form. Both carried a comment saying
+/// they should be deleted rather than emptied once their last row
+/// gained a body, and `watcher findings` / `watcher status` were that
+/// last row. `not_implemented` is now unreachable from the dispatch
+/// table — it survives only as the guard for an isolation spelling that
+/// reaches `AnyBackend::new`'s fall-through, which `backends.rs` tests
+/// directly.
+///
+/// What replaces them is this: the tree and the dispatch table agree.
+/// A command added to one and not the other is the regression those
+/// tripwires existed to catch, and it is now catchable without a stub
+/// to point at.
+#[test]
+fn every_leaf_command_has_a_body() {
+    let dir = agentcage_state::TestDir::new("binary-no-stubs");
+    // Walking clap's tree from the outside needs the help output; the
+    // dispatch table is not introspectable from a test. So this asserts
+    // the observable property instead: no command answers with the
+    // not-implemented stub.
+    for args in [
+        vec!["watcher", "findings", "myapp"],
+        vec!["watcher", "status", "myapp"],
+        vec!["watcher", "ls", "myapp"],
+        vec!["cage", "edit", "myapp"],
+    ] {
+        let out = agentcage_sandboxed(dir.path(), &args);
+        let text = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(
+            !text.contains("not implemented"),
+            "{args:?} is still a stub: {text}"
+        );
+        // Each reaches a body, and the body refuses an absent cage.
+        assert_eq!(code(&out), 1, "{args:?}: {text}");
+        assert!(
+            text.contains("cage 'myapp' does not exist"),
+            "{args:?}: {text}"
+        );
+    }
 }
 
 /// An `apple-container` cage's logs and audit are read through its own

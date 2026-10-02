@@ -817,27 +817,28 @@ by the five preconditions at the top of `AppleBackend::start`.
 | #409 | The "no built image" and egress-image preconditions in `start()` must name the cage and `agentcage cage update <name>` rather than the internal `build_artifacts()`, and must raise the operator-error type the CLI renders as a single `error: …` line. Rust cannot reproduce Python's traceback problem, but it can reproduce the unhelpful message. |
 
 
-### The remaining unported command bodies
+### The command surface is complete
 
-`cage edit` is **done**. Two are left, and both were missed by the same
-accounting error that hid `cage edit`: D-track treated the command
-*tree* as the deliverable, and the tree has been complete for a while,
-so nothing in any track's remaining list named them. Only running them
-finds them.
+Every one of the **41 leaf commands** in the tree has a body. Verified
+mechanically rather than by reading: walk clap's tree from the outside
+via `--help`, run each leaf, and assert none answers with the
+not-implemented stub. That sweep is what found the last three —
+`cage edit`, `watcher findings` and `watcher status` — none of which
+appeared in any track's remaining list, because D-track's accounting
+treated the command *tree* as the deliverable and the tree had been
+complete for a long time.
 
-| Command | State |
-| :-- | :-- |
-| `watcher findings` (alias `watcher ls`) | stub, exits 70 |
-| `watcher status` | stub, exits 70 |
+`not_implemented` is still in `cli/mod.rs` but is now unreachable from
+the dispatch table. It survives as the guard for an isolation spelling
+that reaches `AnyBackend::new`'s fall-through, which `backends.rs`
+tests directly.
 
-Two tripwire tests exist specifically to force the issue when they
-land: `binary.rs`'s `a_parsed_command_fails_loudly_and_names_itself`
-and `aliases_report_their_canonical_command` each hold exactly one row
-now, and both say in a comment that the test should be **deleted**
-rather than emptied when that row gains a body. `cage edit`'s arrival
-emptied `legacy_cage.rs`'s `the_unported_guarded_commands_are_still_stubs`
-and that test is gone, with `cage edit` moved up into the guarded list —
-which is what the tripwire was for.
+The three tripwire tests that existed to force this — two in
+`binary.rs`, one in `legacy_cage.rs` — each said in their own comments
+that they should be **deleted** rather than emptied once their last row
+gained a body. All three are gone, replaced by
+`every_leaf_command_has_a_body`, which asserts the property rather than
+enumerating the exceptions.
 
 ### Track E — E6 and E7, the two surfaces E5 left
 

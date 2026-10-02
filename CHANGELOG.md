@@ -55,6 +55,18 @@ have not changed, only its name.
 
 ### Fixed
 
+- **`watcher findings` and `watcher status` work**, and with them **every
+  command in the tree has a body** — 41 leaf commands, zero stubs, verified by
+  walking clap's tree and running each one rather than by reading a list. Both
+  readers are byte-identical to the Python on the real cages on this machine
+  and across six synthesised edge cases: no state file, an empty one, a corrupt
+  one, a fully-populated one, the no-budget branch, and a torn final JSONL
+  line. The three-state read is preserved exactly, because the distinction
+  matters more than it looks: an absent file is "no scan yet", a failed read is
+  "could not reach the VM", and collapsing them would make an unreachable guest
+  report an all-clear from the one command whose job is surfacing suspicious
+  traffic.
+
 - **`cage edit` works.** It was the one command in the tree with no body, so
   the only way to change a cage's config was to edit the stored `cage.yaml` by
   hand — which is precisely what the command exists to stop you doing. It now
