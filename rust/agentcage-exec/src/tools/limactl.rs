@@ -381,6 +381,37 @@ impl<'a> VmPodman<'a> {
     }
 
     /// One guest command, from borrowed parts.
+    /// `podman container inspect <name>` in the guest, first element.
+    ///
+    /// The vm half of `services.cage_has_live_secret_channel`, which
+    /// asks the *running* egress container whether it mounts the
+    /// staging directory. Host podman cannot answer that for a vm cage:
+    /// the container is not there, so the inspect fails and the question
+    /// reads as "no live channel" -- costing a restart on every `secret
+    /// set` against a vm cage that could have taken the value live.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecError::Failed`] when there is no such container,
+    /// [`ExecError::Parse`] when the answer is not a non-empty JSON
+    /// array -- the Python's `json.loads(...)[0]`.
+    pub fn container_inspect(&self, name: &str) -> Result<Value, ExecError> {
+        let out = self.exec(&["podman", "container", "inspect", name], true)?;
+        let value: Value =
+            serde_json::from_str(out.stdout_text().trim()).map_err(|e| ExecError::Parse {
+                program: "podman".to_string(),
+                detail: e.to_string(),
+            })?;
+        value
+            .as_array()
+            .and_then(|a| a.first())
+            .cloned()
+            .ok_or_else(|| ExecError::Parse {
+                program: "podman".to_string(),
+                detail: "expected a non-empty JSON array".to_string(),
+            })
+    }
+
     fn exec(&self, command: &[&str], check: bool) -> Result<Output, ExecError> {
         let owned: Vec<String> = command.iter().map(|part| (*part).to_string()).collect();
         self.instance.exec(&owned, check)

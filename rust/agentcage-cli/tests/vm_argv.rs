@@ -27,6 +27,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use agentcage_cli::cage_podman::CagePodman;
 use agentcage_cli::vm::VmBackend;
 use agentcage_exec::tools::limactl::VmPodman;
 use agentcage_exec::{FakeRunner, Reply};
@@ -1581,4 +1582,211 @@ fn a_pinned_octet_reaches_the_network_unit() {
         )
         .expect("renders");
     assert!(units.files["quadlets/demo-net.network"].contains("10.89.77.0/24"));
+}
+
+// ── The store router (PR E6) ────────────────────────────────────────
+//
+// `cli._podman_for_cage` (`cli.py:54`) is two lines of Python and the
+// most consequential two lines in the vm secret paths: get it wrong and
+// nothing fails, it just answers about the wrong store. These pin the
+// decision itself, and the argv each arm produces.
+
+/// A running vm cage routes into the guest, and the argv says so.
+#[test]
+fn a_running_vm_cage_routes_its_secrets_into_the_guest() {
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.on(
+        ["limactl", "list", "--json", "agentcage-demo"],
+        Reply::ok("{\"status\": \"Running\"}\n"),
+    );
+    runner.on(["limactl", "shell"], Reply::ok("demo.API_KEY\n"));
+
+    let podman = CagePodman::for_cage(&runner, "vm", "demo");
+    assert!(podman.is_guest());
+    assert_eq!(podman.secret_list("demo.").unwrap(), ["demo.API_KEY"]);
+
+    // `--workdir /` and `--tty=false` are not decoration: the second
+    // is what keeps a piped secret out of a PTY's line discipline.
+    runner.assert_call(
+        1,
+        &[
+            "limactl",
+            "shell",
+            "--workdir",
+            "/",
+            "--tty=false",
+            "agentcage-demo",
+            "--",
+            "podman",
+            "secret",
+            "ls",
+            "--noheading",
+            "--format",
+            "{{.Name}}",
+        ],
+    );
+}
+
+/// A vm cage whose guest is **not** running falls back to host podman.
+///
+/// Not a graceful degradation so much as the only available answer: the
+/// guest's store does not exist while the guest is down. What matters
+/// is that it is *host* podman and not a `limactl` call that hangs or
+/// errors, because every caller treats the result as "the store".
+#[test]
+fn a_stopped_vm_cage_falls_back_to_host_podman() {
+    for status in ["Stopped", "Broken", ""] {
+        let runner = FakeRunner::new();
+        runner.assume_installed();
+        runner.on(
+            ["limactl", "list"],
+            Reply::ok(format!("{{\"status\": \"{status}\"}}\n")),
+        );
+        runner.on(["podman", "secret", "ls"], Reply::ok(""));
+
+        let podman = CagePodman::for_cage(&runner, "vm", "demo");
+        assert!(!podman.is_guest(), "status {status:?} must not route guest");
+        assert!(podman.secret_list("demo.").unwrap().is_empty());
+        assert_eq!(
+            runner.argv(1).first().map(String::as_str),
+            Some("podman"),
+            "status {status:?}"
+        );
+    }
+}
+
+/// A missing `limactl` is a stopped guest, not a panic.
+///
+/// The Python lets the `FileNotFoundError` escape `_podman_for_cage` as
+/// a traceback. Here it answers host, which is what every caller is
+/// already written to handle.
+#[test]
+fn a_missing_limactl_routes_to_the_host_instead_of_failing() {
+    let runner = FakeRunner::new();
+    runner.on(["limactl"], Reply::NotFound);
+    runner.on(["podman", "secret", "ls"], Reply::ok(""));
+
+    let podman = CagePodman::for_cage(&runner, "vm", "demo");
+    assert!(!podman.is_guest());
+}
+
+/// The other two isolations never ask Lima anything.
+///
+/// `container` and `apple-container` are host-store backends, and a
+/// `limactl list` on either would be a wasted subprocess on every
+/// `secret list` — which `FakeRunner`'s panic-on-unstubbed-call turns
+/// into a failure here rather than a slowdown nobody measures.
+#[test]
+fn a_non_vm_cage_never_probes_lima() {
+    for isolation in ["container", "apple-container"] {
+        let runner = FakeRunner::new();
+        runner.on(["podman", "secret", "ls"], Reply::ok(""));
+        let podman = CagePodman::for_cage(&runner, isolation, "demo");
+        assert!(!podman.is_guest(), "{isolation}");
+        assert!(podman.secret_list("demo.").unwrap().is_empty());
+        assert!(
+            runner
+                .argv_sequence()
+                .iter()
+                .all(|argv| argv.first().map(String::as_str) == Some("podman")),
+            "{isolation} probed Lima: {:?}",
+            runner.argv_sequence()
+        );
+    }
+}
+
+/// The guest write path, in full: `podman secret create <name> -` with
+/// the value on stdin, inside the guest.
+#[test]
+fn a_guest_secret_create_keeps_the_value_on_stdin() {
+    const VALUE: &str = "TEST-NOT-A-REAL-SECRET-hunter2";
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.on(
+        ["limactl", "list"],
+        Reply::ok("{\"status\": \"Running\"}\n"),
+    );
+    runner.on(["limactl", "shell"], Reply::success());
+
+    let podman = CagePodman::for_cage(&runner, "vm", "demo");
+    podman.secret_create("demo.API_KEY", VALUE).unwrap();
+
+    let call = runner.call(1);
+    assert_eq!(call.raw_argv().last().unwrap(), "-");
+    assert_eq!(call.stdin_text().as_deref(), Some(VALUE));
+    assert!(
+        !call.raw_argv().iter().any(|a| a.contains(VALUE)),
+        "{:?}",
+        call.raw_argv()
+    );
+}
+
+/// The live-channel question, asked of the guest's egress container.
+///
+/// This is the call whose absence made the Python's vm live-secret path
+/// dead code: `VmPodman` had no `container_inspect`, the
+/// `AttributeError` was swallowed, and every `secret set` on a running
+/// vm cage restarted the workload instead of staging the value.
+#[test]
+fn the_live_channel_is_asked_of_the_guests_egress_container() {
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.on(
+        ["limactl", "list"],
+        Reply::ok("{\"status\": \"Running\"}\n"),
+    );
+    runner.on(
+        ["limactl", "shell"],
+        Reply::ok("[{\"Mounts\": [{\"Destination\": \"/home/acproxy/secrets\"}]}]\n"),
+    );
+    let config = agentcage_core::config::load(
+        "cage.yaml",
+        "name: demo\ncontainer:\n  image: alpine\nisolation: vm\n",
+        &agentcage_core::config::FixedHost {
+            isolation: "vm".to_owned(),
+            dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+        },
+    )
+    .expect("loads");
+
+    let podman = CagePodman::for_cage(&runner, "vm", "demo");
+    assert!(agentcage_cli::services::cage_has_live_secret_channel(
+        &podman, "demo", &config
+    ));
+    let argv = runner.argv(1);
+    assert_eq!(
+        &argv[argv.len() - 4..],
+        ["podman", "container", "inspect", "demo-egress"]
+    );
+}
+
+/// And an egress without the mount answers "no", which costs a restart
+/// rather than a value that never arrives.
+#[test]
+fn an_egress_without_the_staging_mount_has_no_live_channel() {
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.on(
+        ["limactl", "list"],
+        Reply::ok("{\"status\": \"Running\"}\n"),
+    );
+    runner.on(
+        ["limactl", "shell"],
+        Reply::ok("[{\"Mounts\": [{\"Destination\": \"/etc/hosts\"}]}]\n"),
+    );
+    let config = agentcage_core::config::load(
+        "cage.yaml",
+        "name: demo\ncontainer:\n  image: alpine\nisolation: vm\n",
+        &agentcage_core::config::FixedHost {
+            isolation: "vm".to_owned(),
+            dns_servers: Ok(vec!["192.0.2.53".to_owned()]),
+        },
+    )
+    .expect("loads");
+
+    let podman = CagePodman::for_cage(&runner, "vm", "demo");
+    assert!(!agentcage_cli::services::cage_has_live_secret_channel(
+        &podman, "demo", &config
+    ));
 }

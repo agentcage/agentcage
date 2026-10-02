@@ -70,6 +70,29 @@ class TestLiveChannelDetection:
         with patch("agentcage.lima.podman.VmPodman", return_value=podman):
             assert cage_has_live_secret_channel("c1", cfg) is True
 
+    def test_the_real_vm_podman_answers_what_this_function_asks_it(self):
+        """The test above passed for a year against code that could not work.
+
+        ``VmPodman`` had no ``container_inspect``. In production that
+        raised ``AttributeError`` into this function's bare ``except
+        Exception``, so the vm arm always answered False and every
+        ``secret set`` on a running vm cage restarted the workload
+        instead of staging the value — while the test stayed green,
+        because a ``MagicMock`` grows whatever attribute you ask it for.
+
+        So this asserts against the *class*, not a mock. Any method the
+        live-secret path calls on a routed podman belongs in this list;
+        a mock cannot tell you it is missing.
+        """
+        from agentcage.lima.podman import VmPodman
+        from agentcage.podman import Podman
+        for method in ("container_inspect", "secret_exists", "secret_create",
+                       "secret_remove", "secret_read", "secret_list"):
+            assert callable(getattr(VmPodman, method, None)), \
+                f"VmPodman.{method} is missing — the vm arm cannot work"
+            assert callable(getattr(Podman, method, None)), \
+                f"Podman.{method} is missing"
+
 
 class TestStageSecretValue:
 

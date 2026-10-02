@@ -23,6 +23,7 @@
 use agentcage_core::config::Config;
 
 use crate::cli::context::Ctx;
+use agentcage_cli::cage_podman::CagePodman;
 use agentcage_cli::services;
 
 /// `cli._apply_secret_live_or_restart`.
@@ -60,7 +61,7 @@ pub(crate) fn apply_or_restart(ctx: &Ctx, name: &str, key: &str, value: &str) {
         return;
     }
 
-    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+    let podman = CagePodman::for_cage(ctx.runner.as_ref(), &config.isolation, &cage);
     if services::cage_has_live_secret_channel(&podman, &cage, &config) {
         match stage(ctx, &podman, &cage, key, value) {
             Ok(()) => {
@@ -83,7 +84,7 @@ pub(crate) fn apply_or_restart(ctx: &Ctx, name: &str, key: &str, value: &str) {
 /// The staged write, then the mtime bump — in that order.
 fn stage(
     ctx: &Ctx,
-    podman: &agentcage_exec::tools::podman::Podman<'_>,
+    podman: &CagePodman<'_>,
     cage: &str,
     key: &str,
     value: &str,
@@ -96,7 +97,17 @@ fn stage(
     ctx.paths
         .save_proxy_config(cage, &ctx.version)
         .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    // And on `vm`, one more hop. The proxy inside the guest polls the
+    // guest's *copy* of `proxy-config.yaml`, not the host file the line
+    // above just touched, so without this push the mtime bump never
+    // reaches the addon and the staged value is never read. `cli.py:4400`.
+    if podman.is_guest() {
+        agentcage_cli::vm::VmBackend::new(&ctx.paths, ctx.runner.as_ref(), &ctx.version)
+            .push_config_files(cage)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// `cli._restart_cage` — regenerate the cage.yaml-derived files, then

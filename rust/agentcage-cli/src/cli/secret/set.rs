@@ -23,10 +23,10 @@ use std::io::{IsTerminal as _, Read as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use agentcage_cli::cage_podman::CagePodman;
 use agentcage_core::config::Config;
 use agentcage_core::yaml::{Mapping, Value};
 use agentcage_exec::CommandRunner;
-use agentcage_exec::tools::podman::Podman;
 use clap::ArgMatches;
 
 use crate::cli::context::{Ctx, EXIT_FAILURE};
@@ -44,10 +44,15 @@ use agentcage_cli::secrets::{
 /// are memoized per host, not per key.
 pub(crate) struct SecretWriter<'a> {
     host: SecretHost<'a>,
-    /// [`None`] on `isolation: apple-container`, which has no host
-    /// podman secret store — `_store_secret(None, cfg, …)` is how both
+    /// [`None`] on `isolation: apple-container`, which has no podman
+    /// secret store at all — `_store_secret(None, cfg, …)` is how both
     /// of the Python's apple call sites spell it.
-    podman: Option<Podman<'a>>,
+    ///
+    /// For the other two it is the store *that cage's* containers read,
+    /// which on `vm` is inside the Lima guest. Writing a vm cage's
+    /// secret to host podman would not fail; it would succeed and the
+    /// cage would never see the value.
+    podman: Option<CagePodman<'a>>,
     config: &'a Config,
     name: &'a str,
     state_dir: PathBuf,
@@ -73,7 +78,8 @@ impl<'a> SecretWriter<'a> {
     ) -> Self {
         Self {
             host: SecretHost::detect(runner, env),
-            podman: (!apple::is_apple_container(config)).then(|| Podman::new(runner)),
+            podman: (!apple::is_apple_container(config))
+                .then(|| CagePodman::for_cage(runner, &config.isolation, name)),
             config,
             name,
             state_dir,

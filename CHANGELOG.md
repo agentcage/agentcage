@@ -24,6 +24,27 @@ have not changed, only its name.
 
 ### Added
 
+- **`cage backup`, `cage restore` and the whole `secret` group work on
+  `isolation: vm`.** They used to refuse it, because a vm cage keeps its
+  secrets in a podman store *inside its Lima guest* and host podman does not
+  fail when asked about them — it answers, wrongly. `secret list` would have
+  reported every key missing; `secret rm` would have called an existing secret
+  absent. The routing is now explicit (`CagePodman`, the Rust spelling of
+  `cli._podman_for_cage`), and it asks whether the guest is *running* before
+  trusting it; a stopped guest falls back to the host store, which is where a
+  vm cage's secrets are staged and from which the next deploy bridges them in.
+
+  Two consequences worth knowing, neither new but neither previously written
+  down. **A vm cage's named volumes are not included in a backup** — the
+  volume step is container-only, `VmPodman` has no volume verbs, and the
+  tarball comes out with an empty `volumes/` and no warning. And `cage
+  restore` writes secrets to the *host* store on purpose, because the Lima
+  guest does not exist yet at that point; they reach the guest on the deploy
+  that follows. On a host with no podman store at all — which for this backend
+  means a Mac — that step fails and the cage is restored without its secrets;
+  each one warns and the summary says `Restored 0 secrets.`, so you will see
+  it, but the tarball's values do not arrive.
+
 - **The `apple-container` backend executes on the Rust binary.** Track E5:
   `cage create`, `start`, `stop`, `restart`, `destroy`, `exec`, `logs`,
   `audit` and `domain add`/`rm` all drive Apple's `container` CLI directly
@@ -54,6 +75,29 @@ have not changed, only its name.
   has never been ported there either.
 
 ### Fixed
+
+- **`secret set` on a running `vm` cage no longer restarts the workload.** The
+  zero-restart path was unreachable on that backend: `cage_has_live_secret_
+  channel` asks the cage's podman to inspect the running egress container, and
+  the Lima-routed `VmPodman` never defined `container_inspect`. The
+  `AttributeError` landed in that function's own `except Exception`, so the
+  answer was always "no live channel" and every `secret set`/`secret rm` on a
+  running vm cage took the restart path — costing a long-running agent its
+  process state — while the branch written for exactly that case (staging the
+  value into the guest, then pushing the config files so the guest's proxy
+  re-reads them) never ran. The method now exists on both sides.
+
+  The path had a test, and it passed, because it patched the class with a
+  `MagicMock` — which grows whatever attribute you ask it for. The replacement
+  asserts against the real class; deleting the method again makes the new test
+  fail and leaves the old one green, which is the difference.
+
+- **`secret rotate-placeholders` asks the right backend whether a `vm` cage is
+  running.** It used the container backend unconditionally, so it ran
+  `systemctl --user` on the *host*, where a vm cage's unit does not exist. A
+  running vm cage read as stopped and the command printed "the new
+  placeholders apply on next start" while the cage carried on injecting the
+  old ones.
 
 - **Security: `cage secret set` no longer puts the secret in argv on macOS.**
   `KeychainStore.set` ran `security add-generic-password … -w <CLEARTEXT> -U`,

@@ -21,6 +21,9 @@ pub mod backend;
 /// `get_backend(config)` — which backend a cage's `isolation:` names
 /// (PR E4).
 pub mod backends;
+/// Which podman answers for a cage — host, or inside a `vm` cage's
+/// Lima guest.
+pub mod cage_podman;
 /// Fingerprint gathering — what makes `cage update` a no-op (PR D6).
 pub mod deploy;
 /// `agentcage doctor` — the host diagnostics (PR D15).

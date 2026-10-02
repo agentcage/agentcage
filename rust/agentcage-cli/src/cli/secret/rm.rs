@@ -48,7 +48,11 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         return remove_apple(ctx, &config, &name, &key);
     }
 
-    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+    let podman = agentcage_cli::cage_podman::CagePodman::for_cage(
+        ctx.runner.as_ref(),
+        &config.isolation,
+        &name,
+    );
     let full = format!("{name}.{key}");
     let cred = ctx.paths.cred_path(&name, &key);
 

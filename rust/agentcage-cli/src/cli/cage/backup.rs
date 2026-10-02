@@ -210,14 +210,23 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     if config.isolation == APPLE_CONTAINER {
         return backup_apple(ctx, &name, &config, matches);
     }
-    require_container_backend(&config, "cage backup")?;
+    require_known_backend(&config, "cage backup")?;
 
     let output = matches.get_one::<String>("output").map_or_else(
         || PathBuf::from(format!("{name}-backup-{}.tar.gz", file_timestamp())),
         PathBuf::from,
     );
 
-    let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+    // The cage's own store, which on `vm` is inside the Lima guest.
+    // Host podman would answer every question about a vm cage's
+    // secrets wrongly rather than failing: `stored` would come back
+    // empty and `--include-secrets` would write a tarball with no
+    // secrets in it and no warning. `cli.py:3782`.
+    let podman = agentcage_cli::cage_podman::CagePodman::for_cage(
+        ctx.runner.as_ref(),
+        &config.isolation,
+        &name,
+    );
     let mut members: Vec<Member> = Vec::new();
 
     // ── Config ──────────────────────────────────────────
@@ -282,12 +291,21 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         ExitCode::from(EXIT_FAILURE)
     })?;
     let mut volume_names: Vec<String> = Vec::new();
+    // Container-only, and the guard is the Python's (`cli.py:3826`),
+    // not a port decision. Its consequence is worth stating plainly
+    // because nothing prints it: **a vm cage's named volumes are not
+    // backed up.** They live in the guest's podman, `VmPodman` has no
+    // volume verbs, and the tarball comes out with an empty `volumes/`
+    // — silently. The host handle is built here rather than reused
+    // from the router so that "volumes are a host-store thing" is
+    // structural rather than a comment.
     if config.isolation == "container" && !config.container.named_volumes.is_empty() {
+        let host = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
         members.push(Member::Dir(format!("{ROOT}/volumes")));
         for volume in config.container.named_volumes.keys() {
-            if podman.volume_exists(volume).unwrap_or(false) {
+            if host.volume_exists(volume).unwrap_or(false) {
                 let exported = staging.path().join(format!("{volume}.tar"));
-                if let Err(error) = podman.volume_export(volume, &exported.display().to_string()) {
+                if let Err(error) = host.volume_export(volume, &exported.display().to_string()) {
                     eprintln!("error: could not export volume '{volume}': {error}");
                     return Err(ExitCode::from(EXIT_FAILURE));
                 }
@@ -938,6 +956,33 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         }
     }
 
+    // Host podman, on purpose, even for a vm tarball — and unlike
+    // `cage backup` that is right rather than merely faithful.
+    //
+    // `cli.py:3973` builds its handle *here*, after the `--force`
+    // destroy has run `state.remove_deployment`, so
+    // `_podman_for_cage`'s `deployment_exists` check is false by now
+    // (and was false anyway for a restore onto a clean host) and the
+    // router answers host on every path a restore can take. There is
+    // no reachable input for which it restores into a guest store.
+    //
+    // That is the correct target, because the guest does not exist yet:
+    // the Lima instance is created by the deploy further down. The host
+    // store is where a vm cage's secrets are *staged*, and
+    // [`VmBackend::bridge_secrets`] mirrors it into the guest on every
+    // deploy — so the values arrive, one step later than they look
+    // like they do.
+    //
+    // The gap is a host with no podman store at all, which on this
+    // backend means a Mac: every `secret create` fails, so the values
+    // are dropped. Measured on one — each one warns and the summary
+    // says `Restored 0 secrets.`, so it is visible rather than silent,
+    // but the cage still comes back without its secrets.
+    // `backends/vm.py` names the same hazard at its
+    // `_resolve_source_secrets` call. Not fixed here, because the fix
+    // is a re-ordering — stage into the guest after the deploy — and it
+    // belongs with the backend rather than with this command. Pinned by
+    // `a_vm_restore_uses_the_host_store_like_the_python_does`.
     let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
 
     restore_secrets(&podman, &manifest, &target, &backup_dir);
@@ -960,7 +1005,7 @@ fn restore_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
                 eprintln!("error: {error}");
                 ExitCode::from(EXIT_FAILURE)
             })?;
-        require_container_backend(&config, "cage restore")?;
+        require_known_backend(&config, "cage restore")?;
 
         if !manifest.secrets_included && !manifest.secret_keys.is_empty() {
             let env = agentcage_cli::secrets::SystemEnv;
@@ -1544,10 +1589,17 @@ fn is_valid_cage_name(name: &str) -> bool {
     name.len() <= 63 && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// The `vm` / `apple-container` refusal, in the wording every other
-/// ported command uses.
-fn require_container_backend(config: &Config, command: &str) -> Result<(), ExitCode> {
-    if config.isolation == "container" {
+/// The refusal for an isolation nobody implemented, in the wording
+/// every other ported command uses.
+///
+/// `apple-container` never reaches here — both halves branch to their
+/// own body before this — and `vm` stopped being refused in PR E6.
+/// What is left is a `cage.yaml` naming a backend that does not exist,
+/// which is the same thing
+/// [`agentcage_cli::backends::AnyBackend::refusal`] refuses everywhere
+/// else.
+fn require_known_backend(config: &Config, command: &str) -> Result<(), ExitCode> {
+    if config.isolation == "container" || config.isolation == "vm" {
         return Ok(());
     }
     eprintln!(
@@ -2939,18 +2991,28 @@ secret_injection:
         assert!(fake.calls().is_empty(), "{:?}", fake.argv_sequence());
     }
 
-    /// The `vm` backend is **not** opened by any of the above. It
-    /// refuses for its own reasons — `_podman_for_cage` routes a
-    /// running vm cage's secret and volume calls through `VmPodman`
-    /// *inside the Lima guest*, a store nothing in this file talks to —
-    /// and the apple dispatch must not have become a general
-    /// "not container" branch on the way in.
+    /// A `vm` cage backs up, and its secrets are read from the
+    /// **guest** store.
+    ///
+    /// The routing is the whole assertion. Host podman would answer a
+    /// vm cage's `secret ls` with an empty list and no error, so a
+    /// `--include-secrets` backup would come out holding nothing and
+    /// say nothing about it. The `limactl` prefix on the listing call
+    /// is what says the values came from the store the cage actually
+    /// reads.
     #[test]
-    fn the_vm_backend_is_still_refused() {
-        let dir = TestDir::new("vm-backup-refused");
+    fn a_vm_cage_backs_up_from_the_guest_store() {
+        let dir = TestDir::new("vm-backup");
         let fake = FakeRunner::new();
         fake.assume_installed();
-        let ctx = ctx(&dir, fake);
+        // The router asks whether the guest is running first.
+        fake.on(
+            ["limactl", "list", "--json", "agentcage-vm-cage"],
+            Reply::ok("{\"status\": \"Running\"}\n"),
+        );
+        // Then the listing, and one read per stored key, in the guest.
+        fake.on(["limactl", "shell"], Reply::ok("vm-cage.API_KEY\n"));
+        let ctx = ctx(&dir, fake.clone());
 
         let source = dir.join("vm.yaml");
         fs::write(
@@ -2972,6 +3034,160 @@ secret_injection:
             "cage",
             "backup",
             "vm-cage",
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+        assert!(out.exists());
+
+        // Every podman verb went through `limactl`, which is the point.
+        let calls = fake.argv_sequence();
+        assert!(
+            calls
+                .iter()
+                .all(|argv| argv.first().map(String::as_str) == Some("limactl")),
+            "a host podman call escaped: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|argv| argv.contains(&"secret".to_owned())),
+            "the guest store was never listed: {calls:?}"
+        );
+    }
+
+    /// A `vm` cage whose guest is **stopped** falls back to host
+    /// podman, which is what the Python does and is the honest answer:
+    /// the guest's store does not exist while the guest is down, so
+    /// there is nothing to ask.
+    ///
+    /// Pinned because the fallback is silent. A backup taken while the
+    /// VM is down records *no* secrets and reports success, and the
+    /// only thing distinguishing it from a cage with no secrets is this
+    /// test saying so.
+    #[test]
+    fn a_stopped_vm_cage_backs_up_from_the_host_store() {
+        let dir = TestDir::new("vm-backup-stopped");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        fake.on(
+            ["limactl", "list"],
+            Reply::ok("{\"status\": \"Stopped\"}\n"),
+        );
+        fake.on(["podman", "secret", "ls"], Reply::ok(""));
+        let ctx = ctx(&dir, fake.clone());
+
+        let source = dir.join("vm.yaml");
+        fs::write(
+            &source,
+            "name: vm-cage\nisolation: vm\ncontainer:\n  \
+             image: docker.io/library/node:22-slim\n",
+        )
+        .unwrap();
+        ctx.paths.save_deployment("vm-cage", &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path("vm-cage"),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            "vm-cage",
+            "-o",
+            &out.display().to_string(),
+        ]);
+        assert!(backup_inner(&ctx, &matches).is_ok());
+        assert!(out.exists());
+        let calls = fake.argv_sequence();
+        assert!(
+            calls
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("podman")),
+            "the host store was never asked: {calls:?}"
+        );
+    }
+
+    /// **A vm restore writes its secrets to the host store**, which is
+    /// the staging area the deploy's secret bridge mirrors into the
+    /// guest — not a mistake, but not obvious either.
+    ///
+    /// `cli.py:3973` builds its podman handle after the `--force`
+    /// destroy has removed the deployment, so `_podman_for_cage` sees
+    /// no cage and answers host. It has to: the Lima guest is created
+    /// by the deploy that runs *after* this, so there is no guest store
+    /// to write into yet. [`VmBackend::bridge_secrets`] then copies the
+    /// host store into the guest.
+    ///
+    /// Pinned because the reasoning is invisible in the code and the
+    /// obvious "fix" — routing this through
+    /// [`agentcage_cli::cage_podman::CagePodman`] like `cage backup`
+    /// does — would write into a guest that does not exist. If this
+    /// test fails, a router crept in here.
+    #[test]
+    fn a_vm_restore_uses_the_host_store_like_the_python_does() {
+        let dir = TestDir::new("vm-restore-host-store");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        // Host podman answers everything. A `limactl` call would panic
+        // on the unstubbed argv, which is the assertion.
+        fake.on(["podman", "secret"], Reply::success());
+        let ctx = ctx(&dir, fake.clone());
+
+        let backup_dir = dir.join("agentcage-backup");
+        fs::create_dir_all(backup_dir.join("secrets")).unwrap();
+        fs::write(backup_dir.join("secrets/API_KEY"), "v").unwrap();
+        let manifest = Manifest::parse(
+            "{\"format_version\": 1, \"cage_name\": \"vm-cage\", \
+             \"isolation\": \"vm\", \"secret_keys\": [\"API_KEY\"], \
+             \"secrets_included\": true}",
+        )
+        .unwrap();
+
+        let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+        restore_secrets(&podman, &manifest, "vm-cage", &backup_dir);
+
+        let calls = fake.argv_sequence();
+        assert!(!calls.is_empty(), "no secret was restored at all");
+        assert!(
+            calls
+                .iter()
+                .all(|argv| argv.first().map(String::as_str) == Some("podman")),
+            "a restore reached the guest store: {calls:?}"
+        );
+    }
+
+    /// An isolation nobody implemented is still refused, and the apple
+    /// dispatch must not have become a general "not container" branch
+    /// on the way in.
+    #[test]
+    fn an_unknown_backend_is_still_refused() {
+        let dir = TestDir::new("gvisor-backup-refused");
+        let fake = FakeRunner::new();
+        fake.assume_installed();
+        let ctx = ctx(&dir, fake);
+
+        let source = dir.join("gvisor.yaml");
+        fs::write(
+            &source,
+            "name: gv-cage\nisolation: gvisor\ncontainer:\n  \
+             image: docker.io/library/node:22-slim\n",
+        )
+        .unwrap();
+        ctx.paths.save_deployment("gv-cage", &source).unwrap();
+        fs::write(
+            ctx.paths.metadata_path("gv-cage"),
+            "{\"agentcage_version\": \"0.40.1\", \"network_octet\": 42}\n",
+        )
+        .unwrap();
+
+        let out = dir.join("out.tar.gz");
+        let matches = leaf_matches(&[
+            "agentcage",
+            "cage",
+            "backup",
+            "gv-cage",
             "-o",
             &out.display().to_string(),
         ]);

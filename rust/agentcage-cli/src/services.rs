@@ -621,17 +621,30 @@ const STAGED_SECRETS_MOUNT: &str = "/home/acproxy/secrets";
 /// its proxy. The caller must then take the restart path, which also
 /// adopts the converged units.
 ///
-/// Only the container backend is answered here. `vm` needs the
-/// Lima-routed podman (Track E1) and `apple-container` has its own
-/// staging lifecycle tied to `start()`; both read as "no live channel",
-/// which is the safe answer — it costs a restart, not a wrong value.
+/// `container` and `vm` are both answered, each against its own store;
+/// the routing is [`crate::cage_podman::CagePodman`]'s.
+/// `apple-container` has its own staging lifecycle tied to `start()`
+/// and reads as "no live channel", which is the safe answer — it costs
+/// a restart, not a wrong value.
+///
+/// # The vm arm was unreachable in the Python
+///
+/// `services.cage_has_live_secret_channel` builds a `VmPodman` and
+/// calls `container_inspect` on it, and `VmPodman` did not define that
+/// method — so every vm call raised `AttributeError` into the
+/// function's own `except Exception` and answered "no". Nobody saw an
+/// error; what they got was `secret set` on a running vm cage always
+/// restarting it, and `stage_secret_value`'s carefully written vm arm
+/// never running. PR E6 added the missing method on both sides. If the
+/// restart-every-time behaviour was wanted, this is the line to look
+/// at.
 #[must_use]
 pub fn cage_has_live_secret_channel(
-    podman: &agentcage_exec::tools::podman::Podman<'_>,
+    podman: &crate::cage_podman::CagePodman<'_>,
     name: &str,
     config: &Config,
 ) -> bool {
-    if config.isolation != "container" {
+    if config.isolation != "container" && config.isolation != "vm" {
         return false;
     }
     let Ok(info) = podman.container_inspect(&format!("{name}-egress")) else {
@@ -690,27 +703,69 @@ const STAGE_WRITE_SCRIPT: &str =
 /// [`agentcage_exec::ExecError`] if `podman unshare` could not be run
 /// or exited non-zero. The caller falls back to the restart path.
 pub fn stage_secret_value(
-    podman: &agentcage_exec::tools::podman::Podman<'_>,
+    podman: &crate::cage_podman::CagePodman<'_>,
     runner: &dyn agentcage_exec::CommandRunner,
     paths: &Paths,
     name: &str,
     key: &str,
     value: &str,
 ) -> Result<(), agentcage_exec::ExecError> {
-    let target = paths.runtime_secrets_dir(name).join(key);
-    let command = podman
-        .base()
-        .args([
-            "unshare",
-            "sh",
-            "-c",
-            STAGE_WRITE_SCRIPT,
-            "_",
-            &target.display().to_string(),
-        ])
-        .stdin_secret(value.to_owned())
-        .captured();
-    runner.run(&command)?.check("podman")?;
+    match podman {
+        crate::cage_podman::CagePodman::Guest(guest) => {
+            stage_secret_value_in_guest(guest.instance(), name, key, value)
+        }
+        crate::cage_podman::CagePodman::Host(host) => {
+            let target = paths.runtime_secrets_dir(name).join(key);
+            let command = host
+                .base()
+                .args([
+                    "unshare",
+                    "sh",
+                    "-c",
+                    STAGE_WRITE_SCRIPT,
+                    "_",
+                    &target.display().to_string(),
+                ])
+                .stdin_secret(value.to_owned())
+                .captured();
+            runner.run(&command)?.check("podman")?;
+            Ok(())
+        }
+    }
+}
+
+/// The vm arm of [`stage_secret_value`].
+///
+/// Two guest commands rather than one, and the first is the reason this
+/// is not just a transport swap: the target path is under the *guest's*
+/// `XDG_RUNTIME_DIR`, which belongs to the Lima user and is not the
+/// host's. [`Paths::runtime_secrets_dir`] would compose a host path and
+/// the write would land somewhere nothing reads. The Python asks the
+/// guest the same way, with the same `${XDG_RUNTIME_DIR:-/run/user/$(id
+/// -u)}` fallback for a guest whose login shell never set it.
+fn stage_secret_value_in_guest(
+    instance: &agentcage_exec::tools::limactl::LimaInstance<'_>,
+    name: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), agentcage_exec::ExecError> {
+    let probe = [
+        "sh".to_owned(),
+        "-c".to_owned(),
+        r#"echo "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}""#.to_owned(),
+    ];
+    let runtime_dir = instance.exec(&probe, true)?.stdout_text().trim().to_owned();
+    let target = format!("{runtime_dir}/agentcage/{name}/secrets/{key}");
+    let write = [
+        "podman".to_owned(),
+        "unshare".to_owned(),
+        "sh".to_owned(),
+        "-c".to_owned(),
+        STAGE_WRITE_SCRIPT.to_owned(),
+        "_".to_owned(),
+        target,
+    ];
+    instance.exec_with_secret(&write, value)?.check("limactl")?;
     Ok(())
 }
 

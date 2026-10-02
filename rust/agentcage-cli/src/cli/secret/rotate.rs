@@ -134,7 +134,16 @@ fn run(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
         apple::restart_if_running(ctx, &config);
         return Ok(());
     }
-    if ctx.backend().is_running(&config.name, "cage") {
+    // `backend_for`, not `ctx.backend()`: the Python asks
+    // `get_backend(cfg)` (`cli.py:4540`), and on a vm cage the
+    // container backend's `systemctl --user` runs on the *host*, where
+    // that cage's unit does not exist — so a running vm cage would
+    // read as stopped and the rotation would print "applies on next
+    // start" while the cage went on injecting the old placeholders.
+    if ctx
+        .backend_for(&config.isolation)
+        .is_running(&config.name, "cage")
+    {
         println!(
             "Restarting cage '{}' to apply — the old placeholder(s) stop \
              injecting now.",

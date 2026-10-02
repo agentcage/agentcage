@@ -142,19 +142,29 @@ fn open_cage(ctx: &Ctx, name: &str, hint: bool) -> Result<Config, ExitCode> {
 
 /// The backends whose secret store these bodies can drive.
 ///
-/// Two of the three. `container` keeps its values in host podman's
-/// secret store, which is what the second half of every body below
-/// talks to; `apple-container` keeps them in the macOS keychain and is
-/// reached through [`agentcage_cli::secrets::resolve_store`], which is
-/// what [`apple`] is for.
+/// All three, as of PR E6. `container` keeps its values in host
+/// podman's secret store; `vm` keeps them in a podman store inside its
+/// Lima guest, reached through
+/// [`agentcage_cli::cage_podman::CagePodman`]; `apple-container` keeps
+/// them in the macOS keychain, reached through
+/// [`agentcage_cli::secrets::resolve_store`], which is what [`apple`]
+/// is for.
 ///
-/// `vm` is still refused, and refusing it **by name** is the point: its
-/// secrets live inside the Lima guest, so driving host podman at a vm
-/// cage does not fail — it answers, wrongly. `secret list` would report
-/// every key missing and `secret rm` would report a secret that exists
-/// as absent. Wrong, rather than merely unimplemented. Track E.
+/// `vm` was refused until the router existed, and refusing it **by
+/// name** was the point: driving host podman at a vm cage does not
+/// fail, it answers wrongly — `secret list` reporting every key
+/// missing, `secret rm` reporting a secret that exists as absent. That
+/// hazard has not gone away; it is now the reason the router asks
+/// whether the guest is *running* before trusting it.
+///
+/// What remains refused is an isolation nobody implemented, which is
+/// the same refusal [`agentcage_cli::backends::AnyBackend::refusal`]
+/// gives everywhere else.
 fn require_store_backend(config: &Config, name: &str) -> Result<(), ExitCode> {
-    if config.isolation == "container" || apple::is_apple_container(config) {
+    if config.isolation == "container"
+        || config.isolation == "vm"
+        || apple::is_apple_container(config)
+    {
         return Ok(());
     }
     eprintln!(
@@ -187,7 +197,11 @@ fn run_list(ctx: &Ctx, name: &str) -> Result<(), ExitCode> {
     let present: Vec<String> = if apple::is_apple_container(&config) {
         apple::secret_names(ctx, &config, name)
     } else {
-        let podman = agentcage_exec::tools::podman::Podman::new(ctx.runner.as_ref());
+        let podman = agentcage_cli::cage_podman::CagePodman::for_cage(
+            ctx.runner.as_ref(),
+            &config.isolation,
+            name,
+        );
         let prefix = format!("{name}.");
         podman
             .secret_list(&prefix)
@@ -371,11 +385,19 @@ mod tests {
         assert!(render(&config, &[]));
     }
 
-    /// Two backends in, one still out — and the one still out is the
-    /// one whose secrets this code cannot see.
+    /// All three real backends in; an isolation nobody implemented
+    /// still out.
+    ///
+    /// `vm` was the one out until PR E6 gave it a router. What makes it
+    /// safe to let in is not the gate but
+    /// [`agentcage_cli::cage_podman::CagePodman`] asking whether the
+    /// guest is running: host podman answers a vm cage's questions
+    /// wrongly rather than failing, so the hazard the old refusal
+    /// guarded against is still there and is now handled one layer
+    /// down.
     #[test]
-    fn vm_is_still_refused_and_the_other_two_are_not() {
-        for isolation in ["container", "apple-container"] {
+    fn the_three_real_backends_are_accepted_and_an_unknown_one_is_not() {
+        for isolation in ["container", "vm", "apple-container"] {
             let config = Config {
                 isolation: isolation.to_owned(),
                 ..Config::default()
@@ -385,20 +407,14 @@ mod tests {
                 "{isolation} must be accepted"
             );
         }
-        // `vm` keeps its secrets inside the Lima guest. Host podman
-        // would answer every question about them wrongly rather than
-        // failing, which is why it is named rather than fallen through
-        // to. Track E, and out of scope for the apple port.
-        for isolation in ["vm", "gvisor"] {
-            let config = Config {
-                isolation: isolation.to_owned(),
-                ..Config::default()
-            };
-            assert!(
-                require_store_backend(&config, "acme").is_err(),
-                "{isolation} must be refused"
-            );
-        }
+        let config = Config {
+            isolation: "gvisor".to_owned(),
+            ..Config::default()
+        };
+        assert!(
+            require_store_backend(&config, "acme").is_err(),
+            "an unimplemented isolation must be refused"
+        );
     }
 
     /// A cage on disk, with the `isolation` and `secrets.backend` the

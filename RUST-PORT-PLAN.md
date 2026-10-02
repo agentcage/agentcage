@@ -434,6 +434,8 @@ fixture and the port moving together. The rest stand.
 | **D1** | **`KeychainStore.set` put a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Fixed** on both sides — the command line now travels on `security -i`'s stdin and the kernel's argv is `security -i`. Settled by round trip against a real keychain; see below |
 | E2b | **The Rust port built the System-keychain argv scrambled** — the keychain path landed *before* the value and `-U`, so the path would be stored as the password. The Python appends it last. Only reachable on a headless Mac, the one configuration nobody could test | **Fixed** in E2b |
 | E2b | `_security_interaction_blocked` is **dead code**: defined at `secret_store.py:136` and never called. The fall-through treats every non-zero exit alike, so the stderr text is never consulted | Open; pinned, deliberately not wired in — doing so would *narrow* the fall-through and turn a headless Mac failing for any other reason into a hard failure |
+| E8 | **Nothing removes a vm cage's secret *at rest* on macOS.** Two commands, one root cause. `secret rm`'s keychain delete is gated on `_is_apple_container(cfg)` (`cli.py:4431`), but a *vm* cage on a Mac also resolves to the keychain store — so the non-apple branch removes the guest podman copy and the `.cred`, reports `Secret 'rsvm.API_KEY' removed.`, and leaves the value. And `VmBackend.destroy_resources` ignores `keep_secrets` entirely: deleting the Lima instance takes the guest's store with it, but nothing touches the at-rest copy, so `cage destroy` — whose help says it removes "scoped secrets" — leaves it, and `--keep-secrets` is a no-op on that backend. Measured end to end on an Apple Silicon Mac: after `secret rm` reported success, a plain `cage restart` brought the secret back with its keychain value; after `cage destroy`, the keychain item was still there | Open; **reproduced on both sides**. The fix is to delete from the *resolved* store rather than from the two stores the container backend happens to use — but it also needs a decision on the existence check, which currently consults only those two, so `secret rm` on a never-started vm cage says "does not exist" while the keychain holds the value |
+| E8 | **`cage backup --include-secrets` can archive a stale value.** The archive is read from the *runtime* store (guest podman), and `secret set` updates the at-rest store and the live staging file without refreshing it. Measured: three copies, two values — keychain `vm2`, staged file `vm2`, guest podman `vm1`, and the tarball carried `vm1` | Open; the Python reads the same copy. Not vm-specific in principle (a container cage on `systemd-creds` has the same two-copy shape), but vm is where it is easiest to hit, because every `secret set` on a Mac writes to a store the runtime copy is never reconciled with until the next deploy |
 | D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; **documented** in `docs/reference/configuration.md`, which had called the field "static" and mentioned no expansion. Still a policy call: it is deliberate (the apple backend mirrors it on purpose) and has shipped since 0.1.0 |
 
 **The Keychain finding was the most serious thing this port turned up**, because
@@ -882,12 +884,66 @@ end-to-end smoke on real hardware.
 | E6 | `cage backup` / `cage restore` | A second archive *shape*, not a second format: same `agentcage-backup/` root and `manifest.json`, one more member. `--include-secrets` is refused (secrets are env-passed at start, not stored), `named_volumes` is always empty, and `capture.jsonl`/`audit.jsonl` come from the per-cage logs directory rather than a podman volume. Restore prints `export K=<value>` hints for the env names the manifest recorded. |
 | E7 | the `secret` group | `set` / `list` / `rm` / `rotate-placeholders`. The store was already ported; what was missing was that `secret set`'s live-apply path probes host podman, which *answers* about an apple cage rather than failing. There is no live apply on this backend by design — the staged secrets directory is wiped as soon as the egress has read it — so the apple path restarts the cage instead, as the Python does. |
 
-**`vm` is still refused on both**, and that is deliberate rather than
-an oversight: `cage backup`/`restore` and the `secret` group have never
-been ported for the vm backend either, and a change that quietly
-un-refused them would be worse than the refusal. The refusal message in
-`require_store_backend` still cites Track E, and `vm` is now its only
-reader.
+### Track E — E8, the `vm` store
+
+`cage backup`/`restore` and the `secret` group used to refuse
+`isolation: vm` on both, deliberately: a vm cage keeps its secrets in a
+podman store *inside its Lima guest*, and host podman does not fail
+when asked about them — it answers, wrongly. `secret list` would report
+every key missing; `secret rm` would call an existing secret absent.
+A refusal was better than a confident wrong answer.
+
+E8 ports the routing instead, as
+`agentcage_cli::cage_podman::CagePodman` — `cli._podman_for_cage`
+(`cli.py:54`) written down as an enum. The hazard has not gone away; it
+is now handled one layer down, by asking whether the guest is *running*
+before trusting it. A stopped guest falls back to host podman, which is
+what the Python does and is the only answer available: the guest's
+store does not exist while the guest is down.
+
+| Surface | What routes where |
+| :-- | :-- |
+| `secret list` / `set` / `rm` | The cage's own store. On `vm` that is the guest's, through `limactl shell -- podman …` |
+| `secret rotate-placeholders` | `get_backend(cfg)`, not the container backend — asking host `systemctl --user` about a vm cage's unit reads "stopped" for a running cage, and the rotation would print "applies on next start" while the old placeholders kept injecting |
+| `cage backup` | The cage's own store for secrets. Named volumes stay **container-only**, which is the Python's own guard (`cli.py:3826`) and has a consequence nothing prints: **a vm cage's named volumes are not backed up.** `VmPodman` has no volume verbs and the tarball comes out with an empty `volumes/` |
+| `cage restore` | Host podman, deliberately — the Lima guest does not exist yet at that point in the sequence, and `VmBackend::bridge_secrets` mirrors the host store into the guest on the deploy that follows. The gap is a host with no podman store at all, which for this backend means a Mac: every `secret create` fails, each one warns, the summary says `Restored 0 secrets.`, and the cage comes back without them. Measured, not inferred — see the E8 smoke below |
+
+**The E8 smoke, on real hardware.** An Apple Silicon Mac, macOS 26.5,
+Lima 2.2.0, `vz` VM type — and, usefully, **no usable host podman at
+all** (`podman` is installed but there is no machine, so every host
+`podman` call fails). That makes the routing impossible to fake: an
+answer about a vm cage's secrets can only have come from the guest.
+
+A `rsvm` cage on `alpine:3.20`, created and started by the Rust binary:
+
+| Step | Result |
+| :-- | :-- |
+| `secret list rsvm` | `API_KEY  injection  ok` — while host podman cannot even connect. Ground truth `limactl shell … podman secret ls` agrees |
+| `secret set rsvm API_KEY` on the running cage | "applied … without a restart", and the egress container's `StartedAt` is unchanged. The staged file inside the guest holds the new value, read back through `podman unshare`. **This is the path that was unreachable** |
+| `secret rotate-placeholders rsvm` | Took the *restart* branch, i.e. `backend_for` answered "running". The host has no `systemctl` at all, so the old `ctx.backend()` could only have answered "stopped" |
+| `secret rm rsvm API_KEY` | Gone from the guest store, tombstone applied live. Also surfaced the at-rest bug in the table above: a following `cage restart` brought the value back |
+| `cage backup rsvm --include-secrets` | `Secrets: 1 keys (included)`, `Volumes: 0`, read from the guest store. Also surfaced the stale-value finding above |
+| `cage restore … --name rsvm2 --no-start` | Config and metadata restored; secrets warned per key and `Restored 0 secrets.`, because there is no host podman store to write them to. `cage show rsvm2` then reports `Secrets: 0/1 (1 missing)` honestly |
+| `cage ls` | A vm cage reads `running (2/2)` |
+| `cage destroy rsvm -y` | Lima instance deleted, state removed, the operator's own two apple cages untouched — and the at-rest keychain item left behind, per the bug above |
+
+**A bug E8 found, and it had a green test.** `services.cage_has_live_
+secret_channel` builds a `VmPodman` and calls `container_inspect` on
+it — and `VmPodman` never defined that method. The `AttributeError`
+landed in the function's own bare `except Exception`, so the vm arm
+always answered "no live channel". Nothing errored; what happened
+instead was that every `secret set` and `secret rm` on a *running* vm
+cage restarted the workload rather than staging the value, and the
+zero-restart branch written for exactly that case —
+`stage_secret_value`'s vm arm, and the `push_config_files` follow-up
+that makes the guest's proxy re-read its config — never ran at all.
+
+`tests/test_live_secret_apply.py::test_vm_uses_guest_podman` covered
+the path and passed, because it patches the class with a `MagicMock`,
+which grows whatever attribute you ask it for. The method is now on
+both sides, and the test that would have caught it asserts against the
+*class* rather than a mock. Verified by deleting the method again: the
+new test fails, the old one still passes.
 
 **A bug E7 found on the way.** `SecretWriter` selected the store from
 the rule's `source:` scheme even on an apple cage, so a rule carrying

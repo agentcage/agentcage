@@ -23,6 +23,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use agentcage_cli::cage_podman::CagePodman;
+use agentcage_exec::tools::limactl::VmPodman;
 use agentcage_exec::tools::podman::Podman;
 use agentcage_exec::{FakeRunner, Reply};
 
@@ -51,7 +53,7 @@ fn staging_puts_the_value_on_stdin_and_the_path_in_argv() {
     let fake = FakeRunner::new();
     fake.assume_installed();
     fake.push(Reply::success());
-    let podman = Podman::new(&fake);
+    let podman = CagePodman::Host(Podman::new(&fake));
 
     agentcage_cli::services::stage_secret_value(&podman, &fake, &paths, "acme", "API_KEY", CANARY)
         .expect("the fake exits 0");
@@ -100,6 +102,54 @@ fn staging_puts_the_value_on_stdin_and_the_path_in_argv() {
     no_canary("Command::argv_redacted", &command.argv_redacted().join(" "));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same property through the vm arm, which is a different code
+/// path entirely: two guest commands rather than one local `podman
+/// unshare`, and the value crosses `limactl shell` into ssh.
+///
+/// Worth its own test because the transport is where a value is most
+/// likely to end up in argv by accident — the obvious way to write
+/// this would be `sh -c "echo <value> > …"`, which would put the
+/// cleartext in the guest's process table *and* the host's.
+#[test]
+fn staging_into_a_vm_guest_also_keeps_the_value_on_stdin() {
+    let dir = temp_dir("stage-argv-vm");
+    let paths = agentcage_state::Paths::under(&dir);
+    let fake = FakeRunner::new();
+    fake.assume_installed();
+    // 1: the `XDG_RUNTIME_DIR` probe. 2: the staging write.
+    fake.push(Reply::ok("/run/user/501\n"));
+    fake.push(Reply::success());
+    let podman = CagePodman::Guest(VmPodman::new(&fake, "acme"));
+
+    agentcage_cli::services::stage_secret_value(&podman, &fake, &paths, "acme", "API_KEY", CANARY)
+        .expect("the fake exits 0");
+
+    let write = fake.call(1);
+    let argv = write.argv();
+    assert_eq!(argv[0], "limactl");
+    // The target is under the *guest's* runtime dir, as the probe
+    // reported it -- not a host path this process composed.
+    assert!(
+        argv.last()
+            .expect("a target path")
+            .ends_with("/run/user/501/agentcage/acme/secrets/API_KEY"),
+        "{argv:?}"
+    );
+    assert_eq!(write.stdin_text().as_deref(), Some(CANARY));
+
+    for (what, rendered) in [
+        ("argv", argv.join(" ")),
+        ("raw argv", write.raw_argv().join(" ")),
+        ("the recorded call's Debug", format!("{write:?}")),
+        (
+            "the whole argv sequence",
+            format!("{:?}", fake.argv_sequence()),
+        ),
+    ] {
+        no_canary(what, &rendered);
+    }
 }
 
 // ── 2. `secret set`, as a process ───────────────────────────────────
