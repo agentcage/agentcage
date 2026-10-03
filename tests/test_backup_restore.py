@@ -273,10 +273,11 @@ class TestCageBackup:
             names = tar.getnames()
             assert any("secrets/API_KEY" in n for n in names)
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_backup_prefers_the_at_rest_value_over_a_stale_runtime_copy(
-        self, mock_state, MockPodman, tmp_path,
+        self, mock_state, MockPodman, MockLima, tmp_path,
     ):
         """The podman store is not always where the value *lives*.
 
@@ -286,6 +287,10 @@ class TestCageBackup:
         Measured on a vm cage on a Mac: three copies, two values, and
         the tarball got the stale one.
         """
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
         mock_state.deployment_exists.return_value = True
         inj = MagicMock()
         inj.env = "API_KEY"
@@ -321,15 +326,20 @@ class TestCageBackup:
             assert member is not None
             assert member.read().decode() == "CURRENT-at-rest-value"
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_backup_carries_a_key_the_runtime_store_never_saw(
-        self, mock_state, MockPodman, tmp_path,
+        self, mock_state, MockPodman, MockLima, tmp_path,
     ):
         """A secret set on a cage that has not been deployed since has
         no runtime copy at all, so it used to be left out of the backup
         entirely — silently, because the key count came from the same
         list."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
         mock_state.deployment_exists.return_value = True
         inj = MagicMock()
         inj.env = "API_KEY"
@@ -363,14 +373,19 @@ class TestCageBackup:
             member = tar.extractfile("agentcage-backup/secrets/API_KEY")
             assert member.read().decode() == "only-at-rest"
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_a_backup_without_include_secrets_resolves_no_store(
-        self, mock_state, MockPodman, tmp_path,
+        self, mock_state, MockPodman, MockLima, tmp_path,
     ):
         """Resolving a keychain store runs its write probe, which writes
         a throwaway item to the operator's real login keychain. A backup
         that archives no values has no business doing that."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
         mock_state.deployment_exists.return_value = True
         cfg = _mock_config()
         cfg.isolation = "vm"

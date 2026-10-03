@@ -261,6 +261,30 @@ class TestSecretRm:
             assert "does not exist" in result.output
 
 
+class TestPodmanRouting:
+    """`_podman_for_cage` decides which store a cage's secrets live in,
+    which means asking Lima whether the guest is up."""
+
+    @patch("agentcage.cli.state")
+    def test_a_host_without_lima_routes_to_the_host_store(self, mock_state):
+        """`secret rm` and `cage backup` route by isolation now, so they
+        reach this on a vm cage — and a Mac with Lima uninstalled used to
+        get a FileNotFoundError traceback rather than an answer."""
+        from agentcage.cli import _podman_for_cage
+        from agentcage.podman import Podman
+
+        cfg = MagicMock()
+        cfg.isolation = "vm"
+        mock_state.deployment_exists.return_value = True
+        mock_state.load_deployment_config.return_value = cfg
+
+        with patch("subprocess.run", side_effect=FileNotFoundError(
+                2, "No such file or directory", "limactl")):
+            podman = _podman_for_cage("rsvm")
+
+        assert type(podman) is Podman
+
+
 class TestSecretRmAtRest:
     """`secret rm` has to remove the value *at rest*, not just the two
     places the container backend keeps it.
@@ -281,11 +305,16 @@ class TestSecretRmAtRest:
         cfg.container.podman_secrets = []
         return cfg
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_rm_deletes_from_the_at_rest_store(
-        self, mock_state, MockPodman, tmp_path,
+        self, mock_state, MockPodman, MockLima, tmp_path,
     ):
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
         podman = MockPodman.return_value
         podman.secret_exists.return_value = True
         mock_state.deployment_exists.return_value = True
@@ -305,14 +334,19 @@ class TestSecretRmAtRest:
             "rsvm", "API_KEY", state_dir=tmp_path,
         )
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_rm_finds_a_secret_that_exists_only_at_rest(
-        self, mock_state, MockPodman, tmp_path,
+        self, mock_state, MockPodman, MockLima, tmp_path,
     ):
         """A vm cage that has never been started has no runtime copy at
         all. `secret rm` used to call that "does not exist" while the
         keychain held the value — so there was no way to remove it."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
         podman = MockPodman.return_value
         podman.secret_exists.return_value = False
         mock_state.deployment_exists.return_value = True
@@ -331,11 +365,16 @@ class TestSecretRmAtRest:
         assert "removed" in result.output
         store.delete.assert_called_once()
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_rm_still_refuses_a_key_that_is_nowhere(
-        self, mock_state, MockPodman, tmp_path,
+        self, mock_state, MockPodman, MockLima, tmp_path,
     ):
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
         podman = MockPodman.return_value
         podman.secret_exists.return_value = False
         mock_state.deployment_exists.return_value = True
@@ -352,14 +391,19 @@ class TestSecretRmAtRest:
         assert "does not exist" in result.output
         store.delete.assert_not_called()
 
+    @patch("agentcage.cli.LimaInstance")
     @patch("agentcage.cli.Podman")
     @patch("agentcage.cli.state")
     def test_a_store_that_will_not_delete_warns_rather_than_failing(
-        self, mock_state, MockPodman, tmp_path,
+        self, mock_state, MockPodman, MockLima, tmp_path,
     ):
         """The runtime copies are already gone by then, so the secret has
         stopped being injected either way. The operator still has to be
         told, because the next start would otherwise restore it."""
+        # A vm cage whose guest is down: the store to ask is the
+        # host one. Pinned rather than left to whether this machine
+        # happens to have limactl installed.
+        MockLima.return_value.is_running.return_value = False
         from agentcage.secret_store import SecretStoreError
 
         podman = MockPodman.return_value

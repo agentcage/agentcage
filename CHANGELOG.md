@@ -92,6 +92,15 @@ have not changed, only its name.
   the runtime copies are already gone by then, so the secret has stopped being
   injected either way, but you need to know the at-rest copy survived.
 
+- **`secret rm` and `cage backup` no longer traceback on a host without Lima
+  installed.** Both now ask whether a vm cage's guest is running, to decide
+  which store holds the secret — and `LimaInstance.is_running()` handled
+  `limactl` exiting non-zero and `limactl` printing junk, but not `limactl`
+  being absent. The `FileNotFoundError` escaped as a traceback. A missing
+  `limactl` now answers the same as a stopped guest, which is what every
+  caller already handles; `cage start` on a vm cage still reports the missing
+  binary through the backend's prerequisite check, as before.
+
 - **`secret rm` on a running `vm` cage no longer leaves it unable to restart.**
   Removing a secret converges the unit files, which is what drops the
   now-dangling `Secret=<cage>.<KEY>` line — but on the vm backend the

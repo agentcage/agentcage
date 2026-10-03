@@ -62,11 +62,10 @@ impl<'a> CagePodman<'a> {
         if isolation == "vm" {
             let instance = LimaInstance::new(runner, cage_name);
             // `is_running` errors on exactly one thing: `limactl` is
-            // not installed. The Python lets that `FileNotFoundError`
-            // escape `_podman_for_cage` as a traceback; here it means
-            // the same as a stopped guest -- there is no store to ask
-            // -- and every caller already handles that answer. A
-            // traceback is not a behaviour worth porting.
+            // not installed. That means the same as a stopped guest --
+            // there is no store to ask -- and every caller already
+            // handles that answer. `LimaInstance.is_running` on the
+            // Python side swallows it the same way.
             if instance.is_running().unwrap_or(false) {
                 return Self::Guest(VmPodman::new(runner, cage_name));
             }

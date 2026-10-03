@@ -987,6 +987,23 @@ unit files, which is what drops a now-dangling
 Before E9 this was invisible: the keychain copy silently resurrected
 the value, so the dangling line always resolved.
 
+**A bug CI found, on a host with no Lima.** Asking where a vm cage's
+secrets live means asking whether the guest is up, and
+`cli._podman_for_cage` does that with `LimaInstance.is_running()`.
+That method caught a non-zero exit and bad JSON but not a missing
+`limactl` binary, so on a host without Lima installed the
+`FileNotFoundError` escaped as a traceback — from `secret rm` and
+`cage backup`, commands that have no business needing Lima to tell you
+they cannot reach a guest. E9 is what made those commands ask: before
+it, neither one routed by isolation. It reproduces on any Mac with
+Lima uninstalled; CI's Linux runners are simply the first place it ran.
+
+`is_running` and `exists` now answer False, which is what every caller
+already handles and what `VmBackend.has_resources` — guarded with
+`shutil.which("limactl")` — has always done. The Rust reached the same
+answer via `.unwrap_or(false)`, carrying a comment calling it a
+deliberate divergence; the divergence is gone and the comment with it.
+
 **A test that was dead setup.** Three `test_vm_backend.py` destroy tests
 set `backend._podman = MagicMock()` — an attribute `VmBackend` does not
 have and nothing read. Harmless while `destroy_resources` touched no
