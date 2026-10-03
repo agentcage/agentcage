@@ -1230,11 +1230,94 @@ fn destroy_resources_removes_the_guest_and_this_cages_config() {
         ]
     );
     runner.assert_argv(&[
+        // Secrets first, and from the *host* store: a vm cage's values
+        // are set on the host and mirrored into the guest at deploy, so
+        // the host copies would outlive the cage otherwise. This cage
+        // has none, and has no stored config either, so the at-rest
+        // half returns without resolving a store.
+        &[
+            "podman",
+            "secret",
+            "ls",
+            "--noheading",
+            "--format",
+            "{{.Name}}",
+        ],
         &["limactl", "list", "--json", "agentcage-demo"],
         &["limactl", "delete", "--force", "agentcage-demo"],
     ]);
     // The shared directory survives; only this cage's files go.
     assert!(home.root.join(".config/agentcage/lima").is_dir());
+}
+
+/// `--keep-secrets` is no longer a no-op on this backend.
+///
+/// It used to be accepted and ignored, so `cage destroy
+/// --keep-secrets` on a vm cage did the same thing as without it — and
+/// so did the default, which is the half that mattered:
+/// `cage_destroy`'s "Scoped secrets will also be removed." was false
+/// here.
+#[test]
+fn keep_secrets_leaves_the_host_staging_store_alone() {
+    let home = Home::new("destroy-keep");
+    let paths = home.paths();
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.default_reply(Reply::success());
+    runner.on(["limactl", "list"], Reply::ok(r#"{"status":"Stopped"}"#));
+    let backend = vm(&paths, &runner);
+
+    backend.destroy_resources("demo", true).expect("destroys");
+
+    assert!(
+        !runner
+            .argv_sequence()
+            .iter()
+            .any(|argv| argv.first().map(String::as_str) == Some("podman")),
+        "--keep-secrets touched a store: {:?}",
+        runner.argv_sequence()
+    );
+}
+
+/// The host staging secrets a destroy removes, reported by name.
+#[test]
+fn a_destroy_removes_the_host_staging_secrets() {
+    let home = Home::new("destroy-secrets");
+    let paths = home.paths();
+    let runner = FakeRunner::new();
+    runner.assume_installed();
+    runner.default_reply(Reply::success());
+    runner.on(["limactl", "list"], Reply::ok(r#"{"status":"Stopped"}"#));
+    runner.on(
+        ["podman", "secret", "ls"],
+        Reply::ok(
+            "demo.API_KEY
+demo.TOKEN
+other.KEY
+",
+        ),
+    );
+    let backend = vm(&paths, &runner);
+
+    let removed = backend.destroy_resources("demo", false).expect("destroys");
+
+    // The prefix filter is the store's, and `other.KEY` is another
+    // cage's secret -- removing it would be the worst kind of bug here.
+    assert_eq!(
+        removed
+            .iter()
+            .filter(|r| r.starts_with("secret:"))
+            .collect::<Vec<_>>(),
+        ["secret:demo.API_KEY", "secret:demo.TOKEN"]
+    );
+    assert!(
+        !runner
+            .argv_sequence()
+            .iter()
+            .any(|argv| argv.iter().any(|a| a == "other.KEY")),
+        "another cage's secret was touched: {:?}",
+        runner.argv_sequence()
+    );
 }
 
 #[test]

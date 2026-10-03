@@ -434,8 +434,8 @@ fixture and the port moving together. The rest stand.
 | **D1** | **`KeychainStore.set` put a cleartext secret in argv**: `security add-generic-password … -w <CLEARTEXT> -U`. Readable from the process table by any process of the same user, and by root, for the life of the child | **Fixed** on both sides — the command line now travels on `security -i`'s stdin and the kernel's argv is `security -i`. Settled by round trip against a real keychain; see below |
 | E2b | **The Rust port built the System-keychain argv scrambled** — the keychain path landed *before* the value and `-U`, so the path would be stored as the password. The Python appends it last. Only reachable on a headless Mac, the one configuration nobody could test | **Fixed** in E2b |
 | E2b | `_security_interaction_blocked` is **dead code**: defined at `secret_store.py:136` and never called. The fall-through treats every non-zero exit alike, so the stderr text is never consulted | Open; pinned, deliberately not wired in — doing so would *narrow* the fall-through and turn a headless Mac failing for any other reason into a hard failure |
-| E8 | **Nothing removes a vm cage's secret *at rest* on macOS.** Two commands, one root cause. `secret rm`'s keychain delete is gated on `_is_apple_container(cfg)` (`cli.py:4431`), but a *vm* cage on a Mac also resolves to the keychain store — so the non-apple branch removes the guest podman copy and the `.cred`, reports `Secret 'rsvm.API_KEY' removed.`, and leaves the value. And `VmBackend.destroy_resources` ignores `keep_secrets` entirely: deleting the Lima instance takes the guest's store with it, but nothing touches the at-rest copy, so `cage destroy` — whose help says it removes "scoped secrets" — leaves it, and `--keep-secrets` is a no-op on that backend. Measured end to end on an Apple Silicon Mac: after `secret rm` reported success, a plain `cage restart` brought the secret back with its keychain value; after `cage destroy`, the keychain item was still there | Open; **reproduced on both sides**. The fix is to delete from the *resolved* store rather than from the two stores the container backend happens to use — but it also needs a decision on the existence check, which currently consults only those two, so `secret rm` on a never-started vm cage says "does not exist" while the keychain holds the value |
-| E8 | **`cage backup --include-secrets` can archive a stale value.** The archive is read from the *runtime* store (guest podman), and `secret set` updates the at-rest store and the live staging file without refreshing it. Measured: three copies, two values — keychain `vm2`, staged file `vm2`, guest podman `vm1`, and the tarball carried `vm1` | Open; the Python reads the same copy. Not vm-specific in principle (a container cage on `systemd-creds` has the same two-copy shape), but vm is where it is easiest to hit, because every `secret set` on a Mac writes to a store the runtime copy is never reconciled with until the next deploy |
+| E8 | **Nothing removed a vm cage's secret *at rest* on macOS.** Two commands, one root cause. `secret rm`'s keychain delete was gated on `_is_apple_container(cfg)` (`cli.py:4431`), but a *vm* cage on a Mac also resolves to the keychain store — so the non-apple branch removed the guest podman copy and the `.cred`, reported `Secret 'rsvm.API_KEY' removed.`, and left the value. And `VmBackend.destroy_resources` ignored `keep_secrets` entirely. Measured on an Apple Silicon Mac: after `secret rm` reported success, a plain `cage restart` brought the secret back with its keychain value; after `cage destroy`, the keychain item was still there | **Fixed** in E9, both sides |
+| E8 | **`cage backup --include-secrets` archived a stale value.** The archive was read from the *runtime* store, and `secret set` updates the at-rest store and the live staging file without refreshing it. Measured: three copies, two values — keychain `vm2`, staged file `vm2`, guest podman `vm1` — and the tarball carried `vm1` | **Fixed** in E9, both sides |
 | D3 | `container.env` values are `expandvars`-expanded into `Environment="K=V"` in the unit file and thence into `podman run --env`. The declared-secret case is already mitigated (`config.py:1101` strips keys that also have a `secret_injection` rule, and its comment names this exact hazard) — the gap is an **undeclared** `env: {TOKEN: "$TOKEN"}`, which is silent | Open; **documented** in `docs/reference/configuration.md`, which had called the field "static" and mentioned no expansion. Still a policy call: it is deliberate (the apple backend mirrors it on purpose) and has shipped since 0.1.0 |
 
 **The Keychain finding was the most serious thing this port turned up**, because
@@ -908,6 +908,16 @@ store does not exist while the guest is down.
 | `cage backup` | The cage's own store for secrets. Named volumes stay **container-only**, which is the Python's own guard (`cli.py:3826`) and has a consequence nothing prints: **a vm cage's named volumes are not backed up.** `VmPodman` has no volume verbs and the tarball comes out with an empty `volumes/` |
 | `cage restore` | Host podman, deliberately — the Lima guest does not exist yet at that point in the sequence, and `VmBackend::bridge_secrets` mirrors the host store into the guest on the deploy that follows. The gap is a host with no podman store at all, which for this backend means a Mac: every `secret create` fails, each one warns, the summary says `Restored 0 secrets.`, and the cage comes back without them. Measured, not inferred — see the E8 smoke below |
 
+**The E9 verification, on the same hardware.** A fresh `rsvm3` vm cage,
+each fix watched end to end:
+
+| Fix | Evidence |
+| :-- | :-- |
+| `secret rm` removes at rest | Keychain item gone after the removal, and **still gone after a `cage restart`** — the step that used to resurrect it |
+| `cage destroy` removes at rest | `Removed:` listed `secret:rsvm3.API_KEY` alongside the instance and the state, and the keychain item was gone |
+| backup takes the fresh value | Set `v2` on a cage whose guest podman still held `v1`; the three copies read keychain `v2`, guest `v1`, and the tarball carried **`v2`** |
+| convergence reaches the guest | Guest quadlet `Secret=` lines went 1 → 0 across the `secret rm`, and the following `cage restart` came back `running (2/2)` instead of failing |
+
 **The E8 smoke, on real hardware.** An Apple Silicon Mac, macOS 26.5,
 Lima 2.2.0, `vz` VM type — and, usefully, **no usable host podman at
 all** (`podman` is installed but there is no machine, so every host
@@ -926,6 +936,64 @@ A `rsvm` cage on `alpine:3.20`, created and started by the Rust binary:
 | `cage restore … --name rsvm2 --no-start` | Config and metadata restored; secrets warned per key and `Restored 0 secrets.`, because there is no host podman store to write them to. `cage show rsvm2` then reports `Secrets: 0/1 (1 missing)` honestly |
 | `cage ls` | A vm cage reads `running (2/2)` |
 | `cage destroy rsvm -y` | Lima instance deleted, state removed, the operator's own two apple cages untouched — and the at-rest keychain item left behind, per the bug above |
+
+### Track E — E9, the at-rest store
+
+E8's smoke left two findings open, and both turned out to be the same
+mistake made in three places: **assuming the container backend's shape,
+where the runtime copy of a secret *is* the value.** On that backend it
+is — a podman secret, or a `.cred` blob the Quadlet decrypts. On a vm
+cage on a Mac it is not: the value lives in the login keychain and the
+podman entry is a copy, written at deploy time by `_bridge_secrets` and
+never refreshed afterwards.
+
+The distinction already existed and already had a name —
+`SecretStore.runtime_decrypts`, documented since the store abstraction
+was written. It just never decided anything. E9 makes it decide, as
+`secret_store.at_rest_store(cfg)` / `secrets::at_rest_store` on the
+Rust side: the store holding the value when the runtime is not, or
+`None` when the runtime removals already cover it *or when no store
+resolves at all* — because every caller uses it to do strictly more
+work than before, so a resolution failure has to leave them where they
+were rather than failing a removal.
+
+| Command | Was | Is |
+| :-- | :-- | :-- |
+| `secret rm` | Removed the podman secret and the `.cred`, reported success, left the keychain value — which the next start restored. A key present *only* at rest read as "does not exist", so there was no way to remove it at all | Removes from all three, and finds a key that exists only at rest. A store that refuses the delete warns rather than failing: the runtime copies are already gone, and the operator needs to know the at-rest one survived. The unit convergence now reaches the guest, too — see below |
+| `cage destroy` (vm) | `keep_secrets` accepted and ignored, so the help's "Scoped secrets will also be removed." was false and `--keep-secrets` was a no-op. The host staging store — which the container backend *does* clear — outlived the cage too | Clears the host staging store and the at-rest store, before the Lima instance and the state directory go (the keychain store's key index is a file in that directory). `--keep-secrets` now means it |
+| `cage backup --include-secrets` | Archived the runtime copy, so the tarball could carry a value two edits old; a key with no runtime copy at all — set but not deployed since — was dropped from the backup silently | Prefers the at-rest value, falls back to the runtime copy, and archives the union of both key lists. Resolved **only** when `--include-secrets` is given: resolving a keychain store runs its write probe, which writes a throwaway item to the operator's real login keychain |
+
+**A fix that uncovered the next one.** Making the removal complete
+exposed a hazard the old bug had been hiding. `secret rm` converges the
+unit files, which is what drops a now-dangling
+`Secret=<cage>.<KEY>` line — and two things stopped that working on
+`vm`:
+
+* `cli._refresh_units` handles `container` and `vm`; the Rust port had
+  excluded `vm` with a comment saying "only because its backend is
+  Track E". Restored.
+* `VmBackend.install_units` stages quadlets on the *host*; the guest's
+  copies are only refreshed by a deploy. **Both implementations.** So
+  the converged unit sat on the host while the running guest kept the
+  old one, and the next in-guest start — a `cage restart`, or systemd's
+  own crash recovery — died with podman exit 125 (`no secret with name
+  or ID ...`) and took the cage down. Measured: `secret rm` on a
+  running vm cage, then `cage restart`, and the egress would not come
+  back until a full `cage update`. The Python's inline quadlet push is
+  now a `push_quadlets(name, inst)` method, called from `_deploy_cage`
+  as before and from `_refresh_units`; the Rust already had
+  `VmBackend::push_quadlets` and now calls it from the same place.
+
+Before E9 this was invisible: the keychain copy silently resurrected
+the value, so the dangling line always resolved.
+
+**A test that was dead setup.** Three `test_vm_backend.py` destroy tests
+set `backend._podman = MagicMock()` — an attribute `VmBackend` does not
+have and nothing read. Harmless while `destroy_resources` touched no
+store; the moment it did, those tests started shelling out to real
+podman. `_host_podman()` is the seam now, and the suite went from 78
+tests in 3.0s to 81 in 0.5s, which is what a test that was secretly
+running subprocesses looks like when it stops.
 
 **A bug E8 found, and it had a green test.** `services.cage_has_live_
 secret_channel` builds a `VmPodman` and calls `container_inspect` on

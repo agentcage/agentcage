@@ -1298,11 +1298,74 @@ impl<'a> VmBackend<'a> {
         self.instance(name).exists().unwrap_or(false)
     }
 
-    /// `VmBackend.destroy_resources` — the guest and this cage's config.
+    /// Delete this cage's secrets from everywhere this backend put them.
+    ///
+    /// `destroy_resources` used to accept `keep_secrets` and ignore it,
+    /// so `cage destroy`'s promise — "Scoped secrets will also be
+    /// removed." — was false here, and `--keep-secrets` was a no-op.
+    /// Two copies survived a destroy:
+    ///
+    /// * **The host staging store.** A vm cage's secrets are set on the
+    ///   host and mirrored into the guest by [`Self::bridge_secrets`] at
+    ///   deploy. The container backend removes its `<name>.*` podman
+    ///   secrets; this backend never did, so the host copies outlived
+    ///   the cage. (The *guest* copies go with the Lima instance, and
+    ///   the `.cred` blobs go with the state directory.)
+    /// * **The at-rest store, when it is not one of those.** On a macOS
+    ///   host a vm cage resolves to the login keychain, which nothing
+    ///   here touched — observed on a real destroy: the item was still
+    ///   under `agentcage / <cage>.<KEY>` afterwards, with nothing left
+    ///   on disk to say it was there.
+    ///
+    /// Best-effort throughout, for the same reason
+    /// `AppleBackend::forget_secrets` is: a cage that cannot be
+    /// destroyed because its secrets will not delete is worse than a
+    /// leftover the operator can see.
+    fn forget_secrets(&self, name: &str) -> Vec<String> {
+        let mut removed = Vec::new();
+
+        // --- the host staging store ---
+        let host_podman = agentcage_exec::tools::podman::Podman::new(self.runner);
+        for full in host_podman
+            .secret_list(&format!("{name}."))
+            .unwrap_or_default()
+        {
+            if host_podman.secret_remove(&full).unwrap_or(false) {
+                removed.push(format!("secret:{full}"));
+            }
+        }
+
+        // --- the at-rest store, when the runtime is not what holds it ---
+        let state_dir = self.paths.deployment_dir(name);
+        let Ok(config) = self
+            .paths
+            .load_deployment_config(name, &crate::hostenv::RealHost)
+        else {
+            return removed;
+        };
+        let env = crate::secrets::SystemEnv;
+        let host = crate::secrets::SecretHost::detect(self.runner, &env);
+        let Some(store) = crate::secrets::at_rest_store(
+            &config,
+            &host,
+            Some(&host_podman),
+            crate::secrets::Platform::host(),
+        ) else {
+            return removed;
+        };
+        for key in crate::secrets::at_rest_names(store.as_ref(), name, &state_dir) {
+            if store.delete(name, &key, &state_dir).is_ok() {
+                removed.push(format!("secret:{name}.{key}"));
+            }
+        }
+        removed
+    }
+
+    /// `VmBackend.destroy_resources` — the guest, this cage's config,
+    /// and its secrets.
     ///
     /// Returns the removal descriptions `cage destroy` prints, in the
-    /// Python's order. `keep_secrets` is accepted and unused, as in the
-    /// Python: the secret store went with the guest.
+    /// Python's order.
     ///
     /// The shared `~/.config/agentcage/lima` directory itself survives;
     /// only `lima.yaml` and `quadlets/` inside it are removed.
@@ -1313,9 +1376,16 @@ impl<'a> VmBackend<'a> {
     pub fn destroy_resources(
         &self,
         name: &str,
-        _keep_secrets: bool,
+        keep_secrets: bool,
     ) -> Result<Vec<String>, BackendError> {
         let mut removed = Vec::new();
+        // Secrets BEFORE the instance goes, and before the caller's
+        // state-directory removal: the keychain store's index of which
+        // keys exist is a file in the deployment directory, so reading
+        // it afterwards finds nothing to delete.
+        if !keep_secrets {
+            removed.extend(self.forget_secrets(name));
+        }
         let instance = self.instance(name);
         if instance.exists().unwrap_or(false) {
             instance.delete()?;

@@ -433,6 +433,58 @@ def plaintext_store_for(cfg, podman=None) -> SecretStore:
     return PlaintextStore(podman)
 
 
+def at_rest_store(cfg, *, podman=None) -> Optional[SecretStore]:
+    """The store holding this cage's values when its runtime does not.
+
+    ``runtime_decrypts`` is the distinction, and it is the one that
+    matters to every caller that *removes* or *reads back* a secret. A
+    store answering True keeps the value where the cage's runtime
+    already reads it — a podman secret, or a ``.cred`` blob the Quadlet
+    decrypts — so removing that runtime copy removes the value, and
+    reading it reads the value. A store answering False keeps the value
+    somewhere else entirely (the macOS keychain; a ``secrets.json`` in
+    the deployment dir) and has to be told separately.
+
+    Three commands got this wrong by assuming the container backend's
+    shape, where the two are always the same thing:
+
+    * ``secret rm`` removed the podman secret and the ``.cred`` and
+      reported success, leaving a vm cage's value in the keychain — from
+      which the next start restored it.
+    * ``cage destroy`` promised to remove scoped secrets and left the
+      same value behind.
+    * ``cage backup --include-secrets`` archived the podman copy, which
+      ``secret set`` never refreshes, so the tarball could carry a value
+      two edits old.
+
+    Returns None when there is no such store *or when one cannot be
+    resolved at all*. Callers use this to do strictly more work than
+    they used to, so a resolution failure has to leave them exactly
+    where they were rather than failing a removal.
+    """
+    try:
+        store = resolve_store(cfg, podman=podman)
+    except SecretStoreError:
+        return None
+    return None if store.runtime_decrypts else store
+
+
+def at_rest_names(store: SecretStore, cage: str, *, state_dir: Path) -> list[str]:
+    """``store.names(...)``, for callers that must not fail on it.
+
+    ``names`` is optional in the :class:`SecretStore` surface —
+    ``SystemdCredsStore`` and ``PlaintextStore`` do not implement it, so
+    the base class's ``NotImplementedError`` is a real outcome and not a
+    bug. Neither of those is ever reached through
+    :func:`at_rest_store`, but a store that gains ``runtime_decrypts =
+    False`` later should not break a destroy to say so.
+    """
+    try:
+        return sorted(store.names(cage, state_dir=state_dir))
+    except (NotImplementedError, SecretStoreError, OSError, ValueError):
+        return []
+
+
 def resolve_store(cfg, *, podman=None, source_scheme: str = "") -> SecretStore:
     """Pick the secret store for *cfg* (fail-closed).
 

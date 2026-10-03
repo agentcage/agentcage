@@ -226,14 +226,24 @@ fn reinstall_apple_units(
 /// daemon-reload on the same user systemd instance. e2e phases 3, 5
 /// and 6 run in parallel and would otherwise collide.
 pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<(), String> {
-    // apple-container is excluded in the Python because its
+    // apple-container is excluded, in the Python and here, because its
     // `generate_units` output is a metadata snapshot tied to the build
-    // pipeline; `vm` is included there and excluded here only because
-    // its backend is Track E.
-    if config.isolation != "container" {
+    // pipeline and its `start()` already reads live state.
+    //
+    // `vm` used to be excluded too, for no better reason than that its
+    // backend was Track E -- and the consequence was not cosmetic.
+    // Convergence is what drops a now-dangling `Secret=<cage>.<KEY>`
+    // line after `secret rm`; skipping it left the guest's quadlet
+    // naming a store entry that no longer exists, and the next start
+    // died with podman exit 125 (`no secret with name or ID ...`), the
+    // whole cage with it. Observed on real hardware the moment PR E9
+    // made the removal complete enough for the dangling line to bite:
+    // before that, the macOS keychain copy silently resurrected the
+    // value and hid this.
+    if config.isolation != "container" && config.isolation != "vm" {
         return Ok(());
     }
-    let backend = ctx.backend();
+    let backend = ctx.backend_for(&config.isolation);
     let octet =
         ctx.paths
             .load_metadata(cage)
@@ -262,16 +272,47 @@ pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<()
     for warning in &units.warnings {
         eprint!("{warning}");
     }
+    // `backend.unit_dir()`, not the container backend's: a vm cage's
+    // quadlets live under the shared Lima config directory, so asking
+    // the wrong place would find nothing installed and reinstall --
+    // plus a `daemon-reload` -- on every single `secret set`.
+    let unit_dir = backend.unit_dir();
     if units
         .files
         .iter()
-        .all(|(filename, content)| installed_matches(ctx, filename, content))
+        .all(|(filename, content)| installed_matches(&unit_dir, filename, content))
     {
         return Ok(());
     }
     backend
         .install_units(&units, true)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    // And on `vm`, one more hop -- the same shape as the staged-secret
+    // push, and for the same reason.
+    //
+    // `VmBackend::install_units` stages the quadlets on the *host*; the
+    // guest's copies are refreshed by a deploy. Both implementations
+    // are like this, so a converged unit used to sit on the host while
+    // the running guest kept the old one. That is tolerable for a
+    // *added* `Secret=` line (the value is staged live anyway) and not
+    // tolerable for a *removed* one: the guest's quadlet names a store
+    // entry that no longer exists, and the next in-guest start -- a
+    // `cage restart`, or systemd's own crash recovery -- dies with
+    // podman exit 125 and takes the cage down. Measured: `secret rm`
+    // on a running vm cage, then `cage restart`, and the egress would
+    // not come back until a full `cage update`.
+    //
+    // Best-effort: a guest that cannot be reached is a reason to do
+    // less, not to report that the secret was not stored.
+    if config.isolation == "vm" {
+        if let Some(vm) = backend.as_vm() {
+            if let Err(error) = vm.push_quadlets(cage) {
+                eprintln!("warning: could not push converged units into the guest: {error}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `cli._installed_unit_matches` — is `filename` already on disk with
@@ -289,8 +330,7 @@ pub(crate) fn refresh_units(ctx: &Ctx, cage: &str, config: &Config) -> Result<()
 /// `legacy_watcher` removes — so the branch is unreachable in practice.
 /// Correcting it here would make this the one place in the port that
 /// decides where a unit lives, which is `agentcage_state::Units`'s job.
-fn installed_matches(ctx: &Ctx, filename: &str, content: &str) -> bool {
-    let dir = ctx.paths.quadlet_dir();
+fn installed_matches(dir: &std::path::Path, filename: &str, content: &str) -> bool {
     [dir.join(filename), dir.join("quadlets").join(filename)]
         .iter()
         .any(|candidate| {

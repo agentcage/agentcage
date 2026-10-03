@@ -3796,12 +3796,34 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
         has_build_context = _stage_backup_config(src_dir, config_dir)
 
         # ── Secrets ──
+        #
+        # Two sources, because the podman store is not always where the
+        # value lives. When ``runtime_decrypts`` is False the podman
+        # entry is a *copy*, written at deploy time and never refreshed
+        # by `secret set` — so a backup read from it could carry a value
+        # two edits old. Measured on a vm cage on a Mac: three copies,
+        # two values, and the tarball got the stale one. The at-rest
+        # store is authoritative where it exists; the podman copy covers
+        # the keys it does not know about.
+        from agentcage.secret_store import (
+            SecretStoreError, at_rest_names, at_rest_store,
+        )
         expected = _expected_secrets(cfg)
         secrets_in_store = podman.secret_list(prefix=f"{name}.")
         secret_keys = [
             s["Name"].removeprefix(f"{name}.")
             for s in secrets_in_store
         ]
+        sd = state.deployment_dir(name)
+        # Resolved only when the values are actually wanted: resolving a
+        # keychain store runs its write probe, which writes a throwaway
+        # item to the operator's real login keychain — not something a
+        # backup that archives no values has any business doing.
+        at_rest = at_rest_store(cfg, podman=podman) if include_secrets else None
+        if at_rest is not None:
+            for key in at_rest_names(at_rest, name, state_dir=sd):
+                if key not in secret_keys:
+                    secret_keys.append(key)
         if include_secrets:
             click.echo(
                 "WARNING: Including secrets in backup. "
@@ -3811,10 +3833,24 @@ def cage_backup(name: str, output: str | None, include_secrets: bool):
             if secret_keys:
                 secrets_dir = staging_path / "secrets"
                 secrets_dir.mkdir()
-                for s in secrets_in_store:
-                    full_name = s["Name"]
-                    key = full_name.removeprefix(f"{name}.")
-                    value = podman.secret_read(full_name)
+                for key in secret_keys:
+                    full_name = f"{name}.{key}"
+                    value = None
+                    if at_rest is not None:
+                        try:
+                            value = at_rest.get(name, key, state_dir=sd)
+                        except SecretStoreError:
+                            value = None
+                    if value is None:
+                        try:
+                            value = podman.secret_read(full_name)
+                        except Exception as e:
+                            click.echo(
+                                f"warning: could not read secret "
+                                f"'{key}': {e}",
+                                err=True,
+                            )
+                            continue
                     (secrets_dir / key).write_text(value)
         else:
             click.echo(
@@ -4355,6 +4391,25 @@ def _refresh_units(name: str, cfg) -> None:
     ):
         return
     backend.install_units(units, quiet=True)
+    # And on `vm`, one more hop. `install_units` stages the quadlets on
+    # the *host*; the guest's copies are refreshed by a deploy, so a
+    # converged unit used to sit on the host while the running guest
+    # kept the old one. Tolerable for an *added* `Secret=` line (the
+    # value is staged live anyway) and not tolerable for a *removed*
+    # one: the guest's quadlet then names a store entry that no longer
+    # exists and the next in-guest start dies with podman exit 125,
+    # taking the cage with it. Best-effort — a guest that cannot be
+    # reached is a reason to do less, not to report that the secret was
+    # not stored.
+    if cfg.isolation == "vm":
+        try:
+            from agentcage.lima.instance import LimaInstance
+            backend.push_quadlets(name, LimaInstance(name))
+        except Exception as e:
+            click.echo(
+                f"warning: could not push converged units into the guest: {e}",
+                err=True,
+            )
 
 
 def _apply_secret_live_or_restart(name: str, key: str, value: str) -> None:
@@ -4450,15 +4505,47 @@ def secret_rm(name: str, key: str):
     # start, and a secret set live on a running cage (zero-restart) may
     # not have a store entry yet at all.
     cred_file = state.deployment_dir(name) / "creds" / f"{key}.cred"
+    sd = state.deployment_dir(name)
     had_cred = cred_file.is_file()
     had_store = podman.secret_exists(full_name)
-    if not had_cred and not had_store:
+
+    # ...and remove the value *at rest* when the runtime is not what
+    # holds it. The two removals above are the container backend's two
+    # places; a store whose ``runtime_decrypts`` is False keeps the
+    # value somewhere neither of them touches. A vm cage on a Mac
+    # resolves to the keychain, so `secret rm` used to report success
+    # and leave the value there — and the next start put it straight
+    # back. Same reason the apple branch above needs its own delete;
+    # this is that branch's rule applied by store rather than by
+    # isolation.
+    from agentcage.secret_store import (
+        SecretStoreError, at_rest_names, at_rest_store,
+    )
+    at_rest = at_rest_store(cfg, podman=podman)
+    had_at_rest = at_rest is not None and key in at_rest_names(
+        at_rest, name, state_dir=sd,
+    )
+
+    if not had_cred and not had_store and not had_at_rest:
         click.echo(f"error: secret '{full_name}' does not exist", err=True)
         sys.exit(1)
     if had_store:
         podman.secret_remove(full_name)
     if had_cred:
         cred_file.unlink()
+    if had_at_rest:
+        try:
+            at_rest.delete(name, key, state_dir=sd)
+        except SecretStoreError as e:
+            # Reported, not fatal: the runtime copies are already gone,
+            # so the secret has stopped being injected either way. The
+            # operator needs to know the at-rest copy survived, because
+            # the next start would otherwise restore it silently.
+            click.echo(
+                f"warning: could not remove '{full_name}' from the "
+                f"{at_rest.name} store: {e}",
+                err=True,
+            )
     click.echo(f"Secret '{full_name}' removed.")
 
     # Empty value = tombstone: the injector skips the rule instead of

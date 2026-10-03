@@ -250,24 +250,62 @@ fn backup_inner(ctx: &Ctx, matches: &ArgMatches) -> Result<(), ExitCode> {
     // manifest records the first, so a restore can tell the operator
     // what to set; the archive carries the second, because that is all
     // there is to carry.
+    // A third list, and the reason for it: the podman store is not
+    // always where the value *lives*. When
+    // [`agentcage_cli::secrets::SecretStore::runtime_decrypts`] is
+    // false the podman entry is a copy, written at deploy time and
+    // never refreshed by `secret set` — so a backup read from it can
+    // carry a value two edits old. Measured on a vm cage on a Mac:
+    // three copies, two values, and the tarball got the stale one. The
+    // at-rest store is authoritative where it exists; the podman copy
+    // covers the keys it does not know about.
     let expected = services::expected_secrets(&config);
     let prefix = format!("{name}.");
-    let stored: Vec<String> = podman
+    let mut stored: Vec<String> = podman
         .secret_list(&prefix)
         .unwrap_or_default()
         .into_iter()
         .map(|full| full[prefix.len().min(full.len())..].to_owned())
         .collect();
+    // Resolved only when the values are actually wanted. Resolving a
+    // keychain store runs its write probe, which writes a throwaway
+    // item to the operator's real login keychain — not something a
+    // `cage backup` that archives no values has any business doing.
+    let env = agentcage_cli::secrets::SystemEnv;
+    let secret_host = agentcage_cli::secrets::SecretHost::detect(ctx.runner.as_ref(), &env);
+    let at_rest = include_secrets
+        .then(|| {
+            agentcage_cli::secrets::at_rest_store(
+                &config,
+                &secret_host,
+                Some(&podman),
+                agentcage_cli::secrets::Platform::host(),
+            )
+        })
+        .flatten();
+    if let Some(store) = at_rest.as_ref() {
+        merge_at_rest_keys(
+            &mut stored,
+            &agentcage_cli::secrets::at_rest_names(store.as_ref(), &name, &state_dir),
+        );
+    }
 
     if include_secrets {
         eprintln!("WARNING: Including secrets in backup. Store the tarball securely.");
         if !stored.is_empty() {
             members.push(Member::Dir(format!("{ROOT}/secrets")));
             for key in &stored {
-                let value = podman.secret_read(&format!("{prefix}{key}")).map_err(|e| {
-                    eprintln!("error: could not read secret '{key}': {e}");
-                    ExitCode::from(EXIT_FAILURE)
-                })?;
+                let at_rest_value = at_rest
+                    .as_ref()
+                    .and_then(|store| store.get(&name, key, &state_dir).ok())
+                    .flatten();
+                let value = match at_rest_value {
+                    Some(value) => value,
+                    None => podman.secret_read(&format!("{prefix}{key}")).map_err(|e| {
+                        eprintln!("error: could not read secret '{key}': {e}");
+                        ExitCode::from(EXIT_FAILURE)
+                    })?,
+                };
                 members.push(Member::File(
                     format!("{ROOT}/secrets/{key}"),
                     value.into_bytes(),
@@ -1589,6 +1627,28 @@ fn is_valid_cage_name(name: &str) -> bool {
     name.len() <= 63 && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// Add the at-rest store's keys to the runtime store's list, in place.
+///
+/// A union, and the direction matters in both halves. A key the
+/// *runtime* store has but the at-rest store does not is still archived
+/// — that is a secret written straight into podman, which is what
+/// `secrets.backend: plaintext` does. A key the *at-rest* store has but
+/// the runtime store does not used to be dropped from the backup
+/// entirely, silently: a secret set on a cage that has not been
+/// deployed since has no runtime copy at all, and the key count the
+/// command prints came from the same list that was missing it.
+///
+/// Order is the runtime store's first, then the at-rest store's, so a
+/// `container` cage — where the two lists are always equal — keeps the
+/// archive member order it has always had.
+fn merge_at_rest_keys(stored: &mut Vec<String>, at_rest: &[String]) {
+    for key in at_rest {
+        if !stored.contains(key) {
+            stored.push(key.clone());
+        }
+    }
+}
+
 /// The refusal for an isolation nobody implemented, in the wording
 /// every other ported command uses.
 ///
@@ -1636,8 +1696,9 @@ fn file_timestamp() -> String {
 mod tests {
     use super::{
         Manifest, ROOT, backup_inner, build_context_included, carried_containerfile,
-        check_restore_build_context, file_timestamp, is_valid_cage_name, restore_build_context,
-        restore_capture, restore_config, restore_inner, restore_secrets, stage_backup_config,
+        check_restore_build_context, file_timestamp, is_valid_cage_name, merge_at_rest_keys,
+        restore_build_context, restore_capture, restore_config, restore_inner, restore_secrets,
+        stage_backup_config,
     };
     use crate::cli::context::Ctx;
     use agentcage_cli::archive::{self, Member};
@@ -3156,6 +3217,33 @@ secret_injection:
                 .all(|argv| argv.first().map(String::as_str) == Some("podman")),
             "a restore reached the guest store: {calls:?}"
         );
+    }
+
+    /// **The union rule, which is half of the stale-value bug.**
+    ///
+    /// The other half — preferring the at-rest *value* over the runtime
+    /// copy — is asserted end to end on the Python side, because it
+    /// needs a store whose `runtime_decrypts()` is false, and the only
+    /// non-apple one is the keychain, whose resolution is
+    /// platform-dependent.
+    #[test]
+    fn at_rest_keys_are_added_without_disturbing_the_runtime_order() {
+        // The case that used to lose a secret: set, never deployed.
+        let mut only_at_rest: Vec<String> = Vec::new();
+        merge_at_rest_keys(&mut only_at_rest, &["API_KEY".to_owned()]);
+        assert_eq!(only_at_rest, ["API_KEY"]);
+
+        // The container case: the two lists are the same, and the
+        // archive member order must not move.
+        let mut same = vec!["B".to_owned(), "A".to_owned()];
+        merge_at_rest_keys(&mut same, &["A".to_owned(), "B".to_owned()]);
+        assert_eq!(same, ["B", "A"], "a container cage's order is unchanged");
+
+        // A key only the runtime store has survives: that is a value
+        // written straight into podman, which `backend: plaintext` does.
+        let mut both = vec!["RUNTIME_ONLY".to_owned()];
+        merge_at_rest_keys(&mut both, &["AT_REST_ONLY".to_owned()]);
+        assert_eq!(both, ["RUNTIME_ONLY", "AT_REST_ONLY"]);
     }
 
     /// An isolation nobody implemented is still refused, and the apple

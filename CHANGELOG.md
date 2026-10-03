@@ -76,6 +76,45 @@ have not changed, only its name.
 
 ### Fixed
 
+- **`secret rm` and `cage destroy` now remove a vm cage's secret for real on
+  macOS.** The keychain delete was gated on the apple-container backend, but a
+  `vm` cage on a Mac resolves to the keychain too — so `secret rm` removed the
+  guest podman copy and the `.cred` blob, printed `Secret '<cage>.<KEY>'
+  removed.`, and left the value at rest. A plain `cage restart` then brought it
+  back. `cage destroy` had the same hole plus one more: `VmBackend` accepted
+  `--keep-secrets` and ignored it, so the help's "Scoped secrets will also be
+  removed." was false and the *host* staging store — which the container
+  backend does clear — outlived the cage.
+
+  A key that existed only at rest (set, but never deployed) also used to read
+  as `does not exist`, so there was no way to remove it at all. It is found
+  now. A store that refuses the delete warns instead of failing the command:
+  the runtime copies are already gone by then, so the secret has stopped being
+  injected either way, but you need to know the at-rest copy survived.
+
+- **`secret rm` on a running `vm` cage no longer leaves it unable to restart.**
+  Removing a secret converges the unit files, which is what drops the
+  now-dangling `Secret=<cage>.<KEY>` line — but on the vm backend the
+  converged quadlet was written to a host staging directory and never pushed
+  into the guest, so the *running* guest kept naming a store entry that no
+  longer existed. The next start inside the guest — a `cage restart`, or
+  systemd's own crash recovery — then failed with podman exit 125 and took the
+  cage down until a full `cage update`. The convergence now reaches the guest.
+
+  This was invisible until the fix above: the keychain copy used to resurrect
+  the value, so the dangling line always resolved.
+
+- **`cage backup --include-secrets` no longer archives a stale value.** The
+  archive was read from the podman store, which on a backend whose runtime
+  does not decrypt is a *copy* — written at deploy time and never refreshed by
+  `secret set`. Measured on a vm cage: three copies of one secret, two
+  different values, and the tarball got the older one. A key with no runtime
+  copy at all was dropped from the backup silently. The at-rest store is now
+  preferred, with the podman copy as the fallback, and the archive carries the
+  union of both key lists. It is resolved only when `--include-secrets` is
+  given, because resolving a keychain store runs a write probe against your
+  real login keychain.
+
 - **`secret set` on a running `vm` cage no longer restarts the workload.** The
   zero-restart path was unreachable on that backend: `cage_has_live_secret_
   channel` asks the cage's podman to inspect the running egress container, and

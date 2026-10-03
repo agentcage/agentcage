@@ -278,3 +278,121 @@ fn the_configured_scope_reaches_the_store() {
         .expect("the encrypt call");
     assert_eq!(encrypt.argv()[..3], ["systemd-creds", "--user", "encrypt"]);
 }
+
+// ── at_rest_store (PR E9) ───────────────────────────────────────────
+//
+// `runtime_decrypts` existed as documentation before it decided
+// anything. These pin the predicate three commands now depend on:
+// `secret rm`, `cage destroy` and `cage backup --include-secrets` all
+// used to assume the container backend's shape, where the runtime copy
+// *is* the value, and all three were wrong on a vm cage on a Mac.
+
+/// Which cages have a value somewhere the runtime removals do not reach.
+#[test]
+fn only_a_store_the_runtime_does_not_decrypt_is_an_at_rest_store() {
+    let keychain_cases = [
+        // The bug's cage: `auto` on a Mac vm cage is the login keychain.
+        ("vm", "auto", false, Platform::MacOs),
+        ("apple-container", "auto", false, Platform::MacOs),
+    ];
+    for (isolation, backend, allow_plaintext, platform) in keychain_cases {
+        let cfg = common::config(isolation, backend, "auto", allow_plaintext);
+        let fake = creds_missing();
+        // Resolving the keychain store runs its write probe: an add
+        // through `security -i`, then a delete.
+        fake.on(["security", "-i"], Reply::success());
+        fake.on(["security", "delete-generic-password"], Reply::success());
+        let env = MapEnv::new();
+        let host = SecretHost::new(&fake, &env, true);
+        let podman = Podman::new(&fake);
+        let store = agentcage_cli::secrets::at_rest_store(&cfg, &host, Some(&podman), platform)
+            .unwrap_or_else(|| panic!("{isolation}/{backend} must have an at-rest store"));
+        assert_eq!(identify(store.as_ref()), KEYCHAIN);
+    }
+
+    // Everything whose runtime already holds the value: the podman
+    // secret store, or a `.cred` the Quadlet decrypts. Removing the
+    // runtime copy removes the value, so there is nothing extra to do
+    // and these must answer None -- otherwise `secret rm` would delete
+    // twice and `cage backup` would resolve a store for nothing.
+    let none_cases = [
+        (
+            "container",
+            "systemd-creds",
+            false,
+            Platform::Other,
+            "a .cred blob",
+        ),
+        (
+            "container",
+            "plaintext",
+            true,
+            Platform::Other,
+            "the podman store",
+        ),
+        ("vm", "plaintext", true, Platform::MacOs, "the podman store"),
+    ];
+    for (isolation, backend, allow_plaintext, platform, why) in none_cases {
+        let cfg = common::config(isolation, backend, "auto", allow_plaintext);
+        let fake = creds_available();
+        let env = MapEnv::new();
+        let host = SecretHost::new(&fake, &env, true);
+        let podman = Podman::new(&fake);
+        let got = agentcage_cli::secrets::at_rest_store(&cfg, &host, Some(&podman), platform)
+            .map(|s| identify(s.as_ref()));
+        assert_eq!(
+            got, None,
+            "{isolation}/{backend} keeps its value in {why}, which the runtime \
+             removals already cover"
+        );
+    }
+}
+
+/// `apple-container`/`plaintext` is the case that proves the predicate
+/// is not just "is it the keychain".
+///
+/// `ApplePlaintextStore` answers `runtime_decrypts() == false` -- the
+/// value is a file in the deployment directory, not a podman secret --
+/// so it *is* an at-rest store even though it is cleartext, and the two
+/// stores that share the name `plaintext` land on opposite sides of the
+/// predicate. Nothing downstream depends on that today (an apple cage
+/// never reaches these three call sites: `secret rm` and `cage
+/// destroy` have their own apple branches, and `backup_apple` refuses
+/// `--include-secrets`), which is exactly why it is worth pinning
+/// here -- the flag is the rule, not the name.
+#[test]
+fn the_predicate_reads_the_flag_and_not_the_store_name() {
+    let cfg = common::config("apple-container", "plaintext", "auto", true);
+    let fake = creds_missing();
+    let env = MapEnv::new();
+    let host = SecretHost::new(&fake, &env, true);
+    let podman = Podman::new(&fake);
+    // Resolution gives the file-backed plaintext store...
+    assert_eq!(choose(&fake, &cfg, "", Platform::MacOs), Ok(FILE_PLAINTEXT));
+    // ...whose flag is false, so it is not covered by a podman removal.
+    let store = resolve_store(&cfg, &host, Some(&podman), "", Platform::MacOs).unwrap();
+    assert!(!store.runtime_decrypts());
+    assert_ne!(identify(store.as_ref()), PODMAN_PLAINTEXT);
+}
+
+/// A store that cannot be resolved is `None`, not an error.
+///
+/// Callers use `at_rest_store` to do strictly *more* cleanup than they
+/// used to, so a host where no store resolves has to leave them exactly
+/// where they were -- a `secret rm` that fails because the keychain is
+/// locked would be a regression, not a fix.
+#[test]
+fn an_unresolvable_store_is_none_rather_than_a_failure() {
+    // `auto` with no systemd-creds and no plaintext opt-in: resolution
+    // refuses, which is the fail-closed behaviour `secret set` wants.
+    let cfg = common::config("container", "auto", "auto", false);
+    let fake = creds_missing();
+    let env = MapEnv::new();
+    let host = SecretHost::new(&fake, &env, true);
+    let podman = Podman::new(&fake);
+    assert!(choose(&fake, &cfg, "", Platform::Other).is_err());
+    assert!(
+        agentcage_cli::secrets::at_rest_store(&cfg, &host, Some(&podman), Platform::Other)
+            .is_none()
+    );
+}

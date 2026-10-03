@@ -807,6 +807,62 @@ pub fn plaintext_store_for<'a>(
     }
 }
 
+/// The store holding this cage's values when its runtime does not.
+///
+/// [`SecretStore::runtime_decrypts`] is the distinction, and it is the
+/// one that matters to every caller that *removes* or *reads back* a
+/// secret. A store answering `true` keeps the value where the cage's
+/// runtime already reads it — a podman secret, or a `.cred` blob the
+/// Quadlet decrypts — so removing that runtime copy removes the value,
+/// and reading it reads the value. A store answering `false` keeps it
+/// somewhere else entirely (the macOS keychain; a `secrets.json` in
+/// the deployment directory) and has to be told separately.
+///
+/// Three commands got this wrong by assuming the container backend's
+/// shape, where the two are always the same thing:
+///
+/// * `secret rm` removed the podman secret and the `.cred` and reported
+///   success, leaving a vm cage's value in the keychain — from which the
+///   next start restored it.
+/// * `cage destroy` promised to remove scoped secrets and left the same
+///   value behind.
+/// * `cage backup --include-secrets` archived the podman copy, which
+///   `secret set` never refreshes, so the tarball could carry a value
+///   two edits old.
+///
+/// [`None`] when there is no such store *or when one cannot be resolved
+/// at all*. Callers use this to do strictly more work than they used
+/// to, so a resolution failure has to leave them exactly where they
+/// were rather than failing a removal.
+#[must_use]
+pub fn at_rest_store<'a>(
+    cfg: &Config,
+    host: &'a SecretHost<'a>,
+    podman: Option<&'a dyn PodmanSecrets>,
+    platform: Platform,
+) -> Option<Box<dyn SecretStore + 'a>> {
+    let store = resolve_store(cfg, host, podman, "", platform).ok()?;
+    if store.runtime_decrypts() {
+        None
+    } else {
+        Some(store)
+    }
+}
+
+/// [`SecretStore::names`] for callers that must not fail on it.
+///
+/// `names` is optional in the trait — [`SystemdCredsStore`] and
+/// [`PlaintextStore`] do not implement it, so the default's error is a
+/// real outcome and not a bug. Neither is ever reached through
+/// [`at_rest_store`], but a store that gains `runtime_decrypts() ==
+/// false` later should not break a destroy to say so.
+#[must_use]
+pub fn at_rest_names(store: &dyn SecretStore, cage: &str, state_dir: &Path) -> Vec<String> {
+    let mut names = store.names(cage, state_dir).unwrap_or_default();
+    names.sort();
+    names
+}
+
 /// `resolve_store` -- pick the store for `cfg`, fail-closed.
 ///
 /// The order is: an explicit per-rule `source:` scheme, then

@@ -104,7 +104,7 @@ use std::path::{Path, PathBuf};
 pub use resolver::{Backend, Environment, MapEnv, Resolution, SecretHost, SystemEnv};
 pub use store::{
     ApplePlaintextStore, KeychainStore, PlaintextStore, Platform, PodmanSecrets, SecretStore,
-    SystemdCredsStore, plaintext_store_for, resolve_store,
+    SystemdCredsStore, at_rest_names, at_rest_store, plaintext_store_for, resolve_store,
 };
 
 /// Why a secret could not be resolved, stored or retrieved.

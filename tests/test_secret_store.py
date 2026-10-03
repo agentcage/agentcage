@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -245,3 +246,77 @@ def test_keychain_quoting_matches_securitys_own_splitter(monkeypatch):
     assert ss.KeychainStore._quote("a'b") == r"'a\'b'"
     assert ss.KeychainStore._quote("a\\b") == r"'a\\b'"
     assert ss.KeychainStore._quote('a"b') == "'a\"b'"
+
+
+# --- at_rest_store: the predicate three commands depend on ------------
+#
+# `runtime_decrypts` was documentation before it decided anything.
+# `secret rm`, `cage destroy` and `cage backup --include-secrets` all
+# assumed the container backend's shape, where the runtime copy *is*
+# the value — and all three were wrong on a vm cage on a Mac, where the
+# value is in the login keychain. These pin the predicate.
+
+def _cfg(isolation, backend="auto", allow_plaintext=False):
+    class C:
+        pass
+    c = C()
+    c.isolation = isolation
+    c.secrets = SecretsConfig(
+        backend=backend, allow_plaintext=allow_plaintext, scope="auto",
+    )
+    return c
+
+
+def test_at_rest_store_is_the_keychain_for_a_mac_vm_cage(monkeypatch):
+    """The bug's cage. `auto` on a Mac vm cage resolves to the login
+    keychain, which neither the podman removal nor the .cred removal in
+    `secret rm` touches."""
+    from agentcage import secret_store as ss
+    monkeypatch.setattr(ss.sys, "platform", "darwin")
+    monkeypatch.setattr(ss.KeychainStore, "available", lambda self: True)
+    for isolation in ("vm", "apple-container"):
+        store = ss.at_rest_store(_cfg(isolation))
+        assert isinstance(store, ss.KeychainStore), isolation
+        assert store.runtime_decrypts is False
+
+
+@pytest.mark.parametrize("isolation, backend, allow, why", [
+    ("container", "plaintext", True, "the podman store"),
+    ("vm", "plaintext", True, "the podman store"),
+])
+def test_at_rest_store_is_none_when_the_runtime_holds_the_value(
+    monkeypatch, isolation, backend, allow, why,
+):
+    """A store whose runtime already holds the value needs nothing
+    extra: removing the runtime copy removes the value. Answering
+    otherwise would make `secret rm` delete twice and `cage backup`
+    resolve a store for nothing."""
+    from agentcage import secret_store as ss
+    monkeypatch.setattr(ss.sys, "platform", "darwin")
+    assert ss.at_rest_store(_cfg(isolation, backend, allow), podman=MagicMock()) is None
+
+
+def test_at_rest_store_is_none_when_nothing_resolves(monkeypatch):
+    """`auto` with no encrypting backend and no plaintext opt-in refuses,
+    which is the fail-closed behaviour `secret set` wants. Callers use
+    this helper to do strictly *more* cleanup, so a refusal has to leave
+    them where they were rather than failing a removal."""
+    from agentcage import secret_store as ss
+    monkeypatch.setattr(ss.sys, "platform", "linux")
+    monkeypatch.setattr(
+        "agentcage.secret_resolver.detect_default_backend", lambda: None,
+    )
+    with pytest.raises(ss.SecretStoreError):
+        ss.resolve_store(_cfg("container"))
+    assert ss.at_rest_store(_cfg("container")) is None
+
+
+def test_at_rest_names_tolerates_a_store_without_names(monkeypatch):
+    """`names` is optional in the SecretStore surface — SystemdCredsStore
+    and PlaintextStore do not implement it, so the base class's
+    NotImplementedError is a real outcome. A destroy must not fail to
+    say so."""
+    from agentcage import secret_store as ss
+    assert ss.at_rest_names(
+        ss.PlaintextStore(MagicMock()), "acme", state_dir=Path("/unused"),
+    ) == []
